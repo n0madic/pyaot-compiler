@@ -1,0 +1,10 @@
+[package]
+name = "pyaot-linker"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pyaot-diagnostics = { path = "../diagnostics" }
+
+[lints.rust]
+unsafe_code = "forbid"

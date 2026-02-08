@@ -1,0 +1,20 @@
+[package]
+name = "pyaot-codegen-cranelift"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pyaot-utils = { path = "../utils" }
+pyaot-mir = { path = "../mir" }
+pyaot-types = { path = "../types" }
+pyaot-diagnostics = { path = "../diagnostics" }
+pyaot-stdlib-defs = { path = "../stdlib-defs" }
+cranelift-codegen = { workspace = true }
+cranelift-frontend = { workspace = true }
+cranelift-module = { workspace = true }
+cranelift-object = { workspace = true }
+target-lexicon = { workspace = true }
+indexmap = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

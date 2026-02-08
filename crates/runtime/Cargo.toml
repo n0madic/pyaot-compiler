@@ -1,0 +1,21 @@
+[package]
+name = "pyaot-runtime"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gc_stress_test)'] }
+
+[dependencies]
+pyaot-core-defs = { path = "../core-defs" }
+regex-lite = "0.1"
+serde_json = "1"
+libc = "0.2"
+ureq = "3"
+rand = "0.8"
+sha2 = "0.10"
+md-5 = "0.10"
+base64 = "0.22"

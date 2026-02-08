@@ -1,0 +1,72 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cli",
+    "crates/core-defs",
+    "crates/frontend-python",
+    "crates/hir",
+    "crates/semantics",
+    "crates/stdlib-defs",
+    "crates/types",
+    "crates/typecheck",
+    "crates/mir",
+    "crates/lowering",
+    "crates/optimizer",
+    "crates/codegen-cranelift",
+    "crates/linker",
+    "crates/runtime",
+    "crates/diagnostics",
+    "crates/utils",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["n0madic", "claude"]
+license = "MIT"
+
+[workspace.dependencies]
+# Parser
+rustpython-parser = "0.4"
+
+# Cranelift backend
+cranelift-codegen = "0.127"
+cranelift-frontend = "0.127"
+cranelift-module = "0.127"
+cranelift-object = "0.127"
+target-lexicon = "0.13"
+
+# Diagnostics
+miette = { version = "7", features = ["fancy"] }
+thiserror = "1.0"
+codespan-reporting = "0.11"
+
+# Data structures
+indexmap = "2.0"
+hashbrown = "0.14"
+smallvec = "1.11"
+la-arena = "0.3"
+slotmap = "1.0"
+
+# Graphs
+petgraph = "0.6"
+
+# Utilities
+anyhow = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Serialization (for IR dump)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = false

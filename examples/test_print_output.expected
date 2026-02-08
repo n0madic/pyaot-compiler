@@ -1,0 +1,42 @@
+42
+-7
+0
+3.14
+1
+0
+True
+False
+None
+hello
+
+
+1 2 3
+a b c
+1 hello True 3.14
+1 None 2
+1-2-3
+a, b, c
+12
+hello world
+line1
+line2
+1-2-3!
+[1, 2, 3]
+['a', 'b']
+[]
+(1, 2, 3)
+(42,)
+('hello', 'world')
+[[1, 2], [3, 4]]
+{}
+{'x': 1}
+set()
+{42}
+b'hello'
+b''
+30
+200
+0
+1
+2
+Hello World

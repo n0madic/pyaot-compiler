@@ -1,0 +1,165 @@
+//! sys module runtime support
+//!
+//! Provides:
+//! - sys.argv: Command line arguments as list[str]
+//! - sys.exit(code): Exit program with given code
+
+use crate::gc;
+use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind};
+use std::ffi::CStr;
+use std::sync::Mutex;
+
+/// Wrapper for raw pointer to make it Send + Sync
+struct ObjPtr(*mut Obj);
+unsafe impl Send for ObjPtr {}
+unsafe impl Sync for ObjPtr {}
+
+/// Global storage for sys.argv list
+static SYS_ARGV: Mutex<Option<ObjPtr>> = Mutex::new(None);
+
+/// Initialize sys.argv from main's argc/argv
+///
+/// # Safety
+/// `argv` must be a valid pointer to an array of at least `argc` null-terminated C strings.
+pub unsafe fn init_sys_argv(argc: i32, argv: *const *const i8) {
+    // Create a list to hold the arguments
+    let list_ptr = create_argv_list(argc, argv);
+
+    // Store in global
+    let mut guard = SYS_ARGV
+        .lock()
+        .expect("SYS_ARGV mutex poisoned - another thread panicked");
+    *guard = Some(ObjPtr(list_ptr));
+}
+
+/// Create the argv list from C argc/argv
+///
+/// # Safety
+/// `argv` must be a valid pointer to an array of at least `argc` null-terminated C strings.
+unsafe fn create_argv_list(argc: i32, argv: *const *const i8) -> *mut Obj {
+    // Allocate list with capacity for argc elements
+    let capacity = if argc > 0 { argc as usize } else { 0 };
+
+    // Allocate list object
+    let list_size = std::mem::size_of::<ListObj>();
+    let list_ptr = gc::gc_alloc(list_size, TypeTagKind::List as u8) as *mut ListObj;
+
+    (*list_ptr).header = ObjHeader {
+        type_tag: TypeTagKind::List,
+        marked: false,
+        size: list_size,
+    };
+    (*list_ptr).len = 0;
+    (*list_ptr).capacity = capacity;
+
+    // Allocate data array if needed
+    if capacity > 0 {
+        let data_layout = std::alloc::Layout::array::<*mut Obj>(capacity)
+            .expect("Allocation size overflow - capacity too large");
+        (*list_ptr).data = std::alloc::alloc(data_layout) as *mut *mut Obj;
+
+        // Initialize all slots to null
+        for i in 0..capacity {
+            *(*list_ptr).data.add(i) = std::ptr::null_mut();
+        }
+    } else {
+        (*list_ptr).data = std::ptr::null_mut();
+    }
+
+    // Convert each argv element to a StrObj and add to list
+    for i in 0..argc {
+        let c_str_ptr = *argv.add(i as usize);
+        if c_str_ptr.is_null() {
+            continue;
+        }
+
+        let c_str = CStr::from_ptr(c_str_ptr);
+        let bytes = c_str.to_bytes();
+        let len = bytes.len();
+
+        // Allocate string object
+        let str_size = std::mem::size_of::<StrObj>() + len;
+        let str_ptr = gc::gc_alloc(str_size, TypeTagKind::Str as u8) as *mut StrObj;
+
+        (*str_ptr).header = ObjHeader {
+            type_tag: TypeTagKind::Str,
+            marked: false,
+            size: str_size,
+        };
+        (*str_ptr).len = len;
+
+        // Copy string data
+        if len > 0 {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), (*str_ptr).data.as_mut_ptr(), len);
+        }
+
+        // Add to list
+        *(*list_ptr).data.add(i as usize) = str_ptr as *mut Obj;
+        (*list_ptr).len += 1;
+    }
+
+    list_ptr as *mut Obj
+}
+
+/// Get sys.argv list
+/// Returns a pointer to the list of command-line arguments
+#[no_mangle]
+pub extern "C" fn rt_sys_get_argv() -> *mut Obj {
+    let guard = SYS_ARGV
+        .lock()
+        .expect("SYS_ARGV mutex poisoned - another thread panicked");
+    match &*guard {
+        Some(ObjPtr(ptr)) => *ptr,
+        None => {
+            // Return empty list if not initialized
+            // This shouldn't happen in normal usage
+            unsafe {
+                let list_size = std::mem::size_of::<ListObj>();
+                let list_ptr = gc::gc_alloc(list_size, TypeTagKind::List as u8) as *mut ListObj;
+
+                (*list_ptr).header = ObjHeader {
+                    type_tag: TypeTagKind::List,
+                    marked: false,
+                    size: list_size,
+                };
+                (*list_ptr).len = 0;
+                (*list_ptr).capacity = 0;
+                (*list_ptr).data = std::ptr::null_mut();
+
+                list_ptr as *mut Obj
+            }
+        }
+    }
+}
+
+/// Exit the program with the given exit code
+/// This function never returns (diverging)
+#[no_mangle]
+pub extern "C" fn rt_sys_exit(code: i64) -> ! {
+    // Call rt_shutdown to clean up
+    crate::rt_shutdown();
+    std::process::exit(code as i32)
+}
+
+/// Intern a string - returns an interned version of the string
+/// If the string is already interned, returns the same object.
+/// This is equivalent to Python's sys.intern(string).
+///
+/// # Safety
+/// `str_obj` must be a valid pointer to a StrObj.
+#[no_mangle]
+pub unsafe extern "C" fn rt_sys_intern(str_obj: *mut Obj) -> *mut Obj {
+    use crate::object::StrObj;
+    use crate::string::rt_make_str_interned;
+
+    if str_obj.is_null() {
+        return str_obj;
+    }
+
+    let str_ptr = str_obj as *mut StrObj;
+    let len = (*str_ptr).len;
+    let data = (*str_ptr).data.as_ptr();
+
+    // Use the string interning function to get or create interned version
+    rt_make_str_interned(data, len)
+}

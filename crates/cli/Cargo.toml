@@ -1,0 +1,31 @@
+[package]
+name = "pyaot"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "pyaot"
+path = "src/main.rs"
+
+[dependencies]
+pyaot-utils = { path = "../utils" }
+pyaot-diagnostics = { path = "../diagnostics" }
+pyaot-frontend-python = { path = "../frontend-python" }
+pyaot-hir = { path = "../hir" }
+pyaot-types = { path = "../types" }
+pyaot-semantics = { path = "../semantics" }
+pyaot-typecheck = { path = "../typecheck" }
+pyaot-lowering = { path = "../lowering" }
+pyaot-mir = { path = "../mir" }
+pyaot-optimizer = { path = "../optimizer" }
+pyaot-codegen-cranelift = { path = "../codegen-cranelift" }
+pyaot-linker = { path = "../linker" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+miette = { workspace = true }
+target-lexicon = { workspace = true }
+indexmap = { workspace = true }
+rustpython-parser = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

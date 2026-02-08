@@ -1,0 +1,17 @@
+[package]
+name = "pyaot-lowering"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pyaot-utils = { path = "../utils" }
+pyaot-hir = { path = "../hir" }
+pyaot-mir = { path = "../mir" }
+pyaot-types = { path = "../types" }
+pyaot-stdlib-defs = { path = "../stdlib-defs" }
+pyaot-core-defs = { path = "../core-defs" }
+pyaot-diagnostics = { path = "../diagnostics" }
+indexmap = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

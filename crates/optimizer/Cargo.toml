@@ -1,0 +1,13 @@
+[package]
+name = "pyaot-optimizer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pyaot-mir = { path = "../mir" }
+pyaot-utils = { path = "../utils" }
+pyaot-types = { path = "../types" }
+indexmap = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

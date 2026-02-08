@@ -1,0 +1,1238 @@
+# Consolidated test file for classes and OOP
+
+from typing import Any
+from abc import abstractmethod
+
+# ===== SECTION: Class definitions and __init__ =====
+
+class Point:
+    x: int
+    y: int
+
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    def distance_squared(self) -> int:
+        return self.x * self.x + self.y * self.y
+
+    def add(self, other_x: int, other_y: int) -> int:
+        return self.x + other_x + self.y + other_y
+
+# Create instance via constructor
+p = Point(3, 4)
+
+# ===== SECTION: Instance fields and methods =====
+
+# Test field access
+assert p.x == 3, "Field x should be 3"
+assert p.y == 4, "Field y should be 4"
+
+# Test method calls
+d = p.distance_squared()
+assert d == 25, "distance_squared should be 25 (3*3 + 4*4)"
+
+s = p.add(2, 3)
+assert s == 12, "add should be 12 (3+2 + 4+3)"
+
+# Test field modification
+p.x = 10
+assert p.x == 10, "Field x should be 10 after modification"
+
+# ===== SECTION: Multiple instances =====
+
+# Create another instance
+p2 = Point(5, 12)
+assert p2.x == 5, "p2.x should be 5"
+assert p2.y == 12, "p2.y should be 12"
+assert p2.distance_squared() == 169, "p2.distance_squared should be 169"
+
+# Original instance unchanged (except for modification)
+assert p.x == 10, "p.x should still be 10"
+assert p.y == 4, "p.y should still be 4"
+
+# ===== SECTION: Class attributes =====
+
+class AttrCounter:
+    count = 0
+    name = "Counter"
+
+# Test basic access
+assert AttrCounter.count == 0, "AttrCounter.count should equal 0"
+assert AttrCounter.name == "Counter", "AttrCounter.name should equal \"Counter\""
+
+# Test modification
+AttrCounter.count = 5
+assert AttrCounter.count == 5, "AttrCounter.count should equal 5"
+
+class Tracker:
+    total = 0
+
+    def __init__(self):
+        Tracker.total += 1
+
+t1 = Tracker()
+assert Tracker.total == 1, "Tracker.total should equal 1"
+t2 = Tracker()
+assert Tracker.total == 2, "Tracker.total should equal 2"
+
+# Test float class attribute
+class Config:
+    rate = 0.5
+
+assert Config.rate == 0.5, "Config.rate should equal 0.5"
+Config.rate = 1.5
+assert Config.rate == 1.5, "Config.rate should equal 1.5"
+
+# Test bool class attribute
+class Flags:
+    enabled = True
+    debug = False
+
+assert Flags.enabled == True, "Flags.enabled should equal True"
+assert Flags.debug == False, "Flags.debug should equal False"
+Flags.debug = True
+assert Flags.debug == True, "Flags.debug should equal True"
+
+# Test class attr with multiple classes
+class AttrA:
+    x = 10
+
+class AttrB:
+    x = 20
+
+assert AttrA.x == 10, "AttrA.x should equal 10"
+assert AttrB.x == 20, "AttrB.x should equal 20"
+AttrA.x = 15
+assert AttrA.x == 15, "AttrA.x should equal 15"
+assert AttrB.x == 20, "AttrB.x should equal 20"  # B.x should be unchanged
+
+# ===== SECTION: Single inheritance =====
+
+class Animal:
+    name: str
+    def __init__(self, name: str):
+        self.name = name
+    def speak(self) -> str:
+        return "..."
+
+class Dog(Animal):
+    def __init__(self, name: str):
+        super().__init__(name)
+    def speak(self) -> str:
+        return "Woof!"
+
+class Cat(Animal):
+    def __init__(self, name: str):
+        super().__init__(name)
+    def speak(self) -> str:
+        return "Meow!"
+
+# Test basic inheritance
+dog = Dog("Rex")
+assert dog.name == "Rex", "dog.name should equal \"Rex\""
+assert dog.speak() == "Woof!", "dog.speak() should equal \"Woof!\""
+
+cat = Cat("Whiskers")
+assert cat.name == "Whiskers", "cat.name should equal \"Whiskers\""
+assert cat.speak() == "Meow!", "cat.speak() should equal \"Meow!\""
+
+# ===== SECTION: super().__init__() =====
+
+class Shape:
+    x: int
+    y: int
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+    def describe(self) -> str:
+        return "Shape"
+
+class Circle(Shape):
+    radius: int
+    def __init__(self, x: int, y: int, r: int):
+        super().__init__(x, y)
+        self.radius = r
+    def describe(self) -> str:
+        return "Circle"
+
+circle = Circle(10, 20, 5)
+assert circle.x == 10, "circle.x should equal 10"
+assert circle.y == 20, "circle.y should equal 20"
+assert circle.radius == 5, "circle.radius should equal 5"
+assert circle.describe() == "Circle", "circle.describe() should equal \"Circle\""
+
+# ===== SECTION: isinstance() for primitives =====
+
+inst_x: int = 42
+assert isinstance(inst_x, int), "isinstance(inst_x, int) should be True"
+assert not isinstance(inst_x, str), "assertion failed: not isinstance(inst_x, str)"
+assert not isinstance(inst_x, float), "assertion failed: not isinstance(inst_x, float)"
+assert not isinstance(inst_x, bool), "assertion failed: not isinstance(inst_x, bool)"
+
+inst_y: float = 3.14
+assert isinstance(inst_y, float), "isinstance(inst_y, float) should be True"
+assert not isinstance(inst_y, int), "assertion failed: not isinstance(inst_y, int)"
+assert not isinstance(inst_y, str), "assertion failed: not isinstance(inst_y, str)"
+
+flag: bool = True
+assert isinstance(flag, bool), "isinstance(flag, bool) should be True"
+assert isinstance(flag, int), "isinstance(flag, int) should be True (bool is subclass of int)"
+assert not isinstance(flag, str), "assertion failed: not isinstance(flag, str)"
+
+# ===== SECTION: isinstance() for user classes =====
+
+class IsPoint:
+    x: int
+    y: int
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+class IsCircle:
+    r: int
+    def __init__(self, r: int):
+        self.r = r
+
+is_p = IsPoint(1, 2)
+is_c = IsCircle(5)
+
+assert isinstance(is_p, IsPoint), "isinstance(is_p, IsPoint) should be True"
+assert not isinstance(is_p, IsCircle), "assertion failed: not isinstance(is_p, IsCircle)"
+assert isinstance(is_c, IsCircle), "isinstance(is_c, IsCircle) should be True"
+assert not isinstance(is_c, IsPoint), "assertion failed: not isinstance(is_c, IsPoint)"
+
+# Check class vs primitive type
+assert not isinstance(is_p, int), "assertion failed: not isinstance(is_p, int)"
+assert not isinstance(is_p, str), "assertion failed: not isinstance(is_p, str)"
+assert not isinstance(inst_x, IsPoint), "assertion failed: not isinstance(inst_x, IsPoint)"
+
+# ===== SECTION: isinstance() with inheritance =====
+
+assert isinstance(dog, Dog), "isinstance(dog, Dog) should be True"
+assert isinstance(dog, Animal), "isinstance(dog, Animal) should be True"
+assert isinstance(cat, Cat), "isinstance(cat, Cat) should be True"
+assert isinstance(cat, Animal), "isinstance(cat, Animal) should be True"
+
+# Not a cat
+assert not isinstance(dog, Cat), "assertion failed: not isinstance(dog, Cat)"
+# Not a dog
+assert not isinstance(cat, Dog), "assertion failed: not isinstance(cat, Dog)"
+
+# Shape inheritance
+assert isinstance(circle, Circle), "isinstance(circle, Circle) should be True"
+assert isinstance(circle, Shape), "isinstance(circle, Shape) should be True"
+
+# ===== SECTION: Virtual method dispatch (polymorphism) =====
+
+class DispatchAnimal:
+    def speak(self) -> str:
+        return "..."
+
+class DispatchDog(DispatchAnimal):
+    def speak(self) -> str:
+        return "Woof!"
+
+class DispatchCat(DispatchAnimal):
+    def speak(self) -> str:
+        return "Meow!"
+
+# Test direct method calls work via vtable dispatch
+dispatch_dog = DispatchDog()
+dispatch_cat = DispatchCat()
+dispatch_animal = DispatchAnimal()
+
+assert dispatch_dog.speak() == "Woof!", "dispatch_dog.speak() should equal \"Woof!\""
+assert dispatch_cat.speak() == "Meow!", "dispatch_cat.speak() should equal \"Meow!\""
+assert dispatch_animal.speak() == "...", "dispatch_animal.speak() should equal \"...\""
+
+# Test multi-level inheritance
+class Puppy(DispatchDog):
+    def speak(self) -> str:
+        return "Yip!"
+
+puppy = Puppy()
+assert puppy.speak() == "Yip!", "puppy.speak() should equal \"Yip!\""
+
+# Test three-level inheritance
+class Chihuahua(Puppy):
+    def speak(self) -> str:
+        return "Bark!"
+
+chihuahua = Chihuahua()
+assert chihuahua.speak() == "Bark!", "chihuahua.speak() should equal \"Bark!\""
+
+# ===== SECTION: User-defined decorators =====
+
+def identity(func) -> Any:
+    return func
+
+@identity
+def simple(a: int, b: int) -> int:
+    return a + b
+
+result_deco = simple(3, 4)
+assert result_deco == 7, "identity decorator failed"
+
+# Multiple identity decorators
+def identity2(func) -> Any:
+    return func
+
+@identity
+@identity2
+def add_deco(x: int, y: int) -> int:
+    return x + y
+
+result_deco2 = add_deco(10, 20)
+assert result_deco2 == 30, "multiple identity decorators failed"
+
+# Decorator on function with default args
+@identity
+def greet(name: str, greeting: str = "Hello") -> str:
+    return greeting + " " + name
+
+result_deco3 = greet("World")
+assert result_deco3 == "Hello World", "decorator with defaults failed"
+
+result_deco3b = greet("World", "Hi")
+assert result_deco3b == "Hi World", "decorator with explicit arg failed"
+
+# ===== SECTION: Wrapper decorators =====
+# Wrapper decorators return a closure that wraps the original function
+
+def double_result(func):
+    def wrapper(x: int) -> int:
+        return func(x) * 2
+    return wrapper
+
+@double_result
+def get_value(n: int) -> int:
+    return n + 5
+
+wrapper_result1 = get_value(10)
+assert wrapper_result1 == 30, "wrapper decorator (10+5)*2 should be 30"
+
+wrapper_result2 = get_value(0)
+assert wrapper_result2 == 10, "wrapper decorator (0+5)*2 should be 10"
+
+# String wrapper decorator
+def add_prefix(func):
+    def wrapper(name: str) -> str:
+        return "Hello, " + func(name)
+    return wrapper
+
+@add_prefix
+def greet_person(name: str) -> str:
+    return name + "!"
+
+wrapper_str1 = greet_person("World")
+assert wrapper_str1 == "Hello, World!", "wrapper string decorator failed"
+
+wrapper_str2 = greet_person("Alice")
+assert wrapper_str2 == "Hello, Alice!", "wrapper string decorator with Alice failed"
+
+# ===== SECTION: @property decorator (getter/setter) =====
+
+class PropCounter:
+    _value: int
+
+    def __init__(self, v: int):
+        self._value = v
+
+    @property
+    def value(self) -> int:
+        return self._value
+
+    @value.setter
+    def value(self, v: int) -> None:
+        self._value = v
+
+    @property
+    def doubled(self) -> int:
+        return self._value * 2
+
+# Test property getter
+prop_c = PropCounter(5)
+assert prop_c.value == 5, "prop_c.value should equal 5"
+assert prop_c.doubled == 10, "prop_c.doubled should equal 10"
+
+# Test property setter
+prop_c.value = 10
+assert prop_c.value == 10, "prop_c.value should equal 10"
+assert prop_c.doubled == 20, "prop_c.doubled should equal 20"
+
+# Test read-only property (no setter)
+class Rectangle:
+    _width: int
+    _height: int
+
+    def __init__(self, w: int, h: int):
+        self._width = w
+        self._height = h
+
+    @property
+    def area(self) -> int:
+        return self._width * self._height
+
+rect = Rectangle(3, 4)
+assert rect.area == 12, "rect.area should equal 12"
+
+# ===== SECTION: @staticmethod decorator =====
+
+class StaticMath:
+    @staticmethod
+    def static_add(a: int, b: int) -> int:
+        return a + b
+
+    @staticmethod
+    def static_multiply(x: int, y: int) -> int:
+        return x * y
+
+# Test calling static method on class
+assert StaticMath.static_add(2, 3) == 5, "StaticMath.static_add(2, 3) should equal 5"
+assert StaticMath.static_multiply(4, 5) == 20, "StaticMath.static_multiply(4, 5) should equal 20"
+
+# Test calling static method on instance
+sm = StaticMath()
+assert sm.static_add(10, 20) == 30, "sm.static_add(10, 20) should equal 30"
+assert sm.static_multiply(6, 7) == 42, "sm.static_multiply(6, 7) should equal 42"
+
+# Static method with no arguments
+class StaticCounter:
+    @staticmethod
+    def get_default() -> int:
+        return 100
+
+assert StaticCounter.get_default() == 100, "StaticCounter.get_default() should equal 100"
+sc = StaticCounter()
+assert sc.get_default() == 100, "sc.get_default() should equal 100"
+
+# ===== SECTION: @classmethod decorator =====
+
+# Basic classmethod - cls is passed as first argument (as class_id integer)
+class ClassMethodBasic:
+    count: int = 0  # Class attribute with type annotation
+
+    @classmethod
+    def increment(cls: int) -> int:
+        # cls receives the class_id as an integer
+        ClassMethodBasic.count = ClassMethodBasic.count + 1
+        return ClassMethodBasic.count
+
+    @classmethod
+    def get_count(cls: int) -> int:
+        return ClassMethodBasic.count
+
+# Test calling classmethod on class
+assert ClassMethodBasic.get_count() == 0, "ClassMethodBasic.get_count() should equal 0"
+result = ClassMethodBasic.increment()
+assert result == 1, "result should equal 1"
+assert ClassMethodBasic.get_count() == 1, "ClassMethodBasic.get_count() should equal 1"
+ClassMethodBasic.increment()
+assert ClassMethodBasic.get_count() == 2, "ClassMethodBasic.get_count() should equal 2"
+
+# Test calling classmethod on instance
+obj = ClassMethodBasic()
+result2 = obj.increment()
+assert result2 == 3, "result2 should equal 3"
+assert obj.get_count() == 3, "obj.get_count() should equal 3"
+
+# Classmethod with additional parameters
+class ClassMethodWithArgs:
+    value: int = 10  # Class attribute with type annotation
+
+    @classmethod
+    def add_to_value(cls: int, x: int) -> int:
+        return ClassMethodWithArgs.value + x
+
+    @classmethod
+    def multiply_value(cls: int, x: int, y: int) -> int:
+        return ClassMethodWithArgs.value * x * y
+
+# Test classmethod with args on class
+assert ClassMethodWithArgs.add_to_value(5) == 15, "ClassMethodWithArgs.add_to_value(5) should equal 15"
+assert ClassMethodWithArgs.multiply_value(2, 3) == 60, "ClassMethodWithArgs.multiply_value(2, 3) should equal 60"
+
+# Test classmethod with args on instance
+cwa = ClassMethodWithArgs()
+assert cwa.add_to_value(20) == 30, "cwa.add_to_value(20) should equal 30"
+assert cwa.multiply_value(4, 5) == 200, "cwa.multiply_value(4, 5) should equal 200"
+
+# Classmethod returning different types
+class ClassMethodTypes:
+    name = "TestClass"  # Class attribute with type annotation
+
+    @classmethod
+    def get_name(cls: int) -> str:
+        return ClassMethodTypes.name
+
+    @classmethod
+    def is_valid(cls: int) -> bool:
+        return True
+
+assert ClassMethodTypes.get_name() == "TestClass", "ClassMethodTypes.get_name() should equal \"TestClass\""
+assert ClassMethodTypes.is_valid() == True, "ClassMethodTypes.is_valid() should equal True"
+
+# Mixed static and class methods in same class
+class MixedMethods:
+    counter: int = 0  # Class attribute with type annotation
+
+    @staticmethod
+    def static_helper(x: int) -> int:
+        return x * 2
+
+    @classmethod
+    def class_increment(cls: int) -> int:
+        MixedMethods.counter = MixedMethods.counter + 1
+        return MixedMethods.counter
+
+    def instance_method(self) -> int:
+        return MixedMethods.counter + 100
+
+# Test all three method types
+assert MixedMethods.static_helper(5) == 10, "MixedMethods.static_helper(5) should equal 10"
+assert MixedMethods.class_increment() == 1, "MixedMethods.class_increment() should equal 1"
+mm = MixedMethods()
+assert mm.instance_method() == 101, "mm.instance_method() should equal 101"
+assert mm.static_helper(7) == 14, "mm.static_helper(7) should equal 14"
+assert mm.class_increment() == 2, "mm.class_increment() should equal 2"
+
+# Test annotated assignment with value is treated as class attribute (not instance field)
+class AnnotatedClassAttr:
+    count: int = 0
+    name: str = "test"
+    flag: bool = True
+
+    @classmethod
+    def increment_count(cls: int) -> int:
+        AnnotatedClassAttr.count = AnnotatedClassAttr.count + 1
+        return AnnotatedClassAttr.count
+
+# Verify class attributes are accessible and mutable
+assert AnnotatedClassAttr.count == 0, "AnnotatedClassAttr.count should equal 0"
+assert AnnotatedClassAttr.name == "test", "AnnotatedClassAttr.name should equal \"test\""
+assert AnnotatedClassAttr.flag == True, "AnnotatedClassAttr.flag should equal True"
+assert AnnotatedClassAttr.increment_count() == 1, "AnnotatedClassAttr.increment_count() should equal 1"
+assert AnnotatedClassAttr.count == 1, "AnnotatedClassAttr.count should equal 1"
+AnnotatedClassAttr.count = 100
+assert AnnotatedClassAttr.count == 100, "AnnotatedClassAttr.count should equal 100"
+
+print("@classmethod tests passed!")
+
+# ===== SECTION: Abstract methods =====
+
+# Test that concrete classes implementing abstract methods work correctly
+class AbstractAnimal:
+    @abstractmethod
+    def speak(self) -> str:
+        pass
+
+    def describe(self) -> str:
+        return "I am an animal"
+
+class ConcreteDog(AbstractAnimal):
+    def speak(self) -> str:
+        return "Woof!"
+
+class ConcreteCat(AbstractAnimal):
+    def speak(self) -> str:
+        return "Meow!"
+
+# Concrete classes can be instantiated
+dog_impl = ConcreteDog()
+assert dog_impl.speak() == "Woof!", "dog_impl.speak() should equal \"Woof!\""
+assert dog_impl.describe() == "I am an animal", "dog_impl.describe() should equal \"I am an animal\""
+
+cat_impl = ConcreteCat()
+assert cat_impl.speak() == "Meow!", "cat_impl.speak() should equal \"Meow!\""
+assert cat_impl.describe() == "I am an animal", "cat_impl.describe() should equal \"I am an animal\""
+
+# Test multi-level inheritance with abstract methods
+class AbstractShape:
+    @abstractmethod
+    def area(self) -> int:
+        pass
+
+    @abstractmethod
+    def perimeter(self) -> int:
+        pass
+
+class AbstractPolygon(AbstractShape):
+    sides: int
+
+    def __init__(self, sides: int):
+        self.sides = sides
+
+    # Still abstract - doesn't implement area or perimeter
+
+class ConcreteSquare(AbstractPolygon):
+    size: int
+
+    def __init__(self, size: int):
+        super().__init__(4)
+        self.size = size
+
+    def area(self) -> int:
+        return self.size * self.size
+
+    def perimeter(self) -> int:
+        return self.size * 4
+
+square = ConcreteSquare(5)
+assert square.sides == 4, "square.sides should equal 4"
+assert square.size == 5, "square.size should equal 5"
+assert square.area() == 25, "square.area() should equal 25"
+assert square.perimeter() == 20, "square.perimeter() should equal 20"
+
+# Test partial implementation - subclass implements one abstract method
+class PartiallyConcreteShape(AbstractShape):
+    def area(self) -> int:
+        return 100
+
+# PartiallyConcreteShape still has perimeter as abstract
+
+class FullyConcreteShape(PartiallyConcreteShape):
+    def perimeter(self) -> int:
+        return 40
+
+full_shape = FullyConcreteShape()
+assert full_shape.area() == 100, "full_shape.area() should equal 100"
+assert full_shape.perimeter() == 40, "full_shape.perimeter() should equal 40"
+
+print("Abstract method tests passed!")
+
+# ===== SECTION: Dunder methods - __str__ =====
+
+class PointWithStr:
+    x: int
+    y: int
+
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    def __str__(self) -> str:
+        return f"Point({self.x}, {self.y})"
+
+p_str = PointWithStr(3, 4)
+str_result = str(p_str)
+assert str_result == "Point(3, 4)", f"Expected 'Point(3, 4)', got '{str_result}'"
+
+# Test fallback (no __str__)
+class PointNoStr:
+    x: int
+    y: int
+
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+p_no_str = PointNoStr(1, 2)
+str_result2 = str(p_no_str)
+assert "instance at" in str_result2, "Should show default repr"
+
+print("Dunder __str__ tests passed!")
+
+# ===== SECTION: Dunder methods - __repr__ =====
+
+class PointWithRepr:
+    x: int
+    y: int
+
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    def __repr__(self) -> str:
+        return f"Point(x={self.x}, y={self.y})"
+
+p_repr = PointWithRepr(5, 6)
+repr_result = repr(p_repr)
+assert repr_result == "Point(x=5, y=6)", f"Expected 'Point(x=5, y=6)', got '{repr_result}'"
+
+print("Dunder __repr__ tests passed!")
+
+# ===== SECTION: Dunder methods - __eq__ =====
+
+class PointWithEq:
+    x: int
+    y: int
+
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    def __eq__(self, other) -> bool:
+        # Now works! Field access on 'other' parameter thanks to dunder method type inference
+        return self.x == other.x and self.y == other.y
+
+p1_eq = PointWithEq(1, 2)
+p2_eq = PointWithEq(1, 2)  # Different instance with same values
+p3_eq = PointWithEq(3, 4)  # Different instance with different values
+
+# Test __eq__ with field comparison
+assert p1_eq == p2_eq, "Points with same values should be equal"
+assert not (p1_eq == p3_eq), "Points with different values should not be equal"
+
+# Test __ne__
+assert p1_eq != p3_eq, "Different points should be not equal"
+assert not (p1_eq != p2_eq), "Same points should not be not-equal"
+
+print("Dunder __eq__ tests passed!")
+
+# ===== SECTION: Dunder methods - __hash__ =====
+
+class PointHashable:
+    x: int
+    y: int
+
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    def __hash__(self) -> int:
+        # Combine x and y hashes
+        return self.x * 31 + self.y
+
+p1_hash = PointHashable(3, 4)
+p2_hash = PointHashable(3, 4)
+
+# Test hash
+h1 = hash(p1_hash)
+h2 = hash(p2_hash)
+assert h1 == h2, "Equal objects should have equal hashes"
+assert h1 == 3 * 31 + 4, f"Hash should be {3 * 31 + 4}, got {h1}"
+
+print("Dunder __hash__ tests passed!")
+
+# ===== SECTION: Dunder methods - __len__ =====
+
+class Container:
+    count: int
+
+    def __init__(self):
+        self.count = 0
+
+    def add(self):
+        self.count = self.count + 1
+
+    def __len__(self) -> int:
+        return self.count
+
+c = Container()
+assert len(c) == 0, "Empty container should have length 0"
+
+c.add()
+c.add()
+c.add()
+assert len(c) == 3, "Container with 3 items should have length 3"
+
+print("Dunder __len__ tests passed!")
+
+# ===== SECTION: Mutable defaults in __init__ =====
+# Python's mutable default gotcha also applies to __init__ methods:
+# mutable defaults (list, dict, set) are evaluated once at class definition time
+# and shared across all instances that don't provide an explicit argument.
+
+class Counter:
+    counts: list[int]
+
+    def __init__(self, counts: list[int] = []):
+        self.counts = counts
+
+    def add(self, n: int) -> None:
+        self.counts.append(n)
+
+# First instance uses the default list
+c1 = Counter()
+c1.add(1)
+assert len(c1.counts) == 1, "c1 should have 1 element"
+assert c1.counts[0] == 1, "c1.counts[0] should be 1"
+
+# Second instance should share the same default list!
+c2 = Counter()
+c2.add(2)
+assert len(c2.counts) == 2, "c2 should have 2 elements (shared list)"
+assert c2.counts[0] == 1, "c2.counts[0] should be 1 (from c1)"
+assert c2.counts[1] == 2, "c2.counts[1] should be 2"
+
+# Both instances refer to the same list object
+assert c1.counts == c2.counts, "c1 and c2 should share the same list"
+
+# Third instance with explicit list should NOT use the shared default
+c3 = Counter([100])
+c3.add(3)
+assert len(c3.counts) == 2, "c3 should have 2 elements"
+assert c3.counts[0] == 100, "c3.counts[0] should be 100 (explicit)"
+assert c3.counts[1] == 3, "c3.counts[1] should be 3"
+
+# The shared default list (c1, c2) should still have 2 elements
+assert len(c1.counts) == 2, "c1 should still have 2 elements"
+
+# Fourth instance without args should use the shared default again
+c4 = Counter()
+c4.add(4)
+assert len(c4.counts) == 3, "c4 should have 3 elements (shared list)"
+assert c4.counts[2] == 4, "c4.counts[2] should be 4"
+
+# All instances using defaults share the same list
+assert c1.counts == c2.counts, "c1 and c2 share default list"
+assert c1.counts == c4.counts, "c1 and c4 share default list"
+
+print("Mutable defaults in __init__ tests passed!")
+
+# ===== SECTION: Class names as type annotations =====
+
+class TypedPoint:
+    x: int
+    y: int
+
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    def add(self, other: TypedPoint) -> TypedPoint:
+        # Method with class type parameter (same class)
+        return TypedPoint(self.x + other.x, self.y + other.y)
+
+# Function parameter with class type
+def get_x(p: TypedPoint) -> int:
+    return p.x
+
+# Function return with class type
+def create_point() -> TypedPoint:
+    return TypedPoint(10, 20)
+
+# Variable annotation with class type
+tp1: TypedPoint = TypedPoint(3, 4)
+assert tp1.x == 3, "tp1.x should equal 3"
+assert tp1.y == 4, "tp1.y should equal 4"
+
+# Test function with class type parameter
+assert get_x(tp1) == 3, "get_x(tp1) should equal 3"
+
+# Test function with class type return
+tp2: TypedPoint = create_point()
+assert tp2.x == 10, "tp2.x should equal 10"
+assert tp2.y == 20, "tp2.y should equal 20"
+
+# Test method with class type parameter
+tp3: TypedPoint = tp1.add(tp2)
+assert tp3.x == 13, "tp3.x should equal 13 (3 + 10)"
+assert tp3.y == 24, "tp3.y should equal 24 (4 + 20)"
+
+# Optional class type (Union with None)
+def maybe_point(flag: bool) -> TypedPoint | None:
+    if flag:
+        return TypedPoint(1, 1)
+    return None
+
+opt_p: TypedPoint | None = maybe_point(True)
+assert opt_p is not None, "opt_p should not be None"
+if opt_p is not None:
+    assert opt_p.x == 1, "opt_p.x should equal 1"
+
+none_p: TypedPoint | None = maybe_point(False)
+assert none_p is None, "none_p should be None"
+
+# List of class type
+def sum_points(points: list[TypedPoint]) -> int:
+    total: int = 0
+    for p in points:
+        total = total + p.x + p.y
+    return total
+
+point_list: list[TypedPoint] = [TypedPoint(1, 2), TypedPoint(3, 4), TypedPoint(5, 6)]
+total_sum: int = sum_points(point_list)
+assert total_sum == 21, f"sum_points should equal 21 (1+2+3+4+5+6), got {total_sum}"
+
+print("Class type annotation tests passed!")
+
+# ===== SECTION: Comparison dunders =====
+
+class Temperature:
+    degrees: float
+
+    def __init__(self, deg: float) -> None:
+        self.degrees = deg
+
+    def __lt__(self, other) -> bool:
+        return self.degrees < other.degrees
+
+    def __le__(self, other) -> bool:
+        return self.degrees <= other.degrees
+
+    def __gt__(self, other) -> bool:
+        return self.degrees > other.degrees
+
+    def __ge__(self, other) -> bool:
+        return self.degrees >= other.degrees
+
+    def __eq__(self, other) -> bool:
+        return self.degrees == other.degrees
+
+cold = Temperature(0.0)
+warm = Temperature(25.0)
+hot = Temperature(40.0)
+also_cold = Temperature(0.0)
+
+# __lt__
+assert cold < warm, "cold < warm failed"
+assert not (warm < cold), "warm < cold should be False"
+
+# __le__
+assert cold <= warm, "cold <= warm failed"
+assert cold <= also_cold, "cold <= also_cold failed"
+assert not (warm <= cold), "warm <= cold should be False"
+
+# __gt__
+assert hot > warm, "hot > warm failed"
+assert not (cold > warm), "cold > warm should be False"
+
+# __ge__
+assert hot >= warm, "hot >= warm failed"
+assert cold >= also_cold, "cold >= also_cold failed"
+assert not (cold >= warm), "cold >= warm should be False"
+
+# __eq__ and __ne__ (ne falls back to negated eq)
+assert cold == also_cold, "cold == also_cold failed"
+assert not (cold == warm), "cold == warm should be False"
+assert cold != warm, "cold != warm failed"
+assert not (cold != also_cold), "cold != also_cold should be False"
+
+print("Dunder comparison tests passed!")
+
+# ===== SECTION: Arithmetic dunders =====
+
+class Vector2D:
+    x: float
+    y: float
+
+    def __init__(self, x: float, y: float) -> None:
+        self.x = x
+        self.y = y
+
+    def __add__(self, other) -> Vector2D:
+        return Vector2D(self.x + other.x, self.y + other.y)
+
+    def __sub__(self, other) -> Vector2D:
+        return Vector2D(self.x - other.x, self.y - other.y)
+
+    def __mul__(self, other) -> Vector2D:
+        return Vector2D(self.x * other.x, self.y * other.y)
+
+    def __neg__(self) -> Vector2D:
+        return Vector2D(-self.x, -self.y)
+
+    def __eq__(self, other) -> bool:
+        return self.x == other.x and self.y == other.y
+
+v1 = Vector2D(1.0, 2.0)
+v2 = Vector2D(3.0, 4.0)
+
+# __add__
+v_add = v1 + v2
+assert v_add.x == 4.0, f"v1+v2 x failed: {v_add.x}"
+assert v_add.y == 6.0, f"v1+v2 y failed: {v_add.y}"
+
+# __sub__
+v_sub = v2 - v1
+assert v_sub.x == 2.0, f"v2-v1 x failed: {v_sub.x}"
+assert v_sub.y == 2.0, f"v2-v1 y failed: {v_sub.y}"
+
+# __mul__
+v_mul = v1 * v2
+assert v_mul.x == 3.0, f"v1*v2 x failed: {v_mul.x}"
+assert v_mul.y == 8.0, f"v1*v2 y failed: {v_mul.y}"
+
+# __neg__
+v_neg = -v1
+assert v_neg.x == -1.0, f"-v1 x failed: {v_neg.x}"
+assert v_neg.y == -2.0, f"-v1 y failed: {v_neg.y}"
+
+# Chaining arithmetic
+v_chain = v1 + v2 + Vector2D(10.0, 10.0)
+assert v_chain.x == 14.0, f"chained add x failed: {v_chain.x}"
+assert v_chain.y == 16.0, f"chained add y failed: {v_chain.y}"
+
+print("Dunder arithmetic tests passed!")
+
+# ===== Container Dunders (__getitem__, __setitem__, __delitem__, __contains__) =====
+
+class IntList:
+    items: list[int]
+    size: int
+
+    def __init__(self, items: list[int]) -> None:
+        self.items = items
+        self.size = len(items)
+
+    def __getitem__(self, index: int) -> int:
+        return self.items[index]
+
+    def __setitem__(self, index: int, value: int) -> None:
+        self.items[index] = value
+
+    def __delitem__(self, index: int) -> None:
+        del self.items[index]
+        self.size = self.size - 1
+
+    def __contains__(self, value: int) -> bool:
+        i: int = 0
+        while i < self.size:
+            if self.items[i] == value:
+                return True
+            i = i + 1
+        return False
+
+# Create test container
+container_items: list[int] = [10, 20, 30, 40, 50]
+container = IntList(container_items)
+
+# __getitem__
+assert container[0] == 10, f"getitem [0] failed: {container[0]}"
+assert container[2] == 30, f"getitem [2] failed: {container[2]}"
+assert container[4] == 50, f"getitem [4] failed: {container[4]}"
+
+# __setitem__
+container[1] = 99
+assert container[1] == 99, f"setitem [1] failed: {container[1]}"
+container[0] = 0
+assert container[0] == 0, f"setitem [0] failed: {container[0]}"
+
+# __contains__ (in / not in)
+assert 99 in container, "contains 99 failed"
+assert 30 in container, "contains 30 failed"
+assert 999 not in container, "not contains 999 failed"
+assert 1 not in container, "not contains 1 failed"
+
+# __delitem__
+container2_items: list[int] = [100, 200, 300]
+container2 = IntList(container2_items)
+del container2[1]
+assert container2.size == 2, f"delitem size failed: {container2.size}"
+assert container2[0] == 100, f"delitem [0] failed: {container2[0]}"
+assert container2[1] == 300, f"delitem [1] after delete failed: {container2[1]}"
+
+print("Container dunder tests passed!")
+
+# Test container dunders with inheritance
+class NamedIntList(IntList):
+    name: str
+
+    def __init__(self, name: str, items: list[int]) -> None:
+        super().__init__(items)
+        self.name = name
+
+named_items: list[int] = [5, 10, 15]
+named_container = NamedIntList("test", named_items)
+assert named_container[0] == 5, f"inherited getitem failed: {named_container[0]}"
+assert named_container[2] == 15, f"inherited getitem [2] failed: {named_container[2]}"
+named_container[1] = 42
+assert named_container[1] == 42, f"inherited setitem failed: {named_container[1]}"
+assert 42 in named_container, "inherited contains failed"
+assert 99 not in named_container, "inherited not contains failed"
+
+print("Inherited container dunder tests passed!")
+
+# ==================== Iterator Protocol Tests ====================
+
+# Basic iterator class: counts from 0 to stop-1
+class CountUp:
+    current: int
+    stop: int
+
+    def __init__(self, stop: int) -> None:
+        self.current = 0
+        self.stop = stop
+
+    def __iter__(self) -> CountUp:
+        return self
+
+    def __next__(self) -> int:
+        if self.current >= self.stop:
+            raise StopIteration()
+        val: int = self.current
+        self.current = self.current + 1
+        return val
+
+# Test 1: Basic for loop over class iterator
+counter = CountUp(5)
+iter_result: list[int] = []
+for iter_val in counter:
+    iter_result.append(iter_val)
+assert iter_result == [0, 1, 2, 3, 4], f"basic class iterator failed: {iter_result}"
+print("Class iterator basic for loop passed!")
+
+# Test 2: iter() builtin with class
+counter2 = CountUp(3)
+iter_obj = iter(counter2)
+assert next(iter_obj) == 0, "iter()/next() first failed"
+assert next(iter_obj) == 1, "iter()/next() second failed"
+assert next(iter_obj) == 2, "iter()/next() third failed"
+print("Class iterator iter()/next() passed!")
+
+# Test 3: for...else (else runs on normal completion)
+counter3 = CountUp(3)
+iter_else_result: list[int] = []
+iter_else_ran: bool = False
+for iter_else_val in counter3:
+    iter_else_result.append(iter_else_val)
+else:
+    iter_else_ran = True
+assert iter_else_result == [0, 1, 2], f"for...else iterator failed: {iter_else_result}"
+assert iter_else_ran, "else block should run on normal completion"
+print("Class iterator for...else passed!")
+
+# Test 4: Empty iterator (stop=0)
+empty_counter = CountUp(0)
+empty_result: list[int] = []
+for empty_val in empty_counter:
+    empty_result.append(empty_val)
+assert empty_result == [], f"empty iterator failed: {empty_result}"
+print("Class iterator empty iteration passed!")
+
+# Test 5: break exits loop (else should not run)
+counter5 = CountUp(10)
+break_result: list[int] = []
+break_else_ran: bool = False
+for break_val in counter5:
+    if break_val >= 3:
+        break
+    break_result.append(break_val)
+else:
+    break_else_ran = True
+assert break_result == [0, 1, 2], f"break in class iterator failed: {break_result}"
+assert not break_else_ran, "else should not run when break is used"
+print("Class iterator break passed!")
+
+# Test 6: Inherited iterator protocol
+class CountUpNamed(CountUp):
+    label: str
+
+    def __init__(self, label: str, stop: int) -> None:
+        super().__init__(stop)
+        self.label = label
+
+inherited_counter = CountUpNamed("test", 4)
+inherited_result: list[int] = []
+for inherited_val in inherited_counter:
+    inherited_result.append(inherited_val)
+assert inherited_result == [0, 1, 2, 3], f"inherited iterator failed: {inherited_result}"
+print("Inherited class iterator passed!")
+
+print("All iterator protocol tests passed!")
+
+# ==================== __call__ dunder tests ====================
+print("Testing __call__ dunder...")
+
+# Test 1: Basic callable object
+class Adder:
+    value: int
+    def __init__(self, value: int) -> None:
+        self.value = value
+    def __call__(self, x: int) -> int:
+        return self.value + x
+
+adder: Adder = Adder(10)
+assert adder(5) == 15, f"Adder(10)(5) failed: {adder(5)}"
+assert adder(0) == 10, f"Adder(10)(0) failed: {adder(0)}"
+assert adder(-3) == 7, f"Adder(10)(-3) failed: {adder(-3)}"
+print("Basic __call__ passed!")
+
+# Test 2: Callable with multiple arguments
+class Multiplier:
+    factor: int
+    def __init__(self, factor: int) -> None:
+        self.factor = factor
+    def __call__(self, a: int, b: int) -> int:
+        return self.factor * (a + b)
+
+mult: Multiplier = Multiplier(3)
+assert mult(2, 4) == 18, f"Multiplier(3)(2, 4) failed: {mult(2, 4)}"
+print("Multi-arg __call__ passed!")
+
+# Test 3: Callable returning string
+class Greeter:
+    greeting: str
+    def __init__(self, greeting: str) -> None:
+        self.greeting = greeting
+    def __call__(self, name: str) -> str:
+        return self.greeting + " " + name
+
+greeter: Greeter = Greeter("Hello")
+assert greeter("World") == "Hello World", f"Greeter failed: {greeter('World')}"
+print("String __call__ passed!")
+
+# Test 4: Callable with state mutation
+class CallCounter:
+    count: int
+    def __init__(self) -> None:
+        self.count = 0
+    def __call__(self) -> int:
+        self.count = self.count + 1
+        return self.count
+
+call_counter: CallCounter = CallCounter()
+assert call_counter() == 1
+assert call_counter() == 2
+assert call_counter() == 3
+assert call_counter.count == 3
+print("Stateful __call__ passed!")
+
+print("All __call__ dunder tests passed!")
+
+# ==================== Context manager tests ====================
+print("Testing context managers...")
+
+# Test 1: Basic context manager
+class MyContext:
+    entered: bool
+    exited: bool
+    def __init__(self) -> None:
+        self.entered = False
+        self.exited = False
+    def __enter__(self) -> MyContext:
+        self.entered = True
+        return self
+    def __exit__(self, exc_type: int, exc_val: int, exc_tb: int) -> bool:
+        self.exited = True
+        return False
+
+my_ctx: MyContext = MyContext()
+with my_ctx as my_ctx_val:
+    assert my_ctx_val.entered == True, "context manager __enter__ not called"
+assert my_ctx.exited == True, "context manager __exit__ not called"
+print("Basic context manager passed!")
+
+# Test 2: Context manager with body operations
+class ResourceTracker:
+    opened: bool
+    closed: bool
+    ops: int
+    def __init__(self) -> None:
+        self.opened = False
+        self.closed = False
+        self.ops = 0
+    def __enter__(self) -> ResourceTracker:
+        self.opened = True
+        return self
+    def __exit__(self, exc_type: int, exc_val: int, exc_tb: int) -> bool:
+        self.closed = True
+        return False
+    def do_op(self) -> None:
+        self.ops = self.ops + 1
+
+res_tracker: ResourceTracker = ResourceTracker()
+with res_tracker as rt:
+    rt.do_op()
+    rt.do_op()
+    rt.do_op()
+assert res_tracker.opened == True
+assert res_tracker.closed == True
+assert res_tracker.ops == 3
+print("Context manager with operations passed!")
+
+print("All context manager tests passed!")
+
+print("All class tests passed!")

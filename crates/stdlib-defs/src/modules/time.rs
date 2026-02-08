@@ -1,0 +1,271 @@
+//! time module definition
+//!
+//! Provides time-related functions.
+
+use crate::types::{
+    ConstValue, LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibMethodDef,
+    StdlibModuleDef, TypeSpec,
+};
+
+/// time.sleep(seconds) - Pause execution for the given number of seconds
+pub static TIME_SLEEP: StdlibFunctionDef = StdlibFunctionDef {
+    name: "sleep",
+    runtime_name: "rt_time_sleep",
+    params: &[ParamDef::required("seconds", TypeSpec::Float)],
+    return_type: TypeSpec::None,
+    min_args: 1,
+    max_args: 1,
+    hints: LoweringHints::NO_AUTO_BOX,
+};
+
+/// time.time() - Return current Unix timestamp as float
+pub static TIME_TIME: StdlibFunctionDef = StdlibFunctionDef {
+    name: "time",
+    runtime_name: "rt_time_time",
+    params: &[],
+    return_type: TypeSpec::Float,
+    min_args: 0,
+    max_args: 0,
+    hints: LoweringHints::NO_AUTO_BOX,
+};
+
+/// time.monotonic() - Return monotonic clock value for measuring intervals
+pub static TIME_MONOTONIC: StdlibFunctionDef = StdlibFunctionDef {
+    name: "monotonic",
+    runtime_name: "rt_time_monotonic",
+    params: &[],
+    return_type: TypeSpec::Float,
+    min_args: 0,
+    max_args: 0,
+    hints: LoweringHints::NO_AUTO_BOX,
+};
+
+/// time.perf_counter() - Return high-resolution performance counter
+pub static TIME_PERF_COUNTER: StdlibFunctionDef = StdlibFunctionDef {
+    name: "perf_counter",
+    runtime_name: "rt_time_perf_counter",
+    params: &[],
+    return_type: TypeSpec::Float,
+    min_args: 0,
+    max_args: 0,
+    hints: LoweringHints::NO_AUTO_BOX,
+};
+
+/// time.ctime([seconds]) - Convert seconds to readable local time string
+/// If seconds is not provided (or negative), uses current time
+pub static TIME_CTIME: StdlibFunctionDef = StdlibFunctionDef {
+    name: "ctime",
+    runtime_name: "rt_time_ctime",
+    params: &[ParamDef::optional_with_default(
+        "seconds",
+        TypeSpec::Float,
+        ConstValue::Float(-1.0), // Sentinel: use current time
+    )],
+    return_type: TypeSpec::Str,
+    min_args: 0,
+    max_args: 1,
+    hints: LoweringHints::NO_AUTO_BOX,
+};
+
+/// time.localtime([seconds]) - Convert seconds to local time struct_time
+/// If seconds is not provided (or negative), uses current time
+pub static TIME_LOCALTIME: StdlibFunctionDef = StdlibFunctionDef {
+    name: "localtime",
+    runtime_name: "rt_time_localtime",
+    params: &[ParamDef::optional_with_default(
+        "seconds",
+        TypeSpec::Float,
+        ConstValue::Float(-1.0), // Sentinel: use current time
+    )],
+    return_type: TypeSpec::StructTime,
+    min_args: 0,
+    max_args: 1,
+    hints: LoweringHints::NO_AUTO_BOX,
+};
+
+/// time.gmtime([seconds]) - Convert seconds to UTC struct_time
+/// If seconds is not provided (or negative), uses current time
+pub static TIME_GMTIME: StdlibFunctionDef = StdlibFunctionDef {
+    name: "gmtime",
+    runtime_name: "rt_time_gmtime",
+    params: &[ParamDef::optional_with_default(
+        "seconds",
+        TypeSpec::Float,
+        ConstValue::Float(-1.0), // Sentinel: use current time
+    )],
+    return_type: TypeSpec::StructTime,
+    min_args: 0,
+    max_args: 1,
+    hints: LoweringHints::NO_AUTO_BOX,
+};
+
+/// time.mktime(t) - Convert struct_time to seconds since epoch
+pub static TIME_MKTIME: StdlibFunctionDef = StdlibFunctionDef {
+    name: "mktime",
+    runtime_name: "rt_time_mktime",
+    params: &[ParamDef::required("t", TypeSpec::StructTime)],
+    return_type: TypeSpec::Float,
+    min_args: 1,
+    max_args: 1,
+    hints: LoweringHints::NO_AUTO_BOX,
+};
+
+/// time.strftime(format, t) - Format struct_time to string
+/// Common format codes: %Y (year), %m (month), %d (day), %H (hour), %M (minute), %S (second)
+pub static TIME_STRFTIME: StdlibFunctionDef = StdlibFunctionDef {
+    name: "strftime",
+    runtime_name: "rt_time_strftime",
+    params: &[
+        ParamDef::required("format", TypeSpec::Str),
+        ParamDef::required("t", TypeSpec::StructTime),
+    ],
+    return_type: TypeSpec::Str,
+    min_args: 2,
+    max_args: 2,
+    hints: LoweringHints::NO_AUTO_BOX,
+};
+
+/// time.strptime(string, format) - Parse string to struct_time
+/// Common format codes: %Y (year), %m (month), %d (day), %H (hour), %M (minute), %S (second)
+pub static TIME_STRPTIME: StdlibFunctionDef = StdlibFunctionDef {
+    name: "strptime",
+    runtime_name: "rt_time_strptime",
+    params: &[
+        ParamDef::required("string", TypeSpec::Str),
+        ParamDef::required("format", TypeSpec::Str),
+    ],
+    return_type: TypeSpec::StructTime,
+    min_args: 2,
+    max_args: 2,
+    hints: LoweringHints::NO_AUTO_BOX,
+};
+
+// ============= struct_time class methods =============
+
+/// struct_time.tm_year getter
+static STRUCT_TIME_TM_YEAR: StdlibMethodDef = StdlibMethodDef {
+    name: "tm_year",
+    runtime_name: "rt_struct_time_get_tm_year",
+    params: &[],
+    return_type: TypeSpec::Int,
+    min_args: 0,
+    max_args: 0,
+};
+
+/// struct_time.tm_mon getter
+static STRUCT_TIME_TM_MON: StdlibMethodDef = StdlibMethodDef {
+    name: "tm_mon",
+    runtime_name: "rt_struct_time_get_tm_mon",
+    params: &[],
+    return_type: TypeSpec::Int,
+    min_args: 0,
+    max_args: 0,
+};
+
+/// struct_time.tm_mday getter
+static STRUCT_TIME_TM_MDAY: StdlibMethodDef = StdlibMethodDef {
+    name: "tm_mday",
+    runtime_name: "rt_struct_time_get_tm_mday",
+    params: &[],
+    return_type: TypeSpec::Int,
+    min_args: 0,
+    max_args: 0,
+};
+
+/// struct_time.tm_hour getter
+static STRUCT_TIME_TM_HOUR: StdlibMethodDef = StdlibMethodDef {
+    name: "tm_hour",
+    runtime_name: "rt_struct_time_get_tm_hour",
+    params: &[],
+    return_type: TypeSpec::Int,
+    min_args: 0,
+    max_args: 0,
+};
+
+/// struct_time.tm_min getter
+static STRUCT_TIME_TM_MIN: StdlibMethodDef = StdlibMethodDef {
+    name: "tm_min",
+    runtime_name: "rt_struct_time_get_tm_min",
+    params: &[],
+    return_type: TypeSpec::Int,
+    min_args: 0,
+    max_args: 0,
+};
+
+/// struct_time.tm_sec getter
+static STRUCT_TIME_TM_SEC: StdlibMethodDef = StdlibMethodDef {
+    name: "tm_sec",
+    runtime_name: "rt_struct_time_get_tm_sec",
+    params: &[],
+    return_type: TypeSpec::Int,
+    min_args: 0,
+    max_args: 0,
+};
+
+/// struct_time.tm_wday getter
+static STRUCT_TIME_TM_WDAY: StdlibMethodDef = StdlibMethodDef {
+    name: "tm_wday",
+    runtime_name: "rt_struct_time_get_tm_wday",
+    params: &[],
+    return_type: TypeSpec::Int,
+    min_args: 0,
+    max_args: 0,
+};
+
+/// struct_time.tm_yday getter
+static STRUCT_TIME_TM_YDAY: StdlibMethodDef = StdlibMethodDef {
+    name: "tm_yday",
+    runtime_name: "rt_struct_time_get_tm_yday",
+    params: &[],
+    return_type: TypeSpec::Int,
+    min_args: 0,
+    max_args: 0,
+};
+
+/// struct_time.tm_isdst getter
+static STRUCT_TIME_TM_ISDST: StdlibMethodDef = StdlibMethodDef {
+    name: "tm_isdst",
+    runtime_name: "rt_struct_time_get_tm_isdst",
+    params: &[],
+    return_type: TypeSpec::Int,
+    min_args: 0,
+    max_args: 0,
+};
+
+/// struct_time class definition
+pub static STRUCT_TIME_CLASS: StdlibClassDef = StdlibClassDef {
+    name: "struct_time",
+    methods: &[
+        STRUCT_TIME_TM_YEAR,
+        STRUCT_TIME_TM_MON,
+        STRUCT_TIME_TM_MDAY,
+        STRUCT_TIME_TM_HOUR,
+        STRUCT_TIME_TM_MIN,
+        STRUCT_TIME_TM_SEC,
+        STRUCT_TIME_TM_WDAY,
+        STRUCT_TIME_TM_YDAY,
+        STRUCT_TIME_TM_ISDST,
+    ],
+    type_spec: Some(TypeSpec::StructTime),
+};
+
+/// time module definition
+pub static TIME_MODULE: StdlibModuleDef = StdlibModuleDef {
+    name: "time",
+    functions: &[
+        TIME_SLEEP,
+        TIME_TIME,
+        TIME_MONOTONIC,
+        TIME_PERF_COUNTER,
+        TIME_CTIME,
+        TIME_LOCALTIME,
+        TIME_GMTIME,
+        TIME_MKTIME,
+        TIME_STRFTIME,
+        TIME_STRPTIME,
+    ],
+    attrs: &[],
+    constants: &[],
+    classes: &[STRUCT_TIME_CLASS],
+    submodules: &[],
+};

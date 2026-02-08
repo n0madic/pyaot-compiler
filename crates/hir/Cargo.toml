@@ -1,0 +1,15 @@
+[package]
+name = "pyaot-hir"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pyaot-utils = { path = "../utils" }
+pyaot-types = { path = "../types" }
+pyaot-stdlib-defs = { path = "../stdlib-defs" }
+pyaot-core-defs = { path = "../core-defs" }
+la-arena = { workspace = true }
+indexmap = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

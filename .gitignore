@@ -1,0 +1,37 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+*.bak*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output files
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+examples/simple_out
+examples/*_out
+*.o
+
+*PLAN*
+test.py

@@ -1,0 +1,13 @@
+[package]
+name = "pyaot-semantics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pyaot-utils = { path = "../utils" }
+pyaot-hir = { path = "../hir" }
+pyaot-diagnostics = { path = "../diagnostics" }
+indexmap = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

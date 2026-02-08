@@ -1,0 +1,146 @@
+//! String slicing operations: slice, slice_step, getchar
+
+use crate::exceptions;
+use crate::gc;
+use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
+use crate::slice_utils::{normalize_slice_indices, slice_length};
+
+/// Slice a string: s[start:end]
+/// Negative indices are supported (counted from end)
+/// Uses i64::MIN as sentinel for "default start" (0) and i64::MAX for "default end" (len)
+/// Returns: pointer to new allocated StrObj
+#[no_mangle]
+pub extern "C" fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut Obj {
+    use std::ptr;
+
+    if str_obj.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let src = str_obj as *mut StrObj;
+        let len = (*src).len as i64;
+
+        // Normalize indices using shared utility (step=1 for simple slice)
+        let (start, end) = normalize_slice_indices(start, end, len, 1);
+        let slice_len = slice_length(start, end);
+
+        // Allocate new string
+        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + slice_len;
+        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
+
+        let new_str = obj as *mut StrObj;
+        (*new_str).len = slice_len;
+
+        // Copy slice data
+        if slice_len > 0 {
+            ptr::copy_nonoverlapping(
+                (*src).data.as_ptr().add(start as usize),
+                (*new_str).data.as_mut_ptr(),
+                slice_len,
+            );
+        }
+
+        obj
+    }
+}
+
+/// Slice a string with step: s[start:end:step]
+/// Uses i64::MIN as sentinel for "default start" and i64::MAX for "default end"
+/// Defaults depend on step direction:
+///   - Positive step: start=0, end=len
+///   - Negative step: start=len-1, end=-1 (before index 0)
+///
+/// Returns: pointer to new allocated StrObj
+#[no_mangle]
+pub extern "C" fn rt_str_slice_step(
+    str_obj: *mut Obj,
+    start: i64,
+    end: i64,
+    step: i64,
+) -> *mut Obj {
+    if str_obj.is_null() || step == 0 {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let src = str_obj as *mut StrObj;
+        let len = (*src).len as i64;
+
+        // Normalize indices using shared utility
+        let (start, end) = normalize_slice_indices(start, end, len, step);
+
+        // Collect characters at step indices
+        let mut result_chars = Vec::new();
+        let src_data = (*src).data.as_ptr();
+
+        if step > 0 {
+            let mut i = start;
+            while i < end {
+                result_chars.push(*src_data.add(i as usize));
+                i += step;
+            }
+        } else {
+            let mut i = start;
+            while i > end {
+                result_chars.push(*src_data.add(i as usize));
+                i += step;
+            }
+        }
+
+        let result_len = result_chars.len();
+        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
+        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
+
+        let new_str = obj as *mut StrObj;
+        (*new_str).len = result_len;
+
+        // Copy result data
+        if result_len > 0 {
+            std::ptr::copy_nonoverlapping(
+                result_chars.as_ptr(),
+                (*new_str).data.as_mut_ptr(),
+                result_len,
+            );
+        }
+
+        obj
+    }
+}
+
+/// Check if character at index (for single character access s[i])
+/// Returns: pointer to new allocated single-char StrObj
+#[no_mangle]
+pub extern "C" fn rt_str_getchar(str_obj: *mut Obj, index: i64) -> *mut Obj {
+    if str_obj.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let src = str_obj as *mut StrObj;
+        let len = (*src).len as i64;
+
+        // Handle negative index
+        let idx = if index < 0 { len + index } else { index };
+
+        if idx < 0 || idx >= len {
+            // Index out of bounds - raise IndexError
+            let msg = b"string index out of range";
+            exceptions::rt_exc_raise(
+                exceptions::ExceptionType::IndexError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
+
+        // Allocate single-char string
+        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + 1;
+        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
+
+        let new_str = obj as *mut StrObj;
+        (*new_str).len = 1;
+        *(*new_str).data.as_mut_ptr() = *(*src).data.as_ptr().add(idx as usize);
+
+        obj
+    }
+}

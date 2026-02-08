@@ -1,0 +1,12 @@
+[package]
+name = "pyaot-utils"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+la-arena = { workspace = true }
+indexmap = { workspace = true }
+hashbrown = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

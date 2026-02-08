@@ -1,0 +1,453 @@
+//! Search and comparison operations: startswith, endswith, find, eq, contains, count
+//!
+//! Uses Boyer-Moore-Horspool algorithm for efficient O(n/m) substring search
+//! when pattern length >= BMH_THRESHOLD.
+
+use crate::object::{Obj, StrObj};
+
+/// Minimum pattern length to use Boyer-Moore-Horspool.
+/// For shorter patterns, naive search has less overhead.
+pub(crate) const BMH_THRESHOLD: usize = 4;
+
+/// Build Boyer-Moore-Horspool bad character table.
+/// Returns skip distances for each byte value (0-255).
+///
+/// For characters in the pattern: skip = pattern_len - 1 - rightmost_position
+/// For characters not in pattern: skip = pattern_len
+#[inline]
+pub(crate) unsafe fn build_bad_char_table(pattern: *const u8, pattern_len: usize) -> [usize; 256] {
+    let mut table = [pattern_len; 256];
+
+    // For each character in pattern (except the last), compute skip distance
+    // We process left-to-right so later positions overwrite earlier ones
+    for i in 0..(pattern_len.saturating_sub(1)) {
+        let c = *pattern.add(i) as usize;
+        table[c] = pattern_len - 1 - i;
+    }
+
+    table
+}
+
+/// Boyer-Moore-Horspool substring search.
+/// Returns the index of the first occurrence, or -1 if not found.
+///
+/// Time complexity: O(n/m) average case, O(n*m) worst case
+/// Space complexity: O(256) = O(1) for the bad character table
+#[inline]
+pub(crate) unsafe fn bmh_find(
+    haystack: *const u8,
+    haystack_len: usize,
+    needle: *const u8,
+    needle_len: usize,
+) -> i64 {
+    if needle_len == 0 {
+        return 0;
+    }
+    if needle_len > haystack_len {
+        return -1;
+    }
+
+    // For short patterns, use naive search (less overhead)
+    if needle_len < BMH_THRESHOLD {
+        return naive_find(haystack, haystack_len, needle, needle_len);
+    }
+
+    let bad_char = build_bad_char_table(needle, needle_len);
+    let last_idx = needle_len - 1;
+    let mut i = 0;
+
+    while i <= haystack_len - needle_len {
+        // Compare from right to left
+        let mut j = last_idx;
+        loop {
+            if *haystack.add(i + j) != *needle.add(j) {
+                break;
+            }
+            if j == 0 {
+                // Found match
+                return i as i64;
+            }
+            j -= 1;
+        }
+
+        // Shift by bad character rule using the last character of the window
+        let skip_char = *haystack.add(i + last_idx) as usize;
+        i += bad_char[skip_char];
+    }
+
+    -1
+}
+
+/// Naive substring search for short patterns.
+#[inline]
+unsafe fn naive_find(
+    haystack: *const u8,
+    haystack_len: usize,
+    needle: *const u8,
+    needle_len: usize,
+) -> i64 {
+    let limit = haystack_len - needle_len + 1;
+
+    'outer: for i in 0..limit {
+        for j in 0..needle_len {
+            if *haystack.add(i + j) != *needle.add(j) {
+                continue 'outer;
+            }
+        }
+        return i as i64;
+    }
+
+    -1
+}
+
+/// Boyer-Moore-Horspool search starting from a given position.
+/// Used for counting non-overlapping occurrences.
+#[inline]
+pub(crate) unsafe fn bmh_find_from(
+    haystack: *const u8,
+    haystack_len: usize,
+    needle: *const u8,
+    needle_len: usize,
+    start: usize,
+    bad_char: &[usize; 256],
+) -> i64 {
+    if start + needle_len > haystack_len {
+        return -1;
+    }
+
+    let last_idx = needle_len - 1;
+    let mut i = start;
+
+    while i <= haystack_len - needle_len {
+        // Compare from right to left
+        let mut j = last_idx;
+        loop {
+            if *haystack.add(i + j) != *needle.add(j) {
+                break;
+            }
+            if j == 0 {
+                // Found match
+                return i as i64;
+            }
+            j -= 1;
+        }
+
+        // Shift by bad character rule
+        let skip_char = *haystack.add(i + last_idx) as usize;
+        i += bad_char[skip_char];
+    }
+
+    -1
+}
+
+/// Check if string starts with prefix
+/// Returns: 1 (true) or 0 (false)
+#[no_mangle]
+pub extern "C" fn rt_str_startswith(str_obj: *mut Obj, prefix: *mut Obj) -> i8 {
+    if str_obj.is_null() || prefix.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        let src = str_obj as *mut StrObj;
+        let pre = prefix as *mut StrObj;
+
+        let src_len = (*src).len;
+        let pre_len = (*pre).len;
+
+        if pre_len > src_len {
+            return 0;
+        }
+
+        let src_data = (*src).data.as_ptr();
+        let pre_data = (*pre).data.as_ptr();
+
+        for i in 0..pre_len {
+            if *src_data.add(i) != *pre_data.add(i) {
+                return 0;
+            }
+        }
+
+        1
+    }
+}
+
+/// Check if string ends with suffix
+/// Returns: 1 (true) or 0 (false)
+#[no_mangle]
+pub extern "C" fn rt_str_endswith(str_obj: *mut Obj, suffix: *mut Obj) -> i8 {
+    if str_obj.is_null() || suffix.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        let src = str_obj as *mut StrObj;
+        let suf = suffix as *mut StrObj;
+
+        let src_len = (*src).len;
+        let suf_len = (*suf).len;
+
+        if suf_len > src_len {
+            return 0;
+        }
+
+        let src_data = (*src).data.as_ptr();
+        let suf_data = (*suf).data.as_ptr();
+        let offset = src_len - suf_len;
+
+        for i in 0..suf_len {
+            if *src_data.add(offset + i) != *suf_data.add(i) {
+                return 0;
+            }
+        }
+
+        1
+    }
+}
+
+/// Find substring in string using Boyer-Moore-Horspool algorithm
+/// Returns: index of first occurrence or -1 if not found
+#[no_mangle]
+pub extern "C" fn rt_str_find(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
+    if str_obj.is_null() || sub.is_null() {
+        return -1;
+    }
+
+    unsafe {
+        let src = str_obj as *mut StrObj;
+        let needle = sub as *mut StrObj;
+
+        let src_len = (*src).len;
+        let needle_len = (*needle).len;
+
+        if needle_len == 0 {
+            return 0;
+        }
+        if needle_len > src_len {
+            return -1;
+        }
+
+        let src_data = (*src).data.as_ptr();
+        let needle_data = (*needle).data.as_ptr();
+
+        bmh_find(src_data, src_len, needle_data, needle_len)
+    }
+}
+
+/// Compare two strings for equality
+/// Returns: 1 if equal, 0 if not equal
+#[no_mangle]
+pub extern "C" fn rt_str_eq(a: *mut Obj, b: *mut Obj) -> i8 {
+    if a.is_null() && b.is_null() {
+        return 1;
+    }
+    if a.is_null() || b.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        let str_a = a as *mut StrObj;
+        let str_b = b as *mut StrObj;
+
+        let len_a = (*str_a).len;
+        let len_b = (*str_b).len;
+
+        if len_a != len_b {
+            return 0;
+        }
+
+        if len_a == 0 {
+            return 1; // Both empty strings
+        }
+
+        let data_a = (*str_a).data.as_ptr();
+        let data_b = (*str_b).data.as_ptr();
+
+        for i in 0..len_a {
+            if *data_a.add(i) != *data_b.add(i) {
+                return 0;
+            }
+        }
+
+        1
+    }
+}
+
+/// Check if needle is a substring of haystack using Boyer-Moore-Horspool
+/// Returns 1 if needle is found in haystack, 0 otherwise
+#[no_mangle]
+pub extern "C" fn rt_str_contains(needle: *mut Obj, haystack: *mut Obj) -> i8 {
+    if needle.is_null() || haystack.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        let needle_str = needle as *mut StrObj;
+        let haystack_str = haystack as *mut StrObj;
+
+        let needle_len = (*needle_str).len;
+        let haystack_len = (*haystack_str).len;
+
+        // Empty needle is always found
+        if needle_len == 0 {
+            return 1;
+        }
+
+        // Needle longer than haystack cannot be found
+        if needle_len > haystack_len {
+            return 0;
+        }
+
+        let needle_data = (*needle_str).data.as_ptr();
+        let haystack_data = (*haystack_str).data.as_ptr();
+
+        if bmh_find(haystack_data, haystack_len, needle_data, needle_len) >= 0 {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+/// Count occurrences of substring using Boyer-Moore-Horspool
+/// Returns: count of non-overlapping occurrences
+#[no_mangle]
+pub extern "C" fn rt_str_count(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
+    if str_obj.is_null() || sub.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        let src = str_obj as *mut StrObj;
+        let needle = sub as *mut StrObj;
+
+        let src_len = (*src).len;
+        let needle_len = (*needle).len;
+
+        if needle_len == 0 {
+            // Empty string matches at every position + 1
+            return (src_len + 1) as i64;
+        }
+        if needle_len > src_len {
+            return 0;
+        }
+
+        let src_data = (*src).data.as_ptr();
+        let needle_data = (*needle).data.as_ptr();
+
+        // For short patterns, use naive counting (less overhead)
+        if needle_len < BMH_THRESHOLD {
+            let mut count: i64 = 0;
+            let mut i = 0;
+            while i + needle_len <= src_len {
+                let mut matches = true;
+                for j in 0..needle_len {
+                    if *src_data.add(i + j) != *needle_data.add(j) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if matches {
+                    count += 1;
+                    i += needle_len; // Non-overlapping
+                } else {
+                    i += 1;
+                }
+            }
+            return count;
+        }
+
+        // Use BMH for longer patterns
+        let bad_char = build_bad_char_table(needle_data, needle_len);
+        let mut count: i64 = 0;
+        let mut pos = 0;
+
+        loop {
+            let found = bmh_find_from(src_data, src_len, needle_data, needle_len, pos, &bad_char);
+            if found < 0 {
+                break;
+            }
+            count += 1;
+            pos = (found as usize) + needle_len; // Non-overlapping
+        }
+
+        count
+    }
+}
+
+/// Find substring in string searching from the right using Boyer-Moore-Horspool algorithm
+/// Returns: index of last occurrence or -1 if not found
+#[no_mangle]
+pub extern "C" fn rt_str_rfind(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
+    if str_obj.is_null() || sub.is_null() {
+        return -1;
+    }
+
+    unsafe {
+        let src = str_obj as *mut StrObj;
+        let needle = sub as *mut StrObj;
+
+        let src_len = (*src).len;
+        let needle_len = (*needle).len;
+
+        if needle_len == 0 {
+            return src_len as i64;
+        }
+        if needle_len > src_len {
+            return -1;
+        }
+
+        let src_data = (*src).data.as_ptr();
+        let needle_data = (*needle).data.as_ptr();
+
+        // Search backwards - try each position from right to left
+        let mut i = src_len - needle_len;
+        loop {
+            // Compare at position i
+            let mut matches = true;
+            for j in 0..needle_len {
+                if *src_data.add(i + j) != *needle_data.add(j) {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches {
+                return i as i64;
+            }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
+        }
+
+        -1
+    }
+}
+
+/// Find substring in string, raise ValueError if not found
+/// Returns: index of first occurrence
+#[no_mangle]
+pub extern "C" fn rt_str_index(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
+    let result = rt_str_find(str_obj, sub);
+    if result < 0 {
+        unsafe {
+            let msg = b"substring not found";
+            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+        }
+    }
+    result
+}
+
+/// Find substring in string searching from the right, raise ValueError if not found
+/// Returns: index of last occurrence
+#[no_mangle]
+pub extern "C" fn rt_str_rindex(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
+    let result = rt_str_rfind(str_obj, sub);
+    if result < 0 {
+        unsafe {
+            let msg = b"substring not found";
+            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+        }
+    }
+    result
+}

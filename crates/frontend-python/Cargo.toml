@@ -1,0 +1,16 @@
+[package]
+name = "pyaot-frontend-python"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pyaot-utils = { path = "../utils" }
+pyaot-hir = { path = "../hir" }
+pyaot-types = { path = "../types" }
+pyaot-stdlib-defs = { path = "../stdlib-defs" }
+pyaot-diagnostics = { path = "../diagnostics" }
+rustpython-parser = { workspace = true }
+indexmap = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

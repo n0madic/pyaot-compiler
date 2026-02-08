@@ -1,0 +1,403 @@
+use crate::gc::gc_alloc;
+use crate::object::{BytesObj, Obj, ObjHeader, StrObj};
+use crate::string::rt_make_str;
+use pyaot_core_defs::TypeTagKind;
+use std::alloc::{alloc, dealloc, realloc, Layout};
+
+/// StringIO object - in-memory text stream
+#[repr(C)]
+pub struct StringIOObj {
+    pub header: ObjHeader,
+    pub buffer: *mut u8, // Heap-allocated buffer
+    pub len: usize,      // Current content length
+    pub capacity: usize, // Buffer capacity
+    pub position: usize, // Current read/write position
+    pub closed: bool,    // Whether the stream is closed
+}
+
+/// BytesIO object - in-memory binary stream
+#[repr(C)]
+pub struct BytesIOObj {
+    pub header: ObjHeader,
+    pub buffer: *mut u8, // Heap-allocated buffer
+    pub len: usize,      // Current content length
+    pub capacity: usize, // Buffer capacity
+    pub position: usize, // Current read/write position
+    pub closed: bool,    // Whether the stream is closed
+}
+
+// Helper function to create bytes from slice
+unsafe fn make_bytes_from_slice(data: &[u8]) -> *mut Obj {
+    let len = data.len();
+    let size = std::mem::size_of::<BytesObj>() + len;
+    let obj = gc_alloc(size, TypeTagKind::Bytes.tag()) as *mut BytesObj;
+    (*obj).len = len;
+    if len > 0 {
+        std::ptr::copy_nonoverlapping(data.as_ptr(), (*obj).data.as_mut_ptr(), len);
+    }
+    obj as *mut Obj
+}
+
+// Helper function to check if stream is closed
+unsafe fn check_closed(closed: bool) {
+    if closed {
+        crate::exceptions::rt_exc_raise(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+            b"I/O operation on closed file" as *const u8,
+            "I/O operation on closed file".len(),
+        );
+    }
+}
+
+// Helper function to ensure buffer capacity for StringIO/BytesIO
+unsafe fn ensure_capacity(buffer: &mut *mut u8, capacity: &mut usize, needed: usize) {
+    if needed > *capacity {
+        let new_capacity = (needed.max(*capacity * 2)).max(16);
+        if buffer.is_null() {
+            let layout = Layout::from_size_align_unchecked(new_capacity, 1);
+            *buffer = alloc(layout);
+        } else {
+            let old_layout = Layout::from_size_align_unchecked(*capacity, 1);
+            *buffer = realloc(*buffer, old_layout, new_capacity);
+        }
+        *capacity = new_capacity;
+    }
+}
+
+// =============================================================================
+// StringIO Implementation
+// =============================================================================
+
+/// Create a new StringIO object
+#[no_mangle]
+pub unsafe extern "C" fn rt_stringio_new(initial: *mut Obj) -> *mut Obj {
+    let size = std::mem::size_of::<StringIOObj>();
+    let obj = gc_alloc(size, TypeTagKind::StringIO.tag()) as *mut StringIOObj;
+
+    (*obj).buffer = std::ptr::null_mut();
+    (*obj).len = 0;
+    (*obj).capacity = 0;
+    (*obj).position = 0;
+    (*obj).closed = false;
+
+    // If initial string provided, copy its content
+    if !initial.is_null() {
+        let str_obj = initial as *const StrObj;
+        let initial_len = (*str_obj).len;
+        if initial_len > 0 {
+            ensure_capacity(&mut (*obj).buffer, &mut (*obj).capacity, initial_len);
+            std::ptr::copy_nonoverlapping((*str_obj).data.as_ptr(), (*obj).buffer, initial_len);
+            (*obj).len = initial_len;
+        }
+    }
+
+    obj as *mut Obj
+}
+
+/// Write string to StringIO, return number of characters written
+#[no_mangle]
+pub unsafe extern "C" fn rt_stringio_write(sio: *mut Obj, s: *mut Obj) -> i64 {
+    let sio_obj = sio as *mut StringIOObj;
+    check_closed((*sio_obj).closed);
+
+    let str_obj = s as *const StrObj;
+    let str_len = (*str_obj).len;
+
+    if str_len == 0 {
+        return 0;
+    }
+
+    // Calculate required capacity (write at current position)
+    let end_pos = (*sio_obj).position + str_len;
+    ensure_capacity(&mut (*sio_obj).buffer, &mut (*sio_obj).capacity, end_pos);
+
+    // Write data at current position
+    std::ptr::copy_nonoverlapping(
+        (*str_obj).data.as_ptr(),
+        (*sio_obj).buffer.add((*sio_obj).position),
+        str_len,
+    );
+
+    // Update position and length
+    (*sio_obj).position += str_len;
+    if (*sio_obj).position > (*sio_obj).len {
+        (*sio_obj).len = (*sio_obj).position;
+    }
+
+    str_len as i64
+}
+
+/// Read from StringIO
+#[no_mangle]
+pub unsafe extern "C" fn rt_stringio_read(sio: *mut Obj, size: i64) -> *mut Obj {
+    let sio_obj = sio as *mut StringIOObj;
+    check_closed((*sio_obj).closed);
+
+    let remaining = (*sio_obj).len.saturating_sub((*sio_obj).position);
+
+    // Determine how many bytes to read
+    let to_read = if size < 0 {
+        remaining
+    } else {
+        (size as usize).min(remaining)
+    };
+
+    if to_read == 0 {
+        return rt_make_str(std::ptr::null(), 0);
+    }
+
+    let result = rt_make_str((*sio_obj).buffer.add((*sio_obj).position), to_read);
+    (*sio_obj).position += to_read;
+
+    result
+}
+
+/// Read a line from StringIO (until newline or end)
+#[no_mangle]
+pub unsafe extern "C" fn rt_stringio_readline(sio: *mut Obj) -> *mut Obj {
+    let sio_obj = sio as *mut StringIOObj;
+    check_closed((*sio_obj).closed);
+
+    let remaining = (*sio_obj).len.saturating_sub((*sio_obj).position);
+
+    if remaining == 0 {
+        return rt_make_str(std::ptr::null(), 0);
+    }
+
+    // Find newline
+    let buffer_slice =
+        std::slice::from_raw_parts((*sio_obj).buffer.add((*sio_obj).position), remaining);
+
+    let line_len = buffer_slice
+        .iter()
+        .position(|&b| b == b'\n')
+        .map(|pos| pos + 1) // Include the newline
+        .unwrap_or(remaining);
+
+    let result = rt_make_str((*sio_obj).buffer.add((*sio_obj).position), line_len);
+    (*sio_obj).position += line_len;
+
+    result
+}
+
+/// Get the entire value of StringIO as a string
+#[no_mangle]
+pub unsafe extern "C" fn rt_stringio_getvalue(sio: *mut Obj) -> *mut Obj {
+    let sio_obj = sio as *const StringIOObj;
+    check_closed((*sio_obj).closed);
+
+    if (*sio_obj).len == 0 {
+        return rt_make_str(std::ptr::null(), 0);
+    }
+
+    rt_make_str((*sio_obj).buffer, (*sio_obj).len)
+}
+
+/// Seek to a position in StringIO
+#[no_mangle]
+pub unsafe extern "C" fn rt_stringio_seek(sio: *mut Obj, pos: i64) -> i64 {
+    let sio_obj = sio as *mut StringIOObj;
+    check_closed((*sio_obj).closed);
+
+    // Clamp position to valid range [0, len]
+    let new_pos = if pos < 0 {
+        0
+    } else {
+        (pos as usize).min((*sio_obj).len)
+    };
+
+    (*sio_obj).position = new_pos;
+    new_pos as i64
+}
+
+/// Get current position in StringIO
+#[no_mangle]
+pub unsafe extern "C" fn rt_stringio_tell(sio: *mut Obj) -> i64 {
+    let sio_obj = sio as *const StringIOObj;
+    check_closed((*sio_obj).closed);
+    (*sio_obj).position as i64
+}
+
+/// Close StringIO
+#[no_mangle]
+pub unsafe extern "C" fn rt_stringio_close(sio: *mut Obj) {
+    let sio_obj = sio as *mut StringIOObj;
+    (*sio_obj).closed = true;
+}
+
+/// Truncate StringIO at given size (or current position if size=-1)
+#[no_mangle]
+pub unsafe extern "C" fn rt_stringio_truncate(sio: *mut Obj, size: i64) -> i64 {
+    let sio_obj = sio as *mut StringIOObj;
+    check_closed((*sio_obj).closed);
+
+    let new_len = if size < 0 {
+        (*sio_obj).position
+    } else {
+        size as usize
+    };
+
+    (*sio_obj).len = new_len;
+    // If position is beyond new length, move it to the end
+    if (*sio_obj).position > new_len {
+        (*sio_obj).position = new_len;
+    }
+
+    new_len as i64
+}
+
+/// Finalize StringIO (called by GC)
+pub unsafe fn stringio_finalize(obj: *mut Obj) {
+    let sio_obj = obj as *mut StringIOObj;
+    if !(*sio_obj).buffer.is_null() && (*sio_obj).capacity > 0 {
+        let layout = Layout::from_size_align_unchecked((*sio_obj).capacity, 1);
+        dealloc((*sio_obj).buffer, layout);
+        (*sio_obj).buffer = std::ptr::null_mut();
+    }
+}
+
+// =============================================================================
+// BytesIO Implementation
+// =============================================================================
+
+/// Create a new BytesIO object
+#[no_mangle]
+pub unsafe extern "C" fn rt_bytesio_new(initial: *mut Obj) -> *mut Obj {
+    let size = std::mem::size_of::<BytesIOObj>();
+    let obj = gc_alloc(size, TypeTagKind::BytesIO.tag()) as *mut BytesIOObj;
+
+    (*obj).buffer = std::ptr::null_mut();
+    (*obj).len = 0;
+    (*obj).capacity = 0;
+    (*obj).position = 0;
+    (*obj).closed = false;
+
+    // If initial bytes provided, copy its content
+    if !initial.is_null() {
+        let bytes_obj = initial as *const BytesObj;
+        let initial_len = (*bytes_obj).len;
+        if initial_len > 0 {
+            ensure_capacity(&mut (*obj).buffer, &mut (*obj).capacity, initial_len);
+            std::ptr::copy_nonoverlapping((*bytes_obj).data.as_ptr(), (*obj).buffer, initial_len);
+            (*obj).len = initial_len;
+        }
+    }
+
+    obj as *mut Obj
+}
+
+/// Write bytes to BytesIO, return number of bytes written
+#[no_mangle]
+pub unsafe extern "C" fn rt_bytesio_write(bio: *mut Obj, b: *mut Obj) -> i64 {
+    let bio_obj = bio as *mut BytesIOObj;
+    check_closed((*bio_obj).closed);
+
+    let bytes_obj = b as *const BytesObj;
+    let bytes_len = (*bytes_obj).len;
+
+    if bytes_len == 0 {
+        return 0;
+    }
+
+    // Calculate required capacity (write at current position)
+    let end_pos = (*bio_obj).position + bytes_len;
+    ensure_capacity(&mut (*bio_obj).buffer, &mut (*bio_obj).capacity, end_pos);
+
+    // Write data at current position
+    std::ptr::copy_nonoverlapping(
+        (*bytes_obj).data.as_ptr(),
+        (*bio_obj).buffer.add((*bio_obj).position),
+        bytes_len,
+    );
+
+    // Update position and length
+    (*bio_obj).position += bytes_len;
+    if (*bio_obj).position > (*bio_obj).len {
+        (*bio_obj).len = (*bio_obj).position;
+    }
+
+    bytes_len as i64
+}
+
+/// Read from BytesIO
+#[no_mangle]
+pub unsafe extern "C" fn rt_bytesio_read(bio: *mut Obj, size: i64) -> *mut Obj {
+    let bio_obj = bio as *mut BytesIOObj;
+    check_closed((*bio_obj).closed);
+
+    let remaining = (*bio_obj).len.saturating_sub((*bio_obj).position);
+
+    // Determine how many bytes to read
+    let to_read = if size < 0 {
+        remaining
+    } else {
+        (size as usize).min(remaining)
+    };
+
+    if to_read == 0 {
+        return make_bytes_from_slice(&[]);
+    }
+
+    let data_slice =
+        std::slice::from_raw_parts((*bio_obj).buffer.add((*bio_obj).position), to_read);
+    let result = make_bytes_from_slice(data_slice);
+    (*bio_obj).position += to_read;
+
+    result
+}
+
+/// Get the entire value of BytesIO as bytes
+#[no_mangle]
+pub unsafe extern "C" fn rt_bytesio_getvalue(bio: *mut Obj) -> *mut Obj {
+    let bio_obj = bio as *const BytesIOObj;
+    check_closed((*bio_obj).closed);
+
+    if (*bio_obj).len == 0 {
+        return make_bytes_from_slice(&[]);
+    }
+
+    let data_slice = std::slice::from_raw_parts((*bio_obj).buffer, (*bio_obj).len);
+    make_bytes_from_slice(data_slice)
+}
+
+/// Seek to a position in BytesIO
+#[no_mangle]
+pub unsafe extern "C" fn rt_bytesio_seek(bio: *mut Obj, pos: i64) -> i64 {
+    let bio_obj = bio as *mut BytesIOObj;
+    check_closed((*bio_obj).closed);
+
+    // Clamp position to valid range [0, len]
+    let new_pos = if pos < 0 {
+        0
+    } else {
+        (pos as usize).min((*bio_obj).len)
+    };
+
+    (*bio_obj).position = new_pos;
+    new_pos as i64
+}
+
+/// Get current position in BytesIO
+#[no_mangle]
+pub unsafe extern "C" fn rt_bytesio_tell(bio: *mut Obj) -> i64 {
+    let bio_obj = bio as *const BytesIOObj;
+    check_closed((*bio_obj).closed);
+    (*bio_obj).position as i64
+}
+
+/// Close BytesIO
+#[no_mangle]
+pub unsafe extern "C" fn rt_bytesio_close(bio: *mut Obj) {
+    let bio_obj = bio as *mut BytesIOObj;
+    (*bio_obj).closed = true;
+}
+
+/// Finalize BytesIO (called by GC)
+pub unsafe fn bytesio_finalize(obj: *mut Obj) {
+    let bio_obj = obj as *mut BytesIOObj;
+    if !(*bio_obj).buffer.is_null() && (*bio_obj).capacity > 0 {
+        let layout = Layout::from_size_align_unchecked((*bio_obj).capacity, 1);
+        dealloc((*bio_obj).buffer, layout);
+        (*bio_obj).buffer = std::ptr::null_mut();
+    }
+}

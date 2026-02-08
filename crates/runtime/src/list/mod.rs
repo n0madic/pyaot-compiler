@@ -1,0 +1,46 @@
+//! List operations for Python runtime
+//!
+//! This module provides list creation, manipulation, and conversion functions.
+
+/// Calculate new list capacity using CPython's growth formula.
+/// This provides ~12.5% growth for large lists instead of 100% (doubling),
+/// reducing memory waste by ~50% for large lists.
+#[inline]
+pub(crate) fn list_grow_capacity(capacity: usize) -> usize {
+    if capacity == 0 {
+        4
+    } else if capacity < 9 {
+        capacity + 3
+    } else {
+        // ~12.5% growth: capacity + capacity/8 + 6
+        capacity + (capacity >> 3) + 6
+    }
+}
+
+mod compare;
+mod convert;
+mod core;
+mod minmax;
+mod mutation;
+mod query;
+mod slice;
+mod timsort;
+
+// Re-export all public functions
+pub use compare::{rt_list_eq_float, rt_list_eq_int, rt_list_eq_str};
+pub use convert::{
+    rt_list_from_dict, rt_list_from_iter, rt_list_from_range, rt_list_from_set, rt_list_from_str,
+    rt_list_from_tuple, rt_list_tail_to_tuple, rt_list_tail_to_tuple_bool,
+    rt_list_tail_to_tuple_float,
+};
+pub use core::{
+    list_finalize, rt_list_get, rt_list_get_bool, rt_list_get_float, rt_list_get_int, rt_list_len,
+    rt_list_push, rt_list_set, rt_make_list,
+};
+pub use minmax::{rt_list_max_float, rt_list_max_int, rt_list_min_float, rt_list_min_int};
+pub use mutation::{
+    rt_list_append, rt_list_clear, rt_list_extend, rt_list_insert, rt_list_pop, rt_list_remove,
+    rt_list_reverse, rt_list_sort,
+};
+pub use query::{rt_list_copy, rt_list_count, rt_list_index};
+pub use slice::{rt_list_slice, rt_list_slice_step};
