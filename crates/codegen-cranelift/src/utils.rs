@@ -1,7 +1,7 @@
 //! Utility functions for Cranelift code generation
 
 use cranelift_codegen::ir::types as cltypes;
-use cranelift_codegen::ir::{Inst, InstBuilder, Signature, Value};
+use cranelift_codegen::ir::{Inst, InstBuilder, MemFlags, Signature, Value};
 use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::ObjectModule;
@@ -100,7 +100,7 @@ pub fn load_operand(
 }
 
 /// Load an operand and coerce it to a target Cranelift type
-/// Handles i8 -> i64 extension and i64 -> i8 reduction
+/// Handles i8 -> i64 extension, i64 -> i8 reduction, and f64 <-> i64 bitcast
 pub fn load_operand_as(
     builder: &mut FunctionBuilder,
     operand: &Operand,
@@ -119,6 +119,10 @@ pub fn load_operand_as(
         (cltypes::I8, cltypes::I64) => builder.ins().uextend(cltypes::I64, val),
         // i64 to i8 - reduce
         (cltypes::I64, cltypes::I8) => builder.ins().ireduce(cltypes::I8, val),
+        // f64 to i64 - bitcast (for storing floats in generic list/dict slots)
+        (cltypes::F64, cltypes::I64) => builder.ins().bitcast(cltypes::I64, MemFlags::new(), val),
+        // i64 to f64 - bitcast (for loading floats from generic list/dict slots)
+        (cltypes::I64, cltypes::F64) => builder.ins().bitcast(cltypes::F64, MemFlags::new(), val),
         // Other cases - return as-is (caller's responsibility to handle)
         _ => val,
     }

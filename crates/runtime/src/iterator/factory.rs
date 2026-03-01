@@ -61,7 +61,7 @@ pub extern "C" fn rt_iter_dict(dict: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj};
 
     // Get keys list and iterate over that
-    let keys_list = rt_dict_keys(dict);
+    let keys_list = rt_dict_keys(dict, crate::object::ELEM_HEAP_OBJ);
 
     let size = std::mem::size_of::<IteratorObj>();
     let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);
@@ -214,7 +214,7 @@ pub extern "C" fn rt_iter_reversed_dict(dict: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj, ListObj};
 
     // Get keys list and iterate over that in reverse
-    let keys_list = rt_dict_keys(dict);
+    let keys_list = rt_dict_keys(dict, crate::object::ELEM_HEAP_OBJ);
 
     let size = std::mem::size_of::<IteratorObj>();
     let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);

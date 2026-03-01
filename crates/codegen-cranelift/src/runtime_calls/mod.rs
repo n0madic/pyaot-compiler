@@ -248,6 +248,7 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::IsinstanceClass
         | mir::RuntimeFunc::IsinstanceClassInherited
         | mir::RuntimeFunc::RegisterClass
+        | mir::RuntimeFunc::RegisterClassFields
         | mir::RuntimeFunc::IsSubclass => {
             instance::compile_instance_call(builder, dest, func, args, ctx)?;
             Ok(())

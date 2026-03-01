@@ -1024,7 +1024,7 @@ pub extern "C" fn rt_tuple_from_dict(dict: *mut Obj) -> *mut Obj {
     use crate::dict::rt_dict_keys;
 
     // First get keys as list, then convert to tuple
-    let list = rt_dict_keys(dict);
+    let list = rt_dict_keys(dict, crate::object::ELEM_HEAP_OBJ);
     rt_tuple_from_list(list)
 }
 

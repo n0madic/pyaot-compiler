@@ -142,7 +142,7 @@ pub extern "C" fn rt_list_from_dict(dict: *mut Obj) -> *mut Obj {
     use crate::dict::rt_dict_keys;
 
     // rt_dict_keys already returns a list of keys
-    rt_dict_keys(dict)
+    rt_dict_keys(dict, crate::object::ELEM_HEAP_OBJ)
 }
 
 /// Extract list tail as tuple (list[start:] → tuple)

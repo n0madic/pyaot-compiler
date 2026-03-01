@@ -489,6 +489,33 @@ impl<'a> Lowering<'a> {
                 ],
             });
 
+            // Compute heap field mask: bit i is set if field i is a heap type (pointer)
+            // that needs GC tracing. Raw values (Int, Float, Bool, None) are NOT heap.
+            let mut heap_field_mask: i64 = 0;
+            for (i, field) in class_def.fields.iter().enumerate() {
+                if i >= 64 {
+                    break; // Only support up to 64 fields
+                }
+                let is_heap = !matches!(
+                    field.ty,
+                    pyaot_types::Type::Int
+                        | pyaot_types::Type::Float
+                        | pyaot_types::Type::Bool
+                        | pyaot_types::Type::None
+                );
+                if is_heap {
+                    heap_field_mask |= 1i64 << i;
+                }
+            }
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: dummy_local,
+                func: mir::RuntimeFunc::RegisterClassFields,
+                args: vec![
+                    mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                    mir::Operand::Constant(mir::Constant::Int(heap_field_mask)),
+                ],
+            });
+
             // For exception classes, also register the class name for error messages
             if class_def.is_exception_class {
                 // class_def.name is already an InternedString, use it directly

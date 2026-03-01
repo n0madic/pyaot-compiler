@@ -70,20 +70,18 @@ pub fn compile_global_call(
                 let var_id_val = load_operand(builder, &args[0], ctx.var_map);
                 let var_id_i32 = builder.ins().ireduce(cltypes::I32, var_id_val);
                 let value_val = load_operand(builder, &args[1], ctx.var_map);
-                // Handle type mismatch: if value is i8 (bool), extend to i64
-                let value_i64 = if let Some(local_id) = match &args[1] {
-                    mir::Operand::Local(id) => Some(id),
-                    _ => None,
-                } {
-                    if let Some(local) = ctx.locals.get(local_id) {
-                        if matches!(local.ty, pyaot_types::Type::Bool | pyaot_types::Type::None) {
-                            builder.ins().uextend(cltypes::I64, value_val)
-                        } else {
-                            value_val
-                        }
-                    } else {
-                        value_val
-                    }
+                // Handle type mismatch: coerce non-i64 values to i64 for pointer storage
+                let value_ty = builder.func.dfg.value_type(value_val);
+                let value_i64 = if value_ty == cltypes::I8 {
+                    // Bool/None (i8) → extend to i64
+                    builder.ins().uextend(cltypes::I64, value_val)
+                } else if value_ty == cltypes::F64 {
+                    // Float (f64) → bitcast to i64
+                    builder.ins().bitcast(
+                        cltypes::I64,
+                        cranelift_codegen::ir::MemFlags::new(),
+                        value_val,
+                    )
                 } else {
                     value_val
                 };

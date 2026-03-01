@@ -431,20 +431,20 @@ fn mark_object(obj: *mut Obj) {
             }
             TypeTagKind::Dict => {
                 let dict = obj as *mut DictObj;
-                let capacity = (*dict).capacity;
                 let entries = (*dict).entries;
+                let entries_len = (*dict).entries_len;
                 // Validate entries pointer before accessing
-                if entries.is_null() && capacity > 0 {
+                if entries.is_null() && entries_len > 0 {
                     eprintln!(
-                        "FATAL: Dict heap corruption - null entries pointer with capacity={}",
-                        capacity
+                        "FATAL: Dict heap corruption - null entries pointer with entries_len={}",
+                        entries_len
                     );
                     std::process::abort();
                 }
-                for i in 0..capacity {
+                for i in 0..entries_len {
                     let entry = entries.add(i);
                     let key = (*entry).key;
-                    if !key.is_null() && key != TOMBSTONE {
+                    if !key.is_null() {
                         mark_object(key);
                         let value = (*entry).value;
                         if !value.is_null() {
@@ -477,10 +477,15 @@ fn mark_object(obj: *mut Obj) {
                 let instance = obj as *mut InstanceObj;
                 let field_count = (*instance).field_count;
                 let fields = (*instance).fields.as_ptr();
+                // Only mark fields that are heap objects (pointers), not raw int/float/bool values.
+                // The heap_field_mask tells us which fields are heap types.
+                let mask = crate::vtable::get_class_heap_field_mask((*instance).class_id);
                 for i in 0..field_count {
-                    let field = *fields.add(i);
-                    if !field.is_null() {
-                        mark_object(field);
+                    if mask & (1u64 << i) != 0 {
+                        let field = *fields.add(i);
+                        if !field.is_null() {
+                            mark_object(field);
+                        }
                     }
                 }
             }

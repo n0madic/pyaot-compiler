@@ -95,13 +95,12 @@ unsafe fn obj_to_json_value(obj: *mut Obj) -> Value {
         }
         TypeTagKind::Dict => {
             let dict_obj = obj as *const DictObj;
-            let capacity = (*dict_obj).capacity;
+            let entries_len = (*dict_obj).entries_len;
             let mut map = Map::new();
-            let tombstone: *mut Obj = std::ptr::dangling_mut::<Obj>();
-            for i in 0..capacity {
+            for i in 0..entries_len {
                 let entry = (*dict_obj).entries.add(i);
                 let key = (*entry).key;
-                if key.is_null() || key == tombstone {
+                if key.is_null() {
                     continue;
                 }
                 // Keys must be strings for JSON

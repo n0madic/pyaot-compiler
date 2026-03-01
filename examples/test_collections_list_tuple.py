@@ -205,6 +205,31 @@ assert count_list.count(1) == 1, "count_list.count(1) should equal 1"
 assert count_list.count(99) == 0, "count_list.count(99) should equal 0"
 print("list.count() passed")
 
+# list.index() with string values (value equality, not pointer equality)
+str_idx_list: list[str] = ["hello", "world", "foo", "bar"]
+assert str_idx_list.index("hello") == 0, "str list.index(hello) should be 0"
+assert str_idx_list.index("world") == 1, "str list.index(world) should be 1"
+assert str_idx_list.index("foo") == 2, "str list.index(foo) should be 2"
+assert str_idx_list.index("bar") == 3, "str list.index(bar) should be 3"
+
+# list.index() on sorted(set()) result — dynamically created strings
+joined_str: str = "zyxwvu"
+sorted_chars: list[str] = sorted(set(joined_str))
+assert sorted_chars.index("u") == 0, "sorted chars index of u"
+assert sorted_chars.index("v") == 1, "sorted chars index of v"
+assert sorted_chars.index("w") == 2, "sorted chars index of w"
+assert sorted_chars.index("x") == 3, "sorted chars index of x"
+assert sorted_chars.index("y") == 4, "sorted chars index of y"
+assert sorted_chars.index("z") == 5, "sorted chars index of z"
+
+# list.count() with string values
+str_count_list: list[str] = ["a", "b", "a", "c", "a"]
+assert str_count_list.count("a") == 3, "str list.count(a) should be 3"
+assert str_count_list.count("b") == 1, "str list.count(b) should be 1"
+assert str_count_list.count("x") == 0, "str list.count(x) should be 0"
+
+print("list.index()/count() with strings passed")
+
 # ===== SECTION: List equality and min/max =====
 
 list_a: list[int] = [1, 2, 3]

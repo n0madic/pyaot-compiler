@@ -551,12 +551,32 @@ impl<'a> Lowering<'a> {
                     args: vec![obj_operand, boxed_key, boxed_value],
                 });
             }
-            Type::List(_) => {
+            Type::List(ref elem_ty) => {
                 // list[index] = value
+                // Box float/bool values before storing (lists use ELEM_HEAP_OBJ for these types)
+                let store_operand = if **elem_ty == Type::Float {
+                    let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: boxed_local,
+                        func: mir::RuntimeFunc::BoxFloat,
+                        args: vec![value_operand],
+                    });
+                    mir::Operand::Local(boxed_local)
+                } else if **elem_ty == Type::Bool {
+                    let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: boxed_local,
+                        func: mir::RuntimeFunc::BoxBool,
+                        args: vec![value_operand],
+                    });
+                    mir::Operand::Local(boxed_local)
+                } else {
+                    value_operand
+                };
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
                     func: mir::RuntimeFunc::ListSet,
-                    args: vec![obj_operand, index_operand, value_operand],
+                    args: vec![obj_operand, index_operand, store_operand],
                 });
             }
             Type::Class { class_id, .. } => {

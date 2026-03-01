@@ -12,7 +12,7 @@ use crate::runtime_helpers::{
     compile_binary_runtime_call, compile_quaternary_runtime_call, compile_quinary_runtime_call,
     compile_senary_runtime_call, compile_ternary_runtime_call, compile_unary_runtime_call,
 };
-use crate::utils::load_operand;
+use crate::utils::{declare_runtime_function, load_operand, load_operand_as};
 
 /// Compile an iterator-related runtime call
 pub fn compile_iterator_call(
@@ -148,6 +148,12 @@ pub fn compile_iterator_call(
                     dest,
                     ctx,
                     true,
+                )?;
+            } else if matches!(source, mir::SortableKind::Set | mir::SortableKind::Dict) {
+                // Set/Dict without key: rt_sorted_{source}(container, reverse, elem_tag) -> *Obj
+                let func_name = format!("rt_sorted_{}", source.name());
+                compile_sorted_with_elem_tag(
+                    builder, &func_name, &args[0], &args[1], &args[2], dest, ctx,
                 )?;
             } else {
                 // Without key: rt_sorted_{source}(container, reverse) -> *Obj
@@ -338,5 +344,49 @@ pub fn compile_iterator_call(
         _ => unreachable!("Non-iterator function passed to compile_iterator_call"),
     }
 
+    Ok(())
+}
+
+/// Compile sorted set/dict calls with elem_tag parameter.
+/// Signature: fn(container: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj
+fn compile_sorted_with_elem_tag(
+    builder: &mut FunctionBuilder,
+    func_name: &str,
+    container_arg: &Operand,
+    reverse_arg: &Operand,
+    elem_tag_arg: &Operand,
+    dest: LocalId,
+    ctx: &mut CodegenContext,
+) -> Result<()> {
+    use cranelift_codegen::ir::{AbiParam, InstBuilder};
+    use cranelift_codegen::isa::CallConv;
+    use cranelift_module::Module;
+
+    let mut sig = ctx.module.make_signature();
+    sig.call_conv = CallConv::SystemV;
+    sig.params.push(AbiParam::new(cltypes::I64)); // container
+    sig.params.push(AbiParam::new(cltypes::I64)); // reverse
+    sig.params.push(AbiParam::new(cltypes::I8)); // elem_tag
+    sig.returns.push(AbiParam::new(cltypes::I64)); // -> *mut Obj
+
+    let func_id = declare_runtime_function(ctx.module, func_name, &sig)?;
+    let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+
+    let container = load_operand_as(builder, container_arg, ctx.var_map, cltypes::I64);
+    let reverse = load_operand_as(builder, reverse_arg, ctx.var_map, cltypes::I64);
+    let elem_tag_i64 = load_operand(builder, elem_tag_arg, ctx.var_map);
+    let elem_tag = builder.ins().ireduce(cltypes::I8, elem_tag_i64);
+    let call_inst = builder
+        .ins()
+        .call(func_ref, &[container, reverse, elem_tag]);
+
+    let result_val = builder.inst_results(call_inst)[0];
+    let dest_var = *ctx
+        .var_map
+        .get(&dest)
+        .expect("internal error: dest local not in var_map - codegen bug");
+    builder.def_var(dest_var, result_val);
+
+    update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
     Ok(())
 }

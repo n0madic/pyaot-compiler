@@ -6,7 +6,7 @@
 //! - os.remove(path): Remove a file
 
 use crate::gc;
-use crate::object::{DictEntry, DictObj, ListObj, Obj, ObjHeader, TypeTagKind};
+use crate::object::{ListObj, Obj, ObjHeader, TypeTagKind};
 use crate::utils::make_str_from_rust;
 use std::env;
 use std::fs;
@@ -16,61 +16,18 @@ use std::path::PathBuf;
 /// Creates a new dict each time (environment could have changed)
 #[no_mangle]
 pub extern "C" fn rt_os_get_environ() -> *mut Obj {
-    unsafe {
-        // Collect environment variables
-        let vars: Vec<(String, String)> = env::vars().collect();
-        let count = vars.len();
+    let vars: Vec<(String, String)> = env::vars().collect();
+    let count = vars.len();
 
-        // Calculate capacity (use power of 2 for hash table)
-        let capacity = if count == 0 {
-            8
-        } else {
-            let mut cap = 8;
-            while cap < count * 2 {
-                cap *= 2;
-            }
-            cap
-        };
+    let dict = crate::dict::rt_make_dict(count as i64);
 
-        // Allocate dict object
-        let dict_size = std::mem::size_of::<DictObj>();
-        let dict_ptr = gc::gc_alloc(dict_size, TypeTagKind::Dict as u8) as *mut DictObj;
-
-        (*dict_ptr).header = ObjHeader {
-            type_tag: TypeTagKind::Dict,
-            marked: false,
-            size: dict_size,
-        };
-        (*dict_ptr).len = 0;
-        (*dict_ptr).capacity = capacity;
-
-        // Allocate entries array
-        let entries_layout = std::alloc::Layout::array::<DictEntry>(capacity)
-            .expect("Allocation size overflow - capacity too large");
-        (*dict_ptr).entries = std::alloc::alloc_zeroed(entries_layout) as *mut DictEntry;
-
-        // Initialize all entries to empty
-        for i in 0..capacity {
-            let entry = (*dict_ptr).entries.add(i);
-            (*entry).hash = 0;
-            (*entry).key = std::ptr::null_mut();
-            (*entry).value = std::ptr::null_mut();
-        }
-
-        // Insert each environment variable
-        for (key, value) in vars {
-            // Create key string
-            let key_str = make_str_from_rust(&key);
-
-            // Create value string
-            let value_str = make_str_from_rust(&value);
-
-            // Insert into dict using crate's dict_set
-            crate::dict::rt_dict_set(dict_ptr as *mut Obj, key_str, value_str);
-        }
-
-        dict_ptr as *mut Obj
+    for (key, value) in vars {
+        let key_str = unsafe { make_str_from_rust(&key) };
+        let value_str = unsafe { make_str_from_rust(&value) };
+        crate::dict::rt_dict_set(dict, key_str, value_str);
     }
+
+    dict
 }
 
 /// Join path components: os.path.join(path1, path2, ...)

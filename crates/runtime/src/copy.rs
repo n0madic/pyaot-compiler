@@ -40,28 +40,20 @@ pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
             new_list as *mut Obj
         }
 
-        // Dict - shallow copy
+        // Dict - shallow copy (preserves insertion order)
         TypeTagKind::Dict => {
             let orig = obj as *mut DictObj;
             let len = (*orig).len;
-            let capacity = (*orig).capacity;
 
-            // Create new dict with same capacity
-            let new_dict = crate::dict::rt_make_dict(capacity as i64);
+            let new_dict = crate::dict::rt_make_dict(len as i64);
 
             if len > 0 {
-                // Iterate through original entries and copy to new dict
-                for i in 0..capacity {
+                for i in 0..(*orig).entries_len {
                     let entry = (*orig).entries.add(i);
                     let key = (*entry).key;
-
-                    // Skip empty slots (TOMBSTONE or null)
-                    if key.is_null() || key == crate::object::TOMBSTONE {
-                        continue;
+                    if !key.is_null() {
+                        crate::dict::rt_dict_set(new_dict, key, (*entry).value);
                     }
-
-                    let value = (*entry).value;
-                    crate::dict::rt_dict_set(new_dict, key, value);
                 }
             }
 
@@ -228,29 +220,22 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
 
             let orig = obj as *mut DictObj;
             let len = (*orig).len;
-            let capacity = (*orig).capacity;
 
-            // Create new dict with same capacity
-            let new_dict = crate::dict::rt_make_dict(capacity as i64);
+            let new_dict = crate::dict::rt_make_dict(len as i64);
 
             // Register in memo before recursing
             memo.insert(obj_addr, new_dict);
 
             if len > 0 {
-                // Iterate through original entries and deep copy
-                for i in 0..capacity {
+                for i in 0..(*orig).entries_len {
                     let entry = (*orig).entries.add(i);
                     let key = (*entry).key;
-
-                    // Skip empty slots
-                    if key.is_null() || key == crate::object::TOMBSTONE {
-                        continue;
+                    if !key.is_null() {
+                        let value = (*entry).value;
+                        let new_key = deep_copy_recursive(key, memo);
+                        let new_value = deep_copy_recursive(value, memo);
+                        crate::dict::rt_dict_set(new_dict, new_key, new_value);
                     }
-
-                    let value = (*entry).value;
-                    let new_key = deep_copy_recursive(key, memo);
-                    let new_value = deep_copy_recursive(value, memo);
-                    crate::dict::rt_dict_set(new_dict, new_key, new_value);
                 }
             }
 

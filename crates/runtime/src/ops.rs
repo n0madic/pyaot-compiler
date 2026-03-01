@@ -359,16 +359,15 @@ unsafe fn print_maybe_raw_repr(ptr: *mut Obj) {
 /// Dict keys are always boxed, but values may be raw primitives
 unsafe fn print_dict_repr(obj: *mut Obj) {
     let dict = obj as *mut DictObj;
-    let capacity = (*dict).capacity;
+    let entries_len = (*dict).entries_len;
     let entries = (*dict).entries;
-    const TOMBSTONE: *mut Obj = std::ptr::dangling_mut::<Obj>();
 
     print!("{{");
     let mut first = true;
-    for i in 0..capacity {
+    for i in 0..entries_len {
         let entry = entries.add(i);
         let key = (*entry).key;
-        if !key.is_null() && key != TOMBSTONE {
+        if !key.is_null() {
             if !first {
                 print!(", ");
             }

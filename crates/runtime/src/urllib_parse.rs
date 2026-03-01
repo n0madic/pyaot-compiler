@@ -266,8 +266,6 @@ pub extern "C" fn rt_unquote(string: *mut Obj) -> *mut Obj {
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_urlencode(params: *mut Obj) -> *mut Obj {
-    use crate::object::{DictEntry, TOMBSTONE};
-
     if params.is_null() {
         return unsafe { make_str_from_rust("") };
     }
@@ -278,20 +276,19 @@ pub extern "C" fn rt_urlencode(params: *mut Obj) -> *mut Obj {
         }
 
         let dict = params as *const DictObj;
-        let capacity = (*dict).capacity;
+        let entries_len = (*dict).entries_len;
         let entries = (*dict).entries;
 
         let mut pairs: Vec<String> = Vec::new();
 
-        for i in 0..capacity {
-            let entry = entries.add(i) as *const DictEntry;
+        for i in 0..entries_len {
+            let entry = entries.add(i);
             let key = (*entry).key;
 
-            if !key.is_null() && key != TOMBSTONE {
+            if !key.is_null() {
                 let key_str = str_obj_to_rust_string(key);
                 let value_str = str_obj_to_rust_string((*entry).value);
 
-                // Percent-encode key and value (with = and & as safe for structure)
                 let encoded_key = percent_encode(&key_str, "");
                 let encoded_value = percent_encode(&value_str, "");
 
@@ -484,45 +481,9 @@ pub extern "C" fn rt_parse_qs(query: *mut Obj) -> *mut Obj {
     }
 }
 
-/// Helper to get value from dict without going through full rt_dict_get
+/// Helper to get value from dict
 unsafe fn get_dict_value(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
-    use crate::hash_table_utils::hash_hashable_obj;
-    use crate::object::{DictEntry, TOMBSTONE};
-
-    let dict_obj = dict as *const DictObj;
-    let capacity = (*dict_obj).capacity;
-    let entries = (*dict_obj).entries;
-
-    let hash = hash_hashable_obj(key);
-    let mask = capacity - 1;
-    let base = hash as usize;
-
-    // Triangular probing
-    let mut probe_i = 0usize;
-    loop {
-        let offset = (probe_i * (probe_i + 1)) >> 1;
-        let index = (base + offset) & mask;
-        let entry = entries.add(index) as *const DictEntry;
-        let entry_key = (*entry).key;
-
-        if entry_key.is_null() {
-            return std::ptr::null_mut();
-        }
-
-        if entry_key != TOMBSTONE && (*entry).hash == hash {
-            // Compare string keys
-            let entry_key_str = str_obj_to_rust_string(entry_key);
-            let key_str = str_obj_to_rust_string(key);
-            if entry_key_str == key_str {
-                return (*entry).value;
-            }
-        }
-
-        probe_i += 1;
-        if probe_i >= capacity {
-            return std::ptr::null_mut();
-        }
-    }
+    crate::dict::rt_dict_get(dict, key)
 }
 
 // =============================================================================

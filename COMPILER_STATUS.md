@@ -50,7 +50,7 @@ Native Executable
 | str | ✅ | |
 | list[T] | ✅ | |
 | tuple[T1, ...] | ✅ | |
-| dict[K, V] | ✅ | Keys: all hashable types (str/int/bool/float/tuple/None) |
+| dict[K, V] | ✅ | Keys: all hashable types (str/int/bool/float/tuple/None); insertion order preserved (Python 3.7+) |
 | set[T] | ✅ | Elements: all hashable types (str/int/bool/float/tuple/None) |
 | bytes | ✅ | |
 | None | ✅ | |
@@ -127,6 +127,7 @@ Native Executable
 | @property | ✅ | Getter and setter |
 | User decorators | ✅ | Identity, wrapper, and chained decorators |
 | @abstractmethod | ✅ | Compile-time enforcement |
+| `__slots__` | ✅ | Parsed and ignored (AOT compiler handles memory layout statically) |
 | Inheritance | ✅ | Single only |
 | Virtual dispatch (vtables) | ✅ | |
 | super() | ✅ | |
@@ -223,7 +224,7 @@ Native Executable
 | urllib.parse | urlparse, urlencode, quote, unquote, urljoin, parse_qs; ParseResult fields and geturl() |
 | urllib.request | urlopen; HTTPResponse fields (status, url, headers), methods (read, geturl, getcode) |
 | string | ascii_letters, ascii_lowercase, ascii_uppercase, digits, hexdigits, octdigits, punctuation, whitespace, printable |
-| random | random, randint, choice, shuffle, seed, uniform, randrange, sample |
+| random | random, randint, choice, choices, shuffle, seed, uniform, randrange, sample, gauss |
 | hashlib | md5, sha256, sha1; Hash.hexdigest(), Hash.digest() |
 | base64 | b64encode, b64decode, urlsafe_b64encode, urlsafe_b64decode |
 | copy | copy, deepcopy |
@@ -824,7 +825,7 @@ while __idx < __len:
   - Dict: marks all keys and values in entries array
   - Set: marks all elements in entries array
   - Tuple: marks elements based on elem_tag (ELEM_HEAP_OBJ only)
-  - Instance: marks all field pointers
+  - Instance: marks only heap fields using `heap_field_mask` (registered via `rt_register_class_fields`; raw value fields like int/float/bool are skipped)
   - Iterator: marks source container
   - Match: marks groups tuple and original string
   - Generator: **precise tracking** using type_tags array (LOCAL_TYPE_PTR only; raw values skipped)
@@ -1458,9 +1459,9 @@ for x in CountUp(5):  # 0, 1, 2, 3, 4
   - `key` kwarg: function to extract comparison key from each element (user functions, lambdas, or builtins like `abs`)
   - `reverse` kwarg: `True` for descending, `False` (default) for ascending
 - **Runtime functions**:
-  - Without key: `rt_sorted_list`, `rt_sorted_tuple`, `rt_sorted_dict`, `rt_sorted_str`, `rt_sorted_range`
+  - Without key: `rt_sorted_list`, `rt_sorted_tuple`, `rt_sorted_dict`, `rt_sorted_str`, `rt_sorted_range`, `rt_sorted_set`
   - With key: `rt_sorted_list_with_key(list, reverse, key_fn, elem_tag)`, `rt_sorted_tuple_with_key(tuple, reverse, key_fn, elem_tag)`
-- **MIR**: `SortedList`, `SortedTuple`, `SortedDict`, `SortedStr`, `SortedRange`, `SortedListWithKey`, etc.
+- **MIR**: `SortedList`, `SortedTuple`, `SortedDict`, `SortedStr`, `SortedRange`, `SortedSet`, `SortedListWithKey`, etc.
 - **Sorting algorithm**: Insertion sort (stable, O(n²) - suitable for small collections)
 - **Element comparison**: `compare_list_elements()` handles:
   - Raw i64 values (for list[int] - elements stored as bit-cast pointers)

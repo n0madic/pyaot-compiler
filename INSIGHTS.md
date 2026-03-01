@@ -217,3 +217,35 @@ Stdlib functions use `LoweringHints` to control how they're lowered without any 
 - `min_args` / `max_args`: Argument count validation at compile time
 
 This means adding a new stdlib function requires only 2 files: the definition in `stdlib-defs` and the implementation in `runtime`. No lowering or codegen changes are needed unless the function has unusual semantics.
+
+## GC Heap Field Mask for Class Instances
+
+Instance fields store ALL values as i64 (including f64 via bitcast). The GC must know which fields are heap pointers vs raw values to avoid dereferencing float bits as pointers (causes segfault). Solution:
+
+- `ClassInfo` in `vtable.rs` has `heap_field_mask: u64` — bit i set means field i is a heap pointer
+- Compiler computes the mask from field types at class definition time and emits `RegisterClassFields(class_id, mask)`
+- During GC marking, `mark_object` for Instance checks the mask before tracing each field
+- Default is `u64::MAX` (conservative: treat all fields as heap) for safety
+- Non-heap types: `int`, `float`, `bool`, `None` — their raw i64 bits would crash if dereferenced as pointers
+
+## GlobalSet(Ptr) Type Coercion
+
+When storing values into global pointer slots via `GlobalSet(Ptr)`, the runtime expects i64. Values from different types need coercion:
+- `None` (i8) → `uextend` to i64
+- `float` (f64) → `bitcast` to i64
+- `int/str/list/...` (i64) → pass through
+
+The coercion must check the Cranelift value type directly (not the MIR operand kind), because `Constant(None)` doesn't have an associated MIR type annotation the way `Local` operands do.
+
+## Dict/Set to List Boxing Mismatch
+
+Dict and set store ALL elements as `*mut Obj` (boxed heap objects), even for `dict[str, int]` or `set[int]`. When converting to a list (via `.keys()`, `.values()`, `sorted()`, etc.), the result list must match the compiler's expected `elem_tag`:
+
+- `list[int]` → `ELEM_RAW_INT` (raw i64 in data array)
+- `list[str]` → `ELEM_HEAP_OBJ` (pointers in data array)
+
+If the runtime always creates `ELEM_HEAP_OBJ` lists from dict/set, the compiler's `rt_list_get_int` reads a pointer as an integer → garbage values.
+
+**Fix**: `rt_dict_keys`, `rt_dict_values`, `rt_sorted_set`, `rt_sorted_dict` all accept an `elem_tag` parameter. When `elem_tag == ELEM_RAW_INT`, they unbox `IntObj` values to raw i64 before storing in the result list. The lowering passes the correct `elem_tag` via `Self::elem_tag_for_type()`.
+
+**Codegen note**: The `elem_tag` parameter uses `u8` in runtime but `i64` in MIR constants. The codegen must `ireduce` from i64 to i8 before the call.

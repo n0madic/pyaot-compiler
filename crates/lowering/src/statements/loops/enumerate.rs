@@ -293,10 +293,14 @@ impl<'a> Lowering<'a> {
         let (actual_iter_local, _converted) = if iterable_kind == IterableKind::Dict {
             let keys_local =
                 self.alloc_and_add_local(Type::List(Box::new(elem_type.clone())), mir_func);
+            let key_elem_tag = Self::elem_tag_for_type(&elem_type);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: keys_local,
                 func: mir::RuntimeFunc::DictKeys,
-                args: vec![mir::Operand::Local(iter_local)],
+                args: vec![
+                    mir::Operand::Local(iter_local),
+                    mir::Operand::Constant(mir::Constant::Int(key_elem_tag)),
+                ],
             });
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: len_local,

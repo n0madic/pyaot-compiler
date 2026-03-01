@@ -301,6 +301,8 @@ pub enum RuntimeFunc {
     IsinstanceClassInherited,
     /// Register a class with its parent for inheritance: rt_register_class(class_id, parent_class_id)
     RegisterClass,
+    /// Register which class fields are heap objects for GC: rt_register_class_fields(class_id, heap_field_mask)
+    RegisterClassFields,
     /// Check issubclass: rt_issubclass(child: u8, parent: u8) -> i8
     IsSubclass,
 

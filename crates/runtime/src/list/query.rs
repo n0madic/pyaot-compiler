@@ -1,10 +1,24 @@
 //! List query operations: index, count, copy
 
 use super::core::rt_make_list;
-use crate::object::{ListObj, Obj};
+use crate::hash_table_utils::eq_hashable_obj;
+use crate::object::{ListObj, Obj, ELEM_HEAP_OBJ};
+
+/// Compare two list elements for equality.
+/// For heap objects, uses value equality (eq_hashable_obj).
+/// For raw values (int, bool), uses bitwise equality.
+#[inline]
+unsafe fn elem_eq(a: *mut Obj, b: *mut Obj, elem_tag: u8) -> bool {
+    if elem_tag == ELEM_HEAP_OBJ {
+        eq_hashable_obj(a, b)
+    } else {
+        // Raw int/bool: compare as raw bits
+        a == b
+    }
+}
 
 /// Find first occurrence of value in list
-/// Uses pointer equality for comparison
+/// Uses value equality for heap objects, raw equality for primitives
 /// Returns: index of first occurrence, or -1 if not found
 #[no_mangle]
 pub extern "C" fn rt_list_index(list: *mut Obj, value: *mut Obj) -> i64 {
@@ -16,13 +30,14 @@ pub extern "C" fn rt_list_index(list: *mut Obj, value: *mut Obj) -> i64 {
         let list_obj = list as *mut ListObj;
         let len = (*list_obj).len;
         let data = (*list_obj).data;
+        let elem_tag = (*list_obj).elem_tag;
 
         if data.is_null() {
             return -1;
         }
 
         for i in 0..len {
-            if *data.add(i) == value {
+            if elem_eq(*data.add(i), value, elem_tag) {
                 return i as i64;
             }
         }
@@ -32,7 +47,7 @@ pub extern "C" fn rt_list_index(list: *mut Obj, value: *mut Obj) -> i64 {
 }
 
 /// Count occurrences of value in list
-/// Uses pointer equality for comparison
+/// Uses value equality for heap objects, raw equality for primitives
 /// Returns: count of occurrences
 #[no_mangle]
 pub extern "C" fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
@@ -44,6 +59,7 @@ pub extern "C" fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
         let list_obj = list as *mut ListObj;
         let len = (*list_obj).len;
         let data = (*list_obj).data;
+        let elem_tag = (*list_obj).elem_tag;
 
         if data.is_null() {
             return 0;
@@ -51,7 +67,7 @@ pub extern "C" fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
 
         let mut count = 0i64;
         for i in 0..len {
-            if *data.add(i) == value {
+            if elem_eq(*data.add(i), value, elem_tag) {
                 count += 1;
             }
         }

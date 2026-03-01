@@ -18,6 +18,11 @@ const NO_PARENT: u8 = 255;
 pub struct ClassInfo {
     /// Parent class ID (NO_PARENT = no parent, i.e., base class)
     pub parent_class_id: u8,
+    /// Bitmask of which fields are heap objects (pointers) that the GC must trace.
+    /// Bit i is set if field i is a heap type (str, list, dict, tuple, set, class instance, etc.)
+    /// Bit i is clear if field i is a raw value (int, float, bool, None).
+    /// Supports up to 64 fields per class.
+    pub heap_field_mask: u64,
 }
 
 /// Global class registry for inheritance information
@@ -25,6 +30,7 @@ pub struct ClassInfo {
 static CLASS_REGISTRY: RwLock<[ClassInfo; MAX_CLASSES]> = RwLock::new(
     [ClassInfo {
         parent_class_id: NO_PARENT,
+        heap_field_mask: u64::MAX, // Default: treat all fields as heap (conservative)
     }; MAX_CLASSES],
 );
 
@@ -53,7 +59,25 @@ static VTABLE_REGISTRY: RwLock<[VtablePtr; MAX_CLASSES]> =
 #[no_mangle]
 pub extern "C" fn rt_register_class(class_id: u8, parent_class_id: u8) {
     if let Ok(mut registry) = CLASS_REGISTRY.write() {
-        registry[class_id as usize] = ClassInfo { parent_class_id };
+        registry[class_id as usize].parent_class_id = parent_class_id;
+    }
+}
+
+/// Register the heap field mask for a class (tells GC which fields are heap pointers)
+/// heap_field_mask: bitmask where bit i = 1 means field i is a heap object pointer
+#[no_mangle]
+pub extern "C" fn rt_register_class_fields(class_id: u8, heap_field_mask: i64) {
+    if let Ok(mut registry) = CLASS_REGISTRY.write() {
+        registry[class_id as usize].heap_field_mask = heap_field_mask as u64;
+    }
+}
+
+/// Get the heap field mask for a class (used by GC during marking)
+pub fn get_class_heap_field_mask(class_id: u8) -> u64 {
+    if let Ok(registry) = CLASS_REGISTRY.read() {
+        registry[class_id as usize].heap_field_mask
+    } else {
+        u64::MAX // Conservative: treat all fields as heap
     }
 }
 
@@ -154,10 +178,14 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
             // Exception (0) - base class, no parent
             registry[0] = ClassInfo {
                 parent_class_id: NO_PARENT,
+                heap_field_mask: u64::MAX,
             };
             // All other built-in exceptions inherit from Exception (0)
             for i in 1..=12 {
-                registry[i] = ClassInfo { parent_class_id: 0 };
+                registry[i] = ClassInfo {
+                    parent_class_id: 0,
+                    heap_field_mask: u64::MAX,
+                };
             }
         }
     });

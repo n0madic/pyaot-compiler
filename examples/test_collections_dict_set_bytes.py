@@ -696,4 +696,72 @@ assert len(tuple_set) == 3, "tuple set length after duplicate add"
 
 print("set with tuple elements tests passed")
 
+# ===== SECTION: Dict insertion order preservation =====
+
+# Dicts preserve insertion order (Python 3.7+ guarantee)
+order_dict: dict[str, int] = {}
+order_dict["c"] = 3
+order_dict["a"] = 1
+order_dict["b"] = 2
+order_keys: list[str] = list(order_dict.keys())
+assert order_keys[0] == "c", "first key should be c"
+assert order_keys[1] == "a", "second key should be a"
+assert order_keys[2] == "b", "third key should be b"
+
+order_vals: list[int] = list(order_dict.values())
+assert order_vals[0] == 3, "first value should be 3"
+assert order_vals[1] == 1, "second value should be 1"
+assert order_vals[2] == 2, "third value should be 2"
+
+# Updating existing key preserves its position
+order_dict["a"] = 99
+order_keys2: list[str] = list(order_dict.keys())
+assert order_keys2[0] == "c", "after update, first key still c"
+assert order_keys2[1] == "a", "after update, second key still a"
+assert order_keys2[2] == "b", "after update, third key still b"
+order_vals2: list[int] = list(order_dict.values())
+assert order_vals2[1] == 99, "updated value should be 99"
+
+# Deleting and re-inserting moves key to end
+del order_dict["a"]
+order_dict["a"] = 50
+order_keys3: list[str] = list(order_dict.keys())
+assert order_keys3[0] == "c", "after re-insert, first key is c"
+assert order_keys3[1] == "b", "after re-insert, second key is b"
+assert order_keys3[2] == "a", "after re-insert, third key is a (moved to end)"
+
+# Integer keys also preserve order
+int_order_dict: dict[int, str] = {}
+int_order_dict[5] = "five"
+int_order_dict[1] = "one"
+int_order_dict[3] = "three"
+int_order_vals: list[str] = list(int_order_dict.values())
+assert int_order_vals[0] == "five", "int dict first value"
+assert int_order_vals[1] == "one", "int dict second value"
+assert int_order_vals[2] == "three", "int dict third value"
+
+print("dict insertion order tests passed")
+
+# ===== SECTION: sorted(set(...)) =====
+
+# sorted() on a set returns a sorted list
+sorted_set_result: list[int] = sorted(set([3, 1, 4, 1, 5, 9, 2, 6]))
+assert sorted_set_result[0] == 1, "sorted set first element"
+assert sorted_set_result[1] == 2, "sorted set second element"
+assert sorted_set_result[2] == 3, "sorted set third element"
+assert sorted_set_result[3] == 4, "sorted set fourth element"
+assert sorted_set_result[4] == 5, "sorted set fifth element"
+assert sorted_set_result[5] == 6, "sorted set sixth element"
+assert sorted_set_result[6] == 9, "sorted set seventh element"
+assert len(sorted_set_result) == 7, "sorted set length (duplicates removed)"
+
+# sorted() on set of strings
+str_set: set[str] = set(["banana", "apple", "cherry"])
+sorted_str_set: list[str] = sorted(str_set)
+assert sorted_str_set[0] == "apple", "sorted string set first"
+assert sorted_str_set[1] == "banana", "sorted string set second"
+assert sorted_str_set[2] == "cherry", "sorted string set third"
+
+print("sorted(set()) tests passed")
+
 print("All dict, set, and bytes tests passed!")

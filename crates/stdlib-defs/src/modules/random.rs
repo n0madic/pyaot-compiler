@@ -111,6 +111,35 @@ pub static RANDOM_SAMPLE: StdlibFunctionDef = StdlibFunctionDef {
     hints: LoweringHints::DEFAULT,
 };
 
+/// random.gauss(mu, sigma) -> float
+pub static RANDOM_GAUSS: StdlibFunctionDef = StdlibFunctionDef {
+    name: "gauss",
+    runtime_name: "rt_random_gauss",
+    params: &[
+        ParamDef::required("mu", TypeSpec::Float),
+        ParamDef::required("sigma", TypeSpec::Float),
+    ],
+    return_type: TypeSpec::Float,
+    min_args: 2,
+    max_args: 2,
+    hints: LoweringHints::NO_AUTO_BOX,
+};
+
+/// random.choices(population, weights, k=1) -> list
+pub static RANDOM_CHOICES: StdlibFunctionDef = StdlibFunctionDef {
+    name: "choices",
+    runtime_name: "rt_random_choices",
+    params: &[
+        ParamDef::required("population", TypeSpec::Any),
+        ParamDef::required("weights", TypeSpec::Any),
+        ParamDef::optional_with_default("k", TypeSpec::Int, ConstValue::Int(1)),
+    ],
+    return_type: TypeSpec::Any,
+    min_args: 2,
+    max_args: 3,
+    hints: LoweringHints::DEFAULT,
+};
+
 /// random module definition
 pub static RANDOM_MODULE: StdlibModuleDef = StdlibModuleDef {
     name: "random",
@@ -123,6 +152,8 @@ pub static RANDOM_MODULE: StdlibModuleDef = StdlibModuleDef {
         RANDOM_UNIFORM,
         RANDOM_RANDRANGE,
         RANDOM_SAMPLE,
+        RANDOM_GAUSS,
+        RANDOM_CHOICES,
     ],
     attrs: &[],
     constants: &[],

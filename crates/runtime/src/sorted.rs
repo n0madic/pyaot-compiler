@@ -5,9 +5,29 @@ use crate::list::rt_make_list;
 use crate::object::{Obj, ELEM_HEAP_OBJ, ELEM_RAW_INT};
 use crate::string::rt_str_getchar;
 
+use crate::object::ListObj;
+
 // Threshold for switching from quicksort to insertion sort
 // For small arrays, insertion sort is faster due to better cache locality and lower overhead
 const INSERTION_SORT_THRESHOLD: usize = 16;
+
+/// Convert a sorted ELEM_HEAP_OBJ list of boxed ints to a ELEM_RAW_INT list.
+/// Used when sorted(set[int]) or sorted(dict[int,...]) needs to produce list[int].
+fn convert_heap_list_to_raw_int(heap_list: *mut Obj) -> *mut Obj {
+    unsafe {
+        let src = heap_list as *mut ListObj;
+        let len = (*src).len;
+        let result = rt_make_list(len as i64, ELEM_RAW_INT);
+        let dst = result as *mut ListObj;
+        for i in 0..len {
+            let boxed = *(*src).data.add(i);
+            let raw_val = crate::boxing::rt_unbox_int(boxed);
+            *(*dst).data.add(i) = raw_val as *mut Obj;
+        }
+        (*dst).len = len;
+        result
+    }
+}
 
 // Helper functions for sorting
 
@@ -340,14 +360,35 @@ pub extern "C" fn rt_sorted_tuple(tuple: *mut Obj, reverse: i64) -> *mut Obj {
 /// reverse: 0 for ascending, 1 for descending
 /// Returns: pointer to new ListObj containing sorted keys
 #[no_mangle]
-pub extern "C" fn rt_sorted_dict(dict: *mut Obj, reverse: i64) -> *mut Obj {
+pub extern "C" fn rt_sorted_dict(dict: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj {
     if dict.is_null() {
-        return rt_make_list(0, ELEM_HEAP_OBJ);
+        return rt_make_list(0, elem_tag);
     }
 
-    // Get keys list first, then sort it
-    let keys_list = rt_dict_keys(dict);
+    // Get keys list with the target elem_tag (unboxes if ELEM_RAW_INT)
+    let keys_list = rt_dict_keys(dict, elem_tag);
     rt_sorted_list(keys_list, reverse)
+}
+
+/// Create a sorted list from a set
+/// reverse: 0 for ascending, 1 for descending
+/// Returns: pointer to new ListObj containing sorted elements
+#[no_mangle]
+pub extern "C" fn rt_sorted_set(set: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj {
+    if set.is_null() {
+        return rt_make_list(0, elem_tag);
+    }
+
+    // Convert set to list (always ELEM_HEAP_OBJ since set stores boxed elements)
+    let list = crate::set::rt_set_to_list(set);
+    let sorted = rt_sorted_list(list, reverse);
+
+    // If caller wants ELEM_RAW_INT, unbox the sorted list
+    if elem_tag == ELEM_RAW_INT {
+        return convert_heap_list_to_raw_int(sorted);
+    }
+
+    sorted
 }
 
 /// Create a sorted list of single-char strings from a string
@@ -882,8 +923,25 @@ pub extern "C" fn rt_sorted_dict_with_key(dict: *mut Obj, reverse: i64, key_fn: 
 
     // Get keys list first, then sort it with key
     // Dict keys are always boxed (ELEM_HEAP_OBJ = 0)
-    let keys_list = rt_dict_keys(dict);
+    let keys_list = rt_dict_keys(dict, ELEM_HEAP_OBJ);
     rt_sorted_list_with_key(keys_list, reverse, key_fn, ELEM_HEAP_OBJ as i64)
+}
+
+/// Create a sorted list from a set with a key function
+#[no_mangle]
+pub extern "C" fn rt_sorted_set_with_key(
+    set: *mut Obj,
+    reverse: i64,
+    key_fn: KeyFn,
+    elem_tag: i64,
+) -> *mut Obj {
+    if set.is_null() {
+        return rt_make_list(0, ELEM_HEAP_OBJ);
+    }
+
+    // Convert set to list, then sort with key
+    let list = crate::set::rt_set_to_list(set);
+    rt_sorted_list_with_key(list, reverse, key_fn, elem_tag)
 }
 
 /// Create a sorted list of single-char strings from a string with a key function

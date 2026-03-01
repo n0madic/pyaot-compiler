@@ -380,15 +380,14 @@ unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
         }
         TypeTagKind::Dict => {
             let dict = obj as *mut DictObj;
-            let capacity = (*dict).capacity;
+            let entries_len = (*dict).entries_len;
             let entries = (*dict).entries;
-            const TOMBSTONE: *mut Obj = std::ptr::dangling_mut::<Obj>();
             let mut s = String::from("{");
             let mut first = true;
-            for i in 0..capacity {
+            for i in 0..entries_len {
                 let entry = entries.add(i);
                 let key = (*entry).key;
-                if !key.is_null() && key != TOMBSTONE {
+                if !key.is_null() {
                     if !first {
                         s.push_str(", ");
                     }
@@ -879,16 +878,15 @@ unsafe fn obj_to_ascii_string(obj: *mut Obj) -> String {
         }
         TypeTagKind::Dict => {
             let dict = obj as *mut DictObj;
-            let capacity = (*dict).capacity;
+            let entries_len = (*dict).entries_len;
             let entries = (*dict).entries;
-            const DICT_TOMBSTONE: *mut Obj = std::ptr::dangling_mut::<Obj>();
 
             let mut s = String::from("{");
             let mut first = true;
-            for i in 0..capacity {
+            for i in 0..entries_len {
                 let entry = entries.add(i);
                 let key = (*entry).key;
-                if !key.is_null() && key != DICT_TOMBSTONE {
+                if !key.is_null() {
                     if !first {
                         s.push_str(", ");
                     }

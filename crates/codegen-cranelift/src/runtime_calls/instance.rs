@@ -213,6 +213,30 @@ pub fn compile_instance_call(
                 .expect("internal error: local not in var_map - codegen bug");
             builder.def_var(dest_var, zero);
         }
+        mir::RuntimeFunc::RegisterClassFields => {
+            // rt_register_class_fields(class_id: u8, heap_field_mask: i64)
+            // Register which fields are heap objects for GC tracing
+            let mut sig = ctx.module.make_signature();
+            sig.call_conv = CallConv::SystemV;
+            sig.params.push(AbiParam::new(cltypes::I8)); // class_id
+            sig.params.push(AbiParam::new(cltypes::I64)); // heap_field_mask
+
+            let func_id = declare_runtime_function(ctx.module, "rt_register_class_fields", &sig)?;
+            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+
+            let class_id_raw = load_operand(builder, &args[0], ctx.var_map);
+            let class_id = builder.ins().ireduce(cltypes::I8, class_id_raw);
+            let mask = load_operand(builder, &args[1], ctx.var_map);
+            builder.ins().call(func_ref, &[class_id, mask]);
+
+            // Void return — store a dummy value
+            let zero = builder.ins().iconst(cltypes::I64, 0);
+            let dest_var = *ctx
+                .var_map
+                .get(&dest)
+                .expect("internal error: local not in var_map - codegen bug");
+            builder.def_var(dest_var, zero);
+        }
         mir::RuntimeFunc::IsSubclass => {
             // rt_issubclass(child_tag: i64, parent_tag: i64) -> i8
             let mut sig = ctx.module.make_signature();

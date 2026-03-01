@@ -211,21 +211,29 @@ pub struct TupleObj {
     pub data: [*mut Obj; 0], // Flexible array member
 }
 
-/// Dictionary entry (for open-addressing hash table)
+/// Dictionary entry (stored in insertion-order dense array)
 #[repr(C)]
 pub struct DictEntry {
     pub hash: u64,
-    pub key: *mut Obj, // null = empty slot, 1 = tombstone
+    pub key: *mut Obj, // null = deleted entry
     pub value: *mut Obj,
 }
 
-/// Dictionary object (hash table with open addressing)
+/// Dictionary object (compact hash table preserving insertion order)
+///
+/// Uses CPython 3.6+ compact dict design:
+/// - `indices`: hash index table mapping hash slots to entry indices
+///   (-1 = empty, -2 = dummy/deleted, >= 0 = index into entries)
+/// - `entries`: dense array of DictEntry in insertion order
 #[repr(C)]
 pub struct DictObj {
     pub header: ObjHeader,
-    pub len: usize,      // Number of active entries
-    pub capacity: usize, // Total slots in entries array
-    pub entries: *mut DictEntry,
+    pub len: usize,              // Number of active (non-deleted) entries
+    pub indices: *mut i64,       // Hash index table
+    pub indices_capacity: usize, // Size of indices table (power of 2)
+    pub entries: *mut DictEntry, // Dense entries array (insertion order)
+    pub entries_len: usize,      // Number of entries including deleted
+    pub entries_capacity: usize, // Allocated capacity of entries array
 }
 
 /// Set entry (for open-addressing hash table)

@@ -446,6 +446,7 @@ impl<'a> Lowering<'a> {
             Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
             Type::Tuple(_) => Type::Any,
             Type::Dict(key, _) => (**key).clone(),
+            Type::Set(elem) => (**elem).clone(),
             Type::Str => Type::Str,
             _ => Type::Any,
         };
@@ -459,6 +460,9 @@ impl<'a> Lowering<'a> {
             .map(|kf| Self::elem_tag_for_key_func(kf, &elem_type))
             .unwrap_or(0);
 
+        // Compute elem_tag for Set/Dict sorted result before elem_type is moved
+        let result_elem_tag = Self::elem_tag_for_type(&elem_type);
+
         // Create result local with List type (sorted always returns a list)
         let result_local = self.alloc_and_add_local(Type::List(Box::new(elem_type)), mir_func);
 
@@ -468,6 +472,7 @@ impl<'a> Lowering<'a> {
             Type::Tuple(_) => mir::SortableKind::Tuple,
             Type::Dict(_, _) => mir::SortableKind::Dict,
             Type::Str => mir::SortableKind::Str,
+            Type::Set(_) => mir::SortableKind::Set,
             _ => mir::SortableKind::List,
         };
 
@@ -491,13 +496,24 @@ impl<'a> Lowering<'a> {
             });
         } else {
             // No key function - use standard sorted
+            // Set/Dict sorted need elem_tag to produce correctly-typed result lists
+            let args = if matches!(source, mir::SortableKind::Set | mir::SortableKind::Dict) {
+                vec![
+                    arg_operand,
+                    sort_kwargs.reverse,
+                    mir::Operand::Constant(mir::Constant::Int(result_elem_tag)),
+                ]
+            } else {
+                vec![arg_operand, sort_kwargs.reverse]
+            };
+
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
                 func: mir::RuntimeFunc::Sorted {
                     source,
                     has_key: false,
                 },
-                args: vec![arg_operand, sort_kwargs.reverse],
+                args,
             });
         }
 

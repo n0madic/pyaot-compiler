@@ -192,6 +192,14 @@ impl AstToHir {
                     }
                 }
                 py::Stmt::Assign(assign) => {
+                    // Skip __slots__ assignments (CPython memory optimization, not needed in AOT)
+                    if assign.targets.len() == 1 {
+                        if let py::Expr::Name(name) = &assign.targets[0] {
+                            if name.id.as_str() == "__slots__" {
+                                continue;
+                            }
+                        }
+                    }
                     // Class attribute definition: x = value
                     if assign.targets.len() == 1 {
                         if let py::Expr::Name(name) = &assign.targets[0] {

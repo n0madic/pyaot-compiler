@@ -109,10 +109,12 @@ pub fn compile_dict_call(
             compile_container_copy(builder, "rt_dict_copy", &args[0], dest, ctx)?;
         }
         mir::RuntimeFunc::DictKeys => {
-            compile_container_copy(builder, "rt_dict_keys", &args[0], dest, ctx)?;
+            // rt_dict_keys(dict: *mut Obj, elem_tag: u8) -> *mut Obj
+            compile_dict_keys_values(builder, "rt_dict_keys", &args[0], &args[1], dest, ctx)?;
         }
         mir::RuntimeFunc::DictValues => {
-            compile_container_copy(builder, "rt_dict_values", &args[0], dest, ctx)?;
+            // rt_dict_values(dict: *mut Obj, elem_tag: u8) -> *mut Obj
+            compile_dict_keys_values(builder, "rt_dict_values", &args[0], &args[1], dest, ctx)?;
         }
         mir::RuntimeFunc::DictItems => {
             compile_container_copy(builder, "rt_dict_items", &args[0], dest, ctx)?;
@@ -228,5 +230,40 @@ pub fn compile_dict_call(
         _ => unreachable!("Non-dict function passed to compile_dict_call"),
     }
 
+    Ok(())
+}
+
+/// Compile rt_dict_keys/rt_dict_values calls with elem_tag parameter.
+/// Signature: fn(dict: *mut Obj, elem_tag: u8) -> *mut Obj
+fn compile_dict_keys_values(
+    builder: &mut FunctionBuilder,
+    func_name: &str,
+    dict_arg: &Operand,
+    elem_tag_arg: &Operand,
+    dest: LocalId,
+    ctx: &mut CodegenContext,
+) -> Result<()> {
+    let mut sig = ctx.module.make_signature();
+    sig.call_conv = CallConv::SystemV;
+    sig.params.push(AbiParam::new(cltypes::I64)); // dict: *mut Obj
+    sig.params.push(AbiParam::new(cltypes::I8)); // elem_tag: u8
+    sig.returns.push(AbiParam::new(cltypes::I64)); // -> *mut Obj
+
+    let func_id = declare_runtime_function(ctx.module, func_name, &sig)?;
+    let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+
+    let dict_val = load_operand(builder, dict_arg, ctx.var_map);
+    let elem_tag_i64 = load_operand(builder, elem_tag_arg, ctx.var_map);
+    let elem_tag = builder.ins().ireduce(cltypes::I8, elem_tag_i64);
+    let call_inst = builder.ins().call(func_ref, &[dict_val, elem_tag]);
+
+    let result_val = builder.inst_results(call_inst)[0];
+    let dest_var = *ctx
+        .var_map
+        .get(&dest)
+        .expect("internal error: dest local not in var_map - codegen bug");
+    builder.def_var(dest_var, result_val);
+
+    update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
     Ok(())
 }

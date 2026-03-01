@@ -184,18 +184,21 @@ pub enum SortableKind {
     Dict,
     /// String container (sorts characters)
     Str,
+    /// Set container (sorts elements)
+    Set,
     /// Range (requires start, stop, step args; no key function support)
     Range,
 }
 
 impl SortableKind {
-    /// Runtime function name part: "list", "tuple", "dict", "str", "range"
+    /// Runtime function name part: "list", "tuple", "dict", "str", "set", "range"
     pub fn name(&self) -> &'static str {
         match self {
             SortableKind::List => "list",
             SortableKind::Tuple => "tuple",
             SortableKind::Dict => "dict",
             SortableKind::Str => "str",
+            SortableKind::Set => "set",
             SortableKind::Range => "range",
         }
     }

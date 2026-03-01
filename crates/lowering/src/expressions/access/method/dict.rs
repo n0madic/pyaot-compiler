@@ -148,11 +148,15 @@ impl<'a> Lowering<'a> {
             "keys" => {
                 // .keys() - returns list of keys
                 let result_local = self.alloc_and_add_local(Type::List(key_ty.clone()), mir_func);
+                let key_elem_tag = Self::elem_tag_for_type(&key_ty);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::DictKeys,
-                    args: vec![obj_operand],
+                    args: vec![
+                        obj_operand,
+                        mir::Operand::Constant(mir::Constant::Int(key_elem_tag)),
+                    ],
                 });
 
                 Ok(mir::Operand::Local(result_local))
@@ -160,11 +164,15 @@ impl<'a> Lowering<'a> {
             "values" => {
                 // .values() - returns list of values
                 let result_local = self.alloc_and_add_local(Type::List(value_ty.clone()), mir_func);
+                let value_elem_tag = Self::elem_tag_for_type(&value_ty);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::DictValues,
-                    args: vec![obj_operand],
+                    args: vec![
+                        obj_operand,
+                        mir::Operand::Constant(mir::Constant::Int(value_elem_tag)),
+                    ],
                 });
 
                 Ok(mir::Operand::Local(result_local))
