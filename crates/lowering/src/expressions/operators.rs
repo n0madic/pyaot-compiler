@@ -1107,9 +1107,15 @@ impl<'a> Lowering<'a> {
         // Allocate result local
         let result_local = self.alloc_typed_local(mir_func, result_ty);
 
-        // Evaluate condition
+        // Evaluate condition and convert to bool if needed
         let cond_expr = &hir_module.exprs[cond];
+        let cond_type = self.get_expr_type(cond_expr, hir_module);
         let cond_op = self.lower_expr(cond_expr, hir_module, mir_func)?;
+        let final_cond_op = if matches!(cond_type, Type::Bool) {
+            cond_op
+        } else {
+            self.convert_to_bool(cond_op, &cond_type, mir_func)
+        };
 
         // Create blocks for branches
         let then_bb = self.new_block();
@@ -1122,7 +1128,7 @@ impl<'a> Lowering<'a> {
 
         // Branch based on condition
         self.current_block_mut().terminator = mir::Terminator::Branch {
-            cond: cond_op,
+            cond: final_cond_op,
             then_block: then_id,
             else_block: else_id,
         };

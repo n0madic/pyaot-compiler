@@ -160,6 +160,10 @@ impl InlineRemapper {
                 dest: self.remap_local(*dest),
                 src: self.remap_operand(src),
             },
+            InstructionKind::IntBitsToFloat { dest, src } => InstructionKind::IntBitsToFloat {
+                dest: self.remap_local(*dest),
+                src: self.remap_operand(src),
+            },
             InstructionKind::FloatAbs { dest, src } => InstructionKind::FloatAbs {
                 dest: self.remap_local(*dest),
                 src: self.remap_operand(src),

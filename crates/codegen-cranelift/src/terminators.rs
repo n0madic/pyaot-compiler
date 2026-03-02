@@ -63,6 +63,13 @@ pub fn compile_terminator(
                             (cltypes::I8, cltypes::I64) => {
                                 builder.ins().uextend(cltypes::I64, ret_val)
                             }
+                            // f64 to i64 - bitcast (resume functions return i64 but field
+                            // loads may produce f64; bits are preserved for boxing/unboxing)
+                            (cltypes::F64, cltypes::I64) => builder.ins().bitcast(
+                                cltypes::I64,
+                                cranelift_codegen::ir::MemFlags::new(),
+                                ret_val,
+                            ),
                             // Other cases - return as-is
                             _ => ret_val,
                         }

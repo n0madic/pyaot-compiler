@@ -1386,4 +1386,16 @@ print("Same factory with different args passed")
 
 print("All decorator factory tests passed!")
 
+# === Lambda default parameters ===
+lambda_with_default = lambda x, y=10: x + y
+assert lambda_with_default(5) == 15, f"lambda default: expected 15, got {lambda_with_default(5)}"
+assert lambda_with_default(5, 20) == 25, f"lambda override: expected 25, got {lambda_with_default(5, 20)}"
+
+lambda_multi_defaults = lambda a, b=2, c=3: a + b + c
+assert lambda_multi_defaults(1) == 6, "lambda multi defaults: 1+2+3=6"
+assert lambda_multi_defaults(1, 10) == 14, "lambda multi defaults: 1+10+3=14"
+assert lambda_multi_defaults(1, 10, 100) == 111, "lambda multi defaults: 1+10+100=111"
+
+print("Lambda default parameter tests passed!")
+
 print("All function tests passed!")

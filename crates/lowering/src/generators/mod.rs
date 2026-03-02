@@ -29,6 +29,7 @@ use pyaot_types::Type;
 use pyaot_utils::VarId;
 
 use crate::context::Lowering;
+use crate::utils::get_iterable_info;
 use vars::collect_generator_vars;
 
 /// Information about a while-loop generator pattern
@@ -140,6 +141,65 @@ impl<'a> Lowering<'a> {
         Ok(yield_value)
     }
 
+    /// Infer the element type yielded by a generator function.
+    ///
+    /// For the simple for-loop pattern `for x in iterable: yield x` (where the yield
+    /// expression is exactly the loop variable), the element type is the element type
+    /// of the iterable. For attribute access patterns like `yield v.field` where `v`
+    /// is the loop variable and the iterable element is a class instance, the field
+    /// type is resolved from the class definition.
+    ///
+    /// Falls back to `Type::Any` for patterns we cannot statically infer.
+    fn infer_generator_yield_type(&self, func: &hir::Function, hir_module: &hir::Module) -> Type {
+        // Try to detect the for-loop generator pattern
+        if let Some(for_gen) = self.detect_for_loop_generator(&func.body, hir_module) {
+            // First compute the iterable element type; we need it for attribute resolution.
+            let iter_expr = &hir_module.exprs[for_gen.iter_expr];
+            let iter_type = self.get_expr_type(iter_expr, hir_module);
+            let elem_ty = get_iterable_info(&iter_type).map(|(_kind, ty)| ty);
+
+            if let Some(yield_eid) = for_gen.yield_expr {
+                let yield_expr = &hir_module.exprs[yield_eid];
+
+                // Fast path: try direct type inference from the expression.
+                // Works when `v` is already registered in var_types (e.g. simple `yield v`
+                // where the loop variable has a known type annotation on the for-stmt).
+                let yield_ty = self.get_expr_type(yield_expr, hir_module);
+                if yield_ty != Type::Any {
+                    return yield_ty;
+                }
+
+                // Slow path: the yield expression is `v.attr` where `v` is the loop
+                // variable.  `get_expr_type` returned Any because the loop variable is
+                // not yet registered in var_types at inference time.  Resolve the
+                // attribute type by looking it up in the element class's field_types.
+                if let hir::ExprKind::Attribute { obj, attr } = &yield_expr.kind {
+                    let obj_expr = &hir_module.exprs[*obj];
+                    if let hir::ExprKind::Var(var_id) = &obj_expr.kind {
+                        if *var_id == for_gen.target_var {
+                            if let Some(Type::Class { class_id, .. }) = &elem_ty {
+                                if let Some(class_info) = self.get_class_info(class_id) {
+                                    if let Some(field_ty) = class_info.field_types.get(attr) {
+                                        return field_ty.clone();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fallback: return the raw iterable element type (handles `yield v` pattern
+            // when direct inference above returned Any for some reason).
+            if let Some(ty) = elem_ty {
+                if ty != Type::Any {
+                    return ty;
+                }
+            }
+        }
+        Type::Any
+    }
+
     /// Lower a generator function
     /// This creates:
     /// 1. A creator function that allocates and returns a generator object
@@ -153,8 +213,14 @@ impl<'a> Lowering<'a> {
         let gen_vars = collect_generator_vars(func, hir_module);
         let num_locals = gen_vars.len() as u32 + 5; // Variables + some extra for sent values etc.
 
+        // Infer the yield element type for the generator's return type.
+        // For simple for-loop generators (e.g. `v for v in list[float]`), this
+        // propagates the concrete element type so callers like min()/max() can
+        // emit correct float comparisons instead of defaulting to integer ops.
+        let yield_elem_type = self.infer_generator_yield_type(func, hir_module);
+
         // Store the return type for later lookup when calling this generator
-        let return_type = Type::Iterator(Box::new(Type::Any));
+        let return_type = Type::Iterator(Box::new(yield_elem_type));
         self.insert_func_return_type(func.id, return_type);
 
         // 1. Create the creator function (saves parameters to generator)

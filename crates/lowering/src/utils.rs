@@ -74,6 +74,8 @@ pub(crate) enum IterableKind {
     Bytes,
     /// Iterate using iterator protocol (for generators)
     Iterator,
+    /// Iterate over file lines (readlines then iterate)
+    File,
 }
 
 /// Try to determine if an expression is an iterable and extract its kind and element type.
@@ -109,6 +111,10 @@ pub(crate) fn get_iterable_info(ty: &Type) -> Option<(IterableKind, Type)> {
         Type::Iterator(elem_ty) => {
             // Iterating over an iterator/generator yields its element type
             Some((IterableKind::Iterator, (**elem_ty).clone()))
+        }
+        Type::File => {
+            // Iterating over a file yields lines as strings
+            Some((IterableKind::File, Type::Str))
         }
         _ => None,
     }

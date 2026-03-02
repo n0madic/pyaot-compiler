@@ -388,11 +388,41 @@ impl AstToHir {
                             if let Some(RegistryItem::Function(func_def)) =
                                 stdlib::get_item(module, func_name)
                             {
-                                // Pass definition reference (Single Source of Truth)
-                                let mut args = Vec::new();
-                                for arg in call.args.clone() {
-                                    args.push(self.convert_expr(arg)?);
+                                // Map positional and keyword args to parameter slots
+                                let mut arg_slots: Vec<Option<ExprId>> =
+                                    vec![None; func_def.params.len()];
+
+                                // Fill from positional args
+                                for (i, arg) in call.args.iter().enumerate() {
+                                    if i < func_def.params.len() {
+                                        arg_slots[i] = Some(self.convert_expr((*arg).clone())?);
+                                    }
                                 }
+
+                                // Map keyword args to positions by matching param names
+                                for kw in &call.keywords {
+                                    if let Some(ref kw_name) = kw.arg {
+                                        if let Some(pos) = func_def
+                                            .params
+                                            .iter()
+                                            .position(|p| p.name == kw_name.as_str())
+                                        {
+                                            arg_slots[pos] =
+                                                Some(self.convert_expr(kw.value.clone())?);
+                                        }
+                                    }
+                                }
+
+                                // Collect contiguous args (lowering handles trailing defaults)
+                                let mut args = Vec::new();
+                                for slot in &arg_slots {
+                                    if let Some(expr_id) = slot {
+                                        args.push(*expr_id);
+                                    } else {
+                                        break;
+                                    }
+                                }
+
                                 return Ok(self.module.exprs.alloc(Expr {
                                     kind: ExprKind::StdlibCall {
                                         func: func_def,

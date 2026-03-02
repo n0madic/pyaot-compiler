@@ -79,9 +79,9 @@ Native Executable
 
 | Feature | Status | Limitations |
 |---------|--------|-------------|
-| if/elif/else | ✅ | |
+| if/elif/else | ✅ | Implicit truthiness for all types (int, str, list, dict, set, etc.) |
 | while | ✅ | |
-| for | ✅ | range, iterables, unpacking with starred expressions |
+| for | ✅ | range, iterables (list/tuple/dict/str/set/bytes/file), unpacking with starred expressions |
 | for...else / while...else | ✅ | else block runs when loop completes without break |
 | break/continue | ✅ | |
 | try/except/else/finally | ✅ | Binding gets message string, not exception object |
@@ -105,7 +105,7 @@ Native Executable
 | **kwargs unpacking (call-site) | ✅ | Compile-time literals: `f(**{"a":1,"b":2})` |
 | Runtime unpacking | ✅ | Tuple/list variables: `f(*args_tuple)`, dict variables: `f(**kwargs_dict)` |
 | Keyword-only parameters | ✅ | With defaults and bare * syntax |
-| Lambda | ✅ | Read-only captures |
+| Lambda | ✅ | Read-only captures; default parameters supported |
 | Nested functions | ✅ | |
 | nonlocal | ✅ | Cell-based storage |
 | global | ✅ | All types supported |
@@ -148,7 +148,7 @@ Native Executable
 | functools.reduce() | ✅ | Supports initial value and closures with captures |
 | format() | ✅ | Format specs: d, b, o, x, X, f, e, g, width, fill, alignment |
 | reversed(), sorted() | ✅ | sorted() supports key= (incl. builtins like abs) and reverse= |
-| min(), max(), sum() | ✅ | |
+| min(), max(), sum() | ✅ | Supports lists, tuples, sets, ranges, and iterators/generators |
 | abs(), pow(), round() | ✅ | |
 | hash(), id() | ✅ | |
 | isinstance() | ✅ | |
@@ -231,6 +231,8 @@ Native Executable
 | functools | reduce |
 | itertools | chain, islice (with for-loop and next(); both import styles) |
 | io | StringIO (write, read, readline, getvalue, seek, tell, close, truncate), BytesIO (write, read, readline, getvalue, seek, tell, close, truncate) |
+
+Stdlib function calls support **keyword arguments** mapped to parameter positions (e.g., `random.choices([1,2,3], weights=[...], k=5)`).
 
 #### Stdlib Architecture
 
@@ -1683,8 +1685,8 @@ scale = Closure(__lambda_0, [multiplier])
 
 **Limitations**:
 - Read-only captures (values copied at lambda creation time)
+- Default parameters supported (evaluated at definition time, Python semantics)
 - No nested lambdas
-- No default parameters in lambda
 - Types must be inferable from body expression
 
 ### Nested Functions

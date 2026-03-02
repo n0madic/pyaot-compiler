@@ -32,17 +32,33 @@ impl AstToHir {
                 }
             });
 
-        // 3. Generate unique function name
+        // 3. Convert default values in the OUTER scope (Python semantics: defaults
+        // are evaluated at definition time, not call time)
+        let defaults: Vec<_> = lambda.args.defaults().collect();
+        let num_defaults = defaults.len();
+        let num_lambda_params = lambda.args.args.len();
+        let first_default_idx = num_lambda_params.saturating_sub(num_defaults);
+        let mut converted_defaults: Vec<Option<ExprId>> = Vec::new();
+        for i in 0..num_lambda_params {
+            if i >= first_default_idx {
+                let default_idx = i - first_default_idx;
+                converted_defaults.push(Some(self.convert_expr((*defaults[default_idx]).clone())?));
+            } else {
+                converted_defaults.push(None);
+            }
+        }
+
+        // 4. Generate unique function name
         let lambda_name = format!("__lambda_{}", self.next_lambda_id);
         self.next_lambda_id += 1;
         let func_id = self.alloc_func_id();
         let func_name = self.interner.intern(&lambda_name);
 
-        // 4. Save outer scope
+        // 5. Save outer scope
         let outer_var_map = std::mem::take(&mut self.var_map);
         let outer_global_vars = std::mem::take(&mut self.global_vars);
 
-        // 4.5 Auto-propagate global variables to nested scope
+        // 5.5 Auto-propagate global variables to nested scope
         // These variables use global storage instead of being captured
         for name in &global_propagation {
             if let Some(&var_id) = outer_var_map.get(name) {
@@ -53,7 +69,7 @@ impl AstToHir {
             }
         }
 
-        // 5. Create parameters: captured vars first, then lambda params
+        // 6. Create parameters: captured vars first, then lambda params
         let mut params = Vec::new();
 
         // Add captured variables as implicit leading parameters
@@ -76,8 +92,8 @@ impl AstToHir {
             });
         }
 
-        // Add regular lambda parameters
-        for arg in lambda.args.args.iter() {
+        // Add regular lambda parameters (with defaults from outer scope)
+        for (i, arg) in lambda.args.args.iter().enumerate() {
             let param_name = self.interner.intern(&arg.def.arg);
             let param_id = self.alloc_var_id();
             self.var_map.insert(param_name, param_id);
@@ -86,22 +102,22 @@ impl AstToHir {
                 name: param_name,
                 var: param_id,
                 ty: None, // Type inferred during lowering
-                default: None,
+                default: converted_defaults[i],
                 kind: ParamKind::Regular,
                 span: lambda_span,
             });
         }
 
-        // 6. Convert lambda body expression
+        // 7. Convert lambda body expression
         let body_expr = self.convert_expr(*lambda.body)?;
 
-        // 7. Create return statement
+        // 8. Create return statement
         let return_stmt = self.module.stmts.alloc(Stmt {
             kind: StmtKind::Return(Some(body_expr)),
             span: lambda_span,
         });
 
-        // 8. Create and register function
+        // 9. Create and register function
         let function = Function {
             id: func_id,
             name: func_name,
@@ -118,11 +134,11 @@ impl AstToHir {
         self.module.functions.push(func_id);
         self.module.func_defs.insert(func_id, function);
 
-        // 9. Restore scope
+        // 10. Restore scope
         self.global_vars = outer_global_vars;
         self.var_map = outer_var_map;
 
-        // 10. Create capture expressions (references to outer variables)
+        // 11. Create capture expressions (references to outer variables)
         let captures: Vec<ExprId> = captured_vars
             .iter()
             .map(|name| {
@@ -138,7 +154,7 @@ impl AstToHir {
             })
             .collect();
 
-        // 11. Return Closure or FuncRef expression
+        // 12. Return Closure or FuncRef expression
         let expr_kind = if captures.is_empty() {
             ExprKind::FuncRef(func_id)
         } else {

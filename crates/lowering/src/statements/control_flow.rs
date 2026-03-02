@@ -260,38 +260,21 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Emit a call to rt_is_truthy if the condition type requires runtime truthiness dispatch.
+    /// Convert a condition to boolean for use in if/while branch conditions.
     ///
-    /// Union types and Any types are stored as pointers (i64), but the Branch terminator
-    /// expects a boolean (i8). When the condition is a bare Union-typed variable like
-    /// `if x:` where `x: int | None`, we need to call `rt_is_truthy(x)` to convert it.
-    ///
-    /// This function returns the original operand unchanged if the type is already a boolean,
-    /// or emits a runtime call and returns the result operand if conversion is needed.
+    /// Delegates to `convert_to_bool()` which handles all types correctly:
+    /// Bool → as-is, Int → !=0, Float → !=0.0, Str/List/Dict/Tuple/Set → len>0,
+    /// None → false, Union/Any → rt_is_truthy().
     fn emit_truthiness_conversion_if_needed(
         &mut self,
         cond_operand: mir::Operand,
         cond_type: &Type,
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
-        // Check if the condition type needs runtime truthiness conversion
-        // Union types and Any types are stored as pointers and need runtime dispatch
-        let needs_conversion = matches!(cond_type, Type::Union(_) | Type::Any);
-
-        if needs_conversion {
-            // Create a temporary local for the boolean result
-            let bool_local = self.alloc_and_add_local(Type::Bool, mir_func);
-
-            // Emit the runtime call: rt_is_truthy(cond) -> i8
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: bool_local,
-                func: mir::RuntimeFunc::IsTruthy,
-                args: vec![cond_operand],
-            });
-
-            mir::Operand::Local(bool_local)
-        } else {
+        if matches!(cond_type, Type::Bool) {
             cond_operand
+        } else {
+            self.convert_to_bool(cond_operand, cond_type, mir_func)
         }
     }
 }

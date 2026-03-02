@@ -71,11 +71,26 @@ with open("/tmp/test_aot_file3.txt", "r") as f:
     content = f.read()
 assert content.find("context manager") >= 0, "content.find(\"context manager\") should be greater than = 0"
 
-# Test 10: Clean up temporary files with os.remove
+# Test 10: File iteration (for line in file)
+iter_file = open("/tmp/test_aot_iter_file.txt", "w")
+iter_file.write("alpha\nbeta\ngamma\n")
+iter_file.close()
+
+iter_file_lines: list[str] = []
+for iter_file_line in open("/tmp/test_aot_iter_file.txt", "r"):
+    iter_file_lines.append(iter_file_line.strip())
+assert len(iter_file_lines) == 3, f"file iter: expected 3 lines, got {len(iter_file_lines)}"
+assert iter_file_lines[0] == "alpha", f"file iter[0]: expected alpha, got {iter_file_lines[0]}"
+assert iter_file_lines[1] == "beta", f"file iter[1]: expected beta, got {iter_file_lines[1]}"
+assert iter_file_lines[2] == "gamma", f"file iter[2]: expected gamma, got {iter_file_lines[2]}"
+print("File iteration tests passed!")
+
+# Test 11: Clean up temporary files with os.remove
 import os
 
 os.remove("/tmp/test_aot_file.txt")
 os.remove("/tmp/test_aot_file2.txt")
 os.remove("/tmp/test_aot_file3.txt")
+os.remove("/tmp/test_aot_iter_file.txt")
 
 print("All file I/O tests passed!")

@@ -158,32 +158,32 @@ fn apply_padding(s: &str, spec: &FormatSpec) -> String {
     match align {
         '<' => {
             // Left align
-            let fill_str: String = std::iter::repeat(fill).take(pad).collect();
+            let fill_str: String = std::iter::repeat_n(fill, pad).collect();
             format!("{}{}", s, fill_str)
         }
         '>' => {
             // Right align
-            let fill_str: String = std::iter::repeat(fill).take(pad).collect();
+            let fill_str: String = std::iter::repeat_n(fill, pad).collect();
             format!("{}{}", fill_str, s)
         }
         '^' => {
             // Center
             let left = pad / 2;
             let right = pad - left;
-            let l: String = std::iter::repeat(fill).take(left).collect();
-            let r: String = std::iter::repeat(fill).take(right).collect();
+            let l: String = std::iter::repeat_n(fill, left).collect();
+            let r: String = std::iter::repeat_n(fill, right).collect();
             format!("{}{}{}", l, s, r)
         }
         '=' => {
             // Pad after sign
             if let Some(first_char) = s.chars().next() {
                 if matches!(first_char, '+' | '-' | ' ') {
-                    let fill_str: String = std::iter::repeat(fill).take(pad).collect();
+                    let fill_str: String = std::iter::repeat_n(fill, pad).collect();
                     let rest: String = s.chars().skip(1).collect();
                     format!("{}{}{}", first_char, fill_str, rest)
                 } else {
                     // No sign, treat as right-align
-                    let fill_str: String = std::iter::repeat(fill).take(pad).collect();
+                    let fill_str: String = std::iter::repeat_n(fill, pad).collect();
                     format!("{}{}", fill_str, s)
                 }
             } else {
@@ -192,7 +192,7 @@ fn apply_padding(s: &str, spec: &FormatSpec) -> String {
         }
         _ => {
             // Default to right-align
-            let fill_str: String = std::iter::repeat(fill).take(pad).collect();
+            let fill_str: String = std::iter::repeat_n(fill, pad).collect();
             format!("{}{}", fill_str, s)
         }
     }
@@ -246,8 +246,8 @@ fn format_int(value: i64, spec: &FormatSpec) -> Result<String, String> {
         }
         'c' => {
             // Character
-            if value < 0 || value > 0x10FFFF {
-                return Err(format!("%c requires int in range(0x110000)"));
+            if !(0..=0x10FFFF).contains(&value) {
+                return Err("%c requires int in range(0x110000)".to_string());
             }
             if let Some(ch) = char::from_u32(value as u32) {
                 return Ok(ch.to_string()); // No padding for character

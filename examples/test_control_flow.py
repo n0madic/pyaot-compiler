@@ -634,4 +634,38 @@ assert multi_s2 == "hello", "multiple assignment string s2 failed"
 
 print("Multiple assignment tests passed!")
 
+# === Implicit truthiness in if/while ===
+
+# String truthiness
+truthiness_str_full: str = "hello"
+truthiness_str_empty: str = ""
+assert ("yes" if truthiness_str_full else "no") == "yes", "non-empty string should be truthy"
+assert ("yes" if truthiness_str_empty else "no") == "no", "empty string should be falsy"
+
+# List truthiness
+truthiness_list_full: list[int] = [1, 2, 3]
+truthiness_list_empty: list[int] = []
+assert ("yes" if truthiness_list_full else "no") == "yes", "non-empty list should be truthy"
+assert ("yes" if truthiness_list_empty else "no") == "no", "empty list should be falsy"
+
+# Dict truthiness
+truthiness_dict_full: dict[str, int] = {"a": 1}
+truthiness_dict_empty: dict[str, int] = {}
+assert ("yes" if truthiness_dict_full else "no") == "yes", "non-empty dict should be truthy"
+assert ("yes" if truthiness_dict_empty else "no") == "no", "empty dict should be falsy"
+
+# Int truthiness
+assert ("yes" if 42 else "no") == "yes", "non-zero int should be truthy"
+assert ("yes" if 0 else "no") == "no", "zero int should be falsy"
+
+# While with list truthiness
+truthiness_while_items: list[int] = [1, 2, 3]
+truthiness_while_count: int = 0
+while truthiness_while_items:
+    truthiness_while_items.pop()
+    truthiness_while_count = truthiness_while_count + 1
+assert truthiness_while_count == 3, f"while truthiness: expected 3, got {truthiness_while_count}"
+
+print("Implicit truthiness tests passed!")
+
 print("All control flow tests passed!")

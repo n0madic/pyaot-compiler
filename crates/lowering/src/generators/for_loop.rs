@@ -24,6 +24,7 @@ use pyaot_utils::{BlockId, LocalId, VarId};
 
 use super::{ForLoopGenerator, GeneratorVar};
 use crate::context::Lowering;
+use crate::utils::get_iterable_info;
 
 impl<'a> Lowering<'a> {
     /// Detect a for-loop generator pattern:
@@ -146,11 +147,26 @@ impl<'a> Lowering<'a> {
             var_to_mir_local.insert(gen_var.var_id, local_id);
         }
 
+        // Determine the element type of the iterable so we can correctly type the
+        // loop variable (e.g. Class { .. } when iterating over list[MyClass]).
+        // This is used when the yield expression accesses a field on the loop var.
+        let iter_expr_ty = self.get_type_of_expr_id(for_gen.iter_expr, hir_module);
+        let loop_var_elem_ty = get_iterable_info(&iter_expr_ty)
+            .map(|(_kind, ty)| ty)
+            .unwrap_or(Type::Any);
+
         // Also allocate a local for the loop variable (target_var) if not already in gen_vars
         let target_mir_local = if let Some(&existing) = var_to_mir_local.get(&for_gen.target_var) {
             existing
         } else {
-            let local_id = self.alloc_and_add_local(Type::Int, &mut mir_func);
+            // Use the element type for the local so that InstanceGetField gets the
+            // correct pointer-sized allocation (all class instances are heap pointers).
+            let local_ty = if matches!(loop_var_elem_ty, Type::Class { .. }) {
+                loop_var_elem_ty.clone()
+            } else {
+                Type::Int
+            };
+            let local_id = self.alloc_and_add_local(local_ty, &mut mir_func);
             var_to_mir_local.insert(for_gen.target_var, local_id);
             local_id
         };
@@ -483,6 +499,7 @@ impl<'a> Lowering<'a> {
                     &var_to_mir_local,
                     next_value_local,
                     for_gen.target_var,
+                    Some(&loop_var_elem_ty),
                 )?
             } else {
                 mir::Operand::Constant(mir::Constant::None)
@@ -527,6 +544,7 @@ impl<'a> Lowering<'a> {
                     &var_to_mir_local,
                     next_value_local,
                     for_gen.target_var,
+                    Some(&loop_var_elem_ty),
                 )?
             } else {
                 mir::Operand::Constant(mir::Constant::None)

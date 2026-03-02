@@ -468,6 +468,134 @@ impl<'a> Lowering<'a> {
                 return Ok(mir::Operand::Local(result_local));
             }
 
+            // Iterator/generator: use IterNextNoExc + GeneratorIsExhausted protocol
+            if let Type::Iterator(elem_ty) = &arg_type {
+                let iter_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
+                let iter_local = self.alloc_and_add_local(arg_type.clone(), mir_func);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: iter_local,
+                    src: iter_operand,
+                });
+
+                let is_float_iter = matches!(elem_ty.as_ref(), Type::Float);
+                let iter_result_type = if is_float_iter {
+                    Type::Float
+                } else {
+                    Type::Int
+                };
+                let cmp_op = if is_min {
+                    mir::BinOp::Lt
+                } else {
+                    mir::BinOp::Gt
+                };
+
+                // Get first element to initialize result.
+                // IterNextNoExc always returns a raw i64 (either an integer value or float
+                // bits). Allocate first_local as Int to match this return type.
+                let first_local = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: first_local,
+                    func: mir::RuntimeFunc::IterNextNoExc,
+                    args: vec![mir::Operand::Local(iter_local)],
+                });
+
+                let result_local = self.alloc_typed_local(mir_func, iter_result_type.clone());
+                if is_float_iter {
+                    // The iterator yields a pointer to a boxed float object (since list[float]
+                    // always uses ELEM_HEAP_OBJ storage). Unbox to get the raw f64 value.
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: result_local,
+                        func: mir::RuntimeFunc::UnboxFloat,
+                        args: vec![mir::Operand::Local(first_local)],
+                    });
+                } else {
+                    self.emit_instruction(mir::InstructionKind::Copy {
+                        dest: result_local,
+                        src: mir::Operand::Local(first_local),
+                    });
+                }
+
+                // Loop over remaining elements
+                let loop_header = self.new_block();
+                let loop_body = self.new_block();
+                let loop_exit = self.new_block();
+                let loop_header_id = loop_header.id;
+                let loop_body_id = loop_body.id;
+                let loop_exit_id = loop_exit.id;
+
+                self.current_block_mut().terminator = mir::Terminator::Goto(loop_header_id);
+
+                // Header: call next(), check exhausted
+                self.push_block(loop_header);
+                // next_local receives the raw i64 from IterNextNoExc.
+                let next_local = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: next_local,
+                    func: mir::RuntimeFunc::IterNextNoExc,
+                    args: vec![mir::Operand::Local(iter_local)],
+                });
+
+                let exhausted_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: exhausted_local,
+                    func: mir::RuntimeFunc::GeneratorIsExhausted,
+                    args: vec![mir::Operand::Local(iter_local)],
+                });
+
+                self.current_block_mut().terminator = mir::Terminator::Branch {
+                    cond: mir::Operand::Local(exhausted_local),
+                    then_block: loop_exit_id,
+                    else_block: loop_body_id,
+                };
+
+                // Body: compare and update result
+                self.push_block(loop_body);
+
+                // For float iterators, unbox the boxed float pointer from IterNextNoExc
+                // to get a raw f64 for comparison (list[float] uses ELEM_HEAP_OBJ storage,
+                // so the iterator returns a pointer to a boxed float, not raw float bits).
+                let item_operand = if is_float_iter {
+                    let float_local = self.alloc_typed_local(mir_func, Type::Float);
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: float_local,
+                        func: mir::RuntimeFunc::UnboxFloat,
+                        args: vec![mir::Operand::Local(next_local)],
+                    });
+                    mir::Operand::Local(float_local)
+                } else {
+                    mir::Operand::Local(next_local)
+                };
+
+                let cmp_local = self.alloc_typed_local(mir_func, Type::Bool);
+                self.emit_instruction(mir::InstructionKind::BinOp {
+                    dest: cmp_local,
+                    op: cmp_op,
+                    left: item_operand.clone(),
+                    right: mir::Operand::Local(result_local),
+                });
+
+                let then_bb = self.new_block();
+                let merge_bb = self.new_block();
+                self.current_block_mut().terminator = mir::Terminator::Branch {
+                    cond: mir::Operand::Local(cmp_local),
+                    then_block: then_bb.id,
+                    else_block: merge_bb.id,
+                };
+
+                self.push_block(then_bb);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: result_local,
+                    src: item_operand,
+                });
+                self.current_block_mut().terminator = mir::Terminator::Goto(merge_bb.id);
+
+                self.push_block(merge_bb);
+                self.current_block_mut().terminator = mir::Terminator::Goto(loop_header_id);
+
+                self.push_block(loop_exit);
+                return Ok(mir::Operand::Local(result_local));
+            }
+
             // For non-iterable single argument, just return it
             return self.lower_expr(arg_expr, hir_module, mir_func);
         }
@@ -565,10 +693,11 @@ impl<'a> Lowering<'a> {
         let iterable_expr = &hir_module.exprs[args[0]];
         let iterable_type = self.get_expr_type(iterable_expr, hir_module);
 
-        // Infer element type from list type annotation
+        // Infer element type from list or iterator type annotation
         let element_type = match &iterable_type {
             Type::List(elem_ty) => (**elem_ty).clone(),
-            _ => Type::Int, // fallback for non-list iterables
+            Type::Iterator(elem_ty) => (**elem_ty).clone(),
+            _ => Type::Int, // fallback for other iterables
         };
 
         // Check if start value is provided and its type
@@ -616,7 +745,81 @@ impl<'a> Lowering<'a> {
         // Lower the iterable
         let iterable_operand = self.lower_expr(iterable_expr, hir_module, mir_func)?;
 
-        // Get length
+        // Iterator path: use IterNextNoExc + GeneratorIsExhausted protocol
+        if matches!(iterable_type, Type::Iterator(_)) {
+            let iter_local = self.alloc_and_add_local(iterable_type.clone(), mir_func);
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest: iter_local,
+                src: iterable_operand,
+            });
+
+            let loop_header = self.new_block();
+            let loop_body = self.new_block();
+            let loop_exit = self.new_block();
+
+            let loop_header_id = loop_header.id;
+            let loop_body_id = loop_body.id;
+            let loop_exit_id = loop_exit.id;
+
+            self.current_block_mut().terminator = mir::Terminator::Goto(loop_header_id);
+
+            // Header: call next(), check exhausted
+            self.push_block(loop_header);
+
+            let next_local = self.alloc_and_add_local(Type::Int, mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: next_local,
+                func: mir::RuntimeFunc::IterNextNoExc,
+                args: vec![mir::Operand::Local(iter_local)],
+            });
+
+            let exhausted_local = self.alloc_and_add_local(Type::Bool, mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: exhausted_local,
+                func: mir::RuntimeFunc::GeneratorIsExhausted,
+                args: vec![mir::Operand::Local(iter_local)],
+            });
+
+            self.current_block_mut().terminator = mir::Terminator::Branch {
+                cond: mir::Operand::Local(exhausted_local),
+                then_block: loop_exit_id,
+                else_block: loop_body_id,
+            };
+
+            // Body: accumulate
+            self.push_block(loop_body);
+
+            let item_operand = if result_type == Type::Float {
+                self.promote_to_float_if_needed(
+                    mir_func,
+                    mir::Operand::Local(next_local),
+                    &element_type,
+                )
+            } else {
+                mir::Operand::Local(next_local)
+            };
+
+            let temp_result = self.alloc_typed_local(mir_func, result_type.clone());
+            self.emit_instruction(mir::InstructionKind::BinOp {
+                dest: temp_result,
+                op: mir::BinOp::Add,
+                left: mir::Operand::Local(result_local),
+                right: item_operand,
+            });
+
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest: result_local,
+                src: mir::Operand::Local(temp_result),
+            });
+
+            self.current_block_mut().terminator = mir::Terminator::Goto(loop_header_id);
+
+            self.push_block(loop_exit);
+
+            return Ok(mir::Operand::Local(result_local));
+        }
+
+        // List path: indexed iteration via ListLen + ListGet
         let len_local = self.alloc_typed_local(mir_func, Type::Int);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: len_local,

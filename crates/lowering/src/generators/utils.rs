@@ -15,8 +15,14 @@ use super::YieldInfo;
 use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
-    /// Compute a yield expression value for a generator
-    /// Handles simple vars, constants, and binary operations
+    /// Compute a yield expression value for a generator.
+    ///
+    /// Handles simple vars, constants, unary/binary operations, and attribute
+    /// access on the loop variable (e.g. `v.field` where `v` is `loop_var_id`).
+    ///
+    /// `loop_var_ty` is the type of the loop variable and is used to resolve
+    /// attribute accesses against the class's field table.  Pass `None` when the
+    /// type is not known or not needed (recursive calls).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn compute_yield_expr_for_generator(
         &mut self,
@@ -27,6 +33,7 @@ impl<'a> Lowering<'a> {
         var_to_mir_local: &HashMap<VarId, LocalId>,
         loop_var_local: LocalId,
         loop_var_id: VarId,
+        loop_var_ty: Option<&Type>,
     ) -> Result<mir::Operand> {
         match &expr.kind {
             hir::ExprKind::Int(n) => Ok(mir::Operand::Constant(mir::Constant::Int(*n))),
@@ -40,6 +47,79 @@ impl<'a> Lowering<'a> {
                     Ok(mir::Operand::Constant(mir::Constant::Int(0)))
                 }
             }
+            hir::ExprKind::Attribute { obj, attr } => {
+                // Handle `loop_var.field` by emitting InstanceGetField.
+                //
+                // The generator resume protocol requires that yielded values are
+                // raw i64 values that the caller can interpret as `*mut Obj` when
+                // the element type is a heap-boxed type, or as raw primitive bits
+                // for types that bypass boxing (Int, Bool in compact list storage).
+                //
+                // For float fields we must box the raw f64 bits into a FloatObj so
+                // that `rt_unbox_float` can properly dereference it.  For other
+                // primitive fields (Int, Bool) we return the raw i64 value directly
+                // since they are stored as compact integers in the instance.
+                // Class instance fields are already pointers and need no boxing.
+                //
+                // We only support the case where the object is the loop variable and
+                // the loop variable type is a class with a known field offset.
+                let obj_expr = &hir_module.exprs[*obj];
+                if let hir::ExprKind::Var(var_id) = &obj_expr.kind {
+                    if *var_id == loop_var_id {
+                        if let Some(Type::Class { class_id, .. }) = loop_var_ty {
+                            // Clone to drop the borrow on self so we can call &mut self methods.
+                            let class_id = *class_id;
+                            if let Some((offset, field_ty)) =
+                                self.get_class_info(&class_id).and_then(|ci| {
+                                    ci.field_offsets.get(attr).copied().map(|off| {
+                                        let ty =
+                                            ci.field_types.get(attr).cloned().unwrap_or(Type::Any);
+                                        (off, ty)
+                                    })
+                                })
+                            {
+                                // Read the raw field value (i64 bits, regardless of type).
+                                // InstanceGetField always returns i64; the codegen bitcasts to
+                                // f64 when the destination local type is Float.
+                                let raw_local =
+                                    self.alloc_and_add_local(field_ty.clone(), mir_func);
+                                block.instructions.push(mir::Instruction {
+                                    kind: mir::InstructionKind::RuntimeCall {
+                                        dest: raw_local,
+                                        func: mir::RuntimeFunc::InstanceGetField,
+                                        args: vec![
+                                            mir::Operand::Local(loop_var_local),
+                                            mir::Operand::Constant(mir::Constant::Int(
+                                                offset as i64,
+                                            )),
+                                        ],
+                                    },
+                                });
+
+                                // For float fields: box the f64 into a heap FloatObj so the
+                                // caller's UnboxFloat call can properly dereference it.
+                                // The resume protocol always passes boxed values through the
+                                // iterator's *mut Obj return slot.
+                                if matches!(field_ty, Type::Float) {
+                                    let boxed_local = self.alloc_and_add_local(Type::Str, mir_func); // Str = i64 ptr
+                                    block.instructions.push(mir::Instruction {
+                                        kind: mir::InstructionKind::RuntimeCall {
+                                            dest: boxed_local,
+                                            func: mir::RuntimeFunc::BoxFloat,
+                                            args: vec![mir::Operand::Local(raw_local)],
+                                        },
+                                    });
+                                    return Ok(mir::Operand::Local(boxed_local));
+                                }
+
+                                return Ok(mir::Operand::Local(raw_local));
+                            }
+                        }
+                    }
+                }
+                // Unsupported attribute access pattern — fall back to None
+                Ok(mir::Operand::Constant(mir::Constant::Int(0)))
+            }
             hir::ExprKind::UnOp { op, operand } => {
                 let operand_expr = &hir_module.exprs[*operand];
                 let operand_val = self.compute_yield_expr_for_generator(
@@ -50,6 +130,7 @@ impl<'a> Lowering<'a> {
                     var_to_mir_local,
                     loop_var_local,
                     loop_var_id,
+                    loop_var_ty,
                 )?;
 
                 match op {
@@ -95,6 +176,7 @@ impl<'a> Lowering<'a> {
                     var_to_mir_local,
                     loop_var_local,
                     loop_var_id,
+                    loop_var_ty,
                 )?;
 
                 let right_op = self.compute_yield_expr_for_generator(
@@ -105,6 +187,7 @@ impl<'a> Lowering<'a> {
                     var_to_mir_local,
                     loop_var_local,
                     loop_var_id,
+                    loop_var_ty,
                 )?;
 
                 // Allocate result local

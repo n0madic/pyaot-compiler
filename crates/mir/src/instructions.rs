@@ -104,6 +104,9 @@ pub enum InstructionKind {
     IntToFloat { dest: LocalId, src: Operand },
     /// Get float bits as int (bitcast f64 to i64)
     FloatBits { dest: LocalId, src: Operand },
+    /// Reinterpret raw int bits as float (bitcast i64 to f64)
+    /// Used when an iterator yields float values encoded as raw i64 bits.
+    IntBitsToFloat { dest: LocalId, src: Operand },
 
     // ==================== Math instructions ====================
     /// Absolute value of float: abs(x)

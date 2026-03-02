@@ -375,6 +375,7 @@ impl MirMerger {
             | InstructionKind::BoolToInt { src, .. }
             | InstructionKind::IntToFloat { src, .. }
             | InstructionKind::FloatBits { src, .. }
+            | InstructionKind::IntBitsToFloat { src, .. }
             | InstructionKind::FloatAbs { src, .. } => {
                 Self::remap_operand_strings(src, remap);
             }

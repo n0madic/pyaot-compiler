@@ -970,12 +970,10 @@ pub extern "C" fn rt_set_intersection_update(set: *mut Obj, other: *mut Obj) {
         for i in 0..capacity {
             let entry = (*set_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                if rt_set_contains(other, elem) == 0 {
-                    // Not in other, remove from set
-                    (*entry).elem = TOMBSTONE;
-                    (*set_obj).len -= 1;
-                }
+            if !elem.is_null() && elem != TOMBSTONE && rt_set_contains(other, elem) == 0 {
+                // Not in other, remove from set
+                (*entry).elem = TOMBSTONE;
+                (*set_obj).len -= 1;
             }
         }
     }
@@ -999,12 +997,10 @@ pub extern "C" fn rt_set_difference_update(set: *mut Obj, other: *mut Obj) {
         for i in 0..capacity {
             let entry = (*set_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                if rt_set_contains(other, elem) != 0 {
-                    // In other, remove from set
-                    (*entry).elem = TOMBSTONE;
-                    (*set_obj).len -= 1;
-                }
+            if !elem.is_null() && elem != TOMBSTONE && rt_set_contains(other, elem) != 0 {
+                // In other, remove from set
+                (*entry).elem = TOMBSTONE;
+                (*set_obj).len -= 1;
             }
         }
     }
@@ -1033,10 +1029,8 @@ pub extern "C" fn rt_set_symmetric_difference_update(set: *mut Obj, other: *mut 
         for i in 0..other_capacity {
             let entry = (*other_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                if rt_set_contains(set, elem) == 0 {
-                    to_add.push(elem);
-                }
+            if !elem.is_null() && elem != TOMBSTONE && rt_set_contains(set, elem) == 0 {
+                to_add.push(elem);
             }
         }
 
@@ -1046,11 +1040,9 @@ pub extern "C" fn rt_set_symmetric_difference_update(set: *mut Obj, other: *mut 
         for i in 0..capacity {
             let entry = (*set_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                if rt_set_contains(other, elem) != 0 {
-                    (*entry).elem = TOMBSTONE;
-                    (*set_obj).len -= 1;
-                }
+            if !elem.is_null() && elem != TOMBSTONE && rt_set_contains(other, elem) != 0 {
+                (*entry).elem = TOMBSTONE;
+                (*set_obj).len -= 1;
             }
         }
 

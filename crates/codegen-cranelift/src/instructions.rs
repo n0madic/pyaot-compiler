@@ -600,6 +600,23 @@ pub fn compile_instruction(
             update_gc_root_if_needed(builder, dest, result, ctx.gc_frame_data);
         }
 
+        mir::InstructionKind::IntBitsToFloat { dest, src } => {
+            let src_val = load_operand(builder, src, ctx.var_map);
+            // bitcast: reinterpret i64 bits as f64
+            // Used when iterators yield float values encoded as raw i64 bits.
+            let result = builder.ins().bitcast(
+                cltypes::F64,
+                cranelift_codegen::ir::MemFlags::new(),
+                src_val,
+            );
+            let var = *ctx
+                .var_map
+                .get(dest)
+                .expect("internal error: local not in var_map - codegen bug");
+            builder.def_var(var, result);
+            update_gc_root_if_needed(builder, dest, result, ctx.gc_frame_data);
+        }
+
         _ => {
             // Skip unsupported instructions for now
         }

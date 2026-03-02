@@ -400,7 +400,7 @@ impl<'a> Lowering<'a> {
             IterableKind::Tuple => mir::RuntimeFunc::TupleGet,
             IterableKind::Str => mir::RuntimeFunc::StrGetChar,
             IterableKind::Bytes => mir::RuntimeFunc::BytesGet,
-            IterableKind::Iterator => unreachable!(),
+            IterableKind::Iterator | IterableKind::File => unreachable!(),
         };
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {

@@ -1309,5 +1309,21 @@ print("")
 print("  - Functional: map(), filter(), functools.reduce()")
 print("  - Collection constructors: list(), tuple(), dict()")
 print("  - Formatting: format()")
+# === sum/min/max on iterators/generators ===
+iter_sum_result: int = sum(x for x in [1, 2, 3])
+assert iter_sum_result == 6, f"sum(gen): expected 6, got {iter_sum_result}"
+
+iter_sum_doubled: int = sum(x * 2 for x in [0, 1, 2, 3])
+assert iter_sum_doubled == 12, f"sum(x*2 for list): expected 12, got {iter_sum_doubled}"
+
+iter_min_result: int = min(x for x in [3, 1, 2])
+assert iter_min_result == 1, f"min(gen): expected 1, got {iter_min_result}"
+
+iter_max_result: int = max(x for x in [3, 1, 2])
+assert iter_max_result == 3, f"max(gen): expected 3, got {iter_max_result}"
+
+print("sum/min/max on iterators passed!")
+
 print("  - min/max with iterables: tuple, range, set")
+print("  - sum/min/max with iterators/generators")
 print("Note: print(), len(), range() tested in other files")

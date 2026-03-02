@@ -237,4 +237,10 @@ for i in range(3):
 
 print("random.choices() passed")
 
+# === Stdlib keyword arguments ===
+random.seed(42)
+kwargs_result: list[int] = random.choices([1, 2, 3], weights=[10.0, 1.0, 1.0], k=5)
+assert len(kwargs_result) == 5, f"kwargs choices: expected 5, got {len(kwargs_result)}"
+print("Stdlib keyword arguments passed!")
+
 print("All random tests passed!")

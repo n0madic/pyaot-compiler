@@ -1080,7 +1080,7 @@ pub extern "C" fn rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64 {
                 (base as u32, trimmed_str)
             };
 
-            if actual_base < 2 || actual_base > 36 {
+            if !(2..=36).contains(&actual_base) {
                 let msg = b"int() base must be >= 2 and <= 36, or 0";
                 crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
             }
