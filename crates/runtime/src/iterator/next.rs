@@ -499,7 +499,7 @@ unsafe fn iter_next_zipn(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
     let tuple = crate::tuple::rt_make_tuple(count as i64, ELEM_HEAP_OBJ);
 
     for i in 0..count {
-        let iter_i = *iters_data.add(i) as *mut Obj;
+        let iter_i = *iters_data.add(i);
         let item = rt_iter_next_internal(iter_i, false);
         if item == EXHAUSTED_SENTINEL {
             (*zip_iter).exhausted = true;

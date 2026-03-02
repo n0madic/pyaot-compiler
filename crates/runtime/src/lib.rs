@@ -9,6 +9,7 @@
 
 #![allow(unsafe_code)] // Runtime needs unsafe for FFI and memory management
 #![allow(clippy::not_unsafe_ptr_arg_deref)] // FFI functions inherently work with raw pointers
+#![allow(clippy::missing_safety_doc)] // FFI functions are internal; callers are generated code
 
 /// Debug assertion to verify an object has the expected type tag.
 /// Only active in debug builds; compiles to nothing in release.

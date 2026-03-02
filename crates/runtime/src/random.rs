@@ -473,8 +473,8 @@ pub unsafe extern "C" fn rt_random_sample(population: *mut Obj, k: i64) -> *mut 
     let pop_elem_tag = (*list).elem_tag;
     let result = crate::list::rt_make_list(k as i64, pop_elem_tag);
     let result_list = result as *mut ListObj;
-    for i in 0..k {
-        let elem = *(*list).data.add(indices[i]);
+    for (i, &src_idx) in indices.iter().take(k).enumerate() {
+        let elem = *(*list).data.add(src_idx);
         *(*result_list).data.add(i) = elem;
     }
     (*result_list).len = k;

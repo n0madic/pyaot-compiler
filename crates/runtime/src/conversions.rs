@@ -1068,11 +1068,13 @@ pub extern "C" fn rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64 {
                 }
             } else {
                 // Allow explicit base with prefix
-                let trimmed_str = if trimmed.starts_with("0x") || trimmed.starts_with("0X") {
-                    &trimmed[2..]
-                } else if trimmed.starts_with("0b") || trimmed.starts_with("0B") {
-                    &trimmed[2..]
-                } else if trimmed.starts_with("0o") || trimmed.starts_with("0O") {
+                let trimmed_str = if trimmed.starts_with("0x")
+                    || trimmed.starts_with("0X")
+                    || trimmed.starts_with("0b")
+                    || trimmed.starts_with("0B")
+                    || trimmed.starts_with("0o")
+                    || trimmed.starts_with("0O")
+                {
                     &trimmed[2..]
                 } else {
                     trimmed

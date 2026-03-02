@@ -1338,7 +1338,7 @@ impl<'a> Lowering<'a> {
         });
 
         // Create iterators for each argument and add to list
-        for (_i, arg_id) in args.iter().enumerate() {
+        for arg_id in args.iter() {
             let arg_expr = &hir_module.exprs[*arg_id];
             let arg_type = self.get_expr_type(arg_expr, hir_module);
 
