@@ -1,0 +1,121 @@
+# Key APIs
+
+## Type System
+
+- **Primitives**: `int` (i64), `float` (f64), `bool` (i8), `str`, `None`
+- **Containers**: `list[T]`, `dict[K,V]`, `tuple[T1,...,Tn]`, `set[T]`, `bytes`
+- **Special**: `Union[T, U]`, `Optional[T]`, `Iterator[T]`
+- **Classes**: `Type::Class { class_id, name }`
+- **Exceptions**: `Type::BuiltinException(BuiltinExceptionKind)`
+
+## Shared Definitions (`core-defs`)
+
+Single source of truth for exceptions and type tags, shared by compiler and runtime.
+
+```rust
+// BuiltinExceptionKind: Exception, AssertionError, IndexError, ValueError,
+// StopIteration, TypeError, RuntimeError, GeneratorExit, KeyError, AttributeError,
+// IOError, ZeroDivisionError, OverflowError, MemoryError, NameError,
+// NotImplementedError, FileNotFoundError, PermissionError, RecursionError, EOFError,
+// SystemExit, KeyboardInterrupt, FileExistsError, ImportError, OSError,
+// ConnectionError, TimeoutError, SyntaxError
+kind.tag() -> u8
+kind.name() -> &'static str
+BuiltinExceptionKind::from_name("ValueError") -> Option<Self>
+
+// TypeTagKind: Int, Float, Bool, Str, None, List, Tuple, Dict, Instance,
+// Iterator, Set, Bytes, Cell, Generator, Match, File, StringBuilder, StructTime,
+// CompletedProcess, ParseResult, HttpResponse, Hash, StringIO, BytesIO
+//
+// Each type tag has three string representations:
+tag.tag() -> u8                    // Numeric tag
+tag.name() -> &'static str         // Debug name: "StructTime"
+tag.type_class() -> &'static str   // Python type(): "<class 'time.struct_time'>"
+tag.type_name() -> &'static str    // Short name: "time.struct_time"
+
+// Lookup
+TypeTagKind::from_tag(17) -> Some(TypeTagKind::StructTime)
+TypeTagKind::from_name("StructTime") -> Some(TypeTagKind::StructTime)
+```
+
+**Adding new type tag:**
+1. Edit `define_type_tags!` macro in `core-defs/src/type_tags.rs`
+2. Add entry: `NewType = N => "NewType" => "<class 'module.NewType'>" => "module.NewType"`
+3. Runtime and compiler automatically pick up the new definition
+
+**Adding new exception:** Edit `define_exceptions!` macro in `core-defs/src/exceptions.rs`.
+
+## MIR Parameterized Enums
+
+MIR uses parameterized enums to reduce `RuntimeFunc` variants. See `crates/mir/src/lib.rs`:
+
+| Enum | Purpose |
+|------|---------|
+| `ValueKind` | Storage ops (cells, globals, class attrs) |
+| `PrintKind` | Print operations by type |
+| `ReprTargetKind` + `StringFormat` | repr()/ascii() |
+| `CompareKind` + `ComparisonOp` | Comparisons |
+| `ContainerKind` + `MinMaxOp` + `ElementKind` | min()/max() |
+| `IterSourceKind` + `IterDirection` | iter()/reversed() |
+| `SortableKind` | sorted() |
+| `ConversionTypeKind` | Type conversions |
+
+Use `type_to_value_kind()` in `runtime_selector.rs` for mapping types.
+
+## GC (Shadow-stack Mark-sweep)
+
+```rust
+#[repr(C)]
+pub struct ShadowFrame {
+    pub prev: *mut ShadowFrame,
+    pub nroots: usize,
+    pub roots: *mut *mut Obj,
+}
+```
+
+- Heap types: `str`, `list`, `dict`, `tuple`, class instances, iterators
+- Lowering marks heap locals as `is_gc_root: true`
+- Codegen: `gc_push` on entry, `gc_pop` on exit
+
+## Runtime Object Header
+
+```rust
+#[repr(C)]
+pub struct ObjHeader {
+    pub type_tag: TypeTagKind,  // From core-defs (single source of truth)
+    pub marked: bool,
+    pub size: usize,
+}
+```
+
+The runtime uses `TypeTagKind` directly from `core-defs` — no duplicate enum.
+
+## Type Tag Architecture
+
+Type metadata flows from a single source in `core-defs`:
+
+```
+core-defs (SSOT)
+├── TypeTagKind enum
+│   ├── tag()        → u8 (numeric value for gc_alloc)
+│   ├── name()       → "StructTime" (debug/internal)
+│   ├── type_class() → "<class 'time.struct_time'>" (Python type())
+│   └── type_name()  → "time.struct_time" (error messages, repr)
+│
+├──► runtime (uses TypeTagKind directly)
+│    ├── ObjHeader.type_tag: TypeTagKind
+│    ├── rt_type_name() calls type_class()
+│    └── error messages use type_name()
+│
+└──► compiler crates (via stdlib-defs)
+     └── Type system, lowering, codegen
+```
+
+**Key principle:** No hardcoded type strings in runtime — all strings come from `TypeTagKind` methods.
+
+## String Interning
+
+Runtime string pool for deduplication (strings < 256 bytes):
+- Compile-time literals → `rt_make_str_interned`
+- Dict keys auto-interned
+- Python API: `sys.intern(string)`
