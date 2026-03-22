@@ -382,7 +382,18 @@ fn mark_class_attr_pointers() {
 /// Mark an object and its children
 fn mark_object(obj: *mut Obj) {
     unsafe {
-        if obj.is_null() || (*obj).is_marked() {
+        // Skip null pointers and obviously-invalid addresses.
+        // Raw int/bool values (e.g., 0x1 for True) can appear in ELEM_HEAP_OBJ
+        // containers due to elem_tag mismatches in *args tuples and closure captures.
+        // Also validates alignment — Obj requires 8-byte alignment, so code pointers
+        // (4-byte aligned) and small integers are safely skipped.
+        if obj.is_null()
+            || (obj as usize) < 0x1000
+            || !(obj as usize).is_multiple_of(std::mem::align_of::<Obj>())
+        {
+            return;
+        }
+        if (*obj).is_marked() {
             return;
         }
 

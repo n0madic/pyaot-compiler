@@ -394,6 +394,13 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Returns true if values of this type are heap-allocated and need GC tracing.
+    /// Raw primitives (int, bool, float, None) don't need tracing because they're
+    /// stored directly as i64 bit patterns, not as heap object pointers.
+    pub(crate) fn type_needs_gc_trace(ty: &Type) -> bool {
+        !matches!(ty, Type::Int | Type::Bool | Type::Float | Type::None)
+    }
+
     /// Determine the elem_tag to pass to runtime for key functions.
     ///
     /// Returns the elem_tag value based on:

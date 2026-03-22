@@ -691,6 +691,22 @@ impl<'a> Lowering<'a> {
             })
             .unwrap_or(Type::Any);
 
+        // Collect per-operand types for correct elem_tag inference
+        let operand_types: Vec<Type> = extra_positional
+            .iter()
+            .map(|op| self.operand_type(op, mir_func))
+            .collect();
+
+        // If elem_type is Any (no annotation), infer from actual operand types.
+        let elem_type = if elem_type == Type::Any
+            && !extra_positional.is_empty()
+            && operand_types.iter().all(|t| *t == Type::Int)
+        {
+            Type::Int
+        } else {
+            elem_type
+        };
+
         // Check for pre-built varargs from list unpacking
         if let Some(pre_built) = self.take_pending_varargs() {
             if extra_positional.is_empty() {
@@ -704,7 +720,12 @@ impl<'a> Lowering<'a> {
                 )
             }
         } else {
-            self.create_tuple_from_operands(&extra_positional, &elem_type, mir_func)
+            self.create_tuple_from_operands_typed(
+                &extra_positional,
+                &elem_type,
+                Some(&operand_types),
+                mir_func,
+            )
         }
     }
 

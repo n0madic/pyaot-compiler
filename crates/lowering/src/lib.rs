@@ -349,21 +349,41 @@ impl<'a> Lowering<'a> {
         Ok(result)
     }
 
-    /// Create a tuple from a vector of operands with proper element tag handling
+    /// Create a tuple from a vector of operands with proper element tag handling.
+    /// `operand_types`: optional per-operand types for correct boxing when elem_tag is HEAP_OBJ.
     fn create_tuple_from_operands(
         &mut self,
         operands: &[mir::Operand],
         elem_type: &Type,
         mir_func: &mut mir::Function,
     ) -> LocalId {
+        self.create_tuple_from_operands_typed(operands, elem_type, None, mir_func)
+    }
+
+    /// Create a tuple with per-operand type information for correct boxing.
+    fn create_tuple_from_operands_typed(
+        &mut self,
+        operands: &[mir::Operand],
+        elem_type: &Type,
+        operand_types: Option<&[Type]>,
+        mir_func: &mut mir::Function,
+    ) -> LocalId {
         let tuple_local = self.alloc_gc_local(Type::Tuple(vec![elem_type.clone()]), mir_func);
 
-        // Determine elem_tag based on element type
-        // Use ELEM_RAW_INT (1) for int tuples, ELEM_HEAP_OBJ (0) for others
+        // Determine elem_tag based on element types.
+        // Use ELEM_RAW_INT (1) when no element needs GC tracing,
+        // ELEM_HEAP_OBJ (0) when any element is a heap type.
         let elem_tag: i64 = if *elem_type == Type::Int {
-            1 // ELEM_RAW_INT
+            1 // ELEM_RAW_INT — all elements are ints
+        } else if let Some(types) = operand_types {
+            // Per-operand types available: check if any needs GC
+            if types.iter().any(Self::type_needs_gc_trace) {
+                0 // ELEM_HEAP_OBJ
+            } else {
+                1 // ELEM_RAW_INT — all operands are primitives
+            }
         } else {
-            0 // ELEM_HEAP_OBJ
+            0 // ELEM_HEAP_OBJ — unknown types, be safe
         };
 
         // Emit: MakeTuple(size, elem_tag)
@@ -380,36 +400,11 @@ impl<'a> Lowering<'a> {
         for (i, op) in operands.iter().enumerate() {
             // Box primitive values when elem_tag is ELEM_HEAP_OBJ
             let final_operand = if elem_tag == 0 {
-                match elem_type {
-                    Type::Bool => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::BoxBool,
-                            args: vec![op.clone()],
-                        });
-                        mir::Operand::Local(boxed_local)
-                    }
-                    Type::Float => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::BoxFloat,
-                            args: vec![op.clone()],
-                        });
-                        mir::Operand::Local(boxed_local)
-                    }
-                    Type::None => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::BoxNone,
-                            args: vec![],
-                        });
-                        mir::Operand::Local(boxed_local)
-                    }
-                    _ => op.clone(), // Already heap objects or int (which shouldn't happen with elem_tag 0)
-                }
+                // Use per-operand type if available, otherwise use common elem_type
+                let op_type = operand_types
+                    .and_then(|types| types.get(i))
+                    .unwrap_or(elem_type);
+                self.box_for_heap_tuple(op.clone(), op_type, mir_func)
             } else {
                 op.clone() // ELEM_RAW_INT, already i64
             };
@@ -428,6 +423,54 @@ impl<'a> Lowering<'a> {
         }
 
         tuple_local
+    }
+
+    /// Box a primitive value for storage in an ELEM_HEAP_OBJ tuple.
+    fn box_for_heap_tuple(
+        &mut self,
+        op: mir::Operand,
+        op_type: &Type,
+        mir_func: &mut mir::Function,
+    ) -> mir::Operand {
+        match op_type {
+            Type::Int => {
+                let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: boxed_local,
+                    func: mir::RuntimeFunc::BoxInt,
+                    args: vec![op],
+                });
+                mir::Operand::Local(boxed_local)
+            }
+            Type::Bool => {
+                let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: boxed_local,
+                    func: mir::RuntimeFunc::BoxBool,
+                    args: vec![op],
+                });
+                mir::Operand::Local(boxed_local)
+            }
+            Type::Float => {
+                let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: boxed_local,
+                    func: mir::RuntimeFunc::BoxFloat,
+                    args: vec![op],
+                });
+                mir::Operand::Local(boxed_local)
+            }
+            Type::None => {
+                let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: boxed_local,
+                    func: mir::RuntimeFunc::BoxNone,
+                    args: vec![],
+                });
+                mir::Operand::Local(boxed_local)
+            }
+            _ => op, // Already heap objects
+        }
     }
 
     /// Create a combined varargs tuple from extra positional operands + pre-built list tail tuple

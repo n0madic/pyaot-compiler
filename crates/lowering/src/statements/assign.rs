@@ -77,6 +77,16 @@ impl<'a> Lowering<'a> {
 
                     let void_local = self.alloc_and_add_local(Type::None, mir_func);
 
+                    // Determine elem_tag for captures tuple based on actual types.
+                    // Use ELEM_RAW_INT when no capture needs GC tracing.
+                    let capture_elem_tag: i64 = {
+                        let any_needs_gc =
+                            capture_operands.iter().any(|op| {
+                                Self::type_needs_gc_trace(&self.operand_type(op, mir_func))
+                            });
+                        if any_needs_gc { 0 } else { 1 }
+                    };
+
                     // Create inner captures tuple
                     let captures_tuple = self.alloc_and_add_local(Type::Any, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -84,7 +94,7 @@ impl<'a> Lowering<'a> {
                         func: mir::RuntimeFunc::MakeTuple,
                         args: vec![
                             mir::Operand::Constant(mir::Constant::Int(captures.len() as i64)),
-                            mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
+                            mir::Operand::Constant(mir::Constant::Int(capture_elem_tag)),
                         ],
                     });
 

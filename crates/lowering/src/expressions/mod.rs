@@ -364,14 +364,33 @@ impl<'a> Lowering<'a> {
 
             let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
 
-            // Create inner tuple for captures
+            // Determine capture tuple elem_tag based on actual capture types.
+            // If no capture needs GC tracing (all ints/bools/floats), use ELEM_RAW_INT
+            // so the GC doesn't try to trace raw values as heap pointers.
+            // Cell variables are heap pointers and DO need GC tracing.
+            let capture_elem_tag: i64 = {
+                let any_needs_gc = captures.iter().enumerate().any(|(i, capture_id)| {
+                    let capture_expr = &hir_module.exprs[*capture_id];
+                    // Cell variables are always heap pointers
+                    if let hir::ExprKind::Var(var_id) = &capture_expr.kind {
+                        if self.get_nonlocal_cell(var_id).is_some() {
+                            return true;
+                        }
+                    }
+                    // Check the operand type (more reliable than expression type)
+                    let op_type = self.operand_type(&capture_operands[i], mir_func);
+                    Self::type_needs_gc_trace(&op_type)
+                });
+                if any_needs_gc { 0 } else { 1 }
+            };
+
             let captures_tuple = self.alloc_and_add_local(Type::Any, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: captures_tuple,
                 func: mir::RuntimeFunc::MakeTuple,
                 args: vec![
                     mir::Operand::Constant(mir::Constant::Int(captures.len() as i64)),
-                    mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
+                    mir::Operand::Constant(mir::Constant::Int(capture_elem_tag)),
                 ],
             });
 

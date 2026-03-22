@@ -1017,28 +1017,37 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         let count = captures.len();
 
-        // Use ELEM_HEAP_OBJ (0) since all values are stored as i64/*mut Obj
-        // Primitives are stored as raw i64 cast to pointer (which is fine for our tuple storage)
+        // Lower all capture expressions first to know their operand types
+        let mut capture_operands = Vec::with_capacity(count);
+        for capture_id in captures {
+            let capture_expr = &hir_module.exprs[*capture_id];
+            capture_operands.push(self.lower_expr(capture_expr, hir_module, mir_func)?);
+        }
+
+        // Determine elem_tag from actual operand types (more reliable than expr types).
+        // Use ELEM_RAW_INT when no capture needs GC tracing (all primitives),
+        // ELEM_HEAP_OBJ when any capture is a heap type (str, list, cell, etc.)
+        let any_needs_gc = capture_operands
+            .iter()
+            .any(|op| Self::type_needs_gc_trace(&self.operand_type(op, mir_func)));
+        let capture_elem_tag: i64 = if any_needs_gc { 0 } else { 1 };
+
         let tuple_local = self.alloc_and_add_local(Type::Tuple(vec![Type::Any; count]), mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: tuple_local,
             func: mir::RuntimeFunc::MakeTuple,
             args: vec![
                 mir::Operand::Constant(mir::Constant::Int(count as i64)),
-                mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
+                mir::Operand::Constant(mir::Constant::Int(capture_elem_tag)),
             ],
         });
 
         // Set each capture into the tuple
         // Captures are stored as-is (raw i64 for primitives, pointers for heap types)
         // This matches how closures pass captures directly in lower_closure_call
-        for (i, capture_id) in captures.iter().enumerate() {
-            let capture_expr = &hir_module.exprs[*capture_id];
-            let capture_operand = self.lower_expr(capture_expr, hir_module, mir_func)?;
-
-            // Store capture directly without boxing - the lambda expects raw values
+        for (i, capture_operand) in capture_operands.into_iter().enumerate() {
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: tuple_local, // TupleSet returns the tuple (for chaining, but we ignore it)
+                dest: tuple_local,
                 func: mir::RuntimeFunc::TupleSet,
                 args: vec![
                     mir::Operand::Local(tuple_local),
