@@ -1027,9 +1027,11 @@ impl<'a> Lowering<'a> {
         // Determine elem_tag from actual operand types (more reliable than expr types).
         // Use ELEM_RAW_INT when no capture needs GC tracing (all primitives),
         // ELEM_HEAP_OBJ when any capture is a heap type (str, list, cell, etc.)
-        let any_needs_gc = capture_operands
+        let capture_op_types: Vec<Type> = capture_operands
             .iter()
-            .any(|op| Self::type_needs_gc_trace(&self.operand_type(op, mir_func)));
+            .map(|op| self.operand_type(op, mir_func))
+            .collect();
+        let any_needs_gc = capture_op_types.iter().any(Self::type_needs_gc_trace);
         let capture_elem_tag: i64 = if any_needs_gc { 0 } else { 1 };
 
         let tuple_local = self.alloc_and_add_local(Type::Tuple(vec![Type::Any; count]), mir_func);
@@ -1041,6 +1043,11 @@ impl<'a> Lowering<'a> {
                 mir::Operand::Constant(mir::Constant::Int(capture_elem_tag)),
             ],
         });
+
+        // Set per-field heap_field_mask for mixed-type captures
+        if capture_elem_tag == 0 {
+            self.emit_heap_field_mask(tuple_local, &capture_op_types, mir_func);
+        }
 
         // Set each capture into the tuple
         // Captures are stored as-is (raw i64 for primitives, pointers for heap types)

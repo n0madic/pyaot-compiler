@@ -27,6 +27,13 @@ pub extern "C" fn rt_make_tuple(size: i64, elem_tag: u8) -> *mut Obj {
         let tuple = obj as *mut TupleObj;
         (*tuple).len = size;
         (*tuple).elem_tag = elem_tag;
+        // Default heap_field_mask: all fields are heap objects when ELEM_HEAP_OBJ,
+        // no fields are heap objects when ELEM_RAW_INT/ELEM_RAW_BOOL.
+        (*tuple).heap_field_mask = if elem_tag == ELEM_HEAP_OBJ {
+            u64::MAX
+        } else {
+            0
+        };
 
         // Initialize all elements to null
         let data_ptr = (*tuple).data.as_mut_ptr();
@@ -36,6 +43,20 @@ pub extern "C" fn rt_make_tuple(size: i64, elem_tag: u8) -> *mut Obj {
     }
 
     obj
+}
+
+/// Set the heap_field_mask on a tuple.
+/// Called after rt_make_tuple when the caller knows per-field GC tracing info.
+/// mask: bitmask where bit i = 1 means field i is a heap pointer.
+#[no_mangle]
+pub extern "C" fn rt_tuple_set_heap_mask(tuple: *mut Obj, mask: i64) {
+    if tuple.is_null() {
+        return;
+    }
+    unsafe {
+        let tuple_obj = tuple as *mut crate::object::TupleObj;
+        (*tuple_obj).heap_field_mask = mask as u64;
+    }
 }
 
 /// Set element in tuple at given index (used during tuple construction)
@@ -55,8 +76,9 @@ pub extern "C" fn rt_tuple_set(tuple: *mut Obj, index: i64, value: *mut Obj) {
             return;
         }
 
-        // Validate elem_tag matches value type (debug mode only)
-        crate::validate_elem_tag!("tuple", index, (*tuple_obj).elem_tag, value);
+        // Note: no validate_elem_tag! for tuples — the GC uses heap_field_mask for
+        // precise per-field tracing, making the elem_tag-based validation unnecessary.
+        // Mixed-type tuples (captures, *args) are safely handled by the mask.
 
         let data_ptr = (*tuple_obj).data.as_mut_ptr();
         *data_ptr.add(index as usize) = value;

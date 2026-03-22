@@ -473,6 +473,31 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Emit a TupleSetHeapMask instruction for a tuple with mixed types.
+    /// Computes a bitmask from operand types and emits the runtime call.
+    fn emit_heap_field_mask(
+        &mut self,
+        tuple_local: pyaot_utils::LocalId,
+        operand_types: &[Type],
+        mir_func: &mut mir::Function,
+    ) {
+        let mut mask: u64 = 0;
+        for (i, ty) in operand_types.iter().enumerate() {
+            if i < 64 && Self::type_needs_gc_trace(ty) {
+                mask |= 1u64 << i;
+            }
+        }
+        let dummy = self.alloc_and_add_local(Type::None, mir_func);
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: dummy,
+            func: mir::RuntimeFunc::TupleSetHeapMask,
+            args: vec![
+                mir::Operand::Local(tuple_local),
+                mir::Operand::Constant(mir::Constant::Int(mask as i64)),
+            ],
+        });
+    }
+
     /// Create a combined varargs tuple from extra positional operands + pre-built list tail tuple
     /// Used when calling f(1, 2, *list) where f has *args
     fn create_combined_varargs_tuple(

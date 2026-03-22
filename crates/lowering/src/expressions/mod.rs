@@ -381,8 +381,18 @@ impl<'a> Lowering<'a> {
                     let op_type = self.operand_type(&capture_operands[i], mir_func);
                     Self::type_needs_gc_trace(&op_type)
                 });
-                if any_needs_gc { 0 } else { 1 }
+                if any_needs_gc {
+                    0
+                } else {
+                    1
+                }
             };
+
+            // Collect capture operand types for heap_field_mask
+            let capture_op_types: Vec<Type> = capture_operands
+                .iter()
+                .map(|op| self.operand_type(op, mir_func))
+                .collect();
 
             let captures_tuple = self.alloc_and_add_local(Type::Any, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -393,6 +403,11 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Constant(mir::Constant::Int(capture_elem_tag)),
                 ],
             });
+
+            // Set per-field heap_field_mask for mixed-type captures
+            if capture_elem_tag == 0 {
+                self.emit_heap_field_mask(captures_tuple, &capture_op_types, mir_func);
+            }
 
             // Set each capture in the inner tuple
             for (i, capture_op) in capture_operands.into_iter().enumerate() {
@@ -408,6 +423,7 @@ impl<'a> Lowering<'a> {
             }
 
             // Create outer tuple (func_ptr, captures_tuple) - always size 2
+            // heap_field_mask: bit 0 = 0 (func_ptr is raw), bit 1 = 1 (captures_tuple is heap)
             let result_local = self.alloc_and_add_local(Type::Any, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
@@ -417,6 +433,11 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
                 ],
             });
+            self.emit_heap_field_mask(
+                result_local,
+                &[Type::Int, Type::Any], // func_ptr=raw, captures=heap
+                mir_func,
+            );
 
             // Set func_ptr at index 0
             self.emit_instruction(mir::InstructionKind::RuntimeCall {

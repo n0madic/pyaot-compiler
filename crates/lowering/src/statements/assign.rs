@@ -80,12 +80,21 @@ impl<'a> Lowering<'a> {
                     // Determine elem_tag for captures tuple based on actual types.
                     // Use ELEM_RAW_INT when no capture needs GC tracing.
                     let capture_elem_tag: i64 = {
-                        let any_needs_gc =
-                            capture_operands.iter().any(|op| {
-                                Self::type_needs_gc_trace(&self.operand_type(op, mir_func))
-                            });
-                        if any_needs_gc { 0 } else { 1 }
+                        let any_needs_gc = capture_operands
+                            .iter()
+                            .any(|op| Self::type_needs_gc_trace(&self.operand_type(op, mir_func)));
+                        if any_needs_gc {
+                            0
+                        } else {
+                            1
+                        }
                     };
+
+                    // Collect per-operand types for heap_field_mask
+                    let capture_types: Vec<Type> = capture_operands
+                        .iter()
+                        .map(|op| self.operand_type(op, mir_func))
+                        .collect();
 
                     // Create inner captures tuple
                     let captures_tuple = self.alloc_and_add_local(Type::Any, mir_func);
@@ -97,6 +106,11 @@ impl<'a> Lowering<'a> {
                             mir::Operand::Constant(mir::Constant::Int(capture_elem_tag)),
                         ],
                     });
+
+                    // Set per-field heap_field_mask when tuple has mixed types (ELEM_HEAP_OBJ)
+                    if capture_elem_tag == 0 {
+                        self.emit_heap_field_mask(captures_tuple, &capture_types, mir_func);
+                    }
 
                     // Store each capture in the inner tuple at index 0, 1, ...
                     for (i, capture_op) in capture_operands.iter().enumerate() {
@@ -112,6 +126,7 @@ impl<'a> Lowering<'a> {
                     }
 
                     // Create outer tuple (func_ptr, captures_tuple) - always size 2
+                    // heap_field_mask: bit 0 = 0 (func_ptr is raw), bit 1 = 1 (captures_tuple is heap)
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: dest_local,
                         func: mir::RuntimeFunc::MakeTuple,
@@ -120,6 +135,12 @@ impl<'a> Lowering<'a> {
                             mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
                         ],
                     });
+                    // Set mask: only index 1 (captures_tuple) is a heap pointer
+                    self.emit_heap_field_mask(
+                        dest_local,
+                        &[Type::Int, Type::Any], // func_ptr=raw, captures=heap
+                        mir_func,
+                    );
 
                     // Store func_ptr at index 0
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {

@@ -149,29 +149,33 @@ pub const LOCAL_TYPE_PTR: u8 = 3; // Heap pointer (*mut Obj)
 /// or ignore heap pointers (causing use-after-free).
 ///
 /// Only enabled in debug builds to avoid runtime overhead in release.
+///
+/// For tuples with `heap_field_mask`, use the 5-argument form which checks the mask
+/// before warning about small integers.
 #[macro_export]
 macro_rules! validate_elem_tag {
-    ($container_type:expr, $index:expr, $elem_tag:expr, $value:expr) => {
+    // 5-arg form: with heap_field_mask (for tuples)
+    ($container_type:expr, $index:expr, $elem_tag:expr, $value:expr, $heap_mask:expr) => {
         #[cfg(debug_assertions)]
         {
             let value_as_i64 = $value as i64;
             const MIN_HEAP_ADDR: i64 = 0x1000;
             const MAX_HEAP_ADDR: i64 = 0x0000_7FFF_FFFF_FFFF;
+            let idx = $index as u64;
 
             match $elem_tag {
                 $crate::object::ELEM_RAW_INT | $crate::object::ELEM_RAW_BOOL => {
-                    // For raw values, check that the value doesn't look like a heap pointer
                     if (MIN_HEAP_ADDR..=MAX_HEAP_ADDR).contains(&value_as_i64) {
                         eprintln!(
-                            "WARNING: {}[{}] elem_tag={} (raw value) but value={:#x} looks like a heap pointer. \
-                            This may cause GC to crash when trying to dereference it as an Obj*",
+                            "WARNING: {}[{}] elem_tag={} (raw value) but value={:#x} looks like a heap pointer.",
                             $container_type, $index, $elem_tag, value_as_i64
                         );
                     }
                 }
                 $crate::object::ELEM_HEAP_OBJ => {
-                    // For heap objects, value should be null or a valid heap pointer
-                    if !($value as *mut $crate::object::Obj).is_null() {
+                    // Check heap_field_mask: if bit is NOT set, this field is raw — skip warning
+                    let field_is_heap = idx < 64 && ($heap_mask & (1u64 << idx)) != 0;
+                    if field_is_heap && !($value as *mut $crate::object::Obj).is_null() {
                         if value_as_i64 > 0 && value_as_i64 < MIN_HEAP_ADDR {
                             eprintln!(
                                 "WARNING: {}[{}] elem_tag={} (heap object) but value={:#x} looks like a small integer. \
@@ -183,12 +187,16 @@ macro_rules! validate_elem_tag {
                 }
                 _ => {
                     eprintln!(
-                        "WARNING: {}[{}] has unknown elem_tag={}, expected 0 (heap), 1 (int), or 2 (bool)",
+                        "WARNING: {}[{}] has unknown elem_tag={}",
                         $container_type, $index, $elem_tag
                     );
                 }
             }
         }
+    };
+    // 4-arg form: without heap_field_mask (for lists and other containers)
+    ($container_type:expr, $index:expr, $elem_tag:expr, $value:expr) => {
+        $crate::validate_elem_tag!($container_type, $index, $elem_tag, $value, u64::MAX)
     };
 }
 
@@ -208,6 +216,11 @@ pub struct TupleObj {
     pub header: ObjHeader,
     pub len: usize,
     pub elem_tag: u8,
+    /// Per-field bitmask: bit i = 1 means field i is a heap pointer that GC must trace.
+    /// Bit i = 0 means field i is a raw value (int, float, bool, func_ptr) — GC skips it.
+    /// Supports up to 64 fields. For homogeneous tuples (all ELEM_RAW_INT or all ELEM_HEAP_OBJ),
+    /// set to 0 or u64::MAX respectively. For mixed captures, set per-field bits.
+    pub heap_field_mask: u64,
     pub data: [*mut Obj; 0], // Flexible array member
 }
 

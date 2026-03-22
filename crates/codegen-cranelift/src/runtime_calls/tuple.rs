@@ -60,6 +60,20 @@ pub fn compile_tuple_call(
             };
             builder.ins().call(func_ref, &[tuple, index, value]);
         }
+        mir::RuntimeFunc::TupleSetHeapMask => {
+            // rt_tuple_set_heap_mask(tuple: *mut Obj, mask: i64)
+            let mut sig = ctx.module.make_signature();
+            sig.call_conv = CallConv::SystemV;
+            sig.params.push(AbiParam::new(cltypes::I64)); // tuple
+            sig.params.push(AbiParam::new(cltypes::I64)); // mask
+
+            let func_id = declare_runtime_function(ctx.module, "rt_tuple_set_heap_mask", &sig)?;
+            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+
+            let tuple = load_operand(builder, &args[0], ctx.var_map);
+            let mask = load_operand(builder, &args[1], ctx.var_map);
+            builder.ins().call(func_ref, &[tuple, mask]);
+        }
         mir::RuntimeFunc::TupleGet => {
             // rt_tuple_get(tuple: *mut Obj, index: i64) -> *mut Obj
             let mut sig = ctx.module.make_signature();

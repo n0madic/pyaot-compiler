@@ -427,15 +427,18 @@ fn mark_object(obj: *mut Obj) {
             }
             TypeTagKind::Tuple => {
                 let tuple = obj as *mut TupleObj;
-                // Only traverse elements if they are heap objects
-                if (*tuple).elem_tag == 0 {
-                    // ELEM_HEAP_OBJ
+                let mask = (*tuple).heap_field_mask;
+                // Skip if no fields need tracing (ELEM_RAW_INT or mask == 0)
+                if mask != 0 {
                     let len = (*tuple).len;
                     let data = (*tuple).data.as_ptr();
                     for i in 0..len {
-                        let elem = *data.add(i);
-                        if !elem.is_null() {
-                            mark_object(elem);
+                        // Only trace fields marked as heap pointers in the bitmask
+                        if mask & (1u64 << i) != 0 {
+                            let elem = *data.add(i);
+                            if !elem.is_null() {
+                                mark_object(elem);
+                            }
                         }
                     }
                 }

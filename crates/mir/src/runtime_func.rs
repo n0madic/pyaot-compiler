@@ -89,6 +89,8 @@ pub enum RuntimeFunc {
     ListSliceAssign,
     /// Tuple set element (during construction)
     TupleSet,
+    /// Set the heap_field_mask on a tuple (for mixed-type GC tracing)
+    TupleSetHeapMask,
     /// Tuple get element
     TupleGet,
     /// Tuple length
