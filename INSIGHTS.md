@@ -74,12 +74,15 @@ The initial empty `{}` has no type hint, so the variable starts with `Dict(Any, 
 
 `map(func, iterable)` returns `Iterator(elem_type)` where `elem_type` must be inferred from the function's return type, not defaulted to `Any`.
 
-If the type system thinks `map()` returns `Iterator(Any)`, then `list(map(...))` creates a list with `elem_tag=0` (ELEM_HEAP_OBJ) even if the actual values are raw integers. This causes the list to store boxed IntObj pointers, which wastes memory and changes the repr behavior.
+If the type system thinks `map()` returns `Iterator(Any)`, then `list(map(...))` creates a list with `elem_tag=0` (ELEM_HEAP_OBJ) even if the actual values are raw integers. This causes the GC to try tracing raw ints as heap pointers.
 
 The type inference in `lowering/src/type_inference.rs` inspects the function argument to `map()`:
 - For `FuncRef`: checks `get_func_return_type()` or `func_def.return_type`
+- For `Closure` (lambda with captures): same logic via extracted `func_id`
 - For lambdas: uses `infer_lambda_return_type()`
 - Fallback: `Type::Any`
+
+**Gotcha**: Both `FuncRef` and `Closure` must be handled. Lambdas with captures are `Closure`, not `FuncRef`. Missing the `Closure` case causes `map(lambda_with_capture, ...)` to return `Iterator(Any)`.
 
 ---
 
@@ -186,8 +189,8 @@ Interned strings enable pointer equality for dict key comparisons instead of byt
 ## Exception Handling: setjmp/longjmp
 
 Exception handling uses C-style `setjmp`/`longjmp`:
-- `ExceptionFrame` is 216 bytes: `prev` (8) + `jmp_buf` (200) + `gc_stack_top` (8)
-- `try` pushes a frame and calls `setjmp`
+- `ExceptionFrame` layout: `prev` (8 bytes) + `jmp_buf` (200 bytes) + `gc_stack_top` (8 bytes) = 216 bytes
+- `try` pushes a frame via `rt_exc_push_frame`, then Cranelift calls `setjmp(frame_ptr + 8)` **directly** (not through a Rust wrapper — see "setjmp Must Be Called Directly")
 - `raise` calls `longjmp` to jump to the most recent frame
 - The GC stack top is saved/restored to prevent shadow stack corruption on longjmp
 
@@ -228,15 +231,37 @@ Stdlib functions use `LoweringHints` to control how they're lowered without any 
 
 This means adding a new stdlib function requires only 2 files: the definition in `stdlib-defs` and the implementation in `runtime`. No lowering or codegen changes are needed unless the function has unusual semantics.
 
-## GC Heap Field Mask for Class Instances
+## GC Heap Field Mask for Instances and Tuples
 
-Instance fields store ALL values as i64 (including f64 via bitcast). The GC must know which fields are heap pointers vs raw values to avoid dereferencing float bits as pointers (causes segfault). Solution:
+Fields in instances and tuples can be mixed: some are heap pointers, some are raw values (int, float, func_ptr). The GC must not dereference raw values as pointers.
 
+**Instances** use a per-class mask registered at class definition:
 - `ClassInfo` in `vtable.rs` has `heap_field_mask: u64` — bit i set means field i is a heap pointer
-- Compiler computes the mask from field types at class definition time and emits `RegisterClassFields(class_id, mask)`
-- During GC marking, `mark_object` for Instance checks the mask before tracing each field
-- Default is `u64::MAX` (conservative: treat all fields as heap) for safety
-- Non-heap types: `int`, `float`, `bool`, `None` — their raw i64 bits would crash if dereferenced as pointers
+- Compiler emits `RegisterClassFields(class_id, mask)` at module init
+
+**Tuples** use a per-instance mask stored in the object:
+- `TupleObj` has `heap_field_mask: u64` alongside `elem_tag`
+- For homogeneous tuples (all `ELEM_RAW_INT`): `mask = 0`; for all `ELEM_HEAP_OBJ`: `mask = u64::MAX`
+- For mixed-type tuples (closure captures with int + heap values): per-field bits via `rt_tuple_set_heap_mask` / `TupleSetHeapMask` MIR instruction
+- GC's `mark_object` for tuples iterates fields using the mask, not `elem_tag`
+
+**Key**: closure capture tuples `(func_ptr, captures_tuple)` always need a mask because func_ptr is raw but captures_tuple is heap. The lowering computes the mask from `operand_type()` of each capture and emits `TupleSetHeapMask` for any `ELEM_HEAP_OBJ` tuple with mixed types.
+
+Three closure creation paths must all set the mask:
+1. `statements/assign.rs` — nested function closures (`def inner(): ...`)
+2. `expressions/mod.rs` — lambda closures passed as values
+3. `expressions/builtins/iteration.rs` — map/filter captures
+
+## Expected Type Propagation for Empty Collections
+
+Empty collection literals (`[]`, `{}`) have no elements to infer the type from, defaulting to `List(Any)` → `ELEM_HEAP_OBJ`. This causes GC issues when ints are later appended.
+
+The lowering context has `expected_type: Option<Type>` — set before lowering the RHS of an assignment from the target variable's known type. `lower_list` checks this for empty lists to determine the correct `elem_tag`.
+
+Propagation sites:
+- `lower_assign` — from variable type hint or existing var type
+- `emit_mutable_default_initializations` — from parameter type annotation
+- `desugar_list_comprehension` — from `infer_comprehension_elem_type()` (checks if all generators are `range()` or int-list, and element expression is int)
 
 ## GlobalSet(Ptr) Type Coercion
 
