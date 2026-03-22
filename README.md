@@ -89,21 +89,19 @@ pyaot input.py --emit-mir
 
 ## Examples
 
-The `examples/` directory contains test programs demonstrating compiler features.
+The `examples/` directory contains test programs demonstrating compiler features. These are run as Rust integration tests via `cargo test`:
 
-Run all examples:
 ```bash
-./test_examples.sh
+# Run all runtime integration tests
+cargo test -p pyaot --test runtime
+
+# Run a single example test
+cargo test -p pyaot --test runtime runtime_builtins
 ```
 
-Run a single example:
+You can also compile and run examples manually:
 ```bash
-# Compile and run in one command
 pyaot examples/test_builtins.py -o /tmp/test --run
-
-# Or compile first, then run
-pyaot examples/test_builtins.py -o /tmp/test
-/tmp/test
 ```
 
 All examples use `assert` statements for testing. Programs exit with code 0 on success, code 1 on assertion failure.
@@ -252,14 +250,17 @@ pyaot example.py -o example --run
 ## Testing
 
 ```bash
-# Run all tests
+# Run all tests (unit + integration)
 cargo test --workspace
 
 # Run unit tests for a specific crate
 cargo test -p pyaot-types
 
-# Run example tests (Python integration tests)
-./test_examples.sh
+# Run only runtime integration tests (compile + execute Python examples)
+cargo test -p pyaot --test runtime
+
+# Run a single runtime test
+cargo test -p pyaot --test runtime runtime_classes
 ```
 
 ## Contributing

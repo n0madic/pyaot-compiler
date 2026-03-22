@@ -3,6 +3,10 @@ name = "pyaot"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "pyaot"
+path = "src/lib.rs"
+
 [[bin]]
 name = "pyaot"
 path = "src/main.rs"
