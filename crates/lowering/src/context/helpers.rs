@@ -43,23 +43,41 @@ impl<'a> Lowering<'a> {
     }
 
     /// Require exact argument count for a builtin function
-    pub(crate) fn require_exact_args(&self, args: &[hir::ExprId], count: usize, func_name: &str) {
+    pub(crate) fn require_exact_args(
+        &self,
+        args: &[hir::ExprId],
+        count: usize,
+        func_name: &str,
+    ) -> pyaot_diagnostics::Result<()> {
         if args.len() != count {
-            panic!(
-                "{func_name}() requires exactly {count} argument(s), got {}",
-                args.len()
-            );
+            return Err(pyaot_diagnostics::CompilerError::type_error(
+                format!(
+                    "{func_name}() requires exactly {count} argument(s), got {}",
+                    args.len()
+                ),
+                pyaot_utils::Span::dummy(),
+            ));
         }
+        Ok(())
     }
 
     /// Require minimum argument count for a builtin function
-    pub(crate) fn require_min_args(&self, args: &[hir::ExprId], min: usize, func_name: &str) {
+    pub(crate) fn require_min_args(
+        &self,
+        args: &[hir::ExprId],
+        min: usize,
+        func_name: &str,
+    ) -> pyaot_diagnostics::Result<()> {
         if args.len() < min {
-            panic!(
-                "{func_name}() requires at least {min} argument(s), got {}",
-                args.len()
-            );
+            return Err(pyaot_diagnostics::CompilerError::type_error(
+                format!(
+                    "{func_name}() requires at least {min} argument(s), got {}",
+                    args.len()
+                ),
+                pyaot_utils::Span::dummy(),
+            ));
         }
+        Ok(())
     }
 
     /// Emit boolean truthiness check for a collection via its length.
@@ -149,6 +167,16 @@ impl<'a> Lowering<'a> {
                 // None is always falsy
                 mir::Operand::Constant(mir::Constant::Bool(false))
             }
+            Type::Bytes => {
+                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                self.emit_collection_bool_via_len(
+                    mir::RuntimeFunc::BytesLen,
+                    operand,
+                    result_local,
+                    mir_func,
+                );
+                mir::Operand::Local(result_local)
+            }
             Type::List(_) | Type::Dict(_, _) | Type::Tuple(_) | Type::Set(_) => {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 let runtime_func = match operand_type {
@@ -196,23 +224,24 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Get the TypeTag value for a type (matches runtime's TypeTag enum)
+    /// Get the TypeTag value for a type (from core-defs single source of truth)
     pub(crate) fn get_type_tag_for_isinstance_check(&self, ty: &Type) -> i64 {
+        use pyaot_core_defs::TypeTagKind;
         match ty {
-            Type::Int => 0,          // TypeTag::Int
-            Type::Float => 1,        // TypeTag::Float
-            Type::Bool => 2,         // TypeTag::Bool
-            Type::Str => 3,          // TypeTag::Str
-            Type::None => 4,         // TypeTag::None
-            Type::List(_) => 5,      // TypeTag::List
-            Type::Tuple(_) => 6,     // TypeTag::Tuple
-            Type::Dict(_, _) => 7,   // TypeTag::Dict
-            Type::Class { .. } => 8, // TypeTag::Instance
-            Type::Iterator(_) => 9,  // TypeTag::Iterator
-            Type::Set(_) => 10,      // TypeTag::Set
-            Type::Bytes => 11,       // TypeTag::Bytes
-            Type::File => 15,        // TypeTag::File
-            _ => -1,                 // Unknown type
+            Type::Int => TypeTagKind::Int.tag() as i64,
+            Type::Float => TypeTagKind::Float.tag() as i64,
+            Type::Bool => TypeTagKind::Bool.tag() as i64,
+            Type::Str => TypeTagKind::Str.tag() as i64,
+            Type::None => TypeTagKind::None.tag() as i64,
+            Type::List(_) => TypeTagKind::List.tag() as i64,
+            Type::Tuple(_) => TypeTagKind::Tuple.tag() as i64,
+            Type::Dict(_, _) => TypeTagKind::Dict.tag() as i64,
+            Type::Class { .. } => TypeTagKind::Instance.tag() as i64,
+            Type::Iterator(_) => TypeTagKind::Iterator.tag() as i64,
+            Type::Set(_) => TypeTagKind::Set.tag() as i64,
+            Type::Bytes => TypeTagKind::Bytes.tag() as i64,
+            Type::File => TypeTagKind::File.tag() as i64,
+            _ => -1, // Unknown type
         }
     }
 
@@ -288,8 +317,8 @@ impl<'a> Lowering<'a> {
                             self.extract_func_or_builtin(key_expr, hir_module)
                         {
                             key_func = Some(match func_or_builtin {
-                                FuncOrBuiltin::UserFunc(func_id, _) => {
-                                    KeyFuncSource::UserFunc(func_id)
+                                FuncOrBuiltin::UserFunc(func_id, captures) => {
+                                    KeyFuncSource::UserFunc(func_id, captures)
                                 }
                                 FuncOrBuiltin::Builtin(builtin_kind) => {
                                     KeyFuncSource::Builtin(builtin_kind)
@@ -331,7 +360,8 @@ impl<'a> Lowering<'a> {
         key_func.map(|source| {
             let key_fn_local = self.alloc_and_add_local(Type::Int, mir_func);
             match source {
-                KeyFuncSource::UserFunc(func_id) => {
+                KeyFuncSource::UserFunc(func_id, _captures) => {
+                    // TODO: pass captures to key function for closures
                     self.emit_instruction(mir::InstructionKind::FuncAddr {
                         dest: key_fn_local,
                         func: *func_id,
@@ -382,7 +412,7 @@ impl<'a> Lowering<'a> {
                 // Builtin wrappers need boxing for raw element types
                 Self::elem_tag_for_type(elem_type)
             }
-            KeyFuncSource::UserFunc(_) => {
+            KeyFuncSource::UserFunc(..) => {
                 // User functions work with raw values - no boxing needed
                 0 // ELEM_HEAP_OBJ (no boxing)
             }

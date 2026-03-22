@@ -513,19 +513,22 @@ impl<'a> Lowering<'a> {
                     });
                 }
                 _ => {
-                    // For other string comparisons (< > <= >=), fallback to pointer comparison
-                    let mir_op = match op {
-                        hir::CmpOp::Lt => mir::BinOp::Lt,
-                        hir::CmpOp::LtE => mir::BinOp::LtE,
-                        hir::CmpOp::Gt => mir::BinOp::Gt,
-                        hir::CmpOp::GtE => mir::BinOp::GtE,
+                    // For string ordering comparisons (< > <= >=), use Obj compare
+                    // which dispatches via type tag for lexicographic comparison
+                    let cmp_op = match op {
+                        hir::CmpOp::Lt => mir::ComparisonOp::Lt,
+                        hir::CmpOp::LtE => mir::ComparisonOp::Lte,
+                        hir::CmpOp::Gt => mir::ComparisonOp::Gt,
+                        hir::CmpOp::GtE => mir::ComparisonOp::Gte,
                         _ => unreachable!(),
                     };
-                    self.emit_instruction(mir::InstructionKind::BinOp {
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        op: mir_op,
-                        left: left_op,
-                        right: right_op,
+                        func: mir::RuntimeFunc::Compare {
+                            kind: mir::CompareKind::Obj,
+                            op: cmp_op,
+                        },
+                        args: vec![left_op, right_op],
                     });
                 }
             }
@@ -560,19 +563,22 @@ impl<'a> Lowering<'a> {
                     });
                 }
                 _ => {
-                    // For other bytes comparisons (< > <= >=), fallback to pointer comparison
-                    let mir_op = match op {
-                        hir::CmpOp::Lt => mir::BinOp::Lt,
-                        hir::CmpOp::LtE => mir::BinOp::LtE,
-                        hir::CmpOp::Gt => mir::BinOp::Gt,
-                        hir::CmpOp::GtE => mir::BinOp::GtE,
+                    // For bytes ordering comparisons (< > <= >=), use Obj compare
+                    // which dispatches via type tag for lexicographic comparison
+                    let cmp_op = match op {
+                        hir::CmpOp::Lt => mir::ComparisonOp::Lt,
+                        hir::CmpOp::LtE => mir::ComparisonOp::Lte,
+                        hir::CmpOp::Gt => mir::ComparisonOp::Gt,
+                        hir::CmpOp::GtE => mir::ComparisonOp::Gte,
                         _ => unreachable!(),
                     };
-                    self.emit_instruction(mir::InstructionKind::BinOp {
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        op: mir_op,
-                        left: left_op,
-                        right: right_op,
+                        func: mir::RuntimeFunc::Compare {
+                            kind: mir::CompareKind::Obj,
+                            op: cmp_op,
+                        },
+                        args: vec![left_op, right_op],
                     });
                 }
             }

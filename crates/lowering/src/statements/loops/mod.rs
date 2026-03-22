@@ -69,6 +69,11 @@ impl<'a> Lowering<'a> {
                 self.lower_for_iterable(
                     target, iter_expr, kind, elem_type, body, else_block, hir_module, mir_func,
                 )?;
+            } else {
+                return Err(pyaot_diagnostics::CompilerError::type_error(
+                    format!("cannot iterate over type '{:?}'", iter_type),
+                    iter_expr.span,
+                ));
             }
         }
 

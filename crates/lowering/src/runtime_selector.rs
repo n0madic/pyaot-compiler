@@ -30,7 +30,8 @@ impl<'a> Lowering<'a> {
             | Type::Union(_)
             | Type::RuntimeObject(_)
             | Type::File
-            | Type::Any => ValueKind::Ptr,
+            | Type::Any
+            | Type::BuiltinException(_) => ValueKind::Ptr,
             // Default to int for unknown types (backward compatibility)
             _ => ValueKind::Int,
         }
@@ -98,6 +99,7 @@ impl<'a> Lowering<'a> {
                 | Type::Iterator(_)
                 | Type::Union(_)
                 | Type::RuntimeObject(_)
+                | Type::Any
                 | Type::File
         )
     }

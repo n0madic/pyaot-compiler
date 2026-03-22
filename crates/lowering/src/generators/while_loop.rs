@@ -431,7 +431,8 @@ impl<'a> Lowering<'a> {
                         });
                     }
                     _ => {
-                        // Default to 0 for unsupported expressions
+                        // TODO: support more expression kinds in generator yield
+                        // For now, use 0 as fallback for unsupported expressions
                         yield_block.instructions.push(mir::Instruction {
                             kind: mir::InstructionKind::Copy {
                                 dest: yield_value_local,

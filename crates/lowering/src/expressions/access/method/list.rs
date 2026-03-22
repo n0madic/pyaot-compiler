@@ -65,8 +65,6 @@ impl<'a> Lowering<'a> {
             }
             "pop" => {
                 // .pop(index=-1) - removes and returns element at index
-                let result_local = self.alloc_and_add_local((*elem_ty).clone(), mir_func);
-
                 // Default index is -1 (last element)
                 let index_arg = if arg_operands.is_empty() {
                     mir::Operand::Constant(mir::Constant::Int(-1))
@@ -77,25 +75,89 @@ impl<'a> Lowering<'a> {
                         .expect("list.pop requires at least one argument if not empty")
                 };
 
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::ListPop,
-                    args: vec![obj_operand, index_arg],
-                });
-
-                Ok(mir::Operand::Local(result_local))
+                // ListPop returns *mut Obj for Bool/Float (boxed), need to unbox
+                match &*elem_ty {
+                    Type::Bool => {
+                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: boxed_local,
+                            func: mir::RuntimeFunc::ListPop,
+                            args: vec![obj_operand, index_arg],
+                        });
+                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: result_local,
+                            func: mir::RuntimeFunc::UnboxBool,
+                            args: vec![mir::Operand::Local(boxed_local)],
+                        });
+                        Ok(mir::Operand::Local(result_local))
+                    }
+                    Type::Float => {
+                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: boxed_local,
+                            func: mir::RuntimeFunc::ListPop,
+                            args: vec![obj_operand, index_arg],
+                        });
+                        let result_local = self.alloc_and_add_local(Type::Float, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: result_local,
+                            func: mir::RuntimeFunc::UnboxFloat,
+                            args: vec![mir::Operand::Local(boxed_local)],
+                        });
+                        Ok(mir::Operand::Local(result_local))
+                    }
+                    _ => {
+                        let result_local = self.alloc_and_add_local((*elem_ty).clone(), mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: result_local,
+                            func: mir::RuntimeFunc::ListPop,
+                            args: vec![obj_operand, index_arg],
+                        });
+                        Ok(mir::Operand::Local(result_local))
+                    }
+                }
             }
             "insert" => {
                 // .insert(index, value) - mutates list, returns None
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
-                let mut all_args = vec![obj_operand];
-                all_args.extend(arg_operands);
+                // arg_operands[0] = index, arg_operands[1] = value
+                // Box the value if the element type requires it (Bool/Float stored as boxed)
+                let mut args_iter = arg_operands.into_iter();
+                let index_operand = args_iter
+                    .next()
+                    .unwrap_or(mir::Operand::Constant(mir::Constant::Int(0)));
+                let value_operand = args_iter
+                    .next()
+                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+
+                let boxed_value = match &*elem_ty {
+                    Type::Bool => {
+                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: boxed_local,
+                            func: mir::RuntimeFunc::BoxBool,
+                            args: vec![value_operand],
+                        });
+                        mir::Operand::Local(boxed_local)
+                    }
+                    Type::Float => {
+                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: boxed_local,
+                            func: mir::RuntimeFunc::BoxFloat,
+                            args: vec![value_operand],
+                        });
+                        mir::Operand::Local(boxed_local)
+                    }
+                    _ => value_operand,
+                };
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::ListInsert,
-                    args: all_args,
+                    args: vec![obj_operand, index_operand, boxed_value],
                 });
 
                 Ok(mir::Operand::Local(result_local))
@@ -104,13 +166,38 @@ impl<'a> Lowering<'a> {
                 // .remove(value) - mutates list, returns None (or 1/0 internally)
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
-                let mut all_args = vec![obj_operand];
-                all_args.extend(arg_operands);
+                // Box the search value if the element type requires it (Bool/Float)
+                let value_operand = arg_operands
+                    .into_iter()
+                    .next()
+                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+
+                let boxed_value = match &*elem_ty {
+                    Type::Bool => {
+                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: boxed_local,
+                            func: mir::RuntimeFunc::BoxBool,
+                            args: vec![value_operand],
+                        });
+                        mir::Operand::Local(boxed_local)
+                    }
+                    Type::Float => {
+                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: boxed_local,
+                            func: mir::RuntimeFunc::BoxFloat,
+                            args: vec![value_operand],
+                        });
+                        mir::Operand::Local(boxed_local)
+                    }
+                    _ => value_operand,
+                };
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::ListRemove,
-                    args: all_args,
+                    args: vec![obj_operand, boxed_value],
                 });
 
                 Ok(mir::Operand::Local(result_local))

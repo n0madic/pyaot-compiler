@@ -621,6 +621,40 @@ impl<'a> Lowering<'a> {
                     right: right_operand,
                 },
             });
+        } else if matches!(cond_expr.kind, hir::ExprKind::Bool(true)) {
+            // while True: — always true
+            block.instructions.push(mir::Instruction {
+                kind: mir::InstructionKind::Copy {
+                    dest: cond_result_local,
+                    src: mir::Operand::Constant(mir::Constant::Bool(true)),
+                },
+            });
+        } else if let hir::ExprKind::Var(var_id) = &cond_expr.kind {
+            // while some_var: — copy the variable's boolean value
+            if let Some(&mir_local) = var_to_mir_local.get(var_id) {
+                block.instructions.push(mir::Instruction {
+                    kind: mir::InstructionKind::Copy {
+                        dest: cond_result_local,
+                        src: mir::Operand::Local(mir_local),
+                    },
+                });
+            } else {
+                // Variable not in generator scope, default to true
+                block.instructions.push(mir::Instruction {
+                    kind: mir::InstructionKind::Copy {
+                        dest: cond_result_local,
+                        src: mir::Operand::Constant(mir::Constant::Bool(true)),
+                    },
+                });
+            }
+        } else {
+            // TODO: handle other expression kinds in generator while conditions
+            block.instructions.push(mir::Instruction {
+                kind: mir::InstructionKind::Copy {
+                    dest: cond_result_local,
+                    src: mir::Operand::Constant(mir::Constant::Bool(true)),
+                },
+            });
         }
 
         Ok(cond_result_local)

@@ -71,9 +71,14 @@ impl<'a> Lowering<'a> {
                 value_ty,
                 mir_func,
             ),
-            Type::Set(_elem_ty) => {
-                self.lower_set_method(obj_operand, &method_name, arg_operands, arg_types, mir_func)
-            }
+            Type::Set(elem_ty) => self.lower_set_method(
+                obj_operand,
+                &method_name,
+                arg_operands,
+                arg_types,
+                &elem_ty,
+                mir_func,
+            ),
             Type::Tuple(_) => self.lower_tuple_method(
                 obj_operand,
                 &method_name,

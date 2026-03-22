@@ -18,14 +18,11 @@ impl<'a> Lowering<'a> {
         if args.is_empty() {
             // str() with no args returns empty string ""
             let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-            // Return "None" for str() since that's what Python prints for None
+            let empty = self.intern("");
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::Convert {
-                    from: mir::ConversionTypeKind::None,
-                    to: mir::ConversionTypeKind::Str,
-                },
-                args: vec![],
+                func: mir::RuntimeFunc::MakeStr,
+                args: vec![mir::Operand::Constant(mir::Constant::Str(empty))],
             });
             return Ok(mir::Operand::Local(result_local));
         }
@@ -129,14 +126,11 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 _ => {
-                    // For other types (like heap types), use runtime dispatch if they're pointers
-                    // Otherwise fall back to int→str (since pointers are i64)
+                    // For other types (list, tuple, dict, set, bytes, etc.),
+                    // use runtime dispatch which reads the type tag from the object header
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Convert {
-                            from: mir::ConversionTypeKind::Int,
-                            to: mir::ConversionTypeKind::Str,
-                        },
+                        func: mir::RuntimeFunc::ObjToStr,
                         args: vec![arg_operand],
                     });
                 }
@@ -466,7 +460,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "chr");
+        self.require_exact_args(args, 1, "chr")?;
 
         let i_expr = &hir_module.exprs[args[0]];
         let i_operand = self.lower_expr(i_expr, hir_module, mir_func)?;
@@ -489,7 +483,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "ord");
+        self.require_exact_args(args, 1, "ord")?;
 
         let s_expr = &hir_module.exprs[args[0]];
         let s_operand = self.lower_expr(s_expr, hir_module, mir_func)?;

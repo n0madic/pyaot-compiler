@@ -299,6 +299,7 @@ impl<'a> Lowering<'a> {
                 }
 
                 // Check first pattern and collect bindings (all alternatives must bind same vars)
+                // TODO: bindings should come from the actually matching alternative, not always the first
                 let (mut result_cond, bindings) = self.generate_pattern_check(
                     &patterns[0],
                     subject.clone(),
@@ -650,7 +651,8 @@ impl<'a> Lowering<'a> {
         });
         let mut result_cond = mir::Operand::Local(true_local);
 
-        // Check each key-pattern pair
+        // Check each key-pattern pair with short-circuit branching:
+        // If DictContains returns false, skip DictGet and set condition to false.
         for (key_expr_id, pattern) in keys.iter().zip(patterns.iter()) {
             let key_expr = &ctx.hir_module.exprs[*key_expr_id];
             let key_operand = self.lower_expr(key_expr, ctx.hir_module, mir_func)?;
@@ -663,17 +665,21 @@ impl<'a> Lowering<'a> {
                 args: vec![ctx.subject.clone(), key_operand.clone()],
             });
 
-            // Combine with AND
-            let combined_local = self.alloc_and_add_local(Type::Bool, mir_func);
-            self.emit_instruction(mir::InstructionKind::BinOp {
-                dest: combined_local,
-                op: mir::BinOp::And,
-                left: result_cond,
-                right: mir::Operand::Local(contains_local),
-            });
-            result_cond = mir::Operand::Local(combined_local);
+            // Branch: if key exists, get value; otherwise skip to merge with false
+            let get_bb = self.new_block();
+            let merge_bb = self.new_block();
+            let get_bb_id = get_bb.id;
+            let merge_bb_id = merge_bb.id;
 
-            // Get value and check pattern
+            self.current_block_mut().terminator = mir::Terminator::Branch {
+                cond: mir::Operand::Local(contains_local),
+                then_block: get_bb_id,
+                else_block: merge_bb_id,
+            };
+
+            // True path: key exists, get value and check sub-pattern
+            self.push_block(get_bb);
+
             let value_local = self.alloc_and_add_local(value_type.clone(), mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: value_local,
@@ -691,15 +697,32 @@ impl<'a> Lowering<'a> {
 
             bindings.extend(pattern_bindings);
 
-            // Combine with AND
-            let combined_local2 = self.alloc_and_add_local(Type::Bool, mir_func);
+            // Combine with current result_cond
+            let combined_local = self.alloc_and_add_local(Type::Bool, mir_func);
             self.emit_instruction(mir::InstructionKind::BinOp {
-                dest: combined_local2,
+                dest: combined_local,
                 op: mir::BinOp::And,
-                left: result_cond,
+                left: result_cond.clone(),
                 right: pattern_cond,
             });
-            result_cond = mir::Operand::Local(combined_local2);
+            result_cond = mir::Operand::Local(combined_local);
+
+            // Jump to merge
+            self.current_block_mut().terminator = mir::Terminator::Goto(merge_bb_id);
+
+            // Merge block (false path lands here directly with result_cond unchanged —
+            // since contains was false, the overall AND is already false)
+            self.push_block(merge_bb);
+
+            // After merge: AND result_cond with contains_local to account for the false path
+            let final_local = self.alloc_and_add_local(Type::Bool, mir_func);
+            self.emit_instruction(mir::InstructionKind::BinOp {
+                dest: final_local,
+                op: mir::BinOp::And,
+                left: result_cond,
+                right: mir::Operand::Local(contains_local),
+            });
+            result_cond = mir::Operand::Local(final_local);
         }
 
         // Handle **rest binding (not fully implemented - would need dict minus keys)

@@ -15,7 +15,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "abs");
+        self.require_exact_args(args, 1, "abs")?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -101,7 +101,10 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         if args.len() != 2 {
-            panic!("pow() requires 2 arguments");
+            return Err(pyaot_diagnostics::CompilerError::type_error(
+                "pow() requires exactly 2 arguments",
+                pyaot_utils::Span::dummy(),
+            ));
         }
 
         // Get both arguments
@@ -136,7 +139,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_min_args(args, 1, "round");
+        self.require_min_args(args, 1, "round")?;
 
         let x_expr = &hir_module.exprs[args[0]];
         let x_operand = self.lower_expr(x_expr, hir_module, mir_func)?;
@@ -180,10 +183,13 @@ impl<'a> Lowering<'a> {
         is_min: bool,
     ) -> Result<mir::Operand> {
         if args.is_empty() {
-            panic!(
-                "{}() requires at least 1 argument",
-                if is_min { "min" } else { "max" }
-            );
+            return Err(pyaot_diagnostics::CompilerError::type_error(
+                format!(
+                    "{}() requires at least 1 argument",
+                    if is_min { "min" } else { "max" }
+                ),
+                pyaot_utils::Span::dummy(),
+            ));
         }
 
         // Extract key kwarg if provided (supports both user functions and builtins)
@@ -201,10 +207,13 @@ impl<'a> Lowering<'a> {
 
         // Validate: CPython doesn't allow key= with multiple arguments
         if key_func.is_some() && args.len() > 1 {
-            panic!(
-                "{}() with key= requires exactly one iterable argument",
-                if is_min { "min" } else { "max" }
-            );
+            return Err(pyaot_diagnostics::CompilerError::type_error(
+                format!(
+                    "{}() with key= requires exactly one iterable argument",
+                    if is_min { "min" } else { "max" }
+                ),
+                pyaot_utils::Span::dummy(),
+            ));
         }
 
         if args.len() == 1 {
@@ -947,17 +956,27 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         if args.len() != 2 {
-            panic!("divmod() requires 2 arguments");
+            return Err(pyaot_diagnostics::CompilerError::type_error(
+                "divmod() requires exactly 2 arguments",
+                pyaot_utils::Span::dummy(),
+            ));
         }
 
         let a_expr = &hir_module.exprs[args[0]];
         let b_expr = &hir_module.exprs[args[1]];
 
+        let a_type = self.get_expr_type(a_expr, hir_module);
+        let b_type = self.get_expr_type(b_expr, hir_module);
+
         let a_operand = self.lower_expr(a_expr, hir_module, mir_func)?;
         let b_operand = self.lower_expr(b_expr, hir_module, mir_func)?;
 
+        // Determine result type: float if either arg is float, otherwise int
+        let is_float = matches!(a_type, Type::Float) || matches!(b_type, Type::Float);
+        let result_elem_ty = if is_float { Type::Float } else { Type::Int };
+
         // Compute a // b
-        let quot_local = self.alloc_typed_local(mir_func, Type::Int);
+        let quot_local = self.alloc_typed_local(mir_func, result_elem_ty.clone());
         self.emit_instruction(mir::InstructionKind::BinOp {
             dest: quot_local,
             op: mir::BinOp::FloorDiv,
@@ -966,7 +985,7 @@ impl<'a> Lowering<'a> {
         });
 
         // Compute a % b
-        let rem_local = self.alloc_typed_local(mir_func, Type::Int);
+        let rem_local = self.alloc_typed_local(mir_func, result_elem_ty.clone());
         self.emit_instruction(mir::InstructionKind::BinOp {
             dest: rem_local,
             op: mir::BinOp::Mod,
@@ -975,18 +994,47 @@ impl<'a> Lowering<'a> {
         });
 
         // Create tuple (quot, rem)
-        let result_local =
-            self.alloc_and_add_local(Type::Tuple(vec![Type::Int, Type::Int]), mir_func);
+        let result_local = self.alloc_and_add_local(
+            Type::Tuple(vec![result_elem_ty.clone(), result_elem_ty.clone()]),
+            mir_func,
+        );
 
-        // Allocate tuple with 2 elements (elem_tag=1 for ELEM_RAW_INT)
+        // For int results use ELEM_RAW_INT (1), for float use ELEM_HEAP_OBJ (0)
+        let elem_tag: i64 = if is_float { 0 } else { 1 };
+
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
             func: mir::RuntimeFunc::MakeTuple,
             args: vec![
                 mir::Operand::Constant(mir::Constant::Int(2)),
-                mir::Operand::Constant(mir::Constant::Int(1)), // ELEM_RAW_INT
+                mir::Operand::Constant(mir::Constant::Int(elem_tag)),
             ],
         });
+
+        // Box float results before storing in tuple
+        let quot_operand = if is_float {
+            let boxed = self.alloc_and_add_local(Type::Str, mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: boxed,
+                func: mir::RuntimeFunc::BoxFloat,
+                args: vec![mir::Operand::Local(quot_local)],
+            });
+            mir::Operand::Local(boxed)
+        } else {
+            mir::Operand::Local(quot_local)
+        };
+
+        let rem_operand = if is_float {
+            let boxed = self.alloc_and_add_local(Type::Str, mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: boxed,
+                func: mir::RuntimeFunc::BoxFloat,
+                args: vec![mir::Operand::Local(rem_local)],
+            });
+            mir::Operand::Local(boxed)
+        } else {
+            mir::Operand::Local(rem_local)
+        };
 
         // Set tuple elements
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -995,7 +1043,7 @@ impl<'a> Lowering<'a> {
             args: vec![
                 mir::Operand::Local(result_local),
                 mir::Operand::Constant(mir::Constant::Int(0)),
-                mir::Operand::Local(quot_local),
+                quot_operand,
             ],
         });
 
@@ -1005,7 +1053,7 @@ impl<'a> Lowering<'a> {
             args: vec![
                 mir::Operand::Local(result_local),
                 mir::Operand::Constant(mir::Constant::Int(1)),
-                mir::Operand::Local(rem_local),
+                rem_operand,
             ],
         });
 
@@ -1019,7 +1067,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "bin");
+        self.require_exact_args(args, 1, "bin")?;
 
         let n_expr = &hir_module.exprs[args[0]];
         let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
@@ -1042,7 +1090,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "hex");
+        self.require_exact_args(args, 1, "hex")?;
 
         let n_expr = &hir_module.exprs[args[0]];
         let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
@@ -1065,7 +1113,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "oct");
+        self.require_exact_args(args, 1, "oct")?;
 
         let n_expr = &hir_module.exprs[args[0]];
         let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
@@ -1089,7 +1137,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
         runtime_func: mir::RuntimeFunc,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "fmt_int");
+        self.require_exact_args(args, 1, "fmt_int")?;
 
         let n_expr = &hir_module.exprs[args[0]];
         let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;

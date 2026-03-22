@@ -526,13 +526,14 @@ impl<'a> Lowering<'a> {
         let msg_str = self.intern(&msg);
         let msg_operand = mir::Operand::Constant(mir::Constant::Str(msg_str));
 
-        // Emit the assertion fail instruction without allocating a local
-        // The dummy result is never used since we mark unreachable
+        // Emit the assertion fail instruction. AssertFail never returns,
+        // but we need a dest local for the instruction format.
+        let dummy_local = self.alloc_local_id();
         self.current_block_mut()
             .instructions
             .push(mir::Instruction {
                 kind: mir::InstructionKind::RuntimeCall {
-                    dest: LocalId::new(0), // Dummy, won't be used
+                    dest: dummy_local,
                     func: mir::RuntimeFunc::AssertFail,
                     args: vec![msg_operand],
                 },

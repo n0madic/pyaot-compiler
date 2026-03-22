@@ -87,6 +87,7 @@ impl<'a> Lowering<'a> {
         self.cell_vars.clear();
         self.nonlocal_cells.clear();
         self.narrowed_union_vars.clear();
+        self.loop_stack.clear();
         self.expr_type_cache.borrow_mut().clear();
 
         // Copy cell_vars and nonlocal_vars from HIR function
@@ -355,11 +356,9 @@ impl<'a> Lowering<'a> {
 
         for ((func_id, param_idx), slot) in slots_to_init {
             // Get the function and parameter
-            let func = hir_module.func_defs.get(&func_id);
-            if func.is_none() {
+            let Some(func) = hir_module.func_defs.get(&func_id) else {
                 continue;
-            }
-            let func = func.expect("function must be defined in module");
+            };
             let param = &func.params[param_idx];
 
             if let Some(default_id) = param.default {

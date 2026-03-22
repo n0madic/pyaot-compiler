@@ -14,6 +14,7 @@ impl<'a> Lowering<'a> {
         method_name: &str,
         arg_operands: Vec<mir::Operand>,
         arg_types: Vec<Type>,
+        elem_ty: &Type,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         match method_name {
@@ -225,17 +226,64 @@ impl<'a> Lowering<'a> {
             }
             "pop" => {
                 // .pop() - removes and returns an arbitrary element
-                // The result is a boxed object that needs to be unboxed based on set element type
-                let result_local = self.alloc_and_add_local(Type::Any, mir_func);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::SetPop,
-                    args: vec![obj_operand],
-                });
-
-                // TODO: Unbox based on element type when available
-                Ok(mir::Operand::Local(result_local))
+                // SetPop returns a boxed *mut Obj; unbox based on element type
+                match elem_ty {
+                    Type::Bool => {
+                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: boxed_local,
+                            func: mir::RuntimeFunc::SetPop,
+                            args: vec![obj_operand],
+                        });
+                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: result_local,
+                            func: mir::RuntimeFunc::UnboxBool,
+                            args: vec![mir::Operand::Local(boxed_local)],
+                        });
+                        Ok(mir::Operand::Local(result_local))
+                    }
+                    Type::Float => {
+                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: boxed_local,
+                            func: mir::RuntimeFunc::SetPop,
+                            args: vec![obj_operand],
+                        });
+                        let result_local = self.alloc_and_add_local(Type::Float, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: result_local,
+                            func: mir::RuntimeFunc::UnboxFloat,
+                            args: vec![mir::Operand::Local(boxed_local)],
+                        });
+                        Ok(mir::Operand::Local(result_local))
+                    }
+                    Type::Int => {
+                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: boxed_local,
+                            func: mir::RuntimeFunc::SetPop,
+                            args: vec![obj_operand],
+                        });
+                        let result_local = self.alloc_and_add_local(Type::Int, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: result_local,
+                            func: mir::RuntimeFunc::UnboxInt,
+                            args: vec![mir::Operand::Local(boxed_local)],
+                        });
+                        Ok(mir::Operand::Local(result_local))
+                    }
+                    _ => {
+                        // Heap types (Str, Tuple, etc.) — no unboxing needed
+                        let result_local = self.alloc_and_add_local(elem_ty.clone(), mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: result_local,
+                            func: mir::RuntimeFunc::SetPop,
+                            args: vec![obj_operand],
+                        });
+                        Ok(mir::Operand::Local(result_local))
+                    }
+                }
             }
             "update" => {
                 // .update(other) - adds all elements from other

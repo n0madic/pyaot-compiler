@@ -249,6 +249,11 @@ impl<'a> Lowering<'a> {
         // Jump to the exit block of the innermost loop
         if let Some((_continue_target, break_target)) = self.current_loop() {
             self.current_block_mut().terminator = mir::Terminator::Goto(break_target);
+        } else {
+            debug_assert!(
+                false,
+                "break outside loop should be caught by semantic analysis"
+            );
         }
     }
 
@@ -257,6 +262,11 @@ impl<'a> Lowering<'a> {
         // Jump to the header block of the innermost loop
         if let Some((continue_target, _break_target)) = self.current_loop() {
             self.current_block_mut().terminator = mir::Terminator::Goto(continue_target);
+        } else {
+            debug_assert!(
+                false,
+                "continue outside loop should be caught by semantic analysis"
+            );
         }
     }
 

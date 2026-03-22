@@ -340,8 +340,6 @@ impl<'a> Lowering<'a> {
 
         // Check if we have pre-computed capture types for this lambda
         let capture_types = self.get_closure_capture_types(&func.id).cloned();
-        let num_captures = capture_types.as_ref().map(|c| c.len()).unwrap_or(0);
-
         // Build a map of param var_id to param index
         let mut var_to_index: IndexMap<VarId, usize> = IndexMap::new();
         for (i, param) in func.params.iter().enumerate() {
@@ -368,27 +366,10 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // For non-capture parameters that are still unknown, try to infer from capture types
-        // (e.g., if we have string captures, string params are likely)
-        let has_string_captures = capture_types
-            .as_ref()
-            .map(|cts| cts.iter().any(|t| matches!(t, Type::Str)))
-            .unwrap_or(false);
-
-        // Convert to Vec<Type>, using appropriate fallback
+        // Convert to Vec<Type>, using Type::Any for unresolved parameters
         inferred_types
             .into_iter()
-            .enumerate()
-            .map(|(i, opt)| {
-                opt.unwrap_or({
-                    // For non-capture params after capture params, try to infer from context
-                    if i >= num_captures && has_string_captures {
-                        Type::Str
-                    } else {
-                        Type::Int
-                    }
-                })
-            })
+            .map(|opt| opt.unwrap_or(Type::Any))
             .collect()
     }
 

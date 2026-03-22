@@ -356,11 +356,12 @@ impl<'a> Lowering<'a> {
                     });
                     Ok(mir::Operand::Local(dest_local))
                 } else {
+                    // TODO: handle non-global variables in generator iterables
                     Ok(mir::Operand::Constant(mir::Constant::Int(0)))
                 }
             }
             _ => {
-                // For other expressions, return a placeholder
+                // TODO: support more expression kinds as generator iterables
                 Ok(mir::Operand::Constant(mir::Constant::Int(0)))
             }
         }

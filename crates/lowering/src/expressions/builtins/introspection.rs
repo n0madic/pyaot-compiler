@@ -19,7 +19,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 2, "isinstance");
+        self.require_exact_args(args, 2, "isinstance")?;
 
         let obj_expr = &hir_module.exprs[args[0]];
         let type_expr = &hir_module.exprs[args[1]];
@@ -123,7 +123,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 2, "issubclass");
+        self.require_exact_args(args, 2, "issubclass")?;
 
         let class_expr = &hir_module.exprs[args[0]];
         let parent_expr = &hir_module.exprs[args[1]];
@@ -166,7 +166,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "hash");
+        self.require_exact_args(args, 1, "hash")?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -299,7 +299,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "id");
+        self.require_exact_args(args, 1, "id")?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -370,7 +370,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "repr");
+        self.require_exact_args(args, 1, "repr")?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -434,7 +434,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "ascii");
+        self.require_exact_args(args, 1, "ascii")?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -479,7 +479,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "type");
+        self.require_exact_args(args, 1, "type")?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -534,7 +534,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "callable");
+        self.require_exact_args(args, 1, "callable")?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let _arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -543,14 +543,8 @@ impl<'a> Lowering<'a> {
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
         // Check if type is callable at compile time
-        // For our compiler: functions, classes, and lambdas are callable
-        let is_callable = matches!(
-            &arg_type,
-            Type::Class { .. } // Classes are callable (constructors)
-        );
-
-        // For this simple implementation, we just check known callables
-        // In a full implementation, we'd need to check for __call__ method
+        // Classes are callable (constructors), functions/lambdas are callable
+        let is_callable = matches!(&arg_type, Type::Class { .. } | Type::Function { .. });
         self.emit_instruction(mir::InstructionKind::Const {
             dest: result_local,
             value: mir::Constant::Bool(is_callable),
@@ -619,7 +613,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_min_args(args, 2, "getattr");
+        self.require_min_args(args, 2, "getattr")?;
 
         let obj_expr = &hir_module.exprs[args[0]];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;

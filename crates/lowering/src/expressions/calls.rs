@@ -909,9 +909,11 @@ impl<'a> Lowering<'a> {
         // Allocate result local for the instance
         let result_local = self.alloc_and_add_local(class_type, mir_func);
 
-        // Create instance with a default field count of 10 (generous estimate)
-        // In a full implementation, this would come from exported class info
-        let default_field_count = 10;
+        // Try to get actual field count from class info, fall back to 10
+        let default_field_count = self
+            .get_class_info(&class_id)
+            .map(|info| info.total_field_count as i64)
+            .unwrap_or(10); // TODO: export field count in cross-module class metadata
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
             func: mir::RuntimeFunc::MakeInstance,

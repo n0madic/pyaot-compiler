@@ -16,6 +16,8 @@ pub(crate) fn is_heap_type(ty: &Type) -> bool {
             | Type::Class { .. }
             | Type::Iterator(_)
             | Type::Union(_)
+            | Type::RuntimeObject(_)
+            | Type::Any
             | Type::File
     )
 }

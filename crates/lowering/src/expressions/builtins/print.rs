@@ -181,13 +181,11 @@ impl<'a> Lowering<'a> {
         let prompt_operand = if args.is_empty() {
             // Create empty string for default prompt
             let empty_str_local = self.alloc_and_add_local(Type::Str, mir_func);
+            let empty = self.intern("");
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: empty_str_local,
                 func: mir::RuntimeFunc::MakeStr,
-                args: vec![
-                    mir::Operand::Constant(mir::Constant::Int(0)), // null pointer
-                    mir::Operand::Constant(mir::Constant::Int(0)), // length 0
-                ],
+                args: vec![mir::Operand::Constant(mir::Constant::Str(empty))],
             });
             mir::Operand::Local(empty_str_local)
         } else {

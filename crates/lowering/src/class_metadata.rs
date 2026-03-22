@@ -491,20 +491,24 @@ impl<'a> Lowering<'a> {
 
             // Compute heap field mask: bit i is set if field i is a heap type (pointer)
             // that needs GC tracing. Raw values (Int, Float, Bool, None) are NOT heap.
+            // Use class_info.field_types (which includes inherited + own fields in correct
+            // absolute order) to ensure inherited heap fields are also tracked by the GC.
             let mut heap_field_mask: i64 = 0;
-            for (i, field) in class_def.fields.iter().enumerate() {
-                if i >= 64 {
-                    break; // Only support up to 64 fields
-                }
-                let is_heap = !matches!(
-                    field.ty,
-                    pyaot_types::Type::Int
-                        | pyaot_types::Type::Float
-                        | pyaot_types::Type::Bool
-                        | pyaot_types::Type::None
-                );
-                if is_heap {
-                    heap_field_mask |= 1i64 << i;
+            if let Some(class_info) = self.get_class_info(class_id) {
+                for (i, (_name, ty)) in class_info.field_types.iter().enumerate() {
+                    if i >= 64 {
+                        break; // Only support up to 64 fields
+                    }
+                    let is_heap = !matches!(
+                        ty,
+                        pyaot_types::Type::Int
+                            | pyaot_types::Type::Float
+                            | pyaot_types::Type::Bool
+                            | pyaot_types::Type::None
+                    );
+                    if is_heap {
+                        heap_field_mask |= 1i64 << i;
+                    }
                 }
             }
             self.emit_instruction(mir::InstructionKind::RuntimeCall {

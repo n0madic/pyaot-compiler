@@ -42,8 +42,10 @@ impl<'a> Lowering<'a> {
         // Return type is an i64 (either a boxed value or raw int)
         let return_type = Type::Int;
 
-        // Create a new FuncId for the resume function
-        let resume_func_id = FuncId(func.id.0 + 10000);
+        // Create a new FuncId for the resume function.
+        // Offset by a large constant to avoid collisions with regular function IDs.
+        const RESUME_FUNC_ID_OFFSET: u32 = 10000;
+        let resume_func_id = FuncId(func.id.0 + RESUME_FUNC_ID_OFFSET);
 
         let mut mir_func = mir::Function::new(
             resume_func_id,

@@ -352,12 +352,27 @@ impl<'a> Lowering<'a> {
                 }
             }
             hir::ExprKind::Set(elements) => {
-                // Infer set element type from first element
+                // Infer set element type from all elements
                 if elements.is_empty() {
                     Type::Set(Box::new(Type::Any))
                 } else {
-                    let elem_ty = self.get_type_of_expr_id(elements[0], hir_module);
-                    Type::Set(Box::new(elem_ty))
+                    let first_ty = self.get_type_of_expr_id(elements[0], hir_module);
+                    let mut all_same = true;
+                    let mut unique_types = vec![first_ty.clone()];
+                    for elem_id in &elements[1..] {
+                        let elem_ty = self.get_type_of_expr_id(*elem_id, hir_module);
+                        if elem_ty != first_ty {
+                            all_same = false;
+                            if !unique_types.contains(&elem_ty) {
+                                unique_types.push(elem_ty);
+                            }
+                        }
+                    }
+                    if all_same {
+                        Type::Set(Box::new(first_ty))
+                    } else {
+                        Type::Set(Box::new(Type::Union(unique_types)))
+                    }
                 }
             }
             hir::ExprKind::UnOp { op, operand } => match op {
@@ -608,7 +623,9 @@ impl<'a> Lowering<'a> {
                         }
                         let elem_type = match &arg_type {
                             Type::List(elem) => (**elem).clone(),
-                            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                            Type::Tuple(elems) if !elems.is_empty() => {
+                                Type::normalize_union(elems.clone())
+                            }
                             Type::Tuple(_) => Type::Any,
                             Type::Dict(key, _) => (**key).clone(),
                             Type::Set(elem) => (**elem).clone(),
@@ -626,7 +643,9 @@ impl<'a> Lowering<'a> {
                         let arg_type = self.get_type_of_expr_id(args[0], hir_module);
                         let elem_type = match &arg_type {
                             Type::List(elem) => (**elem).clone(),
-                            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                            Type::Tuple(elems) if !elems.is_empty() => {
+                                Type::normalize_union(elems.clone())
+                            }
                             Type::Tuple(_) => Type::Any,
                             Type::Set(elem) => (**elem).clone(),
                             Type::Dict(key, _) => (**key).clone(),
@@ -660,7 +679,9 @@ impl<'a> Lowering<'a> {
                         let arg_type = self.get_type_of_expr_id(args[0], hir_module);
                         let elem_type = match &arg_type {
                             Type::List(elem) => (**elem).clone(),
-                            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                            Type::Tuple(elems) if !elems.is_empty() => {
+                                Type::normalize_union(elems.clone())
+                            }
                             Type::Tuple(_) => Type::Any,
                             Type::Dict(key, _) => (**key).clone(),
                             Type::Str => Type::Str,
@@ -677,7 +698,9 @@ impl<'a> Lowering<'a> {
                         let arg_type = self.get_type_of_expr_id(args[0], hir_module);
                         let elem_type = match &arg_type {
                             Type::List(elem) => (**elem).clone(),
-                            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                            Type::Tuple(elems) if !elems.is_empty() => {
+                                Type::normalize_union(elems.clone())
+                            }
                             Type::Str => Type::Str,
                             Type::Dict(key, _) => (**key).clone(),
                             Type::Set(elem) => (**elem).clone(),
@@ -706,7 +729,9 @@ impl<'a> Lowering<'a> {
                             let arg_type = self.get_type_of_expr_id(*arg_id, hir_module);
                             let elem_type = match &arg_type {
                                 Type::List(elem) => (**elem).clone(),
-                                Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                                Type::Tuple(elems) if !elems.is_empty() => {
+                                    Type::normalize_union(elems.clone())
+                                }
                                 Type::Str => Type::Str,
                                 Type::Dict(key, _) => (**key).clone(),
                                 Type::Set(elem) => (**elem).clone(),
@@ -745,7 +770,9 @@ impl<'a> Lowering<'a> {
                             let iterable_type = self.get_type_of_expr_id(args[1], hir_module);
                             let elem_type = match &iterable_type {
                                 Type::List(elem) => (**elem).clone(),
-                                Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                                Type::Tuple(elems) if !elems.is_empty() => {
+                                    Type::normalize_union(elems.clone())
+                                }
                                 Type::Str => Type::Str,
                                 Type::Dict(key, _) => (**key).clone(),
                                 Type::Set(elem) => (**elem).clone(),
@@ -765,7 +792,9 @@ impl<'a> Lowering<'a> {
                         let arg_type = self.get_type_of_expr_id(args[0], hir_module);
                         let elem_type = match &arg_type {
                             Type::List(elem) => (**elem).clone(),
-                            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                            Type::Tuple(elems) if !elems.is_empty() => {
+                                Type::normalize_union(elems.clone())
+                            }
                             Type::Tuple(_) => Type::Any,
                             Type::Set(elem) => (**elem).clone(),
                             Type::Dict(key, _) => (**key).clone(),
@@ -783,7 +812,9 @@ impl<'a> Lowering<'a> {
                         let arg_type = self.get_type_of_expr_id(args[0], hir_module);
                         let elem_type = match &arg_type {
                             Type::List(elem) => (**elem).clone(),
-                            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                            Type::Tuple(elems) if !elems.is_empty() => {
+                                Type::normalize_union(elems.clone())
+                            }
                             Type::Tuple(_) => Type::Any,
                             Type::Set(elem) => (**elem).clone(),
                             Type::Dict(key, _) => (**key).clone(),
@@ -806,7 +837,9 @@ impl<'a> Lowering<'a> {
                         let arg_type = self.get_type_of_expr_id(args[0], hir_module);
                         let elem_type = match &arg_type {
                             Type::List(elem) => (**elem).clone(),
-                            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                            Type::Tuple(elems) if !elems.is_empty() => {
+                                Type::normalize_union(elems.clone())
+                            }
                             Type::Tuple(_) => Type::Any,
                             Type::Set(elem) => (**elem).clone(),
                             Type::Dict(key, _) => (**key).clone(),
@@ -824,7 +857,25 @@ impl<'a> Lowering<'a> {
                     | hir::Builtin::Oct
                     | hir::Builtin::Input
                     | hir::Builtin::Type => Type::Str,
-                    hir::Builtin::Divmod => Type::Tuple(vec![Type::Int, Type::Int]),
+                    hir::Builtin::Divmod => {
+                        // divmod(a, b) -> (int, int) for ints, (float, float) for floats
+                        let result_ty = if !args.is_empty() {
+                            let a_ty = self.get_type_of_expr_id(args[0], hir_module);
+                            let b_ty = if args.len() > 1 {
+                                self.get_type_of_expr_id(args[1], hir_module)
+                            } else {
+                                Type::Int
+                            };
+                            if matches!(a_ty, Type::Float) || matches!(b_ty, Type::Float) {
+                                Type::Float
+                            } else {
+                                Type::Int
+                            }
+                        } else {
+                            Type::Int
+                        };
+                        Type::Tuple(vec![result_ty.clone(), result_ty])
+                    }
                     hir::Builtin::Chain => {
                         // itertools.chain(*iterables) -> Iterator[Any]
                         Type::Iterator(Box::new(Type::Any))
@@ -835,7 +886,9 @@ impl<'a> Lowering<'a> {
                             let iterable_type = self.get_type_of_expr_id(args[0], hir_module);
                             let elem_type = match &iterable_type {
                                 Type::List(elem) => (**elem).clone(),
-                                Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                                Type::Tuple(elems) if !elems.is_empty() => {
+                                    Type::normalize_union(elems.clone())
+                                }
                                 Type::Set(elem) => (**elem).clone(),
                                 Type::Dict(key, _) => (**key).clone(),
                                 Type::Str => Type::Str,
@@ -854,7 +907,9 @@ impl<'a> Lowering<'a> {
                             let iterable_type = self.get_type_of_expr_id(args[1], hir_module);
                             match &iterable_type {
                                 Type::List(elem) => (**elem).clone(),
-                                Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                                Type::Tuple(elems) if !elems.is_empty() => {
+                                    Type::normalize_union(elems.clone())
+                                }
                                 Type::Set(elem) => (**elem).clone(),
                                 Type::Iterator(elem) => (**elem).clone(),
                                 Type::Str => Type::Str,
@@ -884,8 +939,6 @@ impl<'a> Lowering<'a> {
 
                 if left_ty == right_ty {
                     left_ty
-                } else if matches!(left_ty, Type::Bool) && matches!(right_ty, Type::Bool) {
-                    Type::Bool
                 } else {
                     // For mixed types, return Any
                     Type::Any

@@ -170,14 +170,26 @@ impl<'a> Lowering<'a> {
 
         self.current_block_mut().terminator = mir::Terminator::Goto(header_id);
 
-        // Header: check elem < range_stop (positive step assumed for simplicity)
+        // Header: check loop condition based on step direction
         self.push_block(header_bb);
 
         let cond_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
+        // Determine step direction for correct comparison operator
+        let cmp_op = if range_args.len() >= 3 {
+            let step_expr = &hir_module.exprs[range_args[2]];
+            match crate::utils::get_step_direction(step_expr, hir_module) {
+                crate::utils::StepDirection::Positive => mir::BinOp::Lt,
+                crate::utils::StepDirection::Negative => mir::BinOp::Gt,
+                crate::utils::StepDirection::Unknown => mir::BinOp::Lt, // Default to positive
+            }
+        } else {
+            mir::BinOp::Lt // Default: positive step
+        };
+
         self.emit_instruction(mir::InstructionKind::BinOp {
             dest: cond_local,
-            op: mir::BinOp::Lt,
+            op: cmp_op,
             left: mir::Operand::Local(elem_local),
             right: range_stop,
         });

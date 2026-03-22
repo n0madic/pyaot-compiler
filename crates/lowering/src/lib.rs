@@ -399,6 +399,15 @@ impl<'a> Lowering<'a> {
                         });
                         mir::Operand::Local(boxed_local)
                     }
+                    Type::None => {
+                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: boxed_local,
+                            func: mir::RuntimeFunc::BoxNone,
+                            args: vec![],
+                        });
+                        mir::Operand::Local(boxed_local)
+                    }
                     _ => op.clone(), // Already heap objects or int (which shouldn't happen with elem_tag 0)
                 }
             } else {

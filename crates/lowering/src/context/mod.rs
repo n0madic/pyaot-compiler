@@ -28,8 +28,8 @@ use std::collections::HashMap;
 
 /// Key function source for sort/sorted operations
 pub enum KeyFuncSource {
-    /// User-defined function (by FuncId)
-    UserFunc(FuncId),
+    /// User-defined function (by FuncId, with optional captures)
+    UserFunc(FuncId, Vec<hir::ExprId>),
     /// First-class builtin function (len, str, etc.)
     Builtin(mir::BuiltinFunctionKind),
 }
