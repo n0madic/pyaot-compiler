@@ -748,10 +748,16 @@ impl<'a> Lowering<'a> {
                         // Try to infer element type from the function's return type
                         let elem_type = if args.len() >= 2 {
                             let func_expr = &hir_module.exprs[args[0]];
-                            if let hir::ExprKind::FuncRef(func_id) = &func_expr.kind {
-                                if let Some(return_type) = self.get_func_return_type(func_id) {
+                            // Extract func_id from FuncRef or Closure
+                            let func_id = match &func_expr.kind {
+                                hir::ExprKind::FuncRef(id) => Some(*id),
+                                hir::ExprKind::Closure { func, .. } => Some(*func),
+                                _ => None,
+                            };
+                            if let Some(func_id) = func_id {
+                                if let Some(return_type) = self.get_func_return_type(&func_id) {
                                     return_type.clone()
-                                } else if let Some(func_def) = hir_module.func_defs.get(func_id) {
+                                } else if let Some(func_def) = hir_module.func_defs.get(&func_id) {
                                     func_def.return_type.clone().unwrap_or(Type::Any)
                                 } else {
                                     Type::Any
