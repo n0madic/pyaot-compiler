@@ -28,7 +28,7 @@ impl<'a> Lowering<'a> {
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
                 // Use actual argument type for boxing decision
                 let elem_type = arg_types.first().cloned().unwrap_or(Type::Any);
-                let boxed_elem = self.box_dict_key_if_needed(elem_arg, &elem_type, mir_func);
+                let boxed_elem = self.box_primitive_if_needed(elem_arg, &elem_type, mir_func);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -47,7 +47,7 @@ impl<'a> Lowering<'a> {
                     .next()
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
                 let elem_type = arg_types.first().cloned().unwrap_or(Type::Any);
-                let boxed_elem = self.box_dict_key_if_needed(elem_arg, &elem_type, mir_func);
+                let boxed_elem = self.box_primitive_if_needed(elem_arg, &elem_type, mir_func);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -66,7 +66,7 @@ impl<'a> Lowering<'a> {
                     .next()
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
                 let elem_type = arg_types.first().cloned().unwrap_or(Type::Any);
-                let boxed_elem = self.box_dict_key_if_needed(elem_arg, &elem_type, mir_func);
+                let boxed_elem = self.box_primitive_if_needed(elem_arg, &elem_type, mir_func);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -89,9 +89,9 @@ impl<'a> Lowering<'a> {
                 Ok(mir::Operand::Local(result_local))
             }
             "copy" => {
-                // .copy() - shallow copy
+                // .copy() - shallow copy, preserving the source set's element type
                 let result_local =
-                    self.alloc_and_add_local(Type::Set(Box::new(Type::Any)), mir_func);
+                    self.alloc_and_add_local(Type::Set(Box::new(elem_ty.clone())), mir_func);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,

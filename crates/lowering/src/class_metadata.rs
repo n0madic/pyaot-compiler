@@ -202,8 +202,8 @@ impl<'a> Lowering<'a> {
             // Add/override methods and update vtable slots based on method_kind
             for method_id in &class_def.methods {
                 if let Some(func) = hir_module.func_defs.get(method_id) {
-                    // Function names are mangled as "ClassName$methodname"
-                    // Extract the original method name for lookup
+                    // Method name mangling convention: ClassName$method_name.
+                    // The `$` separator is guaranteed unique as Python identifiers cannot contain `$`.
                     let func_name_str = self.resolve(func.name);
                     let method_name_str = if let Some(idx) = func_name_str.find('$') {
                         // Extract method name after the '$'

@@ -47,10 +47,11 @@ impl<'a> Lowering<'a> {
             }
             "encode" => {
                 // encode(encoding="utf-8") - provide default encoding if not given
+                // Use Constant::None as the default so the runtime treats it as "use UTF-8"
                 let encoding_arg = arg_operands
                     .first()
                     .cloned()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::Int(0)));
+                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
                 let result_local = self.alloc_and_add_local(Type::Bytes, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,

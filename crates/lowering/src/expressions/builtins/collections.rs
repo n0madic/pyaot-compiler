@@ -232,7 +232,7 @@ impl<'a> Lowering<'a> {
 
         // Box element if needed
         let boxed_elem =
-            self.box_dict_key_if_needed(mir::Operand::Local(elem_local), &elem_type, mir_func);
+            self.box_primitive_if_needed(mir::Operand::Local(elem_local), &elem_type, mir_func);
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: dummy_local,
@@ -620,7 +620,7 @@ impl<'a> Lowering<'a> {
             });
 
             // Box primitive values (all dict values must be heap pointers for GC)
-            let boxed_value = self.box_dict_value_if_needed(value_operand, &value_type, mir_func);
+            let boxed_value = self.box_primitive_if_needed(value_operand, &value_type, mir_func);
 
             // Set the key-value pair
             self.emit_instruction(mir::InstructionKind::RuntimeCall {

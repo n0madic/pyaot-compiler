@@ -48,111 +48,35 @@ impl<'a> Lowering<'a> {
         mir::Operand::Local(boxed_local)
     }
 
-    /// Dict keys need to be object pointers (primitives need to be boxed).
-    /// Use Type::Str as proxy for pointer type since it maps to I64 in Cranelift.
-    fn box_dict_key_if_needed(
+    /// Box a primitive value to an object pointer when needed.
+    ///
+    /// Primitives (Int, Bool, Float, None) must be boxed to `*mut Obj` for storage in
+    /// dict keys/values, union-typed variables, and any other context requiring heap pointers.
+    /// Heap types (Str, List, Dict, Tuple, Set, class instances, etc.) are already pointers
+    /// and pass through unchanged.
+    ///
+    /// Uses `Type::Str` as a proxy for the pointer type since it maps to I64 in Cranelift.
+    fn box_primitive_if_needed(
         &mut self,
-        key_operand: mir::Operand,
-        key_type: &Type,
+        operand: mir::Operand,
+        ty: &Type,
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
-        match key_type {
+        match ty {
             Type::Int => {
-                self.emit_box_primitive(key_operand, Type::Str, mir::RuntimeFunc::BoxInt, mir_func)
+                self.emit_box_primitive(operand, Type::Str, mir::RuntimeFunc::BoxInt, mir_func)
             }
             Type::Bool => {
-                self.emit_box_primitive(key_operand, Type::Str, mir::RuntimeFunc::BoxBool, mir_func)
+                self.emit_box_primitive(operand, Type::Str, mir::RuntimeFunc::BoxBool, mir_func)
             }
-            Type::Float => self.emit_box_primitive(
-                key_operand,
-                Type::Str,
-                mir::RuntimeFunc::BoxFloat,
-                mir_func,
-            ),
+            Type::Float => {
+                self.emit_box_primitive(operand, Type::Str, mir::RuntimeFunc::BoxFloat, mir_func)
+            }
             Type::None => {
-                self.emit_box_primitive(key_operand, Type::Str, mir::RuntimeFunc::BoxNone, mir_func)
+                self.emit_box_primitive(operand, Type::Str, mir::RuntimeFunc::BoxNone, mir_func)
             }
-            // Str, Tuple, and other heap types are already object pointers
-            _ => key_operand,
-        }
-    }
-
-    /// Dict values need to be object pointers for GC to track them correctly.
-    /// Primitives (Int, Bool, Float, None) must be boxed.
-    fn box_dict_value_if_needed(
-        &mut self,
-        value_operand: mir::Operand,
-        value_type: &Type,
-        mir_func: &mut mir::Function,
-    ) -> mir::Operand {
-        // Use Type::Str as proxy for pointer type (maps to I64 in Cranelift)
-        match value_type {
-            Type::Int => self.emit_box_primitive(
-                value_operand,
-                Type::Str,
-                mir::RuntimeFunc::BoxInt,
-                mir_func,
-            ),
-            Type::Bool => self.emit_box_primitive(
-                value_operand,
-                Type::Str,
-                mir::RuntimeFunc::BoxBool,
-                mir_func,
-            ),
-            Type::Float => self.emit_box_primitive(
-                value_operand,
-                Type::Str,
-                mir::RuntimeFunc::BoxFloat,
-                mir_func,
-            ),
-            Type::None => self.emit_box_primitive(
-                value_operand,
-                Type::Str,
-                mir::RuntimeFunc::BoxNone,
-                mir_func,
-            ),
-            // Str, List, Dict, Tuple, Set, class instances, etc. are already object pointers
-            _ => value_operand,
-        }
-    }
-
-    /// Box a primitive value when assigned to a Union-typed variable.
-    /// Union values are stored as boxed pointers (*mut Obj).
-    /// Note: We use Type::Str as a proxy for pointer types since it maps to I64 in Cranelift.
-    fn box_value_for_union(
-        &mut self,
-        value_operand: mir::Operand,
-        value_type: &Type,
-        mir_func: &mut mir::Function,
-    ) -> mir::Operand {
-        // Use Str as proxy for pointer type (maps to I64 in Cranelift)
-        match value_type {
-            Type::Int => self.emit_box_primitive(
-                value_operand,
-                Type::Str,
-                mir::RuntimeFunc::BoxInt,
-                mir_func,
-            ),
-            Type::Bool => self.emit_box_primitive(
-                value_operand,
-                Type::Str,
-                mir::RuntimeFunc::BoxBool,
-                mir_func,
-            ),
-            Type::Float => self.emit_box_primitive(
-                value_operand,
-                Type::Str,
-                mir::RuntimeFunc::BoxFloat,
-                mir_func,
-            ),
-            Type::None => self.emit_box_primitive(
-                value_operand,
-                Type::Str,
-                mir::RuntimeFunc::BoxNone,
-                mir_func,
-            ),
-            // Heap types are already pointers - no boxing needed
-            _ => value_operand,
+            // All heap types are already object pointers — no boxing needed
+            _ => operand,
         }
     }
 
@@ -289,7 +213,8 @@ impl<'a> Lowering<'a> {
                     let param = &param_class.regular[i];
                     if let Some(Type::Any) = &param.ty {
                         let arg_type = self.operand_type(operand, mir_func);
-                        *operand = self.box_value_for_union(operand.clone(), &arg_type, mir_func);
+                        *operand =
+                            self.box_primitive_if_needed(operand.clone(), &arg_type, mir_func);
                     }
                 }
             }
@@ -300,7 +225,8 @@ impl<'a> Lowering<'a> {
                     let param = &param_class.kwonly[i];
                     if let Some(Type::Any) = &param.ty {
                         let arg_type = self.operand_type(operand, mir_func);
-                        *operand = self.box_value_for_union(operand.clone(), &arg_type, mir_func);
+                        *operand =
+                            self.box_primitive_if_needed(operand.clone(), &arg_type, mir_func);
                     }
                 }
             }

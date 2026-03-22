@@ -125,7 +125,7 @@ impl<'a> Lowering<'a> {
 
                 // Auto-box if enabled and parameter is Any
                 if hints.auto_box && matches!(param.ty, TypeSpec::Any) {
-                    self.box_value_for_union(arg_operand, &arg_type, mir_func)
+                    self.box_primitive_if_needed(arg_operand, &arg_type, mir_func)
                 } else {
                     arg_operand
                 }
@@ -179,16 +179,22 @@ impl<'a> Lowering<'a> {
             ],
         });
 
-        // Add each argument to the list
+        // Add each argument to the list, boxing primitives as required since the list
+        // uses ELEM_HEAP_OBJ storage (float, bool, and None are stored as heap objects).
         for arg_id in args {
             let arg_expr = &hir_module.exprs[*arg_id];
+            let arg_type = self.get_expr_type(arg_expr, hir_module);
             let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
+
+            // Box the argument when it is a primitive that requires heap representation
+            // (float → BoxFloat, bool → BoxBool, None → BoxNone)
+            let pushed_operand = self.box_primitive_if_needed(arg_operand, &arg_type, mir_func);
 
             let void_local = self.alloc_typed_local(mir_func, Type::None);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: void_local,
                 func: mir::RuntimeFunc::ListPush,
-                args: vec![mir::Operand::Local(list_local), arg_operand],
+                args: vec![mir::Operand::Local(list_local), pushed_operand],
             });
         }
 

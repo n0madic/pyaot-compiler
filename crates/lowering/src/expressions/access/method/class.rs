@@ -53,9 +53,10 @@ impl<'a> Lowering<'a> {
 
                 let result_local = self.alloc_and_add_local(return_type.clone(), mir_func);
 
-                // Class method: call with class_id as first arg
+                // Class method: call with effective (offset-adjusted) class_id as first arg
+                // Use get_effective_class_id for multi-module support
                 let mut call_args = vec![mir::Operand::Constant(mir::Constant::Int(
-                    class_id.index() as i64,
+                    self.get_effective_class_id(*class_id),
                 ))];
                 call_args.extend(arg_operands);
 
@@ -122,7 +123,7 @@ impl<'a> Lowering<'a> {
                     .get_cross_module_class_info(class_id)
                     .and_then(|info| info.method_return_types.get(&method_name))
                     .cloned()
-                    .unwrap_or(Type::Int); // Default to Int if not found
+                    .unwrap_or(Type::Any); // Default to Any if not found (GC safety)
 
                 let result_local = self.alloc_and_add_local(return_type.clone(), mir_func);
 

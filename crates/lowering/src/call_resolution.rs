@@ -232,7 +232,7 @@ impl<'a> Lowering<'a> {
 
         // Fail block
         self.push_block(fail_bb);
-        self.emit_list_unpack_assertion_failure(remaining_params, None);
+        self.emit_list_unpack_assertion_failure(remaining_params, None, mir_func);
 
         // Continue block
         self.push_block(continue_bb);
@@ -493,17 +493,19 @@ impl<'a> Lowering<'a> {
 
         // Fail block
         self.push_block(fail_bb);
-        self.emit_list_unpack_assertion_failure(required_count, Some(remaining_params));
+        self.emit_list_unpack_assertion_failure(required_count, Some(remaining_params), mir_func);
 
         // Continue block
         self.push_block(continue_bb);
     }
 
     /// Emit assertion failure for list unpacking.
-    fn emit_list_unpack_assertion_failure(&mut self, required: usize, max: Option<usize>) {
-        // Need to get mir_func for alloc, but we don't have it here
-        // This is called from contexts where we've already set up the block
-        // We'll need to inline this or restructure slightly
+    fn emit_list_unpack_assertion_failure(
+        &mut self,
+        required: usize,
+        max: Option<usize>,
+        mir_func: &mut mir::Function,
+    ) {
         let msg = if let Some(max_val) = max {
             if required == max_val {
                 format!(
@@ -528,7 +530,7 @@ impl<'a> Lowering<'a> {
 
         // Emit the assertion fail instruction. AssertFail never returns,
         // but we need a dest local for the instruction format.
-        let dummy_local = self.alloc_local_id();
+        let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
         self.current_block_mut()
             .instructions
             .push(mir::Instruction {

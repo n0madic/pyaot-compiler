@@ -20,7 +20,12 @@ impl<'a> Lowering<'a> {
     ) -> Result<()> {
         // Evaluate condition
         let cond_expr = &hir_module.exprs[cond];
+        let cond_type = self.get_expr_type(cond_expr, hir_module);
         let cond_operand = self.lower_expr(cond_expr, hir_module, mir_func)?;
+
+        // Convert to bool if needed (same pattern as lower_if / lower_while)
+        let final_cond_operand =
+            self.emit_truthiness_conversion_if_needed(cond_operand, &cond_type, mir_func);
 
         // Create blocks for branching
         let fail_bb = self.new_block();
@@ -31,7 +36,7 @@ impl<'a> Lowering<'a> {
 
         // Branch: if condition is true, continue; if false, fail
         self.current_block_mut().terminator = mir::Terminator::Branch {
-            cond: cond_operand,
+            cond: final_cond_operand,
             then_block: continue_id,
             else_block: fail_id,
         };

@@ -88,7 +88,7 @@ impl<'a> Lowering<'a> {
             } else if matches!(elem_type, Type::Union(_)) {
                 // Box primitives for Union element types
                 let actual_elem_type = self.get_expr_type(elem_expr, hir_module);
-                self.box_value_for_union(elem_operand, &actual_elem_type, mir_func)
+                self.box_primitive_if_needed(elem_operand, &actual_elem_type, mir_func)
             } else {
                 elem_operand
             };
@@ -229,7 +229,7 @@ impl<'a> Lowering<'a> {
             let key_operand = self.lower_expr(key_expr, hir_module, mir_func)?;
 
             // Box non-heap keys (int, bool) so dict can use them as object pointers
-            let boxed_key = self.box_dict_key_if_needed(key_operand, &key_type, mir_func);
+            let boxed_key = self.box_primitive_if_needed(key_operand, &key_type, mir_func);
 
             let value_expr = &hir_module.exprs[*value_id];
             let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
@@ -237,7 +237,7 @@ impl<'a> Lowering<'a> {
 
             // Box primitive values (all dict values must be heap pointers for GC)
             let boxed_value =
-                self.box_dict_value_if_needed(value_operand, &actual_value_type, mir_func);
+                self.box_primitive_if_needed(value_operand, &actual_value_type, mir_func);
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
@@ -278,7 +278,7 @@ impl<'a> Lowering<'a> {
             let elem_operand = self.lower_expr(elem_expr, hir_module, mir_func)?;
 
             // Box non-heap elements (int, bool) so set can use them as object pointers
-            let boxed_elem = self.box_dict_key_if_needed(elem_operand, &elem_type, mir_func);
+            let boxed_elem = self.box_primitive_if_needed(elem_operand, &elem_type, mir_func);
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,

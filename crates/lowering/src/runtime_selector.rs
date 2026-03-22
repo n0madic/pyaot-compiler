@@ -65,6 +65,7 @@ impl<'a> Lowering<'a> {
                 | Type::Union(_)
                 | Type::RuntimeObject(_)
                 | Type::File
+                | Type::BuiltinException(_)
         )
     }
 
@@ -101,6 +102,7 @@ impl<'a> Lowering<'a> {
                 | Type::RuntimeObject(_)
                 | Type::Any
                 | Type::File
+                | Type::BuiltinException(_)
         )
     }
 

@@ -5,6 +5,7 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 
 use crate::context::Lowering;
+use crate::utils::is_heap_type;
 
 impl<'a> Lowering<'a> {
     /// Lower tuple method calls.
@@ -25,14 +26,19 @@ impl<'a> Lowering<'a> {
                     .into_iter()
                     .next()
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
-                // Box the value since tuples store *mut Obj
+                // Only box the value if it's a heap type; raw types (int, bool, float)
+                // are stored unboxed in ELEM_RAW_INT tuples and must not be boxed.
                 let value_type = arg_types.first().cloned().unwrap_or(Type::Any);
-                let boxed_value = self.box_value_for_union(value_arg, &value_type, mir_func);
+                let search_value = if is_heap_type(&value_type) {
+                    self.box_primitive_if_needed(value_arg, &value_type, mir_func)
+                } else {
+                    value_arg
+                };
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::TupleIndex,
-                    args: vec![obj_operand, boxed_value],
+                    args: vec![obj_operand, search_value],
                 });
 
                 Ok(mir::Operand::Local(result_local))
@@ -45,14 +51,19 @@ impl<'a> Lowering<'a> {
                     .into_iter()
                     .next()
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
-                // Box the value since tuples store *mut Obj
+                // Only box the value if it's a heap type; raw types (int, bool, float)
+                // are stored unboxed in ELEM_RAW_INT tuples and must not be boxed.
                 let value_type = arg_types.first().cloned().unwrap_or(Type::Any);
-                let boxed_value = self.box_value_for_union(value_arg, &value_type, mir_func);
+                let search_value = if is_heap_type(&value_type) {
+                    self.box_primitive_if_needed(value_arg, &value_type, mir_func)
+                } else {
+                    value_arg
+                };
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::TupleCount,
-                    args: vec![obj_operand, boxed_value],
+                    args: vec![obj_operand, search_value],
                 });
 
                 Ok(mir::Operand::Local(result_local))

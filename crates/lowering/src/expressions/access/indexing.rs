@@ -184,7 +184,7 @@ impl<'a> Lowering<'a> {
                 });
                 // Box key if needed (int/bool keys need boxing)
                 let index_type = self.get_expr_type(index_expr, hir_module);
-                let boxed_key = self.box_dict_key_if_needed(index_operand, &index_type, mir_func);
+                let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
 
                 // Check if value type needs unboxing
                 let unbox_func = match value_ty.as_ref() {

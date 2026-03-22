@@ -60,8 +60,10 @@ fn collect_assigned_vars(
                 assigned.insert(*target);
                 collect_assigned_vars(body, hir_module, assigned);
             }
-            hir::StmtKind::ForUnpack { body, .. } => {
-                // For tuple unpacking - targets are in the statement itself
+            hir::StmtKind::ForUnpack { targets, body, .. } => {
+                for target in targets {
+                    assigned.insert(*target);
+                }
                 collect_assigned_vars(body, hir_module, assigned);
             }
             hir::StmtKind::If {
@@ -124,15 +126,10 @@ fn get_exc_type_tag_from_type(ty: &Type) -> Option<(u8, bool)> {
     }
 
     // Handle custom exception classes
-    if let Type::Class { class_id, name } = ty {
+    if let Type::Class { class_id, .. } = ty {
         // Validate class_id fits in u8 to prevent silent truncation
         if class_id.0 > MAX_EXCEPTION_CLASS_ID {
-            panic!(
-                "Exception class {:?} has class_id {} which exceeds the maximum supported \
-                 class_id for exception handling ({}). Programs with more than {} custom \
-                 exception classes are not supported.",
-                name, class_id.0, MAX_EXCEPTION_CLASS_ID, MAX_EXCEPTION_CLASS_ID
-            );
+            return None;
         }
         // Custom exception class - use class_id as the tag
         return Some((class_id.0 as u8, true));
@@ -208,13 +205,15 @@ impl<'a> Lowering<'a> {
                     // Check if this class is an exception class
                     if let Some(class_def) = hir_module.class_defs.get(class_id) {
                         if class_def.is_exception_class {
-                            // Validate class_id fits in u8 to prevent silent truncation
+                            // Validate class_id fits in u8
                             if class_id.0 > MAX_EXCEPTION_CLASS_ID {
-                                panic!(
-                                    "Exception class {:?} has class_id {} which exceeds the maximum \
-                                     supported class_id for exception handling ({}).",
-                                    class_def.name, class_id.0, MAX_EXCEPTION_CLASS_ID
-                                );
+                                return Err(pyaot_diagnostics::CompilerError::CodegenError {
+                                    message: format!(
+                                        "Exception class {:?} has class_id {} which exceeds the maximum \
+                                         supported class_id for exception handling ({}).",
+                                        class_def.name, class_id.0, MAX_EXCEPTION_CLASS_ID
+                                    ),
+                                });
                             }
                             // Custom exception class
                             let msg = if let Some(arg) = args.first() {
@@ -496,10 +495,11 @@ impl<'a> Lowering<'a> {
             self.lower_stmt(stmt, hir_module, mir_func)?;
         }
 
-        // Normal exit from try body: pop frame and go to else block (if exists) or finally
+        // Pop the exception frame on normal exit path.
+        // Must happen even if the block already has a terminator (return/break inside try),
+        // because ExcPopFrame is an instruction that executes before the terminator.
+        self.emit_instruction(mir::InstructionKind::ExcPopFrame);
         if !self.current_block_has_terminator() {
-            // Pop the exception frame on normal path (no exception)
-            self.emit_instruction(mir::InstructionKind::ExcPopFrame);
             self.current_block_mut().terminator = mir::Terminator::Goto(try_success_target);
         }
 

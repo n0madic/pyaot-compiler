@@ -260,7 +260,7 @@ impl<'a> Lowering<'a> {
         // Box primitives when assigning to Union type (or narrowed Union variable)
         let final_operand = if var_type.is_union() || original_union_type.is_some() {
             let value_type = self.get_expr_type(expr, hir_module);
-            self.box_value_for_union(value_operand, &value_type, mir_func)
+            self.box_primitive_if_needed(value_operand, &value_type, mir_func)
         } else {
             value_operand
         };
@@ -580,9 +580,9 @@ impl<'a> Lowering<'a> {
                 }
 
                 // dict[key] = value - box key and value if needed (primitives must be boxed for GC)
-                let boxed_key = self.box_dict_key_if_needed(index_operand, &index_type, mir_func);
+                let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
                 let boxed_value =
-                    self.box_dict_value_if_needed(value_operand, &value_type, mir_func);
+                    self.box_primitive_if_needed(value_operand, &value_type, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
                     func: mir::RuntimeFunc::DictSet,
@@ -663,7 +663,7 @@ impl<'a> Lowering<'a> {
         match obj_type {
             Type::Dict(_, _) => {
                 // del dict[key] → rt_dict_pop(dict, key) and discard result
-                let boxed_key = self.box_dict_key_if_needed(index_operand, &index_type, mir_func);
+                let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
                     func: mir::RuntimeFunc::DictPop,

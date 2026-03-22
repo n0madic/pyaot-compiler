@@ -250,10 +250,7 @@ impl<'a> Lowering<'a> {
         if let Some((_continue_target, break_target)) = self.current_loop() {
             self.current_block_mut().terminator = mir::Terminator::Goto(break_target);
         } else {
-            debug_assert!(
-                false,
-                "break outside loop should be caught by semantic analysis"
-            );
+            panic!("internal error: break outside loop should be caught by semantic analysis");
         }
     }
 
@@ -263,19 +260,16 @@ impl<'a> Lowering<'a> {
         if let Some((continue_target, _break_target)) = self.current_loop() {
             self.current_block_mut().terminator = mir::Terminator::Goto(continue_target);
         } else {
-            debug_assert!(
-                false,
-                "continue outside loop should be caught by semantic analysis"
-            );
+            panic!("internal error: continue outside loop should be caught by semantic analysis");
         }
     }
 
-    /// Convert a condition to boolean for use in if/while branch conditions.
+    /// Convert a condition to boolean for use in if/while/assert branch conditions.
     ///
     /// Delegates to `convert_to_bool()` which handles all types correctly:
     /// Bool → as-is, Int → !=0, Float → !=0.0, Str/List/Dict/Tuple/Set → len>0,
     /// None → false, Union/Any → rt_is_truthy().
-    fn emit_truthiness_conversion_if_needed(
+    pub(crate) fn emit_truthiness_conversion_if_needed(
         &mut self,
         cond_operand: mir::Operand,
         cond_type: &Type,

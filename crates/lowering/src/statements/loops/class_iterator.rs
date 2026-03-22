@@ -14,6 +14,7 @@
 //! [exit]      continue after loop
 //! ```
 
+use pyaot_core_defs::BuiltinExceptionKind;
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
@@ -130,11 +131,10 @@ impl<'a> Lowering<'a> {
         // 6. Handler block: check if StopIteration
         self.push_block(handler_bb);
 
-        // StopIteration tag = 4 (from core-defs)
         let check_local = self.alloc_and_add_local(Type::Bool, mir_func);
         self.emit_instruction(mir::InstructionKind::ExcCheckClass {
             dest: check_local,
-            class_id: 4, // StopIteration
+            class_id: BuiltinExceptionKind::StopIteration.tag(),
         });
 
         let reraise_bb = self.new_block();

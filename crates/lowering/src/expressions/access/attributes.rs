@@ -166,7 +166,8 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // Unknown field or non-class type
+        // TODO: unknown field or non-class type — this should emit a diagnostic error rather
+        // than silently returning None so the user receives a clear compile-time message.
         Ok(mir::Operand::Constant(mir::Constant::None))
     }
 

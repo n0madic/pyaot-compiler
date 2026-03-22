@@ -199,9 +199,44 @@ impl<'a> Lowering<'a> {
                 });
                 mir::Operand::Local(result_local)
             }
+            Type::Class { class_id, .. } => {
+                // For class instances, check for __bool__ and __len__ dunders.
+                // Python truthiness rules: __bool__ takes priority over __len__.
+                // If neither is defined, instances are always truthy (Python default).
+                if let Some(class_info) = self.get_class_info(class_id).cloned() {
+                    if let Some(bool_func_id) = class_info.bool_func {
+                        // __bool__ defined: call it and use the result directly
+                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                        self.emit_instruction(mir::InstructionKind::CallDirect {
+                            dest: result_local,
+                            func: bool_func_id,
+                            args: vec![operand],
+                        });
+                        return mir::Operand::Local(result_local);
+                    } else if let Some(len_func_id) = class_info.len_func {
+                        // __len__ defined but no __bool__: truthy when len != 0
+                        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
+                        self.emit_instruction(mir::InstructionKind::CallDirect {
+                            dest: len_local,
+                            func: len_func_id,
+                            args: vec![operand],
+                        });
+                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                        let zero = mir::Operand::Constant(mir::Constant::Int(0));
+                        self.emit_instruction(mir::InstructionKind::BinOp {
+                            dest: result_local,
+                            op: mir::BinOp::NotEq,
+                            left: mir::Operand::Local(len_local),
+                            right: zero,
+                        });
+                        return mir::Operand::Local(result_local);
+                    }
+                }
+                // No __bool__ or __len__: class instances are always truthy
+                mir::Operand::Constant(mir::Constant::Bool(true))
+            }
             _ => {
-                // For other types (Iterator, Class instances, etc.), assume truthy
-                // Class instances and iterators are always truthy in Python
+                // For other types (Iterator, etc.), assume truthy
                 mir::Operand::Constant(mir::Constant::Bool(true))
             }
         }
@@ -214,6 +249,8 @@ impl<'a> Lowering<'a> {
             (Type::Float, Type::Float) => true,
             (Type::Bool, Type::Bool) => true,
             (Type::Bool, Type::Int) => true, // bool is a subclass of int in Python
+            // int is NOT a subclass of bool: isinstance(int_val, bool) must return false
+            (Type::Int, Type::Bool) => false,
             (Type::Str, Type::Str) => true,
             (Type::None, Type::None) => true,
             (Type::List(_), Type::List(_)) => true,
@@ -224,24 +261,25 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Get the TypeTag value for a type (from core-defs single source of truth)
-    pub(crate) fn get_type_tag_for_isinstance_check(&self, ty: &Type) -> i64 {
+    /// Get the TypeTag value for a type (from core-defs single source of truth).
+    /// Returns `None` for types that have no corresponding runtime type tag.
+    pub(crate) fn get_type_tag_for_isinstance_check(&self, ty: &Type) -> Option<i64> {
         use pyaot_core_defs::TypeTagKind;
         match ty {
-            Type::Int => TypeTagKind::Int.tag() as i64,
-            Type::Float => TypeTagKind::Float.tag() as i64,
-            Type::Bool => TypeTagKind::Bool.tag() as i64,
-            Type::Str => TypeTagKind::Str.tag() as i64,
-            Type::None => TypeTagKind::None.tag() as i64,
-            Type::List(_) => TypeTagKind::List.tag() as i64,
-            Type::Tuple(_) => TypeTagKind::Tuple.tag() as i64,
-            Type::Dict(_, _) => TypeTagKind::Dict.tag() as i64,
-            Type::Class { .. } => TypeTagKind::Instance.tag() as i64,
-            Type::Iterator(_) => TypeTagKind::Iterator.tag() as i64,
-            Type::Set(_) => TypeTagKind::Set.tag() as i64,
-            Type::Bytes => TypeTagKind::Bytes.tag() as i64,
-            Type::File => TypeTagKind::File.tag() as i64,
-            _ => -1, // Unknown type
+            Type::Int => Some(TypeTagKind::Int.tag() as i64),
+            Type::Float => Some(TypeTagKind::Float.tag() as i64),
+            Type::Bool => Some(TypeTagKind::Bool.tag() as i64),
+            Type::Str => Some(TypeTagKind::Str.tag() as i64),
+            Type::None => Some(TypeTagKind::None.tag() as i64),
+            Type::List(_) => Some(TypeTagKind::List.tag() as i64),
+            Type::Tuple(_) => Some(TypeTagKind::Tuple.tag() as i64),
+            Type::Dict(_, _) => Some(TypeTagKind::Dict.tag() as i64),
+            Type::Class { .. } => Some(TypeTagKind::Instance.tag() as i64),
+            Type::Iterator(_) => Some(TypeTagKind::Iterator.tag() as i64),
+            Type::Set(_) => Some(TypeTagKind::Set.tag() as i64),
+            Type::Bytes => Some(TypeTagKind::Bytes.tag() as i64),
+            Type::File => Some(TypeTagKind::File.tag() as i64),
+            _ => None, // Unknown type
         }
     }
 
@@ -361,7 +399,11 @@ impl<'a> Lowering<'a> {
             let key_fn_local = self.alloc_and_add_local(Type::Int, mir_func);
             match source {
                 KeyFuncSource::UserFunc(func_id, _captures) => {
-                    // TODO: pass captures to key function for closures
+                    // TODO: closure captures are silently dropped here.
+                    // `sorted(lst, key=lambda x: x + captured_var)` will produce wrong
+                    // results because `captured_var` is not passed to the key function.
+                    // Fixing this requires the runtime sort to accept a captures pointer
+                    // alongside the function pointer, or using a trampoline approach.
                     self.emit_instruction(mir::InstructionKind::FuncAddr {
                         dest: key_fn_local,
                         func: *func_id,

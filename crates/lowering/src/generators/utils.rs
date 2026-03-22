@@ -148,7 +148,13 @@ impl<'a> Lowering<'a> {
                         Ok(mir::Operand::Local(result_local))
                     }
                     hir::UnOp::Not => {
-                        // not x => x == 0
+                        // For integer types, `not x` is `x == 0`.
+                        // For pointer/heap types, `x == 0` checks for a null pointer
+                        // which is correct for None but not for empty containers
+                        // (an empty list is a non-null pointer, so `not []` would
+                        // incorrectly evaluate to false).
+                        // TODO: use a runtime truthiness check for heap types so that
+                        // `not []`, `not {}`, etc. produce the correct result.
                         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                         block.instructions.push(mir::Instruction {
                             kind: mir::InstructionKind::BinOp {
@@ -201,7 +207,12 @@ impl<'a> Lowering<'a> {
                     hir::BinOp::Div => mir::BinOp::Div,
                     hir::BinOp::Mod => mir::BinOp::Mod,
                     hir::BinOp::FloorDiv => mir::BinOp::FloorDiv,
-                    _ => mir::BinOp::Add, // Default fallback
+                    hir::BinOp::Pow => mir::BinOp::Pow,
+                    hir::BinOp::BitAnd => mir::BinOp::BitAnd,
+                    hir::BinOp::BitOr => mir::BinOp::BitOr,
+                    hir::BinOp::BitXor => mir::BinOp::BitXor,
+                    hir::BinOp::LShift => mir::BinOp::LShift,
+                    hir::BinOp::RShift => mir::BinOp::RShift,
                 };
 
                 // Emit the binary operation
@@ -281,7 +292,12 @@ impl<'a> Lowering<'a> {
                     hir::BinOp::Div => mir::BinOp::Div,
                     hir::BinOp::Mod => mir::BinOp::Mod,
                     hir::BinOp::FloorDiv => mir::BinOp::FloorDiv,
-                    _ => mir::BinOp::Add,
+                    hir::BinOp::Pow => mir::BinOp::Pow,
+                    hir::BinOp::BitAnd => mir::BinOp::BitAnd,
+                    hir::BinOp::BitOr => mir::BinOp::BitOr,
+                    hir::BinOp::BitXor => mir::BinOp::BitXor,
+                    hir::BinOp::LShift => mir::BinOp::LShift,
+                    hir::BinOp::RShift => mir::BinOp::RShift,
                 };
 
                 block.instructions.push(mir::Instruction {
@@ -554,7 +570,12 @@ impl<'a> Lowering<'a> {
                                 hir::BinOp::Div => mir::BinOp::Div,
                                 hir::BinOp::Mod => mir::BinOp::Mod,
                                 hir::BinOp::FloorDiv => mir::BinOp::FloorDiv,
-                                _ => mir::BinOp::Add,
+                                hir::BinOp::Pow => mir::BinOp::Pow,
+                                hir::BinOp::BitAnd => mir::BinOp::BitAnd,
+                                hir::BinOp::BitOr => mir::BinOp::BitOr,
+                                hir::BinOp::BitXor => mir::BinOp::BitXor,
+                                hir::BinOp::LShift => mir::BinOp::LShift,
+                                hir::BinOp::RShift => mir::BinOp::RShift,
                             };
                             block.instructions.push(mir::Instruction {
                                 kind: mir::InstructionKind::BinOp {
@@ -648,7 +669,14 @@ impl<'a> Lowering<'a> {
                 });
             }
         } else {
-            // TODO: handle other expression kinds in generator while conditions
+            // TODO: KNOWN LIMITATION — unrecognized while-condition expression kinds
+            // (anything other than a Compare, `while True`, or a bare variable) are
+            // silently replaced with the constant `true`, turning the generator loop
+            // into an infinite loop.  This will produce silently wrong output for any
+            // generator whose while condition contains a function call, boolean
+            // operator, or other complex expression.  A proper fix requires routing
+            // the full `lower_expr` pipeline through the generator's block-building
+            // machinery instead of the simplified evaluate_while_condition helper.
             block.instructions.push(mir::Instruction {
                 kind: mir::InstructionKind::Copy {
                     dest: cond_result_local,

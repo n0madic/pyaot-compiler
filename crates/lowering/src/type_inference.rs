@@ -109,16 +109,20 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::MethodCall { obj, method, .. } => {
                 let raw_obj_ty = self.get_type_of_expr_id(*obj, hir_module);
                 let method_name = self.resolve(*method);
-                // Unwrap Optional[T] (Union[T, None]) → T so method dispatch works
+                // Unwrap Optional[T] (Union[T, None]) → T so method dispatch works.
+                // Also handles Union[T, U, None] (3+ variants) by stripping None out.
                 let obj_ty = match &raw_obj_ty {
-                    Type::Union(variants)
-                        if variants.len() == 2 && variants.contains(&Type::None) =>
-                    {
-                        variants
+                    Type::Union(variants) if variants.contains(&Type::None) => {
+                        let non_none: Vec<Type> = variants
                             .iter()
-                            .find(|t| **t != Type::None)
+                            .filter(|t| **t != Type::None)
                             .cloned()
-                            .unwrap_or(raw_obj_ty)
+                            .collect();
+                        match non_none.len() {
+                            0 => raw_obj_ty,
+                            1 => non_none.into_iter().next().unwrap(),
+                            _ => Type::Union(non_none),
+                        }
                     }
                     _ => raw_obj_ty,
                 };
@@ -587,10 +591,17 @@ impl<'a> Lowering<'a> {
                     }
                     hir::Builtin::Pow => Type::Float,
                     hir::Builtin::Round => {
-                        // round(x) -> int, round(x, n) -> float
+                        // round(x) -> int (regardless of whether x is int or float, 1-arg always returns int)
+                        // round(x, n) -> same type as x (round(float, n) -> float, round(int, n) -> int)
                         if args.len() > 1 {
-                            Type::Float
+                            // 2-arg form: return type matches the first argument's type
+                            if args.is_empty() {
+                                Type::Int
+                            } else {
+                                self.get_type_of_expr_id(args[0], hir_module)
+                            }
                         } else {
+                            // 1-arg form: always returns int
                             Type::Int
                         }
                     }

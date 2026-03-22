@@ -75,8 +75,10 @@ impl<'a> Lowering<'a> {
                     func: call_func, ..
                 } = &expr.kind
                 {
-                    if let Some(innermost_func_id) = self.find_innermost_func_ref(expr, hir_module)
-                    {
+                    // TODO: innermost_func_id (the decorated function) is found but currently
+                    // unused — future work should use it to link the decorated function to its
+                    // wrapper so call sites can be rewritten directly.
+                    if self.find_innermost_func_ref(expr, hir_module).is_some() {
                         let call_func_expr = &hir_module.exprs[*call_func];
                         if let hir::ExprKind::FuncRef(decorator_func_id) = &call_func_expr.kind {
                             if let Some(decorator_def) = hir_module.func_defs.get(decorator_func_id)
@@ -86,7 +88,6 @@ impl<'a> Lowering<'a> {
                                 {
                                     // Mark this function as a wrapper
                                     self.insert_wrapper_func_id(wrapper_func_id);
-                                    let _ = innermost_func_id;
                                 }
                             }
                         }
@@ -657,7 +658,7 @@ impl<'a> Lowering<'a> {
                     .get(var_id)
                     .cloned()
                     .or_else(|| self.get_var_type(var_id).cloned())
-                    .unwrap_or(Type::Int)
+                    .unwrap_or(Type::Any)
             }
             _ => Type::Any,
         }

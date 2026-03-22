@@ -115,50 +115,72 @@ impl<'a> Lowering<'a> {
             mir_func,
         )?;
 
-        // Apply bindings BEFORE guard evaluation (needed because guard may reference captured vars)
-        for (var_id, value, ty) in &bindings {
-            let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
-            self.emit_instruction(mir::InstructionKind::Copy {
-                dest: local,
-                src: value.clone(),
-            });
-        }
+        // Create else block (next case) — shared by both guard and no-guard paths
+        let else_bb = self.new_block();
+        let else_id = else_bb.id;
 
-        // If there's a guard, combine it with the pattern check
-        let final_cond = if let Some(guard_expr_id) = case.guard {
+        if let Some(guard_expr_id) = case.guard {
+            // Two-stage branch: first check pattern, then emit bindings, then check guard.
+            // This ensures guard expressions can reference captured pattern variables.
+            let bindings_bb = self.new_block();
+            let bindings_id = bindings_bb.id;
+
+            // Stage 1: branch on pattern match → bindings block or next case
+            self.current_block_mut().terminator = mir::Terminator::Branch {
+                cond: cond_operand,
+                then_block: bindings_id,
+                else_block: else_id,
+            };
+
+            // Bindings block: emit bindings, then evaluate guard
+            self.push_block(bindings_bb);
+            for (var_id, value, ty) in &bindings {
+                let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: local,
+                    src: value.clone(),
+                });
+            }
+
+            // Evaluate guard (now pattern variables are bound)
             let guard_expr = &hir_module.exprs[guard_expr_id];
             let guard_operand = self.lower_expr(guard_expr, hir_module, mir_func)?;
 
-            // Combine: pattern_check AND guard
-            let combined_local = self.alloc_and_add_local(Type::Bool, mir_func);
-            self.emit_instruction(mir::InstructionKind::BinOp {
-                dest: combined_local,
-                op: mir::BinOp::And,
-                left: cond_operand,
-                right: guard_operand,
-            });
-            mir::Operand::Local(combined_local)
+            // Stage 2: branch on guard → case body or next case
+            let body_bb = self.new_block();
+            let body_id = body_bb.id;
+            self.current_block_mut().terminator = mir::Terminator::Branch {
+                cond: guard_operand,
+                then_block: body_id,
+                else_block: else_id,
+            };
+
+            // Case body block
+            self.push_block(body_bb);
         } else {
-            cond_operand
-        };
+            // No guard: single-stage branch with bindings in the then-block
+            let then_bb = self.new_block();
+            let then_id = then_bb.id;
 
-        // Create blocks for then (case body) and else (next case)
-        let then_bb = self.new_block();
-        let else_bb = self.new_block();
-        let then_id = then_bb.id;
-        let else_id = else_bb.id;
+            self.current_block_mut().terminator = mir::Terminator::Branch {
+                cond: cond_operand,
+                then_block: then_id,
+                else_block: else_id,
+            };
 
-        // Branch on pattern match
-        self.current_block_mut().terminator = mir::Terminator::Branch {
-            cond: final_cond,
-            then_block: then_id,
-            else_block: else_id,
-        };
+            self.push_block(then_bb);
 
-        // Then block: execute body (bindings were already applied above)
-        self.push_block(then_bb);
+            // Apply bindings inside the then-block (only on match success)
+            for (var_id, value, ty) in &bindings {
+                let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: local,
+                    src: value.clone(),
+                });
+            }
+        }
 
-        // Execute case body
+        // Execute case body (in whichever block we ended up in)
         for stmt_id in &case.body {
             let stmt = &hir_module.stmts[*stmt_id];
             self.lower_stmt(stmt, hir_module, mir_func)?;
@@ -299,7 +321,10 @@ impl<'a> Lowering<'a> {
                 }
 
                 // Check first pattern and collect bindings (all alternatives must bind same vars)
-                // TODO: bindings should come from the actually matching alternative, not always the first
+                // TODO: bindings should come from whichever alternative actually matched, not
+                // always the first.  Currently incorrect when alternatives bind different values
+                // (e.g. `case 1 | 2 as x` — x is always set from the first alternative's check
+                // even when the second alternative is the one that matched).
                 let (mut result_cond, bindings) = self.generate_pattern_check(
                     &patterns[0],
                     subject.clone(),
@@ -409,7 +434,8 @@ impl<'a> Lowering<'a> {
             .iter()
             .position(|p| matches!(p, hir::Pattern::MatchStar(_)));
 
-        // Determine element type
+        // Determine element type (used as a fallback for non-tuple types and for
+        // tuple elements whose index exceeds the statically-known length)
         let elem_type = match subject_type {
             Type::List(elem) => (**elem).clone(),
             Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
@@ -471,6 +497,17 @@ impl<'a> Lowering<'a> {
         // Process patterns before star
         let before_star = star_index.unwrap_or(patterns.len());
         for (i, pattern) in patterns.iter().take(before_star).enumerate() {
+            // Get the correct element type for this index position.
+            // For tuples we use the statically-known per-position type; for
+            // all other sequence types (list, unknown) we fall back to the
+            // uniform elem_type computed above.
+            let idx_elem_type = match subject_type {
+                Type::Tuple(elems) if !elems.is_empty() => {
+                    elems.get(i).cloned().unwrap_or_else(|| elems[0].clone())
+                }
+                _ => elem_type.clone(),
+            };
+
             // Get element at index i
             let idx_local = self.alloc_and_add_local(Type::Int, mir_func);
             self.emit_instruction(mir::InstructionKind::Const {
@@ -478,7 +515,7 @@ impl<'a> Lowering<'a> {
                 value: mir::Constant::Int(i as i64),
             });
 
-            let elem_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
+            let elem_local = self.alloc_and_add_local(idx_elem_type.clone(), mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: elem_local,
                 func: get_func,
@@ -489,7 +526,7 @@ impl<'a> Lowering<'a> {
             let (elem_cond, elem_bindings) = self.generate_pattern_check(
                 pattern,
                 mir::Operand::Local(elem_local),
-                &elem_type,
+                &idx_elem_type,
                 hir_module,
                 mir_func,
             )?;
@@ -725,9 +762,11 @@ impl<'a> Lowering<'a> {
             result_cond = mir::Operand::Local(final_local);
         }
 
-        // Handle **rest binding (not fully implemented - would need dict minus keys)
+        // TODO: **rest should bind a new dict excluding already-matched keys.
+        // Currently binds the full dict.  A correct implementation would call a
+        // runtime helper that copies the subject dict and removes the matched keys,
+        // leaving only the unmatched entries in the **rest binding.
         if let Some(rest_var) = rest {
-            // For now, bind to the full dict (full implementation would exclude matched keys)
             bindings.push((*rest_var, ctx.subject.clone(), ctx.subject_type.clone()));
         }
 
@@ -845,9 +884,12 @@ impl<'a> Lowering<'a> {
             result_cond = mir::Operand::Local(combined_local);
         }
 
-        // Positional patterns are not commonly used with classes
-        // (would need __match_args__ support which is complex)
-        let _ = patterns; // Suppress unused warning
+        // TODO: positional class patterns require __match_args__ support.
+        // Positional patterns in `case ClassName(p1, p2)` map to the class's
+        // `__match_args__` tuple to resolve attribute names, which we do not
+        // yet support.  Until then, positional sub-patterns are silently
+        // ignored and only keyword patterns (`case ClassName(attr=p)`) work.
+        let _ = patterns;
 
         Ok((result_cond, bindings))
     }

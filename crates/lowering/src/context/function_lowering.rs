@@ -44,7 +44,7 @@ impl<'a> Lowering<'a> {
 
         // Pass 3.5: scan for decorated functions in module init
         // This must happen before lowering any functions since other functions may call decorated functions
-        self.scan_module_decorated_functions(hir_module);
+        self.process_module_decorated_functions(hir_module);
 
         // Fourth pass: lower functions
         for func_id in &hir_module.functions {
@@ -84,10 +84,14 @@ impl<'a> Lowering<'a> {
         self.current_blocks.clear();
         self.current_block_idx = 0;
         self.next_block_id = 0;
+        self.next_local_id = 0;
         self.cell_vars.clear();
         self.nonlocal_cells.clear();
         self.narrowed_union_vars.clear();
         self.loop_stack.clear();
+        self.expected_type = None;
+        self.pending_varargs_from_unpack = None;
+        self.pending_kwargs_from_unpack = None;
         self.expr_type_cache.borrow_mut().clear();
 
         // Copy cell_vars and nonlocal_vars from HIR function
@@ -330,6 +334,10 @@ impl<'a> Lowering<'a> {
                             // Allocate a global slot for this mutable default
                             let slot = self.next_default_slot;
                             self.next_default_slot += 1;
+                            debug_assert!(
+                                self.next_default_slot > slot,
+                                "next_default_slot overflow: mutable default slot counter wrapped"
+                            );
                             self.default_value_slots.insert((*func_id, param_idx), slot);
                         }
                     }
@@ -422,10 +430,10 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Pre-scan module init for decorated functions (module-level wrappers).
+    /// Process module init for decorated functions (module-level wrappers).
     /// This must run before lowering any functions since other functions may call decorated functions.
     /// The decorator pattern produces: var = decorator(FuncRef(func))
-    fn scan_module_decorated_functions(&mut self, hir_module: &hir::Module) {
+    fn process_module_decorated_functions(&mut self, hir_module: &hir::Module) {
         // Find the module init function (name is __pyaot_module_init__)
         let init_func = hir_module
             .func_defs

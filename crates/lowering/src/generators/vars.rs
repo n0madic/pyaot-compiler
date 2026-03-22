@@ -26,7 +26,7 @@ pub(super) fn collect_generator_vars(
             vars.push(GeneratorVar {
                 var_id: param.var,
                 gen_local_idx: next_idx,
-                ty: param.ty.clone().unwrap_or(Type::Int),
+                ty: param.ty.clone().unwrap_or(Type::Any),
                 is_param: true,
             });
             var_set.insert(param.var);
@@ -58,7 +58,7 @@ fn collect_vars_from_stmt(
                 vars.push(GeneratorVar {
                     var_id: *target,
                     gen_local_idx: *next_idx,
-                    ty: type_hint.clone().unwrap_or(Type::Int),
+                    ty: type_hint.clone().unwrap_or(Type::Any),
                     is_param: false,
                 });
                 var_set.insert(*target);
@@ -70,7 +70,7 @@ fn collect_vars_from_stmt(
                 vars.push(GeneratorVar {
                     var_id: *target,
                     gen_local_idx: *next_idx,
-                    ty: Type::Int, // Loop variable usually int
+                    ty: Type::Any, // Loop variable may hold any type (int, str, etc.)
                     is_param: false,
                 });
                 var_set.insert(*target);

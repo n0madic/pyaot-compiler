@@ -292,13 +292,13 @@ impl<'a> Lowering<'a> {
                 let boxed_left = if left_was_union {
                     left_op.clone()
                 } else {
-                    self.box_value_for_union(left_op.clone(), &left_type, mir_func)
+                    self.box_primitive_if_needed(left_op.clone(), &left_type, mir_func)
                 };
 
                 let boxed_right = if right_was_union {
                     right_op.clone()
                 } else {
-                    self.box_value_for_union(right_op.clone(), &right_type, mir_func)
+                    self.box_primitive_if_needed(right_op.clone(), &right_type, mir_func)
                 };
 
                 let mir_op = match op {
@@ -351,13 +351,13 @@ impl<'a> Lowering<'a> {
             let boxed_left = if left_type.is_union() {
                 left_op
             } else {
-                self.box_value_for_union(left_op, &left_type, mir_func)
+                self.box_primitive_if_needed(left_op, &left_type, mir_func)
             };
 
             let boxed_right = if right_type.is_union() {
                 right_op
             } else {
-                self.box_value_for_union(right_op, &right_type, mir_func)
+                self.box_primitive_if_needed(right_op, &right_type, mir_func)
             };
 
             match op {
@@ -591,7 +591,7 @@ impl<'a> Lowering<'a> {
                 Type::Dict(_, _) => {
                     // key in dict - use rt_dict_contains
                     // Box key if needed (int/bool keys need boxing)
-                    let boxed_key = self.box_dict_key_if_needed(left_op, &left_type, mir_func);
+                    let boxed_key = self.box_primitive_if_needed(left_op, &left_type, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: mir::RuntimeFunc::DictContains,
@@ -601,7 +601,7 @@ impl<'a> Lowering<'a> {
                 Type::Set(_) => {
                     // elem in set - use rt_set_contains
                     // Box element if needed (int/bool elements need boxing)
-                    let boxed_elem = self.box_dict_key_if_needed(left_op, &left_type, mir_func);
+                    let boxed_elem = self.box_primitive_if_needed(left_op, &left_type, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: mir::RuntimeFunc::SetContains,
@@ -719,7 +719,12 @@ impl<'a> Lowering<'a> {
                     });
                 }
             } else {
-                // For ordering comparisons on lists, fall back to pointer comparison
+                // TODO: list ordering comparisons (<, <=, >, >=) require lexicographic
+                // element-wise comparison, but no dedicated runtime function exists yet.
+                // The runtime's rt_obj_lt/rt_obj_gt don't handle List type tags.
+                // Falling back to pointer comparison here produces KNOWN-INCORRECT results.
+                // A future fix should add rt_list_lt / rt_list_lte / rt_list_gt / rt_list_gte
+                // to the runtime and wire them up via CompareKind, similar to Tuple ordering.
                 let mir_op = match op {
                     hir::CmpOp::Lt => mir::BinOp::Lt,
                     hir::CmpOp::LtE => mir::BinOp::LtE,
@@ -1025,17 +1030,29 @@ impl<'a> Lowering<'a> {
                 // Then block: left is truthy, evaluate and return right
                 self.push_block(then_bb);
                 let right_op = self.lower_expr(right_expr, hir_module, mir_func)?;
+                // Box primitive if result is Union (mismatched types)
+                let right_val = if left_type != right_type {
+                    self.box_primitive_if_needed(right_op, &right_type, mir_func)
+                } else {
+                    right_op
+                };
                 self.emit_instruction(mir::InstructionKind::Copy {
                     dest: result_local,
-                    src: right_op,
+                    src: right_val,
                 });
                 self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
 
                 // Else block: left is falsy, return left value
                 self.push_block(else_bb);
+                // Box primitive if result is Union (mismatched types)
+                let left_val = if left_type != right_type {
+                    self.box_primitive_if_needed(left_op, &left_type, mir_func)
+                } else {
+                    left_op
+                };
                 self.emit_instruction(mir::InstructionKind::Copy {
                     dest: result_local,
-                    src: left_op,
+                    src: left_val,
                 });
                 self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
 
@@ -1066,18 +1083,30 @@ impl<'a> Lowering<'a> {
 
                 // Then block: left is truthy, return left value
                 self.push_block(then_bb);
+                // Box primitive if result is Union (mismatched types)
+                let left_val = if left_type != right_type {
+                    self.box_primitive_if_needed(left_op, &left_type, mir_func)
+                } else {
+                    left_op
+                };
                 self.emit_instruction(mir::InstructionKind::Copy {
                     dest: result_local,
-                    src: left_op,
+                    src: left_val,
                 });
                 self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
 
                 // Else block: left is falsy, evaluate and return right
                 self.push_block(else_bb);
                 let right_op = self.lower_expr(right_expr, hir_module, mir_func)?;
+                // Box primitive if result is Union (mismatched types)
+                let right_val = if left_type != right_type {
+                    self.box_primitive_if_needed(right_op, &right_type, mir_func)
+                } else {
+                    right_op
+                };
                 self.emit_instruction(mir::InstructionKind::Copy {
                     dest: result_local,
-                    src: right_op,
+                    src: right_val,
                 });
                 self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
 
@@ -1104,10 +1133,11 @@ impl<'a> Lowering<'a> {
         let then_ty = self.get_expr_type(then_expr, hir_module);
         let else_ty = self.get_expr_type(else_expr, hir_module);
 
-        let result_ty = if then_ty == else_ty {
-            then_ty
+        let types_differ = then_ty != else_ty;
+        let result_ty = if types_differ {
+            Type::Union(vec![then_ty.clone(), else_ty.clone()])
         } else {
-            Type::Any
+            then_ty.clone()
         };
 
         // Allocate result local
@@ -1142,18 +1172,30 @@ impl<'a> Lowering<'a> {
         // Then block: evaluate then_val and store in result
         self.push_block(then_bb);
         let then_op = self.lower_expr(then_expr, hir_module, mir_func)?;
+        // Box primitive if result is Union (mismatched types)
+        let then_val = if types_differ {
+            self.box_primitive_if_needed(then_op, &then_ty, mir_func)
+        } else {
+            then_op
+        };
         self.emit_instruction(mir::InstructionKind::Copy {
             dest: result_local,
-            src: then_op,
+            src: then_val,
         });
         self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
 
         // Else block: evaluate else_val and store in result
         self.push_block(else_bb);
         let else_op = self.lower_expr(else_expr, hir_module, mir_func)?;
+        // Box primitive if result is Union (mismatched types)
+        let else_val = if types_differ {
+            self.box_primitive_if_needed(else_op, &else_ty, mir_func)
+        } else {
+            else_op
+        };
         self.emit_instruction(mir::InstructionKind::Copy {
             dest: result_local,
-            src: else_op,
+            src: else_val,
         });
         self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
 

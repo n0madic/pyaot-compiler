@@ -181,7 +181,13 @@ impl<'a> Lowering<'a> {
             match crate::utils::get_step_direction(step_expr, hir_module) {
                 crate::utils::StepDirection::Positive => mir::BinOp::Lt,
                 crate::utils::StepDirection::Negative => mir::BinOp::Gt,
-                crate::utils::StepDirection::Unknown => mir::BinOp::Lt, // Default to positive
+                // TODO: StepDirection::Unknown means the step sign cannot be determined
+                // at compile time (e.g. a variable step).  Defaulting to Lt (positive
+                // step direction) produces correct code only for positive steps; a
+                // negative runtime step will cause an infinite loop.  A full fix
+                // requires emitting a runtime check similar to emit_range_runtime_check
+                // used in the non-enumerate range loop path.
+                crate::utils::StepDirection::Unknown => mir::BinOp::Lt,
             }
         } else {
             mir::BinOp::Lt // Default: positive step

@@ -77,8 +77,7 @@ impl<'a> Lowering<'a> {
                     });
                 } else {
                     // Runtime check via type tag
-                    let type_tag = self.get_type_tag_for_isinstance_check(check_type);
-                    if type_tag >= 0 {
+                    if let Some(type_tag) = self.get_type_tag_for_isinstance_check(check_type) {
                         // Get type tag at runtime and compare
                         let tag_local = self.alloc_and_add_local(Type::Int, mir_func);
 
@@ -690,7 +689,7 @@ impl<'a> Lowering<'a> {
         let value_type = self.get_expr_type(value_expr, hir_module);
 
         // Box the value so it becomes *mut Obj
-        let boxed_value = self.box_value_for_union(value_operand, &value_type, mir_func);
+        let boxed_value = self.box_primitive_if_needed(value_operand, &value_type, mir_func);
 
         // Get format spec (default to empty string if not provided)
         let spec_operand = if args.len() > 1 {

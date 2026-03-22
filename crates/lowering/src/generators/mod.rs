@@ -119,25 +119,6 @@ impl<'a> Lowering<'a> {
 
         // Return the yield value directly - the actual state machine logic
         // is handled at the function level in lower_generator_function()
-
-        // Create a result local for the yield expression
-        // (yield can receive a value via send(), handled in full generator state machine)
-        let result_local = self.alloc_local_id();
-        mir_func.add_local(mir::Local {
-            id: result_local,
-            name: None,
-            ty: Type::Any, // The value received from send()
-            is_gc_root: false,
-        });
-
-        // Emit the yield value as the operand
-        // The actual state machine logic is handled at the function level
-        // Store yield value in result local and return it
-        self.emit_instruction(mir::InstructionKind::Copy {
-            dest: result_local,
-            src: yield_value.clone(),
-        });
-
         Ok(yield_value)
     }
 

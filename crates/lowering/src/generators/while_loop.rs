@@ -419,7 +419,12 @@ impl<'a> Lowering<'a> {
                             hir::BinOp::Div => mir::BinOp::Div,
                             hir::BinOp::Mod => mir::BinOp::Mod,
                             hir::BinOp::FloorDiv => mir::BinOp::FloorDiv,
-                            _ => mir::BinOp::Add,
+                            hir::BinOp::Pow => mir::BinOp::Pow,
+                            hir::BinOp::BitAnd => mir::BinOp::BitAnd,
+                            hir::BinOp::BitOr => mir::BinOp::BitOr,
+                            hir::BinOp::BitXor => mir::BinOp::BitXor,
+                            hir::BinOp::LShift => mir::BinOp::LShift,
+                            hir::BinOp::RShift => mir::BinOp::RShift,
                         };
                         yield_block.instructions.push(mir::Instruction {
                             kind: mir::InstructionKind::BinOp {

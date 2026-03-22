@@ -315,8 +315,9 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // Attribute not found - return 0 as default
-        Ok(mir::Operand::Constant(mir::Constant::Int(0)))
+        // TODO: unknown class attribute — should emit a diagnostic error rather than silently
+        // returning None, so that the user gets a clear compile-time message.
+        Ok(mir::Operand::Constant(mir::Constant::None))
     }
 
     /// Lower a closure expression.

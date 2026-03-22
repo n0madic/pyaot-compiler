@@ -19,6 +19,7 @@ pub(crate) fn is_heap_type(ty: &Type) -> bool {
             | Type::RuntimeObject(_)
             | Type::Any
             | Type::File
+            | Type::BuiltinException(_)
     )
 }
 
@@ -53,8 +54,8 @@ pub(crate) fn is_mutable_default_expr(expr: &hir::Expr) -> bool {
                 true
             }
         }
-        // Class instantiation
-        hir::ExprKind::ClassRef(_) => true,
+        // Class reference (not instance) is not mutable — only an instantiation would be
+        hir::ExprKind::ClassRef(_) => false,
         _ => false,
     }
 }

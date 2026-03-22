@@ -46,6 +46,10 @@ impl<'a> Lowering<'a> {
         // Offset by a large constant to avoid collisions with regular function IDs.
         const RESUME_FUNC_ID_OFFSET: u32 = 10000;
         let resume_func_id = FuncId(func.id.0 + RESUME_FUNC_ID_OFFSET);
+        debug_assert!(
+            func.id.0 < RESUME_FUNC_ID_OFFSET,
+            "Function count exceeds RESUME_FUNC_ID_OFFSET; generator resume FuncId would collide"
+        );
 
         let mut mir_func = mir::Function::new(
             resume_func_id,
@@ -255,7 +259,7 @@ impl<'a> Lowering<'a> {
         }
 
         // Allocate a local for the sent value (used for states > 0)
-        let sent_value_local = self.alloc_and_add_local(Type::Int, &mut mir_func);
+        let sent_value_local = self.alloc_and_add_local(Type::Any, &mut mir_func);
 
         // Create state blocks that yield values
         for (i, yield_info) in yield_infos.iter().enumerate() {

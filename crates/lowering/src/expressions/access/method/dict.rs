@@ -34,9 +34,9 @@ impl<'a> Lowering<'a> {
                 if arg_operands.len() >= 2 {
                     // .get(key, default) - box key and default based on dict's types
                     let boxed_key =
-                        self.box_dict_key_if_needed(arg_operands[0].clone(), &key_ty, mir_func);
+                        self.box_primitive_if_needed(arg_operands[0].clone(), &key_ty, mir_func);
                     let boxed_default =
-                        self.box_dict_value_if_needed(arg_operands[1].clone(), &value_ty, mir_func);
+                        self.box_primitive_if_needed(arg_operands[1].clone(), &value_ty, mir_func);
 
                     if let Some(unbox_func) = unbox_func {
                         let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
@@ -63,7 +63,7 @@ impl<'a> Lowering<'a> {
                         .into_iter()
                         .next()
                         .unwrap_or(mir::Operand::Constant(mir::Constant::None));
-                    let boxed_key = self.box_dict_key_if_needed(key_arg, &key_ty, mir_func);
+                    let boxed_key = self.box_primitive_if_needed(key_arg, &key_ty, mir_func);
 
                     if let Some(unbox_func) = unbox_func {
                         let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
@@ -96,7 +96,7 @@ impl<'a> Lowering<'a> {
                     .into_iter()
                     .next()
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
-                let boxed_key = self.box_dict_key_if_needed(key_arg, &key_ty, mir_func);
+                let boxed_key = self.box_primitive_if_needed(key_arg, &key_ty, mir_func);
 
                 if let Some(unbox_func) = unbox_func {
                     let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
@@ -215,13 +215,13 @@ impl<'a> Lowering<'a> {
                     .first()
                     .cloned()
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
-                let boxed_key = self.box_dict_key_if_needed(key_arg, &key_ty, mir_func);
+                let boxed_key = self.box_primitive_if_needed(key_arg, &key_ty, mir_func);
 
                 let default_arg = arg_operands
                     .get(1)
                     .cloned()
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
-                let boxed_default = self.box_dict_value_if_needed(default_arg, &value_ty, mir_func);
+                let boxed_default = self.box_primitive_if_needed(default_arg, &value_ty, mir_func);
 
                 if let Some(unbox_func) = unbox_func {
                     let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
@@ -273,7 +273,7 @@ impl<'a> Lowering<'a> {
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
 
                 // Box value if needed
-                let boxed_value = self.box_dict_value_if_needed(value_arg, &value_ty, mir_func);
+                let boxed_value = self.box_primitive_if_needed(value_arg, &value_ty, mir_func);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,

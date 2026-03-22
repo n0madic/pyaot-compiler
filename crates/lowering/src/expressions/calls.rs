@@ -430,9 +430,11 @@ impl<'a> Lowering<'a> {
             // Check if this FuncId maps to a function in the current module
             // If not, it might be an unresolved import
             if !hir_module.func_defs.contains_key(func_id) {
-                // This is likely a reference to an imported function
-                // Generate a placeholder that will be resolved later
-                // For now, lower the args and return None as a fallback
+                // TODO: cross-module FuncRef — this FuncId is not defined in the current
+                // module, so it refers to an imported function that was not yet resolved
+                // into a CallNamed/CallDirect. Proper handling requires linking the FuncId
+                // back to its source module and emitting a CallNamed instruction.
+                // For now, lower the args (for side-effects) and return None as a fallback.
                 let _ = kwargs; // Ignore kwargs for now
                 let _ = expr;
                 let _arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
@@ -579,8 +581,10 @@ impl<'a> Lowering<'a> {
 
             Ok(mir::Operand::Local(result_local))
         } else {
-            // Only direct function references supported here
-            // Method calls and closures are handled in other code paths
+            // TODO: unhandled callee expression kind — this branch is reached for callee
+            // shapes that are not yet supported (e.g., subscript expressions, arbitrary
+            // callable objects). Proper handling would require emitting a runtime dispatch.
+            // Returning None here silently produces incorrect results.
             Ok(mir::Operand::Constant(mir::Constant::None))
         }
     }
@@ -909,11 +913,15 @@ impl<'a> Lowering<'a> {
         // Allocate result local for the instance
         let result_local = self.alloc_and_add_local(class_type, mir_func);
 
-        // Try to get actual field count from class info, fall back to 10
+        // Try to get actual field count from class info.
+        // Fall back to 32 as a conservative upper bound for cross-module classes whose
+        // metadata is not yet available in this compilation unit.
+        // TODO: export total_field_count in cross-module class metadata so this fallback
+        //       can be eliminated and the correct value used unconditionally.
         let default_field_count = self
             .get_class_info(&class_id)
             .map(|info| info.total_field_count as i64)
-            .unwrap_or(10); // TODO: export field count in cross-module class metadata
+            .unwrap_or(32);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
             func: mir::RuntimeFunc::MakeInstance,

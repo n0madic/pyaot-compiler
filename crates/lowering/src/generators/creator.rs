@@ -240,9 +240,11 @@ impl<'a> Lowering<'a> {
             }
             hir::ExprKind::List(elements) => {
                 // Handle list literals like [1, 2, 3]
-                // First create the list
+                // First create the list.
+                // Use Type::Any as the element type so the list can hold any element
+                // kind; using Type::Int was incorrect for lists containing heap objects.
                 let list_local =
-                    self.alloc_and_add_local(Type::List(Box::new(Type::Int)), mir_func);
+                    self.alloc_and_add_local(Type::List(Box::new(Type::Any)), mir_func);
 
                 // Create empty list (generator list comprehension elements are ints)
                 block.instructions.push(mir::Instruction {

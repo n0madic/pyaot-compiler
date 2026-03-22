@@ -67,8 +67,12 @@ impl<'a> Lowering<'a> {
                 (start, stop, step, direction)
             }
             _ => {
-                // Invalid range call
-                return Ok(());
+                // Semantic analysis guarantees range() is called with 1–3 arguments;
+                // any other count is an internal compiler error.
+                panic!(
+                    "internal error: range() requires 1-3 arguments, got {}",
+                    args.len()
+                );
             }
         };
 

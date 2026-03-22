@@ -340,8 +340,8 @@ impl<'a> Lowering<'a> {
 
         if needs_unboxing {
             // Get the boxed element into a temporary local
-            // Using Str as pointer type placeholder with explicit no GC root since it's just for unboxing
-            let boxed_local = self.alloc_stack_local(Type::Str, mir_func);
+            // Must be a GC root: GC can run between the get and the unbox instruction
+            let boxed_local = self.alloc_gc_local(Type::Str, mir_func);
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: boxed_local,
