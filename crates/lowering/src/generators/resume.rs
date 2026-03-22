@@ -44,10 +44,9 @@ impl<'a> Lowering<'a> {
 
         // Create a new FuncId for the resume function.
         // Offset by a large constant to avoid collisions with regular function IDs.
-        const RESUME_FUNC_ID_OFFSET: u32 = 10000;
-        let resume_func_id = FuncId(func.id.0 + RESUME_FUNC_ID_OFFSET);
+        let resume_func_id = FuncId(func.id.0 + pyaot_utils::RESUME_FUNC_ID_OFFSET);
         debug_assert!(
-            func.id.0 < RESUME_FUNC_ID_OFFSET,
+            func.id.0 < pyaot_utils::RESUME_FUNC_ID_OFFSET,
             "Function count exceeds RESUME_FUNC_ID_OFFSET; generator resume FuncId would collide"
         );
 

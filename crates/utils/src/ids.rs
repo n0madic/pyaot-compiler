@@ -2,6 +2,11 @@
 
 use std::fmt;
 
+/// Offset applied to generator function IDs to derive resume function IDs.
+/// Resume func_id = original func_id + RESUME_FUNC_ID_OFFSET.
+/// Used in lowering (to create) and codegen (to decode).
+pub const RESUME_FUNC_ID_OFFSET: u32 = 10000;
+
 macro_rules! define_id {
     ($name:ident) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

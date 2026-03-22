@@ -137,7 +137,9 @@ fn create_data_section_impl(
 ) -> DataId {
     use std::sync::atomic::Ordering;
 
-    let id = counter.fetch_add(1, Ordering::SeqCst);
+    // Relaxed is sufficient: compilation is single-threaded, so no cross-thread
+    // visibility ordering is required — only atomicity for the static counter.
+    let id = counter.fetch_add(1, Ordering::Relaxed);
     let data_name = format!("{prefix}{id}");
 
     let data_id = module

@@ -441,7 +441,7 @@ pub fn compile_runtime_call(
         mir::RuntimeFunc::ExcIsinstanceClass
         | mir::RuntimeFunc::ExcRaiseCustom
         | mir::RuntimeFunc::ExcRegisterClassName => {
-            compile_exception_call(builder, dest, func, args, ctx);
+            compile_exception_call(builder, dest, func, args, ctx)?;
             Ok(())
         }
 
@@ -452,11 +452,11 @@ pub fn compile_runtime_call(
     }
 }
 
-use crate::utils::{create_raw_string_data, load_operand};
+use crate::utils::{create_raw_string_data, declare_runtime_function, load_operand};
 use cranelift_codegen::ir::types as cltypes;
 use cranelift_codegen::ir::{AbiParam, InstBuilder};
 use cranelift_codegen::isa::CallConv;
-use cranelift_module::{Linkage, Module};
+use cranelift_module::Module;
 
 /// Compile exception-related runtime calls
 fn compile_exception_call(
@@ -465,7 +465,7 @@ fn compile_exception_call(
     func: &mir::RuntimeFunc,
     args: &[Operand],
     ctx: &mut CodegenContext,
-) {
+) -> Result<()> {
     match func {
         mir::RuntimeFunc::ExcRegisterClassName => {
             // rt_exc_register_class_name(class_id: u8, name: *const u8, len: usize)
@@ -487,22 +487,19 @@ fn compile_exception_call(
                 sig.params.push(AbiParam::new(cltypes::I64)); // name ptr
                 sig.params.push(AbiParam::new(cltypes::I64)); // name len
 
-                let func_id = ctx
-                    .module
-                    .declare_function("rt_exc_register_class_name", Linkage::Import, &sig)
-                    .expect("failed to declare rt_exc_register_class_name function");
+                let func_id =
+                    declare_runtime_function(ctx.module, "rt_exc_register_class_name", &sig)?;
                 let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
                 builder.ins().call(func_ref, &[class_id_u8, ptr, len]);
             }
         }
         mir::RuntimeFunc::ExcIsinstanceClass => {
-            // rt_exc_isinstance_class(class_id: u8) -> i8
-            // This is handled in exceptions.rs via compile_exc_check_class
+            // Handled in exceptions.rs via compile_exc_check_class — no-op here
         }
         mir::RuntimeFunc::ExcRaiseCustom => {
-            // rt_exc_raise_custom(class_id: u8, msg_ptr: *const u8, msg_len: usize) -> !
-            // This is handled in exceptions.rs via compile_raise_custom
+            // Handled in exceptions.rs via compile_raise_custom — no-op here
         }
-        _ => {}
+        _ => unreachable!("Non-exception function passed to compile_exception_call"),
     }
+    Ok(())
 }

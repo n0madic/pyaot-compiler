@@ -38,7 +38,14 @@ pub fn compile_instruction(
                 mir::Constant::Float(f) => builder.ins().f64const(*f),
                 mir::Constant::Bool(b) => builder.ins().iconst(cltypes::I8, *b as i64),
                 mir::Constant::None => builder.ins().iconst(cltypes::I8, 0),
-                _ => return Ok(()), // Skip for now
+                // Str and Bytes constants are heap-allocated and always go through
+                // RuntimeCall::MakeStr / RuntimeCall::MakeBytes in lowering.
+                // They should never appear in a Const instruction.
+                mir::Constant::Str(_) | mir::Constant::Bytes(_) => {
+                    return Err(pyaot_diagnostics::CompilerError::codegen_error(
+                        format!("Const instruction with heap-allocated value {:?} — this should use a RuntimeCall", value)
+                    ))
+                }
             };
             let var = *ctx
                 .var_map
@@ -256,11 +263,33 @@ pub fn compile_instruction(
             // Get a function reference
             let func_ref = ctx.module.declare_func_in_func(cl_func_id, builder.func);
 
-            // Prepare arguments
+            // Prepare arguments with type coercion (same as CallDirect)
             let mut arg_vals = Vec::new();
-            for arg in args {
+            for (i, arg) in args.iter().enumerate() {
                 let arg_val = load_operand(builder, arg, ctx.var_map);
-                arg_vals.push(arg_val);
+                // Check Cranelift function signature for type mismatch and coerce
+                let arg_cl_type = builder.func.dfg.value_type(arg_val);
+                let sig =
+                    &builder.func.dfg.signatures[builder.func.dfg.ext_funcs[func_ref].signature];
+                let coerced_val = if let Some(expected_param) = sig.params.get(i) {
+                    let expected_ty = expected_param.value_type;
+                    if arg_cl_type == expected_ty {
+                        arg_val
+                    } else if arg_cl_type == cltypes::I8 && expected_ty == cltypes::I64 {
+                        builder.ins().uextend(cltypes::I64, arg_val)
+                    } else if arg_cl_type == cltypes::F64 && expected_ty == cltypes::I64 {
+                        builder.ins().bitcast(
+                            cltypes::I64,
+                            cranelift_codegen::ir::MemFlags::new(),
+                            arg_val,
+                        )
+                    } else {
+                        arg_val
+                    }
+                } else {
+                    arg_val
+                };
+                arg_vals.push(coerced_val);
             }
 
             // Make the call
@@ -298,12 +327,12 @@ pub fn compile_instruction(
                 .map(|l| crate::utils::type_to_cranelift(&l.ty))
                 .unwrap_or(cltypes::I64);
 
-            // Build the signature for the indirect call
-            // All parameters are I64 (pointers or integers)
+            // Build the signature for the indirect call using actual value types
             let mut sig = ctx.module.make_signature();
             sig.call_conv = CallConv::SystemV;
-            for _ in 0..arg_vals.len() {
-                sig.params.push(AbiParam::new(cltypes::I64));
+            for arg_val in &arg_vals {
+                let arg_ty = builder.func.dfg.value_type(*arg_val);
+                sig.params.push(AbiParam::new(arg_ty));
             }
             sig.returns.push(AbiParam::new(return_type));
 
@@ -382,12 +411,12 @@ pub fn compile_instruction(
             };
             let return_type = crate::utils::type_to_cranelift(&dest_local.ty);
 
-            // Build the signature for the indirect call
-            // All method parameters are I64 (pointers or integers, including self)
+            // Build the signature for the indirect call using actual value types
             let mut sig = ctx.module.make_signature();
             sig.call_conv = CallConv::SystemV;
-            for _ in 0..arg_vals.len() {
-                sig.params.push(AbiParam::new(cltypes::I64));
+            for arg_val in &arg_vals {
+                let arg_ty = builder.func.dfg.value_type(*arg_val);
+                sig.params.push(AbiParam::new(arg_ty));
             }
             // Return type matches the destination variable's type
             sig.returns.push(AbiParam::new(return_type));
@@ -617,22 +646,21 @@ pub fn compile_instruction(
             update_gc_root_if_needed(builder, dest, result, ctx.gc_frame_data);
         }
 
-        _ => {
-            // Skip unsupported instructions for now
-        }
+        // GC instructions are handled at the function level in function.rs
+        // (gc_push/gc_pop prologue/epilogue), not per-instruction.
+        mir::InstructionKind::GcPush { .. }
+        | mir::InstructionKind::GcPop
+        | mir::InstructionKind::GcAlloc { .. } => {}
     }
     Ok(())
 }
 
-/// Promote integer operands to matching types for comparison
-/// When comparing i8 (bool) with i64 (int/any/ptr), promote both to i64
+/// Promote integer operands to matching types for comparison.
+/// When comparing i8 (bool) with i64 (int/any/ptr), promote both to i64.
 fn promote_int_operands(
     builder: &mut FunctionBuilder,
     left_val: cranelift_codegen::ir::Value,
     right_val: cranelift_codegen::ir::Value,
-    _left: &Operand,
-    _right: &Operand,
-    _locals: &indexmap::IndexMap<pyaot_utils::LocalId, mir::Local>,
 ) -> (cranelift_codegen::ir::Value, cranelift_codegen::ir::Value) {
     // Use actual Cranelift IR value types instead of MIR types, because the values
     // may have already been promoted by load_operand_as before reaching this point.
@@ -799,103 +827,39 @@ fn compile_binop(
         // Integer operations - use runtime functions with overflow/division-by-zero checks
         match op {
             mir::BinOp::Add => {
-                // Call rt_add_int(a: i64, b: i64) -> i64 (raises OverflowError)
-                let mut sig = ctx.module.make_signature();
-                sig.call_conv = CallConv::SystemV;
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.returns.push(AbiParam::new(cltypes::I64));
-
-                let func_id = declare_runtime_function(ctx.module, "rt_add_int", &sig)?;
-                let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-                let call_inst = builder.ins().call(func_ref, &[left_val, right_val]);
-                get_call_result(builder, call_inst)
+                call_int_binop_rt(builder, ctx, "rt_add_int", cltypes::I64, left_val, right_val)?
             }
             mir::BinOp::Sub => {
-                // Call rt_sub_int(a: i64, b: i64) -> i64 (raises OverflowError)
-                let mut sig = ctx.module.make_signature();
-                sig.call_conv = CallConv::SystemV;
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.returns.push(AbiParam::new(cltypes::I64));
-
-                let func_id = declare_runtime_function(ctx.module, "rt_sub_int", &sig)?;
-                let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-                let call_inst = builder.ins().call(func_ref, &[left_val, right_val]);
-                get_call_result(builder, call_inst)
+                call_int_binop_rt(builder, ctx, "rt_sub_int", cltypes::I64, left_val, right_val)?
             }
             mir::BinOp::Mul => {
-                // Call rt_mul_int(a: i64, b: i64) -> i64 (raises OverflowError)
-                let mut sig = ctx.module.make_signature();
-                sig.call_conv = CallConv::SystemV;
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.returns.push(AbiParam::new(cltypes::I64));
-
-                let func_id = declare_runtime_function(ctx.module, "rt_mul_int", &sig)?;
-                let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-                let call_inst = builder.ins().call(func_ref, &[left_val, right_val]);
-                get_call_result(builder, call_inst)
+                call_int_binop_rt(builder, ctx, "rt_mul_int", cltypes::I64, left_val, right_val)?
             }
             mir::BinOp::Div => {
                 // Python 3: true division always returns float
-                // Call rt_true_div_int(a: i64, b: i64) -> f64 (raises ZeroDivisionError)
-                let mut sig = ctx.module.make_signature();
-                sig.call_conv = CallConv::SystemV;
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.returns.push(AbiParam::new(cltypes::F64));
-
-                let func_id = declare_runtime_function(ctx.module, "rt_true_div_int", &sig)?;
-                let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-                let call_inst = builder.ins().call(func_ref, &[left_val, right_val]);
-                get_call_result(builder, call_inst)
+                call_int_binop_rt(
+                    builder,
+                    ctx,
+                    "rt_true_div_int",
+                    cltypes::F64,
+                    left_val,
+                    right_val,
+                )?
             }
             mir::BinOp::FloorDiv => {
-                // Floor division returns int for int operands
-                // Call rt_div_int(a: i64, b: i64) -> i64 (raises ZeroDivisionError)
-                let mut sig = ctx.module.make_signature();
-                sig.call_conv = CallConv::SystemV;
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.returns.push(AbiParam::new(cltypes::I64));
-
-                let func_id = declare_runtime_function(ctx.module, "rt_div_int", &sig)?;
-                let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-                let call_inst = builder.ins().call(func_ref, &[left_val, right_val]);
-                get_call_result(builder, call_inst)
+                call_int_binop_rt(builder, ctx, "rt_div_int", cltypes::I64, left_val, right_val)?
             }
             mir::BinOp::Mod => {
-                // Call rt_mod_int(a: i64, b: i64) -> i64 (raises ZeroDivisionError)
-                let mut sig = ctx.module.make_signature();
-                sig.call_conv = CallConv::SystemV;
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.returns.push(AbiParam::new(cltypes::I64));
-
-                let func_id = declare_runtime_function(ctx.module, "rt_mod_int", &sig)?;
-                let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-                let call_inst = builder.ins().call(func_ref, &[left_val, right_val]);
-                get_call_result(builder, call_inst)
+                call_int_binop_rt(builder, ctx, "rt_mod_int", cltypes::I64, left_val, right_val)?
             }
             mir::BinOp::Pow => {
-                // Call rt_pow_int(base: i64, exp: i64) -> i64
-                let mut sig = ctx.module.make_signature();
-                sig.call_conv = CallConv::SystemV;
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.params.push(AbiParam::new(cltypes::I64));
-                sig.returns.push(AbiParam::new(cltypes::I64));
-
-                let func_id = declare_runtime_function(ctx.module, "rt_pow_int", &sig)?;
-                let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-                let call_inst = builder.ins().call(func_ref, &[left_val, right_val]);
-                get_call_result(builder, call_inst)
+                call_int_binop_rt(builder, ctx, "rt_pow_int", cltypes::I64, left_val, right_val)?
             }
             // Integer comparison operations - icmp returns i1, extend to dest type
             // First, promote operands to matching types if needed (i8 vs i64)
             mir::BinOp::Eq => {
                 let (l, r) =
-                    promote_int_operands(builder, left_val, right_val, left, right, ctx.locals);
+                    promote_int_operands(builder, left_val, right_val);
                 let cmp = builder
                     .ins()
                     .icmp(cranelift_codegen::ir::condcodes::IntCC::Equal, l, r);
@@ -903,7 +867,7 @@ fn compile_binop(
             }
             mir::BinOp::NotEq => {
                 let (l, r) =
-                    promote_int_operands(builder, left_val, right_val, left, right, ctx.locals);
+                    promote_int_operands(builder, left_val, right_val);
                 let cmp =
                     builder
                         .ins()
@@ -912,7 +876,7 @@ fn compile_binop(
             }
             mir::BinOp::Lt => {
                 let (l, r) =
-                    promote_int_operands(builder, left_val, right_val, left, right, ctx.locals);
+                    promote_int_operands(builder, left_val, right_val);
                 let cmp = builder.ins().icmp(
                     cranelift_codegen::ir::condcodes::IntCC::SignedLessThan,
                     l,
@@ -922,7 +886,7 @@ fn compile_binop(
             }
             mir::BinOp::LtE => {
                 let (l, r) =
-                    promote_int_operands(builder, left_val, right_val, left, right, ctx.locals);
+                    promote_int_operands(builder, left_val, right_val);
                 let cmp = builder.ins().icmp(
                     cranelift_codegen::ir::condcodes::IntCC::SignedLessThanOrEqual,
                     l,
@@ -932,7 +896,7 @@ fn compile_binop(
             }
             mir::BinOp::Gt => {
                 let (l, r) =
-                    promote_int_operands(builder, left_val, right_val, left, right, ctx.locals);
+                    promote_int_operands(builder, left_val, right_val);
                 let cmp = builder.ins().icmp(
                     cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThan,
                     l,
@@ -942,7 +906,7 @@ fn compile_binop(
             }
             mir::BinOp::GtE => {
                 let (l, r) =
-                    promote_int_operands(builder, left_val, right_val, left, right, ctx.locals);
+                    promote_int_operands(builder, left_val, right_val);
                 let cmp = builder.ins().icmp(
                     cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThanOrEqual,
                     l,
@@ -972,16 +936,50 @@ fn compile_binop(
     Ok(())
 }
 
-/// Extend an i1 comparison result to the target type based on destination variable type.
-/// icmp/fcmp return i1 (native bool), but Python bools are i8 and other types (int, Any, etc.) are i64.
+/// Extend a comparison result to the target type based on destination variable type.
+/// icmp/fcmp return i8 (0 or 1) in Cranelift. If the destination expects i64
+/// (e.g., for Int or Any-typed variables), extend to match.
 fn extend_comparison_result(
-    _builder: &mut FunctionBuilder,
+    builder: &mut FunctionBuilder,
     cmp_result: Value,
-    _dest: &pyaot_utils::LocalId,
-    _ctx: &CodegenContext,
+    dest: &pyaot_utils::LocalId,
+    ctx: &CodegenContext,
 ) -> Value {
-    // Just return the comparison result directly (i1) - Cranelift will handle conversion
-    cmp_result
+    let dest_cl_ty = ctx
+        .locals
+        .get(dest)
+        .map(|l| crate::utils::type_to_cranelift(&l.ty))
+        .unwrap_or(cltypes::I8);
+    let result_ty = builder.func.dfg.value_type(cmp_result);
+    if result_ty == dest_cl_ty {
+        cmp_result
+    } else if dest_cl_ty == cltypes::I64 {
+        builder.ins().uextend(cltypes::I64, cmp_result)
+    } else {
+        cmp_result
+    }
+}
+
+/// Call a binary integer runtime function: rt_name(a: i64, b: i64) -> ret_type.
+/// Used for arithmetic operations that delegate to the runtime for overflow/error checking.
+fn call_int_binop_rt(
+    builder: &mut FunctionBuilder,
+    ctx: &mut CodegenContext,
+    func_name: &str,
+    ret_type: cltypes::Type,
+    left: Value,
+    right: Value,
+) -> pyaot_diagnostics::Result<Value> {
+    let mut sig = ctx.module.make_signature();
+    sig.call_conv = CallConv::SystemV;
+    sig.params.push(AbiParam::new(cltypes::I64));
+    sig.params.push(AbiParam::new(cltypes::I64));
+    sig.returns.push(AbiParam::new(ret_type));
+
+    let func_id = declare_runtime_function(ctx.module, func_name, &sig)?;
+    let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+    let call_inst = builder.ins().call(func_ref, &[left, right]);
+    Ok(get_call_result(builder, call_inst))
 }
 
 /// Box a primitive value (int, float, bool) for passing to Any-typed parameters.

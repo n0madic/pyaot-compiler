@@ -42,7 +42,7 @@ use cranelift_codegen::ir::{AbiParam, InstBuilder};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{Linkage, Module};
-use pyaot_utils::FuncId;
+use pyaot_utils::{FuncId, RESUME_FUNC_ID_OFFSET};
 
 use function::{
     declare_function, declare_runtime_functions, define_function,
@@ -162,13 +162,18 @@ impl Codegen {
 
         // Collect generator resume functions for the dispatcher
         // Resume functions have names ending with "$resume" and their original func_id
-        // is stored as func_id - 10000
+        // is stored as func_id - RESUME_FUNC_ID_OFFSET
         let resume_funcs: Vec<(FuncId, ClFuncId)> = mir_module
             .functions
             .iter()
             .filter(|(_, f)| f.name.ends_with("$resume"))
             .map(|(fid, _)| {
-                // The original generator func_id is stored as resume_id - 10000
+                debug_assert!(
+                    fid.0 >= RESUME_FUNC_ID_OFFSET,
+                    "Resume function ID {} is less than RESUME_FUNC_ID_OFFSET {}",
+                    fid.0,
+                    RESUME_FUNC_ID_OFFSET
+                );
                 (
                     *fid,
                     *func_ids.get(fid).expect(
@@ -321,6 +326,12 @@ impl Codegen {
 
         // Register each vtable
         for (class_id, data_id) in vtable_data_ids {
+            debug_assert!(
+                *class_id <= u8::MAX as u32,
+                "class_id {} exceeds u8::MAX (255) — runtime vtable registry is limited to 256 classes",
+                class_id
+            );
+
             // Get the global value for the vtable data
             let gv = self.module.declare_data_in_func(*data_id, builder.func);
             let vtable_addr = builder.ins().global_value(cltypes::I64, gv);
@@ -396,7 +407,7 @@ impl Codegen {
         // Create blocks for each resume function
         let dispatch_info: Vec<(u32, ClFuncId)> = resume_funcs
             .iter()
-            .map(|(mir_fid, cl_fid)| (mir_fid.0 - 10000, *cl_fid))
+            .map(|(mir_fid, cl_fid)| (mir_fid.0 - RESUME_FUNC_ID_OFFSET, *cl_fid))
             .collect();
 
         if dispatch_info.is_empty() {

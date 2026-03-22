@@ -17,6 +17,17 @@ use crate::utils::{
     create_raw_string_data, declare_runtime_function, get_call_result, load_operand,
 };
 
+/// Size of jmp_buf in bytes. Must match runtime's JMP_BUF_SIZE in
+/// crates/runtime/src/exceptions.rs (200 bytes, safe across macOS and Linux).
+const JMP_BUF_SIZE: usize = 200;
+
+/// ExceptionFrame layout (must match runtime's #[repr(C)] ExceptionFrame):
+///   prev: *mut ExceptionFrame  (8 bytes, offset 0)
+///   jmp_buf: [u8; JMP_BUF_SIZE] (JMP_BUF_SIZE bytes, offset 8)
+///   gc_stack_top: *mut u8      (8 bytes, offset 8 + JMP_BUF_SIZE)
+const EXCEPTION_FRAME_SIZE: u32 = 8 + JMP_BUF_SIZE as u32 + 8;
+const JMP_BUF_OFFSET: i64 = 8;
+
 /// Compile ExcPushFrame instruction
 /// Allocates exception frame on stack and pushes it to the handler stack
 pub fn compile_exc_push_frame(
@@ -24,13 +35,11 @@ pub fn compile_exc_push_frame(
     frame_local: &LocalId,
     ctx: &mut CodegenContext,
 ) -> Result<()> {
-    // ExceptionFrame: prev (8) + jmp_buf (200) + gc_stack_top (8) = 216 bytes
-
     // Create stack slot for ExceptionFrame
     let frame_slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
-        216, // Size of ExceptionFrame
-        3,   // 8-byte alignment
+        EXCEPTION_FRAME_SIZE,
+        3, // 8-byte alignment (2^3 = 8)
     ));
 
     // Get address of the frame on stack
@@ -163,9 +172,8 @@ pub fn compile_try_setjmp(
             .expect("internal error: local not in var_map - codegen bug"),
     );
 
-    // Compute jmp_buf address: frame_ptr + 8 (offset of jmp_buf in ExceptionFrame)
-    // ExceptionFrame layout: prev (*mut ExceptionFrame, 8 bytes) | jmp_buf ([u8; 200]) | ...
-    let jmp_buf_ptr = builder.ins().iadd_imm(frame_ptr, 8);
+    // Compute jmp_buf address: frame_ptr + JMP_BUF_OFFSET
+    let jmp_buf_ptr = builder.ins().iadd_imm(frame_ptr, JMP_BUF_OFFSET);
 
     // Call setjmp directly from Cranelift-generated code
     let call_inst = builder.ins().call(func_ref, &[jmp_buf_ptr]);
