@@ -16,7 +16,21 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let list_type = self.get_expr_type(expr, hir_module);
+        let mut list_type = self.get_expr_type(expr, hir_module);
+
+        // For empty lists with unknown element type, use the expected type from
+        // the assignment context (e.g., `x: list[int] = []` or `x = []` where x
+        // was previously declared as list[int]).
+        if elements.is_empty() {
+            if let Type::List(ref elem_ty) = list_type {
+                if **elem_ty == Type::Any {
+                    if let Some(Type::List(ref expected_elem)) = self.expected_type {
+                        list_type = Type::List(expected_elem.clone());
+                    }
+                }
+            }
+        }
+
         let result_local = self.alloc_and_add_local(list_type.clone(), mir_func);
 
         // Determine elem_tag based on element type

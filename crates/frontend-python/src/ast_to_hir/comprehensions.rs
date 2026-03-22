@@ -653,7 +653,7 @@ impl AstToHir {
         }
     }
 
-    /// Check if an iterable expression produces integers (e.g., range()).
+    /// Check if an iterable expression produces integers (e.g., range(), list of ints).
     fn is_int_iterable(&self, expr: &py::Expr) -> bool {
         match expr {
             py::Expr::Call(call) => {
@@ -663,6 +663,10 @@ impl AstToHir {
                     false
                 }
             }
+            // List literal with all int elements: [1, 2, 3]
+            py::Expr::List(list) => list.elts.iter().all(|e| self.is_int_expression(e)),
+            // Tuple literal with all int elements: (1, 2, 3)
+            py::Expr::Tuple(tuple) => tuple.elts.iter().all(|e| self.is_int_expression(e)),
             _ => false,
         }
     }

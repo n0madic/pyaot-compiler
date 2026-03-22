@@ -80,6 +80,8 @@ impl<'a> Lowering<'a> {
             // Module-level decorator/function tracking (persists across function lowering)
             module_var_wrappers: IndexMap::with_capacity(8),
             module_var_funcs: IndexMap::with_capacity(8),
+            // Expected type for current expression (set by assignment context for type propagation)
+            expected_type: None,
         }
     }
 

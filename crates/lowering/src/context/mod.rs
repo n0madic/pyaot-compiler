@@ -177,6 +177,9 @@ pub struct Lowering<'a> {
     pub(crate) cell_vars: IndexSet<VarId>,
     /// Map nonlocal variables to their cell local (for reading/writing through cells)
     pub(crate) nonlocal_cells: IndexMap<VarId, LocalId>,
+    /// Expected type for the current expression being lowered (set by assignment context).
+    /// Used by empty list/dict/set literals to infer the correct elem_tag.
+    pub(crate) expected_type: Option<Type>,
     /// Track original types of narrowed Union variables (for unboxing during reads)
     /// Key: VarId, Value: Original Union type before narrowing
     pub(crate) narrowed_union_vars: IndexMap<VarId, Type>,

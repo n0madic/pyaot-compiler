@@ -364,8 +364,14 @@ impl<'a> Lowering<'a> {
             if let Some(default_id) = param.default {
                 let default_expr = &hir_module.exprs[default_id];
 
+                // Set expected type from parameter type for correct elem_tag on empty lists
+                let prev_expected = self.expected_type.take();
+                self.expected_type = param.ty.clone();
+
                 // Lower the default expression to get its value
                 let default_operand = self.lower_expr(default_expr, hir_module, mir_func)?;
+
+                self.expected_type = prev_expected;
 
                 // Store in global slot - mutable defaults are always heap types (ptr)
                 let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
