@@ -28,10 +28,15 @@ impl AstToHir {
         let temp_interned = self.interner.intern(&temp_name);
         self.var_map.insert(temp_interned, temp_var_id);
 
-        // 4. Create empty list initialization: __comp_N = []
+        // 4. Create empty list initialization: __comp_N: list[T] = []
+        //    Try to infer element type from the comprehension to set the correct
+        //    elem_tag on the list. This avoids storing raw ints with ELEM_HEAP_OBJ
+        //    tag, which causes GC warnings and potential corruption in debug builds.
+        let elem_type = self.infer_comprehension_elem_type(&comp.elt, &comp.generators);
+        let list_type = elem_type.map(|et| Type::List(Box::new(et)));
         let empty_list = self.module.exprs.alloc(Expr {
             kind: ExprKind::List(vec![]),
-            ty: None,
+            ty: list_type.clone(),
             span: comp_span,
         });
         let init_stmt = self.module.stmts.alloc(Stmt {
@@ -598,5 +603,67 @@ impl AstToHir {
         });
 
         Ok(vec![for_stmt])
+    }
+
+    /// Try to infer the element type of a list comprehension from its element
+    /// expression and generators. Returns Some(Type::Int) when we can determine
+    /// the result is integral, None otherwise (falls back to List(Any)).
+    fn infer_comprehension_elem_type(
+        &self,
+        elt: &py::Expr,
+        generators: &[py::Comprehension],
+    ) -> Option<Type> {
+        // Check if all generators iterate over integer sources (range)
+        let all_int_sources = generators.iter().all(|gen| self.is_int_iterable(&gen.iter));
+
+        if all_int_sources && self.is_int_expression(elt) {
+            Some(Type::Int)
+        } else {
+            None
+        }
+    }
+
+    /// Check if an expression is likely to produce an integer value.
+    fn is_int_expression(&self, expr: &py::Expr) -> bool {
+        match expr {
+            py::Expr::Constant(c) => matches!(c.value, py::Constant::Int(_)),
+            py::Expr::UnaryOp(op) => self.is_int_expression(&op.operand),
+            py::Expr::BinOp(op) => {
+                // Arithmetic on ints produces int (except division)
+                if matches!(op.op, py::Operator::Div | py::Operator::Pow) {
+                    return false;
+                }
+                self.is_int_expression(&op.left) && self.is_int_expression(&op.right)
+            }
+            py::Expr::Name(_) => {
+                // Loop variables from range() are ints
+                true // Conservative: assume names are ints when all sources are int
+            }
+            py::Expr::Call(call) => {
+                if let py::Expr::Name(name) = call.func.as_ref() {
+                    matches!(name.id.as_str(), "int" | "abs" | "len" | "ord" | "hash")
+                } else {
+                    false
+                }
+            }
+            py::Expr::IfExp(if_expr) => {
+                self.is_int_expression(&if_expr.body) && self.is_int_expression(&if_expr.orelse)
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if an iterable expression produces integers (e.g., range()).
+    fn is_int_iterable(&self, expr: &py::Expr) -> bool {
+        match expr {
+            py::Expr::Call(call) => {
+                if let py::Expr::Name(name) = call.func.as_ref() {
+                    matches!(name.id.as_str(), "range")
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
     }
 }

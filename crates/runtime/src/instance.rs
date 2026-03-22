@@ -125,7 +125,7 @@ pub extern "C" fn rt_get_type_tag(obj: *mut Obj) -> i64 {
     // Validate alignment: Obj requires 8-byte alignment (due to usize field).
     // Non-aligned pointers (e.g., 4-byte aligned function pointers from code
     // section) are not valid Obj pointers — return Instance tag as fallback.
-    if (obj as usize) % std::mem::align_of::<Obj>() != 0 {
+    if !(obj as usize).is_multiple_of(std::mem::align_of::<Obj>()) {
         return crate::object::TypeTagKind::Instance as i64;
     }
     unsafe { (*obj).type_tag() as i64 }
@@ -142,7 +142,7 @@ pub extern "C" fn rt_isinstance_class(obj: *mut Obj, class_id: i64) -> i8 {
         return 0;
     }
     // Validate alignment before dereferencing
-    if (obj as usize) % std::mem::align_of::<Obj>() != 0 {
+    if !(obj as usize).is_multiple_of(std::mem::align_of::<Obj>()) {
         return 0;
     }
 

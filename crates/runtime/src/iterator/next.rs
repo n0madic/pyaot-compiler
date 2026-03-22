@@ -345,11 +345,13 @@ unsafe fn iter_next_enumerate(
     let counter = (*iter).index;
     (*iter).index += 1;
 
+    // Box both counter and element for ELEM_HEAP_OBJ tuple
     let boxed_counter = crate::boxing::rt_box_int(counter);
+    let boxed_elem = box_if_raw_int_iterator(inner, elem);
     let tuple = crate::tuple::rt_make_tuple(2, ELEM_HEAP_OBJ);
     let tuple_obj = tuple as *mut TupleObj;
     *(*tuple_obj).data.as_mut_ptr().add(0) = boxed_counter;
-    *(*tuple_obj).data.as_mut_ptr().add(1) = elem;
+    *(*tuple_obj).data.as_mut_ptr().add(1) = boxed_elem;
     tuple
 }
 

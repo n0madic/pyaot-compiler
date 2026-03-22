@@ -28,11 +28,11 @@ use crate::object::{Obj, TypeTagKind};
 /// 3. Even if a list contains MAX_INT, comparing pointers will use the actual storage value
 pub(crate) const EXHAUSTED_SENTINEL: *mut Obj = usize::MAX as *mut Obj;
 
-/// Helper to box an element if it came from a raw-int iterator (list[int], range, bytes)
+/// Helper to box an element if it came from a raw-value iterator (list[int], tuple[int,...], range, bytes)
 /// Returns the element as-is if it's already a heap object, or boxes it if raw
 pub(crate) unsafe fn box_if_raw_int_iterator(iter: *mut Obj, elem: *mut Obj) -> *mut Obj {
     use crate::boxing::rt_box_int;
-    use crate::object::{IteratorKind, IteratorObj, ListObj, ELEM_RAW_INT};
+    use crate::object::{IteratorKind, IteratorObj, ListObj, TupleObj, ELEM_RAW_INT};
 
     if iter.is_null() {
         return elem;
@@ -57,8 +57,15 @@ pub(crate) unsafe fn box_if_raw_int_iterator(iter: *mut Obj, elem: *mut Obj) -> 
                     return rt_box_int(elem as i64);
                 }
             }
+            IteratorKind::Tuple => {
+                // Check tuple's elem_tag
+                let tuple = (*iter_obj).source as *mut TupleObj;
+                if (*tuple).elem_tag == ELEM_RAW_INT {
+                    return rt_box_int(elem as i64);
+                }
+            }
             _ => {
-                // Other iterator types yield heap objects
+                // Other iterator types (Map, Filter, etc.) yield heap objects
             }
         }
     }
