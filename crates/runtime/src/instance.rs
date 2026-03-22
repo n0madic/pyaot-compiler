@@ -112,11 +112,21 @@ pub extern "C" fn rt_instance_get_class_id(inst: *mut Obj) -> u8 {
 
 /// Get the type tag of an object
 /// Returns: type tag as i64
+///
+/// Handles the case where `obj` might not be a valid heap pointer (e.g., a raw
+/// function pointer from a closure/decorator). Non-aligned or obviously invalid
+/// pointers return the Instance tag as a safe fallback.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_get_type_tag(obj: *mut Obj) -> i64 {
     if obj.is_null() {
         return crate::object::TypeTagKind::None as i64;
+    }
+    // Validate alignment: Obj requires 8-byte alignment (due to usize field).
+    // Non-aligned pointers (e.g., 4-byte aligned function pointers from code
+    // section) are not valid Obj pointers — return Instance tag as fallback.
+    if (obj as usize) % std::mem::align_of::<Obj>() != 0 {
+        return crate::object::TypeTagKind::Instance as i64;
     }
     unsafe { (*obj).type_tag() as i64 }
 }
@@ -129,6 +139,10 @@ pub extern "C" fn rt_get_type_tag(obj: *mut Obj) -> i64 {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_isinstance_class(obj: *mut Obj, class_id: i64) -> i8 {
     if obj.is_null() {
+        return 0;
+    }
+    // Validate alignment before dereferencing
+    if (obj as usize) % std::mem::align_of::<Obj>() != 0 {
         return 0;
     }
 

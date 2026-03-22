@@ -133,6 +133,13 @@ pub fn compile_exc_has_exception(
 
 /// Compile TrySetjmp terminator
 /// Sets up setjmp for exception handling, branches to try_body or handler
+///
+/// Calls `setjmp` directly from Cranelift-generated code rather than through
+/// a Rust wrapper function. This is critical because `setjmp`/`longjmp` requires
+/// that the function which called `setjmp` has not returned when `longjmp` fires.
+/// A Rust wrapper (`rt_exc_setjmp`) would return immediately, making the later
+/// `longjmp` undefined behavior — which manifests as SIGILL in debug builds
+/// where the wrapper is not inlined.
 pub fn compile_try_setjmp(
     builder: &mut FunctionBuilder,
     frame_local: &LocalId,
@@ -140,13 +147,13 @@ pub fn compile_try_setjmp(
     handler_entry: &pyaot_utils::BlockId,
     ctx: &mut CodegenContext,
 ) -> Result<()> {
-    // Declare rt_exc_setjmp: extern "C" fn(*mut ExceptionFrame) -> i32
+    // Declare setjmp directly: extern "C" fn(*mut u8) -> i32
     let mut sig = ctx.module.make_signature();
     sig.call_conv = CallConv::SystemV;
-    sig.params.push(AbiParam::new(cltypes::I64)); // frame pointer
+    sig.params.push(AbiParam::new(cltypes::I64)); // jmp_buf pointer
     sig.returns.push(AbiParam::new(cltypes::I32)); // 0 or non-zero
 
-    let func_id = declare_runtime_function(ctx.module, "rt_exc_setjmp", &sig)?;
+    let func_id = declare_runtime_function(ctx.module, "setjmp", &sig)?;
     let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
 
     // Get frame pointer from local variable
@@ -156,8 +163,12 @@ pub fn compile_try_setjmp(
             .expect("internal error: local not in var_map - codegen bug"),
     );
 
-    // Call setjmp
-    let call_inst = builder.ins().call(func_ref, &[frame_ptr]);
+    // Compute jmp_buf address: frame_ptr + 8 (offset of jmp_buf in ExceptionFrame)
+    // ExceptionFrame layout: prev (*mut ExceptionFrame, 8 bytes) | jmp_buf ([u8; 200]) | ...
+    let jmp_buf_ptr = builder.ins().iadd_imm(frame_ptr, 8);
+
+    // Call setjmp directly from Cranelift-generated code
+    let call_inst = builder.ins().call(func_ref, &[jmp_buf_ptr]);
     let result = get_call_result(builder, call_inst);
 
     // Branch based on result: 0 = try_body, non-zero = handler_entry

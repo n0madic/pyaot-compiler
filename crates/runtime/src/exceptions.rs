@@ -20,9 +20,8 @@ use std::ptr;
 pub const JMP_BUF_SIZE: usize = 200;
 
 extern "C" {
-    /// setjmp: save execution context
-    /// Returns 0 on initial call, non-zero when returned via longjmp
-    fn setjmp(env: *mut u8) -> i32;
+    // Note: setjmp is called directly from Cranelift-generated code, not from Rust.
+    // Only longjmp is called from the runtime.
 
     /// longjmp: restore execution context saved by setjmp
     /// val should be non-zero (typically 1)
@@ -296,18 +295,11 @@ pub extern "C" fn rt_exc_pop_frame() {
     });
 }
 
-/// Call setjmp on the exception frame's jump buffer
-/// Returns 0 on normal call, 1 when returning via longjmp (exception raised)
-///
-/// # Safety
-/// `frame` must be a valid pointer to an ExceptionFrame.
-#[no_mangle]
-pub unsafe extern "C" fn rt_exc_setjmp(frame: *mut ExceptionFrame) -> i32 {
-    if frame.is_null() {
-        return -1;
-    }
-    setjmp((*frame).jmp_buf.as_mut_ptr())
-}
+// Note: setjmp is now called directly from Cranelift-generated code (not through
+// a Rust wrapper) to avoid UB. When setjmp is called from a wrapper function that
+// returns, the later longjmp tries to restore a dead stack frame — causing SIGILL
+// in debug builds. The codegen computes jmp_buf address as frame_ptr + 8 and calls
+// setjmp directly.
 
 /// Raise an exception with the given type and message
 /// This function does not return - it longjmps to the nearest handler

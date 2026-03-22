@@ -4,6 +4,16 @@ Non-obvious insights, gotchas, and hard-won knowledge about the Python AOT Compi
 
 ---
 
+## setjmp Must Be Called Directly From Cranelift Code
+
+`setjmp`/`longjmp` exception handling requires that `setjmp` is called directly from the function whose context should be saved. **Never wrap `setjmp` in a Rust function** — after the wrapper returns, `longjmp` would try to restore a dead stack frame, causing SIGILL. In release mode this accidentally works because LTO inlines the wrapper, but in debug mode the wrapper's frame is separate and gets destroyed. The codegen (`codegen-cranelift/src/exceptions.rs`) imports `setjmp` directly and computes the jmp_buf address as `frame_ptr + 8` (offset of `jmp_buf` in `ExceptionFrame`).
+
+## rt_get_type_tag Must Validate Pointer Alignment
+
+`rt_get_type_tag(obj)` can receive non-Obj values (e.g., function pointers from closures/decorators with 4-byte code alignment). It must check `obj` alignment before dereferencing to avoid UB. Same applies to `rt_isinstance_class`. See `runtime/src/instance.rs`.
+
+---
+
 ## List Element Storage: `elem_tag` Controls Everything
 
 Lists have a dual storage mode controlled by `elem_tag` on `ListObj` (`runtime/src/list/core.rs`):

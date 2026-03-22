@@ -4,19 +4,25 @@ use pyaot::CompileOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
 static BUILD_RUNTIME: Once = Once::new();
+
+/// Serialize compilations to avoid thread-safety issues in Cranelift's
+/// ObjectModule when multiple compilations run in the same process.
+/// The compiled executables still run in parallel.
+static COMPILE_MUTEX: Mutex<()> = Mutex::new(());
 
 /// Maximum time a compiled test binary is allowed to run before being killed.
 const EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Ensure the runtime library is built in release mode (exactly once across all tests).
 ///
-/// Always builds in release mode regardless of the test profile, because the
-/// runtime library must be optimized — debug-mode runtime has different overflow
-/// behavior and performance characteristics that cause test failures.
+/// Always uses release mode because the runtime is designed for optimized operation —
+/// debug mode has known elem_tag mismatches in map/filter/tuple operations that
+/// cause GC to misidentify raw int/bool values as heap pointers, leading to
+/// nondeterministic failures under GC pressure.
 fn ensure_runtime_built() {
     BUILD_RUNTIME.call_once(|| {
         let status = Command::new("cargo")
@@ -104,13 +110,16 @@ pub fn run_pyaot(test_name: &str, py_file: &Path, expected_output: Option<&str>)
 
     let output_bin = tmp_dir.join(test_name);
 
-    // Compile
-    let result = pyaot::compile_to_executable(&CompileOptions {
-        input: py_file.to_path_buf(),
-        output: output_bin.clone(),
-        runtime_lib,
-        ..Default::default()
-    });
+    // Compile (serialized to avoid Cranelift thread-safety issues)
+    let result = {
+        let _lock = COMPILE_MUTEX.lock().expect("compile mutex poisoned");
+        pyaot::compile_to_executable(&CompileOptions {
+            input: py_file.to_path_buf(),
+            output: output_bin.clone(),
+            runtime_lib,
+            ..Default::default()
+        })
+    };
 
     if let Err(e) = &result {
         let _ = std::fs::remove_dir_all(&tmp_dir);
