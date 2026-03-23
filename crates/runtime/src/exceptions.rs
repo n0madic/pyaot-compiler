@@ -19,6 +19,54 @@ use std::ptr;
 /// We use 200 bytes to be safe across platforms
 pub const JMP_BUF_SIZE: usize = 200;
 
+// Compile-time assertions that JMP_BUF_SIZE is large enough for the platform's jmp_buf.
+// Sizes are taken from each platform's <setjmp.h>. The libc crate does not expose
+// jmp_buf on all platforms, so we use known sizes from the documented comment above.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const _: () = assert!(
+    JMP_BUF_SIZE >= 192,
+    "JMP_BUF_SIZE too small for macOS arm64 jmp_buf (192 bytes)"
+);
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const _: () = assert!(
+    JMP_BUF_SIZE >= 148,
+    "JMP_BUF_SIZE too small for macOS x86_64 jmp_buf (148 bytes)"
+);
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const _: () = assert!(
+    JMP_BUF_SIZE >= 200,
+    "JMP_BUF_SIZE too small for Linux x86_64 jmp_buf (200 bytes)"
+);
+
+/// Assert at runtime that `JMP_BUF_SIZE` is large enough for the current platform's
+/// `jmp_buf`. Called from `rt_init` on startup so any mismatch fails loudly rather
+/// than silently corrupting the stack.
+///
+/// The platform-specific sizes match the compile-time `const` assertions above;
+/// this function covers any platform not handled by those `#[cfg]` guards.
+pub fn assert_jmp_buf_size() {
+    // Known platform sizes (bytes), mirroring the documented comment on JMP_BUF_SIZE.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let platform_size: usize = 192;
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    let platform_size: usize = 148;
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let platform_size: usize = 200;
+    // On unrecognized platforms, skip the check rather than refuse to compile.
+    #[cfg(not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+    )))]
+    let platform_size: usize = 0;
+
+    assert!(
+        JMP_BUF_SIZE >= platform_size,
+        "JMP_BUF_SIZE ({JMP_BUF_SIZE}) is smaller than the platform jmp_buf size \
+         ({platform_size} bytes); update JMP_BUF_SIZE in exceptions.rs"
+    );
+}
+
 extern "C" {
     // Note: setjmp is called directly from Cranelift-generated code, not from Rust.
     // Only longjmp is called from the runtime.

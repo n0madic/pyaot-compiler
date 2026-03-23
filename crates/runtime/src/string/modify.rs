@@ -2,7 +2,7 @@
 //!
 //! Uses Boyer-Moore-Horspool for efficient substring search in replace.
 
-use crate::gc;
+use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
 use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
 use crate::string::search::{bmh_find_from, build_bad_char_table, BMH_THRESHOLD};
 
@@ -27,6 +27,21 @@ pub extern "C" fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj
             return str_obj; // Can't replace empty string
         }
 
+        // Read all byte data from the StrObjs before calling gc_alloc.
+        // gc_alloc may trigger a collection, which would invalidate raw pointers
+        // derived from StrObj fields if those objects are not reachable.  Root
+        // the three input objects on the shadow stack for the duration of the
+        // allocation so the GC keeps them alive.
+        let mut roots: [*mut Obj; 3] = [str_obj, old, new];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 3,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        // Re-derive byte pointers after rooting (pointers remain valid while roots
+        // are on the shadow stack because the GC only collects, never moves).
         let src_data = (*src).data.as_ptr();
         let old_data = (*old_str).data.as_ptr();
         let new_data = (*new_str).data.as_ptr();
@@ -67,13 +82,14 @@ pub extern "C" fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj
         }
 
         if positions.is_empty() {
+            gc_pop();
             return str_obj; // No matches, return original
         }
 
         let count = positions.len();
         let result_len = src_len - (count * old_len) + (count * new_len);
 
-        // Allocate new string
+        // Allocate new string (gc_alloc may collect; inputs stay alive via shadow frame)
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
@@ -102,6 +118,7 @@ pub extern "C" fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj
             }
         }
 
+        gc_pop();
         obj
     }
 }
@@ -125,7 +142,13 @@ pub extern "C" fn rt_str_mul(str_obj: *mut Obj, count: i64) -> *mut Obj {
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
         let count = count as usize;
-        let result_len = len * count;
+        let result_len = match len.checked_mul(count) {
+            Some(l) => l,
+            None => {
+                let msg = b"repeated string is too long";
+                crate::exceptions::rt_exc_raise_overflow_error(msg.as_ptr(), msg.len());
+            }
+        };
 
         // Allocate new string
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;

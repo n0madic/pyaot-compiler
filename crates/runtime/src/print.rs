@@ -139,40 +139,54 @@ pub extern "C" fn rt_input(prompt: *mut Obj) -> *mut Obj {
     // Read line from stdin
     let stdin = io::stdin();
     let mut line = String::new();
-    if stdin.lock().read_line(&mut line).is_ok() {
-        // Remove trailing newline
-        if line.ends_with('\n') {
-            line.pop();
-            if line.ends_with('\r') {
-                line.pop();
-            }
-        }
-
-        // Allocate and return string
-        let bytes = line.as_bytes();
-        unsafe {
-            let size =
-                std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + bytes.len();
-            let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-            let str_obj = obj as *mut StrObj;
-            (*str_obj).len = bytes.len();
-            if !bytes.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    bytes.as_ptr(),
-                    (*str_obj).data.as_mut_ptr(),
-                    bytes.len(),
+    match stdin.lock().read_line(&mut line) {
+        Ok(0) => {
+            // EOF — raise EOFError like CPython
+            unsafe {
+                crate::exceptions::rt_exc_raise(
+                    crate::exceptions::ExceptionType::EOFError as u8,
+                    b"EOF when reading a line".as_ptr(),
+                    "EOF when reading a line".len(),
                 );
             }
-            obj
         }
-    } else {
-        // EOF or error - return empty string
-        unsafe {
-            let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>();
-            let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-            let str_obj = obj as *mut StrObj;
-            (*str_obj).len = 0;
-            obj
+        Ok(_) => {
+            // Remove trailing newline
+            if line.ends_with('\n') {
+                line.pop();
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+            }
+
+            // Allocate and return string
+            let bytes = line.as_bytes();
+            unsafe {
+                let size = std::mem::size_of::<ObjHeader>()
+                    + std::mem::size_of::<usize>()
+                    + bytes.len();
+                let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
+                let str_obj = obj as *mut StrObj;
+                (*str_obj).len = bytes.len();
+                if !bytes.is_empty() {
+                    std::ptr::copy_nonoverlapping(
+                        bytes.as_ptr(),
+                        (*str_obj).data.as_mut_ptr(),
+                        bytes.len(),
+                    );
+                }
+                obj
+            }
+        }
+        Err(_) => {
+            // I/O error — raise EOFError for consistency with CPython behaviour
+            unsafe {
+                crate::exceptions::rt_exc_raise(
+                    crate::exceptions::ExceptionType::EOFError as u8,
+                    b"EOF when reading a line".as_ptr(),
+                    "EOF when reading a line".len(),
+                );
+            }
         }
     }
 }

@@ -216,16 +216,16 @@ thread_local! {
 
 // ==================== Public runtime functions ====================
 
-/// random.seed(n) - seed the RNG. n=0 means use system entropy (matches Python's seed(None))
+/// random.seed(n) - seed the RNG.
+/// n=i64::MIN is the sentinel for "no argument / seed(None)" — uses system entropy.
+/// All other values (including 0) seed deterministically, matching CPython's seed(int).
 #[no_mangle]
 pub unsafe extern "C" fn rt_random_seed(n: i64) {
     RNG.with(|rng| {
         let mut rng = rng.borrow_mut();
-        if n == 0 {
-            // In Python, seed(0) is NOT the same as seed(None)
-            // But our calling convention uses 0 for None/no-arg
-            // Since seed(0) is rare, we seed with [0] matching CPython's seed(0)
-            *rng = MersenneTwister::seed_from_int(0);
+        if n == i64::MIN {
+            // Sentinel for seed(None) or seed() with no arg — use system entropy
+            *rng = MersenneTwister::from_entropy();
         } else {
             *rng = MersenneTwister::seed_from_int(n);
         }
@@ -249,7 +249,17 @@ pub unsafe extern "C" fn rt_random_randint(a: i64, b: i64) -> i64 {
         );
     }
     // randint(a, b) = randrange(a, b+1) = a + randbelow(b - a + 1)
-    let width = (b - a + 1) as usize;
+    // Use i128 arithmetic to avoid overflow when a and b span i64's full range.
+    let width = match (b as i128 - a as i128).checked_add(1) {
+        Some(w) if w > 0 && w <= usize::MAX as i128 => w as usize,
+        _ => {
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
+                b"randint range too large" as *const u8,
+                "randint range too large".len(),
+            );
+        }
+    };
     RNG.with(|rng| a + rng.borrow_mut().randbelow(width) as i64)
 }
 

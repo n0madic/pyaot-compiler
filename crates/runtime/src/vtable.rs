@@ -58,8 +58,16 @@ static VTABLE_REGISTRY: RwLock<[VtablePtr; MAX_CLASSES]> =
 /// parent_class_id: The parent class ID (0 if no parent)
 #[no_mangle]
 pub extern "C" fn rt_register_class(class_id: u8, parent_class_id: u8) {
-    if let Ok(mut registry) = CLASS_REGISTRY.write() {
-        registry[class_id as usize].parent_class_id = parent_class_id;
+    match CLASS_REGISTRY.write() {
+        Ok(mut registry) => {
+            registry[class_id as usize].parent_class_id = parent_class_id;
+        }
+        Err(_) => {
+            eprintln!(
+                "WARNING: rt_register_class: CLASS_REGISTRY lock poisoned, class {} not registered",
+                class_id
+            );
+        }
     }
 }
 
@@ -67,8 +75,16 @@ pub extern "C" fn rt_register_class(class_id: u8, parent_class_id: u8) {
 /// heap_field_mask: bitmask where bit i = 1 means field i is a heap object pointer
 #[no_mangle]
 pub extern "C" fn rt_register_class_fields(class_id: u8, heap_field_mask: i64) {
-    if let Ok(mut registry) = CLASS_REGISTRY.write() {
-        registry[class_id as usize].heap_field_mask = heap_field_mask as u64;
+    match CLASS_REGISTRY.write() {
+        Ok(mut registry) => {
+            registry[class_id as usize].heap_field_mask = heap_field_mask as u64;
+        }
+        Err(_) => {
+            eprintln!(
+                "WARNING: rt_register_class_fields: CLASS_REGISTRY lock poisoned, class {} fields not registered",
+                class_id
+            );
+        }
     }
 }
 
@@ -86,8 +102,16 @@ pub fn get_class_heap_field_mask(class_id: u8) -> u64 {
 /// vtable_ptr: Pointer to the vtable (array of function pointers)
 #[no_mangle]
 pub extern "C" fn rt_register_vtable(class_id: u8, vtable_ptr: *const u8) {
-    if let Ok(mut registry) = VTABLE_REGISTRY.write() {
-        registry[class_id as usize] = VtablePtr(vtable_ptr);
+    match VTABLE_REGISTRY.write() {
+        Ok(mut registry) => {
+            registry[class_id as usize] = VtablePtr(vtable_ptr);
+        }
+        Err(_) => {
+            eprintln!(
+                "WARNING: rt_register_vtable: VTABLE_REGISTRY lock poisoned, class {} vtable not registered",
+                class_id
+            );
+        }
     }
 }
 
@@ -116,8 +140,12 @@ pub unsafe extern "C" fn rt_vtable_lookup(vtable_ptr: *const u8, slot: usize) ->
         return std::ptr::null();
     }
     // Vtable layout: [num_slots: usize, method_ptrs: [*const (); num_slots]]
+    let num_slots = *(vtable_ptr as *const usize);
+    if slot >= num_slots {
+        return std::ptr::null();
+    }
     // Skip the num_slots field (8 bytes) and index into method_ptrs
-    let methods_ptr = vtable_ptr.add(8) as *const *const u8;
+    let methods_ptr = vtable_ptr.add(std::mem::size_of::<usize>()) as *const *const u8;
     *methods_ptr.add(slot)
 }
 
@@ -144,7 +172,8 @@ pub extern "C" fn rt_class_inherits_from(child_class_id: u8, target_class_id: u8
     // Walk up the parent chain
     let mut current = child_class_id;
     if let Ok(registry) = CLASS_REGISTRY.read() {
-        loop {
+        // Limit iterations to MAX_CLASSES to prevent infinite loops from circular inheritance
+        for _ in 0..MAX_CLASSES {
             let parent = registry[current as usize].parent_class_id;
             if parent == NO_PARENT {
                 // Reached the top of the hierarchy without finding target

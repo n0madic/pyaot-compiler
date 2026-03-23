@@ -24,8 +24,8 @@ use crate::globals::get_global_pointers;
 use crate::object::{
     BoolObj, BytesObj, ChainIterObj, CompletedProcessObj, DictObj, FileObj, FilterIterObj,
     FloatObj, GeneratorObj, ISliceIterObj, InstanceObj, IntObj, IteratorKind, IteratorObj, ListObj,
-    MapIterObj, MatchObj, Obj, ObjHeader, SetObj, StrObj, TupleObj, TypeTagKind, ZipIterObj,
-    TOMBSTONE,
+    MapIterObj, MatchObj, Obj, ObjHeader, SetObj, StrObj, TupleObj, TypeTagKind, Zip3IterObj,
+    ZipIterObj, ZipNIterObj, TOMBSTONE,
 };
 // Note: BytesObj has no object children (like StrObj), so no special handling needed in mark_object
 use std::alloc::{alloc, dealloc, Layout};
@@ -249,6 +249,14 @@ pub extern "C" fn gc_alloc(size: usize, type_tag: u8) -> *mut Obj {
                 size,
             };
 
+            // Verify size is large enough to hold the object header
+            debug_assert!(
+                size >= std::mem::size_of::<ObjHeader>(),
+                "gc_alloc: size {} is smaller than ObjHeader ({})",
+                size,
+                std::mem::size_of::<ObjHeader>()
+            );
+
             // Zero the rest
             ptr::write_bytes(
                 (ptr as *mut u8).add(std::mem::size_of::<ObjHeader>()),
@@ -320,7 +328,7 @@ fn collect_impl(state: &mut GcState) {
     sweep(state);
 
     // Adjust threshold
-    state.threshold = state.total_allocated * 2;
+    state.threshold = state.total_allocated.saturating_mul(2);
     if state.threshold < 1024 * 1024 {
         state.threshold = 1024 * 1024;
     }
@@ -359,6 +367,13 @@ fn mark_roots(state: &mut GcState) {
 
     // Mark objects stored in class attributes
     mark_class_attr_pointers();
+
+    // Mark small integer pool and boolean singleton pool objects.
+    // Pool objects are registered in state.objects like any other allocation, but
+    // they are not reachable via the shadow stack or globals.  sweep() clears
+    // the mark bit on every surviving object, so we must re-mark them here on
+    // every collection cycle to prevent them from being freed.
+    crate::boxing::mark_pools();
 }
 
 /// Mark all heap objects stored in global variables
@@ -433,8 +448,9 @@ fn mark_object(obj: *mut Obj) {
                     let len = (*tuple).len;
                     let data = (*tuple).data.as_ptr();
                     for i in 0..len {
-                        // Only trace fields marked as heap pointers in the bitmask
-                        if mask & (1u64 << i) != 0 {
+                        // Only trace fields marked as heap pointers in the bitmask.
+                        // Use checked_shl to prevent shift overflow when i >= 64.
+                        if mask & 1u64.checked_shl(i as u32).unwrap_or(0) != 0 {
                             let elem = *data.add(i);
                             if !elem.is_null() {
                                 mark_object(elem);
@@ -495,7 +511,8 @@ fn mark_object(obj: *mut Obj) {
                 // The heap_field_mask tells us which fields are heap types.
                 let mask = crate::vtable::get_class_heap_field_mask((*instance).class_id);
                 for i in 0..field_count {
-                    if mask & (1u64 << i) != 0 {
+                    // Use checked_shl to prevent shift overflow when i >= 64.
+                    if mask & 1u64.checked_shl(i as u32).unwrap_or(0) != 0 {
                         let field = *fields.add(i);
                         if !field.is_null() {
                             mark_object(field);
@@ -545,6 +562,25 @@ fn mark_object(obj: *mut Obj) {
                         let islice_iter = obj as *mut ISliceIterObj;
                         if !(*islice_iter).inner_iter.is_null() {
                             mark_object((*islice_iter).inner_iter);
+                        }
+                    }
+                    Ok(IteratorKind::Zip3) => {
+                        let zip3_iter = obj as *mut Zip3IterObj;
+                        if !(*zip3_iter).iter1.is_null() {
+                            mark_object((*zip3_iter).iter1);
+                        }
+                        if !(*zip3_iter).iter2.is_null() {
+                            mark_object((*zip3_iter).iter2);
+                        }
+                        if !(*zip3_iter).iter3.is_null() {
+                            mark_object((*zip3_iter).iter3);
+                        }
+                    }
+                    Ok(IteratorKind::ZipN) => {
+                        let zipn_iter = obj as *mut ZipNIterObj;
+                        // iters is a ListObj containing the iterators
+                        if !(*zipn_iter).iters.is_null() {
+                            mark_object((*zipn_iter).iters);
                         }
                     }
                     _ => {
@@ -715,7 +751,7 @@ fn sweep(state: &mut GcState) {
             // Free this object
             let layout =
                 Layout::from_size_align_unchecked(obj.header.size, std::mem::align_of::<Obj>());
-            state.total_allocated -= obj.header.size;
+            state.total_allocated = state.total_allocated.saturating_sub(obj.header.size);
             dealloc(*obj_ptr as *mut u8, layout);
             false
         } else {

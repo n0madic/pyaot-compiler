@@ -219,11 +219,25 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
             // Create a list to hold the lines
             let list = crate::list::rt_make_list(0, crate::object::ELEM_HEAP_OBJ);
 
-            for line in content.lines() {
-                // Add newline back (except for last line if original didn't have it)
-                let line_with_newline = format!("{}\n", line);
+            // Split on '\n' to preserve whether the file ended with a newline.
+            // Splitting "a\nb\n" yields ["a", "b", ""] — the trailing empty
+            // element signals that the content ended with '\n' and should not
+            // become an extra empty line in the output.
+            let lines: Vec<&str> = content.split('\n').collect();
+            for (idx, line) in lines.iter().enumerate() {
+                let is_last = idx == lines.len() - 1;
+                if is_last && line.is_empty() {
+                    // Trailing '\n' produced an empty last element — skip it.
+                    break;
+                }
+                let line_str = if is_last && !content.ends_with('\n') {
+                    // Last line has no trailing newline — don't add one.
+                    line.to_string()
+                } else {
+                    format!("{}\n", line)
+                };
                 let line_obj =
-                    crate::string::rt_make_str(line_with_newline.as_ptr(), line_with_newline.len());
+                    crate::string::rt_make_str(line_str.as_ptr(), line_str.len());
                 crate::list::rt_list_push(list, line_obj);
             }
 
@@ -393,17 +407,21 @@ unsafe fn check_file_valid(file: *mut Obj) {
 
 /// Check if file is readable
 unsafe fn is_readable(file_obj: *mut FileObj) -> bool {
-    let mode = FileMode::try_from((*file_obj).mode).expect("is_readable: invalid file mode");
-    matches!(mode, FileMode::Read | FileMode::ReadBinary)
+    match FileMode::try_from((*file_obj).mode) {
+        Ok(mode) => matches!(mode, FileMode::Read | FileMode::ReadBinary),
+        Err(_) => false,
+    }
 }
 
 /// Check if file is writable
 unsafe fn is_writable(file_obj: *mut FileObj) -> bool {
-    let mode = FileMode::try_from((*file_obj).mode).expect("is_writable: invalid file mode");
-    matches!(
-        mode,
-        FileMode::Write | FileMode::WriteBinary | FileMode::Append | FileMode::AppendBinary
-    )
+    match FileMode::try_from((*file_obj).mode) {
+        Ok(mode) => matches!(
+            mode,
+            FileMode::Write | FileMode::WriteBinary | FileMode::Append | FileMode::AppendBinary
+        ),
+        Err(_) => false,
+    }
 }
 
 /// Close file during GC sweep if still open (safety net)

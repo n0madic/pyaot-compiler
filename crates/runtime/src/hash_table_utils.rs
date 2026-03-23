@@ -51,20 +51,23 @@ pub unsafe fn hash_hashable_obj(obj: *mut Obj) -> u64 {
         }
         TypeTagKind::Bool => {
             let bool_obj = obj as *mut BoolObj;
-            if (*bool_obj).value {
-                1
-            } else {
-                0
-            }
+            // True == 1, False == 0 in Python; use int hash for cross-type invariant
+            hash_int(if (*bool_obj).value { 1 } else { 0 })
         }
         TypeTagKind::Float => {
             let float_obj = obj as *mut FloatObj;
             let v = (*float_obj).value;
-            // CPython compat: hash(-0.0) == hash(0.0) == 0
             if v == 0.0 {
+                // CPython compat: hash(-0.0) == hash(0.0) == 0
                 return 0;
             }
-            hash_int(v.to_bits() as i64)
+            if v.fract() == 0.0 && v.is_finite() {
+                // Integer-valued float: same hash as the equivalent integer
+                hash_int(v as i64)
+            } else {
+                // Non-integer float: use bit representation as input to the scramble
+                hash_int(v.to_bits() as i64)
+            }
         }
         TypeTagKind::Tuple => crate::hash::rt_hash_tuple(obj) as u64,
         TypeTagKind::None => 0, // CPython: hash(None) == 0
@@ -84,7 +87,49 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
     let tag_a = (*a).type_tag();
     let tag_b = (*b).type_tag();
     if tag_a != tag_b {
-        return false;
+        // Cross-type equality: Int == Bool, Int == Float, Bool == Float
+        return match (tag_a, tag_b) {
+            (TypeTagKind::Int, TypeTagKind::Bool) | (TypeTagKind::Bool, TypeTagKind::Int) => {
+                let int_val = if tag_a == TypeTagKind::Int {
+                    (*(a as *mut IntObj)).value
+                } else if (*(a as *mut BoolObj)).value {
+                    1
+                } else {
+                    0
+                };
+                let other_val = if tag_b == TypeTagKind::Int {
+                    (*(b as *mut IntObj)).value
+                } else if (*(b as *mut BoolObj)).value {
+                    1
+                } else {
+                    0
+                };
+                int_val == other_val
+            }
+            (TypeTagKind::Int, TypeTagKind::Float) | (TypeTagKind::Float, TypeTagKind::Int) => {
+                let (int_val, float_val) = if tag_a == TypeTagKind::Int {
+                    ((*(a as *mut IntObj)).value, (*(b as *mut FloatObj)).value)
+                } else {
+                    ((*(b as *mut IntObj)).value, (*(a as *mut FloatObj)).value)
+                };
+                float_val.fract() == 0.0 && float_val.is_finite() && float_val as i64 == int_val
+            }
+            (TypeTagKind::Bool, TypeTagKind::Float) | (TypeTagKind::Float, TypeTagKind::Bool) => {
+                let (bool_val, float_val) = if tag_a == TypeTagKind::Bool {
+                    (
+                        if (*(a as *mut BoolObj)).value { 1i64 } else { 0 },
+                        (*(b as *mut FloatObj)).value,
+                    )
+                } else {
+                    (
+                        if (*(b as *mut BoolObj)).value { 1i64 } else { 0 },
+                        (*(a as *mut FloatObj)).value,
+                    )
+                };
+                float_val.fract() == 0.0 && float_val.is_finite() && float_val as i64 == bool_val
+            }
+            _ => false,
+        };
     }
     match tag_a {
         TypeTagKind::Int => {

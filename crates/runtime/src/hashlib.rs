@@ -15,7 +15,7 @@ pub struct HashObj {
 }
 
 /// Extract byte slice from a str or bytes object
-unsafe fn extract_data_slice<'a>(data: *mut Obj, func_name: &str) -> &'a [u8] {
+unsafe fn extract_data_slice<'a>(data: *mut Obj) -> &'a [u8] {
     let header = &(*data).header;
     match header.type_tag {
         TypeTagKind::Bytes => {
@@ -26,10 +26,13 @@ unsafe fn extract_data_slice<'a>(data: *mut Obj, func_name: &str) -> &'a [u8] {
             let str_obj = data as *mut StrObj;
             std::slice::from_raw_parts((*str_obj).data.as_ptr(), (*str_obj).len)
         }
-        _ => panic!(
-            "{}: expected bytes or str, got {:?}",
-            func_name, header.type_tag
-        ),
+        _ => {
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                b"expected bytes or str" as *const u8,
+                "expected bytes or str".len(),
+            );
+        }
     }
 }
 
@@ -43,8 +46,12 @@ unsafe fn create_hash_obj(digest_bytes: &[u8]) -> *mut Obj {
     hash_obj as *mut Obj
 }
 
-/// Read digest from a HashObj
-unsafe fn read_digest(hash_obj: *mut Obj) -> &'static [u8] {
+/// Read digest from a HashObj.
+///
+/// # Safety
+/// The caller must ensure `hash_obj` remains valid and no GC collection
+/// occurs between calling this function and consuming the returned slice.
+unsafe fn read_digest<'a>(hash_obj: *mut Obj) -> &'a [u8] {
     let hash = hash_obj as *mut HashObj;
     let digest_len = (*hash).digest_len;
     let src = std::ptr::addr_of!((*hash).digest) as *const u8;
@@ -54,7 +61,7 @@ unsafe fn read_digest(hash_obj: *mut Obj) -> &'static [u8] {
 /// hashlib.md5(data) -> Hash object
 #[no_mangle]
 pub unsafe extern "C" fn rt_hashlib_md5(data: *mut Obj) -> *mut Obj {
-    let data_slice = extract_data_slice(data, "rt_hashlib_md5");
+    let data_slice = extract_data_slice(data);
     let mut hasher = Md5::new();
     hasher.update(data_slice);
     let digest = hasher.finalize();
@@ -64,7 +71,7 @@ pub unsafe extern "C" fn rt_hashlib_md5(data: *mut Obj) -> *mut Obj {
 /// hashlib.sha256(data) -> Hash object
 #[no_mangle]
 pub unsafe extern "C" fn rt_hashlib_sha256(data: *mut Obj) -> *mut Obj {
-    let data_slice = extract_data_slice(data, "rt_hashlib_sha256");
+    let data_slice = extract_data_slice(data);
     let mut hasher = Sha256::new();
     hasher.update(data_slice);
     let digest = hasher.finalize();
@@ -74,7 +81,7 @@ pub unsafe extern "C" fn rt_hashlib_sha256(data: *mut Obj) -> *mut Obj {
 /// hashlib.sha1(data) -> Hash object
 #[no_mangle]
 pub unsafe extern "C" fn rt_hashlib_sha1(data: *mut Obj) -> *mut Obj {
-    let data_slice = extract_data_slice(data, "rt_hashlib_sha1");
+    let data_slice = extract_data_slice(data);
     let digest = sha1_hash(data_slice);
     create_hash_obj(&digest)
 }

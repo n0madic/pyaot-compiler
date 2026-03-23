@@ -11,16 +11,17 @@ use crate::object::{Obj, TypeTagKind};
 /// Returns: pointer to allocated InstanceObj
 #[no_mangle]
 pub extern "C" fn rt_make_instance(class_id: u8, field_count: i64) -> *mut Obj {
-    use crate::object::{InstanceObj, ObjHeader, TypeTagKind};
+    use crate::object::{InstanceObj, TypeTagKind};
     use crate::vtable::rt_get_vtable;
 
     let field_count = field_count.max(0) as usize;
 
-    // Calculate size: header + vtable ptr + class_id + field_count + field pointers
-    let size = std::mem::size_of::<ObjHeader>()
-        + std::mem::size_of::<*const u8>() // vtable pointer
-        + std::mem::size_of::<u8>()
-        + std::mem::size_of::<usize>()
+    // Calculate size using size_of::<InstanceObj>() so that struct padding between
+    // fields (e.g., the 7 padding bytes after class_id: u8 before field_count: usize
+    // on 64-bit targets) is accounted for correctly. The flexible array member
+    // `fields: [*mut Obj; 0]` contributes 0 bytes, so we add the field storage
+    // separately.
+    let size = std::mem::size_of::<InstanceObj>()
         + field_count * std::mem::size_of::<*mut Obj>();
 
     // Allocate using GC
@@ -170,6 +171,10 @@ pub extern "C" fn rt_isinstance_class(obj: *mut Obj, class_id: i64) -> i8 {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_isinstance_class_inherited(obj: *mut Obj, target_class_id: i64) -> i8 {
     if obj.is_null() {
+        return 0;
+    }
+    // Validate alignment before dereferencing (mirrors rt_isinstance_class)
+    if !(obj as usize).is_multiple_of(std::mem::align_of::<crate::object::Obj>()) {
         return 0;
     }
 

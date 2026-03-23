@@ -118,7 +118,13 @@ pub extern "C" fn rt_str_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 
         let len_a = (*str_a).len;
         let len_b = (*str_b).len;
-        let total_len = len_a + len_b;
+        let total_len = match len_a.checked_add(len_b) {
+            Some(l) => l,
+            None => {
+                let msg = b"string concatenation result is too long";
+                rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+            }
+        };
 
         // Calculate size: header + len field + data bytes
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + total_len;

@@ -1,6 +1,7 @@
 //! List conversion operations: create lists from other types
 
 use super::core::{rt_list_push, rt_make_list};
+use crate::gc::{gc_pop, gc_push, ShadowFrame};
 use crate::object::{ListObj, Obj, StrObj, TupleObj, ELEM_HEAP_OBJ, ELEM_RAW_INT};
 
 /// Create a list from a tuple
@@ -51,6 +52,17 @@ pub extern "C" fn rt_list_from_str(str_obj: *mut Obj) -> *mut Obj {
         let list = rt_make_list(len as i64, ELEM_HEAP_OBJ);
         let list_obj = list as *mut ListObj;
 
+        // Root the list across every rt_make_str call: each call invokes gc_alloc,
+        // which may trigger a collection.  Without rooting, a collection would see
+        // the list as unreachable and free it.
+        let mut roots: [*mut Obj; 1] = [list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         for i in 0..len {
             let ch = *data.add(i);
             // Create single-character string
@@ -59,6 +71,7 @@ pub extern "C" fn rt_list_from_str(str_obj: *mut Obj) -> *mut Obj {
         }
         (*list_obj).len = len;
 
+        gc_pop();
         list
     }
 }
@@ -71,16 +84,25 @@ pub extern "C" fn rt_list_from_range(start: i64, stop: i64, step: i64) -> *mut O
         return rt_make_list(0, ELEM_RAW_INT);
     }
 
+    // Use i128 arithmetic to avoid overflow when computing the element count.
+    // i64::MAX - i64::MIN can exceed i64::MAX, so plain i64 subtraction wraps.
     let len = if step > 0 {
-        if stop > start {
-            ((stop - start + step - 1) / step) as usize
+        let diff = (stop as i128).checked_sub(start as i128).unwrap_or(0);
+        if diff <= 0 {
+            0usize
         } else {
-            0
+            let count = (diff + step as i128 - 1) / step as i128;
+            count.min(i64::MAX as i128) as usize
         }
-    } else if start > stop {
-        ((start - stop - step - 1) / (-step)) as usize
     } else {
-        0
+        // step < 0 (step == 0 is handled above)
+        let diff = (start as i128).checked_sub(stop as i128).unwrap_or(0);
+        if diff <= 0 {
+            0usize
+        } else {
+            let count = (diff + (-step as i128) - 1) / (-step as i128);
+            count.min(i64::MAX as i128) as usize
+        }
     };
 
     let list = rt_make_list(len as i64, ELEM_RAW_INT);

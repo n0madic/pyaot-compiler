@@ -179,7 +179,19 @@ pub extern "C" fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
             total_len += sep_len * ((len - 1) as usize);
         }
 
-        // Allocate result
+        // Root sep and list_obj across gc_alloc: the collector may run during
+        // allocation, and neither pointer is on any caller shadow stack.
+        // The GC skips null entries in the roots array, so using null for a
+        // missing sep is safe.
+        let mut roots: [*mut Obj; 2] = [sep, list_obj];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        // Allocate result (may trigger GC; sep and list_obj stay alive via frame)
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + total_len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
         let result = obj as *mut StrObj;
@@ -213,6 +225,7 @@ pub extern "C" fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
             }
         }
 
+        gc_pop();
         obj
     }
 }

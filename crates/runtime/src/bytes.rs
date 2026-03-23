@@ -94,8 +94,17 @@ pub extern "C" fn rt_make_bytes_from_list(list: *mut Obj) -> *mut Obj {
         let list_obj = list as *mut ListObj;
         let len = (*list_obj).len;
 
-        // Calculate size: header + len field + data bytes
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
+        // Calculate size: header + len field + data bytes (checked for overflow)
+        let size = std::mem::size_of::<ObjHeader>()
+            .checked_add(std::mem::size_of::<usize>())
+            .and_then(|s| s.checked_add(len))
+            .unwrap_or_else(|| {
+                rt_exc_raise(
+                    ExceptionType::OverflowError as u8,
+                    b"bytes too large" as *const u8,
+                    "bytes too large".len(),
+                );
+            });
 
         // Allocate using GC
         let obj = gc::gc_alloc(size, TypeTagKind::Bytes as u8);
@@ -135,8 +144,17 @@ pub extern "C" fn rt_make_bytes_from_str(str_obj: *mut Obj) -> *mut Obj {
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
 
-        // Calculate size: header + len field + data bytes
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
+        // Calculate size: header + len field + data bytes (checked for overflow)
+        let size = std::mem::size_of::<ObjHeader>()
+            .checked_add(std::mem::size_of::<usize>())
+            .and_then(|s| s.checked_add(len))
+            .unwrap_or_else(|| {
+                rt_exc_raise(
+                    ExceptionType::OverflowError as u8,
+                    b"bytes too large" as *const u8,
+                    "bytes too large".len(),
+                );
+            });
 
         // Allocate using GC
         let obj = gc::gc_alloc(size, TypeTagKind::Bytes as u8);

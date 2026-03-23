@@ -159,7 +159,19 @@ pub extern "C" fn rt_math_factorial(n: i64) -> i64 {
     }
     let mut result: i64 = 1;
     for i in 2..=n {
-        result = result.wrapping_mul(i);
+        result = match result.checked_mul(i) {
+            Some(v) => v,
+            None => {
+                let msg = "int too large to convert to C long";
+                unsafe {
+                    crate::exceptions::rt_exc_raise(
+                        pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
+                        msg.as_ptr(),
+                        msg.len(),
+                    );
+                }
+            }
+        };
     }
     result
 }
@@ -318,7 +330,19 @@ pub extern "C" fn rt_math_lcm(a: i64, b: i64) -> i64 {
     }
     let gcd = rt_math_gcd(a, b);
     // Avoid overflow by dividing first
-    (a / gcd).wrapping_mul(b.abs())
+    match (a / gcd).checked_mul(b.abs()) {
+        Some(v) => v,
+        None => {
+            let msg = "int too large to convert to C long";
+            unsafe {
+                crate::exceptions::rt_exc_raise(
+                    pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
+                    msg.as_ptr(),
+                    msg.len(),
+                );
+            }
+        }
+    }
 }
 
 /// Binomial coefficient: math.comb(n, k) -> i64
@@ -345,7 +369,19 @@ pub extern "C" fn rt_math_comb(n: i64, k: i64) -> i64 {
 
     let mut result: i64 = 1;
     for i in 0..k {
-        result = result.wrapping_mul(n - i);
+        result = match result.checked_mul(n - i) {
+            Some(v) => v,
+            None => {
+                let msg = "int too large to convert to C long";
+                unsafe {
+                    crate::exceptions::rt_exc_raise(
+                        pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
+                        msg.as_ptr(),
+                        msg.len(),
+                    );
+                }
+            }
+        };
         result /= i + 1;
     }
     result
@@ -368,7 +404,19 @@ pub extern "C" fn rt_math_perm(n: i64, k: i64) -> i64 {
 
     let mut result: i64 = 1;
     for i in 0..k {
-        result = result.wrapping_mul(n - i);
+        result = match result.checked_mul(n - i) {
+            Some(v) => v,
+            None => {
+                let msg = "int too large to convert to C long";
+                unsafe {
+                    crate::exceptions::rt_exc_raise(
+                        pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
+                        msg.as_ptr(),
+                        msg.len(),
+                    );
+                }
+            }
+        };
     }
     result
 }

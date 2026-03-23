@@ -498,6 +498,8 @@ pub extern "C" fn rt_dict_copy(dict: *mut Obj) -> *mut Obj {
 /// Returns: pointer to new ListObj
 #[no_mangle]
 pub extern "C" fn rt_dict_keys(dict: *mut Obj, elem_tag: u8) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if dict.is_null() {
         return rt_make_list(0, elem_tag);
     }
@@ -509,6 +511,18 @@ pub extern "C" fn rt_dict_keys(dict: *mut Obj, elem_tag: u8) -> *mut Obj {
 
         let keys_list = rt_make_list(len as i64, elem_tag);
         let list_obj = keys_list as *mut ListObj;
+
+        // Protect keys_list from GC during iteration. Although the loop body
+        // does not currently perform GC allocations, rooting it here is a
+        // safety net against future changes and matches the pattern used
+        // throughout the runtime.
+        let mut roots: [*mut Obj; 1] = [keys_list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
 
         // Iterate entries in insertion order
         let mut idx = 0usize;
@@ -527,6 +541,7 @@ pub extern "C" fn rt_dict_keys(dict: *mut Obj, elem_tag: u8) -> *mut Obj {
         }
         (*list_obj).len = idx;
 
+        gc_pop();
         keys_list
     }
 }
@@ -538,6 +553,8 @@ pub extern "C" fn rt_dict_keys(dict: *mut Obj, elem_tag: u8) -> *mut Obj {
 /// Returns: pointer to new ListObj
 #[no_mangle]
 pub extern "C" fn rt_dict_values(dict: *mut Obj, elem_tag: u8) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if dict.is_null() {
         return rt_make_list(0, elem_tag);
     }
@@ -549,6 +566,18 @@ pub extern "C" fn rt_dict_values(dict: *mut Obj, elem_tag: u8) -> *mut Obj {
 
         let values_list = rt_make_list(len as i64, elem_tag);
         let list_obj = values_list as *mut ListObj;
+
+        // Protect values_list from GC during iteration. Although the loop body
+        // does not currently perform GC allocations, rooting it here is a
+        // safety net against future changes and matches the pattern used
+        // throughout the runtime.
+        let mut roots: [*mut Obj; 1] = [values_list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
 
         // Iterate entries in insertion order
         let mut idx = 0usize;
@@ -568,6 +597,7 @@ pub extern "C" fn rt_dict_values(dict: *mut Obj, elem_tag: u8) -> *mut Obj {
         }
         (*list_obj).len = idx;
 
+        gc_pop();
         values_list
     }
 }
@@ -576,6 +606,8 @@ pub extern "C" fn rt_dict_values(dict: *mut Obj, elem_tag: u8) -> *mut Obj {
 /// Returns: pointer to new ListObj containing TupleObj elements
 #[no_mangle]
 pub extern "C" fn rt_dict_items(dict: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if dict.is_null() {
         return rt_make_list(0, ELEM_HEAP_OBJ);
     }
@@ -587,18 +619,36 @@ pub extern "C" fn rt_dict_items(dict: *mut Obj) -> *mut Obj {
 
         let items_list = rt_make_list(len as i64, ELEM_HEAP_OBJ);
 
+        // CRITICAL: Protect items_list from GC. rt_make_tuple and rt_list_push
+        // both trigger GC allocations inside the loop, so items_list must be
+        // rooted or it may be collected between iterations.
+        //
+        // The roots slot at index 1 is reserved for the per-iteration tuple so
+        // that it is also reachable during the rt_list_push call that follows.
+        let mut roots: [*mut Obj; 2] = [items_list, std::ptr::null_mut()];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         // Iterate entries in insertion order
         for i in 0..(*dict_obj).entries_len {
             let entry = (*dict_obj).entries.add(i);
             let key = (*entry).key;
             if !key.is_null() {
+                // Root the tuple before rt_list_push, which may allocate
                 let tuple = rt_make_tuple(2, ELEM_HEAP_OBJ);
+                roots[1] = tuple;
                 rt_tuple_set(tuple, 0, key);
                 rt_tuple_set(tuple, 1, (*entry).value);
                 rt_list_push(items_list, tuple);
+                roots[1] = std::ptr::null_mut();
             }
         }
 
+        gc_pop();
         items_list
     }
 }

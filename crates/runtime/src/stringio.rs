@@ -53,12 +53,28 @@ unsafe fn check_closed(closed: bool) {
 unsafe fn ensure_capacity(buffer: &mut *mut u8, capacity: &mut usize, needed: usize) {
     if needed > *capacity {
         let new_capacity = (needed.max(*capacity * 2)).max(16);
-        if buffer.is_null() {
+        if (*buffer).is_null() {
             let layout = Layout::from_size_align_unchecked(new_capacity, 1);
             *buffer = alloc(layout);
+            if (*buffer).is_null() {
+                crate::exceptions::rt_exc_raise(
+                    pyaot_core_defs::BuiltinExceptionKind::MemoryError.tag(),
+                    b"StringIO/BytesIO allocation failed" as *const u8,
+                    "StringIO/BytesIO allocation failed".len(),
+                );
+            }
         } else {
             let old_layout = Layout::from_size_align_unchecked(*capacity, 1);
-            *buffer = realloc(*buffer, old_layout, new_capacity);
+            let new_buf = realloc(*buffer, old_layout, new_capacity);
+            if new_buf.is_null() {
+                // realloc failure leaves the old buffer intact; raise without leaking it
+                crate::exceptions::rt_exc_raise(
+                    pyaot_core_defs::BuiltinExceptionKind::MemoryError.tag(),
+                    b"StringIO/BytesIO reallocation failed" as *const u8,
+                    "StringIO/BytesIO reallocation failed".len(),
+                );
+            }
+            *buffer = new_buf;
         }
         *capacity = new_capacity;
     }
@@ -199,13 +215,15 @@ pub unsafe extern "C" fn rt_stringio_seek(sio: *mut Obj, pos: i64) -> i64 {
     let sio_obj = sio as *mut StringIOObj;
     check_closed((*sio_obj).closed);
 
-    // Clamp position to valid range [0, len]
-    let new_pos = if pos < 0 {
-        0
-    } else {
-        (pos as usize).min((*sio_obj).len)
-    };
+    if pos < 0 {
+        crate::exceptions::rt_exc_raise(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+            b"Negative seek position" as *const u8,
+            "Negative seek position".len(),
+        );
+    }
 
+    let new_pos = (pos as usize).min((*sio_obj).len);
     (*sio_obj).position = new_pos;
     new_pos as i64
 }
@@ -366,13 +384,15 @@ pub unsafe extern "C" fn rt_bytesio_seek(bio: *mut Obj, pos: i64) -> i64 {
     let bio_obj = bio as *mut BytesIOObj;
     check_closed((*bio_obj).closed);
 
-    // Clamp position to valid range [0, len]
-    let new_pos = if pos < 0 {
-        0
-    } else {
-        (pos as usize).min((*bio_obj).len)
-    };
+    if pos < 0 {
+        crate::exceptions::rt_exc_raise(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+            b"Negative seek position" as *const u8,
+            "Negative seek position".len(),
+        );
+    }
 
+    let new_pos = (pos as usize).min((*bio_obj).len);
     (*bio_obj).position = new_pos;
     new_pos as i64
 }

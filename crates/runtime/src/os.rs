@@ -5,9 +5,9 @@
 //! - os.path.join(path1, path2, ...): Join path components
 //! - os.remove(path): Remove a file
 
-use crate::gc;
-use crate::object::{ListObj, Obj, ObjHeader, TypeTagKind};
+use crate::object::{ListObj, Obj};
 use crate::utils::make_str_from_rust;
+use pyaot_core_defs::BuiltinExceptionKind;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -64,14 +64,14 @@ pub extern "C" fn rt_os_path_join(parts: *mut Obj) -> *mut Obj {
 }
 
 /// Remove a file: os.remove(path)
-/// Raises IOError on failure (file not found, permission denied, etc.)
+/// Raises FileNotFoundError, PermissionError, or IOError on failure
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_os_remove(path: *mut Obj) {
     unsafe {
         if path.is_null() {
             crate::exceptions::rt_exc_raise(
-                10, // IOError
+                BuiltinExceptionKind::IOError.tag(),
                 c"os.remove: path is None".as_ptr().cast(),
                 24,
             );
@@ -83,21 +83,26 @@ pub extern "C" fn rt_os_remove(path: *mut Obj) {
                     // Success - no return value needed
                 }
                 Err(e) => {
-                    // Raise IOError with appropriate message
-                    let msg = match e.kind() {
-                        std::io::ErrorKind::NotFound => {
-                            format!("No such file or directory: '{}'\0", path_str)
-                        }
-                        std::io::ErrorKind::PermissionDenied => {
-                            format!("Permission denied: '{}'\0", path_str)
-                        }
-                        std::io::ErrorKind::IsADirectory => {
-                            format!("Is a directory: '{}'\0", path_str)
-                        }
-                        _ => format!("Error removing file '{}': {}\0", path_str, e),
+                    let (exc_tag, msg) = match e.kind() {
+                        std::io::ErrorKind::NotFound => (
+                            BuiltinExceptionKind::FileNotFoundError.tag(),
+                            format!("No such file or directory: '{}'\0", path_str),
+                        ),
+                        std::io::ErrorKind::PermissionDenied => (
+                            BuiltinExceptionKind::PermissionError.tag(),
+                            format!("Permission denied: '{}'\0", path_str),
+                        ),
+                        std::io::ErrorKind::IsADirectory => (
+                            BuiltinExceptionKind::IOError.tag(),
+                            format!("Is a directory: '{}'\0", path_str),
+                        ),
+                        _ => (
+                            BuiltinExceptionKind::IOError.tag(),
+                            format!("Error removing file '{}': {}\0", path_str, e),
+                        ),
                     };
                     crate::exceptions::rt_exc_raise(
-                        10, // IOError
+                        exc_tag,
                         msg.as_ptr(),
                         msg.len() - 1, // exclude null terminator from length
                     );
@@ -105,7 +110,7 @@ pub extern "C" fn rt_os_remove(path: *mut Obj) {
             }
         } else {
             crate::exceptions::rt_exc_raise(
-                10, // IOError
+                BuiltinExceptionKind::IOError.tag(),
                 c"os.remove: invalid path".as_ptr().cast(),
                 22,
             );
@@ -146,7 +151,11 @@ pub extern "C" fn rt_os_getcwd() -> *mut Obj {
             }
             Err(e) => {
                 let msg = format!("Error getting current directory: {}\0", e);
-                crate::exceptions::rt_exc_raise(10, msg.as_ptr(), msg.len() - 1);
+                crate::exceptions::rt_exc_raise(
+                    BuiltinExceptionKind::IOError.tag(),
+                    msg.as_ptr(),
+                    msg.len() - 1,
+                );
             }
         }
     }
@@ -158,7 +167,11 @@ pub extern "C" fn rt_os_getcwd() -> *mut Obj {
 pub extern "C" fn rt_os_chdir(path: *mut Obj) {
     unsafe {
         if path.is_null() {
-            crate::exceptions::rt_exc_raise(10, c"os.chdir: path is None".as_ptr().cast(), 22);
+            crate::exceptions::rt_exc_raise(
+                BuiltinExceptionKind::IOError.tag(),
+                c"os.chdir: path is None".as_ptr().cast(),
+                22,
+            );
         }
 
         if let Some(path_str) = crate::utils::extract_str_checked(path) {
@@ -167,20 +180,29 @@ pub extern "C" fn rt_os_chdir(path: *mut Obj) {
                     // Success
                 }
                 Err(e) => {
-                    let msg = match e.kind() {
-                        std::io::ErrorKind::NotFound => {
-                            format!("No such directory: '{}'\0", path_str)
-                        }
-                        std::io::ErrorKind::PermissionDenied => {
-                            format!("Permission denied: '{}'\0", path_str)
-                        }
-                        _ => format!("Error changing directory '{}': {}\0", path_str, e),
+                    let (exc_tag, msg) = match e.kind() {
+                        std::io::ErrorKind::NotFound => (
+                            BuiltinExceptionKind::FileNotFoundError.tag(),
+                            format!("No such directory: '{}'\0", path_str),
+                        ),
+                        std::io::ErrorKind::PermissionDenied => (
+                            BuiltinExceptionKind::PermissionError.tag(),
+                            format!("Permission denied: '{}'\0", path_str),
+                        ),
+                        _ => (
+                            BuiltinExceptionKind::IOError.tag(),
+                            format!("Error changing directory '{}': {}\0", path_str, e),
+                        ),
                     };
-                    crate::exceptions::rt_exc_raise(10, msg.as_ptr(), msg.len() - 1);
+                    crate::exceptions::rt_exc_raise(exc_tag, msg.as_ptr(), msg.len() - 1);
                 }
             }
         } else {
-            crate::exceptions::rt_exc_raise(10, c"os.chdir: invalid path".as_ptr().cast(), 22);
+            crate::exceptions::rt_exc_raise(
+                BuiltinExceptionKind::IOError.tag(),
+                c"os.chdir: invalid path".as_ptr().cast(),
+                22,
+            );
         }
     }
 }
@@ -197,12 +219,16 @@ pub extern "C" fn rt_os_listdir(path: *mut Obj) -> *mut Obj {
         } else if let Some(s) = crate::utils::extract_str_checked(path) {
             s
         } else {
-            crate::exceptions::rt_exc_raise(10, c"os.listdir: invalid path".as_ptr().cast(), 24);
+            crate::exceptions::rt_exc_raise(
+                BuiltinExceptionKind::IOError.tag(),
+                c"os.listdir: invalid path".as_ptr().cast(),
+                24,
+            );
         };
 
         match fs::read_dir(&path_str) {
             Ok(entries) => {
-                // Collect all entries
+                // Collect all entry names first
                 let mut names = Vec::new();
                 for entry in entries.flatten() {
                     if let Some(name) = entry.file_name().to_str() {
@@ -210,44 +236,35 @@ pub extern "C" fn rt_os_listdir(path: *mut Obj) -> *mut Obj {
                     }
                 }
 
-                // Create list object
-                let count = names.len();
-                let list_size = std::mem::size_of::<ListObj>();
-                let list_ptr = gc::gc_alloc(list_size, TypeTagKind::List as u8) as *mut ListObj;
+                // Build list using rt_make_list + rt_list_push so GC ownership
+                // and finalization are handled correctly by list_finalize.
+                let count = names.len() as i64;
+                let list_ptr =
+                    crate::list::rt_make_list(count, 0 /* ELEM_HEAP_OBJ */);
 
-                (*list_ptr).header = ObjHeader {
-                    type_tag: TypeTagKind::List,
-                    marked: false,
-                    size: list_size,
-                };
-                (*list_ptr).len = count;
-                (*list_ptr).capacity = count;
-                (*list_ptr).elem_tag = 0; // ELEM_HEAP_OBJ
-
-                // Allocate data array
-                let data_layout =
-                    std::alloc::Layout::array::<*mut Obj>(count).expect("Allocation size overflow");
-                (*list_ptr).data = std::alloc::alloc(data_layout) as *mut *mut Obj;
-
-                // Fill with string objects
-                for (i, name) in names.iter().enumerate() {
+                for name in &names {
                     let str_obj = make_str_from_rust(name);
-                    *(*list_ptr).data.add(i) = str_obj;
+                    crate::list::rt_list_push(list_ptr, str_obj);
                 }
 
-                list_ptr as *mut Obj
+                list_ptr
             }
             Err(e) => {
-                let msg = match e.kind() {
-                    std::io::ErrorKind::NotFound => {
-                        format!("No such directory: '{}'\0", path_str)
-                    }
-                    std::io::ErrorKind::PermissionDenied => {
-                        format!("Permission denied: '{}'\0", path_str)
-                    }
-                    _ => format!("Error listing directory '{}': {}\0", path_str, e),
+                let (exc_tag, msg) = match e.kind() {
+                    std::io::ErrorKind::NotFound => (
+                        BuiltinExceptionKind::FileNotFoundError.tag(),
+                        format!("No such directory: '{}'\0", path_str),
+                    ),
+                    std::io::ErrorKind::PermissionDenied => (
+                        BuiltinExceptionKind::PermissionError.tag(),
+                        format!("Permission denied: '{}'\0", path_str),
+                    ),
+                    _ => (
+                        BuiltinExceptionKind::IOError.tag(),
+                        format!("Error listing directory '{}': {}\0", path_str, e),
+                    ),
                 };
-                crate::exceptions::rt_exc_raise(10, msg.as_ptr(), msg.len() - 1);
+                crate::exceptions::rt_exc_raise(exc_tag, msg.as_ptr(), msg.len() - 1);
             }
         }
     }
@@ -256,44 +273,48 @@ pub extern "C" fn rt_os_listdir(path: *mut Obj) -> *mut Obj {
 // ============= Path operations =============
 
 /// Get absolute path: os.path.abspath(path)
+///
+/// Like CPython's os.path.abspath, this normalizes the path and makes it
+/// absolute but does NOT resolve symlinks (use os.path.realpath for that).
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_os_path_abspath(path: *mut Obj) -> *mut Obj {
     unsafe {
         if path.is_null() {
             crate::exceptions::rt_exc_raise(
-                10,
+                BuiltinExceptionKind::IOError.tag(),
                 c"os.path.abspath: path is None".as_ptr().cast(),
                 29,
             );
         }
 
         if let Some(path_str) = crate::utils::extract_str_checked(path) {
-            let path_buf = std::path::Path::new(&path_str);
+            let path_obj = std::path::Path::new(&path_str);
 
-            // Try to get canonical path first (resolves symlinks)
-            let result = match path_buf.canonicalize() {
-                Ok(p) => p.to_string_lossy().to_string(),
-                Err(_) => {
-                    // If canonicalize fails, construct absolute path manually
-                    if path_buf.is_absolute() {
-                        path_str
-                    } else {
-                        match env::current_dir() {
-                            Ok(cwd) => cwd.join(path_buf).to_string_lossy().to_string(),
-                            Err(e) => {
-                                let msg = format!("Error getting current directory: {}\0", e);
-                                crate::exceptions::rt_exc_raise(10, msg.as_ptr(), msg.len() - 1);
-                            }
-                        }
+            // Python's os.path.abspath does NOT resolve symlinks (unlike realpath).
+            // It only makes the path absolute by joining with CWD if needed.
+            let abs_path = if path_obj.is_absolute() {
+                path_obj.to_path_buf()
+            } else {
+                match env::current_dir() {
+                    Ok(cwd) => cwd.join(path_obj),
+                    Err(e) => {
+                        let msg = format!("Error getting current directory: {}\0", e);
+                        crate::exceptions::rt_exc_raise(
+                            BuiltinExceptionKind::IOError.tag(),
+                            msg.as_ptr(),
+                            msg.len() - 1,
+                        );
                     }
                 }
             };
 
+            // Convert to string (lossy, as CPython does for non-UTF-8 paths)
+            let result = abs_path.to_string_lossy().to_string();
             make_str_from_rust(&result)
         } else {
             crate::exceptions::rt_exc_raise(
-                10,
+                BuiltinExceptionKind::IOError.tag(),
                 c"os.path.abspath: invalid path".as_ptr().cast(),
                 29,
             );
@@ -425,7 +446,11 @@ pub extern "C" fn rt_os_path_split(path: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_os_mkdir(path: *mut Obj) {
     unsafe {
         if path.is_null() {
-            crate::exceptions::rt_exc_raise(10, c"os.mkdir: path is None".as_ptr().cast(), 22);
+            crate::exceptions::rt_exc_raise(
+                BuiltinExceptionKind::IOError.tag(),
+                c"os.mkdir: path is None".as_ptr().cast(),
+                22,
+            );
         }
 
         if let Some(path_str) = crate::utils::extract_str_checked(path) {
@@ -434,23 +459,33 @@ pub extern "C" fn rt_os_mkdir(path: *mut Obj) {
                     // Success
                 }
                 Err(e) => {
-                    let msg = match e.kind() {
-                        std::io::ErrorKind::AlreadyExists => {
-                            format!("File exists: '{}'\0", path_str)
-                        }
-                        std::io::ErrorKind::PermissionDenied => {
-                            format!("Permission denied: '{}'\0", path_str)
-                        }
-                        std::io::ErrorKind::NotFound => {
-                            format!("No such file or directory: '{}'\0", path_str)
-                        }
-                        _ => format!("Error creating directory '{}': {}\0", path_str, e),
+                    let (exc_tag, msg) = match e.kind() {
+                        std::io::ErrorKind::AlreadyExists => (
+                            BuiltinExceptionKind::FileExistsError.tag(),
+                            format!("File exists: '{}'\0", path_str),
+                        ),
+                        std::io::ErrorKind::PermissionDenied => (
+                            BuiltinExceptionKind::PermissionError.tag(),
+                            format!("Permission denied: '{}'\0", path_str),
+                        ),
+                        std::io::ErrorKind::NotFound => (
+                            BuiltinExceptionKind::FileNotFoundError.tag(),
+                            format!("No such file or directory: '{}'\0", path_str),
+                        ),
+                        _ => (
+                            BuiltinExceptionKind::IOError.tag(),
+                            format!("Error creating directory '{}': {}\0", path_str, e),
+                        ),
                     };
-                    crate::exceptions::rt_exc_raise(10, msg.as_ptr(), msg.len() - 1);
+                    crate::exceptions::rt_exc_raise(exc_tag, msg.as_ptr(), msg.len() - 1);
                 }
             }
         } else {
-            crate::exceptions::rt_exc_raise(10, c"os.mkdir: invalid path".as_ptr().cast(), 22);
+            crate::exceptions::rt_exc_raise(
+                BuiltinExceptionKind::IOError.tag(),
+                c"os.mkdir: invalid path".as_ptr().cast(),
+                22,
+            );
         }
     }
 }
@@ -461,7 +496,11 @@ pub extern "C" fn rt_os_mkdir(path: *mut Obj) {
 pub extern "C" fn rt_os_makedirs(path: *mut Obj, exist_ok: i8) {
     unsafe {
         if path.is_null() {
-            crate::exceptions::rt_exc_raise(10, c"os.makedirs: path is None".as_ptr().cast(), 25);
+            crate::exceptions::rt_exc_raise(
+                BuiltinExceptionKind::IOError.tag(),
+                c"os.makedirs: path is None".as_ptr().cast(),
+                25,
+            );
         }
 
         if let Some(path_str) = crate::utils::extract_str_checked(path) {
@@ -478,20 +517,29 @@ pub extern "C" fn rt_os_makedirs(path: *mut Obj, exist_ok: i8) {
                         return; // It's OK, directory already exists
                     }
 
-                    let msg = match e.kind() {
-                        std::io::ErrorKind::AlreadyExists => {
-                            format!("File exists: '{}'\0", path_str)
-                        }
-                        std::io::ErrorKind::PermissionDenied => {
-                            format!("Permission denied: '{}'\0", path_str)
-                        }
-                        _ => format!("Error creating directories '{}': {}\0", path_str, e),
+                    let (exc_tag, msg) = match e.kind() {
+                        std::io::ErrorKind::AlreadyExists => (
+                            BuiltinExceptionKind::FileExistsError.tag(),
+                            format!("File exists: '{}'\0", path_str),
+                        ),
+                        std::io::ErrorKind::PermissionDenied => (
+                            BuiltinExceptionKind::PermissionError.tag(),
+                            format!("Permission denied: '{}'\0", path_str),
+                        ),
+                        _ => (
+                            BuiltinExceptionKind::IOError.tag(),
+                            format!("Error creating directories '{}': {}\0", path_str, e),
+                        ),
                     };
-                    crate::exceptions::rt_exc_raise(10, msg.as_ptr(), msg.len() - 1);
+                    crate::exceptions::rt_exc_raise(exc_tag, msg.as_ptr(), msg.len() - 1);
                 }
             }
         } else {
-            crate::exceptions::rt_exc_raise(10, c"os.makedirs: invalid path".as_ptr().cast(), 25);
+            crate::exceptions::rt_exc_raise(
+                BuiltinExceptionKind::IOError.tag(),
+                c"os.makedirs: invalid path".as_ptr().cast(),
+                25,
+            );
         }
     }
 }
@@ -502,7 +550,11 @@ pub extern "C" fn rt_os_makedirs(path: *mut Obj, exist_ok: i8) {
 pub extern "C" fn rt_os_rmdir(path: *mut Obj) {
     unsafe {
         if path.is_null() {
-            crate::exceptions::rt_exc_raise(10, c"os.rmdir: path is None".as_ptr().cast(), 22);
+            crate::exceptions::rt_exc_raise(
+                BuiltinExceptionKind::IOError.tag(),
+                c"os.rmdir: path is None".as_ptr().cast(),
+                22,
+            );
         }
 
         if let Some(path_str) = crate::utils::extract_str_checked(path) {
@@ -511,31 +563,49 @@ pub extern "C" fn rt_os_rmdir(path: *mut Obj) {
                     // Success
                 }
                 Err(e) => {
-                    let msg = match e.kind() {
-                        std::io::ErrorKind::NotFound => {
-                            format!("No such directory: '{}'\0", path_str)
-                        }
-                        std::io::ErrorKind::PermissionDenied => {
-                            format!("Permission denied: '{}'\0", path_str)
-                        }
+                    let (exc_tag, msg) = match e.kind() {
+                        std::io::ErrorKind::NotFound => (
+                            BuiltinExceptionKind::FileNotFoundError.tag(),
+                            format!("No such directory: '{}'\0", path_str),
+                        ),
+                        std::io::ErrorKind::PermissionDenied => (
+                            BuiltinExceptionKind::PermissionError.tag(),
+                            format!("Permission denied: '{}'\0", path_str),
+                        ),
                         _ => {
                             // Check if directory is not empty
                             if let Ok(mut entries) = fs::read_dir(&path_str) {
                                 if entries.next().is_some() {
-                                    format!("Directory not empty: '{}'\0", path_str)
+                                    (
+                                        BuiltinExceptionKind::IOError.tag(),
+                                        format!("Directory not empty: '{}'\0", path_str),
+                                    )
                                 } else {
-                                    format!("Error removing directory '{}': {}\0", path_str, e)
+                                    (
+                                        BuiltinExceptionKind::IOError.tag(),
+                                        format!(
+                                            "Error removing directory '{}': {}\0",
+                                            path_str, e
+                                        ),
+                                    )
                                 }
                             } else {
-                                format!("Error removing directory '{}': {}\0", path_str, e)
+                                (
+                                    BuiltinExceptionKind::IOError.tag(),
+                                    format!("Error removing directory '{}': {}\0", path_str, e),
+                                )
                             }
                         }
                     };
-                    crate::exceptions::rt_exc_raise(10, msg.as_ptr(), msg.len() - 1);
+                    crate::exceptions::rt_exc_raise(exc_tag, msg.as_ptr(), msg.len() - 1);
                 }
             }
         } else {
-            crate::exceptions::rt_exc_raise(10, c"os.rmdir: invalid path".as_ptr().cast(), 22);
+            crate::exceptions::rt_exc_raise(
+                BuiltinExceptionKind::IOError.tag(),
+                c"os.rmdir: invalid path".as_ptr().cast(),
+                22,
+            );
         }
     }
 }
@@ -548,14 +618,22 @@ pub extern "C" fn rt_os_rmdir(path: *mut Obj) {
 pub extern "C" fn rt_os_rename(src: *mut Obj, dst: *mut Obj) {
     unsafe {
         if src.is_null() || dst.is_null() {
-            crate::exceptions::rt_exc_raise(10, c"os.rename: path is None".as_ptr().cast(), 23);
+            crate::exceptions::rt_exc_raise(
+                BuiltinExceptionKind::IOError.tag(),
+                c"os.rename: path is None".as_ptr().cast(),
+                23,
+            );
         }
 
         let src_str = crate::utils::extract_str_checked(src);
         let dst_str = crate::utils::extract_str_checked(dst);
 
         if src_str.is_none() || dst_str.is_none() {
-            crate::exceptions::rt_exc_raise(10, c"os.rename: invalid path".as_ptr().cast(), 23);
+            crate::exceptions::rt_exc_raise(
+                BuiltinExceptionKind::IOError.tag(),
+                c"os.rename: invalid path".as_ptr().cast(),
+                23,
+            );
         }
 
         let src_str = src_str.expect("src_str is Some");
@@ -566,14 +644,21 @@ pub extern "C" fn rt_os_rename(src: *mut Obj, dst: *mut Obj) {
                 // Success
             }
             Err(e) => {
-                let msg = match e.kind() {
-                    std::io::ErrorKind::NotFound => {
-                        format!("No such file or directory: '{}'\0", src_str)
-                    }
-                    std::io::ErrorKind::PermissionDenied => "Permission denied\0".to_string(),
-                    _ => format!("Error renaming '{}' to '{}': {}\0", src_str, dst_str, e),
+                let (exc_tag, msg) = match e.kind() {
+                    std::io::ErrorKind::NotFound => (
+                        BuiltinExceptionKind::FileNotFoundError.tag(),
+                        format!("No such file or directory: '{}'\0", src_str),
+                    ),
+                    std::io::ErrorKind::PermissionDenied => (
+                        BuiltinExceptionKind::PermissionError.tag(),
+                        "Permission denied\0".to_string(),
+                    ),
+                    _ => (
+                        BuiltinExceptionKind::IOError.tag(),
+                        format!("Error renaming '{}' to '{}': {}\0", src_str, dst_str, e),
+                    ),
                 };
-                crate::exceptions::rt_exc_raise(10, msg.as_ptr(), msg.len() - 1);
+                crate::exceptions::rt_exc_raise(exc_tag, msg.as_ptr(), msg.len() - 1);
             }
         }
     }

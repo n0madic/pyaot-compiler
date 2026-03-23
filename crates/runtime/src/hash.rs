@@ -6,16 +6,17 @@ use crate::object::Obj;
 const FNV_OFFSET_BASIS: u64 = 14695981039346656037;
 const FNV_PRIME: u64 = 1099511628211;
 
-/// Hash an integer value
-/// Uses the same algorithm as Python's hash for integers
+/// Hash an integer value, matching CPython's behavior.
+/// CPython: hash(n) == n for all integers except hash(-1) == -2
+/// (since -1 is reserved as an error indicator in CPython's C API).
 /// Returns: hash value as i64
 #[no_mangle]
 pub extern "C" fn rt_hash_int(value: i64) -> i64 {
-    // Python's hash for integers: for small ints, hash(x) == x
-    // For our purposes, use a simple scramble that matches Python behavior for small values
-    // Golden ratio scramble for better distribution
-    let v = value as u64;
-    v.wrapping_mul(11400714819323198485) as i64 // 2^64 / phi
+    if value == -1 {
+        -2
+    } else {
+        value
+    }
 }
 
 /// Hash a string object
@@ -43,14 +44,11 @@ pub extern "C" fn rt_hash_str(str_obj: *mut Obj) -> i64 {
 }
 
 /// Hash a boolean value
-/// Returns: 0 for False, 1 for True (matches Python)
+/// Returns the same value as hashing the equivalent integer (True == 1, False == 0),
+/// satisfying the CPython invariant hash(True) == hash(1) and hash(False) == hash(0).
 #[no_mangle]
 pub extern "C" fn rt_hash_bool(value: i8) -> i64 {
-    if value != 0 {
-        1
-    } else {
-        0
-    }
+    rt_hash_int(if value != 0 { 1 } else { 0 })
 }
 
 /// Get the id (memory address) of a heap object
@@ -113,14 +111,23 @@ unsafe fn hash_any_obj(obj: *mut Obj) -> i64 {
             rt_hash_int((*int_obj).value)
         }
         crate::object::TypeTagKind::Bool => {
-            // Boxed bool
+            // Boxed bool — True == 1, False == 0 in Python; use int hash for cross-type invariant
             let bool_obj = obj as *mut crate::object::BoolObj;
-            rt_hash_bool(if (*bool_obj).value { 1 } else { 0 })
+            rt_hash_int(if (*bool_obj).value { 1 } else { 0 })
         }
         crate::object::TypeTagKind::Float => {
-            // Boxed float - use bit representation
+            // Boxed float — integer-valued floats must hash identically to the equivalent int
             let float_obj = obj as *mut crate::object::FloatObj;
-            (*float_obj).value.to_bits() as i64
+            let v = (*float_obj).value;
+            if v == 0.0 {
+                0 // hash(-0.0) == hash(0.0) == 0
+            } else if v.fract() == 0.0 && v.is_finite() {
+                // Integer-valued float: hash must equal hash of the equivalent integer
+                rt_hash_int(v as i64)
+            } else {
+                // Non-integer float: use bit representation as input to the scramble
+                rt_hash_int(v.to_bits() as i64)
+            }
         }
         crate::object::TypeTagKind::Str => rt_hash_str(obj),
         crate::object::TypeTagKind::Tuple => rt_hash_tuple(obj),

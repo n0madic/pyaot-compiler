@@ -1,7 +1,8 @@
 //! Boxing and unboxing operations for primitive types
 //!
 //! Includes a small integer pool for integers -5 to 256 (like CPython),
-//! reducing GC pressure for commonly used integers.
+//! and boolean singletons for True and False, reducing GC pressure for
+//! commonly used values.
 
 use crate::gc;
 use crate::object::{BoolObj, FloatObj, IntObj, Obj, TypeTagKind};
@@ -21,6 +22,14 @@ unsafe impl Sync for PoolWrapper {}
 /// Pool of pre-allocated small integers
 /// Initialized by init_small_int_pool() during rt_init()
 static SMALL_INT_POOL: Mutex<Option<PoolWrapper>> = Mutex::new(None);
+
+/// Pre-allocated boolean singletons (index 0 = False, index 1 = True)
+/// Initialized by init_bool_pool() during rt_init()
+struct BoolPoolWrapper([*mut Obj; 2]);
+unsafe impl Send for BoolPoolWrapper {}
+unsafe impl Sync for BoolPoolWrapper {}
+
+static BOOL_POOL: Mutex<Option<BoolPoolWrapper>> = Mutex::new(None);
 
 /// Initialize the small integer pool
 /// Pre-allocates IntObj for integers -5 to 256
@@ -44,9 +53,6 @@ pub fn init_small_int_pool() {
         unsafe {
             let int_obj = obj as *mut IntObj;
             (*int_obj).value = value;
-
-            // Mark as permanent GC root (never collect)
-            (*obj).header.marked = true;
         }
 
         *slot = obj;
@@ -62,6 +68,81 @@ pub fn shutdown_small_int_pool() {
         .lock()
         .expect("SMALL_INT_POOL mutex poisoned - another thread panicked");
     *pool_guard = None;
+}
+
+/// Initialize the boolean singleton pool
+/// Pre-allocates BoolObj for False (index 0) and True (index 1)
+/// Called from rt_init()
+pub fn init_bool_pool() {
+    let mut pool_guard = BOOL_POOL
+        .lock()
+        .expect("BOOL_POOL mutex poisoned - another thread panicked");
+
+    if pool_guard.is_some() {
+        return; // Already initialized
+    }
+
+    let mut pool: [*mut Obj; 2] = [std::ptr::null_mut(); 2];
+
+    for (i, slot) in pool.iter_mut().enumerate() {
+        let size = std::mem::size_of::<BoolObj>();
+        let obj = gc::gc_alloc(size, TypeTagKind::Bool as u8);
+
+        unsafe {
+            let bool_obj = obj as *mut BoolObj;
+            (*bool_obj).value = i != 0; // index 0 = False, index 1 = True
+        }
+
+        *slot = obj;
+    }
+
+    *pool_guard = Some(BoolPoolWrapper(pool));
+}
+
+/// Shutdown the boolean singleton pool
+/// Called from rt_shutdown()
+pub fn shutdown_bool_pool() {
+    let mut pool_guard = BOOL_POOL
+        .lock()
+        .expect("BOOL_POOL mutex poisoned - another thread panicked");
+    *pool_guard = None;
+}
+
+/// Mark all pool objects (small integers and boolean singletons) as reachable.
+///
+/// Called during the GC mark phase so that pool objects — which are not on the
+/// shadow stack or in globals — are never swept.  The initial `marked = true`
+/// set at allocation time is cleared by `sweep` at the end of every collection,
+/// so we must re-mark them at the start of every mark phase instead.
+pub fn mark_pools() {
+    // Mark small integer pool
+    let int_guard = SMALL_INT_POOL
+        .lock()
+        .expect("SMALL_INT_POOL mutex poisoned - another thread panicked");
+    if let Some(ref wrapper) = *int_guard {
+        for &obj in &wrapper.0 {
+            if !obj.is_null() {
+                unsafe {
+                    (*obj).set_marked(true);
+                }
+            }
+        }
+    }
+    drop(int_guard);
+
+    // Mark boolean singleton pool
+    let bool_guard = BOOL_POOL
+        .lock()
+        .expect("BOOL_POOL mutex poisoned - another thread panicked");
+    if let Some(ref wrapper) = *bool_guard {
+        for &obj in &wrapper.0 {
+            if !obj.is_null() {
+                unsafe {
+                    (*obj).set_marked(true);
+                }
+            }
+        }
+    }
 }
 
 /// Box an integer value as a heap-allocated IntObj
@@ -94,9 +175,21 @@ pub extern "C" fn rt_box_int(value: i64) -> *mut Obj {
 }
 
 /// Box a boolean value as a heap-allocated BoolObj
+/// Returns a pre-allocated singleton from the bool pool (like CPython's True/False).
 /// Used for dict keys when the key type is bool
 #[no_mangle]
 pub extern "C" fn rt_box_bool(value: i8) -> *mut Obj {
+    let pool_guard = BOOL_POOL
+        .lock()
+        .expect("BOOL_POOL mutex poisoned - another thread panicked");
+
+    if let Some(ref wrapper) = *pool_guard {
+        let index = if value != 0 { 1 } else { 0 };
+        return wrapper.0[index];
+    }
+    drop(pool_guard);
+
+    // Fallback: pool not yet initialized (should not happen in normal operation)
     let size = std::mem::size_of::<BoolObj>();
     let obj = gc::gc_alloc(size, TypeTagKind::Bool as u8);
 

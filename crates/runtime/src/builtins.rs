@@ -19,12 +19,27 @@ use crate::object::{BoolObj, BytesObj, FloatObj, IntObj, Obj, StrObj, TypeTagKin
 // based on the object's type tag. They return boxed values so they can be used
 // uniformly with map(), filter(), sorted(), etc.
 
+/// Raise a TypeError with a static message. Never returns.
+///
+/// # Safety
+/// `msg` must point to valid UTF-8 bytes with length `len`. Both constraints
+/// are satisfied when passing a `b"..."` literal.
+#[inline(always)]
+unsafe fn raise_type_error(msg: &'static [u8]) -> ! {
+    crate::exceptions::rt_exc_raise(
+        pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+        msg.as_ptr(),
+        msg.len(),
+    )
+}
+
 /// len(obj) -> *mut Obj (boxed Int)
 /// Returns the length of sequences (list, tuple, dict, set, str, bytes).
 #[no_mangle]
 pub extern "C" fn rt_builtin_len(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
-        panic!("len() argument is None");
+        // SAFETY: static byte string literal is valid for the duration of the call.
+        unsafe { raise_type_error(b"len() argument is None") };
     }
     let len = unsafe {
         match (*obj).type_tag() {
@@ -34,7 +49,7 @@ pub extern "C" fn rt_builtin_len(obj: *mut Obj) -> *mut Obj {
             TypeTagKind::Tuple => crate::tuple::rt_tuple_len(obj),
             TypeTagKind::Set => crate::set::rt_set_len(obj),
             TypeTagKind::Bytes => crate::bytes::rt_bytes_len(obj),
-            _ => panic!("len() not supported for {}", (*obj).type_tag().type_name()),
+            _ => raise_type_error(b"object of this type has no len()"),
         }
     };
     // Box the result
@@ -53,7 +68,8 @@ pub extern "C" fn rt_builtin_str(obj: *mut Obj) -> *mut Obj {
 #[no_mangle]
 pub extern "C" fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
-        panic!("int() argument is None");
+        // SAFETY: static byte string literal.
+        unsafe { raise_type_error(b"int() argument is None") };
     }
     let value = unsafe {
         match (*obj).type_tag() {
@@ -67,7 +83,7 @@ pub extern "C" fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
                 }
             }
             TypeTagKind::Str => crate::conversions::rt_str_to_int(obj),
-            _ => panic!("int() not supported for {}", (*obj).type_tag().type_name()),
+            _ => raise_type_error(b"int() argument must be a string, a bytes-like object or a real number"),
         }
     };
     // Box the result
@@ -79,7 +95,8 @@ pub extern "C" fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
 #[no_mangle]
 pub extern "C" fn rt_builtin_float(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
-        panic!("float() argument is None");
+        // SAFETY: static byte string literal.
+        unsafe { raise_type_error(b"float() argument is None") };
     }
     let result: f64 = unsafe {
         match (*obj).type_tag() {
@@ -93,10 +110,7 @@ pub extern "C" fn rt_builtin_float(obj: *mut Obj) -> *mut Obj {
                 }
             }
             TypeTagKind::Str => crate::conversions::rt_str_to_float(obj),
-            _ => panic!(
-                "float() not supported for {}",
-                (*obj).type_tag().type_name()
-            ),
+            _ => raise_type_error(b"float() argument must be a string or a real number"),
         }
     };
     // Box the result
@@ -142,7 +156,8 @@ pub extern "C" fn rt_builtin_bool(obj: *mut Obj) -> *mut Obj {
 #[no_mangle]
 pub extern "C" fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
-        panic!("abs() argument is None");
+        // SAFETY: static byte string literal.
+        unsafe { raise_type_error(b"abs() argument is None") };
     }
     unsafe {
         match (*obj).type_tag() {
@@ -159,7 +174,7 @@ pub extern "C" fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
                 let value = if (*(obj as *mut BoolObj)).value { 1 } else { 0 };
                 boxing::rt_box_int(value)
             }
-            _ => panic!("abs() not supported for {}", (*obj).type_tag().type_name()),
+            _ => raise_type_error(b"bad operand type for abs()"),
         }
     }
 }
@@ -183,12 +198,21 @@ pub extern "C" fn rt_builtin_hash(obj: *mut Obj) -> *mut Obj {
                 }
                 TypeTagKind::Float => {
                     let float_obj = obj as *mut FloatObj;
-                    (*float_obj).value.to_bits() as i64
+                    let v = (*float_obj).value;
+                    if v == 0.0 {
+                        0 // hash(-0.0) == hash(0.0) == 0
+                    } else if v.fract() == 0.0 && v.is_finite() {
+                        // Integer-valued float: same hash as the equivalent integer
+                        crate::hash::rt_hash_int(v as i64)
+                    } else {
+                        // Non-integer float: use bit representation as input to the scramble
+                        crate::hash::rt_hash_int(v.to_bits() as i64)
+                    }
                 }
                 TypeTagKind::Str => crate::hash::rt_hash_str(obj),
                 TypeTagKind::Tuple => crate::hash::rt_hash_tuple(obj),
                 TypeTagKind::None => 0,
-                _ => panic!("unhashable type: '{}'", (*obj).type_tag().type_name()),
+                _ => raise_type_error(b"unhashable type"),
             }
         }
     };
@@ -210,12 +234,13 @@ pub extern "C" fn rt_builtin_ord(obj: *mut Obj) -> *mut Obj {
 #[no_mangle]
 pub extern "C" fn rt_builtin_chr(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
-        panic!("chr() argument is None");
+        // SAFETY: static byte string literal.
+        unsafe { raise_type_error(b"chr() argument is None") };
     }
     unsafe {
         let codepoint = match (*obj).type_tag() {
             TypeTagKind::Int => (*(obj as *mut IntObj)).value,
-            _ => panic!("chr() requires int, got {}", (*obj).type_tag().type_name()),
+            _ => raise_type_error(b"an integer is required for chr()"),
         };
         crate::conversions::rt_int_to_chr(codepoint)
     }
@@ -244,6 +269,7 @@ pub extern "C" fn rt_builtin_type(obj: *mut Obj) -> *mut Obj {
 
 /// Internal implementation for getting builtin function pointer.
 /// This non-FFI version can be tested with `#[should_panic]`.
+#[cfg_attr(not(test), allow(dead_code))]
 fn get_builtin_func_ptr_impl(builtin_id: i64) -> i64 {
     match builtin_id {
         0 => rt_builtin_len as *const () as usize as i64,
@@ -267,12 +293,32 @@ fn get_builtin_func_ptr_impl(builtin_id: i64) -> i64 {
 
 /// Get function pointer for a builtin by its ID.
 /// Called from codegen via BuiltinAddr instruction.
-///
-/// # Panics
-/// Panics if builtin_id is out of range.
+/// Raises a RuntimeError (via longjmp) if `builtin_id` is out of range.
 #[no_mangle]
 pub extern "C" fn rt_get_builtin_func_ptr(builtin_id: i64) -> i64 {
-    get_builtin_func_ptr_impl(builtin_id)
+    match builtin_id {
+        0 => rt_builtin_len as *const () as usize as i64,
+        1 => rt_builtin_str as *const () as usize as i64,
+        2 => rt_builtin_int as *const () as usize as i64,
+        3 => rt_builtin_float as *const () as usize as i64,
+        4 => rt_builtin_bool as *const () as usize as i64,
+        5 => rt_builtin_abs as *const () as usize as i64,
+        6 => rt_builtin_hash as *const () as usize as i64,
+        7 => rt_builtin_ord as *const () as usize as i64,
+        8 => rt_builtin_chr as *const () as usize as i64,
+        9 => rt_builtin_repr as *const () as usize as i64,
+        10 => rt_builtin_type as *const () as usize as i64,
+        _ => {
+            // SAFETY: static byte string literal is valid for the duration of the call.
+            unsafe {
+                crate::exceptions::rt_exc_raise(
+                    pyaot_core_defs::BuiltinExceptionKind::RuntimeError.tag(),
+                    b"invalid builtin function ID".as_ptr(),
+                    b"invalid builtin function ID".len(),
+                )
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -299,7 +345,7 @@ mod tests {
         // Verify every builtin kind has a valid function pointer
         for kind in BuiltinFunctionKind::ALL {
             let id = kind.id() as i64;
-            let ptr = rt_get_builtin_func_ptr(id);
+            let ptr = get_builtin_func_ptr_impl(id);
             assert_ne!(
                 ptr, 0,
                 "Builtin {:?} (id={}) has null function pointer",
@@ -310,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_get_builtin_func_ptr_valid() {
-        // Test all valid IDs using internal impl (not extern "C" which aborts on panic)
+        // Test all valid IDs using internal impl (not extern "C" which raises exception on invalid)
         for i in 0..pyaot_core_defs::BUILTIN_FUNCTION_COUNT {
             let ptr = get_builtin_func_ptr_impl(i as i64);
             assert_ne!(ptr, 0, "Builtin ID {} returned null pointer", i);
@@ -320,7 +366,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "Invalid builtin ID")]
     fn test_get_builtin_func_ptr_invalid() {
-        // Use internal impl because extern "C" functions abort on panic instead of unwinding
+        // Use internal impl because the extern "C" version raises a Python exception
+        // (via longjmp) instead of panicking.
         get_builtin_func_ptr_impl(100);
     }
 }

@@ -313,6 +313,30 @@ fn format_int(value: i64, spec: &FormatSpec) -> Result<String, String> {
     Ok(apply_padding(&result, spec))
 }
 
+/// Fix Rust's exponent format to match Python's:
+/// e1 -> e+01, e-1 -> e-01, e10 -> e+10
+fn fix_exponent_format(s: &str) -> String {
+    if let Some(e_pos) = s.find('e') {
+        let (mantissa, exp_part) = s.split_at(e_pos);
+        let exp_str = &exp_part[1..]; // skip 'e'
+        let (sign, digits) = if let Some(d) = exp_str.strip_prefix('-') {
+            ("-", d)
+        } else if let Some(d) = exp_str.strip_prefix('+') {
+            ("+", d)
+        } else {
+            ("+", exp_str)
+        };
+        // Pad to at least 2 digits
+        if digits.len() < 2 {
+            format!("{}e{}{:0>2}", mantissa, sign, digits)
+        } else {
+            format!("{}e{}{}", mantissa, sign, digits)
+        }
+    } else {
+        s.to_string()
+    }
+}
+
 /// Format a float value
 fn format_float(value: f64, spec: &FormatSpec) -> Result<String, String> {
     let type_spec = spec.type_spec.unwrap_or('f');
@@ -325,28 +349,62 @@ fn format_float(value: f64, spec: &FormatSpec) -> Result<String, String> {
         }
         'e' => {
             // Exponential lowercase
-            format!("{:.prec$e}", value, prec = precision)
+            let s = format!("{:.prec$e}", value, prec = precision);
+            fix_exponent_format(&s)
         }
         'E' => {
             // Exponential uppercase
-            format!("{:.prec$E}", value, prec = precision)
-        }
-        'g' => {
-            // General format lowercase
-            if precision == 0 {
-                format!("{:.1}", value)
-            } else {
-                format!("{:.prec$}", value, prec = precision)
-            }
-        }
-        'G' => {
-            // General format uppercase
-            let s = if precision == 0 {
-                format!("{:.1}", value)
-            } else {
-                format!("{:.prec$}", value, prec = precision)
-            };
+            let s = format!("{:.prec$e}", value, prec = precision);
+            let s = fix_exponent_format(&s);
             s.replace('e', "E")
+        }
+        'g' | 'G' => {
+            // General format: switches between fixed and exponential based on exponent
+            let prec = if precision == 0 { 1 } else { precision };
+            let abs_val = value.abs();
+            let formatted = if abs_val == 0.0 {
+                // Zero: use fixed-point
+                let mut s = format!("{:.prec$}", value, prec = prec.saturating_sub(1));
+                // Remove trailing zeros (unless alternate form)
+                if !spec.alternate && s.contains('.') {
+                    s = s.trim_end_matches('0').to_string();
+                    s = s.trim_end_matches('.').to_string();
+                }
+                s
+            } else {
+                let exp = abs_val.log10().floor() as i32;
+                if exp >= -4 && exp < prec as i32 {
+                    // Use fixed-point notation
+                    let fixed_prec = (prec as i32 - 1 - exp).max(0) as usize;
+                    let mut s = format!("{:.prec$}", value, prec = fixed_prec);
+                    if !spec.alternate && s.contains('.') {
+                        s = s.trim_end_matches('0').to_string();
+                        s = s.trim_end_matches('.').to_string();
+                    }
+                    s
+                } else {
+                    // Use exponential notation
+                    let exp_prec = prec.saturating_sub(1);
+                    let mut s = format!("{:.prec$e}", value, prec = exp_prec);
+                    if !spec.alternate && s.contains('.') {
+                        // Split at 'e', trim the mantissa, rejoin
+                        if let Some(e_pos) = s.find('e') {
+                            let (mantissa, exp_part) = s.split_at(e_pos);
+                            let trimmed =
+                                mantissa.trim_end_matches('0').trim_end_matches('.');
+                            s = format!("{}{}", trimmed, exp_part);
+                        }
+                    }
+                    // Fix Rust's exponent format: e1 -> e+01, e-1 -> e-01
+                    s = fix_exponent_format(&s);
+                    s
+                }
+            };
+            if type_spec == 'G' {
+                formatted.replace('e', "E")
+            } else {
+                formatted
+            }
         }
         '%' => {
             // Percentage
@@ -355,10 +413,30 @@ fn format_float(value: f64, spec: &FormatSpec) -> Result<String, String> {
         }
         'n' => {
             // Number (same as 'g' for now)
-            if precision == 0 {
-                format!("{:.1}", value)
+            let prec = if precision == 0 { 1 } else { precision };
+            let abs_val = value.abs();
+            if abs_val == 0.0 {
+                let mut s = format!("{:.prec$}", value, prec = prec.saturating_sub(1));
+                if s.contains('.') {
+                    s = s.trim_end_matches('0').to_string();
+                    s = s.trim_end_matches('.').to_string();
+                }
+                s
             } else {
-                format!("{:.prec$}", value, prec = precision)
+                let exp = abs_val.log10().floor() as i32;
+                if exp >= -4 && exp < prec as i32 {
+                    let fixed_prec = (prec as i32 - 1 - exp).max(0) as usize;
+                    let mut s = format!("{:.prec$}", value, prec = fixed_prec);
+                    if s.contains('.') {
+                        s = s.trim_end_matches('0').to_string();
+                        s = s.trim_end_matches('.').to_string();
+                    }
+                    s
+                } else {
+                    let exp_prec = prec.saturating_sub(1);
+                    let s = format!("{:.prec$e}", value, prec = exp_prec);
+                    fix_exponent_format(&s)
+                }
             }
         }
         _ => {
@@ -407,8 +485,14 @@ fn format_str(s: &str, spec: &FormatSpec) -> Result<String, String> {
         s.to_string()
     };
 
+    // Strings default to left-align in Python
+    let mut str_spec = spec.clone();
+    if str_spec.align.is_none() {
+        str_spec.align = Some('<');
+    }
+
     // Apply padding
-    Ok(apply_padding(&result, spec))
+    Ok(apply_padding(&result, &str_spec))
 }
 
 /// Format a boolean value

@@ -27,40 +27,6 @@ unsafe fn extract_string_list(obj: *mut Obj) -> Vec<String> {
     result
 }
 
-/// Copy list object for CompletedProcess.args field
-unsafe fn copy_list(list: *mut Obj) -> *mut Obj {
-    if list.is_null() {
-        return std::ptr::null_mut();
-    }
-
-    let src_list = list as *const ListObj;
-    let len = (*src_list).len;
-    let capacity = (*src_list).capacity;
-
-    // Allocate new list
-    let list_size = std::mem::size_of::<ListObj>();
-    let new_list_ptr = gc::gc_alloc(list_size, TypeTagKind::List as u8) as *mut ListObj;
-
-    (*new_list_ptr).header = ObjHeader {
-        type_tag: TypeTagKind::List,
-        marked: false,
-        size: list_size,
-    };
-    (*new_list_ptr).len = len;
-    (*new_list_ptr).capacity = capacity;
-    (*new_list_ptr).elem_tag = (*src_list).elem_tag;
-
-    // Allocate data array
-    let data_layout = std::alloc::Layout::array::<*mut Obj>(capacity)
-        .expect("Allocation size overflow - list capacity too large");
-    (*new_list_ptr).data = std::alloc::alloc(data_layout) as *mut *mut Obj;
-
-    // Copy data
-    std::ptr::copy_nonoverlapping((*src_list).data, (*new_list_ptr).data, len);
-
-    new_list_ptr as *mut Obj
-}
-
 /// subprocess.run(args, capture_output=False, check=False) -> CompletedProcess
 ///
 /// Executes a command and returns a CompletedProcess instance.
@@ -146,8 +112,10 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
             crate::object::none_obj()
         };
 
-        // Copy args list for the result object
-        let args_copy = copy_list(args);
+        // Copy args list for the result object using the GC-managed list copy, which
+        // allocates the data array via the system allocator in a way that list_finalize
+        // will correctly free when the list is GC-collected.
+        let args_copy = crate::list::rt_list_copy(args);
 
         // Create CompletedProcess object
         let size = std::mem::size_of::<CompletedProcessObj>();

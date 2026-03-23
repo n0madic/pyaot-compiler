@@ -54,13 +54,14 @@ pub static RANDOM_SHUFFLE: StdlibFunctionDef = StdlibFunctionDef {
 };
 
 /// random.seed(n) -> None
+/// When called with no argument or None, i64::MIN is the sentinel for "use system entropy".
 pub static RANDOM_SEED: StdlibFunctionDef = StdlibFunctionDef {
     name: "seed",
     runtime_name: "rt_random_seed",
     params: &[ParamDef::optional_with_default(
         "n",
         TypeSpec::Int,
-        ConstValue::Int(0),
+        ConstValue::Int(i64::MIN),
     )],
     return_type: TypeSpec::None,
     min_args: 0,

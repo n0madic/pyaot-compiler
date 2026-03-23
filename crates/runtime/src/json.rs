@@ -185,22 +185,28 @@ pub unsafe extern "C" fn rt_json_dumps(obj: *mut Obj) -> *mut Obj {
 fn add_json_spaces(s: &str) -> String {
     let mut result = String::with_capacity(s.len() * 2);
     let mut in_string = false;
-    let mut prev_char = '\0';
+    let mut escape = false;
 
     for c in s.chars() {
-        // Track string boundaries (handle escaped quotes)
-        if c == '"' && prev_char != '\\' {
-            in_string = !in_string;
+        if in_string {
+            if escape {
+                // This character is escaped, skip escape tracking
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+        } else if c == '"' {
+            in_string = true;
         }
 
         result.push(c);
 
         // Add space after comma or colon when not inside a string
-        if !in_string && (c == ',' || c == ':') {
+        if !in_string && !escape && (c == ',' || c == ':') {
             result.push(' ');
         }
-
-        prev_char = c;
     }
 
     result
@@ -256,8 +262,9 @@ pub unsafe extern "C" fn rt_json_dump(obj: *mut Obj, fp: *mut Obj) {
     let value = obj_to_json_value(obj);
     match serde_json::to_string(&value) {
         Ok(s) => {
+            let formatted = add_json_spaces(&s);
             let handle = &mut *(*file_obj).handle;
-            if let Err(e) = handle.write_all(s.as_bytes()) {
+            if let Err(e) = handle.write_all(formatted.as_bytes()) {
                 let msg = format!("IOError: {}", e);
                 crate::utils::raise_value_error(&msg);
             }

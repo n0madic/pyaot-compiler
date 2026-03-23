@@ -89,7 +89,14 @@ pub extern "C" fn rt_re_search(pattern: *mut Obj, string: *mut Obj) -> *mut Obj 
         // Compile regex
         let re = match Regex::new(&pattern_str) {
             Ok(r) => r,
-            Err(_) => return crate::object::none_obj(),
+            Err(e) => {
+                let msg = format!("re.error: {}", e);
+                crate::exceptions::rt_exc_raise(
+                    crate::exceptions::ExceptionType::ValueError as u8,
+                    msg.as_ptr(),
+                    msg.len(),
+                );
+            }
         };
 
         // Search for match
@@ -131,7 +138,14 @@ pub extern "C" fn rt_re_match(pattern: *mut Obj, string: *mut Obj) -> *mut Obj {
         let anchored_pattern = format!("^(?:{})", pattern_str);
         let re = match Regex::new(&anchored_pattern) {
             Ok(r) => r,
-            Err(_) => return crate::object::none_obj(),
+            Err(e) => {
+                let msg = format!("re.error: {}", e);
+                crate::exceptions::rt_exc_raise(
+                    crate::exceptions::ExceptionType::ValueError as u8,
+                    msg.as_ptr(),
+                    msg.len(),
+                );
+            }
         };
 
         // Match at start
@@ -177,7 +191,14 @@ pub extern "C" fn rt_re_sub(pattern: *mut Obj, repl: *mut Obj, string: *mut Obj)
         // Compile regex
         let re = match Regex::new(&pattern_str) {
             Ok(r) => r,
-            Err(_) => return string,
+            Err(e) => {
+                let msg = format!("re.error: {}", e);
+                crate::exceptions::rt_exc_raise(
+                    crate::exceptions::ExceptionType::ValueError as u8,
+                    msg.as_ptr(),
+                    msg.len(),
+                );
+            }
         };
 
         // Replace all occurrences

@@ -123,7 +123,7 @@ pub extern "C" fn rt_list_insert(list: *mut Obj, index: i64, value: *mut Obj) {
 }
 
 /// Remove first occurrence of value from list (mutates list)
-/// Uses pointer equality for comparison
+/// Uses value equality for heap objects, raw equality for primitives.
 /// Returns: 1 if found and removed, 0 otherwise
 #[no_mangle]
 pub extern "C" fn rt_list_remove(list: *mut Obj, value: *mut Obj) -> i8 {
@@ -141,9 +141,17 @@ pub extern "C" fn rt_list_remove(list: *mut Obj, value: *mut Obj) -> i8 {
             return 0;
         }
 
-        // Find the element
+        let elem_tag = (*list_obj).elem_tag;
+
+        // Find the element using value equality for heap objects, raw equality for primitives
         for i in 0..len {
-            if *data.add(i) == value {
+            let elem = *data.add(i);
+            let found = if elem_tag == ELEM_HEAP_OBJ {
+                crate::hash_table_utils::eq_hashable_obj(elem, value)
+            } else {
+                elem == value // Raw value comparison (ELEM_RAW_INT, ELEM_RAW_BOOL)
+            };
+            if found {
                 // Shift remaining elements left
                 for j in i..(len - 1) {
                     *data.add(j) = *data.add(j + 1);

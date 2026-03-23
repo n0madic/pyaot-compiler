@@ -377,7 +377,8 @@ pub extern "C" fn rt_tuple_lt(a: *mut Obj, b: *mut Obj) -> i8 {
         let len_a = (*tuple_a).len;
         let len_b = (*tuple_b).len;
         let min_len = len_a.min(len_b);
-        let elem_tag = (*tuple_a).elem_tag;
+        let elem_tag_a = (*tuple_a).elem_tag;
+        let elem_tag_b = (*tuple_b).elem_tag;
 
         let data_a = (*tuple_a).data.as_ptr();
         let data_b = (*tuple_b).data.as_ptr();
@@ -388,7 +389,14 @@ pub extern "C" fn rt_tuple_lt(a: *mut Obj, b: *mut Obj) -> i8 {
             let elem_b = *data_b.add(i);
 
             use crate::sorted::compare_list_elements;
-            match compare_list_elements(elem_a, elem_b, elem_tag) {
+            let (cmp_a, cmp_b, cmp_tag) = if elem_tag_a == elem_tag_b {
+                (elem_a, elem_b, elem_tag_a)
+            } else {
+                let boxed_a = box_if_raw(elem_a, elem_tag_a);
+                let boxed_b = box_if_raw(elem_b, elem_tag_b);
+                (boxed_a, boxed_b, crate::object::ELEM_HEAP_OBJ)
+            };
+            match compare_list_elements(cmp_a, cmp_b, cmp_tag) {
                 std::cmp::Ordering::Less => return 1,    // a < b
                 std::cmp::Ordering::Greater => return 0, // a > b
                 std::cmp::Ordering::Equal => continue,   // check next element
@@ -425,7 +433,8 @@ pub extern "C" fn rt_tuple_lte(a: *mut Obj, b: *mut Obj) -> i8 {
         let len_a = (*tuple_a).len;
         let len_b = (*tuple_b).len;
         let min_len = len_a.min(len_b);
-        let elem_tag = (*tuple_a).elem_tag;
+        let elem_tag_a = (*tuple_a).elem_tag;
+        let elem_tag_b = (*tuple_b).elem_tag;
 
         let data_a = (*tuple_a).data.as_ptr();
         let data_b = (*tuple_b).data.as_ptr();
@@ -436,7 +445,14 @@ pub extern "C" fn rt_tuple_lte(a: *mut Obj, b: *mut Obj) -> i8 {
             let elem_b = *data_b.add(i);
 
             use crate::sorted::compare_list_elements;
-            match compare_list_elements(elem_a, elem_b, elem_tag) {
+            let (cmp_a, cmp_b, cmp_tag) = if elem_tag_a == elem_tag_b {
+                (elem_a, elem_b, elem_tag_a)
+            } else {
+                let boxed_a = box_if_raw(elem_a, elem_tag_a);
+                let boxed_b = box_if_raw(elem_b, elem_tag_b);
+                (boxed_a, boxed_b, crate::object::ELEM_HEAP_OBJ)
+            };
+            match compare_list_elements(cmp_a, cmp_b, cmp_tag) {
                 std::cmp::Ordering::Less => return 1,    // a < b, so <=
                 std::cmp::Ordering::Greater => return 0, // a > b, so not <=
                 std::cmp::Ordering::Equal => continue,   // check next element
@@ -473,7 +489,8 @@ pub extern "C" fn rt_tuple_gt(a: *mut Obj, b: *mut Obj) -> i8 {
         let len_a = (*tuple_a).len;
         let len_b = (*tuple_b).len;
         let min_len = len_a.min(len_b);
-        let elem_tag = (*tuple_a).elem_tag;
+        let elem_tag_a = (*tuple_a).elem_tag;
+        let elem_tag_b = (*tuple_b).elem_tag;
 
         let data_a = (*tuple_a).data.as_ptr();
         let data_b = (*tuple_b).data.as_ptr();
@@ -484,7 +501,14 @@ pub extern "C" fn rt_tuple_gt(a: *mut Obj, b: *mut Obj) -> i8 {
             let elem_b = *data_b.add(i);
 
             use crate::sorted::compare_list_elements;
-            match compare_list_elements(elem_a, elem_b, elem_tag) {
+            let (cmp_a, cmp_b, cmp_tag) = if elem_tag_a == elem_tag_b {
+                (elem_a, elem_b, elem_tag_a)
+            } else {
+                let boxed_a = box_if_raw(elem_a, elem_tag_a);
+                let boxed_b = box_if_raw(elem_b, elem_tag_b);
+                (boxed_a, boxed_b, crate::object::ELEM_HEAP_OBJ)
+            };
+            match compare_list_elements(cmp_a, cmp_b, cmp_tag) {
                 std::cmp::Ordering::Less => return 0,    // a < b, not >
                 std::cmp::Ordering::Greater => return 1, // a > b
                 std::cmp::Ordering::Equal => continue,   // check next element
@@ -521,7 +545,8 @@ pub extern "C" fn rt_tuple_gte(a: *mut Obj, b: *mut Obj) -> i8 {
         let len_a = (*tuple_a).len;
         let len_b = (*tuple_b).len;
         let min_len = len_a.min(len_b);
-        let elem_tag = (*tuple_a).elem_tag;
+        let elem_tag_a = (*tuple_a).elem_tag;
+        let elem_tag_b = (*tuple_b).elem_tag;
 
         let data_a = (*tuple_a).data.as_ptr();
         let data_b = (*tuple_b).data.as_ptr();
@@ -532,7 +557,14 @@ pub extern "C" fn rt_tuple_gte(a: *mut Obj, b: *mut Obj) -> i8 {
             let elem_b = *data_b.add(i);
 
             use crate::sorted::compare_list_elements;
-            match compare_list_elements(elem_a, elem_b, elem_tag) {
+            let (cmp_a, cmp_b, cmp_tag) = if elem_tag_a == elem_tag_b {
+                (elem_a, elem_b, elem_tag_a)
+            } else {
+                let boxed_a = box_if_raw(elem_a, elem_tag_a);
+                let boxed_b = box_if_raw(elem_b, elem_tag_b);
+                (boxed_a, boxed_b, crate::object::ELEM_HEAP_OBJ)
+            };
+            match compare_list_elements(cmp_a, cmp_b, cmp_tag) {
                 std::cmp::Ordering::Less => return 0,    // a < b, not >=
                 std::cmp::Ordering::Greater => return 1, // a > b, so >=
                 std::cmp::Ordering::Equal => continue,   // check next element
