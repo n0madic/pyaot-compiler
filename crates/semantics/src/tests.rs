@@ -1,6 +1,7 @@
 use super::*;
-use pyaot_hir::{ExceptHandler, Expr, Module, Stmt};
-use pyaot_utils::{Span, StringInterner, VarId};
+use indexmap::IndexSet;
+use pyaot_hir::{ClassDef, ExceptHandler, Expr, Module, Stmt};
+use pyaot_utils::{ClassId, Span, StringInterner, VarId};
 
 fn dummy_span() -> Span {
     Span { start: 0, end: 0 }
@@ -243,10 +244,10 @@ fn test_nested_loops_succeed() {
 }
 
 #[test]
-fn test_bare_raise_in_finally_fails() {
+fn test_bare_raise_in_finally_succeeds() {
     let (mut module, interner) = create_test_module();
 
-    // Create: try: pass finally: raise (should fail - finally is not except)
+    // CPython allows bare raise in finally — it re-raises the active exception
     let pass_stmt = module.stmts.alloc(Stmt {
         kind: StmtKind::Pass,
         span: dummy_span(),
@@ -274,7 +275,7 @@ fn test_bare_raise_in_finally_fails() {
     let mut analyzer = SemanticAnalyzer::new(&interner);
     let result = analyzer.analyze(&module);
 
-    assert!(result.is_err());
+    assert!(result.is_ok());
 }
 
 #[test]
@@ -296,6 +297,125 @@ fn test_raise_with_expression_outside_except_succeeds() {
         span: dummy_span(),
     });
     module.module_init_stmts.push(raise_stmt);
+
+    let mut analyzer = SemanticAnalyzer::new(&interner);
+    let result = analyzer.analyze(&module);
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_abstract_class_instantiation_fails() {
+    let (mut module, mut interner) = create_test_module();
+
+    // Create an abstract class with one unimplemented method
+    let class_id = ClassId::new(0);
+    let method_name = interner.intern("do_something");
+    let class_name = interner.intern("MyAbstractClass");
+
+    let mut abstract_methods = IndexSet::new();
+    abstract_methods.insert(method_name);
+
+    let class_def = ClassDef {
+        id: class_id,
+        name: class_name,
+        base_class: None,
+        fields: vec![],
+        class_attrs: vec![],
+        methods: vec![],
+        init_method: None,
+        properties: vec![],
+        abstract_methods,
+        span: dummy_span(),
+        is_exception_class: false,
+        base_exception_type: None,
+    };
+    module.class_defs.insert(class_id, class_def);
+
+    // Create: MyAbstractClass() — should fail
+    let class_ref = module.exprs.alloc(Expr {
+        kind: ExprKind::ClassRef(class_id),
+        ty: None,
+        span: dummy_span(),
+    });
+
+    let call_expr = module.exprs.alloc(Expr {
+        kind: ExprKind::Call {
+            func: class_ref,
+            args: vec![],
+            kwargs: vec![],
+            kwargs_unpack: None,
+        },
+        ty: None,
+        span: dummy_span(),
+    });
+
+    let call_stmt = module.stmts.alloc(Stmt {
+        kind: StmtKind::Expr(call_expr),
+        span: dummy_span(),
+    });
+    module.module_init_stmts.push(call_stmt);
+
+    let mut analyzer = SemanticAnalyzer::new(&interner);
+    let result = analyzer.analyze(&module);
+
+    assert!(result.is_err());
+    if let Err(CompilerError::SemanticError { message, .. }) = result {
+        assert!(message.contains("Cannot instantiate abstract class"));
+        assert!(message.contains("MyAbstractClass"));
+        assert!(message.contains("do_something"));
+    } else {
+        panic!("Expected SemanticError");
+    }
+}
+
+#[test]
+fn test_concrete_class_instantiation_succeeds() {
+    let (mut module, mut interner) = create_test_module();
+
+    // Create a concrete class (no abstract methods)
+    let class_id = ClassId::new(0);
+    let class_name = interner.intern("MyClass");
+
+    let class_def = ClassDef {
+        id: class_id,
+        name: class_name,
+        base_class: None,
+        fields: vec![],
+        class_attrs: vec![],
+        methods: vec![],
+        init_method: None,
+        properties: vec![],
+        abstract_methods: IndexSet::new(),
+        span: dummy_span(),
+        is_exception_class: false,
+        base_exception_type: None,
+    };
+    module.class_defs.insert(class_id, class_def);
+
+    // Create: MyClass() — should succeed
+    let class_ref = module.exprs.alloc(Expr {
+        kind: ExprKind::ClassRef(class_id),
+        ty: None,
+        span: dummy_span(),
+    });
+
+    let call_expr = module.exprs.alloc(Expr {
+        kind: ExprKind::Call {
+            func: class_ref,
+            args: vec![],
+            kwargs: vec![],
+            kwargs_unpack: None,
+        },
+        ty: None,
+        span: dummy_span(),
+    });
+
+    let call_stmt = module.stmts.alloc(Stmt {
+        kind: StmtKind::Expr(call_expr),
+        span: dummy_span(),
+    });
+    module.module_init_stmts.push(call_stmt);
 
     let mut analyzer = SemanticAnalyzer::new(&interner);
     let result = analyzer.analyze(&module);

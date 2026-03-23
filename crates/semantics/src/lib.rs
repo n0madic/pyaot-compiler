@@ -161,8 +161,11 @@ impl<'a> SemanticAnalyzer<'a> {
                 // Analyze else block (not in except handler)
                 self.analyze_stmts(else_block, module)?;
 
-                // Analyze finally block (not in except handler)
+                // Analyze finally block (in except context — CPython allows
+                // bare raise in finally when an exception is active)
+                self.except_depth += 1;
                 self.analyze_stmts(finally_block, module)?;
+                self.except_depth -= 1;
             }
 
             StmtKind::Expr(expr_id) => {
@@ -369,10 +372,15 @@ impl<'a> SemanticAnalyzer<'a> {
                 }
             }
 
-            ExprKind::MethodCall { obj, args, .. } => {
+            ExprKind::MethodCall {
+                obj, args, kwargs, ..
+            } => {
                 self.analyze_expr(*obj, module)?;
                 for arg in args {
                     self.analyze_expr(*arg, module)?;
+                }
+                for kwarg in kwargs {
+                    self.analyze_expr(kwarg.value, module)?;
                 }
             }
 
