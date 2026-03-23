@@ -37,14 +37,14 @@ fn parse_url(url: &str) -> UrlComponents {
 
     let mut remaining = url;
 
-    // Extract fragment (after #)
-    if let Some(hash_pos) = remaining.rfind('#') {
+    // Extract fragment (after #) — use find (first occurrence) per RFC 3986
+    if let Some(hash_pos) = remaining.find('#') {
         fragment = remaining[hash_pos + 1..].to_string();
         remaining = &remaining[..hash_pos];
     }
 
-    // Extract query (after ?)
-    if let Some(question_pos) = remaining.rfind('?') {
+    // Extract query (after ?) — use find (first occurrence) per RFC 3986
+    if let Some(question_pos) = remaining.find('?') {
         query = remaining[question_pos + 1..].to_string();
         remaining = &remaining[..question_pos];
     }
@@ -197,8 +197,28 @@ fn percent_encode(s: &str, safe: &str) -> String {
     result
 }
 
+/// Percent-encode a string using quote_plus semantics (spaces → '+')
+/// Used by urlencode() to match CPython behavior
+fn percent_encode_plus(s: &str) -> String {
+    let mut result = String::new();
+
+    for byte in s.bytes() {
+        if byte == b' ' {
+            result.push('+');
+        } else if UNRESERVED.contains(&byte) {
+            result.push(byte as char);
+        } else {
+            result.push_str(&percent_encode_byte(byte));
+        }
+    }
+
+    result
+}
+
 /// Decode percent-encoded string
-fn percent_decode(s: &str) -> String {
+/// If `plus_as_space` is true, '+' is decoded as a space (for query strings / unquote_plus).
+/// If false, '+' is kept as-is (for unquote which does not decode '+').
+fn percent_decode(s: &str, plus_as_space: bool) -> String {
     let mut result = Vec::new();
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -213,8 +233,8 @@ fn percent_decode(s: &str) -> String {
                 continue;
             }
         }
-        // Handle + as space (common in query strings)
-        if bytes[i] == b'+' {
+        // Handle + as space only for unquote_plus
+        if plus_as_space && bytes[i] == b'+' {
             result.push(b' ');
         } else {
             result.push(bytes[i]);
@@ -256,7 +276,8 @@ pub extern "C" fn rt_unquote(string: *mut Obj) -> *mut Obj {
 
     unsafe {
         let s = str_obj_to_rust_string(string);
-        let decoded = percent_decode(&s);
+        // rt_unquote does NOT decode '+' as space (only rt_unquote_plus does)
+        let decoded = percent_decode(&s, false);
         make_str_from_rust(&decoded)
     }
 }
@@ -287,10 +308,19 @@ pub extern "C" fn rt_urlencode(params: *mut Obj) -> *mut Obj {
 
             if !key.is_null() {
                 let key_str = str_obj_to_rust_string(key);
-                let value_str = str_obj_to_rust_string((*entry).value);
+                let value = (*entry).value;
+                if value.is_null() || (*value).header.type_tag != crate::object::TypeTagKind::Str {
+                    let msg = b"TypeError: urlencode values must be strings";
+                    crate::exceptions::rt_exc_raise(
+                        pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                        msg.as_ptr(),
+                        msg.len(),
+                    );
+                }
+                let value_str = str_obj_to_rust_string(value);
 
-                let encoded_key = percent_encode(&key_str, "");
-                let encoded_value = percent_encode(&value_str, "");
+                let encoded_key = percent_encode_plus(&key_str);
+                let encoded_value = percent_encode_plus(&value_str);
 
                 pairs.push(format!("{}={}", encoded_key, encoded_value));
             }
@@ -434,8 +464,9 @@ pub extern "C" fn rt_parse_qs(query: *mut Obj) -> *mut Obj {
         // Create result dict
         let dict = rt_make_dict(8);
 
-        // Skip leading ? if present
-        let query_str = query_str.strip_prefix('?').unwrap_or(&query_str);
+        // Note: CPython does NOT strip leading '?' — it becomes part of the first key.
+        // Users should strip it themselves or pass only the query portion.
+        let query_str = &query_str;
 
         if query_str.is_empty() {
             return dict;
@@ -453,8 +484,8 @@ pub extern "C" fn rt_parse_qs(query: *mut Obj) -> *mut Obj {
             };
 
             // Decode key and value
-            let decoded_key = percent_decode(key);
-            let decoded_value = percent_decode(value);
+            let decoded_key = percent_decode(key, true);
+            let decoded_value = percent_decode(value, true);
 
             // Get or create list for this key
             let key_obj = make_str_from_rust(&decoded_key);

@@ -24,7 +24,25 @@ pub extern "C" fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj
         let new_len = (*new_str).len;
 
         if old_len == 0 {
-            return str_obj; // Can't replace empty string
+            // CPython behavior: insert `new` before each character and at the end
+            // "abc".replace("", "X") -> "XaXbXcX"
+            let src_bytes = std::slice::from_raw_parts((*src).data.as_ptr(), (*src).len);
+            let new_bytes = std::slice::from_raw_parts((*new_str).data.as_ptr(), (*new_str).len);
+
+            let mut result =
+                Vec::with_capacity((*src).len + (new_bytes.len() * (src_bytes.len() + 1)));
+
+            // Iterate over characters (not bytes) for multi-byte safety
+            let src_str = std::str::from_utf8_unchecked(src_bytes);
+            for ch in src_str.chars() {
+                result.extend_from_slice(new_bytes);
+                let mut buf = [0u8; 4];
+                let encoded = ch.encode_utf8(&mut buf);
+                result.extend_from_slice(encoded.as_bytes());
+            }
+            result.extend_from_slice(new_bytes); // After the last character
+
+            return crate::string::core::rt_make_str_impl(result.as_ptr(), result.len());
         }
 
         // Read all byte data from the StrObjs before calling gc_alloc.
@@ -308,7 +326,7 @@ pub extern "C" fn rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj {
 
         // First pass: calculate result length
         let mut result_len = 0;
-        let mut column = 0; // Current column position
+        let mut column = 0usize; // Current column position (character count, not byte count)
 
         for i in 0..str_len {
             let c = *str_data.add(i);
@@ -326,7 +344,10 @@ pub extern "C" fn rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj {
                 column = 0;
             } else {
                 result_len += 1;
-                column += 1;
+                // Only count leading bytes of multi-byte sequences for column tracking
+                if (c & 0xC0) != 0x80 {
+                    column += 1;
+                }
             }
         }
 
@@ -340,7 +361,7 @@ pub extern "C" fn rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj {
 
         // Second pass: copy with tab expansion
         let mut dst_idx = 0;
-        let mut column = 0;
+        let mut column = 0usize;
 
         for i in 0..str_len {
             let c = *str_data.add(i);
@@ -361,7 +382,10 @@ pub extern "C" fn rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj {
             } else {
                 *dst_data.add(dst_idx) = c;
                 dst_idx += 1;
-                column += 1;
+                // Only count leading bytes of multi-byte sequences for column tracking
+                if (c & 0xC0) != 0x80 {
+                    column += 1;
+                }
             }
         }
 

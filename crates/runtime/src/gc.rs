@@ -30,7 +30,7 @@ use crate::object::{
 // Note: BytesObj has no object children (like StrObj), so no special handling needed in mark_object
 use std::alloc::{alloc, dealloc, Layout};
 use std::ptr;
-use std::sync::{Mutex, Once};
+use std::sync::{Mutex, OnceLock};
 
 // ============================================================================
 // Compile-time alignment verification
@@ -106,39 +106,40 @@ struct GcState {
     stack_depth: usize,
 }
 
-static mut GC_STATE: Option<Mutex<GcState>> = None;
-static GC_INIT: Once = Once::new();
+// Safety: GcState contains raw pointers (*mut ShadowFrame and *mut Obj) which are
+// not automatically Send. However, all access to GcState is gated behind a Mutex,
+// so sending it to another thread is safe — the pointers are only dereferenced
+// while holding the lock.
+unsafe impl Send for GcState {}
+
+static GC_STATE: OnceLock<Mutex<GcState>> = OnceLock::new();
 
 /// Initialize the GC (idempotent - safe to call multiple times)
 pub fn init() {
-    GC_INIT.call_once(|| {
-        unsafe {
-            GC_STATE = Some(Mutex::new(GcState {
-                stack_top: ptr::null_mut(),
-                objects: Vec::new(),
-                total_allocated: 0,
-                threshold: 1024 * 1024, // 1MB initial threshold
-                stack_depth: 0,
-            }));
-        }
+    GC_STATE.get_or_init(|| {
+        Mutex::new(GcState {
+            stack_top: ptr::null_mut(),
+            objects: Vec::new(),
+            total_allocated: 0,
+            threshold: 1024 * 1024,
+            stack_depth: 0,
+        })
     });
 }
 
 /// Shutdown the GC (free all objects)
 pub fn shutdown() {
-    unsafe {
-        if let Some(ref gc) = GC_STATE {
-            let mut state = gc
-                .lock()
-                .expect("GC_STATE mutex poisoned - another thread panicked");
+    if let Some(gc) = GC_STATE.get() {
+        let mut state = gc.lock().expect("GC_STATE mutex poisoned");
+        unsafe {
             for obj_ptr in &state.objects {
                 let obj = &**obj_ptr;
-                let layout =
-                    Layout::from_size_align_unchecked(obj.header.size, std::mem::align_of::<Obj>());
+                let layout = Layout::from_size_align(obj.header.size, std::mem::align_of::<Obj>())
+                    .expect("Invalid layout during GC shutdown");
                 dealloc(*obj_ptr as *mut u8, layout);
             }
-            state.objects.clear();
         }
+        state.objects.clear();
     }
 }
 
@@ -146,15 +147,9 @@ fn with_gc_state<F, R>(f: F) -> R
 where
     F: FnOnce(&mut GcState) -> R,
 {
-    unsafe {
-        let gc = (*std::ptr::addr_of!(GC_STATE))
-            .as_ref()
-            .expect("GC not initialized");
-        let mut state = gc
-            .lock()
-            .expect("GC_STATE mutex poisoned - another thread panicked");
-        f(&mut state)
-    }
+    let gc = GC_STATE.get().expect("GC not initialized");
+    let mut state = gc.lock().expect("GC_STATE mutex poisoned");
+    f(&mut state)
 }
 
 /// Push a shadow frame onto the stack
@@ -219,6 +214,13 @@ pub extern "C" fn gc_alloc(size: usize, type_tag: u8) -> *mut Obj {
     let validated_type_tag = TypeTagKind::from_tag(type_tag)
         .unwrap_or_else(|| panic!("gc_alloc: invalid type tag {}", type_tag));
 
+    assert!(
+        size >= std::mem::size_of::<ObjHeader>(),
+        "gc_alloc: size {} is smaller than ObjHeader ({})",
+        size,
+        std::mem::size_of::<ObjHeader>()
+    );
+
     with_gc_state(|state| {
         // GC stress testing mode: collect on every allocation
         // Enable with: RUSTFLAGS="--cfg gc_stress_test" cargo build
@@ -236,7 +238,8 @@ pub extern "C" fn gc_alloc(size: usize, type_tag: u8) -> *mut Obj {
         }
 
         unsafe {
-            let layout = Layout::from_size_align_unchecked(size, std::mem::align_of::<Obj>());
+            let layout = Layout::from_size_align(size, std::mem::align_of::<Obj>())
+                .expect("gc_alloc: invalid layout");
             let ptr = alloc(layout) as *mut Obj;
             if ptr.is_null() {
                 panic!("Out of memory");
@@ -248,14 +251,6 @@ pub extern "C" fn gc_alloc(size: usize, type_tag: u8) -> *mut Obj {
                 marked: false,
                 size,
             };
-
-            // Verify size is large enough to hold the object header
-            debug_assert!(
-                size >= std::mem::size_of::<ObjHeader>(),
-                "gc_alloc: size {} is smaller than ObjHeader ({})",
-                size,
-                std::mem::size_of::<ObjHeader>()
-            );
 
             // Zero the rest
             ptr::write_bytes(
@@ -306,15 +301,12 @@ pub fn unwind_to(target: *mut ShadowFrame) {
         state.stack_top = target;
         state.stack_depth = state.stack_depth.saturating_sub(frames_popped);
 
-        #[cfg(debug_assertions)]
-        {
-            // In debug mode, verify we actually found the target
-            if current.is_null() && !target.is_null() {
-                panic!(
-                    "unwind_to: target frame not found in shadow stack. \
-                    This indicates stack corruption or mismatched push/pop."
-                );
-            }
+        // In both debug and release: abort if target not found (stack corruption)
+        if current.is_null() && !target.is_null() {
+            eprintln!(
+                "FATAL: unwind_to: target frame not found in shadow stack. Stack corruption detected."
+            );
+            std::process::abort();
         }
     });
 }
@@ -446,6 +438,13 @@ fn mark_object(obj: *mut Obj) {
                 // Skip if no fields need tracing (ELEM_RAW_INT or mask == 0)
                 if mask != 0 {
                     let len = (*tuple).len;
+                    // Warn if tuple has more fields than the bitmask can track
+                    if len > 64 {
+                        eprintln!(
+                            "WARNING: Tuple with {} fields exceeds heap_field_mask capacity (64). Fields beyond 64 will not be GC-traced.",
+                            len
+                        );
+                    }
                     let data = (*tuple).data.as_ptr();
                     for i in 0..len {
                         // Only trace fields marked as heap pointers in the bitmask.
@@ -506,6 +505,12 @@ fn mark_object(obj: *mut Obj) {
             TypeTagKind::Instance => {
                 let instance = obj as *mut InstanceObj;
                 let field_count = (*instance).field_count;
+                if field_count > 64 {
+                    eprintln!(
+                        "WARNING: Instance with {} fields exceeds heap_field_mask capacity (64). Fields beyond 64 will not be GC-traced.",
+                        field_count
+                    );
+                }
                 let fields = (*instance).fields.as_ptr();
                 // Only mark fields that are heap objects (pointers), not raw int/float/bool values.
                 // The heap_field_mask tells us which fields are heap types.
@@ -621,6 +626,18 @@ fn mark_object(obj: *mut Obj) {
                         }
                         // Other tags (LOCAL_TYPE_RAW_INT, LOCAL_TYPE_RAW_FLOAT, LOCAL_TYPE_RAW_BOOL)
                         // are raw values, not pointers - skip them
+                    }
+                }
+
+                // Trace sent_value if it might be a heap pointer
+                // sent_value is stored as i64; if it's a valid-looking heap pointer, trace it
+                let sent = (*gen).sent_value;
+                if sent != 0 {
+                    let sent_ptr = sent as *mut Obj;
+                    if (sent_ptr as usize) >= 0x1000
+                        && (sent_ptr as usize).is_multiple_of(std::mem::align_of::<Obj>())
+                    {
+                        mark_object(sent_ptr);
                     }
                 }
             }
@@ -749,8 +766,8 @@ fn sweep(state: &mut GcState) {
                 _ => {}
             }
             // Free this object
-            let layout =
-                Layout::from_size_align_unchecked(obj.header.size, std::mem::align_of::<Obj>());
+            let layout = Layout::from_size_align(obj.header.size, std::mem::align_of::<Obj>())
+                .expect("sweep: invalid layout during dealloc");
             state.total_allocated = state.total_allocated.saturating_sub(obj.header.size);
             dealloc(*obj_ptr as *mut u8, layout);
             false

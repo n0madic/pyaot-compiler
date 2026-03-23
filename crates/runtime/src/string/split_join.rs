@@ -76,10 +76,14 @@ pub extern "C" fn rt_str_split(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) 
             let sep_data = (*sep_str).data.as_ptr();
 
             if sep_len == 0 {
-                // Empty separator is invalid, return original string in list
-                rt_list_push(list, str_obj);
+                // CPython raises ValueError for empty separator
                 gc_pop();
-                return list;
+                let msg = b"empty separator";
+                crate::exceptions::rt_exc_raise(
+                    pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+                    msg.as_ptr(),
+                    msg.len(),
+                );
             }
 
             let mut splits: i64 = 0;
@@ -264,11 +268,33 @@ pub extern "C" fn rt_str_splitlines(s: *mut Obj) -> *mut Obj {
         while i < str_len {
             let c = *str_data.add(i);
 
-            if c == b'\n' {
-                // Add line (without newline)
+            // Check for Unicode line separators \u2028 (LS) and \u2029 (PS)
+            // UTF-8 encoding: 0xE2 0x80 0xA8 or 0xE2 0x80 0xA9
+            let is_unicode_ls_ps = c == 0xE2
+                && i + 2 < str_len
+                && *str_data.add(i + 1) == 0x80
+                && (*str_data.add(i + 2) == 0xA8 || *str_data.add(i + 2) == 0xA9);
+
+            // Check for U+0085 NEL: UTF-8 encoding is 0xC2 0x85
+            let is_nel = c == 0xC2 && i + 1 < str_len && *str_data.add(i + 1) == 0x85;
+
+            if c == b'\n'
+                || c == b'\x0b'  // \v vertical tab
+                || c == b'\x0c'  // \f form feed
+                || c == b'\x1c'  // file separator
+                || c == b'\x1d'  // group separator
+                || c == b'\x1e'  // record separator
+            {
+                // Add line (without line terminator)
                 let line = rt_make_str(str_data.add(line_start), i - line_start);
                 rt_list_push(list, line);
                 i += 1;
+                line_start = i;
+            } else if is_nel {
+                // U+0085 NEL (2 bytes in UTF-8)
+                let line = rt_make_str(str_data.add(line_start), i - line_start);
+                rt_list_push(list, line);
+                i += 2;
                 line_start = i;
             } else if c == b'\r' {
                 // Add line (without carriage return)
@@ -279,6 +305,12 @@ pub extern "C" fn rt_str_splitlines(s: *mut Obj) -> *mut Obj {
                 if i < str_len && *str_data.add(i) == b'\n' {
                     i += 1;
                 }
+                line_start = i;
+            } else if is_unicode_ls_ps {
+                // \u2028 LINE SEPARATOR or \u2029 PARAGRAPH SEPARATOR (3 bytes each)
+                let line = rt_make_str(str_data.add(line_start), i - line_start);
+                rt_list_push(list, line);
+                i += 3;
                 line_start = i;
             } else {
                 i += 1;
@@ -324,10 +356,19 @@ pub extern "C" fn rt_str_partition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
         let str_data = (*str_obj).data.as_ptr();
         let sep_data = (*sep_obj).data.as_ptr();
 
+        if sep_len == 0 {
+            let msg = b"empty separator";
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
+
         // Find first occurrence of separator
         let mut found_pos: Option<usize> = None;
 
-        if sep_len > 0 && sep_len <= str_len {
+        if sep_len <= str_len {
             for i in 0..=(str_len - sep_len) {
                 let mut matches = true;
                 for j in 0..sep_len {
@@ -393,10 +434,19 @@ pub extern "C" fn rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
         let str_data = (*str_obj).data.as_ptr();
         let sep_data = (*sep_obj).data.as_ptr();
 
+        if sep_len == 0 {
+            let msg = b"empty separator";
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
+
         // Find last occurrence of separator (search backwards)
         let mut found_pos: Option<usize> = None;
 
-        if sep_len > 0 && sep_len <= str_len {
+        if sep_len <= str_len {
             for i in (0..=(str_len - sep_len)).rev() {
                 let mut matches = true;
                 for j in 0..sep_len {
@@ -509,10 +559,14 @@ pub extern "C" fn rt_str_rsplit(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64)
             let sep_data = (*sep_str).data.as_ptr();
 
             if sep_len == 0 {
-                // Empty separator is invalid, return original string in list
-                rt_list_push(list, str_obj);
+                // CPython raises ValueError for empty separator
                 gc_pop();
-                return list;
+                let msg = b"empty separator";
+                crate::exceptions::rt_exc_raise(
+                    pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+                    msg.as_ptr(),
+                    msg.len(),
+                );
             }
 
             let mut splits: i64 = 0;

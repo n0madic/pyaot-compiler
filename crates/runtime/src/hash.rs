@@ -123,7 +123,13 @@ unsafe fn hash_any_obj(obj: *mut Obj) -> i64 {
                 0 // hash(-0.0) == hash(0.0) == 0
             } else if v.fract() == 0.0 && v.is_finite() {
                 // Integer-valued float: hash must equal hash of the equivalent integer
-                rt_hash_int(v as i64)
+                // Only cast to i64 if within safe range to avoid overflow/UB
+                if v >= i64::MIN as f64 && v <= i64::MAX as f64 {
+                    rt_hash_int(v as i64)
+                } else {
+                    // Large integer-valued float outside i64 range: hash the bit representation
+                    rt_hash_int(v.to_bits() as i64)
+                }
             } else {
                 // Non-integer float: use bit representation as input to the scramble
                 rt_hash_int(v.to_bits() as i64)

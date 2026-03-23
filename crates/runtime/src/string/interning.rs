@@ -149,47 +149,48 @@ pub unsafe extern "C" fn rt_make_str_interned(data: *const u8, len: usize) -> *m
     let hash = compute_fnv1a_hash(data, len);
     let shard_idx = get_shard_index(hash);
 
-    // Only lock the relevant shard - other shards remain accessible
-    let mut shard_guard = STRING_POOL_SHARDS[shard_idx]
-        .lock()
-        .expect("STRING_POOL shard mutex poisoned - another thread panicked");
+    // First, check if the string already exists in the pool
+    {
+        let shard_guard = STRING_POOL_SHARDS[shard_idx]
+            .lock()
+            .expect("STRING_POOL shard mutex poisoned");
 
-    if let Some(ref mut pool) = shard_guard.map {
-        // Look for existing entry with matching hash
-        if let Some(entries) = pool.get(&hash) {
-            for entry in entries {
-                // Verify the pointer is still valid (object not collected)
-                // The string should have been marked if it's still reachable
-                let str_obj = entry.str_ptr as *mut StrObj;
+        if let Some(ref pool) = shard_guard.map {
+            if let Some(entries) = pool.get(&hash) {
+                for entry in entries {
+                    let str_obj = entry.str_ptr as *mut StrObj;
 
-                // Validate it's still a string (sanity check)
-                if (*entry.str_ptr).header.type_tag != TypeTagKind::Str {
-                    continue;
-                }
+                    if (*entry.str_ptr).header.type_tag != TypeTagKind::Str {
+                        continue;
+                    }
 
-                let existing_len = (*str_obj).len;
-                let existing_data = (*str_obj).data.as_ptr();
+                    let existing_len = (*str_obj).len;
+                    let existing_data = (*str_obj).data.as_ptr();
 
-                // Compare actual bytes (hash collision handling)
-                if bytes_equal(data, len, existing_data, existing_len) {
-                    // Found matching string - return cached pointer
-                    return entry.str_ptr;
+                    if bytes_equal(data, len, existing_data, existing_len) {
+                        return entry.str_ptr;
+                    }
                 }
             }
         }
+    }
+    // shard_guard dropped here — safe to allocate
 
-        // Not found - create new string and add to pool
-        let new_str = rt_make_str_impl(data, len);
+    // Create new string (may trigger GC which calls prune_string_pool)
+    let new_str = rt_make_str_impl(data, len);
 
+    // Re-acquire lock and insert into pool
+    let mut shard_guard = STRING_POOL_SHARDS[shard_idx]
+        .lock()
+        .expect("STRING_POOL shard mutex poisoned");
+
+    if let Some(ref mut pool) = shard_guard.map {
         pool.entry(hash)
             .or_insert_with(Vec::new)
             .push(PoolEntry { str_ptr: new_str });
-
-        new_str
-    } else {
-        // Pool not initialized, fall back to regular allocation
-        rt_make_str_impl(data, len)
     }
+
+    new_str
 }
 
 /// Prune dead strings from the pool during GC sweep

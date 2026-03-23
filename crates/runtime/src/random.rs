@@ -198,11 +198,14 @@ impl MersenneTwister {
 
     /// Create from system entropy (for default initialization)
     fn from_entropy() -> Self {
-        // Use std time as a simple entropy source
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(12345);
+        // Mix with process ID for additional entropy so two processes starting
+        // at the same nanosecond still get different sequences.
+        let pid = std::process::id() as u64;
+        let seed = seed ^ pid ^ (pid << 32);
         let key = [seed as u32, (seed >> 32) as u32];
         Self::init_by_array(&key)
     }

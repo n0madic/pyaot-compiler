@@ -143,8 +143,20 @@ pub unsafe extern "C" fn rt_file_read_n(file: *mut Obj, n: i64) -> *mut Obj {
         return rt_file_read(file);
     }
 
+    let n = n as usize;
+    // Cap allocation to prevent OOM from absurd sizes
+    const MAX_READ_SIZE: usize = 1 << 30; // 1 GB
+    if n > MAX_READ_SIZE {
+        let msg = b"ValueError: read size too large";
+        crate::exceptions::rt_exc_raise(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+            msg.as_ptr(),
+            msg.len(),
+        );
+    }
+
     let handle = &mut *(*file_obj).handle;
-    let mut buffer = vec![0u8; n as usize];
+    let mut buffer = vec![0u8; n];
 
     match handle.read(&mut buffer) {
         Ok(bytes_read) => {
@@ -195,7 +207,13 @@ pub unsafe extern "C" fn rt_file_readline(file: *mut Obj) -> *mut Obj {
         }
     }
 
-    crate::string::rt_make_str(line.as_ptr(), line.len())
+    if (*file_obj).binary {
+        // Return bytes object for binary mode
+        crate::bytes::rt_make_bytes(line.as_ptr(), line.len())
+    } else {
+        // Return string for text mode
+        crate::string::rt_make_str(line.as_ptr(), line.len())
+    }
 }
 
 /// Read all lines from the file as a list of strings

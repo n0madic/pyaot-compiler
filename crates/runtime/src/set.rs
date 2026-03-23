@@ -155,9 +155,28 @@ pub extern "C" fn rt_set_add(set: *mut Obj, elem: *mut Obj) {
         debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_add");
         let set_obj = set as *mut SetObj;
 
-        // Check load factor and resize if needed (> 0.75)
-        if (*set_obj).len * 4 >= (*set_obj).capacity * 3 {
-            let new_capacity = (*set_obj).capacity * 2;
+        // Check load factor and resize if needed.
+        // Count tombstones to prevent table degradation from repeated add/remove cycles:
+        // after many deletions the table fills with tombstones, but `len` stays low so
+        // the standard len-only check never triggers a resize. We include tombstones in
+        // the fill count so the table is compacted once (fill / capacity) >= 0.75.
+        // The scan is O(capacity) in the worst case, but that is the same order as the
+        // resize itself, so the amortised cost per element remains O(1).
+        let mut tombstone_count = 0usize;
+        let cap = (*set_obj).capacity;
+        if (*set_obj).len * 4 >= cap * 2 {
+            // Only scan when len is already above 50% — below that, tombstones alone
+            // cannot push fill past 75%, so the cheap len-only check is sufficient.
+            let entries = (*set_obj).entries;
+            for i in 0..cap {
+                if (*entries.add(i)).elem == TOMBSTONE {
+                    tombstone_count += 1;
+                }
+            }
+        }
+        let fill = (*set_obj).len + tombstone_count;
+        if fill * 4 >= cap * 3 {
+            let new_capacity = cap * 2;
             set_resize(set_obj, new_capacity);
         }
 
@@ -296,10 +315,14 @@ pub extern "C" fn rt_set_copy(set: *mut Obj) -> *mut Obj {
     unsafe {
         debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_copy");
         let src = set as *mut SetObj;
-        let capacity = (*src).capacity;
-        let new_set = rt_make_set(capacity as i64);
+        // Size the new set based on the number of live elements rather than the
+        // source capacity. This eliminates tombstones and avoids copying a
+        // potentially over-sized or tombstone-saturated table.
+        let new_capacity = ((*src).len * 4 / 3 + 1).next_power_of_two().max(8);
+        let new_set = rt_make_set(new_capacity as i64);
 
         // Copy all non-empty, non-tombstone entries
+        let capacity = (*src).capacity;
         for i in 0..capacity {
             let src_entry = (*src).entries.add(i);
             let elem = (*src_entry).elem;
@@ -511,7 +534,14 @@ pub extern "C" fn rt_set_max_float(set: *mut Obj) -> f64 {
 #[no_mangle]
 pub extern "C" fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     if a.is_null() || b.is_null() {
-        return rt_make_set(8);
+        let msg = b"TypeError: unsupported operand type(s) for set operation";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
     }
 
     unsafe {
@@ -542,7 +572,14 @@ pub extern "C" fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 #[no_mangle]
 pub extern "C" fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     if a.is_null() || b.is_null() {
-        return rt_make_set(8);
+        let msg = b"TypeError: unsupported operand type(s) for set operation";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
     }
 
     unsafe {
@@ -578,7 +615,14 @@ pub extern "C" fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 #[no_mangle]
 pub extern "C" fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     if a.is_null() || b.is_null() {
-        return rt_make_set(8);
+        let msg = b"TypeError: unsupported operand type(s) for set operation";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
     }
 
     unsafe {
@@ -614,7 +658,14 @@ pub extern "C" fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 #[no_mangle]
 pub extern "C" fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     if a.is_null() || b.is_null() {
-        return rt_make_set(8);
+        let msg = b"TypeError: unsupported operand type(s) for set operation";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
     }
 
     unsafe {

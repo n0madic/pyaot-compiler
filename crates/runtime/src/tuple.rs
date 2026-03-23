@@ -325,9 +325,9 @@ unsafe fn compare_heap_objects(a: *mut Obj, b: *mut Obj) -> bool {
     let type_a = (*header_a).type_tag;
     let type_b = (*header_b).type_tag;
 
-    // Different types => not equal
+    // Different types => check for numeric cross-type equality (CPython: 1 == 1.0 == True)
     if type_a != type_b {
-        return false;
+        return crate::hash_table_utils::eq_hashable_obj(a, b);
     }
 
     match type_a {

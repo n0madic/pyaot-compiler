@@ -45,6 +45,16 @@ pub extern "C" fn rt_urlopen(url: *mut Obj, data: *mut Obj, timeout: f64) -> *mu
         }
         let url_str = str_obj_to_rust_string(url);
 
+        // Validate URL scheme
+        if !url_str.starts_with("http://") && !url_str.starts_with("https://") {
+            let msg = format!("ValueError: unsupported URL scheme in '{}'", url_str);
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
+
         // Build the agent with timeout configuration
         // ureq 3.x uses Agent::config_builder() instead of AgentBuilder
         let timeout_duration = Duration::from_secs_f64(timeout.max(0.1));

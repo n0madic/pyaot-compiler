@@ -89,7 +89,7 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
         // Check if we should raise on non-zero exit
         if check != 0 && returncode != 0 {
             let msg = format!(
-                "subprocess.run: command '{}' returned non-zero exit status {}",
+                "Command '{}' returned non-zero exit status {}",
                 cmd_args.join(" "),
                 returncode
             );

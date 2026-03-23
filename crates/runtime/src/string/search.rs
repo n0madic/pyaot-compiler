@@ -5,6 +5,14 @@
 
 use crate::object::{Obj, StrObj};
 
+/// Convert a byte offset to a character (codepoint) offset in a UTF-8 string
+fn byte_offset_to_char_offset(bytes: &[u8], byte_offset: usize) -> usize {
+    bytes[..byte_offset]
+        .iter()
+        .filter(|&&b| (b & 0xC0) != 0x80)
+        .count()
+}
+
 /// Minimum pattern length to use Boyer-Moore-Horspool.
 /// For shorter patterns, naive search has less overhead.
 pub(crate) const BMH_THRESHOLD: usize = 4;
@@ -230,7 +238,14 @@ pub extern "C" fn rt_str_find(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
         let src_data = (*src).data.as_ptr();
         let needle_data = (*needle).data.as_ptr();
 
-        bmh_find(src_data, src_len, needle_data, needle_len)
+        let byte_pos = bmh_find(src_data, src_len, needle_data, needle_len);
+        if byte_pos < 0 {
+            return -1;
+        }
+        // Convert byte offset to character offset for CPython compatibility
+        let haystack_bytes = std::slice::from_raw_parts(src_data, src_len);
+        let char_offset = byte_offset_to_char_offset(haystack_bytes, byte_pos as usize);
+        char_offset as i64
     }
 }
 
@@ -325,8 +340,10 @@ pub extern "C" fn rt_str_count(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
         let needle_len = (*needle).len;
 
         if needle_len == 0 {
-            // Empty string matches at every position + 1
-            return (src_len + 1) as i64;
+            // Empty string count = number of characters + 1 (matching CPython)
+            let src_bytes = std::slice::from_raw_parts((*src).data.as_ptr(), src_len);
+            let char_count = src_bytes.iter().filter(|&&b| (b & 0xC0) != 0x80).count();
+            return (char_count + 1) as i64;
         }
         if needle_len > src_len {
             return 0;
@@ -391,7 +408,11 @@ pub extern "C" fn rt_str_rfind(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
         let needle_len = (*needle).len;
 
         if needle_len == 0 {
-            return src_len as i64;
+            // Return character count (not byte count) for CPython compatibility
+            let src_data = (*src).data.as_ptr();
+            let src_bytes = std::slice::from_raw_parts(src_data, src_len);
+            let char_count = src_bytes.iter().filter(|&&b| (b & 0xC0) != 0x80).count();
+            return char_count as i64;
         }
         if needle_len > src_len {
             return -1;
@@ -412,7 +433,10 @@ pub extern "C" fn rt_str_rfind(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
                 }
             }
             if matches {
-                return i as i64;
+                // Convert byte offset to character offset for CPython compatibility
+                let haystack_bytes = std::slice::from_raw_parts(src_data, src_len);
+                let char_offset = byte_offset_to_char_offset(haystack_bytes, i);
+                return char_offset as i64;
             }
             if i == 0 {
                 break;

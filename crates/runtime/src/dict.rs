@@ -204,13 +204,16 @@ unsafe fn dict_resize(dict: *mut DictObj) {
 pub extern "C" fn rt_make_dict(capacity: i64) -> *mut Obj {
     use std::alloc::{alloc_zeroed, Layout};
 
-    // Ensure capacity is power of 2 for efficient mask-based probing
-    let requested = if capacity <= 0 {
+    // Ensure capacity is power of 2 for efficient mask-based probing.
+    // Account for load factor: if the caller requests N item slots, we need
+    // the indices table to be large enough that N items fit at ≤66% load.
+    // Using N * 3/2 as the minimum indices size achieves this.
+    let indices_capacity = if capacity <= 0 {
         8
     } else {
-        capacity.max(8) as usize
+        let needed = (capacity as usize * 3 / 2).max(8);
+        next_power_of_2(needed)
     };
-    let indices_capacity = next_power_of_2(requested);
     let entries_capacity = indices_capacity;
 
     // Allocate DictObj using GC
@@ -874,8 +877,11 @@ pub extern "C" fn rt_dict_fromkeys(keys_list: *mut Obj, value: *mut Obj) -> *mut
 
         for i in 0..len as usize {
             let key = *(*list_obj).data.add(i);
+            // When no value is supplied, Python uses None as the default.
+            // Storing null would make rt_dict_get indistinguishable from a
+            // missing key, so we store the None singleton instead.
             let val = if value.is_null() {
-                std::ptr::null_mut()
+                crate::object::none_obj()
             } else {
                 value
             };

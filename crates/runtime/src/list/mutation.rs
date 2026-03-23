@@ -233,11 +233,26 @@ pub extern "C" fn rt_list_extend(list: *mut Obj, other: *mut Obj) {
 
         let list_len = (*list_obj).len;
         let other_len = (*other_obj).len;
-        let other_data = (*other_obj).data;
 
-        if other_data.is_null() || other_len == 0 {
+        if other_len == 0 {
             return;
         }
+
+        // Self-extend case (a.extend(a)): snapshot other's data before any realloc
+        // that might move the underlying allocation and leave us with a dangling pointer.
+        let snapshot: Option<Vec<*mut Obj>> = if list == other {
+            let data = (*other_obj).data;
+            if data.is_null() {
+                return;
+            }
+            Some((0..other_len).map(|i| *data.add(i)).collect())
+        } else {
+            let data = (*other_obj).data;
+            if data.is_null() {
+                return;
+            }
+            None
+        };
 
         // Pre-allocate capacity for all new elements (optimization)
         let new_len = list_len + other_len;
@@ -272,9 +287,17 @@ pub extern "C" fn rt_list_extend(list: *mut Obj, other: *mut Obj) {
             (*list_obj).capacity = new_capacity;
         }
 
-        // Copy all elements in one operation
+        // Copy elements: use snapshot for self-extend, direct copy otherwise
         let list_data = (*list_obj).data;
-        std::ptr::copy_nonoverlapping(other_data, list_data.add(list_len), other_len);
+        if let Some(ref snap) = snapshot {
+            for (i, &elem) in snap.iter().enumerate() {
+                *list_data.add(list_len + i) = elem;
+            }
+        } else {
+            // Safe: list != other, so their data buffers do not overlap
+            let other_data = (*other_obj).data;
+            std::ptr::copy_nonoverlapping(other_data, list_data.add(list_len), other_len);
+        }
         (*list_obj).len = new_len;
     }
 }
@@ -337,6 +360,22 @@ unsafe fn compare_objects(a: *mut Obj, b: *mut Obj, elem_tag: u8) -> i32 {
             } else {
                 0
             }
+        } else if a_type == TypeTagKind::Int {
+            let a_val = (*(a as *mut crate::object::IntObj)).value;
+            let b_val = (*(b as *mut crate::object::IntObj)).value;
+            if a_val < b_val { -1 } else if a_val > b_val { 1 } else { 0 }
+        } else if a_type == TypeTagKind::Float {
+            let a_val = (*(a as *mut crate::object::FloatObj)).value;
+            let b_val = (*(b as *mut crate::object::FloatObj)).value;
+            match a_val.partial_cmp(&b_val) {
+                Some(std::cmp::Ordering::Less) => -1,
+                Some(std::cmp::Ordering::Greater) => 1,
+                _ => 0,
+            }
+        } else if a_type == TypeTagKind::Bool {
+            let a_val = (*(a as *mut crate::object::BoolObj)).value;
+            let b_val = (*(b as *mut crate::object::BoolObj)).value;
+            if !a_val && b_val { -1 } else if a_val && !b_val { 1 } else { 0 }
         } else {
             // For other objects, fall back to pointer comparison
             if a < b {
@@ -544,13 +583,18 @@ pub extern "C" fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, va
                 .expect("Allocation size overflow - capacity too large");
             let new_data = alloc_zeroed(new_layout) as *mut *mut Obj;
 
-            // Copy existing elements
+            // Copy existing elements into the new buffer
+            let old_data = (*list_obj).data;
             if old_len > 0 {
-                std::ptr::copy_nonoverlapping((*list_obj).data, new_data, old_len);
+                std::ptr::copy_nonoverlapping(old_data, new_data, old_len);
             }
 
-            // Free old data (note: list data is allocated with std::alloc, not GC)
-            // We don't free here as the old data might be referenced elsewhere
+            // Free the old data buffer (list data is std::alloc-managed, not GC-managed)
+            if !old_data.is_null() && capacity > 0 {
+                let old_layout = Layout::array::<*mut Obj>(capacity)
+                    .expect("list old layout overflow");
+                std::alloc::dealloc(old_data as *mut u8, old_layout);
+            }
 
             (*list_obj).data = new_data;
             (*list_obj).capacity = new_capacity;

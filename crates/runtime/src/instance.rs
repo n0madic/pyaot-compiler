@@ -61,6 +61,7 @@ pub extern "C" fn rt_instance_get_field(inst: *mut Obj, offset: i64) -> i64 {
 
         // Bounds check
         if offset < 0 || offset >= field_count {
+            debug_assert!(false, "rt_instance_get_field: offset {} out of bounds (field_count={})", offset, field_count);
             return 0;
         }
 
@@ -87,6 +88,7 @@ pub extern "C" fn rt_instance_set_field(inst: *mut Obj, offset: i64, value: i64)
 
         // Bounds check
         if offset < 0 || offset >= field_count {
+            debug_assert!(false, "rt_instance_set_field: offset {} out of bounds (field_count={})", offset, field_count);
             return;
         }
 
@@ -127,7 +129,7 @@ pub extern "C" fn rt_get_type_tag(obj: *mut Obj) -> i64 {
     // Non-aligned pointers (e.g., 4-byte aligned function pointers from code
     // section) are not valid Obj pointers — return Instance tag as fallback.
     if !(obj as usize).is_multiple_of(std::mem::align_of::<Obj>()) {
-        return crate::object::TypeTagKind::Instance as i64;
+        return -1; // Invalid pointer, not a valid object
     }
     unsafe { (*obj).type_tag() as i64 }
 }

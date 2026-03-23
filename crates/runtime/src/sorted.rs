@@ -7,10 +7,6 @@ use crate::string::rt_str_getchar;
 
 use crate::object::ListObj;
 
-// Threshold for switching from quicksort to insertion sort
-// For small arrays, insertion sort is faster due to better cache locality and lower overhead
-const INSERTION_SORT_THRESHOLD: usize = 16;
-
 /// Convert a sorted ELEM_HEAP_OBJ list of boxed ints to a ELEM_RAW_INT list.
 /// Used when sorted(set[int]) or sorted(dict[int,...]) needs to produce list[int].
 fn convert_heap_list_to_raw_int(heap_list: *mut Obj) -> *mut Obj {
@@ -112,171 +108,27 @@ pub(crate) unsafe fn compare_list_elements(
     }
 }
 
-/// Insertion sort for small arrays or as a fallback
-/// data: pointer to array of *mut Obj
-/// len: length of array
+/// Stable sort for an array of *mut Obj elements.
+/// Uses Vec::sort_by which is guaranteed stable (merge sort based).
 /// reverse: false for ascending, true for descending
 /// elem_tag: element storage type (ELEM_HEAP_OBJ, ELEM_RAW_INT, ELEM_RAW_BOOL)
-unsafe fn insertion_sort(data: *mut *mut Obj, len: usize, reverse: bool, elem_tag: u8) {
-    for i in 1..len {
-        let key = *data.add(i);
-        let mut j = i as isize - 1;
-        while j >= 0 {
-            let cmp = compare_list_elements(*data.add(j as usize), key, elem_tag);
-            let should_move = if reverse {
-                cmp == std::cmp::Ordering::Less
-            } else {
-                cmp == std::cmp::Ordering::Greater
-            };
-            if should_move {
-                *data.add((j + 1) as usize) = *data.add(j as usize);
-                j -= 1;
-            } else {
-                break;
-            }
-        }
-        *data.add((j + 1) as usize) = key;
-    }
-}
-
-/// Partition function for quicksort using median-of-three pivot selection
-/// Returns the final position of the pivot
-unsafe fn partition(data: *mut *mut Obj, len: usize, reverse: bool, elem_tag: u8) -> usize {
-    // Median-of-three pivot selection
-    let mid = len / 2;
-    let last = len - 1;
-
-    // Sort first, middle, and last elements
-    let mut a = *data.add(0);
-    let mut b = *data.add(mid);
-    let mut c = *data.add(last);
-
-    // Bubble sort the three elements
-    if compare_list_elements(a, b, elem_tag)
-        == if reverse {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
-        }
-    {
-        std::mem::swap(&mut a, &mut b);
-    }
-    if compare_list_elements(b, c, elem_tag)
-        == if reverse {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
-        }
-    {
-        std::mem::swap(&mut b, &mut c);
-    }
-    if compare_list_elements(a, b, elem_tag)
-        == if reverse {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
-        }
-    {
-        std::mem::swap(&mut a, &mut b);
-    }
-
-    *data.add(0) = a;
-    *data.add(mid) = b;
-    *data.add(last) = c;
-
-    // Use median as pivot, move it to second-to-last position
-    let pivot = b;
-    *data.add(mid) = *data.add(last - 1);
-    *data.add(last - 1) = pivot;
-
-    // Partition around pivot
-    let mut i = 0;
-    let mut j = last - 1;
-
-    loop {
-        // Move i forward
-        loop {
-            i += 1;
-            if i >= j {
-                break;
-            }
-            let cmp = compare_list_elements(*data.add(i), pivot, elem_tag);
-            let stop = if reverse {
-                cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
-            } else {
-                cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
-            };
-            if stop {
-                break;
-            }
-        }
-
-        // Move j backward
-        loop {
-            if j <= i {
-                break;
-            }
-            j -= 1;
-            let cmp = compare_list_elements(*data.add(j), pivot, elem_tag);
-            let stop = if reverse {
-                cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
-            } else {
-                cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
-            };
-            if stop {
-                break;
-            }
-        }
-
-        if i >= j {
-            break;
-        }
-
-        // Swap elements
-        let temp = *data.add(i);
-        *data.add(i) = *data.add(j);
-        *data.add(j) = temp;
-    }
-
-    // Put pivot in final position
-    *data.add(last - 1) = *data.add(i);
-    *data.add(i) = pivot;
-
-    i
-}
-
-/// Quicksort implementation with insertion sort for small subarrays
-/// data: pointer to array of *mut Obj
-/// len: length of array
-/// reverse: false for ascending, true for descending
-/// elem_tag: element storage type (ELEM_HEAP_OBJ, ELEM_RAW_INT, ELEM_RAW_BOOL)
-unsafe fn quicksort(data: *mut *mut Obj, len: usize, reverse: bool, elem_tag: u8) {
+unsafe fn stable_sort(data: *mut *mut Obj, len: usize, reverse: bool, elem_tag: u8) {
     if len <= 1 {
         return;
     }
 
-    // Use insertion sort for small arrays
-    if len <= INSERTION_SORT_THRESHOLD {
-        insertion_sort(data, len, reverse, elem_tag);
-        return;
-    }
-
-    // Partition and recursively sort
-    let pivot_idx = partition(data, len, reverse, elem_tag);
-
-    // Sort left partition
-    if pivot_idx > 0 {
-        quicksort(data, pivot_idx, reverse, elem_tag);
-    }
-
-    // Sort right partition
-    if pivot_idx + 1 < len {
-        quicksort(
-            data.add(pivot_idx + 1),
-            len - pivot_idx - 1,
-            reverse,
-            elem_tag,
-        );
+    // Collect into a Vec, sort stably, write back
+    let mut vec: Vec<*mut Obj> = (0..len).map(|i| *data.add(i)).collect();
+    vec.sort_by(|&a, &b| {
+        let ord = compare_list_elements(a, b, elem_tag);
+        if reverse {
+            ord.reverse()
+        } else {
+            ord
+        }
+    });
+    for (i, elem) in vec.into_iter().enumerate() {
+        *data.add(i) = elem;
     }
 }
 
@@ -309,9 +161,9 @@ pub extern "C" fn rt_sorted_list(list: *mut Obj, reverse: i64) -> *mut Obj {
             }
             (*new_list_obj).len = len;
 
-            // Sort using quicksort (O(n log n) average case)
+            // Sort using stable sort (required for CPython compatibility)
             let data = (*new_list_obj).data;
-            quicksort(data, len, reverse != 0, (*src).elem_tag);
+            stable_sort(data, len, reverse != 0, (*src).elem_tag);
         }
 
         new_list
@@ -347,9 +199,9 @@ pub extern "C" fn rt_sorted_tuple(tuple: *mut Obj, reverse: i64) -> *mut Obj {
             }
             (*new_list_obj).len = len;
 
-            // Sort using quicksort (O(n log n) average case)
+            // Sort using stable sort (required for CPython compatibility)
             let data = (*new_list_obj).data;
-            quicksort(data, len, reverse != 0, (*src).elem_tag);
+            stable_sort(data, len, reverse != 0, (*src).elem_tag);
         }
 
         new_list
@@ -420,10 +272,10 @@ pub extern "C" fn rt_sorted_str(str_obj: *mut Obj, reverse: i64) -> *mut Obj {
             }
             (*new_list_obj).len = len;
 
-            // Sort using quicksort (O(n log n) average case)
+            // Sort using stable sort (required for CPython compatibility)
             // Char strings are always heap objects
             let data = (*new_list_obj).data;
-            quicksort(data, len, reverse != 0, ELEM_HEAP_OBJ);
+            stable_sort(data, len, reverse != 0, ELEM_HEAP_OBJ);
         }
 
         new_list
@@ -474,10 +326,10 @@ pub extern "C" fn rt_sorted_range(start: i64, stop: i64, step: i64, reverse: i64
         }
         (*new_list_obj).len = len;
 
-        // Sort using quicksort (O(n log n) average case)
+        // Sort using stable sort (required for CPython compatibility)
         // Range elements are raw integers
         let data = (*new_list_obj).data;
-        quicksort(data, len, reverse != 0, ELEM_RAW_INT);
+        stable_sort(data, len, reverse != 0, ELEM_RAW_INT);
     }
 
     new_list
@@ -506,295 +358,22 @@ pub(crate) unsafe fn compare_key_values(a: *mut Obj, b: *mut Obj) -> std::cmp::O
 /// The key function takes an element and returns a key value for comparison
 type KeyFn = extern "C" fn(*mut Obj) -> *mut Obj;
 
-/// Insertion sort for (key, index) pairs
-/// Used for stable sorting with key functions
-unsafe fn insertion_sort_key_pairs(pairs: &mut [(*mut Obj, usize)], reverse: bool) {
-    let len = pairs.len();
-    for i in 1..len {
-        let current = pairs[i];
-        let mut j = i as isize - 1;
-        while j >= 0 {
-            let cmp = compare_key_values(pairs[j as usize].0, current.0);
-            let should_move = if reverse {
-                cmp == std::cmp::Ordering::Less
-            } else {
-                cmp == std::cmp::Ordering::Greater
-            };
-            if should_move {
-                pairs[(j + 1) as usize] = pairs[j as usize];
-                j -= 1;
-            } else {
-                break;
-            }
-        }
-        pairs[(j + 1) as usize] = current;
-    }
+/// Stable sort for (key, index) pairs.
+/// Stability ensures equal keys preserve original order (CPython guarantee).
+unsafe fn stable_sort_key_pairs(pairs: &mut [(*mut Obj, usize)], reverse: bool) {
+    pairs.sort_by(|a, b| {
+        let ord = compare_key_values(a.0, b.0);
+        if reverse { ord.reverse() } else { ord }
+    });
 }
 
-/// Partition for quicksort on (key, index) pairs
-unsafe fn partition_key_pairs(pairs: &mut [(*mut Obj, usize)], reverse: bool) -> usize {
-    let len = pairs.len();
-    let mid = len / 2;
-    let last = len - 1;
-
-    // Median-of-three pivot selection
-    let mut a = pairs[0];
-    let mut b = pairs[mid];
-    let mut c = pairs[last];
-
-    // Sort the three elements
-    if compare_key_values(a.0, b.0)
-        == if reverse {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
-        }
-    {
-        std::mem::swap(&mut a, &mut b);
-    }
-    if compare_key_values(b.0, c.0)
-        == if reverse {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
-        }
-    {
-        std::mem::swap(&mut b, &mut c);
-    }
-    if compare_key_values(a.0, b.0)
-        == if reverse {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
-        }
-    {
-        std::mem::swap(&mut a, &mut b);
-    }
-
-    pairs[0] = a;
-    pairs[mid] = b;
-    pairs[last] = c;
-
-    // Use median as pivot
-    let pivot = b;
-    pairs[mid] = pairs[last - 1];
-    pairs[last - 1] = pivot;
-
-    let mut i = 0;
-    let mut j = last - 1;
-
-    loop {
-        loop {
-            i += 1;
-            if i >= j {
-                break;
-            }
-            let cmp = compare_key_values(pairs[i].0, pivot.0);
-            let stop = if reverse {
-                cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
-            } else {
-                cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
-            };
-            if stop {
-                break;
-            }
-        }
-
-        loop {
-            if j <= i {
-                break;
-            }
-            j -= 1;
-            let cmp = compare_key_values(pairs[j].0, pivot.0);
-            let stop = if reverse {
-                cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
-            } else {
-                cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
-            };
-            if stop {
-                break;
-            }
-        }
-
-        if i >= j {
-            break;
-        }
-
-        pairs.swap(i, j);
-    }
-
-    pairs[last - 1] = pairs[i];
-    pairs[i] = pivot;
-
-    i
-}
-
-/// Quicksort for (key, index) pairs
-unsafe fn quicksort_key_pairs(pairs: &mut [(*mut Obj, usize)], reverse: bool) {
-    let len = pairs.len();
-
-    if len <= 1 {
-        return;
-    }
-
-    if len <= INSERTION_SORT_THRESHOLD {
-        insertion_sort_key_pairs(pairs, reverse);
-        return;
-    }
-
-    let pivot_idx = partition_key_pairs(pairs, reverse);
-
-    if pivot_idx > 0 {
-        quicksort_key_pairs(&mut pairs[..pivot_idx], reverse);
-    }
-
-    if pivot_idx + 1 < len {
-        quicksort_key_pairs(&mut pairs[pivot_idx + 1..], reverse);
-    }
-}
-
-/// Insertion sort for (key, obj) pairs (used for rt_sorted_str_with_key)
-unsafe fn insertion_sort_key_obj_pairs(pairs: &mut [(*mut Obj, *mut Obj)], reverse: bool) {
-    let len = pairs.len();
-    for i in 1..len {
-        let current = pairs[i];
-        let mut j = i as isize - 1;
-        while j >= 0 {
-            let cmp = compare_key_values(pairs[j as usize].0, current.0);
-            let should_move = if reverse {
-                cmp == std::cmp::Ordering::Less
-            } else {
-                cmp == std::cmp::Ordering::Greater
-            };
-            if should_move {
-                pairs[(j + 1) as usize] = pairs[j as usize];
-                j -= 1;
-            } else {
-                break;
-            }
-        }
-        pairs[(j + 1) as usize] = current;
-    }
-}
-
-/// Partition for quicksort on (key, obj) pairs
-unsafe fn partition_key_obj_pairs(pairs: &mut [(*mut Obj, *mut Obj)], reverse: bool) -> usize {
-    let len = pairs.len();
-    let mid = len / 2;
-    let last = len - 1;
-
-    // Median-of-three pivot selection
-    let mut a = pairs[0];
-    let mut b = pairs[mid];
-    let mut c = pairs[last];
-
-    if compare_key_values(a.0, b.0)
-        == if reverse {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
-        }
-    {
-        std::mem::swap(&mut a, &mut b);
-    }
-    if compare_key_values(b.0, c.0)
-        == if reverse {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
-        }
-    {
-        std::mem::swap(&mut b, &mut c);
-    }
-    if compare_key_values(a.0, b.0)
-        == if reverse {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
-        }
-    {
-        std::mem::swap(&mut a, &mut b);
-    }
-
-    pairs[0] = a;
-    pairs[mid] = b;
-    pairs[last] = c;
-
-    let pivot = b;
-    pairs[mid] = pairs[last - 1];
-    pairs[last - 1] = pivot;
-
-    let mut i = 0;
-    let mut j = last - 1;
-
-    loop {
-        loop {
-            i += 1;
-            if i >= j {
-                break;
-            }
-            let cmp = compare_key_values(pairs[i].0, pivot.0);
-            let stop = if reverse {
-                cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
-            } else {
-                cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
-            };
-            if stop {
-                break;
-            }
-        }
-
-        loop {
-            if j <= i {
-                break;
-            }
-            j -= 1;
-            let cmp = compare_key_values(pairs[j].0, pivot.0);
-            let stop = if reverse {
-                cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
-            } else {
-                cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
-            };
-            if stop {
-                break;
-            }
-        }
-
-        if i >= j {
-            break;
-        }
-
-        pairs.swap(i, j);
-    }
-
-    pairs[last - 1] = pairs[i];
-    pairs[i] = pivot;
-
-    i
-}
-
-/// Quicksort for (key, obj) pairs
-unsafe fn quicksort_key_obj_pairs(pairs: &mut [(*mut Obj, *mut Obj)], reverse: bool) {
-    let len = pairs.len();
-
-    if len <= 1 {
-        return;
-    }
-
-    if len <= INSERTION_SORT_THRESHOLD {
-        insertion_sort_key_obj_pairs(pairs, reverse);
-        return;
-    }
-
-    let pivot_idx = partition_key_obj_pairs(pairs, reverse);
-
-    if pivot_idx > 0 {
-        quicksort_key_obj_pairs(&mut pairs[..pivot_idx], reverse);
-    }
-
-    if pivot_idx + 1 < len {
-        quicksort_key_obj_pairs(&mut pairs[pivot_idx + 1..], reverse);
-    }
+/// Stable sort for (key, obj) pairs (used for rt_sorted_str_with_key).
+/// Stability ensures equal keys preserve original order (CPython guarantee).
+unsafe fn stable_sort_key_obj_pairs(pairs: &mut [(*mut Obj, *mut Obj)], reverse: bool) {
+    pairs.sort_by(|a, b| {
+        let ord = compare_key_values(a.0, b.0);
+        if reverse { ord.reverse() } else { ord }
+    });
 }
 
 /// Create a sorted list from a list with a key function
@@ -840,8 +419,8 @@ pub extern "C" fn rt_sorted_list_with_key(
             key_index_pairs.push((key_value, i));
         }
 
-        // Sort by key values using quicksort (O(n log n) average case)
-        quicksort_key_pairs(&mut key_index_pairs, reverse != 0);
+        // Sort by key values using stable sort (required for CPython compatibility)
+        stable_sort_key_pairs(&mut key_index_pairs, reverse != 0);
 
         // Build result list from sorted indices
         let new_list = rt_make_list(len as i64, (*src).elem_tag);
@@ -897,8 +476,8 @@ pub extern "C" fn rt_sorted_tuple_with_key(
             key_index_pairs.push((key_value, i));
         }
 
-        // Sort by key values using quicksort (O(n log n) average case)
-        quicksort_key_pairs(&mut key_index_pairs, reverse != 0);
+        // Sort by key values using stable sort (required for CPython compatibility)
+        stable_sort_key_pairs(&mut key_index_pairs, reverse != 0);
 
         // Build result list from sorted indices
         let new_list = rt_make_list(len as i64, (*src).elem_tag);
@@ -973,8 +552,8 @@ pub extern "C" fn rt_sorted_str_with_key(
             key_index_pairs.push((key_value, char_str));
         }
 
-        // Sort by key values using quicksort (O(n log n) average case)
-        quicksort_key_obj_pairs(&mut key_index_pairs, reverse != 0);
+        // Sort by key values using stable sort (required for CPython compatibility)
+        stable_sort_key_obj_pairs(&mut key_index_pairs, reverse != 0);
 
         // Build result list from sorted pairs
         let new_list = rt_make_list(len as i64, ELEM_HEAP_OBJ);

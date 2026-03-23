@@ -27,7 +27,7 @@ pub unsafe extern "C" fn rt_make_bytes(data: *const u8, len: usize) -> *mut Obj 
             rt_exc_raise(
                 ExceptionType::MemoryError as u8,
                 b"MemoryError: bytes size overflow".as_ptr(),
-                31,
+                32,
             );
         });
 

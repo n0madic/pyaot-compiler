@@ -223,7 +223,7 @@ pub unsafe extern "C" fn rt_stringio_seek(sio: *mut Obj, pos: i64) -> i64 {
         );
     }
 
-    let new_pos = (pos as usize).min((*sio_obj).len);
+    let new_pos = pos as usize; // Allow seeking past end of content
     (*sio_obj).position = new_pos;
     new_pos as i64
 }
@@ -256,10 +256,7 @@ pub unsafe extern "C" fn rt_stringio_truncate(sio: *mut Obj, size: i64) -> i64 {
     };
 
     (*sio_obj).len = new_len;
-    // If position is beyond new length, move it to the end
-    if (*sio_obj).position > new_len {
-        (*sio_obj).position = new_len;
-    }
+    // CPython's truncate() does NOT change the stream position
 
     new_len as i64
 }

@@ -38,11 +38,31 @@ pub extern "C" fn rt_float_to_str(value: f64) -> *mut Obj {
     use crate::object::{ObjHeader, StrObj, TypeTagKind};
 
     // Format float similar to Python's default repr
-    let s = if value.fract() == 0.0 && value.abs() < 1e15 {
-        // For whole numbers, show .0 like Python
+    let s = if value.is_nan() {
+        "nan".to_string()
+    } else if value.is_infinite() {
+        if value > 0.0 {
+            "inf".to_string()
+        } else {
+            "-inf".to_string()
+        }
+    } else if value == 0.0 {
+        if value.is_sign_negative() {
+            "-0.0".to_string()
+        } else {
+            "0.0".to_string()
+        }
+    } else if value.fract() == 0.0 && value.abs() < 1e16 {
+        // For whole numbers in representable range, show .0 like Python
         format!("{:.1}", value)
     } else {
-        format!("{}", value)
+        let s = format!("{}", value);
+        // Ensure float-like appearance (has decimal point or exponent)
+        if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+            format!("{}.0", s)
+        } else {
+            s
+        }
     };
     let bytes = s.as_bytes();
     let len = bytes.len();
@@ -126,10 +146,11 @@ pub extern "C" fn rt_str_to_int(str_obj: *mut Obj) -> i64 {
         let bytes = std::slice::from_raw_parts(data, len);
 
         if let Ok(s) = std::str::from_utf8(bytes) {
-            match s.trim().parse::<i64>() {
+            let trimmed = s.trim_matches(|c: char| c.is_ascii_whitespace());
+            match trimmed.parse::<i64>() {
                 Ok(val) => val,
                 Err(_) => {
-                    let msg = format!("invalid literal for int() with base 10: '{}'", s);
+                    let msg = format!("invalid literal for int() with base 10: '{}'", s.trim());
                     exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
                 }
             }
@@ -161,10 +182,11 @@ pub extern "C" fn rt_str_to_float(str_obj: *mut Obj) -> f64 {
         let bytes = std::slice::from_raw_parts(data, len);
 
         if let Ok(s) = std::str::from_utf8(bytes) {
-            match s.trim().parse::<f64>() {
+            let trimmed = s.trim_matches(|c: char| c.is_ascii_whitespace());
+            match trimmed.parse::<f64>() {
                 Ok(val) => val,
                 Err(_) => {
-                    let msg = format!("could not convert string to float: '{}'", s);
+                    let msg = format!("could not convert string to float: '{}'", s.trim());
                     exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
                 }
             }
@@ -320,10 +342,21 @@ unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
         TypeTagKind::Int => format!("{}", (*(obj as *mut IntObj)).value),
         TypeTagKind::Float => {
             let v = (*(obj as *mut FloatObj)).value;
-            if v.fract() == 0.0 && v.abs() < 1e15 {
+            if v.is_nan() {
+                "nan".to_string()
+            } else if v.is_infinite() {
+                if v > 0.0 { "inf".to_string() } else { "-inf".to_string() }
+            } else if v == 0.0 {
+                if v.is_sign_negative() { "-0.0".to_string() } else { "0.0".to_string() }
+            } else if v.fract() == 0.0 && v.abs() < 1e16 {
                 format!("{:.1}", v)
             } else {
-                format!("{}", v)
+                let s = format!("{}", v);
+                if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+                    format!("{}.0", s)
+                } else {
+                    s
+                }
             }
         }
         TypeTagKind::Bool => {
@@ -474,10 +507,21 @@ unsafe fn obj_repr_string(s: &mut String, obj: *mut Obj) {
         }
         TypeTagKind::Float => {
             let v = (*(obj as *mut FloatObj)).value;
-            if v.fract() == 0.0 && v.abs() < 1e15 {
+            if v.is_nan() {
+                s.push_str("nan");
+            } else if v.is_infinite() {
+                s.push_str(if v > 0.0 { "inf" } else { "-inf" });
+            } else if v == 0.0 {
+                s.push_str(if v.is_sign_negative() { "-0.0" } else { "0.0" });
+            } else if v.fract() == 0.0 && v.abs() < 1e16 {
                 let _ = write!(s, "{:.1}", v);
             } else {
-                let _ = write!(s, "{}", v);
+                let formatted = format!("{}", v);
+                if !formatted.contains('.') && !formatted.contains('e') && !formatted.contains('E') {
+                    let _ = write!(s, "{}.0", v);
+                } else {
+                    s.push_str(&formatted);
+                }
             }
         }
         TypeTagKind::Bool => {
@@ -494,7 +538,22 @@ unsafe fn obj_repr_string(s: &mut String, obj: *mut Obj) {
             let bytes = std::slice::from_raw_parts(data, len);
             s.push('\'');
             if let Ok(text) = std::str::from_utf8(bytes) {
-                s.push_str(text);
+                for ch in text.chars() {
+                    match ch {
+                        '\\' => s.push_str("\\\\"),
+                        '\'' => s.push_str("\\'"),
+                        '\n' => s.push_str("\\n"),
+                        '\r' => s.push_str("\\r"),
+                        '\t' => s.push_str("\\t"),
+                        c if c.is_control() => {
+                            // Use \xNN for other control characters
+                            for b in c.encode_utf8(&mut [0u8; 4]).bytes() {
+                                let _ = write!(s, "\\x{:02x}", b);
+                            }
+                        }
+                        c => s.push(c),
+                    }
+                }
             }
             s.push('\'');
         }
@@ -512,10 +571,10 @@ unsafe fn obj_repr_string(s: &mut String, obj: *mut Obj) {
 /// Convert integer to binary string (e.g., '0b1010')
 #[no_mangle]
 pub extern "C" fn rt_int_to_bin(n: i64) -> *mut Obj {
-    let s = if n >= 0 {
-        format!("0b{:b}", n)
+    let s = if n < 0 {
+        format!("-0b{:b}", n.unsigned_abs())
     } else {
-        format!("-0b{:b}", -n)
+        format!("0b{:b}", n)
     };
     let bytes = s.as_bytes();
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
@@ -524,10 +583,10 @@ pub extern "C" fn rt_int_to_bin(n: i64) -> *mut Obj {
 /// Convert integer to hexadecimal string (e.g., '0xff')
 #[no_mangle]
 pub extern "C" fn rt_int_to_hex(n: i64) -> *mut Obj {
-    let s = if n >= 0 {
-        format!("0x{:x}", n)
+    let s = if n < 0 {
+        format!("-0x{:x}", n.unsigned_abs())
     } else {
-        format!("-0x{:x}", -n)
+        format!("0x{:x}", n)
     };
     let bytes = s.as_bytes();
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
@@ -536,10 +595,10 @@ pub extern "C" fn rt_int_to_hex(n: i64) -> *mut Obj {
 /// Convert integer to octal string (e.g., '0o10')
 #[no_mangle]
 pub extern "C" fn rt_int_to_oct(n: i64) -> *mut Obj {
-    let s = if n >= 0 {
-        format!("0o{:o}", n)
+    let s = if n < 0 {
+        format!("-0o{:o}", n.unsigned_abs())
     } else {
-        format!("-0o{:o}", -n)
+        format!("0o{:o}", n)
     };
     let bytes = s.as_bytes();
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }

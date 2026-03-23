@@ -103,15 +103,16 @@ pub extern "C" fn rt_re_search(pattern: *mut Obj, string: *mut Obj) -> *mut Obj 
         match re.captures(&string_str) {
             Some(caps) => {
                 let m = caps.get(0).expect("regex capture must have group 0");
-                let start = m.start() as i64;
-                let end = m.end() as i64;
+                // Convert byte offsets to character offsets for CPython compatibility
+                let start_chars = string_str[..m.start()].chars().count() as i64;
+                let end_chars = string_str[..m.end()].chars().count() as i64;
 
                 // Collect all groups (including group 0 = full match)
                 let groups: Vec<Option<&str>> = (0..caps.len())
                     .map(|i| caps.get(i).map(|m| m.as_str()))
                     .collect();
 
-                create_match_obj(true, start, end, groups, string)
+                create_match_obj(true, start_chars, end_chars, groups, string)
             }
             None => crate::object::none_obj(),
         }
@@ -152,15 +153,16 @@ pub extern "C" fn rt_re_match(pattern: *mut Obj, string: *mut Obj) -> *mut Obj {
         match re.captures(&string_str) {
             Some(caps) => {
                 let m = caps.get(0).expect("regex capture must have group 0");
-                let start = m.start() as i64;
-                let end = m.end() as i64;
+                // Convert byte offsets to character offsets for CPython compatibility
+                let start_chars = string_str[..m.start()].chars().count() as i64;
+                let end_chars = string_str[..m.end()].chars().count() as i64;
 
                 // Collect all groups
                 let groups: Vec<Option<&str>> = (0..caps.len())
                     .map(|i| caps.get(i).map(|m| m.as_str()))
                     .collect();
 
-                create_match_obj(true, start, end, groups, string)
+                create_match_obj(true, start_chars, end_chars, groups, string)
             }
             None => crate::object::none_obj(),
         }
@@ -201,8 +203,20 @@ pub extern "C" fn rt_re_sub(pattern: *mut Obj, repl: *mut Obj, string: *mut Obj)
             }
         };
 
+        // Translate Python replacement syntax (\1, \2, \g<name>) to regex syntax ($1, $2)
+        let translated_repl = repl_str
+            .replace("\\1", "$1")
+            .replace("\\2", "$2")
+            .replace("\\3", "$3")
+            .replace("\\4", "$4")
+            .replace("\\5", "$5")
+            .replace("\\6", "$6")
+            .replace("\\7", "$7")
+            .replace("\\8", "$8")
+            .replace("\\9", "$9")
+            .replace("\\0", "$0");
         // Replace all occurrences
-        let result = re.replace_all(&string_str, repl_str.as_str());
+        let result = re.replace_all(&string_str, translated_repl.as_str());
 
         make_str_from_rust(&result)
     }

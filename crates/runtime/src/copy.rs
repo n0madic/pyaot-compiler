@@ -113,10 +113,34 @@ pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
             new_inst as *mut Obj
         }
 
-        // Other types (Iterator, Cell, Generator, Match, File, StringBuilder,
-        // StructTime, CompletedProcess, Hash, StringIO, BytesIO) - return as-is
-        // These types either have internal state that shouldn't be copied or
-        // are immutable/stateful objects
+        // File, Generator, Iterator — raise TypeError (CPython does the same)
+        TypeTagKind::File => {
+            let msg = b"TypeError: cannot copy file objects";
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
+        TypeTagKind::Generator => {
+            let msg = b"TypeError: cannot copy generator objects";
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
+        TypeTagKind::Iterator => {
+            let msg = b"TypeError: cannot copy iterator objects";
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
+
+        // Other types (Cell, Match, StringBuilder, StructTime, CompletedProcess,
+        // Hash, StringIO, BytesIO) - return as-is
         _ => obj,
     }
 }

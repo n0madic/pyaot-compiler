@@ -273,19 +273,27 @@ pub extern "C" fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
         // Get format string
         let format_str = str_obj_to_rust_string(format);
 
-        // Format using strftime
-        let mut buffer = [0i8; 256];
-        let format_cstr = std::ffi::CString::new(format_str)
+        let fmt_c = std::ffi::CString::new(format_str)
             .unwrap_or_else(|_| std::ffi::CString::new("").unwrap());
-        let len = libc::strftime(buffer.as_mut_ptr(), buffer.len(), format_cstr.as_ptr(), &tm);
 
-        if len == 0 {
-            return make_str_from_rust("");
-        }
-
-        let result = std::ffi::CStr::from_ptr(buffer.as_ptr())
-            .to_string_lossy()
-            .into_owned();
+        // Use a retry loop to handle format strings that produce long output
+        let mut buf_size = 256usize;
+        let result = loop {
+            let mut buffer = vec![0i8; buf_size];
+            let written =
+                libc::strftime(buffer.as_mut_ptr(), buf_size, fmt_c.as_ptr(), &tm);
+            if written > 0 {
+                let s = std::ffi::CStr::from_ptr(buffer.as_ptr())
+                    .to_string_lossy()
+                    .into_owned();
+                break s;
+            }
+            if buf_size >= 8192 {
+                // Give up — return empty string
+                break String::new();
+            }
+            buf_size *= 2;
+        };
         make_str_from_rust(&result)
     }
 }

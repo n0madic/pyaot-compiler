@@ -509,22 +509,21 @@ pub struct HttpResponseObj {
     pub body: *mut Obj,    // BytesObj - Response body
 }
 
+use std::sync::OnceLock;
+
 /// None singleton
-static mut NONE_SINGLETON: Option<Obj> = None;
+static NONE_SINGLETON: OnceLock<Obj> = OnceLock::new();
 
 pub fn none_obj() -> *mut Obj {
-    unsafe {
-        if (*std::ptr::addr_of!(NONE_SINGLETON)).is_none() {
-            NONE_SINGLETON = Some(Obj {
-                header: ObjHeader {
-                    type_tag: TypeTagKind::None,
-                    marked: true, // Never collect None
-                    size: std::mem::size_of::<Obj>(),
-                },
-            });
-        }
-        (*std::ptr::addr_of_mut!(NONE_SINGLETON))
-            .as_mut()
-            .expect("NONE_SINGLETON must be initialized") as *mut Obj
-    }
+    let obj = NONE_SINGLETON.get_or_init(|| Obj {
+        header: ObjHeader {
+            type_tag: TypeTagKind::None,
+            marked: true, // Never collect None
+            size: std::mem::size_of::<Obj>(),
+        },
+    });
+    // Safety: The OnceLock guarantees the Obj is initialized exactly once.
+    // We need a mutable pointer for API compatibility, but the None singleton
+    // is never actually mutated (except the mark bit, which is already true).
+    obj as *const Obj as *mut Obj
 }

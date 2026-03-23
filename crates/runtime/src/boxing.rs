@@ -35,14 +35,18 @@ static BOOL_POOL: Mutex<Option<BoolPoolWrapper>> = Mutex::new(None);
 /// Pre-allocates IntObj for integers -5 to 256
 /// Called from rt_init()
 pub fn init_small_int_pool() {
-    let mut pool_guard = SMALL_INT_POOL
-        .lock()
-        .expect("SMALL_INT_POOL mutex poisoned - another thread panicked");
-
-    if pool_guard.is_some() {
-        return; // Already initialized
+    // Check if already initialized (fast path without allocation)
+    {
+        let pool_guard = SMALL_INT_POOL
+            .lock()
+            .expect("SMALL_INT_POOL mutex poisoned");
+        if pool_guard.is_some() {
+            return;
+        }
     }
 
+    // Allocate all pool objects WITHOUT holding the mutex
+    // This prevents deadlock with GC's mark_pools which also locks SMALL_INT_POOL
     let mut pool: [*mut Obj; SMALL_INT_POOL_SIZE] = [std::ptr::null_mut(); SMALL_INT_POOL_SIZE];
 
     for (i, slot) in pool.iter_mut().enumerate() {
@@ -58,7 +62,13 @@ pub fn init_small_int_pool() {
         *slot = obj;
     }
 
-    *pool_guard = Some(PoolWrapper(pool));
+    // Now store under the lock
+    let mut pool_guard = SMALL_INT_POOL
+        .lock()
+        .expect("SMALL_INT_POOL mutex poisoned");
+    if pool_guard.is_none() {
+        *pool_guard = Some(PoolWrapper(pool));
+    }
 }
 
 /// Shutdown the small integer pool
@@ -74,14 +84,17 @@ pub fn shutdown_small_int_pool() {
 /// Pre-allocates BoolObj for False (index 0) and True (index 1)
 /// Called from rt_init()
 pub fn init_bool_pool() {
-    let mut pool_guard = BOOL_POOL
-        .lock()
-        .expect("BOOL_POOL mutex poisoned - another thread panicked");
-
-    if pool_guard.is_some() {
-        return; // Already initialized
+    // Check if already initialized (fast path)
+    {
+        let pool_guard = BOOL_POOL
+            .lock()
+            .expect("BOOL_POOL mutex poisoned");
+        if pool_guard.is_some() {
+            return;
+        }
     }
 
+    // Allocate outside the mutex to prevent deadlock with GC
     let mut pool: [*mut Obj; 2] = [std::ptr::null_mut(); 2];
 
     for (i, slot) in pool.iter_mut().enumerate() {
@@ -90,13 +103,19 @@ pub fn init_bool_pool() {
 
         unsafe {
             let bool_obj = obj as *mut BoolObj;
-            (*bool_obj).value = i != 0; // index 0 = False, index 1 = True
+            (*bool_obj).value = i != 0;
         }
 
         *slot = obj;
     }
 
-    *pool_guard = Some(BoolPoolWrapper(pool));
+    // Store under lock
+    let mut pool_guard = BOOL_POOL
+        .lock()
+        .expect("BOOL_POOL mutex poisoned");
+    if pool_guard.is_none() {
+        *pool_guard = Some(BoolPoolWrapper(pool));
+    }
 }
 
 /// Shutdown the boolean singleton pool

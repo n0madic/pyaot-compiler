@@ -112,7 +112,7 @@ pub fn timsort_float(data: &mut [f64]) {
 }
 
 /// Sort with a comparison function
-pub fn timsort_with_cmp<T, F>(data: &mut [T], mut cmp: F)
+pub fn timsort_with_cmp<T: Clone, F>(data: &mut [T], mut cmp: F)
 where
     F: FnMut(&T, &T) -> Ordering,
 {
@@ -346,7 +346,7 @@ fn merge_collapse_float(data: &mut [f64], runs: &mut Vec<Run>) {
     }
 }
 
-fn merge_collapse_with_cmp<T, F>(data: &mut [T], runs: &mut Vec<Run>, cmp: &mut F)
+fn merge_collapse_with_cmp<T: Clone, F>(data: &mut [T], runs: &mut Vec<Run>, cmp: &mut F)
 where
     F: FnMut(&T, &T) -> Ordering,
 {
@@ -390,7 +390,7 @@ fn merge_force_collapse_float(data: &mut [f64], runs: &mut Vec<Run>) {
     }
 }
 
-fn merge_force_collapse_with_cmp<T, F>(data: &mut [T], runs: &mut Vec<Run>, cmp: &mut F)
+fn merge_force_collapse_with_cmp<T: Clone, F>(data: &mut [T], runs: &mut Vec<Run>, cmp: &mut F)
 where
     F: FnMut(&T, &T) -> Ordering,
 {
@@ -441,7 +441,7 @@ fn merge_at_float(data: &mut [f64], runs: &mut Vec<Run>, i: usize) {
     runs.remove(i + 1);
 }
 
-fn merge_at_with_cmp<T, F>(data: &mut [T], runs: &mut Vec<Run>, i: usize, cmp: &mut F)
+fn merge_at_with_cmp<T: Clone, F>(data: &mut [T], runs: &mut Vec<Run>, i: usize, cmp: &mut F)
 where
     F: FnMut(&T, &T) -> Ordering,
 {
@@ -542,7 +542,7 @@ fn merge_float(data: &mut [f64], start: usize, mid: usize, end: usize) {
     }
 }
 
-fn merge_with_cmp<T, F>(data: &mut [T], start: usize, mid: usize, end: usize, cmp: &mut F)
+fn merge_with_cmp<T: Clone, F>(data: &mut [T], start: usize, mid: usize, end: usize, cmp: &mut F)
 where
     F: FnMut(&T, &T) -> Ordering,
 {
@@ -553,28 +553,36 @@ where
         return;
     }
 
-    // For generic types, we need to use rotation instead of temp buffer
-    // to avoid requiring Clone/Copy trait bounds
-    let mut i = start;
-    let mut j = mid;
+    // Copy both halves into temporary buffers to avoid O(n) shifts per element
+    let left: Vec<T> = data[start..mid].to_vec();
+    let right: Vec<T> = data[mid..end].to_vec();
 
-    while i < j && j < end {
-        if cmp(&data[i], &data[j]) != Ordering::Greater {
+    let mut i = 0; // index into left
+    let mut j = 0; // index into right
+    let mut k = start; // index into data (output)
+
+    while i < left.len() && j < right.len() {
+        // Use <= (not <) to preserve stability: left elements come first on equal keys
+        if cmp(&left[i], &right[j]) != Ordering::Greater {
+            data[k] = left[i].clone();
             i += 1;
         } else {
-            // Find position to insert data[j]
-            let value_j = j;
-            let mut k = i;
-            while k < j && cmp(&data[k], &data[value_j]) != Ordering::Greater {
-                k += 1;
-            }
-
-            // Rotate data[k..j+1] to move data[j] to position k
-            data[k..=j].rotate_right(1);
-
-            i = k + 1;
+            data[k] = right[j].clone();
             j += 1;
         }
+        k += 1;
+    }
+
+    while i < left.len() {
+        data[k] = left[i].clone();
+        i += 1;
+        k += 1;
+    }
+
+    while j < right.len() {
+        data[k] = right[j].clone();
+        j += 1;
+        k += 1;
     }
 }
 

@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 pub struct HashObj {
     pub header: ObjHeader,
     pub digest_len: usize,
-    pub digest: [u8; 32], // Fixed buffer, enough for SHA256
+    pub digest: [u8; 64], // Fixed buffer, enough for SHA512
 }
 
 /// Extract byte slice from a str or bytes object
@@ -38,6 +38,11 @@ unsafe fn extract_data_slice<'a>(data: *mut Obj) -> &'a [u8] {
 
 /// Allocate a HashObj and write a digest into it
 unsafe fn create_hash_obj(digest_bytes: &[u8]) -> *mut Obj {
+    assert!(
+        digest_bytes.len() <= 64,
+        "Digest size {} exceeds buffer capacity",
+        digest_bytes.len()
+    );
     let size = std::mem::size_of::<HashObj>();
     let hash_obj = gc_alloc(size, TypeTagKind::Hash.tag()) as *mut HashObj;
     (*hash_obj).digest_len = digest_bytes.len();

@@ -10,7 +10,42 @@ use crate::utils::make_str_from_rust;
 use pyaot_core_defs::BuiltinExceptionKind;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
+
+/// Normalize a path by resolving `.` and `..` components without touching the filesystem.
+/// This matches Python's os.path.normpath behaviour.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut components: Vec<Component> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {
+                // Skip '.' components — but preserve a leading one for relative paths
+                if components.is_empty() {
+                    // keep nothing; a completely empty result is fine
+                }
+            }
+            Component::ParentDir => {
+                // Pop a Normal component if possible, otherwise keep '..'
+                match components.last() {
+                    Some(Component::Normal(_)) => {
+                        components.pop();
+                    }
+                    _ => {
+                        components.push(component);
+                    }
+                }
+            }
+            _ => {
+                components.push(component);
+            }
+        }
+    }
+    if components.is_empty() {
+        PathBuf::from(".")
+    } else {
+        components.iter().collect()
+    }
+}
 
 /// Get os.environ as a dict[str, str]
 /// Creates a new dict each time (environment could have changed)
@@ -292,7 +327,8 @@ pub extern "C" fn rt_os_path_abspath(path: *mut Obj) -> *mut Obj {
             let path_obj = std::path::Path::new(&path_str);
 
             // Python's os.path.abspath does NOT resolve symlinks (unlike realpath).
-            // It only makes the path absolute by joining with CWD if needed.
+            // It only makes the path absolute by joining with CWD if needed,
+            // then normalizes away '.' and '..' components.
             let abs_path = if path_obj.is_absolute() {
                 path_obj.to_path_buf()
             } else {
@@ -309,8 +345,9 @@ pub extern "C" fn rt_os_path_abspath(path: *mut Obj) -> *mut Obj {
                 }
             };
 
+            let normalized = normalize_path(&abs_path);
             // Convert to string (lossy, as CPython does for non-UTF-8 paths)
-            let result = abs_path.to_string_lossy().to_string();
+            let result = normalized.to_string_lossy().to_string();
             make_str_from_rust(&result)
         } else {
             crate::exceptions::rt_exc_raise(

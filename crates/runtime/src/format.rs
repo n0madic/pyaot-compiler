@@ -339,7 +339,7 @@ fn fix_exponent_format(s: &str) -> String {
 
 /// Format a float value
 fn format_float(value: f64, spec: &FormatSpec) -> Result<String, String> {
-    let type_spec = spec.type_spec.unwrap_or('f');
+    let type_spec = spec.type_spec.unwrap_or('g');
     let precision = spec.precision.unwrap_or(6);
 
     let mut result = match type_spec {
@@ -447,8 +447,13 @@ fn format_float(value: f64, spec: &FormatSpec) -> Result<String, String> {
         }
     };
 
-    // Apply sign for non-negative values
-    if value >= 0.0 && !value.is_nan() {
+    // Apply 'F' uppercase: inf -> INF, nan -> NAN
+    if type_spec == 'F' {
+        result = result.replace("inf", "INF").replace("nan", "NAN");
+    }
+
+    // Apply sign for non-negative values (NaN is treated as positive for sign purposes)
+    if value >= 0.0 || value.is_nan() {
         if let Some(sign) = spec.sign {
             match sign {
                 '+' => result = format!("+{}", result),

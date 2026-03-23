@@ -72,7 +72,8 @@ pub extern "C" fn rt_register_class(class_id: u8, parent_class_id: u8) {
 }
 
 /// Register the heap field mask for a class (tells GC which fields are heap pointers)
-/// heap_field_mask: bitmask where bit i = 1 means field i is a heap object pointer
+/// heap_field_mask: bitmask where bit i = 1 means field i is a heap object pointer.
+/// Passed as i64 for Cranelift ABI compatibility; bit pattern is preserved as u64.
 #[no_mangle]
 pub extern "C" fn rt_register_class_fields(class_id: u8, heap_field_mask: i64) {
     match CLASS_REGISTRY.write() {
@@ -139,6 +140,10 @@ pub unsafe extern "C" fn rt_vtable_lookup(vtable_ptr: *const u8, slot: usize) ->
     if vtable_ptr.is_null() {
         return std::ptr::null();
     }
+    // Validate alignment for reading a usize
+    if !(vtable_ptr as usize).is_multiple_of(std::mem::align_of::<usize>()) {
+        return std::ptr::null();
+    }
     // Vtable layout: [num_slots: usize, method_ptrs: [*const (); num_slots]]
     let num_slots = *(vtable_ptr as *const usize);
     if slot >= num_slots {
@@ -150,7 +155,7 @@ pub unsafe extern "C" fn rt_vtable_lookup(vtable_ptr: *const u8, slot: usize) ->
 }
 
 /// Get the parent class ID for a given class
-/// Returns 0 if no parent (base class) or class not found
+/// Returns NO_PARENT (255) if no parent (base class), or 0 if lock failure
 #[no_mangle]
 pub extern "C" fn rt_get_parent_class(class_id: u8) -> u8 {
     if let Ok(registry) = CLASS_REGISTRY.read() {

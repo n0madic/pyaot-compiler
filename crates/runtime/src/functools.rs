@@ -54,7 +54,14 @@ unsafe fn call_reduce_with_captures(
             let c3 = rt_tuple_get(captures, 3);
             func(c0, c1, c2, c3, acc, elem)
         }
-        _ => panic!("reduce: unsupported capture count {}", capture_count),
+        _ => {
+            let msg = b"reduce: unsupported capture count";
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
     }
 }
 
