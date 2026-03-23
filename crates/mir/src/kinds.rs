@@ -257,26 +257,41 @@ pub enum CompareKind {
 }
 
 impl CompareKind {
-    /// Get the runtime function name for this comparison kind and operation
-    /// Returns the full function name like "rt_list_eq_int", "rt_tuple_lt", "rt_obj_eq"
-    pub fn runtime_func_name(&self, op: ComparisonOp) -> String {
-        match self {
-            // List comparisons only support Eq, and the element type is in the function name
-            CompareKind::ListInt => "rt_list_eq_int".to_string(),
-            CompareKind::ListFloat => "rt_list_eq_float".to_string(),
-            CompareKind::ListStr => "rt_list_eq_str".to_string(),
-            // Tuple supports all comparison ops
-            CompareKind::Tuple => format!("rt_tuple{}", op.suffix()),
+    /// Get the runtime function name for this comparison kind and operation.
+    /// Returns the full function name like "rt_list_eq_int", "rt_tuple_lt", "rt_obj_eq".
+    ///
+    /// # Panics (debug only)
+    /// Panics if an ordering op (Lt/Lte/Gt/Gte) is used with an Eq-only kind.
+    pub fn runtime_func_name(&self, op: ComparisonOp) -> &'static str {
+        debug_assert!(
+            self.supports_ordering() || matches!(op, ComparisonOp::Eq),
+            "CompareKind::{self:?} only supports Eq, but got {op:?}"
+        );
+        match (self, op) {
+            // List comparisons only support Eq
+            (CompareKind::ListInt, _) => "rt_list_eq_int",
+            (CompareKind::ListFloat, _) => "rt_list_eq_float",
+            (CompareKind::ListStr, _) => "rt_list_eq_str",
             // String and bytes only support Eq
-            CompareKind::Str => "rt_str_eq".to_string(),
-            CompareKind::Bytes => "rt_bytes_eq".to_string(),
+            (CompareKind::Str, _) => "rt_str_eq",
+            (CompareKind::Bytes, _) => "rt_bytes_eq",
+            // Tuple supports all comparison ops
+            (CompareKind::Tuple, ComparisonOp::Eq) => "rt_tuple_eq",
+            (CompareKind::Tuple, ComparisonOp::Lt) => "rt_tuple_lt",
+            (CompareKind::Tuple, ComparisonOp::Lte) => "rt_tuple_lte",
+            (CompareKind::Tuple, ComparisonOp::Gt) => "rt_tuple_gt",
+            (CompareKind::Tuple, ComparisonOp::Gte) => "rt_tuple_gte",
             // Object supports all comparison ops
-            CompareKind::Obj => format!("rt_obj{}", op.suffix()),
+            (CompareKind::Obj, ComparisonOp::Eq) => "rt_obj_eq",
+            (CompareKind::Obj, ComparisonOp::Lt) => "rt_obj_lt",
+            (CompareKind::Obj, ComparisonOp::Lte) => "rt_obj_lte",
+            (CompareKind::Obj, ComparisonOp::Gt) => "rt_obj_gt",
+            (CompareKind::Obj, ComparisonOp::Gte) => "rt_obj_gte",
         }
     }
 
-    /// Whether this kind supports ordering comparisons (Lt, Lte, Gt, Gte)
-    /// Only Tuple and Obj support ordering; List/Str/Bytes only support Eq
+    /// Whether this kind supports ordering comparisons (Lt, Lte, Gt, Gte).
+    /// Only Tuple and Obj support ordering; List/Str/Bytes only support Eq.
     pub fn supports_ordering(&self) -> bool {
         matches!(self, CompareKind::Tuple | CompareKind::Obj)
     }
@@ -400,7 +415,8 @@ pub enum ConversionTypeKind {
     Float,
     /// Boolean (i8)
     Bool,
-    /// None type (no value)
+    /// None type — unlike `PrintKind::None` and `ReprTargetKind::None`, conversion
+    /// functions with this variant (e.g. `rt_none_to_str`) still take an argument.
     None,
     /// String object (*mut Obj)
     Str,

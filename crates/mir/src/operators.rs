@@ -1,7 +1,7 @@
 //! Binary and unary operators for MIR
 
 /// Binary operations in MIR
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinOp {
     Add,
     Sub,
@@ -27,7 +27,7 @@ pub enum BinOp {
 }
 
 /// Unary operations in MIR
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnOp {
     Neg,
     Not,

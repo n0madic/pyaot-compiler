@@ -200,8 +200,6 @@ pub enum RuntimeFunc {
     StrEncode,
     /// String replace()
     StrReplace,
-    /// Print function (legacy)
-    Print,
     /// Print a value with specific kind (no newline)
     /// - Int: i64 value
     /// - Float: f64 value
@@ -248,9 +246,6 @@ pub enum RuntimeFunc {
     RoundToInt,
     /// Round to N digits: round(x, ndigits) -> f64
     RoundToDigits,
-    /// Float absolute value (for FloatAbs instruction alternative)
-    FloatAbsFunc,
-
     // ==================== Character/Code runtime functions ====================
     /// Convert int to character: chr(i) -> str
     IntToChr,

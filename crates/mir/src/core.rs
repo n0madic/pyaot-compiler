@@ -109,19 +109,6 @@ impl Function {
         id
     }
 
-    pub fn add_block(&mut self) -> BlockId {
-        let id = BlockId::from(self.blocks.len());
-        self.blocks.insert(
-            id,
-            BasicBlock {
-                id,
-                instructions: Vec::new(),
-                terminator: Terminator::Unreachable,
-            },
-        );
-        id
-    }
-
     pub fn block_mut(&mut self, id: BlockId) -> &mut BasicBlock {
         self.blocks.get_mut(&id).expect("invalid block id")
     }

@@ -33,7 +33,7 @@ pub fn compile_compare_call(
     // Get the runtime function name
     let func_name = kind.runtime_func_name(op);
 
-    let func_id = declare_runtime_function(ctx.module, &func_name, &sig)?;
+    let func_id = declare_runtime_function(ctx.module, func_name, &sig)?;
     let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
 
     let a = load_operand(builder, &args[0], ctx.var_map);

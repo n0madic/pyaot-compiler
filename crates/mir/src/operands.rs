@@ -3,14 +3,14 @@
 use pyaot_utils::{InternedString, LocalId};
 
 /// Operand (value used in instructions)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Operand {
     Local(LocalId),
     Constant(Constant),
 }
 
 /// Constant value
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Constant {
     Int(i64),
     Float(f64),
