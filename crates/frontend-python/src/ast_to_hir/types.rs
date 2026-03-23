@@ -253,6 +253,8 @@ impl AstToHir {
                     "list" => Type::List(Box::new(Type::Any)),
                     "tuple" => Type::Tuple(vec![]),
                     "dict" => Type::Dict(Box::new(Type::Any), Box::new(Type::Any)),
+                    "set" => Type::Set(Box::new(Type::Any)),
+                    "NoneType" => Type::None,
                     _ => {
                         return Err(CompilerError::parse_error(
                             format!("Unknown type for isinstance: {}", name.id),

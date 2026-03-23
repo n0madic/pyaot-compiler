@@ -409,6 +409,11 @@ impl AstToHir {
                     self.collect_free_variables(value, local_params, free_vars);
                 }
             }
+            py::Expr::Set(set) => {
+                for elem in &set.elts {
+                    self.collect_free_variables(elem, local_params, free_vars);
+                }
+            }
             // Constants don't reference variables
             py::Expr::Constant(_) => {}
             // Other expressions - recursively handle if needed

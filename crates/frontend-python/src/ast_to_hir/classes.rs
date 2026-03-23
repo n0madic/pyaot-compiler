@@ -1,10 +1,11 @@
 use super::AstToHir;
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::*;
 use pyaot_types::{exception_name_to_tag, Type};
 use pyaot_utils::{ClassId, FuncId, InternedString, Span};
 use rustpython_parser::ast as py;
+use std::collections::HashSet;
 
 /// Result of parsing method decorators
 #[derive(Debug, Clone, Default)]
@@ -155,11 +156,10 @@ impl AstToHir {
         let mut init_method = None;
 
         // Track property getters and setters: property_name -> (getter_func_id, getter_type, getter_span)
-        let mut property_getters: std::collections::HashMap<String, (FuncId, Type, Span)> =
-            std::collections::HashMap::new();
+        // Uses IndexMap for deterministic property ordering in ClassDef
+        let mut property_getters: IndexMap<String, (FuncId, Type, Span)> = IndexMap::new();
         // Track property setters: property_name -> setter_func_id
-        let mut property_setters: std::collections::HashMap<String, FuncId> =
-            std::collections::HashMap::new();
+        let mut property_setters: IndexMap<String, FuncId> = IndexMap::new();
         // Track abstract methods: names of methods marked with @abstractmethod
         let mut own_abstract_methods: IndexSet<InternedString> = IndexSet::new();
         // Track all method names in this class (for removing overrides from inherited abstract set)
@@ -234,7 +234,6 @@ impl AstToHir {
 
                     let method_func_id = self.convert_method_def(
                         func_def,
-                        class_id,
                         &class_def.name,
                         &parsed_decorators,
                     )?;
@@ -424,7 +423,6 @@ impl AstToHir {
     fn convert_method_def(
         &mut self,
         func_def: py::StmtFunctionDef,
-        _class_id: ClassId,
         class_name: &str,
         decorators: &ParsedDecorators,
     ) -> Result<FuncId> {
@@ -566,85 +564,8 @@ impl AstToHir {
             });
         }
 
-        // Process *args parameter (vararg)
-        if let Some(vararg_param) = &func_def.args.vararg {
-            let vararg_name = self.interner.intern(&vararg_param.arg);
-            let vararg_id = self.alloc_var_id();
-            self.var_map.insert(vararg_name, vararg_id);
-            self.initialized_vars.insert(vararg_name);
-
-            // Type annotation: *args: int → tuple[int, ...]
-            let vararg_type = if let Some(annotation) = &vararg_param.annotation {
-                let element_type = self.convert_type_annotation(annotation)?;
-                Some(Type::Tuple(vec![element_type]))
-            } else {
-                Some(Type::Tuple(vec![Type::Any])) // Default: tuple[Any, ...]
-            };
-
-            params.push(Param {
-                name: vararg_name,
-                var: vararg_id,
-                ty: vararg_type,
-                default: None,
-                kind: ParamKind::VarPositional,
-                span: method_span,
-            });
-        }
-
-        // Process keyword-only parameters (kwonlyargs - parameters after *args)
-        for kwonly_arg in func_def.args.kwonlyargs.iter() {
-            let param_name = self.interner.intern(&kwonly_arg.def.arg);
-            let param_id = self.alloc_var_id();
-            self.var_map.insert(param_name, param_id);
-            self.initialized_vars.insert(param_name);
-
-            let param_type = if let Some(annotation) = &kwonly_arg.def.annotation {
-                Some(self.convert_type_annotation(annotation)?)
-            } else {
-                None
-            };
-
-            // Extract default value from AST (if present)
-            let default = if let Some(default_expr) = &kwonly_arg.default {
-                Some(self.convert_expr((**default_expr).clone())?)
-            } else {
-                None
-            };
-
-            params.push(Param {
-                name: param_name,
-                var: param_id,
-                ty: param_type,
-                default,
-                kind: ParamKind::KeywordOnly,
-                span: method_span,
-            });
-        }
-
-        // Process **kwargs parameter (kwarg)
-        if let Some(kwarg_param) = &func_def.args.kwarg {
-            let kwarg_name = self.interner.intern(&kwarg_param.arg);
-            let kwarg_id = self.alloc_var_id();
-            self.var_map.insert(kwarg_name, kwarg_id);
-            self.initialized_vars.insert(kwarg_name);
-
-            // Type annotation: **kwargs: int → dict[str, int]
-            let kwarg_type = if let Some(annotation) = &kwarg_param.annotation {
-                let value_type = self.convert_type_annotation(annotation)?;
-                Some(Type::Dict(Box::new(Type::Str), Box::new(value_type)))
-            } else {
-                Some(Type::Dict(Box::new(Type::Str), Box::new(Type::Any)))
-            };
-
-            params.push(Param {
-                name: kwarg_name,
-                var: kwarg_id,
-                ty: kwarg_type,
-                default: None,
-                kind: ParamKind::VarKeyword,
-                span: method_span,
-            });
-        }
+        // Process *args, keyword-only, and **kwargs parameters
+        params.extend(self.convert_extra_params(&func_def.args, method_span)?);
 
         // Convert return type
         let return_type = if let Some(ret_ann) = &func_def.returns {
@@ -672,8 +593,8 @@ impl AstToHir {
             return_type,
             body: body_stmts,
             span: method_span,
-            cell_vars: std::collections::HashSet::new(),
-            nonlocal_vars: std::collections::HashSet::new(),
+            cell_vars: HashSet::new(),
+            nonlocal_vars: HashSet::new(),
             is_generator: method_is_generator,
             method_kind: decorators.method_kind,
             is_abstract: decorators.is_abstract,

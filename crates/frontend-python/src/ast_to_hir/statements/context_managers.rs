@@ -289,9 +289,12 @@ impl AstToHir {
             ty: None,
             span: with_span,
         });
+        // TODO: CPython passes (exc_type, exc_val, exc_tb) to __exit__.
+        // We pass (0, 0, 0) for no exception and (1, 0, 0) for exception,
+        // which means context managers that inspect their arguments will behave
+        // incorrectly. Full support requires propagating exception info from the
+        // runtime's exception handling mechanism.
         // When no exception occurs, pass 0 to __exit__ (0 represents "no exception")
-        // Note: CPython passes None, but our method signatures expect int
-        // The value 0 semantically means "no exception" which the context manager can check
         let zero1 = self.module.exprs.alloc(Expr {
             kind: ExprKind::Int(0),
             ty: Some(Type::Int),

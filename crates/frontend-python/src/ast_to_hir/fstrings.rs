@@ -65,29 +65,14 @@ impl FormatSpec {
 
         // Parse zero-pad flag '0' (before width)
         if i < chars.len() && chars[i] == '0' {
-            // Only treat as zero-pad if followed by more digits (width) or end/type
-            // Check: if '0' is followed by a digit, it's zero-pad + width
-            // If '0' is alone before type/precision, it's zero-pad with implicit width
-            if i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
-                result.zero_pad = true;
-                i += 1; // skip the '0', width digits follow
-                        // Set default fill/align for zero-pad if not explicitly set
-                if result.fill.is_none() {
-                    result.fill = Some('0');
-                }
-                if result.align.is_none() {
-                    result.align = Some('=');
-                }
-            } else if i + 1 >= chars.len() || !chars[i + 1].is_ascii_digit() {
-                // Lone '0' or '0' followed by non-digit: it's zero-pad flag
-                result.zero_pad = true;
-                i += 1;
-                if result.fill.is_none() {
-                    result.fill = Some('0');
-                }
-                if result.align.is_none() {
-                    result.align = Some('=');
-                }
+            result.zero_pad = true;
+            i += 1;
+            // Set default fill/align for zero-pad if not explicitly set
+            if result.fill.is_none() {
+                result.fill = Some('0');
+            }
+            if result.align.is_none() {
+                result.align = Some('=');
             }
         }
 
@@ -237,6 +222,10 @@ impl AstToHir {
     }
 
     /// Convert a FormattedValue (the {expr} part of an f-string)
+    ///
+    /// Python semantics (PEP 498): conversion flag is applied BEFORE format spec.
+    /// - `f"{x!r:>20}"` → repr(x), then right-align to width 20
+    /// - `f"{x:.2f}"` → format x as float with 2 decimal places, then str()
     fn convert_formatted_value(
         &mut self,
         fv: &py::ExprFormattedValue,
@@ -245,43 +234,67 @@ impl AstToHir {
         // Convert the expression inside the braces
         let expr_id = self.convert_expr(*fv.value.clone())?;
 
-        // Apply format spec FIRST (e.g., :.2f for float formatting)
-        // Format spec operates on the original value type
-        let formatted_expr = if let Some(ref format_spec) = fv.format_spec {
-            self.apply_format_spec(expr_id, format_spec, fstring_span)?
-        } else {
-            expr_id
-        };
-
-        // Apply conversion flag AFTER format spec (!s, !r, !a)
-        // Python semantics: format spec is applied first, then conversion
         match fv.conversion {
             ConversionFlag::Repr => {
-                // !r: Always wrap in repr(), even for strings (adds quotes)
-                Ok(self.module.exprs.alloc(Expr {
+                // !r: apply repr() first (conversion before formatting per PEP 498)
+                let repr_expr = self.module.exprs.alloc(Expr {
                     kind: ExprKind::BuiltinCall {
                         builtin: Builtin::Repr,
-                        args: vec![formatted_expr],
+                        args: vec![expr_id],
                         kwargs: vec![],
                     },
                     ty: Some(Type::Str),
                     span: fstring_span,
-                }))
+                });
+                // Apply format spec to the repr string (string-level formatting only)
+                if let Some(ref format_spec) = fv.format_spec {
+                    self.apply_format_spec(repr_expr, format_spec, fstring_span)
+                } else {
+                    Ok(repr_expr)
+                }
             }
             ConversionFlag::Ascii => {
-                // !a: Wrap in ascii() to escape non-ASCII characters
-                Ok(self.module.exprs.alloc(Expr {
+                // !a: apply ascii() first (conversion before formatting per PEP 498)
+                let ascii_expr = self.module.exprs.alloc(Expr {
                     kind: ExprKind::BuiltinCall {
                         builtin: Builtin::Ascii,
-                        args: vec![formatted_expr],
+                        args: vec![expr_id],
                         kwargs: vec![],
                     },
                     ty: Some(Type::Str),
                     span: fstring_span,
-                }))
+                });
+                if let Some(ref format_spec) = fv.format_spec {
+                    self.apply_format_spec(ascii_expr, format_spec, fstring_span)
+                } else {
+                    Ok(ascii_expr)
+                }
             }
-            ConversionFlag::Str | ConversionFlag::None => {
-                // !s or no flag: use str() for non-strings, passthrough for strings
+            ConversionFlag::Str => {
+                // !s: apply str() first, then format spec (string-level formatting)
+                let str_expr = self.module.exprs.alloc(Expr {
+                    kind: ExprKind::BuiltinCall {
+                        builtin: Builtin::Str,
+                        args: vec![expr_id],
+                        kwargs: vec![],
+                    },
+                    ty: Some(Type::Str),
+                    span: fstring_span,
+                });
+                if let Some(ref format_spec) = fv.format_spec {
+                    self.apply_format_spec(str_expr, format_spec, fstring_span)
+                } else {
+                    Ok(str_expr)
+                }
+            }
+            ConversionFlag::None => {
+                // No conversion: apply format spec to original type (numeric formatting),
+                // then ensure string result
+                let formatted_expr = if let Some(ref format_spec) = fv.format_spec {
+                    self.apply_format_spec(expr_id, format_spec, fstring_span)?
+                } else {
+                    expr_id
+                };
                 let expr = &self.module.exprs[formatted_expr];
                 if matches!(expr.kind, ExprKind::Str(_)) {
                     Ok(formatted_expr)

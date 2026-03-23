@@ -384,6 +384,74 @@ impl AstToHir {
         }
     }
 
+    /// Create an assignment statement for any target type (Name, Attribute, Subscript).
+    /// Used by chained assignments and other multi-target scenarios.
+    fn assign_to_target(
+        &mut self,
+        target: &py::Expr,
+        value_expr: ExprId,
+        span: Span,
+    ) -> Result<StmtId> {
+        match target {
+            py::Expr::Name(_) => {
+                self.mark_var_initialized(target);
+                let target_var = self.get_or_create_var_from_expr(target)?;
+                Ok(self.module.stmts.alloc(Stmt {
+                    kind: StmtKind::Assign {
+                        target: target_var,
+                        value: value_expr,
+                        type_hint: None,
+                    },
+                    span,
+                }))
+            }
+            py::Expr::Attribute(attr) => {
+                // Check for class attribute assignment: ClassName.attr = value
+                if let py::Expr::Name(base_name) = &*attr.value {
+                    let base_str = self.interner.intern(&base_name.id);
+                    if let Some(&class_id) = self.class_map.get(&base_str) {
+                        let attr_name = self.interner.intern(&attr.attr);
+                        return Ok(self.module.stmts.alloc(Stmt {
+                            kind: StmtKind::ClassAttrAssign {
+                                class_id,
+                                attr: attr_name,
+                                value: value_expr,
+                            },
+                            span,
+                        }));
+                    }
+                }
+                // Regular field assignment: obj.field = value
+                let obj_expr = self.convert_expr(*attr.value.clone())?;
+                let field_name = self.interner.intern(&attr.attr);
+                Ok(self.module.stmts.alloc(Stmt {
+                    kind: StmtKind::FieldAssign {
+                        obj: obj_expr,
+                        field: field_name,
+                        value: value_expr,
+                    },
+                    span,
+                }))
+            }
+            py::Expr::Subscript(sub) => {
+                let obj_expr = self.convert_expr(*sub.value.clone())?;
+                let index_expr = self.convert_expr(*sub.slice.clone())?;
+                Ok(self.module.stmts.alloc(Stmt {
+                    kind: StmtKind::IndexAssign {
+                        obj: obj_expr,
+                        index: index_expr,
+                        value: value_expr,
+                    },
+                    span,
+                }))
+            }
+            _ => Err(CompilerError::parse_error(
+                "Unsupported chained assignment target",
+                span,
+            )),
+        }
+    }
+
     /// Convert chained assignment: a = b = value
     /// Python evaluates the value once, then assigns right-to-left.
     /// We generate: tmp = value; b = tmp; a = tmp
@@ -416,16 +484,7 @@ impl AstToHir {
                 ty: None,
                 span: stmt_span,
             });
-            self.mark_var_initialized(target);
-            let target_var = self.get_or_create_var_from_expr(target)?;
-            let assign_stmt = self.module.stmts.alloc(Stmt {
-                kind: StmtKind::Assign {
-                    target: target_var,
-                    value: temp_ref,
-                    type_hint: None,
-                },
-                span: stmt_span,
-            });
+            let assign_stmt = self.assign_to_target(target, temp_ref, stmt_span)?;
             self.pending_stmts.push(assign_stmt);
         }
 
@@ -436,15 +495,6 @@ impl AstToHir {
             ty: None,
             span: stmt_span,
         });
-        self.mark_var_initialized(first_target);
-        let target_var = self.get_or_create_var_from_expr(first_target)?;
-        Ok(self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: target_var,
-                value: temp_ref,
-                type_hint: None,
-            },
-            span: stmt_span,
-        }))
+        self.assign_to_target(first_target, temp_ref, stmt_span)
     }
 }

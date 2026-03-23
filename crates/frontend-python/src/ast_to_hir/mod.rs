@@ -156,9 +156,9 @@ impl AstToHir {
     }
 
     pub fn convert(mut self, ast: py::Mod) -> Result<(Module, StringInterner)> {
-        match &ast {
+        match ast {
             py::Mod::Module(m) => {
-                for stmt in m.body.clone() {
+                for stmt in m.body {
                     self.convert_top_level_stmt(stmt)?;
                 }
             }

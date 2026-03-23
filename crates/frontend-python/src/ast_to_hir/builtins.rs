@@ -40,6 +40,30 @@ impl AstToHir {
         kwargs_unpack: Option<ExprId>,
         call_span: Span,
     ) -> Result<Option<ExprId>> {
+        // Check kwargs_unpack early — builtin functions don't support **kwargs unpacking
+        // This must be checked before matching to avoid rejecting non-builtins
+        if kwargs_unpack.is_some() {
+            // Only reject if this is actually a builtin name
+            let is_builtin = matches!(
+                name,
+                "print" | "setattr" | "len" | "ord" | "hash" | "id" | "int"
+                | "float" | "pow" | "bool" | "all" | "any" | "callable" | "hasattr"
+                | "str" | "chr" | "bin" | "hex" | "oct" | "repr" | "ascii" | "type"
+                | "input" | "bytes" | "open" | "set" | "divmod" | "getattr"
+                | "range" | "abs" | "min" | "max" | "round" | "sum" | "iter"
+                | "next" | "reversed" | "sorted" | "enumerate" | "zip" | "map"
+                | "filter" | "list" | "tuple" | "dict" | "format" | "reduce"
+                | "isinstance" | "issubclass"
+            ) || BuiltinExceptionKind::from_name(name).is_some();
+
+            if is_builtin {
+                return Err(CompilerError::parse_error(
+                    "**kwargs unpacking not supported for builtin functions",
+                    call_span,
+                ));
+            }
+        }
+
         // Group builtins by return type for cleaner handling
         let result = match name {
             // Builtins returning None
@@ -264,14 +288,6 @@ impl AstToHir {
             // Not a builtin
             _ => return Ok(None),
         };
-
-        // Builtin functions don't support **kwargs unpacking yet
-        if kwargs_unpack.is_some() {
-            return Err(CompilerError::parse_error(
-                "**kwargs unpacking not supported for builtin functions",
-                call_span,
-            ));
-        }
 
         result.map(Some)
     }
