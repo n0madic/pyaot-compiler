@@ -363,7 +363,11 @@ type KeyFn = extern "C" fn(*mut Obj) -> *mut Obj;
 unsafe fn stable_sort_key_pairs(pairs: &mut [(*mut Obj, usize)], reverse: bool) {
     pairs.sort_by(|a, b| {
         let ord = compare_key_values(a.0, b.0);
-        if reverse { ord.reverse() } else { ord }
+        if reverse {
+            ord.reverse()
+        } else {
+            ord
+        }
     });
 }
 
@@ -372,7 +376,11 @@ unsafe fn stable_sort_key_pairs(pairs: &mut [(*mut Obj, usize)], reverse: bool) 
 unsafe fn stable_sort_key_obj_pairs(pairs: &mut [(*mut Obj, *mut Obj)], reverse: bool) {
     pairs.sort_by(|a, b| {
         let ord = compare_key_values(a.0, b.0);
-        if reverse { ord.reverse() } else { ord }
+        if reverse {
+            ord.reverse()
+        } else {
+            ord
+        }
     });
 }
 

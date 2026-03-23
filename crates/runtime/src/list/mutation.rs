@@ -363,7 +363,13 @@ unsafe fn compare_objects(a: *mut Obj, b: *mut Obj, elem_tag: u8) -> i32 {
         } else if a_type == TypeTagKind::Int {
             let a_val = (*(a as *mut crate::object::IntObj)).value;
             let b_val = (*(b as *mut crate::object::IntObj)).value;
-            if a_val < b_val { -1 } else if a_val > b_val { 1 } else { 0 }
+            if a_val < b_val {
+                -1
+            } else if a_val > b_val {
+                1
+            } else {
+                0
+            }
         } else if a_type == TypeTagKind::Float {
             let a_val = (*(a as *mut crate::object::FloatObj)).value;
             let b_val = (*(b as *mut crate::object::FloatObj)).value;
@@ -375,7 +381,13 @@ unsafe fn compare_objects(a: *mut Obj, b: *mut Obj, elem_tag: u8) -> i32 {
         } else if a_type == TypeTagKind::Bool {
             let a_val = (*(a as *mut crate::object::BoolObj)).value;
             let b_val = (*(b as *mut crate::object::BoolObj)).value;
-            if !a_val && b_val { -1 } else if a_val && !b_val { 1 } else { 0 }
+            if !a_val && b_val {
+                -1
+            } else if a_val && !b_val {
+                1
+            } else {
+                0
+            }
         } else {
             // For other objects, fall back to pointer comparison
             if a < b {
@@ -591,8 +603,8 @@ pub extern "C" fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, va
 
             // Free the old data buffer (list data is std::alloc-managed, not GC-managed)
             if !old_data.is_null() && capacity > 0 {
-                let old_layout = Layout::array::<*mut Obj>(capacity)
-                    .expect("list old layout overflow");
+                let old_layout =
+                    Layout::array::<*mut Obj>(capacity).expect("list old layout overflow");
                 std::alloc::dealloc(old_data as *mut u8, old_layout);
             }
 

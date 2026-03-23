@@ -274,8 +274,7 @@ pub extern "C" fn rt_os_listdir(path: *mut Obj) -> *mut Obj {
                 // Build list using rt_make_list + rt_list_push so GC ownership
                 // and finalization are handled correctly by list_finalize.
                 let count = names.len() as i64;
-                let list_ptr =
-                    crate::list::rt_make_list(count, 0 /* ELEM_HEAP_OBJ */);
+                let list_ptr = crate::list::rt_make_list(count, 0 /* ELEM_HEAP_OBJ */);
 
                 for name in &names {
                     let str_obj = make_str_from_rust(name);
@@ -620,10 +619,7 @@ pub extern "C" fn rt_os_rmdir(path: *mut Obj) {
                                 } else {
                                     (
                                         BuiltinExceptionKind::IOError.tag(),
-                                        format!(
-                                            "Error removing directory '{}': {}\0",
-                                            path_str, e
-                                        ),
+                                        format!("Error removing directory '{}': {}\0", path_str, e),
                                     )
                                 }
                             } else {

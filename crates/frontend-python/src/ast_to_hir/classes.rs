@@ -232,11 +232,8 @@ impl AstToHir {
                         Type::None
                     };
 
-                    let method_func_id = self.convert_method_def(
-                        func_def,
-                        &class_def.name,
-                        &parsed_decorators,
-                    )?;
+                    let method_func_id =
+                        self.convert_method_def(func_def, &class_def.name, &parsed_decorators)?;
 
                     if is_init {
                         init_method = Some(method_func_id);

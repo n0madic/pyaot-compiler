@@ -826,15 +826,30 @@ fn compile_binop(
     } else {
         // Integer operations - use runtime functions with overflow/division-by-zero checks
         match op {
-            mir::BinOp::Add => {
-                call_int_binop_rt(builder, ctx, "rt_add_int", cltypes::I64, left_val, right_val)?
-            }
-            mir::BinOp::Sub => {
-                call_int_binop_rt(builder, ctx, "rt_sub_int", cltypes::I64, left_val, right_val)?
-            }
-            mir::BinOp::Mul => {
-                call_int_binop_rt(builder, ctx, "rt_mul_int", cltypes::I64, left_val, right_val)?
-            }
+            mir::BinOp::Add => call_int_binop_rt(
+                builder,
+                ctx,
+                "rt_add_int",
+                cltypes::I64,
+                left_val,
+                right_val,
+            )?,
+            mir::BinOp::Sub => call_int_binop_rt(
+                builder,
+                ctx,
+                "rt_sub_int",
+                cltypes::I64,
+                left_val,
+                right_val,
+            )?,
+            mir::BinOp::Mul => call_int_binop_rt(
+                builder,
+                ctx,
+                "rt_mul_int",
+                cltypes::I64,
+                left_val,
+                right_val,
+            )?,
             mir::BinOp::Div => {
                 // Python 3: true division always returns float
                 call_int_binop_rt(
@@ -846,28 +861,41 @@ fn compile_binop(
                     right_val,
                 )?
             }
-            mir::BinOp::FloorDiv => {
-                call_int_binop_rt(builder, ctx, "rt_div_int", cltypes::I64, left_val, right_val)?
-            }
-            mir::BinOp::Mod => {
-                call_int_binop_rt(builder, ctx, "rt_mod_int", cltypes::I64, left_val, right_val)?
-            }
-            mir::BinOp::Pow => {
-                call_int_binop_rt(builder, ctx, "rt_pow_int", cltypes::I64, left_val, right_val)?
-            }
+            mir::BinOp::FloorDiv => call_int_binop_rt(
+                builder,
+                ctx,
+                "rt_div_int",
+                cltypes::I64,
+                left_val,
+                right_val,
+            )?,
+            mir::BinOp::Mod => call_int_binop_rt(
+                builder,
+                ctx,
+                "rt_mod_int",
+                cltypes::I64,
+                left_val,
+                right_val,
+            )?,
+            mir::BinOp::Pow => call_int_binop_rt(
+                builder,
+                ctx,
+                "rt_pow_int",
+                cltypes::I64,
+                left_val,
+                right_val,
+            )?,
             // Integer comparison operations - icmp returns i1, extend to dest type
             // First, promote operands to matching types if needed (i8 vs i64)
             mir::BinOp::Eq => {
-                let (l, r) =
-                    promote_int_operands(builder, left_val, right_val);
+                let (l, r) = promote_int_operands(builder, left_val, right_val);
                 let cmp = builder
                     .ins()
                     .icmp(cranelift_codegen::ir::condcodes::IntCC::Equal, l, r);
                 extend_comparison_result(builder, cmp, dest, ctx)
             }
             mir::BinOp::NotEq => {
-                let (l, r) =
-                    promote_int_operands(builder, left_val, right_val);
+                let (l, r) = promote_int_operands(builder, left_val, right_val);
                 let cmp =
                     builder
                         .ins()
@@ -875,8 +903,7 @@ fn compile_binop(
                 extend_comparison_result(builder, cmp, dest, ctx)
             }
             mir::BinOp::Lt => {
-                let (l, r) =
-                    promote_int_operands(builder, left_val, right_val);
+                let (l, r) = promote_int_operands(builder, left_val, right_val);
                 let cmp = builder.ins().icmp(
                     cranelift_codegen::ir::condcodes::IntCC::SignedLessThan,
                     l,
@@ -885,8 +912,7 @@ fn compile_binop(
                 extend_comparison_result(builder, cmp, dest, ctx)
             }
             mir::BinOp::LtE => {
-                let (l, r) =
-                    promote_int_operands(builder, left_val, right_val);
+                let (l, r) = promote_int_operands(builder, left_val, right_val);
                 let cmp = builder.ins().icmp(
                     cranelift_codegen::ir::condcodes::IntCC::SignedLessThanOrEqual,
                     l,
@@ -895,8 +921,7 @@ fn compile_binop(
                 extend_comparison_result(builder, cmp, dest, ctx)
             }
             mir::BinOp::Gt => {
-                let (l, r) =
-                    promote_int_operands(builder, left_val, right_val);
+                let (l, r) = promote_int_operands(builder, left_val, right_val);
                 let cmp = builder.ins().icmp(
                     cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThan,
                     l,
@@ -905,8 +930,7 @@ fn compile_binop(
                 extend_comparison_result(builder, cmp, dest, ctx)
             }
             mir::BinOp::GtE => {
-                let (l, r) =
-                    promote_int_operands(builder, left_val, right_val);
+                let (l, r) = promote_int_operands(builder, left_val, right_val);
                 let cmp = builder.ins().icmp(
                     cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThanOrEqual,
                     l,

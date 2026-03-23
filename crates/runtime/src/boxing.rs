@@ -86,9 +86,7 @@ pub fn shutdown_small_int_pool() {
 pub fn init_bool_pool() {
     // Check if already initialized (fast path)
     {
-        let pool_guard = BOOL_POOL
-            .lock()
-            .expect("BOOL_POOL mutex poisoned");
+        let pool_guard = BOOL_POOL.lock().expect("BOOL_POOL mutex poisoned");
         if pool_guard.is_some() {
             return;
         }
@@ -110,9 +108,7 @@ pub fn init_bool_pool() {
     }
 
     // Store under lock
-    let mut pool_guard = BOOL_POOL
-        .lock()
-        .expect("BOOL_POOL mutex poisoned");
+    let mut pool_guard = BOOL_POOL.lock().expect("BOOL_POOL mutex poisoned");
     if pool_guard.is_none() {
         *pool_guard = Some(BoolPoolWrapper(pool));
     }

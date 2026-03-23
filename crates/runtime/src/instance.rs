@@ -21,8 +21,7 @@ pub extern "C" fn rt_make_instance(class_id: u8, field_count: i64) -> *mut Obj {
     // on 64-bit targets) is accounted for correctly. The flexible array member
     // `fields: [*mut Obj; 0]` contributes 0 bytes, so we add the field storage
     // separately.
-    let size = std::mem::size_of::<InstanceObj>()
-        + field_count * std::mem::size_of::<*mut Obj>();
+    let size = std::mem::size_of::<InstanceObj>() + field_count * std::mem::size_of::<*mut Obj>();
 
     // Allocate using GC
     let obj = gc::gc_alloc(size, TypeTagKind::Instance as u8);
@@ -61,7 +60,11 @@ pub extern "C" fn rt_instance_get_field(inst: *mut Obj, offset: i64) -> i64 {
 
         // Bounds check
         if offset < 0 || offset >= field_count {
-            debug_assert!(false, "rt_instance_get_field: offset {} out of bounds (field_count={})", offset, field_count);
+            debug_assert!(
+                false,
+                "rt_instance_get_field: offset {} out of bounds (field_count={})",
+                offset, field_count
+            );
             return 0;
         }
 
@@ -88,7 +91,11 @@ pub extern "C" fn rt_instance_set_field(inst: *mut Obj, offset: i64, value: i64)
 
         // Bounds check
         if offset < 0 || offset >= field_count {
-            debug_assert!(false, "rt_instance_set_field: offset {} out of bounds (field_count={})", offset, field_count);
+            debug_assert!(
+                false,
+                "rt_instance_set_field: offset {} out of bounds (field_count={})",
+                offset, field_count
+            );
             return;
         }
 

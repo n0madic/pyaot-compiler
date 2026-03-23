@@ -217,4 +217,3 @@ pub enum InlineDecision {
     /// Never inline (with reason)
     Never(&'static str),
 }
-

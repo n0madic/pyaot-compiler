@@ -283,7 +283,8 @@ pub extern "C" fn rt_str_splitlines(s: *mut Obj) -> *mut Obj {
                 || c == b'\x0c'  // \f form feed
                 || c == b'\x1c'  // file separator
                 || c == b'\x1d'  // group separator
-                || c == b'\x1e'  // record separator
+                || c == b'\x1e'
+            // record separator
             {
                 // Add line (without line terminator)
                 let line = rt_make_str(str_data.add(line_start), i - line_start);

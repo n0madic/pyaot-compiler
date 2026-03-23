@@ -254,8 +254,7 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
                 } else {
                     format!("{}\n", line)
                 };
-                let line_obj =
-                    crate::string::rt_make_str(line_str.as_ptr(), line_str.len());
+                let line_obj = crate::string::rt_make_str(line_str.as_ptr(), line_str.len());
                 crate::list::rt_list_push(list, line_obj);
             }
 

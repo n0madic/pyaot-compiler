@@ -390,8 +390,7 @@ fn format_float(value: f64, spec: &FormatSpec) -> Result<String, String> {
                         // Split at 'e', trim the mantissa, rejoin
                         if let Some(e_pos) = s.find('e') {
                             let (mantissa, exp_part) = s.split_at(e_pos);
-                            let trimmed =
-                                mantissa.trim_end_matches('0').trim_end_matches('.');
+                            let trimmed = mantissa.trim_end_matches('0').trim_end_matches('.');
                             s = format!("{}{}", trimmed, exp_part);
                         }
                     }

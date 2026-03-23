@@ -83,7 +83,9 @@ pub extern "C" fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
                 }
             }
             TypeTagKind::Str => crate::conversions::rt_str_to_int(obj),
-            _ => raise_type_error(b"int() argument must be a string, a bytes-like object or a real number"),
+            _ => raise_type_error(
+                b"int() argument must be a string, a bytes-like object or a real number",
+            ),
         }
     };
     // Box the result

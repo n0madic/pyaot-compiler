@@ -559,9 +559,9 @@ fn test_multi_block_callee_inlined() {
     );
     // No more calls to callee
     let has_call = caller.blocks.values().any(|b| {
-        b.instructions.iter().any(|i| {
-            matches!(i.kind, InstructionKind::CallDirect { func, .. } if func == callee_id)
-        })
+        b.instructions.iter().any(
+            |i| matches!(i.kind, InstructionKind::CallDirect { func, .. } if func == callee_id),
+        )
     });
     assert!(!has_call, "Multi-block callee should be inlined");
 }
@@ -779,7 +779,10 @@ fn test_transitive_inlining() {
             .iter()
             .any(|i| matches!(i.kind, InstructionKind::BinOp { .. }))
     });
-    assert!(has_binop, "C should contain A's BinOp after transitive inlining");
+    assert!(
+        has_binop,
+        "C should contain A's BinOp after transitive inlining"
+    );
 }
 
 #[test]
@@ -793,7 +796,12 @@ fn test_consider_decision_medium_function() {
         is_gc_root: false,
     };
 
-    let mut func = Function::new(func_id, "medium".to_string(), vec![param.clone()], Type::Int);
+    let mut func = Function::new(
+        func_id,
+        "medium".to_string(),
+        vec![param.clone()],
+        Type::Int,
+    );
 
     // Add 15 instructions (above always_inline_threshold=10, below max_inline_size=50)
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -850,7 +858,12 @@ fn test_gc_roots_excluded_from_always_inline() {
         is_gc_root: false,
     };
 
-    let mut func = Function::new(func_id, "gc_func".to_string(), vec![param.clone()], Type::Str);
+    let mut func = Function::new(
+        func_id,
+        "gc_func".to_string(),
+        vec![param.clone()],
+        Type::Str,
+    );
     func.locals.insert(result.id, result.clone());
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();

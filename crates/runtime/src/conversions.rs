@@ -462,7 +462,9 @@ unsafe fn obj_repr_string(s: &mut String, obj: *mut Obj) {
             let _ = write!(s, "{}", (*(obj as *mut IntObj)).value);
         }
         TypeTagKind::Float => {
-            s.push_str(&crate::utils::format_float_python((*(obj as *mut FloatObj)).value));
+            s.push_str(&crate::utils::format_float_python(
+                (*(obj as *mut FloatObj)).value,
+            ));
         }
         TypeTagKind::Bool => {
             s.push_str(if (*(obj as *mut BoolObj)).value {

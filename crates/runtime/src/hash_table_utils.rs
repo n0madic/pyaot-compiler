@@ -117,12 +117,20 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
             (TypeTagKind::Bool, TypeTagKind::Float) | (TypeTagKind::Float, TypeTagKind::Bool) => {
                 let (bool_val, float_val) = if tag_a == TypeTagKind::Bool {
                     (
-                        if (*(a as *mut BoolObj)).value { 1i64 } else { 0 },
+                        if (*(a as *mut BoolObj)).value {
+                            1i64
+                        } else {
+                            0
+                        },
                         (*(b as *mut FloatObj)).value,
                     )
                 } else {
                     (
-                        if (*(b as *mut BoolObj)).value { 1i64 } else { 0 },
+                        if (*(b as *mut BoolObj)).value {
+                            1i64
+                        } else {
+                            0
+                        },
                         (*(a as *mut FloatObj)).value,
                     )
                 };

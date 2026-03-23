@@ -280,8 +280,7 @@ pub extern "C" fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
         let mut buf_size = 256usize;
         let result = loop {
             let mut buffer = vec![0i8; buf_size];
-            let written =
-                libc::strftime(buffer.as_mut_ptr(), buf_size, fmt_c.as_ptr(), &tm);
+            let written = libc::strftime(buffer.as_mut_ptr(), buf_size, fmt_c.as_ptr(), &tm);
             if written > 0 {
                 let s = std::ffi::CStr::from_ptr(buffer.as_ptr())
                     .to_string_lossy()
