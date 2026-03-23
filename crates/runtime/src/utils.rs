@@ -128,6 +128,43 @@ pub unsafe fn raise_io_error(msg: &str) -> ! {
     crate::exceptions::rt_exc_raise(ExceptionType::IOError as u8, msg.as_ptr(), msg.len())
 }
 
+/// Format a float value the way CPython does.
+///
+/// CPython rules:
+/// - `nan` → `"nan"` (lowercase)
+/// - `inf` → `"inf"`, `-inf` → `"-inf"`
+/// - `-0.0` → `"-0.0"`
+/// - Whole numbers with `abs < 1e16` → `"{:.1}"` (e.g. `2.0`)
+/// - Others → shortest repr, ensuring a `.` or `e` is present
+pub fn format_float_python(value: f64) -> String {
+    if value.is_nan() {
+        return "nan".to_string();
+    }
+    if value.is_infinite() {
+        return if value > 0.0 {
+            "inf".to_string()
+        } else {
+            "-inf".to_string()
+        };
+    }
+    if value == 0.0 {
+        return if value.is_sign_negative() {
+            "-0.0".to_string()
+        } else {
+            "0.0".to_string()
+        };
+    }
+    if value.fract() == 0.0 && value.abs() < 1e16 {
+        return format!("{:.1}", value);
+    }
+    let s = format!("{}", value);
+    if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+        format!("{}.0", s)
+    } else {
+        s
+    }
+}
+
 /// Raise a RuntimeError exception with the given message
 ///
 /// # Safety

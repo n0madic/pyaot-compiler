@@ -132,7 +132,7 @@ pub extern "C" fn rt_print_int(value: i64) {
 /// Print a float (legacy - with newline)
 #[no_mangle]
 pub extern "C" fn rt_print_float(value: f64) {
-    println!("{}", value);
+    println!("{}", crate::utils::format_float_python(value));
 }
 
 /// Print a boolean (legacy - with newline)
@@ -158,7 +158,7 @@ pub extern "C" fn rt_print_int_value(value: i64) {
 /// Print a float value (no newline)
 #[no_mangle]
 pub extern "C" fn rt_print_float_value(value: f64) {
-    print!("{}", value);
+    print!("{}", crate::utils::format_float_python(value));
 }
 
 /// Print a boolean value (no newline)
@@ -247,12 +247,7 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
         }
         TypeTagKind::Float => {
             let float_obj = obj as *mut FloatObj;
-            let v = (*float_obj).value;
-            if v.fract() == 0.0 && v.abs() < 1e15 {
-                print!("{:.1}", v);
-            } else {
-                print!("{}", v);
-            }
+            print!("{}", crate::utils::format_float_python((*float_obj).value));
         }
         TypeTagKind::Bool => {
             let bool_obj = obj as *mut BoolObj;
@@ -274,7 +269,7 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
         TypeTagKind::Dict => print_dict_repr(obj),
         TypeTagKind::Set => print_set_repr(obj),
         TypeTagKind::Bytes => rt_print_bytes_obj(obj),
-        TypeTagKind::Instance => print!("<instance at {:p}>", obj),
+        TypeTagKind::Instance => print!("<object at {:p}>", obj),
         TypeTagKind::Iterator => print!("<iterator>"),
         TypeTagKind::Cell => print!("<cell>"),
         // For these types, use type_name() from core-defs (single source of truth)
@@ -427,12 +422,7 @@ pub extern "C" fn rt_print_obj(obj: *mut Obj) {
             }
             TypeTagKind::Float => {
                 let float_obj = obj as *mut FloatObj;
-                let v = (*float_obj).value;
-                if v.fract() == 0.0 && v.abs() < 1e15 {
-                    print!("{:.1}", v);
-                } else {
-                    print!("{}", v);
-                }
+                print!("{}", crate::utils::format_float_python((*float_obj).value));
             }
             TypeTagKind::Bool => {
                 let bool_obj = obj as *mut BoolObj;
@@ -445,7 +435,7 @@ pub extern "C" fn rt_print_obj(obj: *mut Obj) {
             TypeTagKind::Tuple => print_tuple_repr(obj),
             TypeTagKind::Dict => print_dict_repr(obj),
             TypeTagKind::Set => print_set_repr(obj),
-            TypeTagKind::Instance => print!("<instance at {:p}>", obj),
+            TypeTagKind::Instance => print!("<object at {:p}>", obj),
             TypeTagKind::Iterator => print!("<iterator>"),
             TypeTagKind::Cell => print!("<cell>"),
             // For these types, use type_name() from core-defs (single source of truth)

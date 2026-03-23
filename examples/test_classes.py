@@ -629,7 +629,7 @@ class PointNoStr:
 
 p_no_str = PointNoStr(1, 2)
 str_result2 = str(p_no_str)
-assert "instance at" in str_result2, "Should show default repr"
+assert "object at" in str_result2, "Should show default repr"
 
 print("Dunder __str__ tests passed!")
 

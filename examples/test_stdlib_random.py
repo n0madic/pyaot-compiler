@@ -181,15 +181,11 @@ print("random.gauss() passed")
 
 # ===== SECTION: random.choices() =====
 
-# NOTE: In CPython, random.choices() uses keyword args: choices(pop, weights=w, k=k)
-# Our compiler passes them positionally: choices(pop, weights, k)
-# Tests use positional form matching our compiler's calling convention.
-
 random.seed(800)
 colors: list[str] = ["red", "green", "blue"]
 ch_weights: list[float] = [10.0, 1.0, 1.0]
 
-ch1: list[str] = random.choices(colors, ch_weights, 5)  # type: ignore
+ch1: list[str] = random.choices(colors, ch_weights, k=5)  # type: ignore
 assert len(ch1) == 5, "choices(k=5) must return 5 elements"
 
 # All elements must come from population
@@ -203,7 +199,7 @@ for elem in ch1:
 # With heavy weight on "red", expect mostly reds
 red_count: int = 0
 random.seed(42)
-many_choices: list[str] = random.choices(colors, ch_weights, 100)  # type: ignore
+many_choices: list[str] = random.choices(colors, ch_weights, k=100)  # type: ignore
 for elem in many_choices:
     if elem == "red":
         red_count = red_count + 1
@@ -211,7 +207,7 @@ assert red_count > 50, f"with weights [10,1,1], red should dominate, got {red_co
 
 # Reproducibility
 random.seed(800)
-ch2: list[str] = random.choices(colors, ch_weights, 5)  # type: ignore
+ch2: list[str] = random.choices(colors, ch_weights, k=5)  # type: ignore
 for i in range(5):
     assert ch1[i] == ch2[i], f"choices reproducibility at index {i}"
 
@@ -219,7 +215,7 @@ for i in range(5):
 random.seed(900)
 int_pop: list[int] = [1, 2, 3, 4, 5]
 int_ch_weights: list[float] = [1.0, 1.0, 1.0, 1.0, 1.0]
-int_ch: list[int] = random.choices(int_pop, int_ch_weights, 3)  # type: ignore
+int_ch: list[int] = random.choices(int_pop, int_ch_weights, k=3)  # type: ignore
 assert len(int_ch) == 3, "choices with int population returns correct count"
 
 for elem in int_ch:
@@ -231,7 +227,7 @@ for elem in int_ch:
 
 # Reproducibility for int choices
 random.seed(900)
-int_ch2: list[int] = random.choices(int_pop, int_ch_weights, 3)  # type: ignore
+int_ch2: list[int] = random.choices(int_pop, int_ch_weights, k=3)  # type: ignore
 for i in range(3):
     assert int_ch[i] == int_ch2[i], f"int choices reproducibility at index {i}"
 

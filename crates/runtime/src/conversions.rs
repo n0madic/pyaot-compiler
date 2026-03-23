@@ -37,33 +37,7 @@ pub extern "C" fn rt_int_to_str(value: i64) -> *mut Obj {
 pub extern "C" fn rt_float_to_str(value: f64) -> *mut Obj {
     use crate::object::{ObjHeader, StrObj, TypeTagKind};
 
-    // Format float similar to Python's default repr
-    let s = if value.is_nan() {
-        "nan".to_string()
-    } else if value.is_infinite() {
-        if value > 0.0 {
-            "inf".to_string()
-        } else {
-            "-inf".to_string()
-        }
-    } else if value == 0.0 {
-        if value.is_sign_negative() {
-            "-0.0".to_string()
-        } else {
-            "0.0".to_string()
-        }
-    } else if value.fract() == 0.0 && value.abs() < 1e16 {
-        // For whole numbers in representable range, show .0 like Python
-        format!("{:.1}", value)
-    } else {
-        let s = format!("{}", value);
-        // Ensure float-like appearance (has decimal point or exponent)
-        if !s.contains('.') && !s.contains('e') && !s.contains('E') {
-            format!("{}.0", s)
-        } else {
-            s
-        }
-    };
+    let s = crate::utils::format_float_python(value);
     let bytes = s.as_bytes();
     let len = bytes.len();
 
@@ -340,25 +314,7 @@ unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
 
     match (*obj).type_tag() {
         TypeTagKind::Int => format!("{}", (*(obj as *mut IntObj)).value),
-        TypeTagKind::Float => {
-            let v = (*(obj as *mut FloatObj)).value;
-            if v.is_nan() {
-                "nan".to_string()
-            } else if v.is_infinite() {
-                if v > 0.0 { "inf".to_string() } else { "-inf".to_string() }
-            } else if v == 0.0 {
-                if v.is_sign_negative() { "-0.0".to_string() } else { "0.0".to_string() }
-            } else if v.fract() == 0.0 && v.abs() < 1e16 {
-                format!("{:.1}", v)
-            } else {
-                let s = format!("{}", v);
-                if !s.contains('.') && !s.contains('e') && !s.contains('E') {
-                    format!("{}.0", s)
-                } else {
-                    s
-                }
-            }
-        }
+        TypeTagKind::Float => crate::utils::format_float_python((*(obj as *mut FloatObj)).value),
         TypeTagKind::Bool => {
             if (*(obj as *mut BoolObj)).value {
                 "True".to_string()
@@ -506,23 +462,7 @@ unsafe fn obj_repr_string(s: &mut String, obj: *mut Obj) {
             let _ = write!(s, "{}", (*(obj as *mut IntObj)).value);
         }
         TypeTagKind::Float => {
-            let v = (*(obj as *mut FloatObj)).value;
-            if v.is_nan() {
-                s.push_str("nan");
-            } else if v.is_infinite() {
-                s.push_str(if v > 0.0 { "inf" } else { "-inf" });
-            } else if v == 0.0 {
-                s.push_str(if v.is_sign_negative() { "-0.0" } else { "0.0" });
-            } else if v.fract() == 0.0 && v.abs() < 1e16 {
-                let _ = write!(s, "{:.1}", v);
-            } else {
-                let formatted = format!("{}", v);
-                if !formatted.contains('.') && !formatted.contains('e') && !formatted.contains('E') {
-                    let _ = write!(s, "{}.0", v);
-                } else {
-                    s.push_str(&formatted);
-                }
-            }
+            s.push_str(&crate::utils::format_float_python((*(obj as *mut FloatObj)).value));
         }
         TypeTagKind::Bool => {
             s.push_str(if (*(obj as *mut BoolObj)).value {
@@ -668,11 +608,7 @@ pub extern "C" fn rt_repr_int(n: i64) -> *mut Obj {
 /// repr(float) -> string
 #[no_mangle]
 pub extern "C" fn rt_repr_float(f: f64) -> *mut Obj {
-    let s = if f.fract() == 0.0 && f.abs() < 1e15 {
-        format!("{:.1}", f)
-    } else {
-        format!("{}", f)
-    };
+    let s = crate::utils::format_float_python(f);
     let bytes = s.as_bytes();
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
 }
@@ -1080,11 +1016,11 @@ pub extern "C" fn rt_type_name_extract(type_str: *mut Obj) -> *mut Obj {
 }
 
 /// Default repr for objects without __str__ or __repr__
-/// Returns: pointer to string like "<instance at 0x...>"
+/// Returns: pointer to string like "<object at 0x...>"
 #[no_mangle]
 pub extern "C" fn rt_obj_default_repr(obj: *mut Obj) -> *mut Obj {
     unsafe {
-        let s = format!("<instance at {:p}>", obj);
+        let s = format!("<object at {:p}>", obj);
         let bytes = s.as_bytes();
         rt_make_str(bytes.as_ptr(), bytes.len())
     }
