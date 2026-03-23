@@ -1,7 +1,7 @@
 //! Call graph analysis and function cost computation for inlining decisions
 
 use indexmap::{IndexMap, IndexSet};
-use pyaot_mir::{BasicBlock, Function, InstructionKind, Module, Terminator};
+use pyaot_mir::{Function, InstructionKind, Module, Terminator};
 use pyaot_utils::FuncId;
 
 use super::InlineConfig;
@@ -78,7 +78,6 @@ pub struct FunctionCost {
     /// Whether the function is a generator (has $resume suffix)
     pub is_generator: bool,
     /// Whether the function has calls that cannot be inlined (CallNamed, CallVirtual)
-    #[allow(dead_code)]
     pub has_uninlinable_calls: bool,
 }
 
@@ -185,10 +184,11 @@ impl FunctionCost {
             return InlineDecision::Never("too many instructions");
         }
 
-        // Always inline small leaf functions
+        // Always inline small leaf functions without uninlinable calls
         if self.instruction_count <= config.always_inline_threshold
             && self.block_count == 1
             && !self.has_gc_roots
+            && !self.has_uninlinable_calls
         {
             return InlineDecision::Always;
         }
@@ -218,19 +218,3 @@ pub enum InlineDecision {
     Never(&'static str),
 }
 
-/// Analyze a block for CallDirect instructions that could be inlined
-#[allow(dead_code)]
-pub fn find_inline_candidates(block: &BasicBlock) -> Vec<usize> {
-    block
-        .instructions
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, instr)| {
-            if matches!(instr.kind, InstructionKind::CallDirect { .. }) {
-                Some(idx)
-            } else {
-                None
-            }
-        })
-        .collect()
-}

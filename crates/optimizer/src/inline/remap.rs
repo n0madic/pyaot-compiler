@@ -4,7 +4,7 @@
 //! to avoid conflicts with the caller function's IDs.
 
 use indexmap::IndexMap;
-use pyaot_mir::{BasicBlock, Instruction, InstructionKind, Operand, Terminator};
+use pyaot_mir::{BasicBlock, Instruction, InstructionKind, Operand, RaiseCause, Terminator};
 use pyaot_utils::{BlockId, LocalId};
 
 /// Remapper for LocalId and BlockId when inlining
@@ -49,15 +49,11 @@ impl InlineRemapper {
         })
     }
 
-    /// Get the next available LocalId after remapping
-    #[allow(dead_code)]
-    pub fn next_local_id(&self) -> u32 {
-        self.next_local
-    }
-
-    /// Get the next available BlockId after remapping
-    pub fn next_block_id(&self) -> u32 {
-        self.next_block
+    /// Allocate a fresh BlockId without associating it with a source block
+    pub fn allocate_block_id(&mut self) -> BlockId {
+        let id = BlockId::from(self.next_block);
+        self.next_block += 1;
+        id
     }
 
     /// Remap an operand
@@ -235,7 +231,10 @@ impl InlineRemapper {
             } => Terminator::Raise {
                 exc_type: *exc_type,
                 message: message.as_ref().map(|o| self.remap_operand(o)),
-                cause: cause.clone(),
+                cause: cause.as_ref().map(|c| RaiseCause {
+                    exc_type: c.exc_type,
+                    message: c.message.as_ref().map(|o| self.remap_operand(o)),
+                }),
                 suppress_context: *suppress_context,
             },
             Terminator::RaiseCustom { class_id, message } => Terminator::RaiseCustom {

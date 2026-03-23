@@ -15,32 +15,31 @@ use super::InlineConfig;
 
 /// Perform inlining pass on the module
 pub fn inline_pass(module: &mut Module, config: &InlineConfig) {
-    // Build call graph and compute costs
-    let call_graph = CallGraph::build(module);
-    let costs: IndexMap<FuncId, FunctionCost> = module
-        .functions
-        .keys()
-        .map(|&id| {
-            let cost = FunctionCost::compute(&module.functions[&id], &call_graph);
-            (id, cost)
-        })
-        .collect();
-
-    // Determine which functions can be inlined
-    let inlinable: IndexMap<FuncId, InlineDecision> = costs
-        .iter()
-        .map(|(&id, cost)| (id, cost.should_inline(config)))
-        .collect();
-
     // Perform multiple iterations to handle transitive inlining
+    // Recompute call graph and costs each iteration since inlining changes function sizes
     for _iteration in 0..config.max_iterations {
+        let call_graph = CallGraph::build(module);
+        let costs: IndexMap<FuncId, FunctionCost> = module
+            .functions
+            .keys()
+            .map(|&id| {
+                let cost = FunctionCost::compute(&module.functions[&id], &call_graph);
+                (id, cost)
+            })
+            .collect();
+
+        let inlinable: IndexMap<FuncId, InlineDecision> = costs
+            .iter()
+            .map(|(&id, cost)| (id, cost.should_inline(config)))
+            .collect();
+
         let mut any_inlined = false;
 
         // Collect function IDs to process (avoid borrowing issues)
         let func_ids: Vec<FuncId> = module.functions.keys().copied().collect();
 
         for func_id in func_ids {
-            if inline_calls_in_function(module, func_id, &inlinable) {
+            if inline_calls_in_function(module, func_id, &inlinable, config) {
                 any_inlined = true;
             }
         }
@@ -51,18 +50,31 @@ pub fn inline_pass(module: &mut Module, config: &InlineConfig) {
     }
 }
 
+/// Maximum total instruction count for a caller before we stop inlining into it.
+/// Prevents unbounded growth from many small inlined functions.
+const MAX_CALLER_INSTRUCTIONS: usize = 500;
+
 /// Inline eligible calls within a single function
 /// Returns true if any inlining was performed
 fn inline_calls_in_function(
     module: &mut Module,
     caller_id: FuncId,
     inlinable: &IndexMap<FuncId, InlineDecision>,
+    config: &InlineConfig,
 ) -> bool {
     let mut any_inlined = false;
 
     // We need to iterate over blocks, but inlining modifies the block structure
     // So we process one call at a time and restart
     loop {
+        // Stop inlining into this function if it has grown too large
+        if let Some(caller) = module.functions.get(&caller_id) {
+            let total_instrs: usize = caller.blocks.values().map(|b| b.instructions.len()).sum();
+            if total_instrs > MAX_CALLER_INSTRUCTIONS.max(config.max_inline_size * 10) {
+                break;
+            }
+        }
+
         // Find next inline candidate
         let candidate = find_next_inline_candidate(module, caller_id, inlinable);
 
@@ -158,12 +170,8 @@ fn perform_inline(
     // Create remapper
     let mut remapper = InlineRemapper::new(next_local, next_block);
 
-    // Create continuation block ID (for after inlined code)
-    let continuation_block_id = BlockId::from(remapper.next_block_id());
-
-    // Pre-allocate a block id for remapping (we'll use it as the continuation target)
-    // This ensures the remapper's next_block is incremented
-    let _ = remapper.remap_block(BlockId::from(u32::MAX)); // Dummy to advance counter
+    // Allocate a fresh block ID for the continuation block (after inlined code)
+    let continuation_block_id = remapper.allocate_block_id();
 
     // Remap callee's parameter locals to new locals in caller
     // and create Copy instructions to pass arguments
