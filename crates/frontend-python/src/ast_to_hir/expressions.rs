@@ -413,13 +413,45 @@ impl AstToHir {
                                     }
                                 }
 
-                                // Collect contiguous args (lowering handles trailing defaults)
-                                let mut args = Vec::new();
-                                for slot in &arg_slots {
+                                // Find the last filled slot to determine how many args to pass.
+                                // Interior gaps (e.g., f(a, k=c) skipping param b) get
+                                // default-value expressions so lowering sees a contiguous
+                                // argument list.
+                                let last_filled = arg_slots.iter().rposition(|s| s.is_some());
+                                let collect_len = last_filled.map_or(0, |i| i + 1);
+
+                                let mut args = Vec::with_capacity(collect_len);
+                                for (i, slot) in arg_slots.iter().enumerate().take(collect_len) {
                                     if let Some(expr_id) = slot {
                                         args.push(*expr_id);
                                     } else {
-                                        break;
+                                        // Fill interior gap with a default-value expression
+                                        // so lowering receives a contiguous arg list.
+                                        let param = &func_def.params[i];
+                                        let default_expr = if let Some(ref dv) = param.default {
+                                            match dv {
+                                                pyaot_stdlib_defs::ConstValue::Int(v) => {
+                                                    ExprKind::Int(*v)
+                                                }
+                                                pyaot_stdlib_defs::ConstValue::Float(v) => {
+                                                    ExprKind::Float(*v)
+                                                }
+                                                pyaot_stdlib_defs::ConstValue::Bool(v) => {
+                                                    ExprKind::Bool(*v)
+                                                }
+                                                pyaot_stdlib_defs::ConstValue::Str(s) => {
+                                                    ExprKind::Str(self.interner.intern(s))
+                                                }
+                                            }
+                                        } else {
+                                            ExprKind::None
+                                        };
+                                        let filler = self.module.exprs.alloc(Expr {
+                                            kind: default_expr,
+                                            ty: None,
+                                            span: expr_span,
+                                        });
+                                        args.push(filler);
                                     }
                                 }
 

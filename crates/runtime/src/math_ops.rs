@@ -176,10 +176,16 @@ pub extern "C" fn rt_math_factorial(n: i64) -> i64 {
     result
 }
 
-/// Natural logarithm: math.log(x) -> f64
+/// Logarithm: math.log(x[, base]) -> f64
+/// When base is NaN (sentinel), computes natural logarithm.
+/// Otherwise computes log(x) / log(base) like CPython.
 #[no_mangle]
-pub extern "C" fn rt_math_log(x: f64) -> f64 {
-    x.ln()
+pub extern "C" fn rt_math_log(x: f64, base: f64) -> f64 {
+    if base.is_nan() {
+        x.ln()
+    } else {
+        x.ln() / base.ln()
+    }
 }
 
 /// Logarithm base 2: math.log2(x) -> f64

@@ -110,17 +110,18 @@ pub static TIME_MKTIME: StdlibFunctionDef = StdlibFunctionDef {
     hints: LoweringHints::NO_AUTO_BOX,
 };
 
-/// time.strftime(format, t) - Format struct_time to string
+/// time.strftime(format[, t]) - Format struct_time to string
+/// When t is omitted, uses current local time (like CPython).
 /// Common format codes: %Y (year), %m (month), %d (day), %H (hour), %M (minute), %S (second)
 pub static TIME_STRFTIME: StdlibFunctionDef = StdlibFunctionDef {
     name: "strftime",
     runtime_name: "rt_time_strftime",
     params: &[
         ParamDef::required("format", TypeSpec::Str),
-        ParamDef::required("t", TypeSpec::StructTime),
+        ParamDef::optional("t", TypeSpec::StructTime),
     ],
     return_type: TypeSpec::Str,
-    min_args: 2,
+    min_args: 1,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
 };

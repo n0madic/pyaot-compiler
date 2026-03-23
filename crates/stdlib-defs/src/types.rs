@@ -373,7 +373,7 @@ impl StdlibClassDef {
 }
 
 /// Const-compatible string equality check
-const fn const_str_eq(a: &str, b: &str) -> bool {
+pub(crate) const fn const_str_eq(a: &str, b: &str) -> bool {
     let a_bytes = a.as_bytes();
     let b_bytes = b.as_bytes();
     if a_bytes.len() != b_bytes.len() {
@@ -393,3 +393,7 @@ const fn const_str_eq(a: &str, b: &str) -> bool {
 pub static TYPE_STR: TypeSpec = TypeSpec::Str;
 pub static TYPE_INT: TypeSpec = TypeSpec::Int;
 pub static TYPE_ANY: TypeSpec = TypeSpec::Any;
+pub static TYPE_LIST_STR: TypeSpec = TypeSpec::List(&TYPE_STR);
+pub static TYPE_OPTIONAL_STR: TypeSpec = TypeSpec::Optional(&TYPE_STR);
+pub static TYPE_OPTIONAL_BYTES: TypeSpec = TypeSpec::Optional(&TypeSpec::Bytes);
+pub static TYPE_DICT_STR_STR: TypeSpec = TypeSpec::Dict(&TYPE_STR, &TYPE_STR);

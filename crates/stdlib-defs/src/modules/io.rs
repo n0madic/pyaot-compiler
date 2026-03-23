@@ -3,8 +3,8 @@
 //! Provides in-memory I/O objects: StringIO and BytesIO.
 
 use crate::types::{
-    ConstValue, LoweringHints, ParamDef, StdlibFunctionDef, StdlibMethodDef, StdlibModuleDef,
-    TypeSpec,
+    ConstValue, LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibMethodDef,
+    StdlibModuleDef, TypeSpec,
 };
 
 /// io.StringIO(initial?) constructor
@@ -15,7 +15,7 @@ pub static IO_STRINGIO: StdlibFunctionDef = StdlibFunctionDef {
     return_type: TypeSpec::StringIO,
     min_args: 0,
     max_args: 1,
-    hints: LoweringHints::DEFAULT,
+    hints: LoweringHints::NO_AUTO_BOX,
 };
 
 /// io.BytesIO(initial?) constructor
@@ -26,7 +26,7 @@ pub static IO_BYTESIO: StdlibFunctionDef = StdlibFunctionDef {
     return_type: TypeSpec::BytesIO,
     min_args: 0,
     max_args: 1,
-    hints: LoweringHints::DEFAULT,
+    hints: LoweringHints::NO_AUTO_BOX,
 };
 
 // StringIO methods
@@ -169,12 +169,42 @@ pub static BYTESIO_CLOSE: StdlibMethodDef = StdlibMethodDef {
     max_args: 0,
 };
 
+/// StringIO class definition
+pub static STRINGIO_CLASS: StdlibClassDef = StdlibClassDef {
+    name: "StringIO",
+    methods: &[
+        STRINGIO_WRITE,
+        STRINGIO_READ,
+        STRINGIO_READLINE,
+        STRINGIO_GETVALUE,
+        STRINGIO_SEEK,
+        STRINGIO_TELL,
+        STRINGIO_CLOSE,
+        STRINGIO_TRUNCATE,
+    ],
+    type_spec: Some(TypeSpec::StringIO),
+};
+
+/// BytesIO class definition
+pub static BYTESIO_CLASS: StdlibClassDef = StdlibClassDef {
+    name: "BytesIO",
+    methods: &[
+        BYTESIO_WRITE,
+        BYTESIO_READ,
+        BYTESIO_GETVALUE,
+        BYTESIO_SEEK,
+        BYTESIO_TELL,
+        BYTESIO_CLOSE,
+    ],
+    type_spec: Some(TypeSpec::BytesIO),
+};
+
 /// io module definition
 pub static IO_MODULE: StdlibModuleDef = StdlibModuleDef {
     name: "io",
     functions: &[IO_STRINGIO, IO_BYTESIO],
     attrs: &[],
     constants: &[],
-    classes: &[],
+    classes: &[STRINGIO_CLASS, BYTESIO_CLASS],
     submodules: &[],
 };

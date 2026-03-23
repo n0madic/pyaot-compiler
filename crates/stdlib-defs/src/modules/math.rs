@@ -119,14 +119,17 @@ pub static MATH_FACTORIAL: StdlibFunctionDef = StdlibFunctionDef {
     hints: LoweringHints::NO_AUTO_BOX,
 };
 
-/// math.log(x) - natural logarithm
+/// math.log(x[, base]) - logarithm (natural log when base is omitted)
 pub static MATH_LOG: StdlibFunctionDef = StdlibFunctionDef {
     name: "log",
     runtime_name: "rt_math_log",
-    params: &[ParamDef::required("x", TypeSpec::Float)],
+    params: &[
+        ParamDef::required("x", TypeSpec::Float),
+        ParamDef::optional_with_default("base", TypeSpec::Float, ConstValue::Float(f64::NAN)),
+    ],
     return_type: TypeSpec::Float,
     min_args: 1,
-    max_args: 1,
+    max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
 };
 

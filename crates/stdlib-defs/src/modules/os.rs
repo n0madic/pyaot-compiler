@@ -173,12 +173,13 @@ pub static OS_MODULE: StdlibModuleDef = StdlibModuleDef {
 // ============= os.path submodule =============
 
 /// os.path.join function - variadic args collected to list
+/// Requires at least one path argument (CPython raises TypeError with 0 args)
 pub static OS_PATH_JOIN: StdlibFunctionDef = StdlibFunctionDef {
     name: "join",
     runtime_name: "rt_os_path_join",
     params: &[ParamDef::variadic("paths", TypeSpec::Str)],
     return_type: TypeSpec::Str,
-    min_args: 0,
+    min_args: 1,
     max_args: usize::MAX,
     hints: LoweringHints::VARIADIC_TO_LIST,
 };

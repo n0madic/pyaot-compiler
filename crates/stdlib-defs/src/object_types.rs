@@ -107,29 +107,9 @@ impl ObjectTypeDef {
     }
 }
 
-/// Const-compatible string equality check
-const fn const_str_eq(a: &str, b: &str) -> bool {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-    if a_bytes.len() != b_bytes.len() {
-        return false;
-    }
-    let mut i = 0;
-    while i < a_bytes.len() {
-        if a_bytes[i] != b_bytes[i] {
-            return false;
-        }
-        i += 1;
-    }
-    true
-}
+use crate::types::const_str_eq;
 
-// Static type references for field types
-use crate::types::TYPE_STR;
-pub static TYPE_OPTIONAL_STR: TypeSpec = TypeSpec::Optional(&TYPE_STR);
-pub static TYPE_LIST_STR: TypeSpec = TypeSpec::List(&TYPE_STR);
-pub static TYPE_OPTIONAL_BYTES: TypeSpec = TypeSpec::Optional(&TypeSpec::Bytes);
-pub static TYPE_DICT_STR_STR: TypeSpec = TypeSpec::Dict(&TYPE_STR, &TYPE_STR);
+use crate::types::{TYPE_DICT_STR_STR, TYPE_LIST_STR, TYPE_OPTIONAL_STR};
 
 // =============================================================================
 // CompletedProcess object (subprocess module)

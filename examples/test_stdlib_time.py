@@ -130,7 +130,23 @@ mktime_result: float = time.mktime(gmtime_for_mktime)
 # Just verify it returns a reasonable float
 assert mktime_result != 0.0
 
-# Test time.strftime()
+# Test time.strftime() with no struct_time (uses current local time)
+strftime_no_t: str = time.strftime("%Y")
+print("strftime no t:", strftime_no_t)
+# Year should be a 4-digit number >= 2024
+assert len(strftime_no_t) == 4, "strftime('%Y') should be 4 chars"
+strftime_no_t_year: int = int(strftime_no_t)
+assert strftime_no_t_year >= 2024
+assert strftime_no_t_year <= 2100
+
+# Test strftime without t returns date matching localtime
+strftime_no_t_full: str = time.strftime("%Y-%m-%d")
+lt_check: time.struct_time = time.localtime()
+lt_check_str: str = time.strftime("%Y-%m-%d", lt_check)
+# Should match (they may differ by seconds, but date should be same)
+assert strftime_no_t_full == lt_check_str, "strftime() without t should use current local time"
+
+# Test time.strftime() with explicit struct_time
 strftime_lt: time.struct_time = time.localtime()
 strftime_result: str = time.strftime("%Y-%m-%d", strftime_lt)
 print("strftime result:", strftime_result)
@@ -179,5 +195,11 @@ assert lt_imported.tm_year >= 2024
 
 gt_imported: time.struct_time = gmtime()
 assert gt_imported.tm_year >= 2024
+
+# Test strftime without t from import
+strftime_import_no_t: str = strftime("%Y")
+assert len(strftime_import_no_t) == 4
+strftime_import_year: int = int(strftime_import_no_t)
+assert strftime_import_year >= 2024
 
 print("All time module tests passed!")

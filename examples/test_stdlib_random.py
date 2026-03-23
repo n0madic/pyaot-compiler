@@ -233,6 +233,36 @@ for i in range(3):
 
 print("random.choices() passed")
 
+# ===== SECTION: random.choices() without weights (uniform) =====
+
+random.seed(42)
+uniform_ch: list[str] = random.choices(colors, k=10)
+assert len(uniform_ch) == 10, "choices without weights: expected 10 elements"
+
+# All elements must come from population
+for elem in uniform_ch:
+    found_uw: bool = False
+    for c in colors:
+        if c == elem:
+            found_uw = True
+    assert found_uw, "choices without weights: element must be in population"
+
+# Reproducibility
+random.seed(42)
+uniform_ch2: list[str] = random.choices(colors, k=10)
+for i in range(10):
+    assert uniform_ch[i] == uniform_ch2[i], f"choices without weights reproducibility at index {i}"
+
+# Test choices without weights with int population
+random.seed(123)
+int_uniform_ch: list[int] = random.choices([10, 20, 30, 40, 50], k=5)
+assert len(int_uniform_ch) == 5, "int choices without weights: expected 5 elements"
+
+for elem in int_uniform_ch:
+    assert elem == 10 or elem == 20 or elem == 30 or elem == 40 or elem == 50, "element must be in population"
+
+print("random.choices() without weights passed")
+
 # === Stdlib keyword arguments ===
 random.seed(42)
 kwargs_result: list[int] = random.choices([1, 2, 3], weights=[10.0, 1.0, 1.0], k=5)

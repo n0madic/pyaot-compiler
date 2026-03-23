@@ -242,32 +242,49 @@ pub extern "C" fn rt_time_mktime(t: *mut Obj) -> f64 {
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
-    if format.is_null() || t.is_null() {
+    if format.is_null() {
         return unsafe { make_str_from_rust("") };
     }
 
     unsafe {
-        if (*t).header.type_tag != TypeTagKind::StructTime {
-            return make_str_from_rust("");
-        }
-
-        let st = t as *const StructTimeObj;
-
-        // Convert Python struct_time to libc tm
-        let tm = libc::tm {
-            tm_year: ((*st).tm_year - 1900) as i32,
-            tm_mon: ((*st).tm_mon - 1) as i32,
-            tm_mday: (*st).tm_mday as i32,
-            tm_hour: (*st).tm_hour as i32,
-            tm_min: (*st).tm_min as i32,
-            tm_sec: (*st).tm_sec as i32,
-            tm_wday: (((*st).tm_wday + 1) % 7) as i32,
-            tm_yday: ((*st).tm_yday - 1) as i32,
-            tm_isdst: (*st).tm_isdst as i32,
+        // When t is null (omitted), use current local time like CPython
+        let tm = if t.is_null() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as libc::time_t)
+                .unwrap_or(0);
+            let mut local_tm: libc::tm = std::mem::zeroed();
             #[cfg(unix)]
-            tm_gmtoff: 0,
-            #[cfg(unix)]
-            tm_zone: std::ptr::null_mut(),
+            {
+                libc::localtime_r(&now, &mut local_tm);
+            }
+            #[cfg(windows)]
+            {
+                libc::localtime_s(&mut local_tm, &now);
+            }
+            local_tm
+        } else {
+            if (*t).header.type_tag != TypeTagKind::StructTime {
+                return make_str_from_rust("");
+            }
+
+            let st = t as *const StructTimeObj;
+
+            libc::tm {
+                tm_year: ((*st).tm_year - 1900) as i32,
+                tm_mon: ((*st).tm_mon - 1) as i32,
+                tm_mday: (*st).tm_mday as i32,
+                tm_hour: (*st).tm_hour as i32,
+                tm_min: (*st).tm_min as i32,
+                tm_sec: (*st).tm_sec as i32,
+                tm_wday: (((*st).tm_wday + 1) % 7) as i32,
+                tm_yday: ((*st).tm_yday - 1) as i32,
+                tm_isdst: (*st).tm_isdst as i32,
+                #[cfg(unix)]
+                tm_gmtoff: 0,
+                #[cfg(unix)]
+                tm_zone: std::ptr::null_mut(),
+            }
         };
 
         // Get format string

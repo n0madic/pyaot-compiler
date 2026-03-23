@@ -3,7 +3,8 @@
 //! Provides cryptographic hash functions (md5, sha1, sha256).
 
 use crate::types::{
-    LoweringHints, ParamDef, StdlibFunctionDef, StdlibMethodDef, StdlibModuleDef, TypeSpec,
+    LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibMethodDef, StdlibModuleDef,
+    TypeSpec,
 };
 
 /// hashlib.md5(data) -> Hash object
@@ -59,12 +60,19 @@ pub static HASH_DIGEST: StdlibMethodDef = StdlibMethodDef {
     max_args: 0,
 };
 
+/// Hash class definition
+pub static HASH_CLASS: StdlibClassDef = StdlibClassDef {
+    name: "Hash",
+    methods: &[HASH_HEXDIGEST, HASH_DIGEST],
+    type_spec: Some(TypeSpec::Hash),
+};
+
 /// hashlib module definition
 pub static HASHLIB_MODULE: StdlibModuleDef = StdlibModuleDef {
     name: "hashlib",
     functions: &[HASHLIB_MD5, HASHLIB_SHA1, HASHLIB_SHA256],
     attrs: &[],
     constants: &[],
-    classes: &[],
+    classes: &[HASH_CLASS],
     submodules: &[],
 };

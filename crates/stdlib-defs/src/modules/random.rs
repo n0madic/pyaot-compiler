@@ -126,17 +126,18 @@ pub static RANDOM_GAUSS: StdlibFunctionDef = StdlibFunctionDef {
     hints: LoweringHints::NO_AUTO_BOX,
 };
 
-/// random.choices(population, weights, k=1) -> list
+/// random.choices(population, weights=None, k=1) -> list
+/// When weights is None (omitted), uses uniform distribution
 pub static RANDOM_CHOICES: StdlibFunctionDef = StdlibFunctionDef {
     name: "choices",
     runtime_name: "rt_random_choices",
     params: &[
         ParamDef::required("population", TypeSpec::Any),
-        ParamDef::required("weights", TypeSpec::Any),
+        ParamDef::optional("weights", TypeSpec::Any),
         ParamDef::optional_with_default("k", TypeSpec::Int, ConstValue::Int(1)),
     ],
     return_type: TypeSpec::Any,
-    min_args: 2,
+    min_args: 1,
     max_args: 3,
     hints: LoweringHints::DEFAULT,
 };

@@ -239,10 +239,58 @@ mod tests {
         let match_type = get_class_type("re", "Match").unwrap();
         assert!(matches!(match_type, TypeSpec::Match));
 
+        // hashlib.Hash -> Hash
+        let hash_type = get_class_type("hashlib", "Hash").unwrap();
+        assert!(matches!(hash_type, TypeSpec::Hash));
+
+        // io.StringIO -> StringIO
+        let stringio_type = get_class_type("io", "StringIO").unwrap();
+        assert!(matches!(stringio_type, TypeSpec::StringIO));
+
+        // io.BytesIO -> BytesIO
+        let bytesio_type = get_class_type("io", "BytesIO").unwrap();
+        assert!(matches!(bytesio_type, TypeSpec::BytesIO));
+
         // Non-existent class
         assert!(get_class_type("time", "nonexistent").is_none());
 
         // Non-existent module
         assert!(get_class_type("nonexistent", "struct_time").is_none());
+    }
+
+    #[test]
+    fn test_cpython_api_arg_counts() {
+        // os.path.join requires at least 1 argument
+        let join = get_function("os.path", "join").unwrap();
+        assert_eq!(join.min_args, 1);
+        assert!(!join.valid_arg_count(0));
+        assert!(join.valid_arg_count(1));
+        assert!(join.valid_arg_count(5));
+
+        // math.log accepts 1 or 2 arguments
+        let log = get_function("math", "log").unwrap();
+        assert_eq!(log.min_args, 1);
+        assert_eq!(log.max_args, 2);
+        assert!(!log.valid_arg_count(0));
+        assert!(log.valid_arg_count(1));
+        assert!(log.valid_arg_count(2));
+        assert!(!log.valid_arg_count(3));
+
+        // time.strftime accepts 1 or 2 arguments
+        let strftime = get_function("time", "strftime").unwrap();
+        assert_eq!(strftime.min_args, 1);
+        assert_eq!(strftime.max_args, 2);
+        assert!(strftime.valid_arg_count(1));
+        assert!(strftime.valid_arg_count(2));
+        assert!(!strftime.valid_arg_count(0));
+
+        // random.choices accepts 1-3 arguments (weights is optional)
+        let choices = get_function("random", "choices").unwrap();
+        assert_eq!(choices.min_args, 1);
+        assert_eq!(choices.max_args, 3);
+        assert!(choices.valid_arg_count(1));
+        assert!(choices.valid_arg_count(2));
+        assert!(choices.valid_arg_count(3));
+        assert!(!choices.valid_arg_count(0));
     }
 }

@@ -5,13 +5,11 @@
 
 use crate::types::{
     ConstValue, LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibMethodDef,
-    StdlibModuleDef, TypeSpec, TYPE_STR,
+    StdlibModuleDef, TypeSpec, TYPE_DICT_STR_STR, TYPE_LIST_STR, TYPE_STR,
 };
 
-// Static type references for urllib types
-pub static TYPE_LIST_STR: TypeSpec = TypeSpec::List(&TYPE_STR);
+// Static type reference specific to urllib
 pub static TYPE_DICT_STR_LIST_STR: TypeSpec = TypeSpec::Dict(&TYPE_STR, &TYPE_LIST_STR);
-pub static TYPE_DICT_STR_STR: TypeSpec = TypeSpec::Dict(&TYPE_STR, &TYPE_STR);
 
 // =============================================================================
 // urllib.parse module functions

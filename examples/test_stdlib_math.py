@@ -170,7 +170,29 @@ assert log_e < 1.001
 
 log_10: float = math.log(10.0)
 assert log_10 > 2.3
-assert log_10< 2.31
+assert log_10 < 2.31
+
+# Test math.log(x, base) - logarithm with explicit base
+print("Testing math.log(x, base)...")
+log_100_10: float = math.log(100.0, 10.0)
+print("log(100, 10):", log_100_10)
+assert log_100_10 > 1.999
+assert log_100_10 < 2.001
+
+log_8_2: float = math.log(8.0, 2.0)
+print("log(8, 2):", log_8_2)
+assert log_8_2 > 2.999
+assert log_8_2 < 3.001
+
+log_27_3: float = math.log(27.0, 3.0)
+print("log(27, 3):", log_27_3)
+assert log_27_3 > 2.999
+assert log_27_3 < 3.001
+
+# math.log(x) without base should still work as natural log
+log_e_natural: float = math.log(e)
+assert log_e_natural > 0.999
+assert log_e_natural < 1.001
 
 print("Testing math.log2()...")
 log2_8: float = math.log2(8.0)
@@ -490,6 +512,11 @@ from math import gcd, lcm, comb, perm
 log_from_import: float = log(e)
 assert log_from_import > 0.999
 assert log_from_import < 1.001
+
+# Test log with base via from import
+log_base_import: float = log(1000.0, 10.0)
+assert log_base_import > 2.999
+assert log_base_import < 3.001
 
 log2_from_import: float = log2(8.0)
 assert log2_from_import == 3.0
