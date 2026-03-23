@@ -1,5 +1,7 @@
 # Test urllib.parse module functionality
 from urllib.parse import urlparse, quote, unquote, urljoin, urlencode, parse_qs
+from urllib.request import urlopen
+from urllib.error import HTTPError
 
 # =============================================================================
 # Test urlparse - Parse URLs into components
@@ -179,19 +181,19 @@ print("urlencode tests passed!")
 
 # Test basic parsing
 parsed1 = parse_qs("key=value")
-assert "key" in parsed1, f"Expected 'key' in result"
+assert "key" in parsed1, "Expected 'key' in result"
 assert parsed1["key"][0] == "value", f"Expected 'value', got '{parsed1['key'][0]}'"
 
 # Test multiple values for same key
 parsed2 = parse_qs("a=1&a=2")
-assert "a" in parsed2, f"Expected 'a' in result"
+assert "a" in parsed2, "Expected 'a' in result"
 assert len(parsed2["a"]) == 2, f"Expected 2 values, got {len(parsed2['a'])}"
 assert parsed2["a"][0] == "1", f"Expected '1', got '{parsed2['a'][0]}'"
 assert parsed2["a"][1] == "2", f"Expected '2', got '{parsed2['a'][1]}'"
 
 # Test multiple keys
 parsed3 = parse_qs("foo=bar&baz=qux")
-assert "foo" in parsed3 and "baz" in parsed3, f"Expected both 'foo' and 'baz' in result"
+assert "foo" in parsed3 and "baz" in parsed3, "Expected both 'foo' and 'baz' in result"
 assert parsed3["foo"][0] == "bar", f"Expected 'bar', got '{parsed3['foo'][0]}'"
 assert parsed3["baz"][0] == "qux", f"Expected 'qux', got '{parsed3['baz'][0]}'"
 
@@ -241,7 +243,6 @@ print("All urllib.parse tests passed!")
 # =============================================================================
 # Test urllib.request module
 # =============================================================================
-from urllib.request import urlopen
 
 # NOTE: These tests require network connectivity and access to httpbin.org
 # They will be skipped in the example test suite to avoid network dependencies
@@ -271,7 +272,7 @@ try:
     response_404 = urlopen("https://httpbin.org/status/404", None, 10.0)
     # If we get here, runtime returned the response (compiled mode)
     assert response_404.status == 404, f"Expected status 404, got {response_404.status}"
-except Exception:
+except HTTPError:
     # CPython raises HTTPError for 404
     pass
 
