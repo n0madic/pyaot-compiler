@@ -46,6 +46,8 @@ pub enum RuntimeFunc {
     MakeDict,
     /// List append
     ListAppend,
+    /// Set elem_tag on an empty list (for type-correct append on List(Any))
+    ListSetElemTag,
     /// List set element
     ListSet,
     /// List get element

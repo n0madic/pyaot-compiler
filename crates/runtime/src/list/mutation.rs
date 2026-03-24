@@ -8,6 +8,23 @@ use crate::exceptions::{rt_exc_raise, ExceptionType};
 use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind, ELEM_HEAP_OBJ, ELEM_RAW_INT};
 use std::alloc::{alloc_zeroed, realloc, Layout};
 
+/// Update the elem_tag of an empty list.
+/// Called by the compiler before the first append when the list was created with
+/// ELEM_HEAP_OBJ (e.g., `li = []` without type annotation) but the actual element
+/// type is known (e.g., int). Only updates if the list is currently empty.
+#[no_mangle]
+pub extern "C" fn rt_list_set_elem_tag(list: *mut Obj, tag: u8) {
+    if list.is_null() {
+        return;
+    }
+    unsafe {
+        let list_obj = list as *mut ListObj;
+        if (*list_obj).len == 0 {
+            (*list_obj).elem_tag = tag;
+        }
+    }
+}
+
 /// Append element to list (mutates list)
 /// This is the same as rt_list_push, but named to match Python's .append()
 #[no_mangle]

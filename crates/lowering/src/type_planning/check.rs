@@ -82,6 +82,7 @@ impl<'a> Lowering<'a> {
         &mut self,
         func_id: &pyaot_utils::FuncId,
         arg_expr_ids: &[hir::ExprId],
+        kwargs: &[hir::KeywordArg],
         call_span: pyaot_utils::Span,
         hir_module: &hir::Module,
     ) {
@@ -89,25 +90,56 @@ impl<'a> Lowering<'a> {
             return;
         };
 
-        // Count required params (no default, regular kind)
-        let required_count = func_def
+        // Collect regular params for matching
+        let regular_params: Vec<&hir::Param> = func_def
             .params
             .iter()
-            .filter(|p| p.default.is_none() && matches!(p.kind, hir::ParamKind::Regular))
+            .filter(|p| matches!(p.kind, hir::ParamKind::Regular))
+            .collect();
+
+        // Count required params (no default, regular kind)
+        let required_count = regular_params
+            .iter()
+            .filter(|p| p.default.is_none())
             .count();
 
-        if arg_expr_ids.len() < required_count {
-            if let Some(missing_param) = func_def.params.get(arg_expr_ids.len()) {
-                let name = self.resolve(missing_param.name).to_string();
-                self.warnings
-                    .add(pyaot_diagnostics::CompilerWarning::TypeError {
-                        span: call_span,
-                        message: format!("missing required argument: '{}'", name),
-                    });
+        // Count how many required params are satisfied by keyword arguments
+        let kwargs_filling_required = kwargs
+            .iter()
+            .filter(|kw| {
+                let kw_name = self.resolve(kw.name);
+                regular_params.iter().any(|p| {
+                    p.default.is_none() && self.resolve(p.name) == kw_name
+                })
+            })
+            .count();
+
+        let effective_count = arg_expr_ids.len() + kwargs_filling_required;
+        if effective_count < required_count {
+            // Find the first missing parameter
+            let positional_names: std::collections::HashSet<_> = (0..arg_expr_ids.len())
+                .filter_map(|i| regular_params.get(i).map(|p| self.resolve(p.name).to_string()))
+                .collect();
+            let kwarg_names: std::collections::HashSet<_> = kwargs
+                .iter()
+                .map(|kw| self.resolve(kw.name).to_string())
+                .collect();
+            for param in &regular_params {
+                if param.default.is_none() {
+                    let name = self.resolve(param.name).to_string();
+                    if !positional_names.contains(&name) && !kwarg_names.contains(&name) {
+                        self.warnings
+                            .add(pyaot_diagnostics::CompilerWarning::TypeError {
+                                span: call_span,
+                                message: format!("missing required argument: '{}'", name),
+                            });
+                        break;
+                    }
+                }
             }
         }
 
-        // Check each arg type against param type (skip *args/**kwargs params)
+        // Check each positional arg type against param type (skip *args/**kwargs params)
         for (i, arg_id) in arg_expr_ids.iter().enumerate() {
             if let Some(param) = func_def.params.get(i) {
                 if matches!(
@@ -118,6 +150,16 @@ impl<'a> Lowering<'a> {
                 }
                 if let Some(ref param_ty) = param.ty {
                     self.check_expr_type(*arg_id, param_ty, hir_module);
+                }
+            }
+        }
+
+        // Check each kwarg type against its matching param type
+        for kw in kwargs {
+            let kw_name = self.resolve(kw.name);
+            if let Some(param) = regular_params.iter().find(|p| self.resolve(p.name) == kw_name) {
+                if let Some(ref param_ty) = param.ty {
+                    self.check_expr_type(kw.value, param_ty, hir_module);
                 }
             }
         }

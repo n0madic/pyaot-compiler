@@ -485,7 +485,7 @@ impl<'a> Lowering<'a> {
                 // No args at all — use func expression span
                 func_expr.span
             };
-            self.check_call_args(func_id, &regular_arg_ids, call_span, hir_module);
+            self.check_call_args(func_id, &regular_arg_ids, kwargs, call_span, hir_module);
 
             // Get function definition to access parameter names and defaults
             let func_def = hir_module.func_defs.get(func_id);

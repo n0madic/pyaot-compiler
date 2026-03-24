@@ -15,6 +15,7 @@ impl<'a> Lowering<'a> {
         obj_operand: mir::Operand,
         method_name: &str,
         arg_operands: Vec<mir::Operand>,
+        arg_types: Vec<Type>,
         kwargs: &[hir::KeywordArg],
         elem_ty: Box<Type>,
         hir_module: &hir::Module,
@@ -25,11 +26,28 @@ impl<'a> Lowering<'a> {
                 // .append(value) - mutates list, returns None
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
-                // Get the value operand
                 let value_operand = arg_operands
                     .into_iter()
                     .next()
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+
+                // When elem_ty is Any (e.g., `li = []` without annotation), the list was
+                // created with ELEM_HEAP_OBJ. If the actual value is Int, we need to
+                // update the list's elem_tag to ELEM_RAW_INT before storing the raw value.
+                let actual_value_ty = arg_types.first();
+                if *elem_ty == Type::Any {
+                    if let Some(Type::Int) = actual_value_ty {
+                        let dummy = self.alloc_and_add_local(Type::None, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: dummy,
+                            func: mir::RuntimeFunc::ListSetElemTag,
+                            args: vec![
+                                obj_operand.clone(),
+                                mir::Operand::Constant(mir::Constant::Int(1)), // ELEM_RAW_INT
+                            ],
+                        });
+                    }
+                }
 
                 // Box the value if the element type requires it
                 // Bool and Float elements are stored as boxed objects (ELEM_HEAP_OBJ)

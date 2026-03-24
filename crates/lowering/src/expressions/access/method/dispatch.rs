@@ -58,6 +58,7 @@ impl<'a> Lowering<'a> {
                 obj_operand,
                 &method_name,
                 arg_operands,
+                arg_types,
                 kwargs,
                 elem_ty,
                 hir_module,

@@ -542,6 +542,19 @@ assert default_result == 12, "default_result should equal 12"
 default_result = multiply_kwargs(b=4, a=3)       # 12 (order doesn't matter)
 assert default_result == 12, "default_result should equal 12"
 
+# All-kwargs call with more than 2 params (regression: type checker false positive)
+def add_three_kw(x: int, y: int, z: int) -> int:
+    return x + y + z
+
+assert add_three_kw(x=1, y=2, z=3) == 6, "all kwargs in order"
+assert add_three_kw(z=3, y=2, x=1) == 6, "all kwargs reverse order"
+assert add_three_kw(y=10, x=5, z=20) == 35, "all kwargs arbitrary order"
+
+# Mixed positional and kwargs with reordering
+assert add_three_kw(1, z=3, y=2) == 6, "positional + reordered kwargs"
+
+print("Keyword argument tests passed!")
+
 # Run all nested function tests
 test_basic_nested()
 test_nested_recursive()

@@ -140,6 +140,15 @@ pub fn compile_list_call(
                 ctx,
             )?;
         }
+        mir::RuntimeFunc::ListSetElemTag => {
+            compile_void_runtime_call(
+                builder,
+                "rt_list_set_elem_tag",
+                &[cltypes::I64, cltypes::I8],
+                args,
+                ctx,
+            )?;
+        }
         mir::RuntimeFunc::ListPop => {
             compile_container_get(builder, "rt_list_pop", &args[0], &args[1], dest, ctx)?;
         }

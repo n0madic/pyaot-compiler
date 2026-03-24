@@ -125,6 +125,7 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::ListSlice
         | mir::RuntimeFunc::ListSliceStep
         | mir::RuntimeFunc::ListAppend
+        | mir::RuntimeFunc::ListSetElemTag
         | mir::RuntimeFunc::ListPop
         | mir::RuntimeFunc::ListInsert
         | mir::RuntimeFunc::ListRemove

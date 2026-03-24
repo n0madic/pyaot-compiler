@@ -809,4 +809,79 @@ assert pow_comp_mixed == [0, 2, 8, 18], f"[x*x + x**2] failed: {pow_comp_mixed}"
 
 print("x**2 in list comprehension tests passed!")
 
+# ============================================================================
+# Empty list (no type annotation) + append + remove/insert
+# Regression: empty list got elem_tag=ELEM_HEAP_OBJ but append stored raw ints,
+# causing segfault when remove tried to dereference raw ints as pointers.
+# ============================================================================
+
+# Minimal case: empty list + append + remove
+li_empty = []
+li_empty.append(1)
+li_empty.remove(1)
+assert li_empty == [], "empty list append+remove should give []"
+
+# Multiple appends then remove
+li_build = []
+li_build.append(10)
+li_build.append(20)
+li_build.append(30)
+assert li_build == [10, 20, 30], "empty list multi-append"
+li_build.remove(20)
+assert li_build == [10, 30], "empty list remove middle element"
+
+# Empty list + append + insert + remove
+li_ops = []
+li_ops.append(1)
+li_ops.append(3)
+li_ops.insert(1, 2)
+assert li_ops == [1, 2, 3], "empty list append+insert"
+li_ops.remove(2)
+assert li_ops == [1, 3], "empty list insert then remove"
+
+# Empty list + append + slicing + del + remove (original crash scenario)
+def test_empty_list_complex():
+    li = []
+    li.append(1)
+    li.append(2)
+    li.append(4)
+    li.append(3)
+    assert li == [1, 2, 4, 3], "empty list append 4 elements"
+
+    assert li[1:3] == [2, 4], "slice [1:3]"
+    assert li[::2] == [1, 4], "slice [::2]"
+    assert li[::-1] == [3, 4, 2, 1], "reverse slice"
+
+    li2 = li[:]
+    assert li2 == [1, 2, 4, 3], "full slice copy"
+
+    del li[2]
+    assert li == [1, 2, 3], "del element"
+
+    li.remove(2)
+    assert li == [1, 3], "remove after del"
+
+    li.insert(1, 2)
+    assert li == [1, 2, 3], "insert after remove"
+
+test_empty_list_complex()
+
+# Empty list + append in function scope with many allocations
+def test_empty_list_gc_pressure():
+    a = []
+    a.append(1)
+    a.append(2)
+    a.append(3)
+    # Create temporary lists to increase GC pressure
+    t1 = [10, 20, 30]
+    t2 = [40, 50, 60]
+    t3 = a[:]
+    assert a == [1, 2, 3], "list eq under gc pressure"
+    a.remove(2)
+    assert a == [1, 3], "remove under gc pressure"
+
+test_empty_list_gc_pressure()
+
+print("Empty list append/remove tests passed!")
+
 print("All list and tuple collection tests passed!")
