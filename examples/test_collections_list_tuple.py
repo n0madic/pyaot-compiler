@@ -884,4 +884,54 @@ test_empty_list_gc_pressure()
 
 print("Empty list append/remove tests passed!")
 
+# ============================================================================
+# Empty container type inference from usage (no annotation)
+# Regression: `li = []` got List(Any) / elem_tag=ELEM_HEAP_OBJ even when only
+# ints are appended. The type planner now infers the element type from subsequent
+# append/insert/add calls and creates the list with the correct elem_tag.
+# ============================================================================
+
+# String element inference: li = [] + append(str)
+str_list = []
+str_list.append("hello")
+str_list.append("world")
+assert str_list == ["hello", "world"], "empty list + append str"
+assert len(str_list) == 2, "empty list + append str len"
+str_list.remove("hello")
+assert str_list == ["world"], "empty list + remove str"
+
+# Int element inference inside if block
+def test_empty_list_in_branch():
+    flag: bool = True
+    if flag:
+        nums = []
+        nums.append(42)
+        nums.append(99)
+        assert nums == [42, 99], "empty list in if branch"
+        nums.remove(42)
+        assert nums == [99], "remove in if branch"
+
+test_empty_list_in_branch()
+
+# Int element inference inside for loop body
+def test_empty_list_in_loop():
+    result = []
+    for i in range(5):
+        result.append(i)
+    assert result == [0, 1, 2, 3, 4], "empty list in loop body"
+    result.remove(2)
+    assert result == [0, 1, 3, 4], "remove after loop append"
+
+test_empty_list_in_loop()
+
+# Empty list + insert infers element type
+insert_list = []
+insert_list.insert(0, 100)
+insert_list.insert(0, 200)
+assert insert_list == [200, 100], "empty list + insert int"
+insert_list.remove(200)
+assert insert_list == [100], "remove after insert"
+
+print("Empty container type inference tests passed!")
+
 print("All list and tuple collection tests passed!")
