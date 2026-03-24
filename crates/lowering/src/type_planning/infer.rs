@@ -4,9 +4,10 @@
 //! Moved from type_inference.rs.
 
 use pyaot_hir as hir;
-use pyaot_stdlib_defs::{lookup_object_field, lookup_object_type, ALL_OBJECT_TYPES};
+use pyaot_stdlib_defs::{lookup_object_field, lookup_object_type};
 use pyaot_types::{typespec_to_type, Type};
 
+use super::helpers;
 use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
@@ -22,53 +23,8 @@ impl<'a> Lowering<'a> {
                 let left_ty = self.get_type_of_expr_id(*left, hir_module);
                 let right_ty = self.get_type_of_expr_id(*right, hir_module);
 
-                // Class types with arithmetic dunders return the class type
-                if matches!(left_ty, Type::Class { .. }) {
-                    return left_ty;
-                }
-
-                // Set operations (|, &, -, ^) return Set type
-                if let Type::Set(elem_ty) = &left_ty {
-                    match op {
-                        hir::BinOp::BitOr
-                        | hir::BinOp::BitAnd
-                        | hir::BinOp::Sub
-                        | hir::BinOp::BitXor => return Type::Set(elem_ty.clone()),
-                        _ => {}
-                    }
-                }
-
-                // List concatenation (+) returns List type
-                if let Type::List(elem_ty) = &left_ty {
-                    if matches!(op, hir::BinOp::Add) {
-                        return Type::List(elem_ty.clone());
-                    }
-                }
-
-                // Dict merge (|) returns Dict type
-                if let Type::Dict(key_ty, val_ty) = &left_ty {
-                    if matches!(op, hir::BinOp::BitOr) {
-                        return Type::Dict(key_ty.clone(), val_ty.clone());
-                    }
-                }
-
-                // Python 3: true division (/) always returns float
-                if matches!(op, hir::BinOp::Div) {
-                    return Type::Float;
-                }
-
-                // String operations return strings
-                if matches!(left_ty, Type::Str) {
-                    match op {
-                        hir::BinOp::Add | hir::BinOp::Mul => Type::Str,
-                        _ => expr.ty.clone().unwrap_or(Type::Any),
-                    }
-                } else if matches!(left_ty, Type::Float) || matches!(right_ty, Type::Float) {
-                    // Float operations return Float
-                    Type::Float
-                } else if matches!(left_ty, Type::Int) && matches!(right_ty, Type::Int) {
-                    // Integer operations (except Div which is handled above)
-                    Type::Int
+                if let Some(ty) = helpers::resolve_binop_type(op, &left_ty, &right_ty) {
+                    ty
                 } else {
                     expr.ty.clone().unwrap_or(Type::Any)
                 }
@@ -93,63 +49,11 @@ impl<'a> Lowering<'a> {
                     }
                     _ => raw_obj_ty,
                 };
+                // Try shared dispatch table first (Str, List, Dict, Set, File)
+                if let Some(ty) = helpers::resolve_method_return_type(&obj_ty, method_name) {
+                    return ty;
+                }
                 match &obj_ty {
-                    Type::Str => match method_name {
-                        // String transformation methods
-                        "upper" | "lower" | "strip" | "lstrip" | "rstrip" | "replace" | "title"
-                        | "capitalize" | "swapcase" | "center" | "ljust" | "rjust" | "zfill"
-                        | "join" | "removeprefix" | "removesuffix" | "expandtabs" => Type::Str,
-                        // Methods returning list
-                        "split" | "splitlines" => Type::List(Box::new(Type::Str)),
-                        // Methods returning tuple
-                        "partition" | "rpartition" => {
-                            Type::Tuple(vec![Type::Str, Type::Str, Type::Str])
-                        }
-                        // Boolean predicates
-                        "startswith" | "endswith" | "isdigit" | "isalpha" | "isalnum"
-                        | "isspace" | "isupper" | "islower" => Type::Bool,
-                        // Integer methods
-                        "find" | "count" => Type::Int,
-                        _ => expr.ty.clone().unwrap_or(Type::Any),
-                    },
-                    Type::List(elem_ty) => match method_name {
-                        "pop" => (**elem_ty).clone(),
-                        "copy" => Type::List(elem_ty.clone()),
-                        "index" | "count" => Type::Int,
-                        "append" | "insert" | "remove" | "clear" | "reverse" => Type::None,
-                        _ => expr.ty.clone().unwrap_or(Type::Any),
-                    },
-                    Type::Dict(key_ty, value_ty) => match method_name {
-                        "get" | "pop" | "setdefault" => (**value_ty).clone(),
-                        "copy" => Type::Dict(key_ty.clone(), value_ty.clone()),
-                        "keys" => Type::List(key_ty.clone()),
-                        "values" => Type::List(value_ty.clone()),
-                        "items" => {
-                            let tuple_ty =
-                                Type::Tuple(vec![(**key_ty).clone(), (**value_ty).clone()]);
-                            Type::List(Box::new(tuple_ty))
-                        }
-                        "popitem" => Type::Tuple(vec![(**key_ty).clone(), (**value_ty).clone()]),
-                        "clear" | "update" => Type::None,
-                        _ => expr.ty.clone().unwrap_or(Type::Any),
-                    },
-                    Type::Set(elem_ty) => match method_name {
-                        "copy"
-                        | "union"
-                        | "intersection"
-                        | "difference"
-                        | "symmetric_difference" => Type::Set(elem_ty.clone()),
-                        "add" | "remove" | "discard" | "clear" => Type::None,
-                        "issubset" | "issuperset" | "isdisjoint" => Type::Bool,
-                        _ => expr.ty.clone().unwrap_or(Type::Any),
-                    },
-                    Type::File => match method_name {
-                        "read" | "readline" => Type::Str, // Text mode returns str
-                        "readlines" => Type::List(Box::new(Type::Str)),
-                        "write" => Type::Int,
-                        "close" | "flush" => Type::None,
-                        _ => expr.ty.clone().unwrap_or(Type::Any),
-                    },
                     Type::Class { ref class_id, .. } => {
                         // Get method return type from class info
                         if let Some(class_info) = self.get_class_info(class_id) {
@@ -185,17 +89,6 @@ impl<'a> Lowering<'a> {
                                 return typespec_to_type(&method_def.return_type);
                             }
                         }
-                        expr.ty.clone().unwrap_or(Type::Any)
-                    }
-                    // For Type::Any, check object type methods as fallback
-                    Type::Any => {
-                        // Look up the method in all object types (Single Source of Truth)
-                        for obj_def in ALL_OBJECT_TYPES {
-                            if let Some(method_def) = obj_def.get_method(method_name) {
-                                return typespec_to_type(&method_def.return_type);
-                            }
-                        }
-                        // Fallback to expression annotation or Any
                         expr.ty.clone().unwrap_or(Type::Any)
                     }
                     _ => expr.ty.clone().unwrap_or(Type::Any),

@@ -6,6 +6,7 @@
 //! - `check`: top-down type validation + error reporting
 
 mod check;
+pub(crate) mod helpers;
 mod infer;
 mod pre_scan;
 
@@ -60,14 +61,14 @@ impl<'a> Lowering<'a> {
         let func_ids = hir_module.functions.to_vec();
 
         // Pass 1: Collect explicitly annotated return types so they are available
-        // for cross-function inference (fixes forward-reference ordering)
+        // for cross-function inference (fixes forward-reference ordering).
+        // This includes `-> None` annotations — the HIR distinguishes
+        // `Option::None` (no annotation) from `Some(Type::None)` (explicit `-> None`).
         for func_id in &func_ids {
             if let Some(func) = hir_module.func_defs.get(func_id) {
-                let has_explicit =
-                    func.return_type.is_some() && func.return_type.as_ref() != Some(&Type::None);
-                if has_explicit {
+                if let Some(ref return_type) = func.return_type {
                     self.func_return_types
-                        .insert(*func_id, func.return_type.clone().unwrap());
+                        .insert(*func_id, return_type.clone());
                 }
             }
         }
@@ -180,11 +181,22 @@ impl<'a> Lowering<'a> {
                     self.collect_return_types(*s, module, param_types, return_types);
                 }
             }
-            hir::StmtKind::For { body, .. }
-            | hir::StmtKind::ForUnpack { body, .. }
-            | hir::StmtKind::ForUnpackStarred { body, .. }
-            | hir::StmtKind::While { body, .. } => {
+            hir::StmtKind::For {
+                body, else_block, ..
+            }
+            | hir::StmtKind::ForUnpack {
+                body, else_block, ..
+            }
+            | hir::StmtKind::ForUnpackStarred {
+                body, else_block, ..
+            }
+            | hir::StmtKind::While {
+                body, else_block, ..
+            } => {
                 for s in body {
+                    self.collect_return_types(*s, module, param_types, return_types);
+                }
+                for s in else_block {
                     self.collect_return_types(*s, module, param_types, return_types);
                 }
             }
@@ -252,43 +264,7 @@ impl<'a> Lowering<'a> {
                 let right_ty =
                     self.infer_deep_expr_type(&module.exprs[*right], module, param_types);
 
-                // Class types with arithmetic dunders return the class type
-                if matches!(left_ty, Type::Class { .. }) {
-                    return left_ty;
-                }
-                // Set operations (|, &, -, ^) return Set type
-                if let Type::Set(elem_ty) = &left_ty {
-                    if matches!(
-                        op,
-                        hir::BinOp::BitOr
-                            | hir::BinOp::BitAnd
-                            | hir::BinOp::Sub
-                            | hir::BinOp::BitXor
-                    ) {
-                        return Type::Set(elem_ty.clone());
-                    }
-                }
-                // List concatenation (+) returns List type
-                if matches!(left_ty, Type::List(_)) && matches!(op, hir::BinOp::Add) {
-                    return left_ty;
-                }
-                // Dict merge (|) returns Dict type
-                if matches!(left_ty, Type::Dict(_, _)) && matches!(op, hir::BinOp::BitOr) {
-                    return left_ty;
-                }
-                if matches!(op, hir::BinOp::Div) {
-                    return Type::Float;
-                }
-                if left_ty == Type::Str || right_ty == Type::Str {
-                    return Type::Str;
-                }
-                if left_ty == Type::Float || right_ty == Type::Float {
-                    return Type::Float;
-                }
-                if left_ty == Type::Int && right_ty == Type::Int {
-                    return Type::Int;
-                }
-                Type::Any
+                helpers::resolve_binop_type(op, &left_ty, &right_ty).unwrap_or(Type::Any)
             }
 
             // === Unary operations ===
@@ -308,8 +284,10 @@ impl<'a> Lowering<'a> {
                     self.infer_deep_expr_type(&module.exprs[*right], module, param_types);
                 if left_ty == right_ty {
                     left_ty
-                } else {
+                } else if left_ty == Type::Any || right_ty == Type::Any {
                     Type::Any
+                } else {
+                    Type::normalize_union(vec![left_ty, right_ty])
                 }
             }
 
@@ -323,8 +301,10 @@ impl<'a> Lowering<'a> {
                     self.infer_deep_expr_type(&module.exprs[*else_val], module, param_types);
                 if then_ty == else_ty {
                     then_ty
-                } else {
+                } else if then_ty == Type::Any || else_ty == Type::Any {
                     Type::Any
+                } else {
+                    Type::normalize_union(vec![then_ty, else_ty])
                 }
             }
 
@@ -333,9 +313,11 @@ impl<'a> Lowering<'a> {
                 if elems.is_empty() {
                     expr.ty.clone().unwrap_or(Type::List(Box::new(Type::Any)))
                 } else {
-                    let first =
-                        self.infer_deep_expr_type(&module.exprs[elems[0]], module, param_types);
-                    Type::List(Box::new(first))
+                    let elem_types: Vec<Type> = elems
+                        .iter()
+                        .map(|e| self.infer_deep_expr_type(&module.exprs[*e], module, param_types))
+                        .collect();
+                    Type::List(Box::new(helpers::unify_element_types(elem_types)))
                 }
             }
             hir::ExprKind::Tuple(elems) => {
@@ -349,20 +331,33 @@ impl<'a> Lowering<'a> {
                 if pairs.is_empty() {
                     Type::Dict(Box::new(Type::Any), Box::new(Type::Any))
                 } else {
-                    let key =
-                        self.infer_deep_expr_type(&module.exprs[pairs[0].0], module, param_types);
-                    let val =
-                        self.infer_deep_expr_type(&module.exprs[pairs[0].1], module, param_types);
-                    Type::Dict(Box::new(key), Box::new(val))
+                    let key_types: Vec<Type> = pairs
+                        .iter()
+                        .map(|(k, _)| {
+                            self.infer_deep_expr_type(&module.exprs[*k], module, param_types)
+                        })
+                        .collect();
+                    let val_types: Vec<Type> = pairs
+                        .iter()
+                        .map(|(_, v)| {
+                            self.infer_deep_expr_type(&module.exprs[*v], module, param_types)
+                        })
+                        .collect();
+                    Type::Dict(
+                        Box::new(helpers::unify_element_types(key_types)),
+                        Box::new(helpers::unify_element_types(val_types)),
+                    )
                 }
             }
             hir::ExprKind::Set(elems) => {
                 if elems.is_empty() {
                     Type::Set(Box::new(Type::Any))
                 } else {
-                    let first =
-                        self.infer_deep_expr_type(&module.exprs[elems[0]], module, param_types);
-                    Type::Set(Box::new(first))
+                    let elem_types: Vec<Type> = elems
+                        .iter()
+                        .map(|e| self.infer_deep_expr_type(&module.exprs[*e], module, param_types))
+                        .collect();
+                    Type::Set(Box::new(helpers::unify_element_types(elem_types)))
                 }
             }
 
@@ -470,54 +465,11 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::MethodCall { obj, method, .. } => {
                 let obj_ty = self.infer_deep_expr_type(&module.exprs[*obj], module, param_types);
                 let method_name = self.interner.resolve(*method);
+                // Try shared dispatch table first (Str, List, Dict, Set, File)
+                if let Some(ty) = helpers::resolve_method_return_type(&obj_ty, method_name) {
+                    return ty;
+                }
                 match &obj_ty {
-                    Type::Str => match method_name {
-                        "upper" | "lower" | "strip" | "lstrip" | "rstrip" | "replace" | "title"
-                        | "capitalize" | "swapcase" | "join" | "format" | "center" | "ljust"
-                        | "rjust" | "zfill" => Type::Str,
-                        "split" | "splitlines" => Type::List(Box::new(Type::Str)),
-                        "find" | "rfind" | "index" | "rindex" | "count" => Type::Int,
-                        "startswith" | "endswith" | "isdigit" | "isalpha" | "isalnum"
-                        | "isspace" | "isupper" | "islower" => Type::Bool,
-                        "encode" => Type::Bytes,
-                        _ => Type::Any,
-                    },
-                    Type::List(elem_ty) => match method_name {
-                        "pop" => (**elem_ty).clone(),
-                        "copy" => Type::List(elem_ty.clone()),
-                        "index" | "count" => Type::Int,
-                        _ => Type::Any,
-                    },
-                    Type::Dict(key_ty, val_ty) => match method_name {
-                        "get" | "pop" | "setdefault" => (**val_ty).clone(),
-                        "keys" => Type::List(key_ty.clone()),
-                        "values" => Type::List(val_ty.clone()),
-                        "items" => {
-                            let tuple_ty =
-                                Type::Tuple(vec![(**key_ty).clone(), (**val_ty).clone()]);
-                            Type::List(Box::new(tuple_ty))
-                        }
-                        "popitem" => Type::Tuple(vec![(**key_ty).clone(), (**val_ty).clone()]),
-                        "clear" | "update" => Type::None,
-                        _ => Type::Any,
-                    },
-                    Type::Set(elem_ty) => match method_name {
-                        "copy"
-                        | "union"
-                        | "intersection"
-                        | "difference"
-                        | "symmetric_difference" => Type::Set(elem_ty.clone()),
-                        "add" | "remove" | "discard" | "clear" => Type::None,
-                        "issubset" | "issuperset" | "isdisjoint" => Type::Bool,
-                        _ => Type::Any,
-                    },
-                    Type::File => match method_name {
-                        "read" | "readline" => Type::Str,
-                        "readlines" => Type::List(Box::new(Type::Str)),
-                        "write" => Type::Int,
-                        "close" | "flush" => Type::None,
-                        _ => Type::Any,
-                    },
                     Type::Class { class_id, .. } => {
                         if let Some(info) = self.class_info.get(class_id) {
                             let method_maps = [
@@ -553,14 +505,30 @@ impl<'a> Lowering<'a> {
             }
 
             // === Indexing ===
-            hir::ExprKind::Index { obj, .. } => {
+            hir::ExprKind::Index { obj, index } => {
                 let obj_ty = self.infer_deep_expr_type(&module.exprs[*obj], module, param_types);
                 match obj_ty {
                     Type::List(elem) => *elem,
                     Type::Dict(_, val) => *val,
                     Type::Str => Type::Str,
                     Type::Bytes => Type::Int,
-                    Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                    Type::Tuple(elems) if !elems.is_empty() => {
+                        // Try compile-time index resolution for Int literals
+                        let index_expr = &module.exprs[*index];
+                        if let hir::ExprKind::Int(idx) = &index_expr.kind {
+                            let len = elems.len() as i64;
+                            let actual_idx = if *idx < 0 { len + idx } else { *idx };
+                            if actual_idx >= 0 && (actual_idx as usize) < elems.len() {
+                                return elems[actual_idx as usize].clone();
+                            }
+                        }
+                        // Fallback: homogeneous → single type, heterogeneous → union
+                        if elems.iter().all(|t| t == &elems[0]) {
+                            elems[0].clone()
+                        } else {
+                            Type::normalize_union(elems.clone())
+                        }
+                    }
                     _ => Type::Any,
                 }
             }

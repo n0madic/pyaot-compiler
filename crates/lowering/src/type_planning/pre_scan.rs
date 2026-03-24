@@ -47,7 +47,7 @@ impl<'a> Lowering<'a> {
         for (i, stmt_id) in stmts.iter().enumerate() {
             let stmt = &hir_module.stmts[*stmt_id];
 
-            // Look for: var = [] (no type hint, empty list)
+            // Look for: var = [] / {} / set() (no type hint, empty container)
             if let hir::StmtKind::Assign {
                 target,
                 value,
@@ -59,22 +59,35 @@ impl<'a> Lowering<'a> {
                     matches!(&expr.kind, hir::ExprKind::List(elems) if elems.is_empty());
                 let is_empty_set =
                     matches!(&expr.kind, hir::ExprKind::Set(elems) if elems.is_empty());
+                let is_empty_dict =
+                    matches!(&expr.kind, hir::ExprKind::Dict(pairs) if pairs.is_empty());
 
-                if !is_empty_list && !is_empty_set {
+                if !is_empty_list && !is_empty_set && !is_empty_dict {
                     continue;
                 }
 
-                // Scan subsequent statements for method calls on this variable
-                let elem_ty = self.find_elem_type_from_usage(*target, &stmts[i + 1..], hir_module);
+                if is_empty_dict {
+                    // Scan for d[key] = value assignments to infer key/value types
+                    let (key_ty, val_ty) =
+                        self.find_dict_types_from_usage(*target, &stmts[i + 1..], hir_module);
+                    if key_ty != Type::Any || val_ty != Type::Any {
+                        let refined = Type::Dict(Box::new(key_ty), Box::new(val_ty));
+                        self.refined_var_types.insert(*target, refined);
+                    }
+                } else {
+                    // Scan subsequent statements for method calls on this variable
+                    let elem_ty =
+                        self.find_elem_type_from_usage(*target, &stmts[i + 1..], hir_module);
 
-                if elem_ty != Type::Any {
-                    let refined = if is_empty_list {
-                        Type::List(Box::new(elem_ty))
-                    } else {
-                        Type::Set(Box::new(elem_ty))
-                    };
-                    // Store in refined_var_types which persists across function lowerings
-                    self.refined_var_types.insert(*target, refined);
+                    if elem_ty != Type::Any {
+                        let refined = if is_empty_list {
+                            Type::List(Box::new(elem_ty))
+                        } else {
+                            Type::Set(Box::new(elem_ty))
+                        };
+                        // Store in refined_var_types which persists across function lowerings
+                        self.refined_var_types.insert(*target, refined);
+                    }
                 }
             }
 
@@ -190,6 +203,39 @@ impl<'a> Lowering<'a> {
             }
         }
         None
+    }
+
+    /// Look through subsequent statements for dict index assignments (`d[key] = value`)
+    /// that reveal the key and value types.
+    fn find_dict_types_from_usage(
+        &self,
+        var: VarId,
+        stmts: &[hir::StmtId],
+        hir_module: &hir::Module,
+    ) -> (Type, Type) {
+        for stmt_id in stmts {
+            let stmt = &hir_module.stmts[*stmt_id];
+            match &stmt.kind {
+                hir::StmtKind::IndexAssign { obj, index, value } => {
+                    let obj_expr = &hir_module.exprs[*obj];
+                    if matches!(&obj_expr.kind, hir::ExprKind::Var(v) if *v == var) {
+                        let key_ty =
+                            self.infer_static_expr_type(&hir_module.exprs[*index], hir_module);
+                        let val_ty =
+                            self.infer_static_expr_type(&hir_module.exprs[*value], hir_module);
+                        if key_ty != Type::Any && val_ty != Type::Any {
+                            return (key_ty, val_ty);
+                        }
+                    }
+                }
+                // Stop at reassignment to the same variable
+                hir::StmtKind::Assign { target, .. } if *target == var => {
+                    return (Type::Any, Type::Any);
+                }
+                _ => {}
+            }
+        }
+        (Type::Any, Type::Any)
     }
 
     /// Lightweight static type inference for expressions (no mutable state needed).
