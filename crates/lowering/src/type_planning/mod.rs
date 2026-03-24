@@ -31,7 +31,8 @@ impl<'a> Lowering<'a> {
         self.process_module_decorated_functions(hir_module);
     }
 
-    /// Get the type of an expression by its ID (cached).
+    /// Get the type of an expression by its ID (memoized).
+    /// Results persist across functions — ExprIds are unique per-module.
     pub(crate) fn get_type_of_expr_id(
         &self,
         expr_id: hir::ExprId,

@@ -89,7 +89,9 @@ impl<'a> Lowering<'a> {
         self.expected_type = None;
         self.pending_varargs_from_unpack = None;
         self.pending_kwargs_from_unpack = None;
-        self.expr_type_cache.borrow_mut().clear();
+        // expr_type_cache NOT cleared — ExprIds are unique per-module, so
+        // cached types from other functions are valid. This enables TypeMap
+        // accumulation across functions.
 
         // Copy cell_vars and nonlocal_vars from HIR function
         for var_id in &func.cell_vars {
