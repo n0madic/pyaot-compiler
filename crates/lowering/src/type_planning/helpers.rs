@@ -286,11 +286,14 @@ pub(crate) fn resolve_builtin_call_type(
             if arg_types.is_empty() {
                 return Some(Type::Int);
             }
+            // Single-arg form: min(iterable) / max(iterable) — returns element type
             if arg_types.len() == 1 {
-                if let Type::List(elem_type) = &arg_types[0] {
-                    return Some(elem_type.as_ref().clone());
+                let elem_type = extract_iterable_element_type(&arg_types[0]);
+                if elem_type != Type::Any {
+                    return Some(elem_type);
                 }
             }
+            // Multi-arg form: min(a, b, c) — returns the common type
             let has_float = arg_types.contains(&Type::Float);
             Some(if has_float { Type::Float } else { Type::Int })
         }
