@@ -650,6 +650,7 @@ impl<'a> Lowering<'a> {
         params: &[&hir::Param],
         target_func_id: Option<pyaot_utils::FuncId>,
         param_index_offset: usize,
+        call_span: pyaot_utils::Span,
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
@@ -678,7 +679,7 @@ impl<'a> Lowering<'a> {
                 } else {
                     let param_name = self.resolve(param.name).to_string();
                     return Err(CompilerError::missing_required_argument(
-                        param_name, param.span,
+                        param_name, call_span,
                     ));
                 }
             }

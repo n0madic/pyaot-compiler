@@ -77,10 +77,12 @@ impl<'a> Lowering<'a> {
     }
 
     /// Check function call: validate arg count and arg types against parameters.
+    /// `call_span` is the source location of the call expression (e.g. `f(1)`).
     pub(crate) fn check_call_args(
         &mut self,
         func_id: &pyaot_utils::FuncId,
         arg_expr_ids: &[hir::ExprId],
+        call_span: pyaot_utils::Span,
         hir_module: &hir::Module,
     ) {
         let Some(func_def) = hir_module.func_defs.get(func_id) else {
@@ -101,7 +103,7 @@ impl<'a> Lowering<'a> {
                 let name = self.resolve(missing_param.name).to_string();
                 self.warnings
                     .add(pyaot_diagnostics::CompilerWarning::TypeError {
-                        span: pyaot_utils::Span::dummy(),
+                        span: call_span,
                         message: format!("missing required argument: '{}'", name),
                     });
             }

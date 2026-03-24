@@ -137,6 +137,7 @@ impl<'a> Lowering<'a> {
         params: &[hir::Param],
         target_func_id: Option<pyaot_utils::FuncId>,
         param_index_offset: usize,
+        call_span: pyaot_utils::Span,
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<Vec<mir::Operand>> {
@@ -186,6 +187,7 @@ impl<'a> Lowering<'a> {
             &param_class.regular,
             target_func_id,
             param_index_offset,
+            call_span,
             hir_module,
             mir_func,
         )?;
@@ -201,6 +203,7 @@ impl<'a> Lowering<'a> {
             &param_class.kwonly,
             target_func_id,
             kwonly_offset,
+            call_span,
             hir_module,
             mir_func,
         )?;

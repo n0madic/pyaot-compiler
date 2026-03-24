@@ -333,6 +333,7 @@ impl<'a> Lowering<'a> {
                         &func_def.params,
                         Some(func_id),
                         0, // No offset for regular function calls
+                        expr.span,
                         hir_module,
                         mir_func,
                     )?
@@ -368,6 +369,7 @@ impl<'a> Lowering<'a> {
                         &func_def.params,
                         Some(func_id),
                         0, // No offset for regular function calls
+                        expr.span,
                         hir_module,
                         mir_func,
                     )?
@@ -475,10 +477,30 @@ impl<'a> Lowering<'a> {
                     }
                 })
                 .collect();
-            self.check_call_args(func_id, &regular_arg_ids, hir_module);
+            // For error span: use the first arg's span (points to call site),
+            // or construct from the func_expr span end (f(←here))
+            let call_span = if let Some(first_arg) = regular_arg_ids.first() {
+                hir_module.exprs[*first_arg].span
+            } else {
+                // No args at all — use func expression span
+                func_expr.span
+            };
+            self.check_call_args(func_id, &regular_arg_ids, call_span, hir_module);
 
             // Get function definition to access parameter names and defaults
             let func_def = hir_module.func_defs.get(func_id);
+
+            // Use first arg span for call site location (Call expr span may be wrong)
+            let call_site_span = args
+                .iter()
+                .find_map(|a| {
+                    if let crate::expressions::calls::ExpandedArg::Regular(id) = a {
+                        Some(hir_module.exprs[*id].span)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(expr.span);
 
             let arg_operands = if let Some(func_def) = func_def {
                 // Resolve arguments using helper (handles kwargs and defaults)
@@ -488,6 +510,7 @@ impl<'a> Lowering<'a> {
                     &func_def.params,
                     Some(*func_id),
                     0, // No offset for regular function calls
+                    call_site_span,
                     hir_module,
                     mir_func,
                 )?
@@ -890,6 +913,7 @@ impl<'a> Lowering<'a> {
                         &init_params,
                         Some(init_func_id),
                         1, // Offset by 1 because self is skipped
+                        pyaot_utils::Span::dummy(), // class instantiation has no call expr
                         hir_module,
                         mir_func,
                     )?;
