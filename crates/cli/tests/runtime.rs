@@ -55,6 +55,7 @@ runtime_cases!(
     (runtime_gc_simple, "test_gc_simple.py"),
     (runtime_multi_except, "test_multi_except.py"),
     (runtime_dead_code_warnings, "test_dead_code_warnings.py"),
+    (runtime_type_inference, "test_type_inference.py"),
     (runtime_decorator_factory, "test_decorator_factory.py"),
     (runtime_builtin_first_class, "test_builtin_first_class.py"),
     // Collections
