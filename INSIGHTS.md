@@ -284,3 +284,17 @@ If the runtime always creates `ELEM_HEAP_OBJ` lists from dict/set, the compiler'
 **Fix**: `rt_dict_keys`, `rt_dict_values`, `rt_sorted_set`, `rt_sorted_dict` all accept an `elem_tag` parameter. When `elem_tag == ELEM_RAW_INT`, they unbox `IntObj` values to raw i64 before storing in the result list. The lowering passes the correct `elem_tag` via `Self::elem_tag_for_type()`.
 
 **Codegen note**: The `elem_tag` parameter uses `u8` in runtime but `i64` in MIR constants. The codegen must `ireduce` from i64 to i8 before the call.
+
+## GC Global State Limitations
+
+The GC uses a single `static GC_STATE: OnceLock<Mutex<GcState>>` (`runtime/src/gc.rs:115`). This has important implications:
+
+**Single shadow stack**: `state.stack_top` is a single linked list of `ShadowFrame` pointers. Every compiled function pushes/pops to this one stack. If multiple threads execute compiled code simultaneously, their shadow frames will interleave in this list. GC mark phase would follow frames from mixed threads, leading to missed roots or dangling frame traversal.
+
+**Mutex on hot path**: `gc_push`, `gc_pop`, `gc_alloc` all acquire the mutex through `with_gc_state()`. These are the hottest paths in compiled code — every function call does push+pop, every heap allocation takes the lock. Under contention this becomes a severe bottleneck.
+
+**OnceLock prevents reinit**: `gc::init()` uses `get_or_init()` — it's a no-op after first call. `gc::shutdown()` frees all objects but cannot reset the `OnceLock`. This means test isolation requires external synchronization (see `RUNTIME_TEST_LOCK` in `lib.rs`).
+
+**Map iterator boxing flag**: The map callback ABI is `fn(*mut Obj) -> *mut Obj` for all callbacks. User-defined functions compiled by Cranelift receive raw native types (i64 for int), so raw int elements from `ELEM_RAW_INT` lists pass through correctly. But builtin functions (like `str`, `int`) genuinely expect `*mut Obj` pointers. To distinguish, the compiler sets bit 7 of `capture_count` in `MapIterObj` (0x80 flag) for builtins, causing `iter_next_map` to box raw elements via `box_if_raw_int_iterator` before calling the callback. See `lowering/src/expressions/builtins/iteration.rs` and `runtime/src/iterator/next.rs`.
+
+**Current safety**: The project is single-threaded by design (no async/await, no threading module). The mutex is uncontended and adds negligible overhead. But any future work on parallelism must address the GC architecture first.
