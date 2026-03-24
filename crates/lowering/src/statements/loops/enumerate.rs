@@ -437,55 +437,30 @@ impl<'a> Lowering<'a> {
         // Body: get element, set counter, execute body
         self.push_block(body_bb);
 
+        // After DictKeys/SetToList conversion, the result list's elem_tag depends on
+        // the element type. Use specialized get functions that handle both raw and boxed
+        // storage transparently (ListGetInt, ListGetFloat, ListGetBool).
         let get_func = match iterable_kind {
-            IterableKind::List | IterableKind::Dict | IterableKind::Set => {
-                mir::RuntimeFunc::ListGet
-            }
+            IterableKind::List | IterableKind::Dict | IterableKind::Set => match &elem_type {
+                Type::Int => mir::RuntimeFunc::ListGetInt,
+                Type::Float => mir::RuntimeFunc::ListGetFloat,
+                Type::Bool => mir::RuntimeFunc::ListGetBool,
+                _ => mir::RuntimeFunc::ListGet,
+            },
             IterableKind::Tuple => mir::RuntimeFunc::TupleGet,
             IterableKind::Str => mir::RuntimeFunc::StrGetChar,
             IterableKind::Bytes => mir::RuntimeFunc::BytesGet,
             IterableKind::Iterator | IterableKind::File => unreachable!(),
         };
 
-        // Dict/set store elements as boxed heap objects; unbox primitives after ListGet.
-        // Same pattern as iterable.rs lower_for_iterable.
-        let needs_unboxing = (iterable_kind == IterableKind::Dict
-            || iterable_kind == IterableKind::Set)
-            && matches!(elem_type, Type::Int | Type::Bool | Type::Float);
-
-        if needs_unboxing {
-            // Get boxed element into a GC-rooted temporary (GC can run between get and unbox)
-            let boxed_local = self.alloc_gc_local(Type::Str, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: boxed_local,
-                func: get_func,
-                args: vec![
-                    mir::Operand::Local(actual_iter_local),
-                    mir::Operand::Local(idx_local),
-                ],
-            });
-
-            let unbox_func = match elem_type {
-                Type::Int => mir::RuntimeFunc::UnboxInt,
-                Type::Bool => mir::RuntimeFunc::UnboxBool,
-                Type::Float => mir::RuntimeFunc::UnboxFloat,
-                _ => unreachable!(),
-            };
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: elem_local,
-                func: unbox_func,
-                args: vec![mir::Operand::Local(boxed_local)],
-            });
-        } else {
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: elem_local,
-                func: get_func,
-                args: vec![
-                    mir::Operand::Local(actual_iter_local),
-                    mir::Operand::Local(idx_local),
-                ],
-            });
-        }
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: elem_local,
+            func: get_func,
+            args: vec![
+                mir::Operand::Local(actual_iter_local),
+                mir::Operand::Local(idx_local),
+            ],
+        });
 
         self.push_loop(increment_id, exit_id);
 

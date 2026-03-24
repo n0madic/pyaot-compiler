@@ -307,8 +307,15 @@ impl<'a> Lowering<'a> {
                 }
             }
             IterableKind::Dict | IterableKind::Set => {
-                // Dict/Set elements are always boxed, use generic ListGet
-                mir::RuntimeFunc::ListGet
+                // After DictKeys/SetToList conversion, the result list's elem_tag
+                // depends on the element type: ELEM_RAW_INT for Int, ELEM_HEAP_OBJ
+                // for everything else. Use specialized get functions accordingly.
+                match &elem_type {
+                    Type::Int => mir::RuntimeFunc::ListGetInt,
+                    Type::Float => mir::RuntimeFunc::ListGetFloat,
+                    Type::Bool => mir::RuntimeFunc::ListGetBool,
+                    _ => mir::RuntimeFunc::ListGet,
+                }
             }
             IterableKind::Tuple => {
                 // Use specialized tuple get functions for primitive types
@@ -333,49 +340,16 @@ impl<'a> Lowering<'a> {
             iter_local
         };
 
-        // For dict keys and set elements, elements are boxed - need to unbox after retrieval
-        let needs_unboxing = (iterable_kind == IterableKind::Dict
-            || iterable_kind == IterableKind::Set)
-            && matches!(elem_type, Type::Int | Type::Bool | Type::Float);
-
-        if needs_unboxing {
-            // Get the boxed element into a temporary local
-            // Must be a GC root: GC can run between the get and the unbox instruction
-            let boxed_local = self.alloc_gc_local(Type::Str, mir_func);
-
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: boxed_local,
-                func: get_func,
-                args: vec![
-                    mir::Operand::Local(iter_to_index),
-                    mir::Operand::Local(idx_local),
-                ],
-            });
-
-            // Unbox the element based on its type
-            let unbox_func = match elem_type {
-                Type::Int => mir::RuntimeFunc::UnboxInt,
-                Type::Bool => mir::RuntimeFunc::UnboxBool,
-                Type::Float => mir::RuntimeFunc::UnboxFloat,
-                _ => unreachable!(),
-            };
-
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: target_local,
-                func: unbox_func,
-                args: vec![mir::Operand::Local(boxed_local)],
-            });
-        } else {
-            // Regular case - no unboxing needed (lists, tuples, strings, or str dict keys/set elements)
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: target_local,
-                func: get_func,
-                args: vec![
-                    mir::Operand::Local(iter_to_index),
-                    mir::Operand::Local(idx_local),
-                ],
-            });
-        }
+        // Specialized get functions (ListGetInt, ListGetFloat, ListGetBool) handle
+        // both ELEM_RAW_INT and ELEM_HEAP_OBJ transparently, so no manual unboxing needed.
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: target_local,
+            func: get_func,
+            args: vec![
+                mir::Operand::Local(iter_to_index),
+                mir::Operand::Local(idx_local),
+            ],
+        });
 
         // If target is a global variable, sync the global with the local at start of each iteration
         // This is necessary because the loop uses a local for efficiency, but code inside

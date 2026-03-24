@@ -849,12 +849,35 @@ impl<'a> Lowering<'a> {
             // True path: key exists, get value and check sub-pattern
             self.push_block(get_bb);
 
+            // DictGet returns a boxed *mut Obj for all values.
+            // Primitive types (Int, Float, Bool) need unboxing.
+            let unbox_func = match &value_type {
+                Type::Int => Some(mir::RuntimeFunc::UnboxInt),
+                Type::Float => Some(mir::RuntimeFunc::UnboxFloat),
+                Type::Bool => Some(mir::RuntimeFunc::UnboxBool),
+                _ => None,
+            };
+
             let value_local = self.alloc_and_add_local(value_type.clone(), mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: value_local,
-                func: mir::RuntimeFunc::DictGet,
-                args: vec![ctx.subject.clone(), key_operand],
-            });
+            if let Some(unbox_func) = unbox_func {
+                let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: boxed_local,
+                    func: mir::RuntimeFunc::DictGet,
+                    args: vec![ctx.subject.clone(), key_operand],
+                });
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: value_local,
+                    func: unbox_func,
+                    args: vec![mir::Operand::Local(boxed_local)],
+                });
+            } else {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: value_local,
+                    func: mir::RuntimeFunc::DictGet,
+                    args: vec![ctx.subject.clone(), key_operand],
+                });
+            }
 
             let (pattern_cond, pattern_bindings) = self.generate_pattern_check(
                 pattern,
