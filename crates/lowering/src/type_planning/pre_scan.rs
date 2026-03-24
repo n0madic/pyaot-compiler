@@ -288,6 +288,66 @@ impl<'a> Lowering<'a> {
                     }
                 }
 
+                // For sorted(iterable, key=lambda), min(iterable, key=lambda), max(iterable, key=lambda):
+                // The key function receives element type of the iterable
+                if matches!(
+                    builtin,
+                    hir::Builtin::Sorted | hir::Builtin::Min | hir::Builtin::Max
+                ) && !args.is_empty()
+                {
+                    // Find key= kwarg
+                    let key_func = kwargs.iter().find_map(|kw| {
+                        let kw_name = self.interner.resolve(kw.name);
+                        if kw_name == "key" {
+                            Some(&hir_module.exprs[kw.value])
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(key_expr) = key_func {
+                        let iterable_arg = &hir_module.exprs[args[0]];
+                        let iterable_type =
+                            self.get_expr_type_static(iterable_arg, hir_module, var_types);
+                        let elem_type = match &iterable_type {
+                            Type::List(elem) => (**elem).clone(),
+                            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                            Type::Set(elem) => (**elem).clone(),
+                            Type::Dict(key, _) => (**key).clone(),
+                            Type::Str => Type::Str,
+                            Type::Iterator(elem) => (**elem).clone(),
+                            _ => Type::Any,
+                        };
+                        if !matches!(elem_type, Type::Any) {
+                            let func_info = match &key_expr.kind {
+                                hir::ExprKind::FuncRef(func_id) => Some((*func_id, vec![])),
+                                hir::ExprKind::Closure { func, captures } => {
+                                    Some((*func, captures.clone()))
+                                }
+                                _ => None,
+                            };
+                            if let Some((func_id, captures)) = func_info {
+                                if let Some(func_def) = hir_module.func_defs.get(&func_id) {
+                                    let num_captures = captures.len();
+                                    let num_non_capture =
+                                        func_def.params.len().saturating_sub(num_captures);
+                                    if num_non_capture == 1 {
+                                        let mut param_hints = Vec::new();
+                                        for cap_id in &captures {
+                                            let cap_expr = &hir_module.exprs[*cap_id];
+                                            let cap_type = self.get_expr_type_static(
+                                                cap_expr, hir_module, var_types,
+                                            );
+                                            param_hints.push(cap_type);
+                                        }
+                                        param_hints.push(elem_type);
+                                        self.insert_lambda_param_type_hints(func_id, param_hints);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Scan all arguments (this catches map(lambda ..., ...), filter(lambda ..., ...), etc.)
                 for arg_id in args {
                     let arg_expr = &hir_module.exprs[*arg_id];

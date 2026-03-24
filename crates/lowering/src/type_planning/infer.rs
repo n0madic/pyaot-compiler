@@ -916,16 +916,15 @@ impl<'a> Lowering<'a> {
             }
             hir::ExprKind::LogicalOp { left, right, .. } => {
                 // Logical and/or return one of the operands
-                // For bool operands, result is bool
-                // For mixed types, return the common type or Any
                 let left_ty = self.get_type_of_expr_id(*left, hir_module);
                 let right_ty = self.get_type_of_expr_id(*right, hir_module);
 
                 if left_ty == right_ty {
                     left_ty
-                } else {
-                    // For mixed types, return Any
+                } else if left_ty == Type::Any || right_ty == Type::Any {
                     Type::Any
+                } else {
+                    Type::normalize_union(vec![left_ty, right_ty])
                 }
             }
             hir::ExprKind::Compare { .. } => {
@@ -936,14 +935,14 @@ impl<'a> Lowering<'a> {
                 then_val, else_val, ..
             } => {
                 // Ternary: if condition then then_val else else_val
-                // Type is the common type of then_val and else_val
                 let then_ty = self.get_type_of_expr_id(*then_val, hir_module);
                 let else_ty = self.get_type_of_expr_id(*else_val, hir_module);
 
                 if then_ty == else_ty {
                     then_ty
                 } else {
-                    // For mixed types, return Any
+                    // TODO: return Union[then_ty, else_ty] once codegen handles
+                    // Union boxing for IfExpr branches properly
                     Type::Any
                 }
             }
