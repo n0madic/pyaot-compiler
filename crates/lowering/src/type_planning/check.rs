@@ -12,6 +12,7 @@
 
 use pyaot_hir as hir;
 use pyaot_types::Type;
+use smallvec::SmallVec;
 
 use crate::context::Lowering;
 
@@ -113,15 +114,15 @@ impl<'a> Lowering<'a> {
 
         let effective_count = arg_expr_ids.len() + kwargs_filling_required;
         if effective_count < required_count {
-            // Find the first missing parameter
-            let positional_names: std::collections::HashSet<_> = (0..arg_expr_ids.len())
+            // Find the first missing parameter (SmallVec avoids heap for typical ≤8 params)
+            let positional_names: SmallVec<[String; 8]> = (0..arg_expr_ids.len())
                 .filter_map(|i| {
                     regular_params
                         .get(i)
                         .map(|p| self.resolve(p.name).to_string())
                 })
                 .collect();
-            let kwarg_names: std::collections::HashSet<_> = kwargs
+            let kwarg_names: SmallVec<[String; 8]> = kwargs
                 .iter()
                 .map(|kw| self.resolve(kw.name).to_string())
                 .collect();

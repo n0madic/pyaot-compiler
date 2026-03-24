@@ -757,7 +757,7 @@ unsafe fn rt_list_contains_value(list: *mut Obj, value: *mut Obj) -> i8 {
 
 /// Check if tuple contains value using value equality
 unsafe fn rt_tuple_contains_value(tuple: *mut Obj, value: *mut Obj) -> i8 {
-    use crate::object::{BoolObj, IntObj, TupleObj, ELEM_HEAP_OBJ, ELEM_RAW_BOOL, ELEM_RAW_INT};
+    use crate::object::{BoolObj, IntObj, TupleObj, ELEM_RAW_BOOL, ELEM_RAW_INT};
 
     let tuple_obj = tuple as *mut TupleObj;
     let len = (*tuple_obj).len;
@@ -808,7 +808,7 @@ unsafe fn rt_tuple_contains_value(tuple: *mut Obj, value: *mut Obj) -> i8 {
             }
             0
         }
-        ELEM_HEAP_OBJ | _ => {
+        _ => {
             // Elements are *mut Obj pointers — use value equality
             for i in 0..len {
                 let elem = *data.add(i);

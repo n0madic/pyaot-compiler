@@ -12,6 +12,7 @@ pyaot-stdlib-defs = { path = "../stdlib-defs" }
 pyaot-core-defs = { path = "../core-defs" }
 pyaot-diagnostics = { path = "../diagnostics" }
 indexmap = { workspace = true }
+smallvec = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -67,8 +67,7 @@ impl<'a> Lowering<'a> {
         for func_id in &func_ids {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 if let Some(ref return_type) = func.return_type {
-                    self.func_return_types
-                        .insert(*func_id, return_type.clone());
+                    self.func_return_types.insert(*func_id, return_type.clone());
                 }
             }
         }
@@ -391,68 +390,42 @@ impl<'a> Lowering<'a> {
             }
 
             // === Builtin calls ===
+            // === Builtin calls ===
             hir::ExprKind::BuiltinCall { builtin, args, .. } => {
-                use hir::Builtin;
-                match builtin {
-                    Builtin::Int => Type::Int,
-                    Builtin::Float => Type::Float,
-                    Builtin::Bool => Type::Bool,
-                    Builtin::Str => Type::Str,
-                    Builtin::Bytes => Type::Bytes,
-                    Builtin::Len | Builtin::Hash | Builtin::Id | Builtin::Ord => Type::Int,
-                    Builtin::Chr
-                    | Builtin::Repr
-                    | Builtin::Ascii
-                    | Builtin::Format
-                    | Builtin::Input
-                    | Builtin::Bin
-                    | Builtin::Hex
-                    | Builtin::Oct
-                    | Builtin::Type => Type::Str,
-                    Builtin::Isinstance
-                    | Builtin::Issubclass
-                    | Builtin::All
-                    | Builtin::Any
-                    | Builtin::Callable
-                    | Builtin::Hasattr => Type::Bool,
-                    Builtin::Abs => {
-                        if !args.is_empty() {
-                            self.infer_deep_expr_type(&module.exprs[args[0]], module, param_types)
+                let arg_types: Vec<Type> = args
+                    .iter()
+                    .map(|id| self.infer_deep_expr_type(&module.exprs[*id], module, param_types))
+                    .collect();
+                if let Some(ty) =
+                    helpers::resolve_builtin_call_type(builtin, args, &arg_types, module)
+                {
+                    ty
+                } else if matches!(builtin, hir::Builtin::Map) {
+                    // Map needs func_return_types access
+                    let elem_type = if args.len() >= 2 {
+                        let func_expr = &module.exprs[args[0]];
+                        let func_id = match &func_expr.kind {
+                            hir::ExprKind::FuncRef(id) => Some(*id),
+                            hir::ExprKind::Closure { func, .. } => Some(*func),
+                            _ => None,
+                        };
+                        if let Some(func_id) = func_id {
+                            if let Some(ret) = self.func_return_types.get(&func_id) {
+                                ret.clone()
+                            } else if let Some(func_def) = module.func_defs.get(&func_id) {
+                                func_def.return_type.clone().unwrap_or(Type::Any)
+                            } else {
+                                Type::Any
+                            }
                         } else {
-                            Type::Int
+                            Type::Any
                         }
-                    }
-                    Builtin::Print => Type::None,
-                    Builtin::Range => Type::Iterator(Box::new(Type::Int)),
-                    Builtin::Pow => Type::Float,
-                    Builtin::Open => Type::File,
-                    Builtin::Sorted => {
-                        if !args.is_empty() {
-                            let arg_ty = self.infer_deep_expr_type(
-                                &module.exprs[args[0]],
-                                module,
-                                param_types,
-                            );
-                            let elem = infer::extract_iterable_element_type(&arg_ty);
-                            Type::List(Box::new(elem))
-                        } else {
-                            Type::List(Box::new(Type::Any))
-                        }
-                    }
-                    Builtin::List => {
-                        if !args.is_empty() {
-                            let arg_ty = self.infer_deep_expr_type(
-                                &module.exprs[args[0]],
-                                module,
-                                param_types,
-                            );
-                            let elem = infer::extract_iterable_element_type(&arg_ty);
-                            Type::List(Box::new(elem))
-                        } else {
-                            Type::List(Box::new(Type::Any))
-                        }
-                    }
-                    _ => expr.ty.clone().unwrap_or(Type::Any),
+                    } else {
+                        Type::Any
+                    };
+                    Type::Iterator(Box::new(elem_type))
+                } else {
+                    expr.ty.clone().unwrap_or(Type::Any)
                 }
             }
 
@@ -463,8 +436,11 @@ impl<'a> Lowering<'a> {
 
             // === Method calls (common patterns) ===
             hir::ExprKind::MethodCall { obj, method, .. } => {
-                let obj_ty = self.infer_deep_expr_type(&module.exprs[*obj], module, param_types);
+                let raw_obj_ty =
+                    self.infer_deep_expr_type(&module.exprs[*obj], module, param_types);
                 let method_name = self.interner.resolve(*method);
+                // Unwrap Optional[T] (Union[T, None]) → T so method dispatch works.
+                let obj_ty = helpers::unwrap_optional(&raw_obj_ty);
                 // Try shared dispatch table first (Str, List, Dict, Set, File)
                 if let Some(ty) = helpers::resolve_method_return_type(&obj_ty, method_name) {
                     return ty;
@@ -507,30 +483,8 @@ impl<'a> Lowering<'a> {
             // === Indexing ===
             hir::ExprKind::Index { obj, index } => {
                 let obj_ty = self.infer_deep_expr_type(&module.exprs[*obj], module, param_types);
-                match obj_ty {
-                    Type::List(elem) => *elem,
-                    Type::Dict(_, val) => *val,
-                    Type::Str => Type::Str,
-                    Type::Bytes => Type::Int,
-                    Type::Tuple(elems) if !elems.is_empty() => {
-                        // Try compile-time index resolution for Int literals
-                        let index_expr = &module.exprs[*index];
-                        if let hir::ExprKind::Int(idx) = &index_expr.kind {
-                            let len = elems.len() as i64;
-                            let actual_idx = if *idx < 0 { len + idx } else { *idx };
-                            if actual_idx >= 0 && (actual_idx as usize) < elems.len() {
-                                return elems[actual_idx as usize].clone();
-                            }
-                        }
-                        // Fallback: homogeneous → single type, heterogeneous → union
-                        if elems.iter().all(|t| t == &elems[0]) {
-                            elems[0].clone()
-                        } else {
-                            Type::normalize_union(elems.clone())
-                        }
-                    }
-                    _ => Type::Any,
-                }
+                let index_expr = &module.exprs[*index];
+                helpers::resolve_index_type(&obj_ty, index_expr)
             }
 
             // === Slicing ===

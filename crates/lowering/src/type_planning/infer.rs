@@ -33,22 +33,7 @@ impl<'a> Lowering<'a> {
                 let raw_obj_ty = self.get_type_of_expr_id(*obj, hir_module);
                 let method_name = self.resolve(*method);
                 // Unwrap Optional[T] (Union[T, None]) → T so method dispatch works.
-                // Also handles Union[T, U, None] (3+ variants) by stripping None out.
-                let obj_ty = match &raw_obj_ty {
-                    Type::Union(variants) if variants.contains(&Type::None) => {
-                        let non_none: Vec<Type> = variants
-                            .iter()
-                            .filter(|t| **t != Type::None)
-                            .cloned()
-                            .collect();
-                        match non_none.len() {
-                            0 => raw_obj_ty,
-                            1 => non_none.into_iter().next().unwrap(),
-                            _ => Type::Union(non_none),
-                        }
-                    }
-                    _ => raw_obj_ty,
-                };
+                let obj_ty = helpers::unwrap_optional(&raw_obj_ty);
                 // Try shared dispatch table first (Str, List, Dict, Set, File)
                 if let Some(ty) = helpers::resolve_method_return_type(&obj_ty, method_name) {
                     return ty;
@@ -100,73 +85,29 @@ impl<'a> Lowering<'a> {
             }
             hir::ExprKind::Index { obj, index } => {
                 let obj_ty = self.get_type_of_expr_id(*obj, hir_module);
-                // Indexing: string returns string (single char), bytes returns int
-                match obj_ty {
-                    Type::Str => Type::Str,
-                    Type::Bytes => Type::Int, // bytes indexing returns an int (0-255)
-                    Type::List(elem_ty) => *elem_ty,
-                    Type::Tuple(elems) => {
-                        // For heterogeneous tuples, try to extract the index value at compile-time
-                        // to return the precise element type
-                        let index_expr = &hir_module.exprs[*index];
-                        if let hir::ExprKind::Int(idx) = &index_expr.kind {
-                            // Handle negative indices
-                            let len = elems.len() as i64;
-                            let actual_idx = if *idx < 0 { len + idx } else { *idx };
-                            if actual_idx >= 0 && (actual_idx as usize) < elems.len() {
-                                return elems[actual_idx as usize].clone();
-                            }
-                        }
-                        // Fallback: if we can't determine the index at compile-time,
-                        // return a union of all element types for heterogeneous tuples,
-                        // or the single element type for homogeneous tuples
-                        if elems.is_empty() {
-                            Type::Any
-                        } else if elems.iter().all(|t| t == &elems[0]) {
-                            // Homogeneous tuple - all elements have the same type
-                            elems[0].clone()
-                        } else {
-                            // Heterogeneous tuple - return union of all types
-                            Type::normalize_union(elems.clone())
-                        }
-                    }
-                    Type::Dict(_, value_ty) => *value_ty,
-                    Type::Class { class_id, .. } => {
-                        // Class with __getitem__ - return type from the dunder method
-                        self.get_class_info(&class_id)
-                            .and_then(|info| info.getitem_func)
-                            .and_then(|func_id| self.get_func_return_type(&func_id).cloned())
-                            .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
-                    }
-                    _ => expr.ty.clone().unwrap_or(Type::Any),
+                let index_expr = &hir_module.exprs[*index];
+                let base = helpers::resolve_index_type(&obj_ty, index_expr);
+                if base != Type::Any {
+                    base
+                } else if let Type::Class { class_id, .. } = &obj_ty {
+                    // Class with __getitem__ — return type from the dunder method
+                    self.get_class_info(class_id)
+                        .and_then(|info| info.getitem_func)
+                        .and_then(|func_id| self.get_func_return_type(&func_id).cloned())
+                        .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                } else {
+                    expr.ty.clone().unwrap_or(Type::Any)
                 }
             }
             hir::ExprKind::List(elements) => {
-                // Infer list element type from all elements
                 if elements.is_empty() {
-                    // For empty lists, prefer the annotated type if available
                     expr.ty.clone().unwrap_or(Type::List(Box::new(Type::Any)))
                 } else {
-                    let first_ty = self.get_type_of_expr_id(elements[0], hir_module);
-
-                    // Check if all elements have the same type
-                    let mut all_same = true;
-                    let mut unique_types = vec![first_ty.clone()];
-                    for elem_id in &elements[1..] {
-                        let elem_ty = self.get_type_of_expr_id(*elem_id, hir_module);
-                        if elem_ty != first_ty {
-                            all_same = false;
-                            if !unique_types.contains(&elem_ty) {
-                                unique_types.push(elem_ty);
-                            }
-                        }
-                    }
-
-                    if all_same {
-                        Type::List(Box::new(first_ty))
-                    } else {
-                        Type::List(Box::new(Type::Union(unique_types)))
-                    }
+                    let elem_types: Vec<Type> = elements
+                        .iter()
+                        .map(|e| self.get_type_of_expr_id(*e, hir_module))
+                        .collect();
+                    Type::List(Box::new(helpers::unify_element_types(elem_types)))
                 }
             }
             hir::ExprKind::Tuple(elements) => {
@@ -178,71 +119,32 @@ impl<'a> Lowering<'a> {
                 Type::Tuple(elem_types)
             }
             hir::ExprKind::Dict(pairs) => {
-                // Infer dict key/value types from all pairs
                 if pairs.is_empty() {
                     Type::Dict(Box::new(Type::Any), Box::new(Type::Any))
                 } else {
-                    let (first_key_id, first_val_id) = &pairs[0];
-                    let first_key_ty = self.get_type_of_expr_id(*first_key_id, hir_module);
-                    let first_val_ty = self.get_type_of_expr_id(*first_val_id, hir_module);
-
-                    let mut key_all_same = true;
-                    let mut val_all_same = true;
-                    let mut unique_key_types = vec![first_key_ty.clone()];
-                    let mut unique_val_types = vec![first_val_ty.clone()];
-
-                    for (key_id, val_id) in &pairs[1..] {
-                        let k_ty = self.get_type_of_expr_id(*key_id, hir_module);
-                        let v_ty = self.get_type_of_expr_id(*val_id, hir_module);
-                        if k_ty != first_key_ty {
-                            key_all_same = false;
-                            if !unique_key_types.contains(&k_ty) {
-                                unique_key_types.push(k_ty);
-                            }
-                        }
-                        if v_ty != first_val_ty {
-                            val_all_same = false;
-                            if !unique_val_types.contains(&v_ty) {
-                                unique_val_types.push(v_ty);
-                            }
-                        }
-                    }
-
-                    let key_ty = if key_all_same {
-                        first_key_ty
-                    } else {
-                        Type::Union(unique_key_types)
-                    };
-                    let val_ty = if val_all_same {
-                        first_val_ty
-                    } else {
-                        Type::Union(unique_val_types)
-                    };
-                    Type::Dict(Box::new(key_ty), Box::new(val_ty))
+                    let key_types: Vec<Type> = pairs
+                        .iter()
+                        .map(|(k, _)| self.get_type_of_expr_id(*k, hir_module))
+                        .collect();
+                    let val_types: Vec<Type> = pairs
+                        .iter()
+                        .map(|(_, v)| self.get_type_of_expr_id(*v, hir_module))
+                        .collect();
+                    Type::Dict(
+                        Box::new(helpers::unify_element_types(key_types)),
+                        Box::new(helpers::unify_element_types(val_types)),
+                    )
                 }
             }
             hir::ExprKind::Set(elements) => {
-                // Infer set element type from all elements
                 if elements.is_empty() {
                     Type::Set(Box::new(Type::Any))
                 } else {
-                    let first_ty = self.get_type_of_expr_id(elements[0], hir_module);
-                    let mut all_same = true;
-                    let mut unique_types = vec![first_ty.clone()];
-                    for elem_id in &elements[1..] {
-                        let elem_ty = self.get_type_of_expr_id(*elem_id, hir_module);
-                        if elem_ty != first_ty {
-                            all_same = false;
-                            if !unique_types.contains(&elem_ty) {
-                                unique_types.push(elem_ty);
-                            }
-                        }
-                    }
-                    if all_same {
-                        Type::Set(Box::new(first_ty))
-                    } else {
-                        Type::Set(Box::new(Type::Union(unique_types)))
-                    }
+                    let elem_types: Vec<Type> = elements
+                        .iter()
+                        .map(|e| self.get_type_of_expr_id(*e, hir_module))
+                        .collect();
+                    Type::Set(Box::new(helpers::unify_element_types(elem_types)))
                 }
             }
             hir::ExprKind::UnOp { op, operand } => match op {
@@ -403,298 +305,63 @@ impl<'a> Lowering<'a> {
                 Type::Any
             }
             hir::ExprKind::BuiltinCall { builtin, args, .. } => {
-                // Infer return types for builtin functions
-                match builtin {
-                    hir::Builtin::Sum => {
-                        // sum(iterable, start=0) -> int | float
-                        // Returns float if list element type is float or start is float
-                        if args.is_empty() {
-                            return Type::Int;
+                let arg_types: Vec<Type> = args
+                    .iter()
+                    .map(|id| self.get_type_of_expr_id(*id, hir_module))
+                    .collect();
+                // Handle class-specific overrides before shared helper
+                if matches!(builtin, hir::Builtin::Iter) && !arg_types.is_empty() {
+                    if let Type::Class { class_id, .. } = &arg_types[0] {
+                        if self
+                            .get_class_info(class_id)
+                            .and_then(|info| info.iter_func)
+                            .is_some()
+                        {
+                            return arg_types[0].clone();
                         }
-                        let iterable_type = self.get_type_of_expr_id(args[0], hir_module);
-                        let element_type = match &iterable_type {
-                            Type::List(elem_ty) => (**elem_ty).clone(),
-                            _ => Type::Int,
+                    }
+                }
+                if matches!(builtin, hir::Builtin::Next) && !arg_types.is_empty() {
+                    if let Type::Class { class_id, .. } = &arg_types[0] {
+                        if let Some(ret) = self
+                            .get_class_info(class_id)
+                            .and_then(|info| info.next_func)
+                            .and_then(|func_id| self.get_func_return_type(&func_id).cloned())
+                        {
+                            return ret;
+                        }
+                    }
+                }
+                if let Some(ty) =
+                    helpers::resolve_builtin_call_type(builtin, args, &arg_types, hir_module)
+                {
+                    ty
+                } else if matches!(builtin, hir::Builtin::Map) {
+                    // Map needs func_return_types access
+                    let elem_type = if args.len() >= 2 {
+                        let func_expr = &hir_module.exprs[args[0]];
+                        let func_id = match &func_expr.kind {
+                            hir::ExprKind::FuncRef(id) => Some(*id),
+                            hir::ExprKind::Closure { func, .. } => Some(*func),
+                            _ => None,
                         };
-                        let start_type = if args.len() > 1 {
-                            self.get_type_of_expr_id(args[1], hir_module)
-                        } else {
-                            Type::Int
-                        };
-                        if element_type == Type::Float || start_type == Type::Float {
-                            Type::Float
-                        } else {
-                            Type::Int
-                        }
-                    }
-                    hir::Builtin::Len => Type::Int,
-                    hir::Builtin::Abs => {
-                        // abs() returns the same type as input
-                        if !args.is_empty() {
-                            self.get_type_of_expr_id(args[0], hir_module)
-                        } else {
-                            Type::Int
-                        }
-                    }
-                    hir::Builtin::Min | hir::Builtin::Max => {
-                        // min/max return float if any arg is float, or element type if single list argument
-                        if args.is_empty() {
-                            return Type::Int;
-                        }
-
-                        // Check for single list argument case
-                        if args.len() == 1 {
-                            let arg_type = self.get_type_of_expr_id(args[0], hir_module);
-                            if let Type::List(elem_type) = arg_type {
-                                return elem_type.as_ref().clone();
-                            }
-                        }
-
-                        // Multiple arguments - check if any is float
-                        let mut has_float = false;
-                        for arg_id in args {
-                            if self.get_type_of_expr_id(*arg_id, hir_module) == Type::Float {
-                                has_float = true;
-                                break;
-                            }
-                        }
-                        if has_float {
-                            Type::Float
-                        } else {
-                            Type::Int
-                        }
-                    }
-                    hir::Builtin::Pow => Type::Float,
-                    hir::Builtin::Round => {
-                        // round(x) -> int (regardless of whether x is int or float, 1-arg always returns int)
-                        // round(x, n) -> same type as x (round(float, n) -> float, round(int, n) -> int)
-                        if args.len() > 1 {
-                            // 2-arg form: return type matches the first argument's type
-                            self.get_type_of_expr_id(args[0], hir_module)
-                        } else {
-                            // 1-arg form: always returns int
-                            Type::Int
-                        }
-                    }
-                    hir::Builtin::Int => Type::Int,
-                    hir::Builtin::Float => Type::Float,
-                    hir::Builtin::Bool => Type::Bool,
-                    hir::Builtin::Str => Type::Str,
-                    hir::Builtin::Bytes => Type::Bytes,
-                    hir::Builtin::Chr => Type::Str,
-                    hir::Builtin::Ord => Type::Int,
-                    hir::Builtin::All | hir::Builtin::Any => Type::Bool,
-                    hir::Builtin::Print => Type::None,
-                    hir::Builtin::Hash | hir::Builtin::Id => Type::Int,
-                    hir::Builtin::Isinstance | hir::Builtin::Issubclass => Type::Bool,
-                    hir::Builtin::Iter => {
-                        // iter(x) returns Iterator[element_type]
-                        if args.is_empty() {
-                            return Type::Iterator(Box::new(Type::Any));
-                        }
-                        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
-                        // Class with __iter__ returns the class type itself
-                        if let Type::Class { class_id, .. } = &arg_type {
-                            if self
-                                .get_class_info(class_id)
-                                .and_then(|info| info.iter_func)
-                                .is_some()
-                            {
-                                return arg_type;
-                            }
-                        }
-                        let elem_type = extract_iterable_element_type(&arg_type);
-                        Type::Iterator(Box::new(elem_type))
-                    }
-                    hir::Builtin::Set => {
-                        // set() or set(iterable)
-                        if args.is_empty() {
-                            return Type::Set(Box::new(Type::Any));
-                        }
-                        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
-                        let elem_type = extract_iterable_element_type(&arg_type);
-                        Type::Set(Box::new(elem_type))
-                    }
-                    hir::Builtin::Next => {
-                        // next(iter) returns element_type from Iterator[element_type]
-                        if args.is_empty() {
-                            return Type::Any;
-                        }
-                        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
-                        match &arg_type {
-                            Type::Iterator(elem) => (**elem).clone(),
-                            // Class with __next__ returns the __next__ return type
-                            Type::Class { class_id, .. } => self
-                                .get_class_info(class_id)
-                                .and_then(|info| info.next_func)
-                                .and_then(|func_id| self.get_func_return_type(&func_id).cloned())
-                                .unwrap_or(Type::Any),
-                            _ => Type::Any,
-                        }
-                    }
-                    hir::Builtin::Reversed => {
-                        // reversed(x) returns Iterator[element_type]
-                        if args.is_empty() {
-                            return Type::Iterator(Box::new(Type::Any));
-                        }
-                        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
-                        let elem_type = extract_iterable_element_type(&arg_type);
-                        Type::Iterator(Box::new(elem_type))
-                    }
-                    hir::Builtin::Open => Type::File,
-                    hir::Builtin::Enumerate => {
-                        // enumerate(iterable, start=0) -> Iterator[Tuple[Int, elem_type]]
-                        if args.is_empty() {
-                            return Type::Iterator(Box::new(Type::Any));
-                        }
-                        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
-                        let elem_type = extract_iterable_element_type(&arg_type);
-                        Type::Iterator(Box::new(Type::Tuple(vec![Type::Int, elem_type])))
-                    }
-                    hir::Builtin::Zip => {
-                        // zip(iter1, iter2, ...) -> Iterator[Tuple[elem1, elem2, ...]]
-                        if args.is_empty() {
-                            return Type::Iterator(Box::new(Type::Tuple(vec![])));
-                        }
-                        let mut elem_types = Vec::new();
-                        for arg_id in args {
-                            let arg_expr = &hir_module.exprs[*arg_id];
-                            // Special case: range() returns Int elements
-                            if let hir::ExprKind::BuiltinCall {
-                                builtin: hir::Builtin::Range,
-                                ..
-                            } = &arg_expr.kind
-                            {
-                                elem_types.push(Type::Int);
-                                continue;
-                            }
-                            let arg_type = self.get_type_of_expr_id(*arg_id, hir_module);
-                            let elem_type = extract_iterable_element_type(&arg_type);
-                            elem_types.push(elem_type);
-                        }
-                        Type::Iterator(Box::new(Type::Tuple(elem_types)))
-                    }
-                    hir::Builtin::Map => {
-                        // map(func, iterable) returns an iterator
-                        // Try to infer element type from the function's return type
-                        let elem_type = if args.len() >= 2 {
-                            let func_expr = &hir_module.exprs[args[0]];
-                            // Extract func_id from FuncRef or Closure
-                            let func_id = match &func_expr.kind {
-                                hir::ExprKind::FuncRef(id) => Some(*id),
-                                hir::ExprKind::Closure { func, .. } => Some(*func),
-                                _ => None,
-                            };
-                            if let Some(func_id) = func_id {
-                                if let Some(return_type) = self.get_func_return_type(&func_id) {
-                                    return_type.clone()
-                                } else if let Some(func_def) = hir_module.func_defs.get(&func_id) {
-                                    func_def.return_type.clone().unwrap_or(Type::Any)
-                                } else {
-                                    Type::Any
-                                }
+                        if let Some(func_id) = func_id {
+                            if let Some(return_type) = self.get_func_return_type(&func_id) {
+                                return_type.clone()
+                            } else if let Some(func_def) = hir_module.func_defs.get(&func_id) {
+                                func_def.return_type.clone().unwrap_or(Type::Any)
                             } else {
                                 Type::Any
                             }
                         } else {
                             Type::Any
-                        };
-                        Type::Iterator(Box::new(elem_type))
-                    }
-                    hir::Builtin::Filter => {
-                        // filter(func, iterable) returns an iterator with same element type as input
-                        if args.len() >= 2 {
-                            let iterable_type = self.get_type_of_expr_id(args[1], hir_module);
-                            let elem_type = extract_iterable_element_type(&iterable_type);
-                            Type::Iterator(Box::new(elem_type))
-                        } else {
-                            Type::Iterator(Box::new(Type::Any))
                         }
-                    }
-                    hir::Builtin::List => {
-                        // list() or list(iterable)
-                        if args.is_empty() {
-                            return Type::List(Box::new(Type::Any));
-                        }
-                        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
-                        let elem_type = extract_iterable_element_type(&arg_type);
-                        Type::List(Box::new(elem_type))
-                    }
-                    hir::Builtin::Tuple => {
-                        // tuple() or tuple(iterable)
-                        if args.is_empty() {
-                            return Type::Tuple(vec![]);
-                        }
-                        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
-                        let elem_type = extract_iterable_element_type(&arg_type);
-                        // For dynamic tuple from iterable, use vec![elem_type] as placeholder
-                        Type::Tuple(vec![elem_type])
-                    }
-                    hir::Builtin::Dict => {
-                        // dict() or dict(iterable) or dict(**kwargs)
-                        Type::Dict(Box::new(Type::Any), Box::new(Type::Any))
-                    }
-                    hir::Builtin::Sorted => {
-                        // sorted(iterable, key=None, reverse=False) -> List[elem_type]
-                        if args.is_empty() {
-                            return Type::List(Box::new(Type::Any));
-                        }
-                        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
-                        let elem_type = extract_iterable_element_type(&arg_type);
-                        Type::List(Box::new(elem_type))
-                    }
-                    hir::Builtin::Format
-                    | hir::Builtin::Repr
-                    | hir::Builtin::Ascii
-                    | hir::Builtin::Bin
-                    | hir::Builtin::Hex
-                    | hir::Builtin::Oct
-                    | hir::Builtin::Input
-                    | hir::Builtin::Type => Type::Str,
-                    hir::Builtin::Divmod => {
-                        // divmod(a, b) -> (int, int) for ints, (float, float) for floats
-                        let result_ty = if !args.is_empty() {
-                            let a_ty = self.get_type_of_expr_id(args[0], hir_module);
-                            let b_ty = if args.len() > 1 {
-                                self.get_type_of_expr_id(args[1], hir_module)
-                            } else {
-                                Type::Int
-                            };
-                            if matches!(a_ty, Type::Float) || matches!(b_ty, Type::Float) {
-                                Type::Float
-                            } else {
-                                Type::Int
-                            }
-                        } else {
-                            Type::Int
-                        };
-                        Type::Tuple(vec![result_ty.clone(), result_ty])
-                    }
-                    hir::Builtin::Chain => {
-                        // itertools.chain(*iterables) -> Iterator[Any]
-                        Type::Iterator(Box::new(Type::Any))
-                    }
-                    hir::Builtin::ISlice => {
-                        // itertools.islice(iterable, ...) -> Iterator[elem_type]
-                        if !args.is_empty() {
-                            let iterable_type = self.get_type_of_expr_id(args[0], hir_module);
-                            let elem_type = extract_iterable_element_type(&iterable_type);
-                            Type::Iterator(Box::new(elem_type))
-                        } else {
-                            Type::Iterator(Box::new(Type::Any))
-                        }
-                    }
-                    hir::Builtin::Reduce => {
-                        // Infer from iterable's element type (second argument)
-                        // For reduce(func, iterable), the result has the same type as elements
-                        if args.len() >= 2 {
-                            let iterable_type = self.get_type_of_expr_id(args[1], hir_module);
-                            extract_iterable_element_type(&iterable_type)
-                        } else {
-                            Type::Any
-                        }
-                    }
-                    _ => expr.ty.clone().unwrap_or(Type::Any),
+                    } else {
+                        Type::Any
+                    };
+                    Type::Iterator(Box::new(elem_type))
+                } else {
+                    expr.ty.clone().unwrap_or(Type::Any)
                 }
             }
             hir::ExprKind::Closure { func, .. } => {

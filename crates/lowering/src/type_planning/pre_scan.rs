@@ -101,11 +101,20 @@ impl<'a> Lowering<'a> {
                     self.refine_empty_containers_in_block(then_block, hir_module);
                     self.refine_empty_containers_in_block(else_block, hir_module);
                 }
-                hir::StmtKind::For { body, .. }
-                | hir::StmtKind::ForUnpack { body, .. }
-                | hir::StmtKind::ForUnpackStarred { body, .. }
-                | hir::StmtKind::While { body, .. } => {
+                hir::StmtKind::For {
+                    body, else_block, ..
+                }
+                | hir::StmtKind::ForUnpack {
+                    body, else_block, ..
+                }
+                | hir::StmtKind::ForUnpackStarred {
+                    body, else_block, ..
+                }
+                | hir::StmtKind::While {
+                    body, else_block, ..
+                } => {
                     self.refine_empty_containers_in_block(body, hir_module);
+                    self.refine_empty_containers_in_block(else_block, hir_module);
                 }
                 hir::StmtKind::Try {
                     body,
@@ -195,7 +204,7 @@ impl<'a> Lowering<'a> {
             if let Some(idx) = value_arg_idx {
                 if let Some(arg_id) = args.get(idx) {
                     let arg_expr = &hir_module.exprs[*arg_id];
-                    let ty = self.infer_static_expr_type(arg_expr, hir_module);
+                    let ty = self.infer_deep_expr_type(arg_expr, hir_module, &IndexMap::new());
                     if ty != Type::Any {
                         return Some(ty);
                     }
@@ -219,10 +228,16 @@ impl<'a> Lowering<'a> {
                 hir::StmtKind::IndexAssign { obj, index, value } => {
                     let obj_expr = &hir_module.exprs[*obj];
                     if matches!(&obj_expr.kind, hir::ExprKind::Var(v) if *v == var) {
-                        let key_ty =
-                            self.infer_static_expr_type(&hir_module.exprs[*index], hir_module);
-                        let val_ty =
-                            self.infer_static_expr_type(&hir_module.exprs[*value], hir_module);
+                        let key_ty = self.infer_deep_expr_type(
+                            &hir_module.exprs[*index],
+                            hir_module,
+                            &IndexMap::new(),
+                        );
+                        let val_ty = self.infer_deep_expr_type(
+                            &hir_module.exprs[*value],
+                            hir_module,
+                            &IndexMap::new(),
+                        );
                         if key_ty != Type::Any && val_ty != Type::Any {
                             return (key_ty, val_ty);
                         }
@@ -236,12 +251,6 @@ impl<'a> Lowering<'a> {
             }
         }
         (Type::Any, Type::Any)
-    }
-
-    /// Lightweight static type inference for expressions (no mutable state needed).
-    /// Delegates to infer_deep_expr_type with empty param_types.
-    fn infer_static_expr_type(&self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
-        self.infer_deep_expr_type(expr, hir_module, &IndexMap::new())
     }
 }
 
@@ -297,7 +306,7 @@ impl<'a> Lowering<'a> {
                 // Determine the variable type
                 let var_type = type_hint
                     .clone()
-                    .unwrap_or_else(|| self.get_expr_type_static(expr, hir_module, var_types));
+                    .unwrap_or_else(|| self.infer_deep_expr_type(expr, hir_module, var_types));
                 var_types.insert(*target, var_type);
 
                 // Scan the value expression for inline closures
@@ -341,15 +350,22 @@ impl<'a> Lowering<'a> {
                     self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
                 }
             }
-            hir::StmtKind::While { body, .. } => {
+            hir::StmtKind::For {
+                body, else_block, ..
+            }
+            | hir::StmtKind::ForUnpack {
+                body, else_block, ..
+            }
+            | hir::StmtKind::ForUnpackStarred {
+                body, else_block, ..
+            }
+            | hir::StmtKind::While {
+                body, else_block, ..
+            } => {
                 for stmt_id in body {
                     self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
                 }
-            }
-            hir::StmtKind::For { body, .. }
-            | hir::StmtKind::ForUnpack { body, .. }
-            | hir::StmtKind::ForUnpackStarred { body, .. } => {
-                for stmt_id in body {
+                for stmt_id in else_block {
                     self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
                 }
             }
@@ -417,7 +433,7 @@ impl<'a> Lowering<'a> {
                     for capture_id in captures {
                         let capture_expr = &hir_module.exprs[*capture_id];
                         let capture_type =
-                            self.get_expr_type_static(capture_expr, hir_module, var_types);
+                            self.infer_deep_expr_type(capture_expr, hir_module, var_types);
                         capture_types.push(capture_type);
                     }
                     self.insert_closure_capture_types(*func, capture_types);
@@ -454,7 +470,7 @@ impl<'a> Lowering<'a> {
                     let func_arg = &hir_module.exprs[args[0]];
                     let iterable_arg = &hir_module.exprs[args[1]];
                     let iterable_type =
-                        self.get_expr_type_static(iterable_arg, hir_module, var_types);
+                        self.infer_deep_expr_type(iterable_arg, hir_module, var_types);
                     let elem_type = extract_iterable_element_type(&iterable_type);
                     if !matches!(elem_type, Type::Any) {
                         let func_info = match &func_arg.kind {
@@ -475,7 +491,7 @@ impl<'a> Lowering<'a> {
                                     for cap_id in &captures {
                                         let cap_expr = &hir_module.exprs[*cap_id];
                                         let cap_type = self
-                                            .get_expr_type_static(cap_expr, hir_module, var_types);
+                                            .infer_deep_expr_type(cap_expr, hir_module, var_types);
                                         param_hints.push(cap_type);
                                     }
                                     param_hints.push(elem_type);
@@ -492,7 +508,7 @@ impl<'a> Lowering<'a> {
                     let func_arg = &hir_module.exprs[args[0]];
                     let iterable_arg = &hir_module.exprs[args[1]];
                     let iterable_type =
-                        self.get_expr_type_static(iterable_arg, hir_module, var_types);
+                        self.infer_deep_expr_type(iterable_arg, hir_module, var_types);
                     let elem_type = extract_iterable_element_type(&iterable_type);
                     if !matches!(elem_type, Type::Any) {
                         // Extract func_id and captures from FuncRef or Closure
@@ -513,7 +529,7 @@ impl<'a> Lowering<'a> {
                                     for cap_id in &captures {
                                         let cap_expr = &hir_module.exprs[*cap_id];
                                         let cap_type = self
-                                            .get_expr_type_static(cap_expr, hir_module, var_types);
+                                            .infer_deep_expr_type(cap_expr, hir_module, var_types);
                                         param_hints.push(cap_type);
                                     }
                                     param_hints.push(elem_type.clone());
@@ -544,7 +560,7 @@ impl<'a> Lowering<'a> {
                     if let Some(key_expr) = key_func {
                         let iterable_arg = &hir_module.exprs[args[0]];
                         let iterable_type =
-                            self.get_expr_type_static(iterable_arg, hir_module, var_types);
+                            self.infer_deep_expr_type(iterable_arg, hir_module, var_types);
                         let elem_type = extract_iterable_element_type(&iterable_type);
                         if !matches!(elem_type, Type::Any) {
                             let func_info = match &key_expr.kind {
@@ -563,7 +579,7 @@ impl<'a> Lowering<'a> {
                                         let mut param_hints = Vec::new();
                                         for cap_id in &captures {
                                             let cap_expr = &hir_module.exprs[*cap_id];
-                                            let cap_type = self.get_expr_type_static(
+                                            let cap_type = self.infer_deep_expr_type(
                                                 cap_expr, hir_module, var_types,
                                             );
                                             param_hints.push(cap_type);
@@ -655,17 +671,6 @@ impl<'a> Lowering<'a> {
             // Primitives and other simple expressions don't contain closures
             _ => {}
         }
-    }
-
-    /// Get expression type using only static information (for pre-processing).
-    /// Delegates to infer_deep_expr_type with var_types as param_types override.
-    fn get_expr_type_static(
-        &self,
-        expr: &hir::Expr,
-        hir_module: &hir::Module,
-        var_types: &IndexMap<VarId, Type>,
-    ) -> Type {
-        self.infer_deep_expr_type(expr, hir_module, var_types)
     }
 
     // ==================== Lambda Parameter Type Inference ====================
@@ -928,20 +933,9 @@ impl<'a> Lowering<'a> {
             let stmt = &hir_module.stmts[*stmt_id];
             if let hir::StmtKind::Return(Some(expr_id)) = &stmt.kind {
                 let expr = &hir_module.exprs[*expr_id];
-                return self.infer_expr_return_type_with_params(expr, hir_module, &param_type_map);
+                return self.infer_deep_expr_type(expr, hir_module, &param_type_map);
             }
         }
         Type::None
-    }
-
-    /// Infer the type of an expression for return type inference, using known param types.
-    /// Delegates to infer_deep_expr_type for comprehensive inference.
-    fn infer_expr_return_type_with_params(
-        &self,
-        expr: &hir::Expr,
-        hir_module: &hir::Module,
-        param_types: &IndexMap<VarId, Type>,
-    ) -> Type {
-        self.infer_deep_expr_type(expr, hir_module, param_types)
     }
 }
