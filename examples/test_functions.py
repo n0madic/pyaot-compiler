@@ -1436,4 +1436,49 @@ assert esc_b() == 2, "independent closure b: second call"
 
 print("Escaping nonlocal closure tests passed!")
 
+# ===== SECTION: Return type inference for unannotated functions =====
+
+def _rti_double(x: int):
+    return x * 2
+assert _rti_double(21) == 42, "return type inference: int arithmetic"
+
+def _rti_greet(name: str):
+    return "Hello, " + name
+assert _rti_greet("World") == "Hello, World", "return type inference: str concat"
+
+def _rti_is_positive(x: int):
+    return x > 0
+assert _rti_is_positive(5) == True, "return type inference: comparison true"
+assert _rti_is_positive(-3) == False, "return type inference: comparison false"
+
+def _rti_first(items: list[int]):
+    return items[0]
+assert _rti_first([10, 20, 30]) == 10, "return type inference: list indexing"
+
+def _rti_add(a: int, b: int):
+    return a + b
+assert _rti_add(3, 4) == 7, "return type inference: two int params"
+
+# Nested calls with inferred return types
+def _rti_square(x: int):
+    return x * x
+
+def _rti_sum_squares(a: int, b: int):
+    return _rti_square(a) + _rti_square(b)
+
+assert _rti_sum_squares(3, 4) == 25, "nested calls with inferred return: 3² + 4² = 25"
+
+# Bidirectional: empty containers in function args
+def _rti_sum_list(items: list[int]) -> int:
+    return sum(items)
+assert _rti_sum_list([]) == 0, "bidirectional: empty list in function arg"
+
+# Bidirectional: empty containers in return
+def _rti_empty_int_list() -> list[int]:
+    return []
+_rti_empty = _rti_empty_int_list()
+assert len(_rti_empty) == 0, "bidirectional: empty list in return"
+
+print("Return type inference tests passed!")
+
 print("All function tests passed!")

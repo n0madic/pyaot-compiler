@@ -906,4 +906,18 @@ assert enum_ten_result == [10, 11, 12], f"enumerate start=10 failed: {enum_ten_r
 
 print("enumerate(start=N) tests passed!")
 
+# ===== SECTION: Lambda parameter inference in sorted/reduce =====
+
+_lpi_words: list[str] = ["banana", "apple", "fig"]
+_lpi_sorted = sorted(_lpi_words, key=lambda w: len(w))
+assert _lpi_sorted[0] == "fig", "sorted key=lambda: shortest first"
+assert _lpi_sorted[2] == "banana", "sorted key=lambda: longest last"
+
+from functools import reduce
+_lpi_nums: list[int] = [1, 2, 3, 4, 5]
+_lpi_total = reduce(lambda a, b: a + b, _lpi_nums)
+assert _lpi_total == 15, "reduce lambda: sum 1..5"
+
+print("Lambda parameter inference tests passed!")
+
 print("All iteration and comprehension tests passed!")

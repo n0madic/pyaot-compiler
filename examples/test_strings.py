@@ -928,4 +928,16 @@ assert string.hexdigits == "0123456789abcdefABCDEF", "string.hexdigits failed"
 assert string.octdigits == "01234567", "string.octdigits failed"
 print("string module constants tests passed")
 
+# ===== SECTION: Chained method calls preserve types =====
+
+_chain_s = "  Hello World  "
+_chain_trimmed = _chain_s.strip().upper()
+assert _chain_trimmed == "HELLO WORLD", "chained methods: strip().upper()"
+
+_chain_parts = "a,b,c".split(",")
+assert len(_chain_parts) == 3, "method return: split() → list[str]"
+assert _chain_parts[0] == "a", "method return: split() first element"
+
+print("Chained method type inference tests passed!")
+
 print("All string tests passed!")

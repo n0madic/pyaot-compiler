@@ -668,4 +668,14 @@ assert truthiness_while_count == 3, f"while truthiness: expected 3, got {truthin
 
 print("Implicit truthiness tests passed!")
 
+# ===== SECTION: IfExpr with Union types =====
+
+_ifexpr_x = 42 if True else "hello"
+assert _ifexpr_x == 42, "ifexpr union: true branch int"
+
+_ifexpr_y = 42 if False else "hello"
+assert _ifexpr_y == "hello", "ifexpr union: false branch str"
+
+print("IfExpr Union type tests passed!")
+
 print("All control flow tests passed!")

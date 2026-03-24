@@ -458,4 +458,18 @@ assert str(0.0) == "0.0", f"str(0.0) should be '0.0', got '{str(0.0)}'"
 
 print("Float scientific notation formatting tests passed!")
 
+# ===== SECTION: Bidirectional type propagation for empty containers =====
+
+_bidir_nums: list[int] = []
+_bidir_nums.append(1)
+_bidir_nums.append(2)
+assert len(_bidir_nums) == 2, "bidirectional: empty list with type hint"
+assert _bidir_nums[0] == 1, "bidirectional: list[int] elem access"
+
+_bidir_d: dict[str, int] = {}
+_bidir_d["a"] = 1
+assert _bidir_d["a"] == 1, "bidirectional: empty dict with type hint"
+
+print("Bidirectional type propagation tests passed!")
+
 print("All core types and operator tests passed!")

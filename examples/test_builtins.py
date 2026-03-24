@@ -1368,3 +1368,13 @@ print("map() with builtins and type-converting lambdas tests passed!")
 print("  - min/max with iterables: tuple, range, set")
 print("  - sum/min/max with iterators/generators")
 print("Note: print(), len(), range() tested in other files")
+
+# ===== SECTION: Builtin return type inference =====
+
+assert len([1, 2, 3]) == 3, "builtin return type: len → int"
+assert abs(-5) == 5, "builtin return type: abs(int) → int"
+assert int("42") == 42, "builtin return type: int(str) → int"
+assert str(42) == "42", "builtin return type: str(int) → str"
+assert bool(1) == True, "builtin return type: bool(int) → bool"
+
+print("Builtin return type inference tests passed!")
