@@ -137,6 +137,25 @@ impl<'a> Lowering<'a> {
 
                     return Ok(mir::Operand::Local(result_local));
                 }
+
+                // 3. Fallback to class attribute (Python: instance.class_attr)
+                if let (Some(&(owning_class_id, attr_offset)), Some(attr_type)) = (
+                    class_info.class_attr_offsets.get(&attr),
+                    class_info.class_attr_types.get(&attr).cloned(),
+                ) {
+                    let result_local = self.alloc_and_add_local(attr_type.clone(), mir_func);
+                    let get_func = self.get_class_attr_get_func(&attr_type);
+                    let effective_class_id = self.get_effective_class_id(owning_class_id);
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: result_local,
+                        func: get_func,
+                        args: vec![
+                            mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                            mir::Operand::Constant(mir::Constant::Int(attr_offset as i64)),
+                        ],
+                    });
+                    return Ok(mir::Operand::Local(result_local));
+                }
             }
 
             // Try cross-module class info (for classes from imported modules)

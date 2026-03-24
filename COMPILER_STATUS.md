@@ -110,8 +110,8 @@ Native Executable
 | nonlocal | ✅ | Cell-based storage |
 | global | ✅ | All types supported |
 | Generators | ✅ | `yield from` supported; throw() not supported |
-| Classes | ✅ | Single inheritance only |
-| `__init__` | ✅ | |
+| Classes | ✅ | Single inheritance; class attrs accessible through instances |
+| `__init__` | ✅ | Fields from `self.field = value` auto-discovered |
 | `__str__`, `__repr__` | ✅ | Fallback to default repr for classes without dunder methods |
 | `__eq__`, `__ne__` | ✅ | `__ne__` auto-negates `__eq__` if not defined |
 | `__lt__`, `__le__`, `__gt__`, `__ge__` | ✅ | Enables sorted(), min(), max() on custom objects |
@@ -125,7 +125,7 @@ Native Executable
 | @staticmethod | ✅ | |
 | @classmethod | ✅ | cls receives class_id as int |
 | @property | ✅ | Getter and setter |
-| User decorators | ✅ | Identity, wrapper, and chained decorators |
+| User decorators | ✅ | Identity, wrapper, and chained decorators; `*args` forwarding not supported |
 | @abstractmethod | ✅ | Compile-time enforcement |
 | `__slots__` | ✅ | Parsed and ignored (AOT compiler handles memory layout statically) |
 | Inheritance | ✅ | Single only |

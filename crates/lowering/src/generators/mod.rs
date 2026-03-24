@@ -131,7 +131,11 @@ impl<'a> Lowering<'a> {
     /// type is resolved from the class definition.
     ///
     /// Falls back to `Type::Any` for patterns we cannot statically infer.
-    fn infer_generator_yield_type(&mut self, func: &hir::Function, hir_module: &hir::Module) -> Type {
+    fn infer_generator_yield_type(
+        &mut self,
+        func: &hir::Function,
+        hir_module: &hir::Module,
+    ) -> Type {
         // Try to detect the for-loop generator pattern
         if let Some(for_gen) = self.detect_for_loop_generator(&func.body, hir_module) {
             // First compute the iterable element type; we need it for attribute resolution.

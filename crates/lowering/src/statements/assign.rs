@@ -768,6 +768,27 @@ impl<'a> Lowering<'a> {
                             value_operand,
                         ],
                     });
+                    return Ok(());
+                }
+
+                // 3. Fallback to class attribute assignment (Python: instance.class_attr = value)
+                if let (Some(&(owning_class_id, attr_offset)), Some(attr_type)) = (
+                    class_info.class_attr_offsets.get(&field),
+                    class_info.class_attr_types.get(&field).cloned(),
+                ) {
+                    let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
+                    let set_func = self.get_class_attr_set_func(&attr_type);
+                    let effective_class_id = self.get_effective_class_id(owning_class_id);
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: dummy_local,
+                        func: set_func,
+                        args: vec![
+                            mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                            mir::Operand::Constant(mir::Constant::Int(attr_offset as i64)),
+                            value_operand,
+                        ],
+                    });
+                    return Ok(());
                 }
             }
         }

@@ -423,23 +423,6 @@ impl<'a> Lowering<'a> {
 }
 
 // =============================================================================
-// Expression Types (expr_types — memoized, persists across functions)
-// =============================================================================
-
-impl<'a> Lowering<'a> {
-    /// Get a memoized expression type.
-    pub(crate) fn get_cached_expr_type(&self, expr_id: &hir::ExprId) -> Option<Type> {
-        self.expr_types.get(expr_id).cloned()
-    }
-
-    /// Store a memoized expression type.
-    pub(crate) fn cache_expr_type(&mut self, expr_id: hir::ExprId, ty: Type) {
-        self.expr_types.insert(expr_id, ty);
-    }
-
-}
-
-// =============================================================================
 // Default Value Slots (default_value_slots)
 // =============================================================================
 

@@ -118,8 +118,7 @@ impl<'a> Lowering<'a> {
         } else {
             Type::Any
         };
-        let result_local =
-            self.alloc_and_add_local(Type::Set(Box::new(set_elem_type)), mir_func);
+        let result_local = self.alloc_and_add_local(Type::Set(Box::new(set_elem_type)), mir_func);
 
         if args.is_empty() {
             // set() - create empty set
@@ -268,8 +267,7 @@ impl<'a> Lowering<'a> {
         } else {
             Type::Any
         };
-        let result_local =
-            self.alloc_and_add_local(Type::List(Box::new(list_elem_type)), mir_func);
+        let result_local = self.alloc_and_add_local(Type::List(Box::new(list_elem_type)), mir_func);
 
         if args.is_empty() {
             // list() - create empty list

@@ -1266,4 +1266,79 @@ assert repr(ro) == "ReprOnly(42)", "repr(instance) should call __repr__"
 
 print("print(instance) __str__/__repr__ tests passed!")
 
+# ===== SECTION: Init-only field declarations (no class-level annotations) =====
+# Fields discovered from self.field = value in __init__ without class-level x: int
+
+class ImplicitPt:
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+ipt = ImplicitPt(10, 20)
+assert ipt.x == 10, "ImplicitPt.x should be 10"
+assert ipt.y == 20, "ImplicitPt.y should be 20"
+
+# Multiple instances
+ipt2 = ImplicitPt(100, 200)
+assert ipt2.x == 100, "ipt2.x should be 100"
+assert ipt.x == 10, "ipt.x should still be 10"
+
+# Field modification
+ipt.x = 99
+assert ipt.x == 99, "ImplicitPt.x after modification should be 99"
+
+# Method reading init-only fields
+class ImplicitBox:
+    def __init__(self, val: int):
+        self.val = val
+    def get_val(self) -> int:
+        return self.val
+
+ib = ImplicitBox(42)
+assert ib.get_val() == 42, "ImplicitBox.get_val() should be 42"
+
+# Property reading init-only fields
+class ImplicitProp:
+    def __init__(self, x: int):
+        self._x = x
+    @property
+    def x(self) -> int:
+        return self._x
+
+ip = ImplicitProp(42)
+assert ip.x == 42, "ImplicitProp.x property should be 42"
+
+# Mixed: some fields declared at class level, some only in __init__
+class MixedFields:
+    declared: int
+
+    def __init__(self, a: int, b: int):
+        self.declared = a
+        self.implicit = b
+    def sum(self) -> int:
+        return self.declared + self.implicit
+
+mf = MixedFields(10, 20)
+assert mf.declared == 10, "MixedFields.declared should be 10"
+assert mf.implicit == 20, "MixedFields.implicit should be 20"
+assert mf.sum() == 30, "MixedFields.sum() should be 30"
+
+print("Init-only field declarations: PASS")
+
+# ===== SECTION: Class attribute access through instances =====
+
+class ClassAttrAccess:
+    x: int = 10
+    name: str = "hello"
+
+ca = ClassAttrAccess()
+assert ca.x == 10, "Instance access to class attr int should be 10"
+assert ca.name == "hello", "Instance access to class attr str should be hello"
+
+# Class attr modification through instance
+ca.x = 42
+assert ca.x == 42, "Class attr modified through instance should be 42"
+
+print("Class attribute access through instances: PASS")
+
 print("All class tests passed!")

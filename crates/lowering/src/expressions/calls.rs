@@ -912,7 +912,7 @@ impl<'a> Lowering<'a> {
                         kwargs,
                         &init_params,
                         Some(init_func_id),
-                        1, // Offset by 1 because self is skipped
+                        1,                          // Offset by 1 because self is skipped
                         pyaot_utils::Span::dummy(), // class instantiation has no call expr
                         hir_module,
                         mir_func,

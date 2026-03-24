@@ -206,7 +206,9 @@ mod tests {
 
     #[test]
     fn test_string_builder_basic() {
-        let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::RUNTIME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         setup();
 
         unsafe {
@@ -237,7 +239,9 @@ mod tests {
 
     #[test]
     fn test_string_builder_empty() {
-        let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::RUNTIME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         setup();
 
         unsafe {
@@ -253,7 +257,9 @@ mod tests {
 
     #[test]
     fn test_string_builder_growth() {
-        let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::RUNTIME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         setup();
 
         unsafe {

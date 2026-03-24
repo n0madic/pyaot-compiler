@@ -61,8 +61,8 @@ impl<'a> Lowering<'a> {
         for func_id in &func_ids {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 // Skip functions that already have explicit return type annotations
-                let has_explicit = func.return_type.is_some()
-                    && func.return_type.as_ref() != Some(&Type::None);
+                let has_explicit =
+                    func.return_type.is_some() && func.return_type.as_ref() != Some(&Type::None);
                 if has_explicit {
                     self.func_return_types
                         .insert(*func_id, func.return_type.clone().unwrap());
@@ -224,8 +224,7 @@ impl<'a> Lowering<'a> {
 
             // === Binary operations ===
             hir::ExprKind::BinOp { op, left, right } => {
-                let left_ty =
-                    self.infer_deep_expr_type(&module.exprs[*left], module, param_types);
+                let left_ty = self.infer_deep_expr_type(&module.exprs[*left], module, param_types);
                 let right_ty =
                     self.infer_deep_expr_type(&module.exprs[*right], module, param_types);
 
@@ -259,8 +258,7 @@ impl<'a> Lowering<'a> {
             // === Comparisons / logical ===
             hir::ExprKind::Compare { .. } => Type::Bool,
             hir::ExprKind::LogicalOp { left, right, .. } => {
-                let left_ty =
-                    self.infer_deep_expr_type(&module.exprs[*left], module, param_types);
+                let left_ty = self.infer_deep_expr_type(&module.exprs[*left], module, param_types);
                 let right_ty =
                     self.infer_deep_expr_type(&module.exprs[*right], module, param_types);
                 if left_ty == right_ty {
@@ -272,9 +270,7 @@ impl<'a> Lowering<'a> {
 
             // === If expression ===
             hir::ExprKind::IfExpr {
-                then_val,
-                else_val,
-                ..
+                then_val, else_val, ..
             } => {
                 let then_ty =
                     self.infer_deep_expr_type(&module.exprs[*then_val], module, param_types);
@@ -364,18 +360,24 @@ impl<'a> Lowering<'a> {
                     Builtin::Str => Type::Str,
                     Builtin::Bytes => Type::Bytes,
                     Builtin::Len | Builtin::Hash | Builtin::Id | Builtin::Ord => Type::Int,
-                    Builtin::Chr | Builtin::Repr | Builtin::Ascii | Builtin::Format
-                    | Builtin::Input | Builtin::Bin | Builtin::Hex | Builtin::Oct
+                    Builtin::Chr
+                    | Builtin::Repr
+                    | Builtin::Ascii
+                    | Builtin::Format
+                    | Builtin::Input
+                    | Builtin::Bin
+                    | Builtin::Hex
+                    | Builtin::Oct
                     | Builtin::Type => Type::Str,
-                    Builtin::Isinstance | Builtin::Issubclass | Builtin::All | Builtin::Any
-                    | Builtin::Callable | Builtin::Hasattr => Type::Bool,
+                    Builtin::Isinstance
+                    | Builtin::Issubclass
+                    | Builtin::All
+                    | Builtin::Any
+                    | Builtin::Callable
+                    | Builtin::Hasattr => Type::Bool,
                     Builtin::Abs => {
                         if !args.is_empty() {
-                            self.infer_deep_expr_type(
-                                &module.exprs[args[0]],
-                                module,
-                                param_types,
-                            )
+                            self.infer_deep_expr_type(&module.exprs[args[0]], module, param_types)
                         } else {
                             Type::Int
                         }
@@ -421,14 +423,13 @@ impl<'a> Lowering<'a> {
 
             // === Method calls (common patterns) ===
             hir::ExprKind::MethodCall { obj, method, .. } => {
-                let obj_ty =
-                    self.infer_deep_expr_type(&module.exprs[*obj], module, param_types);
+                let obj_ty = self.infer_deep_expr_type(&module.exprs[*obj], module, param_types);
                 let method_name = self.interner.resolve(*method);
                 match &obj_ty {
                     Type::Str => match method_name {
-                        "upper" | "lower" | "strip" | "lstrip" | "rstrip" | "replace"
-                        | "title" | "capitalize" | "swapcase" | "join" | "format"
-                        | "center" | "ljust" | "rjust" | "zfill" => Type::Str,
+                        "upper" | "lower" | "strip" | "lstrip" | "rstrip" | "replace" | "title"
+                        | "capitalize" | "swapcase" | "join" | "format" | "center" | "ljust"
+                        | "rjust" | "zfill" => Type::Str,
                         "split" | "splitlines" => Type::List(Box::new(Type::Str)),
                         "find" | "rfind" | "index" | "rindex" | "count" => Type::Int,
                         "startswith" | "endswith" | "isdigit" | "isalpha" | "isalnum"
@@ -454,8 +455,7 @@ impl<'a> Lowering<'a> {
 
             // === Indexing ===
             hir::ExprKind::Index { obj, .. } => {
-                let obj_ty =
-                    self.infer_deep_expr_type(&module.exprs[*obj], module, param_types);
+                let obj_ty = self.infer_deep_expr_type(&module.exprs[*obj], module, param_types);
                 match obj_ty {
                     Type::List(elem) => *elem,
                     Type::Dict(_, val) => *val,
@@ -473,8 +473,7 @@ impl<'a> Lowering<'a> {
 
             // === Attribute access ===
             hir::ExprKind::Attribute { obj, attr } => {
-                let obj_ty =
-                    self.infer_deep_expr_type(&module.exprs[*obj], module, param_types);
+                let obj_ty = self.infer_deep_expr_type(&module.exprs[*obj], module, param_types);
                 if let Type::RuntimeObject(tag) = &obj_ty {
                     let attr_name = self.interner.resolve(*attr);
                     if let Some(field) = lookup_object_field(*tag, attr_name) {

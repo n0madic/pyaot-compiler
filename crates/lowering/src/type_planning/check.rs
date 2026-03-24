@@ -93,9 +93,7 @@ impl<'a> Lowering<'a> {
         let required_count = func_def
             .params
             .iter()
-            .filter(|p| {
-                p.default.is_none() && matches!(p.kind, hir::ParamKind::Regular)
-            })
+            .filter(|p| p.default.is_none() && matches!(p.kind, hir::ParamKind::Regular))
             .count();
 
         if arg_expr_ids.len() < required_count {

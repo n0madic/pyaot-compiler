@@ -330,56 +330,32 @@ type_planning/
 
 ---
 
+## Init-Only Field Discovery
+
+Instance fields can be declared two ways:
+1. Class-level annotation: `x: int` (without value) in the class body
+2. Assignment in `__init__`: `self.x = value`
+
+The frontend (`frontend-python/src/ast_to_hir/classes.rs`) scans `__init__` bodies for `self.field = value` patterns to discover fields not declared at the class level. Type inference:
+- If the RHS is a simple parameter reference (`self.x = x`) and the parameter has a type annotation, the annotation type is used
+- Otherwise, `Type::Any` is used
+
+Fields declared at the class level take precedence (no duplicates). The scan recurses into `if`/`for`/`while`/`try` blocks.
+
+## Class Attribute Access Through Instances
+
+Python allows accessing class attributes through instances: `instance.class_attr`. The lowering (`lowering/src/expressions/access/attributes.rs`) checks in order:
+1. `@property` getters
+2. Instance fields (`field_offsets`)
+3. Class attributes (`class_attr_offsets`) — fallback
+
+This matches Python's MRO: instance dict first, then class dict. Assignment through instances (`instance.class_attr = value`) modifies the shared class attribute (not an instance-specific shadow, unlike CPython).
+
+---
+
 ## Known Pre-Existing Codegen Issues
 
-These bugs exist in the Cranelift codegen, independent of type inference:
-
-**1. Instance field direct access → Cranelift i8/i64 mismatch**
-```python
-class Pt:
-    def __init__(self, x: int, y: int):
-        self.x = x
-        self.y = y
-p = Pt(10, 20)
-print(p.x)   # CRASH: arg 0 has type i8, expected i64
-```
-Root cause: field access on class instances emits wrong Cranelift type when accessed directly (not through a method). Likely a missing `ireduce`/`sextend` in codegen for instance field loads.
-
-**2. Instance field read via method returns garbage**
-```python
-class Box:
-    def __init__(self, val: int):
-        self.val = val
-    def get_val(self) -> int:
-        return self.val
-b = Box(42)
-print(b.get_val())  # prints garbage address like 4305256448, not 42
-```
-Root cause: `self.val` read inside a method returns the heap pointer instead of the unboxed int value. The field load doesn't dereference correctly.
-
-**3. @property accessor returns garbage**
-```python
-class C:
-    def __init__(self, x: int):
-        self._x = x
-    @property
-    def x(self) -> int:
-        return self._x
-c = C(42)
-print(c.x)  # prints garbage address
-```
-Same root cause as #2 — property getter reads `self._x` which returns a pointer.
-
-**4. Class-level attribute access → Cranelift i8/i64 mismatch**
-```python
-class P:
-    x: int = 10
-p = P()
-print(p.x)  # CRASH: arg 0 has type i8, expected i64
-```
-Root cause: class attributes (not instance fields) use a different storage mechanism (class_attr_offsets) and the codegen path doesn't handle the type correctly.
-
-**5. Decorator with wrapper changes argument count**
+**Decorator with `*args` wrapper — argument count mismatch**
 ```python
 def decorator(func):
     def wrapper(*args):
@@ -390,4 +366,4 @@ def multiply(a: int, b: int) -> int:
     return a * b
 print(multiply(3, 4))  # CRASH: got 3 args, expected 2
 ```
-Root cause: the wrapper function receives `*args` (1 tuple param) but calls the original function which expects 2 separate params. The indirect call through `func(*args)` doesn't unpack the tuple correctly.
+This is a feature gap, not a codegen bug. Supporting `*args` forwarding in decorator wrappers requires tuple packing at call sites, tuple unpacking for `func(*args)` indirect calls, and integration with the closure dispatch mechanism. Workaround: use explicit typed parameters in wrapper functions instead of `*args`.

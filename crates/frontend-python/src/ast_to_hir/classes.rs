@@ -232,6 +232,20 @@ impl AstToHir {
                         Type::None
                     };
 
+                    // Scan __init__ body for self.field = value assignments to discover
+                    // instance fields that aren't declared at the class level.
+                    // Must happen before convert_method_def which moves func_def.
+                    if is_init {
+                        let new_fields = self.scan_init_fields(
+                            &func_def.body,
+                            &func_def.args,
+                            &fields,
+                            &class_attrs,
+                            class_span,
+                        );
+                        fields.extend(new_fields);
+                    }
+
                     let method_func_id =
                         self.convert_method_def(func_def, &class_def.name, &parsed_decorators)?;
 
@@ -605,5 +619,144 @@ impl AstToHir {
         self.current_func_is_generator = outer_is_generator;
 
         Ok(func_id)
+    }
+
+    /// Scan __init__ body for `self.field = value` assignments to discover
+    /// instance fields that aren't explicitly declared at the class level.
+    fn scan_init_fields(
+        &mut self,
+        body: &[py::Stmt],
+        args: &py::Arguments,
+        existing_fields: &[FieldDef],
+        class_attrs: &[ClassAttribute],
+        class_span: Span,
+    ) -> Vec<FieldDef> {
+        let mut new_fields = Vec::new();
+        let mut seen_names = std::collections::HashSet::new();
+
+        // Build set of already-declared field/attr names for dedup
+        for f in existing_fields {
+            seen_names.insert(self.interner.resolve(f.name).to_string());
+        }
+        for a in class_attrs {
+            seen_names.insert(self.interner.resolve(a.name).to_string());
+        }
+
+        // Build map from param name → type annotation for type inference
+        let param_types: std::collections::HashMap<String, &py::Expr> = args
+            .args
+            .iter()
+            .filter_map(|arg| {
+                arg.def
+                    .annotation
+                    .as_ref()
+                    .map(|ann| (arg.def.arg.to_string(), ann.as_ref()))
+            })
+            .collect();
+
+        self.scan_stmts_for_self_fields(
+            body,
+            &param_types,
+            &mut seen_names,
+            &mut new_fields,
+            class_span,
+        );
+
+        new_fields
+    }
+
+    /// Recursively scan statements for `self.field = value` patterns.
+    fn scan_stmts_for_self_fields(
+        &mut self,
+        stmts: &[py::Stmt],
+        param_types: &std::collections::HashMap<String, &py::Expr>,
+        seen: &mut std::collections::HashSet<String>,
+        out: &mut Vec<FieldDef>,
+        span: Span,
+    ) {
+        for stmt in stmts {
+            match stmt {
+                py::Stmt::Assign(assign) => {
+                    if assign.targets.len() == 1 {
+                        if let py::Expr::Attribute(attr) = &assign.targets[0] {
+                            if let py::Expr::Name(name) = &*attr.value {
+                                if name.id.as_str() == "self" {
+                                    let field_name = attr.attr.to_string();
+                                    if !seen.contains(&field_name) {
+                                        seen.insert(field_name.clone());
+                                        let ty = self
+                                            .infer_field_type_from_rhs(&assign.value, param_types);
+                                        let interned = self.interner.intern(&field_name);
+                                        out.push(FieldDef {
+                                            name: interned,
+                                            ty,
+                                            span,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                py::Stmt::AnnAssign(ann) => {
+                    if let py::Expr::Attribute(attr) = &*ann.target {
+                        if let py::Expr::Name(name) = &*attr.value {
+                            if name.id.as_str() == "self" {
+                                let field_name = attr.attr.to_string();
+                                if !seen.contains(&field_name) {
+                                    seen.insert(field_name.clone());
+                                    let ty = self
+                                        .convert_type_annotation(&ann.annotation)
+                                        .unwrap_or(Type::Any);
+                                    let interned = self.interner.intern(&field_name);
+                                    out.push(FieldDef {
+                                        name: interned,
+                                        ty,
+                                        span,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                // Recurse into control flow blocks to find fields set conditionally
+                py::Stmt::If(if_stmt) => {
+                    self.scan_stmts_for_self_fields(&if_stmt.body, param_types, seen, out, span);
+                    self.scan_stmts_for_self_fields(&if_stmt.orelse, param_types, seen, out, span);
+                }
+                py::Stmt::For(for_stmt) => {
+                    self.scan_stmts_for_self_fields(&for_stmt.body, param_types, seen, out, span);
+                }
+                py::Stmt::While(while_stmt) => {
+                    self.scan_stmts_for_self_fields(&while_stmt.body, param_types, seen, out, span);
+                }
+                py::Stmt::Try(try_stmt) => {
+                    self.scan_stmts_for_self_fields(&try_stmt.body, param_types, seen, out, span);
+                    for handler in &try_stmt.handlers {
+                        let py::ExceptHandler::ExceptHandler(h) = handler;
+                        self.scan_stmts_for_self_fields(&h.body, param_types, seen, out, span);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Infer field type from the RHS of `self.field = value`.
+    /// If the RHS is a simple parameter reference with a type annotation, use that.
+    /// Otherwise, fall back to Type::Any.
+    fn infer_field_type_from_rhs(
+        &mut self,
+        rhs: &py::Expr,
+        param_types: &std::collections::HashMap<String, &py::Expr>,
+    ) -> Type {
+        if let py::Expr::Name(name) = rhs {
+            if let Some(ann) = param_types.get(name.id.as_str()) {
+                if let Ok(ty) = self.convert_type_annotation(ann) {
+                    return ty;
+                }
+            }
+        }
+        Type::Any
     }
 }
