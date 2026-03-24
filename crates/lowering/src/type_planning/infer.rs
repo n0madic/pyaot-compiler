@@ -161,6 +161,12 @@ impl<'a> Lowering<'a> {
                             ];
                             for methods in method_maps {
                                 if let Some(&method_func_id) = methods.get(method) {
+                                    // Check inferred return types first (from infer_all_return_types)
+                                    if let Some(ret_ty) =
+                                        self.func_return_types.get(&method_func_id)
+                                    {
+                                        return ret_ty.clone();
+                                    }
                                     if let Some(func_def) =
                                         hir_module.func_defs.get(&method_func_id)
                                     {
@@ -465,8 +471,17 @@ impl<'a> Lowering<'a> {
 
                 if let Type::Class { class_id, .. } = &obj_ty {
                     if let Some(class_info) = self.get_class_info(class_id) {
+                        // Instance fields
                         if let Some(field_ty) = class_info.field_types.get(attr) {
                             return field_ty.clone();
+                        }
+                        // Properties (@property)
+                        if let Some(prop_ty) = class_info.property_types.get(attr) {
+                            return prop_ty.clone();
+                        }
+                        // Class attributes
+                        if let Some(attr_ty) = class_info.class_attr_types.get(attr) {
+                            return attr_ty.clone();
                         }
                     }
                 }
