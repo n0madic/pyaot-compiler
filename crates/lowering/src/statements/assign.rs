@@ -270,15 +270,9 @@ impl<'a> Lowering<'a> {
         // original Union type for boxing, even though the narrowed type is not Union
         let original_union_type = self.get_narrowed_union_type(&target);
 
-        // Set expected type so empty collection literals can infer elem_tag
-        let prev_expected = self.expected_type.take();
-        self.expected_type = Some(var_type.clone());
-
-        // Lower the value expression first
-        let value_operand = self.lower_expr(expr, hir_module, mir_func)?;
-
-        // Restore previous expected type
-        self.expected_type = prev_expected;
+        // Lower the value expression with expected type for bidirectional propagation
+        let value_operand =
+            self.lower_expr_expecting(expr, Some(var_type.clone()), hir_module, mir_func)?;
 
         // Box primitives when assigning to Union type (or narrowed Union variable)
         let final_operand = if var_type.is_union() || original_union_type.is_some() {

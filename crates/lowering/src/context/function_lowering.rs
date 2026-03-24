@@ -86,7 +86,7 @@ impl<'a> Lowering<'a> {
         self.nonlocal_cells.clear();
         self.narrowed_union_vars.clear();
         self.loop_stack.clear();
-        self.expected_type = None;
+        self.expected_type = None; // Reset for new function scope
         self.pending_varargs_from_unpack = None;
         self.pending_kwargs_from_unpack = None;
         // expr_types NOT cleared — ExprIds are unique per-module, so
@@ -370,14 +370,13 @@ impl<'a> Lowering<'a> {
             if let Some(default_id) = param.default {
                 let default_expr = &hir_module.exprs[default_id];
 
-                // Set expected type from parameter type for correct elem_tag on empty lists
-                let prev_expected = self.expected_type.take();
-                self.expected_type = param.ty.clone();
-
-                // Lower the default expression to get its value
-                let default_operand = self.lower_expr(default_expr, hir_module, mir_func)?;
-
-                self.expected_type = prev_expected;
+                // Lower the default expression with expected type for correct elem_tag
+                let default_operand = self.lower_expr_expecting(
+                    default_expr,
+                    param.ty.clone(),
+                    hir_module,
+                    mir_func,
+                )?;
 
                 // Store in global slot - mutable defaults are always heap types (ptr)
                 let dummy_local = self.alloc_and_add_local(Type::None, mir_func);

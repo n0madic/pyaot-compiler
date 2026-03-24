@@ -32,6 +32,22 @@ use crate::utils::is_heap_type;
 impl<'a> Lowering<'a> {
     /// Main entry point for lowering an expression.
     /// Dispatches to appropriate submodule based on expression kind.
+    /// Lower an expression with an expected type for bidirectional propagation.
+    /// Empty containers use `expected` to determine their element types.
+    pub(crate) fn lower_expr_expecting(
+        &mut self,
+        expr: &hir::Expr,
+        expected: Option<Type>,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
+        let prev = self.expected_type.take();
+        self.expected_type = expected;
+        let result = self.lower_expr(expr, hir_module, mir_func);
+        self.expected_type = prev;
+        result
+    }
+
     pub(crate) fn lower_expr(
         &mut self,
         expr: &hir::Expr,

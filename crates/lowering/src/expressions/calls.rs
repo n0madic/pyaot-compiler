@@ -55,17 +55,11 @@ impl<'a> Lowering<'a> {
                     let arg_expr = &hir_module.exprs[*expr_id];
 
                     // Bidirectional: propagate parameter type into argument expression
-                    let prev_expected = self.expected_type.take();
-                    if let Some(params) = param_types {
-                        if let Some(param) = params.get(positional_index) {
-                            if let Some(ref param_ty) = param.ty {
-                                self.expected_type = Some(param_ty.clone());
-                            }
-                        }
-                    }
-
-                    let operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-                    self.expected_type = prev_expected;
+                    let expected = param_types
+                        .and_then(|p| p.get(positional_index))
+                        .and_then(|p| p.ty.clone());
+                    let operand =
+                        self.lower_expr_expecting(arg_expr, expected, hir_module, mir_func)?;
 
                     operands.push(operand);
                     positional_index += 1;
