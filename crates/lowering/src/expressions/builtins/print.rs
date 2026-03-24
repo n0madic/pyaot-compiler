@@ -75,42 +75,79 @@ impl<'a> Lowering<'a> {
             // Use get_expr_type for proper type inference
             let arg_type = self.get_expr_type(arg_expr, hir_module);
 
-            // Determine the print kind based on type
-            let print_kind = if arg_type.is_union() {
-                // For Union types, use runtime dispatch
-                PrintKind::Obj
-            } else {
-                match &arg_type {
-                    Type::Int => PrintKind::Int,
-                    Type::Float => PrintKind::Float,
-                    Type::Bool => PrintKind::Bool,
-                    Type::None => PrintKind::None,
-                    Type::Str => PrintKind::StrObj,
-                    Type::Bytes => PrintKind::BytesObj,
-                    // For heap types like lists, tuples, dicts, etc., use Obj for runtime dispatch
-                    Type::List(_)
-                    | Type::Tuple(_)
-                    | Type::Dict(_, _)
-                    | Type::Set(_)
-                    | Type::Class { .. }
-                    | Type::Iterator(_) => PrintKind::Obj,
-                    // For Any and other unknown types, default to Int (raw value)
-                    _ => PrintKind::Int,
+            // For class instances, convert to string via __str__/__repr__ first,
+            // then print the resulting string (matches CPython behavior)
+            if let Type::Class { class_id, .. } = &arg_type {
+                let str_local = self.alloc_and_add_local(Type::Str, mir_func);
+                if let Some(class_info) = self.get_class_info(class_id) {
+                    if let Some(str_func) = class_info.str_func {
+                        self.emit_instruction(mir::InstructionKind::CallDirect {
+                            dest: str_local,
+                            func: str_func,
+                            args: vec![arg_operand],
+                        });
+                    } else if let Some(repr_func) = class_info.repr_func {
+                        self.emit_instruction(mir::InstructionKind::CallDirect {
+                            dest: str_local,
+                            func: repr_func,
+                            args: vec![arg_operand],
+                        });
+                    } else {
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: str_local,
+                            func: mir::RuntimeFunc::ObjDefaultRepr,
+                            args: vec![arg_operand],
+                        });
+                    }
+                } else {
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: str_local,
+                        func: mir::RuntimeFunc::ObjDefaultRepr,
+                        args: vec![arg_operand],
+                    });
                 }
-            };
-
-            // Build args based on print kind
-            let call_args = if print_kind.has_argument() {
-                vec![arg_operand]
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: dummy_local,
+                    func: mir::RuntimeFunc::PrintValue(PrintKind::StrObj),
+                    args: vec![mir::Operand::Local(str_local)],
+                });
             } else {
-                vec![]
-            };
+                // Determine the print kind based on type
+                let print_kind = if arg_type.is_union() {
+                    // For Union types, use runtime dispatch
+                    PrintKind::Obj
+                } else {
+                    match &arg_type {
+                        Type::Int => PrintKind::Int,
+                        Type::Float => PrintKind::Float,
+                        Type::Bool => PrintKind::Bool,
+                        Type::None => PrintKind::None,
+                        Type::Str => PrintKind::StrObj,
+                        Type::Bytes => PrintKind::BytesObj,
+                        // For heap types like lists, tuples, dicts, etc., use Obj for runtime dispatch
+                        Type::List(_)
+                        | Type::Tuple(_)
+                        | Type::Dict(_, _)
+                        | Type::Set(_)
+                        | Type::Iterator(_) => PrintKind::Obj,
+                        // For Any and other unknown types, default to Int (raw value)
+                        _ => PrintKind::Int,
+                    }
+                };
 
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::PrintValue(print_kind),
-                args: call_args,
-            });
+                // Build args based on print kind
+                let call_args = if print_kind.has_argument() {
+                    vec![arg_operand]
+                } else {
+                    vec![]
+                };
+
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: dummy_local,
+                    func: mir::RuntimeFunc::PrintValue(print_kind),
+                    args: call_args,
+                });
+            }
 
             // Print separator between arguments (not after last)
             if i < args.len() - 1 {

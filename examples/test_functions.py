@@ -1398,4 +1398,42 @@ assert lambda_multi_defaults(1, 10, 100) == 111, "lambda multi defaults: 1+10+10
 
 print("Lambda default parameter tests passed!")
 
+# ===== SECTION: Escaping nonlocal closures (regression test) =====
+
+def make_counter_escape():
+    count: int = 0
+    def increment() -> int:
+        nonlocal count
+        count = count + 1
+        return count
+    return increment
+
+esc_counter = make_counter_escape()
+assert esc_counter() == 1, "escaping nonlocal: first call should return 1"
+assert esc_counter() == 2, "escaping nonlocal: second call should return 2"
+assert esc_counter() == 3, "escaping nonlocal: third call should return 3"
+
+# Test with initial value
+def make_counter_from(start: int):
+    count: int = start
+    def inc() -> int:
+        nonlocal count
+        count = count + 1
+        return count
+    return inc
+
+esc_counter10 = make_counter_from(10)
+assert esc_counter10() == 11, "escaping nonlocal from 10: first call should return 11"
+assert esc_counter10() == 12, "escaping nonlocal from 10: second call should return 12"
+
+# Two independent closures sharing no state
+esc_a = make_counter_escape()
+esc_b = make_counter_escape()
+assert esc_a() == 1, "independent closure a: should start at 1"
+assert esc_b() == 1, "independent closure b: should start at 1"
+assert esc_a() == 2, "independent closure a: second call"
+assert esc_b() == 2, "independent closure b: second call"
+
+print("Escaping nonlocal closure tests passed!")
+
 print("All function tests passed!")

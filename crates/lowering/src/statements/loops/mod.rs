@@ -98,11 +98,17 @@ impl<'a> Lowering<'a> {
             if let hir::ExprKind::BuiltinCall {
                 builtin: hir::Builtin::Enumerate,
                 args: enum_args,
-                ..
+                kwargs: enum_kwargs,
             } = &iter_expr.kind
             {
                 return self.lower_for_enumerate_optimized(
-                    targets, enum_args, body, else_block, hir_module, mir_func,
+                    targets,
+                    enum_args,
+                    enum_kwargs,
+                    body,
+                    else_block,
+                    hir_module,
+                    mir_func,
                 );
             }
         }

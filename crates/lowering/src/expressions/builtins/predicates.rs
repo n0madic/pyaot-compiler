@@ -8,6 +8,51 @@ use pyaot_types::Type;
 use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
+    /// Select the appropriate Len/Get functions and item type based on iterable type.
+    /// Returns (len_func, get_func, item_type, zero_constant).
+    fn predicate_iter_info(
+        &self,
+        iterable_type: &Type,
+    ) -> (mir::RuntimeFunc, mir::RuntimeFunc, Type, mir::Constant) {
+        match iterable_type {
+            Type::List(elem) => {
+                let elem = elem.as_ref();
+                match elem {
+                    Type::Bool => (
+                        mir::RuntimeFunc::ListLen,
+                        mir::RuntimeFunc::ListGetBool,
+                        Type::Bool,
+                        mir::Constant::Bool(false),
+                    ),
+                    Type::Int => (
+                        mir::RuntimeFunc::ListLen,
+                        mir::RuntimeFunc::ListGetInt,
+                        Type::Int,
+                        mir::Constant::Int(0),
+                    ),
+                    _ => (
+                        mir::RuntimeFunc::ListLen,
+                        mir::RuntimeFunc::ListGet,
+                        Type::Int,
+                        mir::Constant::Int(0),
+                    ),
+                }
+            }
+            Type::Tuple(_) => (
+                mir::RuntimeFunc::TupleLen,
+                mir::RuntimeFunc::TupleGet,
+                Type::Int,
+                mir::Constant::Int(0),
+            ),
+            _ => (
+                mir::RuntimeFunc::ListLen,
+                mir::RuntimeFunc::ListGet,
+                Type::Int,
+                mir::Constant::Int(0),
+            ),
+        }
+    }
+
     /// Lower all(iterable) -> bool
     pub(super) fn lower_all(
         &mut self,
@@ -23,12 +68,7 @@ impl<'a> Lowering<'a> {
         let iterable_operand = self.lower_expr(iterable_expr, hir_module, mir_func)?;
         let iterable_type = self.get_expr_type(iterable_expr, hir_module);
 
-        // Select Len/Get functions based on iterable type
-        let (len_func, get_func) = match &iterable_type {
-            Type::List(_) => (mir::RuntimeFunc::ListLen, mir::RuntimeFunc::ListGet),
-            Type::Tuple(_) => (mir::RuntimeFunc::TupleLen, mir::RuntimeFunc::TupleGet),
-            _ => (mir::RuntimeFunc::ListLen, mir::RuntimeFunc::ListGet),
-        };
+        let (len_func, get_func, item_type, zero_const) = self.predicate_iter_info(&iterable_type);
 
         // Create result (default True)
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
@@ -88,8 +128,8 @@ impl<'a> Lowering<'a> {
         // Loop body
         self.push_block(loop_body);
 
-        // Get item
-        let item_local = self.alloc_and_add_local(Type::Int, mir_func);
+        // Get item using the type-appropriate getter
+        let item_local = self.alloc_and_add_local(item_type.clone(), mir_func);
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: item_local,
@@ -97,14 +137,14 @@ impl<'a> Lowering<'a> {
             args: vec![iterable_operand.clone(), mir::Operand::Local(counter_local)],
         });
 
-        // Convert to bool (compare != 0)
+        // Convert to bool: compare item != zero_const (works for both i8 and i64)
         let item_bool = self.alloc_and_add_local(Type::Bool, mir_func);
 
         self.emit_instruction(mir::InstructionKind::BinOp {
             dest: item_bool,
             op: mir::BinOp::NotEq,
             left: mir::Operand::Local(item_local),
-            right: mir::Operand::Constant(mir::Constant::Int(0)),
+            right: mir::Operand::Constant(zero_const),
         });
 
         // Check if item is False - if so, early exit
@@ -169,12 +209,7 @@ impl<'a> Lowering<'a> {
         let iterable_operand = self.lower_expr(iterable_expr, hir_module, mir_func)?;
         let iterable_type = self.get_expr_type(iterable_expr, hir_module);
 
-        // Select Len/Get functions based on iterable type
-        let (len_func, get_func) = match &iterable_type {
-            Type::List(_) => (mir::RuntimeFunc::ListLen, mir::RuntimeFunc::ListGet),
-            Type::Tuple(_) => (mir::RuntimeFunc::TupleLen, mir::RuntimeFunc::TupleGet),
-            _ => (mir::RuntimeFunc::ListLen, mir::RuntimeFunc::ListGet),
-        };
+        let (len_func, get_func, item_type, zero_const) = self.predicate_iter_info(&iterable_type);
 
         // Create result (default False)
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
@@ -234,8 +269,8 @@ impl<'a> Lowering<'a> {
         // Loop body
         self.push_block(loop_body);
 
-        // Get item
-        let item_local = self.alloc_and_add_local(Type::Int, mir_func);
+        // Get item using the type-appropriate getter
+        let item_local = self.alloc_and_add_local(item_type.clone(), mir_func);
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: item_local,
@@ -243,14 +278,14 @@ impl<'a> Lowering<'a> {
             args: vec![iterable_operand.clone(), mir::Operand::Local(counter_local)],
         });
 
-        // Convert i64 to bool (compare != 0)
+        // Convert to bool: compare item != zero_const (works for both i8 and i64)
         let item_bool = self.alloc_and_add_local(Type::Bool, mir_func);
 
         self.emit_instruction(mir::InstructionKind::BinOp {
             dest: item_bool,
             op: mir::BinOp::NotEq,
             left: mir::Operand::Local(item_local),
-            right: mir::Operand::Constant(mir::Constant::Int(0)),
+            right: mir::Operand::Constant(zero_const),
         });
 
         // Check if item is True - if so, early exit

@@ -267,6 +267,8 @@ pub extern "C" fn rt_map_new(
         let map_iter = obj as *mut MapIterObj;
         (*map_iter).kind = IteratorKind::Map as u8;
         (*map_iter).exhausted = false;
+        // Bit 7 of capture_count encodes needs_boxing flag (set by compiler).
+        // Lower 4 bits = actual capture count (0-4).
         (*map_iter).capture_count = capture_count as u8;
         (*map_iter)._pad = [0; 5];
         (*map_iter).func_ptr = func_ptr;

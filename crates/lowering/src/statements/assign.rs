@@ -67,11 +67,21 @@ impl<'a> Lowering<'a> {
                     });
 
                     // Lower all capture expressions
+                    // For cell variables (used by nonlocal), pass the cell pointer directly
                     let mut capture_operands = Vec::new();
                     for capture_id in captures {
                         let capture_expr = &hir_module.exprs[*capture_id];
-                        let capture_operand =
-                            self.lower_expr(capture_expr, hir_module, mir_func)?;
+                        let capture_operand = if let hir::ExprKind::Var(var_id) = &capture_expr.kind
+                        {
+                            if let Some(cell_local) = self.get_nonlocal_cell(var_id) {
+                                // Cell variable — pass the cell pointer, not the value
+                                mir::Operand::Local(cell_local)
+                            } else {
+                                self.lower_expr(capture_expr, hir_module, mir_func)?
+                            }
+                        } else {
+                            self.lower_expr(capture_expr, hir_module, mir_func)?
+                        };
                         capture_operands.push(capture_operand);
                     }
 
@@ -79,10 +89,18 @@ impl<'a> Lowering<'a> {
 
                     // Determine elem_tag for captures tuple based on actual types.
                     // Use ELEM_RAW_INT when no capture needs GC tracing.
+                    // Cell variables are always heap pointers that need GC tracing.
                     let capture_elem_tag: i64 = {
-                        let any_needs_gc = capture_operands
-                            .iter()
-                            .any(|op| Self::type_needs_gc_trace(&self.operand_type(op, mir_func)));
+                        let any_needs_gc = captures.iter().enumerate().any(|(i, capture_id)| {
+                            let capture_expr = &hir_module.exprs[*capture_id];
+                            if let hir::ExprKind::Var(var_id) = &capture_expr.kind {
+                                if self.get_nonlocal_cell(var_id).is_some() {
+                                    return true;
+                                }
+                            }
+                            let op_type = self.operand_type(&capture_operands[i], mir_func);
+                            Self::type_needs_gc_trace(&op_type)
+                        });
                         if any_needs_gc {
                             0
                         } else {

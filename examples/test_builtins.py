@@ -1324,6 +1324,42 @@ assert iter_max_result == 3, f"max(gen): expected 3, got {iter_max_result}"
 
 print("sum/min/max on iterators passed!")
 
+# ============================================================================
+# any()/all() with bool lists (regression test)
+# ============================================================================
+
+bool_all_true: list[bool] = [True, True, True]
+bool_has_false: list[bool] = [True, False, True]
+bool_all_false: list[bool] = [False, False, False]
+
+assert all(bool_all_true) == True, "all([True,True,True]) should be True"
+assert all(bool_has_false) == False, "all([True,False,True]) should be False"
+assert all(bool_all_false) == False, "all([False,False,False]) should be False"
+
+assert any(bool_all_true) == True, "any([True,True,True]) should be True"
+assert any(bool_has_false) == True, "any([True,False,True]) should be True"
+assert any(bool_all_false) == False, "any([False,False,False]) should be False"
+
+print("any()/all() with bool lists tests passed!")
+
+# ============================================================================
+# map() with builtins and type-converting lambdas (regression test)
+# ============================================================================
+
+# map with builtin str on int list
+map_str_result: list[str] = list(map(str, [1, 2, 3]))
+assert map_str_result == ["1", "2", "3"], f"map(str, [1,2,3]) failed: {map_str_result}"
+
+# map with lambda that converts int to str
+map_lambda_str: list[str] = list(map(lambda x: str(x), [10, 20, 30]))
+assert map_lambda_str == ["10", "20", "30"], f"map(lambda x: str(x)) failed: {map_lambda_str}"
+
+# TODO: map(int, ["1","2","3"]) not yet supported — list() stores boxed IntObj
+# with ELEM_HEAP_OBJ but compiler uses ListGet instead of ListGetInt for unboxing.
+# Needs expected_type propagation from variable annotation to list() constructor.
+
+print("map() with builtins and type-converting lambdas tests passed!")
+
 print("  - min/max with iterables: tuple, range, set")
 print("  - sum/min/max with iterators/generators")
 print("Note: print(), len(), range() tested in other files")

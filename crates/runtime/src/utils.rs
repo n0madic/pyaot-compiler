@@ -128,14 +128,13 @@ pub unsafe fn raise_io_error(msg: &str) -> ! {
     crate::exceptions::rt_exc_raise(ExceptionType::IOError as u8, msg.as_ptr(), msg.len())
 }
 
-/// Format a float value the way CPython does.
+/// Format a float value the way CPython does (shortest repr that round-trips).
 ///
-/// CPython rules:
-/// - `nan` → `"nan"` (lowercase)
-/// - `inf` → `"inf"`, `-inf` → `"-inf"`
-/// - `-0.0` → `"-0.0"`
-/// - Whole numbers with `abs < 1e16` → `"{:.1}"` (e.g. `2.0`)
-/// - Others → shortest repr, ensuring a `.` or `e` is present
+/// CPython uses David Gay's dtoa algorithm with these rules:
+/// - Special: `nan`, `inf`, `-inf`, `0.0`, `-0.0`
+/// - Scientific notation when exponent >= 16 or <= -5
+/// - Decimal notation otherwise
+/// - Always has `.` or `e`; trailing zeros stripped (but `.0` kept for whole numbers)
 pub fn format_float_python(value: f64) -> String {
     if value.is_nan() {
         return "nan".to_string();
@@ -154,15 +153,60 @@ pub fn format_float_python(value: f64) -> String {
             "0.0".to_string()
         };
     }
-    if value.fract() == 0.0 && value.abs() < 1e16 {
+
+    // Determine the decimal exponent to decide notation
+    let abs_val = value.abs();
+    let exp10 = abs_val.log10().floor() as i32;
+
+    // CPython uses scientific notation when exponent >= 16 or <= -5
+    if exp10 >= 16 || exp10 <= -5 {
+        return format_float_scientific(value);
+    }
+
+    // For values that are whole numbers, use fixed format with .1
+    if value.fract() == 0.0 && abs_val < 1e16 {
         return format!("{:.1}", value);
     }
+
+    // Use Rust's shortest-representation formatter
     let s = format!("{}", value);
     if !s.contains('.') && !s.contains('e') && !s.contains('E') {
         format!("{}.0", s)
     } else {
         s
     }
+}
+
+/// Format a float in scientific notation matching CPython's style.
+/// CPython format: `[-]d[.ddd]e±dd[d]` — shortest mantissa, exponent always has ± sign
+/// and at least 2 digits.
+fn format_float_scientific(value: f64) -> String {
+    // Use Rust's shortest-representation scientific notation
+    let s = format!("{:e}", value);
+
+    // Split into mantissa and exponent parts: "1.5e10" or "1e308"
+    let (mantissa, exp_str) = match s.split_once('e') {
+        Some((m, e)) => (m, e),
+        None => return s,
+    };
+
+    // Parse exponent value
+    let exp_val: i32 = exp_str.parse().unwrap_or(0);
+
+    // Format exponent CPython-style: always ± sign, at least 2 digits
+    let formatted_exp = if exp_val >= 0 {
+        if exp_val >= 100 {
+            format!("e+{}", exp_val)
+        } else {
+            format!("e+{:02}", exp_val)
+        }
+    } else if exp_val <= -100 {
+        format!("e{}", exp_val)
+    } else {
+        format!("e-{:02}", exp_val.unsigned_abs())
+    };
+
+    format!("{}{}", mantissa, formatted_exp)
 }
 
 /// Raise a RuntimeError exception with the given message

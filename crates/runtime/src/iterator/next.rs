@@ -555,13 +555,25 @@ unsafe fn iter_next_map(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
         return EXHAUSTED_SENTINEL;
     }
 
+    // Bit 7 of capture_count encodes whether raw int elements need boxing
+    // before calling the map function (set for builtins that expect *mut Obj).
+    let raw_cc = (*map_iter).capture_count;
+    let needs_boxing = raw_cc & 0x80 != 0;
+    let actual_cc = raw_cc & 0x7F;
+
+    let elem_for_call = if needs_boxing {
+        box_if_raw_int_iterator((*map_iter).inner_iter, elem)
+    } else {
+        elem
+    };
+
     // Call map function with captures (if any)
     // Captures are prepended to the argument list: func(c0, c1, ..., elem)
     call_map_with_captures(
         (*map_iter).func_ptr,
         (*map_iter).captures,
-        (*map_iter).capture_count,
-        elem,
+        actual_cc,
+        elem_for_call,
     )
 }
 

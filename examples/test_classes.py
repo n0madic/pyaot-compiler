@@ -1235,4 +1235,35 @@ print("Context manager with operations passed!")
 
 print("All context manager tests passed!")
 
+# ============================================================================
+# print(instance) calls __str__ (regression test)
+# ============================================================================
+
+class PrintablePoint:
+    x: int
+    y: int
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+    def __str__(self) -> str:
+        return f"Point({self.x}, {self.y})"
+    def __repr__(self) -> str:
+        return f"Point(x={self.x}, y={self.y})"
+
+pp = PrintablePoint(3, 4)
+# print(instance) must call __str__, not show <object at 0x...>
+assert str(pp) == "Point(3, 4)", "str(instance) should call __str__"
+# Test __repr__ fallback when __str__ not defined
+class ReprOnly:
+    v: int
+    def __init__(self, v: int):
+        self.v = v
+    def __repr__(self) -> str:
+        return f"ReprOnly({self.v})"
+
+ro = ReprOnly(42)
+assert repr(ro) == "ReprOnly(42)", "repr(instance) should call __repr__"
+
+print("print(instance) __str__/__repr__ tests passed!")
+
 print("All class tests passed!")

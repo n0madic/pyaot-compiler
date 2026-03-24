@@ -197,6 +197,52 @@ impl<'a> Lowering<'a> {
                 kwargs,
                 ..
             } => {
+                // For map(func, iterable) and filter(func, iterable), register
+                // parameter type hints so the lambda gets the correct element type
+                // instead of defaulting to Any.
+                if matches!(builtin, hir::Builtin::Map | hir::Builtin::Filter) && args.len() >= 2 {
+                    let func_arg = &hir_module.exprs[args[0]];
+                    let iterable_arg = &hir_module.exprs[args[1]];
+                    let iterable_type =
+                        self.get_expr_type_static(iterable_arg, hir_module, var_types);
+                    let elem_type = match &iterable_type {
+                        Type::List(elem) => (**elem).clone(),
+                        Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+                        Type::Set(elem) => (**elem).clone(),
+                        Type::Str => Type::Str,
+                        Type::Iterator(elem) => (**elem).clone(),
+                        _ => Type::Any,
+                    };
+                    if !matches!(elem_type, Type::Any) {
+                        let func_info = match &func_arg.kind {
+                            hir::ExprKind::FuncRef(func_id) => Some((*func_id, vec![])),
+                            hir::ExprKind::Closure { func, captures } => {
+                                Some((*func, captures.clone()))
+                            }
+                            _ => None,
+                        };
+                        if let Some((func_id, captures)) = func_info {
+                            if let Some(func_def) = hir_module.func_defs.get(&func_id) {
+                                let num_captures = captures.len();
+                                let num_non_capture =
+                                    func_def.params.len().saturating_sub(num_captures);
+                                // map/filter callback takes exactly 1 element parameter
+                                if num_non_capture == 1 {
+                                    let mut param_hints = Vec::new();
+                                    for cap_id in &captures {
+                                        let cap_expr = &hir_module.exprs[*cap_id];
+                                        let cap_type = self
+                                            .get_expr_type_static(cap_expr, hir_module, var_types);
+                                        param_hints.push(cap_type);
+                                    }
+                                    param_hints.push(elem_type);
+                                    self.insert_lambda_param_type_hints(func_id, param_hints);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // For reduce(), register parameter type hints for the callback lambda
                 // reduce(func, iterable[, initial]) — func takes (acc, elem) both of element type
                 if matches!(builtin, hir::Builtin::Reduce) && args.len() >= 2 {

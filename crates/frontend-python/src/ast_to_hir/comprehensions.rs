@@ -460,8 +460,8 @@ impl AstToHir {
             py::Expr::Constant(c) => matches!(c.value, py::Constant::Int(_)),
             py::Expr::UnaryOp(op) => self.is_int_expression(&op.operand),
             py::Expr::BinOp(op) => {
-                // Arithmetic on ints produces int (except division)
-                if matches!(op.op, py::Operator::Div | py::Operator::Pow) {
+                // Arithmetic on ints produces int (except true division which returns float)
+                if matches!(op.op, py::Operator::Div) {
                     return false;
                 }
                 self.is_int_expression(&op.left) && self.is_int_expression(&op.right)

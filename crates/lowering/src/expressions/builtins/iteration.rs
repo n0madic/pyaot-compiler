@@ -949,9 +949,10 @@ impl<'a> Lowering<'a> {
                         builtin: builtin_kind,
                     });
 
-                    // Builtins have no captures
+                    // Builtins have no captures. Set bit 7 (0x80) in capture_count
+                    // to signal the runtime to box raw int elements before calling.
                     let cap_op = mir::Operand::Constant(mir::Constant::Int(0));
-                    let cap_count = mir::Operand::Constant(mir::Constant::Int(0));
+                    let cap_count = mir::Operand::Constant(mir::Constant::Int(0x80));
 
                     // Infer result type based on builtin
                     let result_type = self.infer_builtin_return_type(builtin_kind);

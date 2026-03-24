@@ -19,6 +19,7 @@ impl<'a> Lowering<'a> {
         &mut self,
         targets: &[VarId],
         enum_args: &[hir::ExprId],
+        enum_kwargs: &[hir::KeywordArg],
         body: &[hir::StmtId],
         else_block: &[hir::StmtId],
         hir_module: &hir::Module,
@@ -31,12 +32,22 @@ impl<'a> Lowering<'a> {
         let counter_var = targets[0]; // i
         let elem_var = targets[1]; // v
 
-        // Get start value (second arg to enumerate() or default 0)
+        // Get start value: positional second arg, or start= kwarg, or default 0
         let start_operand = if enum_args.len() > 1 {
             let start_expr = &hir_module.exprs[enum_args[1]];
             self.lower_expr(start_expr, hir_module, mir_func)?
         } else {
-            mir::Operand::Constant(mir::Constant::Int(0))
+            // Check kwargs for start=
+            let mut found_start = None;
+            for kwarg in enum_kwargs {
+                let name = self.resolve(kwarg.name);
+                if name == "start" {
+                    let start_expr = &hir_module.exprs[kwarg.value];
+                    found_start = Some(self.lower_expr(start_expr, hir_module, mir_func)?);
+                    break;
+                }
+            }
+            found_start.unwrap_or(mir::Operand::Constant(mir::Constant::Int(0)))
         };
 
         let inner_iter_expr = &hir_module.exprs[enum_args[0]];

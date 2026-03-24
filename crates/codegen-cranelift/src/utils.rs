@@ -218,7 +218,18 @@ pub fn is_int_operand(operand: &Operand, locals: &IndexMap<LocalId, mir::Local>)
     }
 }
 
-/// Convert an int value to float (for mixed-type arithmetic)
+/// Helper to determine if an operand is a bool type
+pub fn is_bool_operand(operand: &Operand, locals: &IndexMap<LocalId, mir::Local>) -> bool {
+    match operand {
+        Operand::Local(local_id) => locals
+            .get(local_id)
+            .is_some_and(|l| matches!(l.ty, Type::Bool)),
+        Operand::Constant(mir::Constant::Bool(_)) => true,
+        _ => false,
+    }
+}
+
+/// Convert an int or bool value to float (for mixed-type arithmetic)
 pub fn promote_to_float(
     builder: &mut FunctionBuilder,
     val: cranelift_codegen::ir::Value,
@@ -228,6 +239,10 @@ pub fn promote_to_float(
     if is_int_operand(operand, locals) {
         // Convert signed int64 to float64
         builder.ins().fcvt_from_sint(cltypes::F64, val)
+    } else if is_bool_operand(operand, locals) {
+        // Bool is i8: extend to i64, then convert to f64
+        let i64_val = builder.ins().uextend(cltypes::I64, val);
+        builder.ins().fcvt_from_sint(cltypes::F64, i64_val)
     } else {
         val
     }

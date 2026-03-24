@@ -273,7 +273,7 @@ impl<'a> Lowering<'a> {
 
         // list(iterable) - create list from iterable
         let iter_expr = &hir_module.exprs[args[0]];
-        let iter_type = self.get_expr_type(iter_expr, hir_module);
+        let hir_type = self.get_expr_type(iter_expr, hir_module);
 
         // Check for range() call - handle specially
         if let hir::ExprKind::BuiltinCall {
@@ -286,6 +286,16 @@ impl<'a> Lowering<'a> {
         }
 
         let source_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
+
+        // Use the lowered operand type if the HIR type is unknown (Any).
+        // map/filter infer Iterator(Int) during lowering, but the HIR may still say Any.
+        // We always use ELEM_HEAP_OBJ for map/filter iterators because the map callback
+        // ABI returns *mut Obj (boxed), and ListGetInt can transparently unbox both.
+        let lowered_type = self.operand_type(&source_operand, mir_func);
+        let iter_type = match &hir_type {
+            Type::Any if matches!(lowered_type, Type::Iterator(_)) => lowered_type,
+            other => other.clone(),
+        };
 
         // Dispatch based on source type
         match &iter_type {
@@ -325,14 +335,16 @@ impl<'a> Lowering<'a> {
                     args: vec![source_operand],
                 });
             }
-            Type::Iterator(elem_type) => {
-                let elem_tag = Self::elem_tag_for_type(elem_type);
+            Type::Iterator(_) => {
+                // Always use ELEM_HEAP_OBJ for generic iterators (map, filter, etc.)
+                // because the iterator protocol returns *mut Obj. ListGetInt/ListGetBool
+                // transparently handle unboxing from ELEM_HEAP_OBJ storage.
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::ListFromIter,
                     args: vec![
                         source_operand,
-                        mir::Operand::Constant(mir::Constant::Int(elem_tag)),
+                        mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
                     ],
                 });
             }

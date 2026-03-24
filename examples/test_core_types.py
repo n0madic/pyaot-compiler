@@ -433,4 +433,29 @@ chain_result = chain_increment_and_return(1) < chain_increment_and_return(2) < c
 assert chain_call_count == 3, "Each operand should be evaluated once"
 assert chain_result, "1 < 2 < 3 should be True"
 
+# ===== SECTION: Bool + float mixed arithmetic (regression test) =====
+
+assert True + 0.5 == 1.5, "True + 0.5 should equal 1.5"
+assert False + 0.5 == 0.5, "False + 0.5 should equal 0.5"
+assert True * 2.0 == 2.0, "True * 2.0 should equal 2.0"
+assert 0.5 + True == 1.5, "0.5 + True should equal 1.5"
+assert 1.0 - True == 0.0, "1.0 - True should equal 0.0"
+assert True / 2.0 == 0.5, "True / 2.0 should equal 0.5"
+assert 10.0 * False == 0.0, "10.0 * False should equal 0.0"
+
+print("Bool + float mixed arithmetic tests passed!")
+
+# ===== SECTION: Float scientific notation formatting (regression test) =====
+
+assert str(1e308) == "1e+308", f"str(1e308) should be '1e+308', got '{str(1e308)}'"
+assert str(1e-308) == "1e-308", f"str(1e-308) should be '1e-308', got '{str(1e-308)}'"
+assert str(1e20) == "1e+20", f"str(1e20) should be '1e+20', got '{str(1e20)}'"
+assert str(1e-10) == "1e-10", f"str(1e-10) should be '1e-10', got '{str(1e-10)}'"
+# Values below the threshold should still use decimal notation
+assert str(1e15) == "1000000000000000.0", f"str(1e15) should be decimal, got '{str(1e15)}'"
+assert str(1.5) == "1.5", f"str(1.5) should be '1.5', got '{str(1.5)}'"
+assert str(0.0) == "0.0", f"str(0.0) should be '0.0', got '{str(0.0)}'"
+
+print("Float scientific notation formatting tests passed!")
+
 print("All core types and operator tests passed!")

@@ -624,6 +624,15 @@ impl<'a> Lowering<'a> {
                         right: mir::Operand::Constant(mir::Constant::Int(0)),
                     });
                 }
+                Type::Tuple(_) => {
+                    // elem in tuple - use rt_obj_contains (needs boxed element)
+                    let boxed_elem = self.box_primitive_if_needed(left_op, &left_type, mir_func);
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: result_local,
+                        func: mir::RuntimeFunc::ObjContains,
+                        args: vec![right_op, boxed_elem], // (tuple, elem)
+                    });
+                }
                 Type::Class { class_id, .. } => {
                     // Class with __contains__ dunder
                     let contains_func = self

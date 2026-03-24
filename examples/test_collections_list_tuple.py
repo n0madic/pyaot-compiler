@@ -776,4 +776,37 @@ assert mixed_tuple2[-3] == 100, "mixed_tuple2[-3] should be 100"
 
 print("Mixed-type tuple indexing passed")
 
+# ============================================================================
+# Tuple 'in' operator (regression test)
+# ============================================================================
+
+tuple_in_test: tuple[int, int, int, int, int] = (10, 20, 30, 40, 50)
+assert 10 in tuple_in_test, "10 in (10,20,30,40,50) should be True"
+assert 30 in tuple_in_test, "30 in (10,20,30,40,50) should be True"
+assert 50 in tuple_in_test, "50 in (10,20,30,40,50) should be True"
+assert 99 not in tuple_in_test, "99 not in (10,20,30,40,50) should be True"
+assert 0 not in tuple_in_test, "0 not in (10,20,30,40,50) should be True"
+
+tuple_str_in: tuple[str, str, str] = ("a", "b", "c")
+assert "a" in tuple_str_in, "'a' in ('a','b','c') should be True"
+assert "d" not in tuple_str_in, "'d' not in ('a','b','c') should be True"
+
+print("Tuple 'in' operator tests passed!")
+
+# ============================================================================
+# x**2 in list comprehension (regression test)
+# ============================================================================
+
+pow_comp_result: list[int] = [x ** 2 for x in range(6)]
+assert pow_comp_result == [0, 1, 4, 9, 16, 25], f"[x**2 for x in range(6)] failed: {pow_comp_result}"
+
+pow_comp_cube: list[int] = [x ** 3 for x in range(5)]
+assert pow_comp_cube == [0, 1, 8, 27, 64], f"[x**3 for x in range(5)] failed: {pow_comp_cube}"
+
+# Mixed: multiplication and power in same comprehension
+pow_comp_mixed: list[int] = [x * x + x ** 2 for x in range(4)]
+assert pow_comp_mixed == [0, 2, 8, 18], f"[x*x + x**2] failed: {pow_comp_mixed}"
+
+print("x**2 in list comprehension tests passed!")
+
 print("All list and tuple collection tests passed!")

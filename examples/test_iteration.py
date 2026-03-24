@@ -881,4 +881,29 @@ assert iter_combo_result == [3, 4, 5, 6, 7], "chain+islice combo failed"
 
 print("itertools chain/islice tests passed!")
 
+# ============================================================================
+# enumerate(start=N) keyword argument (regression test)
+# ============================================================================
+
+enum_start_result: list[tuple[int, str]] = []
+for i, v in enumerate(["a", "b", "c"], start=1):
+    enum_start_result.append((i, v))
+assert enum_start_result[0] == (1, "a"), f"enumerate start=1 index 0 failed: {enum_start_result[0]}"
+assert enum_start_result[1] == (2, "b"), f"enumerate start=1 index 1 failed: {enum_start_result[1]}"
+assert enum_start_result[2] == (3, "c"), f"enumerate start=1 index 2 failed: {enum_start_result[2]}"
+
+# enumerate with start=0 (default) still works
+enum_default_result: list[tuple[int, str]] = []
+for i, v in enumerate(["x", "y"], start=0):
+    enum_default_result.append((i, v))
+assert enum_default_result[0] == (0, "x"), "enumerate start=0 failed"
+
+# enumerate with start=10
+enum_ten_result: list[int] = []
+for i, v in enumerate(range(3), start=10):
+    enum_ten_result.append(i)
+assert enum_ten_result == [10, 11, 12], f"enumerate start=10 failed: {enum_ten_result}"
+
+print("enumerate(start=N) tests passed!")
+
 print("All iteration and comprehension tests passed!")

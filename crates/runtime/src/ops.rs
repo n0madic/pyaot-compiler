@@ -757,20 +757,68 @@ unsafe fn rt_list_contains_value(list: *mut Obj, value: *mut Obj) -> i8 {
 
 /// Check if tuple contains value using value equality
 unsafe fn rt_tuple_contains_value(tuple: *mut Obj, value: *mut Obj) -> i8 {
-    use crate::object::TupleObj;
+    use crate::object::{BoolObj, IntObj, TupleObj, ELEM_HEAP_OBJ, ELEM_RAW_BOOL, ELEM_RAW_INT};
 
     let tuple_obj = tuple as *mut TupleObj;
     let len = (*tuple_obj).len;
     let data = (*tuple_obj).data.as_ptr();
+    let elem_tag = (*tuple_obj).elem_tag;
 
-    for i in 0..len {
-        let elem = *data.add(i);
-        if rt_obj_eq(elem, value) == 1 {
-            return 1;
+    match elem_tag {
+        ELEM_RAW_INT => {
+            // Elements are raw i64 values — unbox the search value to compare
+            if value.is_null() {
+                return 0;
+            }
+            let search_val = match (*value).header.type_tag {
+                TypeTagKind::Int => (*(value as *mut IntObj)).value,
+                TypeTagKind::Bool => (*(value as *mut BoolObj)).value as i8 as i64,
+                _ => return 0,
+            };
+            for i in 0..len {
+                let elem_raw = *data.add(i) as i64;
+                if elem_raw == search_val {
+                    return 1;
+                }
+            }
+            0
+        }
+        ELEM_RAW_BOOL => {
+            // Elements are raw i8 values cast to pointer
+            if value.is_null() {
+                return 0;
+            }
+            let search_val: i8 = match (*value).header.type_tag {
+                TypeTagKind::Bool => (*(value as *mut BoolObj)).value as i8,
+                TypeTagKind::Int => {
+                    let v = (*(value as *mut IntObj)).value;
+                    if v == 0 {
+                        0
+                    } else {
+                        1
+                    }
+                }
+                _ => return 0,
+            };
+            for i in 0..len {
+                let elem_raw = *data.add(i) as i8;
+                if elem_raw == search_val {
+                    return 1;
+                }
+            }
+            0
+        }
+        ELEM_HEAP_OBJ | _ => {
+            // Elements are *mut Obj pointers — use value equality
+            for i in 0..len {
+                let elem = *data.add(i);
+                if rt_obj_eq(elem, value) == 1 {
+                    return 1;
+                }
+            }
+            0
         }
     }
-
-    0
 }
 
 /// Check truthiness of any value with runtime type dispatch
