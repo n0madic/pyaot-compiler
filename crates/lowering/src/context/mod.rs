@@ -23,7 +23,6 @@ use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, StringInterner, VarId};
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// Key function source for sort/sorted operations
@@ -201,10 +200,9 @@ pub struct Lowering<'a> {
     /// Runtime kwargs dict from **kwargs unpacking (used during resolve_call_args)
     /// Contains (dict_operand, value_type) for extracting kwargs at runtime
     pub(crate) pending_kwargs_from_unpack: Option<(LocalId, Type)>,
-    /// Cache for expression type inference results (cleared per-function)
-    /// Uses RefCell for interior mutability since get_expr_type takes &self
-    pub(crate) expr_type_cache: RefCell<HashMap<hir::ExprId, Type>>,
-    // type_map removed — expr_type_cache serves as the type memoization store
+    /// Memoized expression types — persists across functions (ExprIds are unique per-module).
+    /// Replaces the former RefCell<HashMap> expr_type_cache.
+    pub(crate) expr_types: HashMap<hir::ExprId, Type>,
     /// Storage for mutable default parameter values.
     /// Maps (FuncId, param_index) to global slot ID.
     /// In Python, mutable defaults (list, dict, set, class instances) are evaluated once

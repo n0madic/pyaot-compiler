@@ -16,7 +16,7 @@ impl<'a> Lowering<'a> {
     /// Returns true if the expression is a string add operation, false otherwise.
     /// Operands are collected left-to-right (evaluation order).
     fn collect_str_concat_chain(
-        &self,
+        &mut self,
         expr_id: hir::ExprId,
         hir_module: &hir::Module,
         chain: &mut Vec<hir::ExprId>,

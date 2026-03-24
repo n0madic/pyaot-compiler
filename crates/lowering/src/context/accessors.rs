@@ -423,18 +423,18 @@ impl<'a> Lowering<'a> {
 }
 
 // =============================================================================
-// Expression Type Cache (expr_type_cache)
+// Expression Types (expr_types — memoized, persists across functions)
 // =============================================================================
 
 impl<'a> Lowering<'a> {
-    /// Get a cached expression type.
+    /// Get a memoized expression type.
     pub(crate) fn get_cached_expr_type(&self, expr_id: &hir::ExprId) -> Option<Type> {
-        self.expr_type_cache.borrow().get(expr_id).cloned()
+        self.expr_types.get(expr_id).cloned()
     }
 
-    /// Cache an expression type.
-    pub(crate) fn cache_expr_type(&self, expr_id: hir::ExprId, ty: Type) {
-        self.expr_type_cache.borrow_mut().insert(expr_id, ty);
+    /// Store a memoized expression type.
+    pub(crate) fn cache_expr_type(&mut self, expr_id: hir::ExprId, ty: Type) {
+        self.expr_types.insert(expr_id, ty);
     }
 
 }

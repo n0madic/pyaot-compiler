@@ -11,7 +11,7 @@ use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
     /// Internal type computation (the actual inference logic).
-    pub(crate) fn compute_expr_type(&self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
+    pub(crate) fn compute_expr_type(&mut self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
         match &expr.kind {
             hir::ExprKind::Var(var_id) => self
                 .get_var_type(var_id)

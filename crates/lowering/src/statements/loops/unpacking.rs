@@ -354,7 +354,7 @@ impl<'a> Lowering<'a> {
 
     /// Compute element types for zip() arguments, handling special cases like range()
     fn compute_zip_element_types(
-        &self,
+        &mut self,
         zip_args: &[hir::ExprId],
         hir_module: &hir::Module,
     ) -> Vec<Type> {

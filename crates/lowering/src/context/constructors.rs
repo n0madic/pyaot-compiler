@@ -6,7 +6,6 @@ use pyaot_diagnostics::CompilerWarnings;
 use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::{ClassId, FuncId, StringInterner, VarId};
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 use super::{CrossModuleClassInfo, Lowering};
@@ -70,8 +69,8 @@ impl<'a> Lowering<'a> {
             class_id_offset: 0,
             pending_varargs_from_unpack: None,
             pending_kwargs_from_unpack: None,
-            // Expression type cache (large, cleared per function)
-            expr_type_cache: RefCell::new(HashMap::with_capacity(256)),
+            // Memoized expression types (persists across functions)
+            expr_types: HashMap::with_capacity(256),
             default_value_slots: IndexMap::with_capacity(func_count / 2 + 1),
             // Use a high starting value to avoid collision with regular globals (VarIds)
             next_default_slot: 0x8000_0000,
