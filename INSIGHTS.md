@@ -301,27 +301,29 @@ The GC uses a single `static GC_STATE: OnceLock<Mutex<GcState>>` (`runtime/src/g
 
 ---
 
-## Type Inference is Integrated in Lowering
+## Unified Type System: `type_planning/`
 
-Type inference is performed on-demand during lowering via `compute_expr_type()` in `type_inference.rs`. There is no separate type checking pass — the old `typecheck` crate and `type-infer` crate were both removed.
+All type inference is in one module `crates/lowering/src/type_planning/`:
 
-**Why type inference can't be separated from lowering**: Type inference requires access to lowering's incremental state — `var_types` (updated per-statement), `var_to_func`/`var_to_wrapper` (tracking function references), `LoweredClassInfo` (with vtable slots, 20+ dunder method fields), and `func_return_types` (populated during lambda/generator lowering). An attempt to pre-compute types in a separate crate failed (28/33 test failures) because the separate crate couldn't replicate lowering's exact processing order and context.
+```
+type_planning/
+  mod.rs       — public API: get_type_of_expr_id, get_expr_type, run_type_planning
+  infer.rs     — bottom-up: compute_expr_type(&mut self) → Type (memoized in expr_types)
+  pre_scan.rs  — pre-scan: closure/lambda/decorator discovery before codegen
+  check.rs     — top-down: check_expr_type validates types, reports CompilerWarning::TypeError
+```
 
-**Pre-scan phase**: Before lowering functions, `precompute_closure_capture_types()` (lambda_inference.rs) scans the entire module to discover closures, decorator patterns, and lambda parameter types from map/filter/reduce. This must run before function lowering so that lambda type inference has capture type information.
+**No RefCell** — `compute_expr_type(&mut self)` stores results directly in `expr_types: HashMap<ExprId, Type>`. Memoized types persist across functions (ExprIds are unique per-module).
 
-**On-demand inference**: `get_type_of_expr_id()` computes expression types lazily with memoization (`expr_type_cache`). Each expression type is computed at most once per function.
+**Bidirectional propagation** via `lower_expr_expecting(expr, expected_type, ...)`:
+- Assignment: `x: list[int] = []` → expected = `list[int]`
+- Return: `def f() -> list[int]: return []` → expected = return type
+- Call args: `f([])` where `f(x: list[int])` → expected = param type
+- Defaults: `def f(x: list[int] = [])` → expected = param type
+- Empty containers read `expected_type` to determine elem_tag
 
-**Type checking** (`type_planning.rs`): Check mode validates types and reports errors as `CompilerWarning::TypeError`. Three check points:
-- **Assignment**: `x: int = "str"` → `check_expr_type(value, hint)` reports mismatch
-- **Return**: `def f() -> int: return "str"` → `check_expr_type(value, return_type)` reports mismatch
-- **Function call args**: `f("str")` where `def f(x: int)` → `check_call_args(func, args)` reports mismatch + missing args
-- Python-specific: `int → float` promotion is allowed (not an error)
-- `*args`/`**kwargs` parameters skip type checking (accept any types)
-- Type errors are warnings (non-fatal) — compilation proceeds to catch runtime errors too
-
-**Bidirectional type propagation**: The `expected_type: Option<Type>` field propagates types top-down in five contexts:
-1. **Annotated assignment**: `x: list[int] = []` → `[]` gets `list[int]` (assign.rs)
-2. **Function call arguments**: `f([])` where `f(x: list[int])` → `[]` gets `list[int]` (call_resolution.rs)
-3. **Return statements**: `def f() -> list[int]: return []` → `[]` gets `list[int]` (control_flow.rs)
-4. **Empty containers**: `{}`, `set()`, `dict()` use expected_type from assignment/call/return context (collections.rs, builtins/collections.rs)
-5. **If-expressions**: `x: T = a if cond else b` → both branches see expected_type (automatic via lower_expr)
+**Type checking** at 3 points — reports `CompilerWarning::TypeError`:
+- `x: int = "str"` → assignment mismatch
+- `return "str"` where `-> int` → return mismatch
+- `f("str")` where `def f(x: int)` → arg mismatch + missing arg detection
+- Python `int → float` promotion allowed; `*args`/`**kwargs` skip checking
