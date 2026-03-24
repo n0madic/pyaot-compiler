@@ -940,10 +940,12 @@ impl<'a> Lowering<'a> {
 
                 if then_ty == else_ty {
                     then_ty
-                } else {
-                    // TODO: return Union[then_ty, else_ty] once codegen handles
-                    // Union boxing for IfExpr branches properly
+                } else if then_ty == Type::Any || else_ty == Type::Any {
                     Type::Any
+                } else {
+                    // Codegen (lower_if_expr) already handles boxing for mismatched
+                    // branches — it checks types_differ and boxes primitives.
+                    Type::normalize_union(vec![then_ty, else_ty])
                 }
             }
             hir::ExprKind::StdlibCall { func, .. } => {
