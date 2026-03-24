@@ -60,11 +60,8 @@ impl<'a> Lowering<'a> {
             (Type::Int, Type::Float) | (Type::Bool, Type::Int) | (Type::Bool, Type::Float)
         );
 
-        // Check compatibility (bidirectional: either direction is fine)
-        if !is_python_compatible
-            && !inferred.is_subtype_of(expected)
-            && !expected.is_subtype_of(&inferred)
-        {
+        // Check compatibility: inferred must be a subtype of expected
+        if !is_python_compatible && !inferred.is_subtype_of(expected) {
             self.warnings
                 .add(pyaot_diagnostics::CompilerWarning::TypeError {
                     span: expr.span,
@@ -141,6 +138,23 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
+        }
+
+        // Check for excess positional arguments
+        let has_var_positional = func_def
+            .params
+            .iter()
+            .any(|p| matches!(p.kind, hir::ParamKind::VarPositional));
+        if !has_var_positional && arg_expr_ids.len() > regular_params.len() {
+            self.warnings
+                .add(pyaot_diagnostics::CompilerWarning::TypeError {
+                    span: call_span,
+                    message: format!(
+                        "too many positional arguments: expected at most {}, got {}",
+                        regular_params.len(),
+                        arg_expr_ids.len()
+                    ),
+                });
         }
 
         // Check each positional arg type against param type (skip *args/**kwargs params)

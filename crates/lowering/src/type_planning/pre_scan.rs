@@ -9,6 +9,7 @@ use pyaot_hir as hir;
 use pyaot_types::Type;
 use pyaot_utils::VarId;
 
+use super::infer::extract_iterable_element_type;
 use crate::Lowering;
 
 // =============================================================================
@@ -27,6 +28,8 @@ impl<'a> Lowering<'a> {
     /// Must run before lowering so that `get_var_type` returns the refined type.
     pub(crate) fn refine_empty_container_types(&mut self, hir_module: &hir::Module) {
         // Scan module-level statements
+        self.refine_empty_containers_in_block(&hir_module.module_init_stmts, hir_module);
+        // Scan function bodies
         for func_id in hir_module.functions.iter() {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 self.refine_empty_containers_in_block(&func.body, hir_module);
@@ -87,6 +90,7 @@ impl<'a> Lowering<'a> {
                 }
                 hir::StmtKind::For { body, .. }
                 | hir::StmtKind::ForUnpack { body, .. }
+                | hir::StmtKind::ForUnpackStarred { body, .. }
                 | hir::StmtKind::While { body, .. } => {
                     self.refine_empty_containers_in_block(body, hir_module);
                 }
@@ -102,6 +106,11 @@ impl<'a> Lowering<'a> {
                     }
                     self.refine_empty_containers_in_block(else_block, hir_module);
                     self.refine_empty_containers_in_block(finally_block, hir_module);
+                }
+                hir::StmtKind::Match { cases, .. } => {
+                    for case in cases {
+                        self.refine_empty_containers_in_block(&case.body, hir_module);
+                    }
                 }
                 _ => {}
             }
@@ -184,41 +193,9 @@ impl<'a> Lowering<'a> {
     }
 
     /// Lightweight static type inference for expressions (no mutable state needed).
+    /// Delegates to infer_deep_expr_type with empty param_types.
     fn infer_static_expr_type(&self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
-        match &expr.kind {
-            hir::ExprKind::Int(_) => Type::Int,
-            hir::ExprKind::Float(_) => Type::Float,
-            hir::ExprKind::Bool(_) => Type::Bool,
-            hir::ExprKind::Str(_) => Type::Str,
-            hir::ExprKind::Bytes(_) => Type::Bytes,
-            hir::ExprKind::None => Type::None,
-            hir::ExprKind::Var(var_id) => self
-                .get_var_type(var_id)
-                .cloned()
-                .or_else(|| self.global_var_types.get(var_id).cloned())
-                .unwrap_or(Type::Any),
-            hir::ExprKind::BinOp { op, left, right } => {
-                if matches!(op, hir::BinOp::Div) {
-                    return Type::Float;
-                }
-                let lt = self.infer_static_expr_type(&hir_module.exprs[*left], hir_module);
-                let rt = self.infer_static_expr_type(&hir_module.exprs[*right], hir_module);
-                if lt == Type::Float || rt == Type::Float {
-                    Type::Float
-                } else if lt == Type::Int && rt == Type::Int {
-                    Type::Int
-                } else if lt == Type::Str || rt == Type::Str {
-                    Type::Str
-                } else {
-                    Type::Any
-                }
-            }
-            hir::ExprKind::UnOp {
-                op: hir::UnOp::Neg,
-                operand,
-            } => self.infer_static_expr_type(&hir_module.exprs[*operand], hir_module),
-            _ => expr.ty.clone().unwrap_or(Type::Any),
-        }
+        self.infer_deep_expr_type(expr, hir_module, &IndexMap::new())
     }
 }
 
@@ -323,7 +300,9 @@ impl<'a> Lowering<'a> {
                     self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
                 }
             }
-            hir::StmtKind::For { body, .. } | hir::StmtKind::ForUnpack { body, .. } => {
+            hir::StmtKind::For { body, .. }
+            | hir::StmtKind::ForUnpack { body, .. }
+            | hir::StmtKind::ForUnpackStarred { body, .. } => {
                 for stmt_id in body {
                     self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
                 }
@@ -347,6 +326,19 @@ impl<'a> Lowering<'a> {
                 }
                 for stmt_id in finally_block {
                     self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
+                }
+            }
+            hir::StmtKind::Match { subject, cases } => {
+                let subj_expr = &hir_module.exprs[*subject];
+                self.scan_expr_for_closures(subj_expr, hir_module, var_types);
+                for case in cases {
+                    if let Some(guard) = &case.guard {
+                        let guard_expr = &hir_module.exprs[*guard];
+                        self.scan_expr_for_closures(guard_expr, hir_module, var_types);
+                    }
+                    for stmt_id in &case.body {
+                        self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
+                    }
                 }
             }
             hir::StmtKind::Expr(expr_id) => {
@@ -417,14 +409,7 @@ impl<'a> Lowering<'a> {
                     let iterable_arg = &hir_module.exprs[args[1]];
                     let iterable_type =
                         self.get_expr_type_static(iterable_arg, hir_module, var_types);
-                    let elem_type = match &iterable_type {
-                        Type::List(elem) => (**elem).clone(),
-                        Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-                        Type::Set(elem) => (**elem).clone(),
-                        Type::Str => Type::Str,
-                        Type::Iterator(elem) => (**elem).clone(),
-                        _ => Type::Any,
-                    };
+                    let elem_type = extract_iterable_element_type(&iterable_type);
                     if !matches!(elem_type, Type::Any) {
                         let func_info = match &func_arg.kind {
                             hir::ExprKind::FuncRef(func_id) => Some((*func_id, vec![])),
@@ -462,13 +447,7 @@ impl<'a> Lowering<'a> {
                     let iterable_arg = &hir_module.exprs[args[1]];
                     let iterable_type =
                         self.get_expr_type_static(iterable_arg, hir_module, var_types);
-                    let elem_type = match &iterable_type {
-                        Type::List(elem) => (**elem).clone(),
-                        Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-                        Type::Set(elem) => (**elem).clone(),
-                        Type::Str => Type::Str,
-                        _ => Type::Any,
-                    };
+                    let elem_type = extract_iterable_element_type(&iterable_type);
                     if !matches!(elem_type, Type::Any) {
                         // Extract func_id and captures from FuncRef or Closure
                         let func_info = match &func_arg.kind {
@@ -520,15 +499,7 @@ impl<'a> Lowering<'a> {
                         let iterable_arg = &hir_module.exprs[args[0]];
                         let iterable_type =
                             self.get_expr_type_static(iterable_arg, hir_module, var_types);
-                        let elem_type = match &iterable_type {
-                            Type::List(elem) => (**elem).clone(),
-                            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-                            Type::Set(elem) => (**elem).clone(),
-                            Type::Dict(key, _) => (**key).clone(),
-                            Type::Str => Type::Str,
-                            Type::Iterator(elem) => (**elem).clone(),
-                            _ => Type::Any,
-                        };
+                        let elem_type = extract_iterable_element_type(&iterable_type);
                         if !matches!(elem_type, Type::Any) {
                             let func_info = match &key_expr.kind {
                                 hir::ExprKind::FuncRef(func_id) => Some((*func_id, vec![])),
@@ -570,7 +541,22 @@ impl<'a> Lowering<'a> {
                     self.scan_expr_for_closures(kw_expr, hir_module, var_types);
                 }
             }
-            hir::ExprKind::BinOp { left, right, .. } => {
+            hir::ExprKind::MethodCall {
+                obj, args, kwargs, ..
+            } => {
+                let obj_expr = &hir_module.exprs[*obj];
+                self.scan_expr_for_closures(obj_expr, hir_module, var_types);
+                for arg_id in args {
+                    let arg_expr = &hir_module.exprs[*arg_id];
+                    self.scan_expr_for_closures(arg_expr, hir_module, var_types);
+                }
+                for kw in kwargs {
+                    let kw_expr = &hir_module.exprs[kw.value];
+                    self.scan_expr_for_closures(kw_expr, hir_module, var_types);
+                }
+            }
+            hir::ExprKind::BinOp { left, right, .. }
+            | hir::ExprKind::LogicalOp { left, right, .. } => {
                 let left_expr = &hir_module.exprs[*left];
                 let right_expr = &hir_module.exprs[*right];
                 self.scan_expr_for_closures(left_expr, hir_module, var_types);
@@ -586,10 +572,20 @@ impl<'a> Lowering<'a> {
                 self.scan_expr_for_closures(left_expr, hir_module, var_types);
                 self.scan_expr_for_closures(right_expr, hir_module, var_types);
             }
-            hir::ExprKind::List(elements) | hir::ExprKind::Tuple(elements) => {
+            hir::ExprKind::List(elements)
+            | hir::ExprKind::Tuple(elements)
+            | hir::ExprKind::Set(elements) => {
                 for elem_id in elements {
                     let elem_expr = &hir_module.exprs[*elem_id];
                     self.scan_expr_for_closures(elem_expr, hir_module, var_types);
+                }
+            }
+            hir::ExprKind::Dict(pairs) => {
+                for (key_id, val_id) in pairs {
+                    let key_expr = &hir_module.exprs[*key_id];
+                    let val_expr = &hir_module.exprs[*val_id];
+                    self.scan_expr_for_closures(key_expr, hir_module, var_types);
+                    self.scan_expr_for_closures(val_expr, hir_module, var_types);
                 }
             }
             hir::ExprKind::Index { obj, index } => {
@@ -616,30 +612,14 @@ impl<'a> Lowering<'a> {
     }
 
     /// Get expression type using only static information (for pre-processing).
+    /// Delegates to infer_deep_expr_type with var_types as param_types override.
     fn get_expr_type_static(
         &self,
         expr: &hir::Expr,
         hir_module: &hir::Module,
         var_types: &IndexMap<VarId, Type>,
     ) -> Type {
-        match &expr.kind {
-            hir::ExprKind::Int(_) => Type::Int,
-            hir::ExprKind::Float(_) => Type::Float,
-            hir::ExprKind::Bool(_) => Type::Bool,
-            hir::ExprKind::Str(_) => Type::Str,
-            hir::ExprKind::None => Type::None,
-            hir::ExprKind::Var(var_id) => var_types.get(var_id).cloned().unwrap_or(Type::Any),
-            hir::ExprKind::List(elements) => {
-                if elements.is_empty() {
-                    Type::List(Box::new(Type::Any))
-                } else {
-                    let first_expr = &hir_module.exprs[elements[0]];
-                    let elem_ty = self.get_expr_type_static(first_expr, hir_module, var_types);
-                    Type::List(Box::new(elem_ty))
-                }
-            }
-            _ => Type::Any,
-        }
+        self.infer_deep_expr_type(expr, hir_module, var_types)
     }
 
     // ==================== Lambda Parameter Type Inference ====================
@@ -745,21 +725,8 @@ impl<'a> Lowering<'a> {
                         }
                     }
                 } else {
-                    // Default to Int for arithmetic (Python semantics: + on untyped params is Int)
-                    if let hir::ExprKind::Var(var_id) = &left_expr.kind {
-                        if let Some(&idx) = var_to_index.get(var_id) {
-                            if inferred_types[idx].is_none() {
-                                inferred_types[idx] = Some(Type::Int);
-                            }
-                        }
-                    }
-                    if let hir::ExprKind::Var(var_id) = &right_expr.kind {
-                        if let Some(&idx) = var_to_index.get(var_id) {
-                            if inferred_types[idx].is_none() {
-                                inferred_types[idx] = Some(Type::Int);
-                            }
-                        }
-                    }
+                    // No literal context — leave as None (becomes Type::Any)
+                    // Cannot assume Int: could be string concatenation, float arithmetic, etc.
                 }
 
                 // Recurse into subexpressions
@@ -921,64 +888,14 @@ impl<'a> Lowering<'a> {
         Type::None
     }
 
-    /// Infer the type of an expression for return type inference, using known param types
+    /// Infer the type of an expression for return type inference, using known param types.
+    /// Delegates to infer_deep_expr_type for comprehensive inference.
     fn infer_expr_return_type_with_params(
         &self,
         expr: &hir::Expr,
         hir_module: &hir::Module,
         param_types: &IndexMap<VarId, Type>,
     ) -> Type {
-        match &expr.kind {
-            hir::ExprKind::Int(_) => Type::Int,
-            hir::ExprKind::Float(_) => Type::Float,
-            hir::ExprKind::Bool(_) => Type::Bool,
-            hir::ExprKind::Str(_) => Type::Str,
-            hir::ExprKind::None => Type::None,
-            hir::ExprKind::BinOp { left, right, op } => {
-                let left_expr = &hir_module.exprs[*left];
-                let right_expr = &hir_module.exprs[*right];
-                let left_ty =
-                    self.infer_expr_return_type_with_params(left_expr, hir_module, param_types);
-                let right_ty =
-                    self.infer_expr_return_type_with_params(right_expr, hir_module, param_types);
-
-                // String concatenation
-                if left_ty == Type::Str || right_ty == Type::Str {
-                    return Type::Str;
-                }
-
-                // Float division always returns float
-                if matches!(op, hir::BinOp::Div) {
-                    return Type::Float;
-                }
-
-                // Float arithmetic
-                if left_ty == Type::Float || right_ty == Type::Float {
-                    return Type::Float;
-                }
-
-                // Int arithmetic
-                Type::Int
-            }
-            hir::ExprKind::Compare { .. } => Type::Bool,
-            hir::ExprKind::LogicalOp { .. } => Type::Bool,
-            hir::ExprKind::UnOp { op, operand } => match op {
-                hir::UnOp::Not => Type::Bool,
-                hir::UnOp::Neg => {
-                    let operand_expr = &hir_module.exprs[*operand];
-                    self.infer_expr_return_type_with_params(operand_expr, hir_module, param_types)
-                }
-                hir::UnOp::Invert => Type::Int, // Bitwise NOT always returns Int
-            },
-            hir::ExprKind::Var(var_id) => {
-                // Check param types first, then var_types
-                param_types
-                    .get(var_id)
-                    .cloned()
-                    .or_else(|| self.get_var_type(var_id).cloned())
-                    .unwrap_or(Type::Any)
-            }
-            _ => Type::Any,
-        }
+        self.infer_deep_expr_type(expr, hir_module, param_types)
     }
 }

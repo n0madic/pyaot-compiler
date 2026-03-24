@@ -11,7 +11,7 @@ mod pre_scan;
 
 use indexmap::IndexMap;
 use pyaot_hir as hir;
-use pyaot_stdlib_defs::lookup_object_field;
+use pyaot_stdlib_defs::{lookup_object_field, lookup_object_type};
 use pyaot_types::{typespec_to_type, Type};
 use pyaot_utils::VarId;
 
@@ -57,19 +57,29 @@ impl<'a> Lowering<'a> {
     /// can look up return types in `func_return_types`.
     fn infer_all_return_types(&mut self, hir_module: &hir::Module) {
         // Collect func_ids to avoid borrow issues
-        let func_ids: Vec<_> = hir_module.functions.clone();
+        let func_ids = hir_module.functions.to_vec();
 
+        // Pass 1: Collect explicitly annotated return types so they are available
+        // for cross-function inference (fixes forward-reference ordering)
         for func_id in &func_ids {
             if let Some(func) = hir_module.func_defs.get(func_id) {
-                // Skip functions that already have explicit return type annotations
                 let has_explicit =
                     func.return_type.is_some() && func.return_type.as_ref() != Some(&Type::None);
                 if has_explicit {
                     self.func_return_types
                         .insert(*func_id, func.return_type.clone().unwrap());
-                    continue;
                 }
+            }
+        }
 
+        // Pass 2: Infer return types for unannotated functions
+        for func_id in &func_ids {
+            // Skip functions already resolved in pass 1
+            if self.func_return_types.contains_key(func_id) {
+                continue;
+            }
+
+            if let Some(func) = hir_module.func_defs.get(func_id) {
                 // Skip empty functions
                 if func.body.is_empty() {
                     continue;
@@ -127,11 +137,16 @@ impl<'a> Lowering<'a> {
         } else if return_types.len() == 1 {
             return_types.into_iter().next().unwrap()
         } else {
-            // Multiple return types — take first concrete one
-            return_types
+            // Multiple return types — union concrete types
+            let concrete: Vec<Type> = return_types
                 .into_iter()
-                .find(|t| *t != Type::Any && *t != Type::None)
-                .unwrap_or(Type::None)
+                .filter(|t| *t != Type::Any)
+                .collect();
+            if concrete.is_empty() {
+                Type::Any
+            } else {
+                Type::normalize_union(concrete)
+            }
         }
     }
 
@@ -167,6 +182,7 @@ impl<'a> Lowering<'a> {
             }
             hir::StmtKind::For { body, .. }
             | hir::StmtKind::ForUnpack { body, .. }
+            | hir::StmtKind::ForUnpackStarred { body, .. }
             | hir::StmtKind::While { body, .. } => {
                 for s in body {
                     self.collect_return_types(*s, module, param_types, return_types);
@@ -191,6 +207,13 @@ impl<'a> Lowering<'a> {
                 }
                 for s in finally_block {
                     self.collect_return_types(*s, module, param_types, return_types);
+                }
+            }
+            hir::StmtKind::Match { cases, .. } => {
+                for case in cases {
+                    for s in &case.body {
+                        self.collect_return_types(*s, module, param_types, return_types);
+                    }
                 }
             }
             _ => {}
@@ -229,6 +252,30 @@ impl<'a> Lowering<'a> {
                 let right_ty =
                     self.infer_deep_expr_type(&module.exprs[*right], module, param_types);
 
+                // Class types with arithmetic dunders return the class type
+                if matches!(left_ty, Type::Class { .. }) {
+                    return left_ty;
+                }
+                // Set operations (|, &, -, ^) return Set type
+                if let Type::Set(elem_ty) = &left_ty {
+                    if matches!(
+                        op,
+                        hir::BinOp::BitOr
+                            | hir::BinOp::BitAnd
+                            | hir::BinOp::Sub
+                            | hir::BinOp::BitXor
+                    ) {
+                        return Type::Set(elem_ty.clone());
+                    }
+                }
+                // List concatenation (+) returns List type
+                if matches!(left_ty, Type::List(_)) && matches!(op, hir::BinOp::Add) {
+                    return left_ty;
+                }
+                // Dict merge (|) returns Dict type
+                if matches!(left_ty, Type::Dict(_, _)) && matches!(op, hir::BinOp::BitOr) {
+                    return left_ty;
+                }
                 if matches!(op, hir::BinOp::Div) {
                     return Type::Float;
                 }
@@ -240,9 +287,6 @@ impl<'a> Lowering<'a> {
                 }
                 if left_ty == Type::Int && right_ty == Type::Int {
                     return Type::Int;
-                }
-                if matches!(left_ty, Type::List(_)) && matches!(op, hir::BinOp::Add) {
-                    return left_ty;
                 }
                 Type::Any
             }
@@ -448,8 +492,62 @@ impl<'a> Lowering<'a> {
                         "get" | "pop" | "setdefault" => (**val_ty).clone(),
                         "keys" => Type::List(key_ty.clone()),
                         "values" => Type::List(val_ty.clone()),
+                        "items" => {
+                            let tuple_ty =
+                                Type::Tuple(vec![(**key_ty).clone(), (**val_ty).clone()]);
+                            Type::List(Box::new(tuple_ty))
+                        }
+                        "popitem" => Type::Tuple(vec![(**key_ty).clone(), (**val_ty).clone()]),
+                        "clear" | "update" => Type::None,
                         _ => Type::Any,
                     },
+                    Type::Set(elem_ty) => match method_name {
+                        "copy"
+                        | "union"
+                        | "intersection"
+                        | "difference"
+                        | "symmetric_difference" => Type::Set(elem_ty.clone()),
+                        "add" | "remove" | "discard" | "clear" => Type::None,
+                        "issubset" | "issuperset" | "isdisjoint" => Type::Bool,
+                        _ => Type::Any,
+                    },
+                    Type::File => match method_name {
+                        "read" | "readline" => Type::Str,
+                        "readlines" => Type::List(Box::new(Type::Str)),
+                        "write" => Type::Int,
+                        "close" | "flush" => Type::None,
+                        _ => Type::Any,
+                    },
+                    Type::Class { class_id, .. } => {
+                        if let Some(info) = self.class_info.get(class_id) {
+                            let method_maps = [
+                                &info.method_funcs,
+                                &info.class_methods,
+                                &info.static_methods,
+                            ];
+                            for methods in method_maps {
+                                if let Some(&method_func_id) = methods.get(method) {
+                                    if let Some(ret_ty) =
+                                        self.func_return_types.get(&method_func_id)
+                                    {
+                                        return ret_ty.clone();
+                                    }
+                                    if let Some(func_def) = module.func_defs.get(&method_func_id) {
+                                        return func_def.return_type.clone().unwrap_or(Type::None);
+                                    }
+                                }
+                            }
+                        }
+                        Type::Any
+                    }
+                    Type::RuntimeObject(type_tag) => {
+                        if let Some(obj_def) = lookup_object_type(*type_tag) {
+                            if let Some(method_def) = obj_def.get_method(method_name) {
+                                return typespec_to_type(&method_def.return_type);
+                            }
+                        }
+                        Type::Any
+                    }
                     _ => Type::Any,
                 }
             }
