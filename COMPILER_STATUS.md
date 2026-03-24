@@ -21,7 +21,7 @@ High-level IR (HIR) - Desugared Python with types
     ↓
 [Semantic Analysis] (placeholder)
     ↓
-[Type Checker] (placeholder)
+[Type Inference] (integrated in lowering)
     ↓
 [HIR → MIR Lowering]
     ↓

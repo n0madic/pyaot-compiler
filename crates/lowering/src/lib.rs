@@ -8,11 +8,10 @@ mod context;
 mod exceptions;
 mod expressions;
 mod generators;
-mod lambda_inference;
 mod narrowing;
 mod runtime_selector;
 mod statements;
-mod type_inference;
+mod type_planning;
 mod utils;
 
 pub use context::{CrossModuleClassInfo, FuncOrBuiltin, LoweredClassInfo, Lowering};

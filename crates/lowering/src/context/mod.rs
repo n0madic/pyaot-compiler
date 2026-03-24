@@ -204,6 +204,7 @@ pub struct Lowering<'a> {
     /// Cache for expression type inference results (cleared per-function)
     /// Uses RefCell for interior mutability since get_expr_type takes &self
     pub(crate) expr_type_cache: RefCell<HashMap<hir::ExprId, Type>>,
+    // type_map removed — expr_type_cache serves as the type memoization store
     /// Storage for mutable default parameter values.
     /// Maps (FuncId, param_index) to global slot ID.
     /// In Python, mutable defaults (list, dict, set, class instances) are evaluated once

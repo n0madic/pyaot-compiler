@@ -249,6 +249,11 @@ impl<'a> Lowering<'a> {
             _ => {}
         }
 
+        // Type check: validate RHS type against type hint (if present)
+        if let Some(ref hint) = type_hint {
+            self.check_expr_type(value, hint, hir_module);
+        }
+
         // Priority: explicit type hint > existing variable type > inferred from RHS
         // For reassignments to existing variables (especially Union types),
         // we need to use the variable's original type, not the RHS type

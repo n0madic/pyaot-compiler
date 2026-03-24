@@ -16,7 +16,7 @@
 | `runtime` | Runtime library (staticlib) | `gc.rs`, `object.rs`, collections, stdlib |
 | `utils` | IDs, string interning | `ids.rs`, `interner.rs` |
 | `semantics` | Name resolution, control flow | `lib.rs` |
-| `typecheck` | Type checking | `lib.rs` |
+| `lowering` (type_inference) | Type inference during HIR→MIR lowering | `type_inference.rs`, `lambda_inference.rs` |
 | `diagnostics` | Error reporting | `lib.rs` |
 
 ## Runtime Module Structure

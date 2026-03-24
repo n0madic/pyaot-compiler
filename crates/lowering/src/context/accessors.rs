@@ -436,6 +436,7 @@ impl<'a> Lowering<'a> {
     pub(crate) fn cache_expr_type(&self, expr_id: hir::ExprId, ty: Type) {
         self.expr_type_cache.borrow_mut().insert(expr_id, ty);
     }
+
 }
 
 // =============================================================================

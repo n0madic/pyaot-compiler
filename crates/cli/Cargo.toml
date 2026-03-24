@@ -18,7 +18,6 @@ pyaot-frontend-python = { path = "../frontend-python" }
 pyaot-hir = { path = "../hir" }
 pyaot-types = { path = "../types" }
 pyaot-semantics = { path = "../semantics" }
-pyaot-typecheck = { path = "../typecheck" }
 pyaot-lowering = { path = "../lowering" }
 pyaot-mir = { path = "../mir" }
 pyaot-optimizer = { path = "../optimizer" }

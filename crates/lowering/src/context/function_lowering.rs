@@ -39,14 +39,11 @@ impl<'a> Lowering<'a> {
         // once at function definition time and shared across all calls.
         self.scan_mutable_defaults(hir_module);
 
-        // Third pass: pre-compute closure capture types
-        self.precompute_closure_capture_types(hir_module);
+        // Phase 1: Type Planning — pre-scan + compute types for all expressions
+        // Fills type_map, closure_capture_types, lambda_param_type_hints, func_return_types
+        self.run_type_planning(hir_module);
 
-        // Pass 3.5: scan for decorated functions in module init
-        // This must happen before lowering any functions since other functions may call decorated functions
-        self.process_module_decorated_functions(hir_module);
-
-        // Fourth pass: lower functions
+        // Phase 2: Code Generation — lower functions using type_map
         for func_id in &hir_module.functions {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 if func.is_generator {
@@ -433,7 +430,7 @@ impl<'a> Lowering<'a> {
     /// Process module init for decorated functions (module-level wrappers).
     /// This must run before lowering any functions since other functions may call decorated functions.
     /// The decorator pattern produces: var = decorator(FuncRef(func))
-    fn process_module_decorated_functions(&mut self, hir_module: &hir::Module) {
+    pub(crate) fn process_module_decorated_functions(&mut self, hir_module: &hir::Module) {
         // Find the module init function (name is __pyaot_module_init__)
         let init_func = hir_module
             .func_defs

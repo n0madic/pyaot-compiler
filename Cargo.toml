@@ -8,7 +8,6 @@ members = [
     "crates/semantics",
     "crates/stdlib-defs",
     "crates/types",
-    "crates/typecheck",
     "crates/mir",
     "crates/lowering",
     "crates/optimizer",

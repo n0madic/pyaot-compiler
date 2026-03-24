@@ -298,3 +298,30 @@ The GC uses a single `static GC_STATE: OnceLock<Mutex<GcState>>` (`runtime/src/g
 **Map iterator boxing flag**: The map callback ABI is `fn(*mut Obj) -> *mut Obj` for all callbacks. User-defined functions compiled by Cranelift receive raw native types (i64 for int), so raw int elements from `ELEM_RAW_INT` lists pass through correctly. But builtin functions (like `str`, `int`) genuinely expect `*mut Obj` pointers. To distinguish, the compiler sets bit 7 of `capture_count` in `MapIterObj` (0x80 flag) for builtins, causing `iter_next_map` to box raw elements via `box_if_raw_int_iterator` before calling the callback. See `lowering/src/expressions/builtins/iteration.rs` and `runtime/src/iterator/next.rs`.
 
 **Current safety**: The project is single-threaded by design (no async/await, no threading module). The mutex is uncontended and adds negligible overhead. But any future work on parallelism must address the GC architecture first.
+
+---
+
+## Type Inference is Integrated in Lowering
+
+Type inference is performed on-demand during lowering via `compute_expr_type()` in `type_inference.rs`. There is no separate type checking pass — the old `typecheck` crate and `type-infer` crate were both removed.
+
+**Why type inference can't be separated from lowering**: Type inference requires access to lowering's incremental state — `var_types` (updated per-statement), `var_to_func`/`var_to_wrapper` (tracking function references), `LoweredClassInfo` (with vtable slots, 20+ dunder method fields), and `func_return_types` (populated during lambda/generator lowering). An attempt to pre-compute types in a separate crate failed (28/33 test failures) because the separate crate couldn't replicate lowering's exact processing order and context.
+
+**Pre-scan phase**: Before lowering functions, `precompute_closure_capture_types()` (lambda_inference.rs) scans the entire module to discover closures, decorator patterns, and lambda parameter types from map/filter/reduce. This must run before function lowering so that lambda type inference has capture type information.
+
+**On-demand inference**: `get_type_of_expr_id()` computes expression types lazily with memoization (`expr_type_cache`). Each expression type is computed at most once per function.
+
+**Type checking** (`type_planning.rs`): Check mode validates types and reports errors as `CompilerWarning::TypeError`. Three check points:
+- **Assignment**: `x: int = "str"` → `check_expr_type(value, hint)` reports mismatch
+- **Return**: `def f() -> int: return "str"` → `check_expr_type(value, return_type)` reports mismatch
+- **Function call args**: `f("str")` where `def f(x: int)` → `check_call_args(func, args)` reports mismatch + missing args
+- Python-specific: `int → float` promotion is allowed (not an error)
+- `*args`/`**kwargs` parameters skip type checking (accept any types)
+- Type errors are warnings (non-fatal) — compilation proceeds to catch runtime errors too
+
+**Bidirectional type propagation**: The `expected_type: Option<Type>` field propagates types top-down in five contexts:
+1. **Annotated assignment**: `x: list[int] = []` → `[]` gets `list[int]` (assign.rs)
+2. **Function call arguments**: `f([])` where `f(x: list[int])` → `[]` gets `list[int]` (call_resolution.rs)
+3. **Return statements**: `def f() -> list[int]: return []` → `[]` gets `list[int]` (control_flow.rs)
+4. **Empty containers**: `{}`, `set()`, `dict()` use expected_type from assignment/call/return context (collections.rs, builtins/collections.rs)
+5. **If-expressions**: `x: T = a if cond else b` → both branches see expected_type (automatic via lower_expr)

@@ -112,8 +112,14 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        // Create result local with Set type
-        let result_local = self.alloc_and_add_local(Type::Set(Box::new(Type::Any)), mir_func);
+        // Bidirectional: use expected_type for empty set() calls
+        let set_elem_type = if let Some(Type::Set(ref expected_elem)) = self.expected_type {
+            (**expected_elem).clone()
+        } else {
+            Type::Any
+        };
+        let result_local =
+            self.alloc_and_add_local(Type::Set(Box::new(set_elem_type)), mir_func);
 
         if args.is_empty() {
             // set() - create empty set
@@ -573,9 +579,15 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        // Create result local with Dict type
+        // Bidirectional: use expected_type for empty dict() calls
+        let (dict_key_type, dict_val_type) =
+            if let Some(Type::Dict(ref ek, ref ev)) = self.expected_type {
+                ((**ek).clone(), (**ev).clone())
+            } else {
+                (Type::Any, Type::Any)
+            };
         let result_local = self.alloc_and_add_local(
-            Type::Dict(Box::new(Type::Any), Box::new(Type::Any)),
+            Type::Dict(Box::new(dict_key_type), Box::new(dict_val_type)),
             mir_func,
         );
 

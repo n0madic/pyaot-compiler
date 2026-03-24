@@ -181,13 +181,7 @@ impl MirMerger {
                 Report::new(e).with_source_code(NamedSource::new(&source_name, source_code.clone()))
             })?;
 
-            // Type checking
-            let mut type_checker = pyaot_typecheck::TypeChecker::new(&parsed.interner);
-            type_checker.check_module(&parsed.hir).map_err(|e| {
-                Report::new(e).with_source_code(NamedSource::new(&source_name, source_code.clone()))
-            })?;
-
-            // Lower to MIR with module exports
+            // Lower to MIR with module exports (type inference runs inside lower_module)
             let func_count = parsed.hir.functions.len();
             let class_count = parsed.hir.class_defs.len();
             let mut lowering = pyaot_lowering::Lowering::new_with_capacity(

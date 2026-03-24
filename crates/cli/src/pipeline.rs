@@ -28,16 +28,7 @@ pub fn compile_single_module(
         Report::new(e).with_source_code(NamedSource::new(&source_name, source_code.clone()))
     })?;
 
-    // Type checking
-    if verbose {
-        println!("Type checking...");
-    }
-    let mut type_checker = pyaot_typecheck::TypeChecker::new(&parsed.interner);
-    type_checker.check_module(&parsed.hir).map_err(|e| {
-        Report::new(e).with_source_code(NamedSource::new(&source_name, source_code.clone()))
-    })?;
-
-    // Lower to MIR
+    // Lower to MIR (includes type inference + codegen in one pass)
     if verbose {
         println!("Lowering to MIR...");
     }
@@ -49,7 +40,7 @@ pub fn compile_single_module(
         Report::new(e).with_source_code(NamedSource::new(&source_name, source_code.clone()))
     })?;
 
-    // Emit any warnings collected during lowering
+    // Emit all warnings (type errors are warnings, not fatal)
     if !warnings.is_empty() {
         warnings.emit_all(&source_name, &source_code);
     }

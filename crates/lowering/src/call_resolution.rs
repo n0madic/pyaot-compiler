@@ -71,12 +71,25 @@ impl<'a> Lowering<'a> {
     ) -> Result<Vec<mir::Operand>> {
         let mut all_positional = Vec::new();
 
+        let mut positional_index = 0usize;
         for arg in positional {
             match arg {
                 ExpandedArg::Regular(expr_id) => {
                     let arg_expr = &hir_module.exprs[*expr_id];
+
+                    // Bidirectional: propagate parameter type into argument expression
+                    let prev_expected = self.expected_type.take();
+                    if let Some(param) = params.regular.get(positional_index) {
+                        if let Some(ref param_ty) = param.ty {
+                            self.expected_type = Some(param_ty.clone());
+                        }
+                    }
+
                     let operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
+                    self.expected_type = prev_expected;
+
                     all_positional.push(operand);
+                    positional_index += 1;
                 }
                 ExpandedArg::RuntimeUnpackTuple(expr_id) => {
                     self.lower_runtime_tuple_unpack(

@@ -208,7 +208,19 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let dict_type = self.get_expr_type(expr, hir_module);
+        let mut dict_type = self.get_expr_type(expr, hir_module);
+
+        // Bidirectional: for empty dicts, use expected_type from context
+        if pairs.is_empty() {
+            if let Type::Dict(ref key_ty, ref val_ty) = dict_type {
+                if **key_ty == Type::Any && **val_ty == Type::Any {
+                    if let Some(Type::Dict(ref ek, ref ev)) = self.expected_type {
+                        dict_type = Type::Dict(ek.clone(), ev.clone());
+                    }
+                }
+            }
+        }
+
         let result_local = self.alloc_and_add_local(dict_type.clone(), mir_func);
 
         // Create dict with capacity
@@ -257,7 +269,19 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let set_type = self.get_expr_type(expr, hir_module);
+        let mut set_type = self.get_expr_type(expr, hir_module);
+
+        // Bidirectional: for empty sets, use expected_type from context
+        if elements.is_empty() {
+            if let Type::Set(ref elem_ty) = set_type {
+                if **elem_ty == Type::Any {
+                    if let Some(Type::Set(ref expected_elem)) = self.expected_type {
+                        set_type = Type::Set(expected_elem.clone());
+                    }
+                }
+            }
+        }
+
         let result_local = self.alloc_and_add_local(set_type.clone(), mir_func);
 
         // Create set with capacity

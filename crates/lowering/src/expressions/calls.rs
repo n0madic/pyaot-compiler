@@ -26,22 +26,49 @@ pub(crate) enum ExpandedArg {
 }
 
 impl<'a> Lowering<'a> {
-    /// Lower expanded call arguments to MIR operands, handling runtime tuple unpacking
-    fn lower_expanded_args(
+    /// Lower expanded call arguments to MIR operands, handling runtime tuple unpacking.
+    /// If `param_types` is provided, parameter types are propagated into argument
+    /// expressions via `expected_type` (bidirectional type inference).
+    pub(crate) fn lower_expanded_args(
         &mut self,
         expanded_args: &[ExpandedArg],
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<Vec<mir::Operand>> {
+        self.lower_expanded_args_with_params(expanded_args, None, hir_module, mir_func)
+    }
+
+    /// Lower expanded call arguments with optional parameter type propagation.
+    fn lower_expanded_args_with_params(
+        &mut self,
+        expanded_args: &[ExpandedArg],
+        param_types: Option<&[hir::Param]>,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<Vec<mir::Operand>> {
         let mut operands = Vec::new();
+        let mut positional_index = 0usize;
 
         for arg in expanded_args {
             match arg {
                 ExpandedArg::Regular(expr_id) => {
-                    // Regular argument - lower normally
                     let arg_expr = &hir_module.exprs[*expr_id];
+
+                    // Bidirectional: propagate parameter type into argument expression
+                    let prev_expected = self.expected_type.take();
+                    if let Some(params) = param_types {
+                        if let Some(param) = params.get(positional_index) {
+                            if let Some(ref param_ty) = param.ty {
+                                self.expected_type = Some(param_ty.clone());
+                            }
+                        }
+                    }
+
                     let operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
+                    self.expected_type = prev_expected;
+
                     operands.push(operand);
+                    positional_index += 1;
                 }
                 ExpandedArg::RuntimeUnpackTuple(expr_id) => {
                     // Runtime tuple unpacking - extract each element
@@ -443,6 +470,19 @@ impl<'a> Lowering<'a> {
         }
 
         if let hir::ExprKind::FuncRef(func_id) = &func_expr.kind {
+            // Type check: validate arg count and types against function signature
+            let regular_arg_ids: Vec<hir::ExprId> = args
+                .iter()
+                .filter_map(|a| {
+                    if let crate::expressions::calls::ExpandedArg::Regular(id) = a {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            self.check_call_args(func_id, &regular_arg_ids, hir_module);
+
             // Get function definition to access parameter names and defaults
             let func_def = hir_module.func_defs.get(func_id);
 

@@ -1,10 +1,7 @@
-//! Type inference for HIR expressions
+//! Infer mode: bottom-up type synthesis
 //!
-//! This module provides type inference for HIR expressions with memoization.
-//! The `get_type_of_expr_id` method is the cached entry point that should be used
-//! when an ExprId is available. For cases where only an expression reference is
-//! available, `get_expr_type` can be used directly (it still benefits from caching
-//! on recursive calls).
+//! Contains `compute_expr_type()` — the core expression type inference.
+//! Moved from type_inference.rs.
 
 use pyaot_hir as hir;
 use pyaot_stdlib_defs::{lookup_object_field, lookup_object_type, ALL_OBJECT_TYPES};
@@ -13,38 +10,8 @@ use pyaot_types::{typespec_to_type, Type};
 use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
-    /// Get the type of an expression by its ID (cached).
-    ///
-    /// This is the preferred entry point when an ExprId is available,
-    /// as it leverages memoization to avoid redundant type computations.
-    pub(crate) fn get_type_of_expr_id(
-        &self,
-        expr_id: hir::ExprId,
-        hir_module: &hir::Module,
-    ) -> Type {
-        // Check cache first
-        if let Some(cached) = self.get_cached_expr_type(&expr_id) {
-            return cached;
-        }
-
-        // Compute type and cache it
-        let expr = &hir_module.exprs[expr_id];
-        let result = self.compute_expr_type(expr, hir_module);
-
-        self.cache_expr_type(expr_id, result.clone());
-        result
-    }
-
-    /// Get the effective type of an expression, considering tracked var_types.
-    ///
-    /// This method computes the type without caching at the top level.
-    /// Use `get_type_of_expr_id` when an ExprId is available for better performance.
-    pub(crate) fn get_expr_type(&self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
-        self.compute_expr_type(expr, hir_module)
-    }
-
     /// Internal type computation (the actual inference logic).
-    fn compute_expr_type(&self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
+    pub(crate) fn compute_expr_type(&self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
         match &expr.kind {
             hir::ExprKind::Var(var_id) => self
                 .get_var_type(var_id)
@@ -1013,5 +980,20 @@ impl<'a> Lowering<'a> {
             }
             _ => expr.ty.clone().unwrap_or(Type::Any),
         }
+    }
+}
+
+/// Extract the element type from an iterable type.
+pub(crate) fn extract_iterable_element_type(ty: &Type) -> Type {
+    match ty {
+        Type::List(elem) => (**elem).clone(),
+        Type::Tuple(elems) if !elems.is_empty() => Type::normalize_union(elems.clone()),
+        Type::Tuple(_) => Type::Any,
+        Type::Set(elem) => (**elem).clone(),
+        Type::Dict(key, _) => (**key).clone(),
+        Type::Str => Type::Str,
+        Type::Bytes => Type::Int,
+        Type::Iterator(elem) => (**elem).clone(),
+        _ => Type::Any,
     }
 }

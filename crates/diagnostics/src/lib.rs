@@ -106,6 +106,8 @@ pub type Result<T> = std::result::Result<T, CompilerError>;
 pub enum CompilerWarning {
     /// Unreachable code detected (e.g., isinstance check that's always True/False)
     DeadCode { span: Span, message: String },
+    /// Type mismatch detected during type checking
+    TypeError { span: Span, message: String },
 }
 
 impl CompilerWarning {
@@ -119,30 +121,33 @@ impl CompilerWarning {
 
     /// Format the warning for display using miette
     pub fn format(&self, source_name: &str, source: &str) -> String {
-        match self {
-            CompilerWarning::DeadCode { span, message } => {
-                use miette::{GraphicalReportHandler, NamedSource};
+        let (span, message, label) = match self {
+            CompilerWarning::DeadCode { span, message } => (span, message, "unreachable code"),
+            CompilerWarning::TypeError { span, message } => (span, message, "type mismatch"),
+        };
 
-                let diagnostic_span = DiagnosticSpan(*span);
-                let source_span: SourceSpan = diagnostic_span.into();
+        use miette::{GraphicalReportHandler, NamedSource};
 
-                let report = miette::Report::new(
-                    miette::MietteDiagnostic::new(message.clone())
-                        .with_severity(miette::Severity::Warning)
-                        .with_labels(vec![miette::LabeledSpan::at(
-                            source_span,
-                            "unreachable code",
-                        )]),
-                )
-                .with_source_code(NamedSource::new(source_name, source.to_string()));
+        let diagnostic_span = DiagnosticSpan(*span);
+        let source_span: SourceSpan = diagnostic_span.into();
 
-                let mut output = String::new();
-                GraphicalReportHandler::new()
-                    .render_report(&mut output, report.as_ref())
-                    .expect("failed to render warning");
-                output
-            }
-        }
+        let severity = match self {
+            CompilerWarning::DeadCode { .. } => miette::Severity::Warning,
+            CompilerWarning::TypeError { .. } => miette::Severity::Error,
+        };
+
+        let report = miette::Report::new(
+            miette::MietteDiagnostic::new(message.clone())
+                .with_severity(severity)
+                .with_labels(vec![miette::LabeledSpan::at(source_span, label)]),
+        )
+        .with_source_code(NamedSource::new(source_name, source.to_string()));
+
+        let mut output = String::new();
+        GraphicalReportHandler::new()
+            .render_report(&mut output, report.as_ref())
+            .expect("failed to render warning");
+        output
     }
 }
 
@@ -173,6 +178,13 @@ impl CompilerWarnings {
     /// Get the number of warnings
     pub fn len(&self) -> usize {
         self.warnings.len()
+    }
+
+    /// Check if any warnings are type errors
+    pub fn has_type_errors(&self) -> bool {
+        self.warnings
+            .iter()
+            .any(|w| matches!(w, CompilerWarning::TypeError { .. }))
     }
 
     /// Emit all warnings to stderr

@@ -1,7 +1,7 @@
-//! Lambda and closure type inference
+//! Pre-scan: closure/lambda/decorator discovery + lambda type inference
 //!
-//! This module handles type inference for lambda functions and closures, including
-//! parameter type inference from usage and return type inference from body analysis.
+//! Moved from lambda_inference.rs. Handles pre-scan for closures, decorator
+//! patterns, lambda parameter inference, and lambda return type inference.
 
 use indexmap::IndexMap;
 use pyaot_hir as hir;
