@@ -102,8 +102,23 @@ impl<'a> Lowering<'a> {
                             args: vec![mir::Operand::Local(boxed_local)],
                         });
                     }
+                    Type::Int => {
+                        // ListGetInt transparently handles both ELEM_RAW_INT and
+                        // ELEM_HEAP_OBJ storage (unboxes IntObj when needed).
+                        mir_func.add_local(mir::Local {
+                            id: result_local,
+                            name: None,
+                            ty: Type::Int,
+                            is_gc_root: false,
+                        });
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: result_local,
+                            func: mir::RuntimeFunc::ListGetInt,
+                            args: vec![obj_operand, index_operand],
+                        });
+                    }
                     _ => {
-                        // For Int and heap types (Str, List, etc.), ListGet returns the right type
+                        // For heap types (Str, List, etc.), ListGet returns *mut Obj
                         mir_func.add_local(mir::Local {
                             id: result_local,
                             name: None,

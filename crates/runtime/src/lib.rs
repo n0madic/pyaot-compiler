@@ -112,6 +112,11 @@ pub mod urllib_request;
 // Tests
 #[cfg(test)]
 mod tests;
+/// Global lock for runtime unit tests that use GC.
+/// Prevents parallel tests from interfering with each other's GC state
+/// (init/shutdown race conditions).
+#[cfg(test)]
+pub(crate) static RUNTIME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 use std::ffi::CStr;
 use std::io::Write;

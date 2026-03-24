@@ -243,6 +243,7 @@ mod tests {
 
     #[test]
     fn test_interning_deduplication() {
+        let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         setup();
 
         unsafe {
@@ -268,6 +269,7 @@ mod tests {
 
     #[test]
     fn test_interning_different_strings() {
+        let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         setup();
 
         unsafe {
@@ -289,6 +291,7 @@ mod tests {
 
     #[test]
     fn test_interning_size_threshold() {
+        let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         setup();
 
         unsafe {
@@ -306,6 +309,7 @@ mod tests {
 
     #[test]
     fn test_interning_empty_string() {
+        let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         setup();
 
         unsafe {

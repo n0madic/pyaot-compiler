@@ -21,6 +21,7 @@ use crate::{dict, gc, list, object, set, tuple};
 #[cfg(debug_assertions)]
 #[should_panic(expected = "test_macro: expected List, got Dict")]
 fn test_debug_assert_type_tag_macro() {
+    let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     gc::init();
 
     // Create a Dict object
@@ -35,6 +36,7 @@ fn test_debug_assert_type_tag_macro() {
 /// Test that the macro does NOT panic when types match.
 #[test]
 fn test_debug_assert_type_tag_macro_correct_type() {
+    let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     gc::init();
 
     // Create a List object
@@ -53,6 +55,7 @@ fn test_debug_assert_type_tag_macro_correct_type() {
 #[cfg(debug_assertions)]
 #[should_panic(expected = "expected Tuple, got Set")]
 fn test_debug_assert_type_tag_tuple_vs_set() {
+    let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     gc::init();
 
     let set_obj = set::rt_make_set(8);
@@ -68,6 +71,7 @@ fn test_debug_assert_type_tag_tuple_vs_set() {
 #[cfg(debug_assertions)]
 #[should_panic(expected = "expected Dict, got List")]
 fn test_debug_assert_type_tag_dict_vs_list() {
+    let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     gc::init();
 
     let list_obj = list::rt_make_list(4, 0);
@@ -83,6 +87,7 @@ fn test_debug_assert_type_tag_dict_vs_list() {
 #[cfg(debug_assertions)]
 #[should_panic(expected = "expected Set, got Dict")]
 fn test_debug_assert_type_tag_set_vs_dict() {
+    let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     gc::init();
 
     let dict_obj = dict::rt_make_dict(4);
@@ -95,6 +100,7 @@ fn test_debug_assert_type_tag_set_vs_dict() {
 /// Verify all correct types don't trigger assertions.
 #[test]
 fn test_correct_types_no_panic() {
+    let _guard = crate::RUNTIME_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     gc::init();
 
     let list_obj = list::rt_make_list(4, 0);

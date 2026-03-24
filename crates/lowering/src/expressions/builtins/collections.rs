@@ -255,8 +255,15 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        // Create result local with List type
-        let result_local = self.alloc_and_add_local(Type::List(Box::new(Type::Any)), mir_func);
+        // Use expected_type from assignment context (e.g. `x: list[int] = list(...)`)
+        // for precise element type. This enables ListGetInt instead of generic ListGet.
+        let list_elem_type = if let Some(Type::List(ref expected_elem)) = self.expected_type {
+            (**expected_elem).clone()
+        } else {
+            Type::Any
+        };
+        let result_local =
+            self.alloc_and_add_local(Type::List(Box::new(list_elem_type)), mir_func);
 
         if args.is_empty() {
             // list() - create empty list

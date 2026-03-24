@@ -1354,9 +1354,14 @@ assert map_str_result == ["1", "2", "3"], f"map(str, [1,2,3]) failed: {map_str_r
 map_lambda_str: list[str] = list(map(lambda x: str(x), [10, 20, 30]))
 assert map_lambda_str == ["10", "20", "30"], f"map(lambda x: str(x)) failed: {map_lambda_str}"
 
-# TODO: map(int, ["1","2","3"]) not yet supported — list() stores boxed IntObj
-# with ELEM_HEAP_OBJ but compiler uses ListGet instead of ListGetInt for unboxing.
-# Needs expected_type propagation from variable annotation to list() constructor.
+# map with builtin int on str list — result stored as ELEM_HEAP_OBJ,
+# ListGetInt transparently unboxes IntObj to raw i64
+map_int_result: list[int] = list(map(int, ["1", "2", "3"]))
+assert len(map_int_result) == 3, f"map(int, strs) len failed: {len(map_int_result)}"
+assert map_int_result[0] == 1, f"map(int, strs)[0] should be 1, got {map_int_result[0]}"
+assert map_int_result[1] == 2, f"map(int, strs)[1] should be 2, got {map_int_result[1]}"
+assert map_int_result[2] == 3, f"map(int, strs)[2] should be 3, got {map_int_result[2]}"
+assert map_int_result[0] + 10 == 11, f"map(int, strs)[0]+10 should be 11"
 
 print("map() with builtins and type-converting lambdas tests passed!")
 
