@@ -3,26 +3,6 @@
 use pyaot_hir as hir;
 use pyaot_types::Type;
 
-/// Check if a type requires GC tracking (heap-allocated types)
-pub(crate) fn is_heap_type(ty: &Type) -> bool {
-    matches!(
-        ty,
-        Type::Str
-            | Type::Bytes
-            | Type::List(_)
-            | Type::Dict(_, _)
-            | Type::Set(_)
-            | Type::Tuple(_)
-            | Type::Class { .. }
-            | Type::Iterator(_)
-            | Type::Union(_)
-            | Type::RuntimeObject(_)
-            | Type::Any
-            | Type::File
-            | Type::BuiltinException(_)
-    )
-}
-
 /// Check if a type is mutable and thus needs special handling for function defaults.
 /// In Python, mutable defaults (list, dict, set, class instances) are evaluated once
 /// at function definition time and shared across all calls.

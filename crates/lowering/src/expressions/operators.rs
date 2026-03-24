@@ -1150,7 +1150,7 @@ impl<'a> Lowering<'a> {
         };
 
         // Allocate result local
-        let result_local = self.alloc_typed_local(mir_func, result_ty);
+        let result_local = self.alloc_and_add_local(result_ty, mir_func);
 
         // Evaluate condition and convert to bool if needed
         let cond_expr = &hir_module.exprs[cond];

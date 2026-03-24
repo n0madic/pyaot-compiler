@@ -1032,7 +1032,7 @@ impl<'a> Lowering<'a> {
             .iter()
             .map(|op| self.operand_type(op, mir_func))
             .collect();
-        let any_needs_gc = capture_op_types.iter().any(Self::type_needs_gc_trace);
+        let any_needs_gc = capture_op_types.iter().any(Type::is_heap);
         let capture_elem_tag: i64 = if any_needs_gc { 0 } else { 1 };
 
         let tuple_local = self.alloc_and_add_local(Type::Tuple(vec![Type::Any; count]), mir_func);

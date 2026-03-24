@@ -29,7 +29,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         let result_type = typespec_to_type(&attr_def.ty);
-        let result_local = self.alloc_typed_local(mir_func, result_type);
+        let result_local = self.alloc_and_add_local(result_type, mir_func);
 
         // Emit generic StdlibAttrGet - codegen will use attr_def.runtime_getter
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -93,7 +93,7 @@ impl<'a> Lowering<'a> {
         let mir_args = self.lower_stdlib_args(func_def, args, hir_module, mir_func)?;
 
         let result_type = typespec_to_type(&func_def.return_type);
-        let result_local = self.alloc_typed_local(mir_func, result_type);
+        let result_local = self.alloc_and_add_local(result_type, mir_func);
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
@@ -166,7 +166,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         // Create a list to hold the arguments
-        let list_local = self.alloc_typed_local(mir_func, Type::List(Box::new(Type::Str)));
+        let list_local = self.alloc_and_add_local(Type::List(Box::new(Type::Str)), mir_func);
 
         // Allocate list (assuming string elements - heap objects)
         let capacity = args.len() as i64;
@@ -190,7 +190,7 @@ impl<'a> Lowering<'a> {
             // (float → BoxFloat, bool → BoxBool, None → BoxNone)
             let pushed_operand = self.box_primitive_if_needed(arg_operand, &arg_type, mir_func);
 
-            let void_local = self.alloc_typed_local(mir_func, Type::None);
+            let void_local = self.alloc_and_add_local(Type::None, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: void_local,
                 func: mir::RuntimeFunc::ListPush,
@@ -200,7 +200,7 @@ impl<'a> Lowering<'a> {
 
         // Call the runtime function with the list
         let result_type = typespec_to_type(&func_def.return_type);
-        let result_local = self.alloc_typed_local(mir_func, result_type);
+        let result_local = self.alloc_and_add_local(result_type, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
             func: mir::RuntimeFunc::StdlibCall(func_def),
@@ -254,7 +254,7 @@ impl<'a> Lowering<'a> {
 
         // Allocate result local with correct type
         let result_type = typespec_to_type(&method_def.return_type);
-        let result_local = self.alloc_typed_local(mir_func, result_type);
+        let result_local = self.alloc_and_add_local(result_type, mir_func);
 
         // Emit the generic ObjectMethodCall
         self.emit_instruction(mir::InstructionKind::RuntimeCall {

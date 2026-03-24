@@ -52,26 +52,6 @@ impl<'a> Lowering<'a> {
         mir::RuntimeFunc::GlobalGet(self.type_to_value_kind(var_type))
     }
 
-    /// Check if a type requires pointer-based global storage (heap types and Any)
-    pub(crate) fn is_global_ptr_type(&self, var_type: &Type) -> bool {
-        matches!(
-            var_type,
-            Type::Any
-                | Type::Str
-                | Type::List(_)
-                | Type::Dict(_, _)
-                | Type::Tuple(_)
-                | Type::Set(_)
-                | Type::Bytes
-                | Type::Class { .. }
-                | Type::Iterator(_)
-                | Type::Union(_)
-                | Type::RuntimeObject(_)
-                | Type::File
-                | Type::BuiltinException(_)
-        )
-    }
-
     // ==================== Cell Storage (for closures/nonlocal) ====================
 
     /// Get the appropriate runtime function for creating a cell based on type
@@ -87,26 +67,6 @@ impl<'a> Lowering<'a> {
     /// Get the appropriate runtime function for setting a value in a cell based on type
     pub(crate) fn get_cell_set_func(&self, var_type: &Type) -> mir::RuntimeFunc {
         mir::RuntimeFunc::CellSet(self.type_to_value_kind(var_type))
-    }
-
-    /// Check if a type requires pointer-based cell storage (heap types)
-    pub(crate) fn is_cell_ptr_type(&self, var_type: &Type) -> bool {
-        matches!(
-            var_type,
-            Type::Str
-                | Type::List(_)
-                | Type::Dict(_, _)
-                | Type::Tuple(_)
-                | Type::Set(_)
-                | Type::Bytes
-                | Type::Class { .. }
-                | Type::Iterator(_)
-                | Type::Union(_)
-                | Type::RuntimeObject(_)
-                | Type::Any
-                | Type::File
-                | Type::BuiltinException(_)
-        )
     }
 
     // ==================== Class Attribute Storage ====================

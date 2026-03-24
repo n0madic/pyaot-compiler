@@ -121,6 +121,22 @@ impl Type {
         }
     }
 
+    /// Returns true if values of this type are heap-allocated and need pointer storage/GC tracking.
+    /// Raw primitives (Int, Bool, Float, None) are stored as immediate values.
+    /// Compile-time-only types (Function, Var, Never) are not heap-allocated.
+    pub fn is_heap(&self) -> bool {
+        !matches!(
+            self,
+            Type::Int
+                | Type::Bool
+                | Type::Float
+                | Type::None
+                | Type::Function { .. }
+                | Type::Var(_)
+                | Type::Never
+        )
+    }
+
     /// Check if this is a Union type
     pub fn is_union(&self) -> bool {
         matches!(self, Type::Union(_))

@@ -99,7 +99,7 @@ impl<'a> Lowering<'a> {
                                 }
                             }
                             let op_type = self.operand_type(&capture_operands[i], mir_func);
-                            Self::type_needs_gc_trace(&op_type)
+                            op_type.is_heap()
                         });
                         if any_needs_gc {
                             0

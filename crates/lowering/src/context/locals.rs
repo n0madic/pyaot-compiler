@@ -4,8 +4,6 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, LocalId};
 
-use crate::utils::is_heap_type;
-
 use super::Lowering;
 
 impl<'a> Lowering<'a> {
@@ -33,7 +31,7 @@ impl<'a> Lowering<'a> {
             id: local_id,
             name: None,
             ty: ty.clone(),
-            is_gc_root: is_heap_type(&ty),
+            is_gc_root: ty.is_heap(),
         });
         local_id
     }

@@ -5,7 +5,6 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 
 use crate::context::Lowering;
-use crate::utils::is_heap_type;
 
 impl<'a> Lowering<'a> {
     /// Lower tuple method calls.
@@ -29,7 +28,7 @@ impl<'a> Lowering<'a> {
                 // Only box the value if it's a heap type; raw types (int, bool, float)
                 // are stored unboxed in ELEM_RAW_INT tuples and must not be boxed.
                 let value_type = arg_types.first().cloned().unwrap_or(Type::Any);
-                let search_value = if is_heap_type(&value_type) {
+                let search_value = if value_type.is_heap() {
                     self.box_primitive_if_needed(value_arg, &value_type, mir_func)
                 } else {
                     value_arg
@@ -54,7 +53,7 @@ impl<'a> Lowering<'a> {
                 // Only box the value if it's a heap type; raw types (int, bool, float)
                 // are stored unboxed in ELEM_RAW_INT tuples and must not be boxed.
                 let value_type = arg_types.first().cloned().unwrap_or(Type::Any);
-                let search_value = if is_heap_type(&value_type) {
+                let search_value = if value_type.is_heap() {
                     self.box_primitive_if_needed(value_arg, &value_type, mir_func)
                 } else {
                     value_arg

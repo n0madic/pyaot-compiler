@@ -12,8 +12,6 @@ use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
     /// Internal type computation (the actual inference logic).
-    // TODO: ~40% of this logic is duplicated in `infer_deep_expr_type` (type_planning/mod.rs).
-    // The shared parts (containers, BuiltinCall, MethodCall) should be extracted into helpers.
     pub(crate) fn compute_expr_type(&mut self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
         match &expr.kind {
             hir::ExprKind::Var(var_id) => self
@@ -102,18 +100,13 @@ impl<'a> Lowering<'a> {
                 }
             }
             hir::ExprKind::List(elements) => {
-                if elements.is_empty() {
-                    expr.ty.clone().unwrap_or(Type::List(Box::new(Type::Any)))
-                } else {
-                    let elem_types: Vec<Type> = elements
-                        .iter()
-                        .map(|e| self.get_type_of_expr_id(*e, hir_module))
-                        .collect();
-                    Type::List(Box::new(helpers::unify_element_types(elem_types)))
-                }
+                let elem_types: Vec<Type> = elements
+                    .iter()
+                    .map(|e| self.get_type_of_expr_id(*e, hir_module))
+                    .collect();
+                helpers::infer_list_type(elem_types, expr.ty.as_ref())
             }
             hir::ExprKind::Tuple(elements) => {
-                // Infer tuple element types from all elements
                 let elem_types: Vec<Type> = elements
                     .iter()
                     .map(|e| self.get_type_of_expr_id(*e, hir_module))
@@ -121,33 +114,22 @@ impl<'a> Lowering<'a> {
                 Type::Tuple(elem_types)
             }
             hir::ExprKind::Dict(pairs) => {
-                if pairs.is_empty() {
-                    Type::Dict(Box::new(Type::Any), Box::new(Type::Any))
-                } else {
-                    let key_types: Vec<Type> = pairs
-                        .iter()
-                        .map(|(k, _)| self.get_type_of_expr_id(*k, hir_module))
-                        .collect();
-                    let val_types: Vec<Type> = pairs
-                        .iter()
-                        .map(|(_, v)| self.get_type_of_expr_id(*v, hir_module))
-                        .collect();
-                    Type::Dict(
-                        Box::new(helpers::unify_element_types(key_types)),
-                        Box::new(helpers::unify_element_types(val_types)),
-                    )
-                }
+                let key_types: Vec<Type> = pairs
+                    .iter()
+                    .map(|(k, _)| self.get_type_of_expr_id(*k, hir_module))
+                    .collect();
+                let val_types: Vec<Type> = pairs
+                    .iter()
+                    .map(|(_, v)| self.get_type_of_expr_id(*v, hir_module))
+                    .collect();
+                helpers::infer_dict_type(key_types, val_types)
             }
             hir::ExprKind::Set(elements) => {
-                if elements.is_empty() {
-                    Type::Set(Box::new(Type::Any))
-                } else {
-                    let elem_types: Vec<Type> = elements
-                        .iter()
-                        .map(|e| self.get_type_of_expr_id(*e, hir_module))
-                        .collect();
-                    Type::Set(Box::new(helpers::unify_element_types(elem_types)))
-                }
+                let elem_types: Vec<Type> = elements
+                    .iter()
+                    .map(|e| self.get_type_of_expr_id(*e, hir_module))
+                    .collect();
+                helpers::infer_set_type(elem_types)
             }
             hir::ExprKind::UnOp { op, operand } => match op {
                 hir::UnOp::Not => Type::Bool,

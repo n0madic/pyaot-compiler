@@ -22,8 +22,6 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::{LocalId, VarId};
 
-use utils::is_heap_type;
-
 impl<'a> Lowering<'a> {
     /// Helper to emit a boxing instruction and return the boxed operand.
     fn emit_box_primitive(
@@ -109,7 +107,7 @@ impl<'a> Lowering<'a> {
                 id: local_id,
                 name: None,
                 ty: var_type.clone(),
-                is_gc_root: is_heap_type(&var_type),
+                is_gc_root: var_type.is_heap(),
             });
             local_id
         }
@@ -305,7 +303,7 @@ impl<'a> Lowering<'a> {
             1 // ELEM_RAW_INT — all elements are ints
         } else if let Some(types) = operand_types {
             // Per-operand types available: check if any needs GC
-            if types.iter().any(Self::type_needs_gc_trace) {
+            if types.iter().any(Type::is_heap) {
                 0 // ELEM_HEAP_OBJ
             } else {
                 1 // ELEM_RAW_INT — all operands are primitives
@@ -332,7 +330,7 @@ impl<'a> Lowering<'a> {
                 let op_type = operand_types
                     .and_then(|types| types.get(i))
                     .unwrap_or(elem_type);
-                self.box_for_heap_tuple(op.clone(), op_type, mir_func)
+                self.box_primitive_if_needed(op.clone(), op_type, mir_func)
             } else {
                 op.clone() // ELEM_RAW_INT, already i64
             };
@@ -353,54 +351,6 @@ impl<'a> Lowering<'a> {
         tuple_local
     }
 
-    /// Box a primitive value for storage in an ELEM_HEAP_OBJ tuple.
-    fn box_for_heap_tuple(
-        &mut self,
-        op: mir::Operand,
-        op_type: &Type,
-        mir_func: &mut mir::Function,
-    ) -> mir::Operand {
-        match op_type {
-            Type::Int => {
-                let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: boxed_local,
-                    func: mir::RuntimeFunc::BoxInt,
-                    args: vec![op],
-                });
-                mir::Operand::Local(boxed_local)
-            }
-            Type::Bool => {
-                let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: boxed_local,
-                    func: mir::RuntimeFunc::BoxBool,
-                    args: vec![op],
-                });
-                mir::Operand::Local(boxed_local)
-            }
-            Type::Float => {
-                let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: boxed_local,
-                    func: mir::RuntimeFunc::BoxFloat,
-                    args: vec![op],
-                });
-                mir::Operand::Local(boxed_local)
-            }
-            Type::None => {
-                let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: boxed_local,
-                    func: mir::RuntimeFunc::BoxNone,
-                    args: vec![],
-                });
-                mir::Operand::Local(boxed_local)
-            }
-            _ => op, // Already heap objects
-        }
-    }
-
     /// Emit a TupleSetHeapMask instruction for a tuple with mixed types.
     /// Computes a bitmask from operand types and emits the runtime call.
     fn emit_heap_field_mask(
@@ -411,7 +361,7 @@ impl<'a> Lowering<'a> {
     ) {
         let mut mask: u64 = 0;
         for (i, ty) in operand_types.iter().enumerate() {
-            if i < 64 && Self::type_needs_gc_trace(ty) {
+            if i < 64 && ty.is_heap() {
                 mask |= 1u64 << i;
             }
         }

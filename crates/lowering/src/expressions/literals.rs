@@ -65,12 +65,11 @@ impl<'a> Lowering<'a> {
                 .unwrap_or(Type::Int); // Globals default to Int for backward compatibility
 
             let result_local = self.alloc_local_id();
-            let is_ptr_type = self.is_global_ptr_type(&var_type);
             mir_func.add_local(mir::Local {
                 id: result_local,
                 name: None,
                 ty: var_type.clone(),
-                is_gc_root: is_ptr_type, // Pointer types need GC root tracking
+                is_gc_root: var_type.is_heap(),
             });
 
             // Determine the type-specific runtime function for global get
@@ -94,12 +93,11 @@ impl<'a> Lowering<'a> {
                 .unwrap_or(Type::Int);
 
             let result_local = self.alloc_local_id();
-            let is_ptr_type = self.is_cell_ptr_type(&var_type);
             mir_func.add_local(mir::Local {
                 id: result_local,
                 name: None,
                 ty: var_type.clone(),
-                is_gc_root: is_ptr_type,
+                is_gc_root: var_type.is_heap(),
             });
 
             // Emit cell get operation

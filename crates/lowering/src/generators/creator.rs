@@ -14,7 +14,6 @@ use pyaot_utils::{BlockId, LocalId, VarId};
 
 use super::GeneratorVar;
 use crate::context::Lowering;
-use crate::utils::is_heap_type;
 
 impl<'a> Lowering<'a> {
     /// Create the generator creator function
@@ -43,7 +42,7 @@ impl<'a> Lowering<'a> {
                 id: local_id,
                 name: None,
                 ty: param_ty.clone(),
-                is_gc_root: is_heap_type(&param_ty),
+                is_gc_root: param_ty.is_heap(),
             });
             param_local_ids.push(local_id);
         }

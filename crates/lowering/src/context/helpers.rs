@@ -356,6 +356,12 @@ impl<'a> Lowering<'a> {
                         {
                             key_func = Some(match func_or_builtin {
                                 FuncOrBuiltin::UserFunc(func_id, captures) => {
+                                    if !captures.is_empty() {
+                                        return Err(CompilerError::semantic_error(
+                                            "key= function with captured variables is not yet supported",
+                                            kw.span,
+                                        ));
+                                    }
                                     KeyFuncSource::UserFunc(func_id, captures)
                                 }
                                 FuncOrBuiltin::Builtin(builtin_kind) => {
@@ -399,11 +405,8 @@ impl<'a> Lowering<'a> {
             let key_fn_local = self.alloc_and_add_local(Type::Int, mir_func);
             match source {
                 KeyFuncSource::UserFunc(func_id, _captures) => {
-                    // TODO: closure captures are silently dropped here.
-                    // `sorted(lst, key=lambda x: x + captured_var)` will produce wrong
-                    // results because `captured_var` is not passed to the key function.
-                    // Fixing this requires the runtime sort to accept a captures pointer
-                    // alongside the function pointer, or using a trampoline approach.
+                    // Captures are validated as empty in extract_sort_kwargs.
+                    // Non-empty captures require runtime trampoline support (not yet implemented).
                     self.emit_instruction(mir::InstructionKind::FuncAddr {
                         dest: key_fn_local,
                         func: *func_id,
@@ -434,13 +437,6 @@ impl<'a> Lowering<'a> {
             Type::Bool => 0, // Bool in lists is boxed (ELEM_HEAP_OBJ)
             _ => 0,          // ELEM_HEAP_OBJ (Float, Str, etc.)
         }
-    }
-
-    /// Returns true if values of this type are heap-allocated and need GC tracing.
-    /// Raw primitives (int, bool, float, None) don't need tracing because they're
-    /// stored directly as i64 bit patterns, not as heap object pointers.
-    pub(crate) fn type_needs_gc_trace(ty: &Type) -> bool {
-        !matches!(ty, Type::Int | Type::Bool | Type::Float | Type::None)
     }
 
     /// Determine the elem_tag to pass to runtime for key functions.

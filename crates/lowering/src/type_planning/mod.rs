@@ -135,7 +135,10 @@ impl<'a> Lowering<'a> {
         if return_types.is_empty() {
             Type::None
         } else if return_types.len() == 1 {
-            return_types.into_iter().next().unwrap()
+            return_types
+                .into_iter()
+                .next()
+                .expect("checked: return_types.len() == 1")
         } else {
             // Multiple return types — union concrete types
             let concrete: Vec<Type> = return_types
@@ -234,8 +237,6 @@ impl<'a> Lowering<'a> {
     /// Deep expression type inference for return type analysis.
     /// More comprehensive than the old `infer_expr_return_type_with_params` —
     /// handles Call, MethodCall, Index, Attribute, BuiltinCall, containers.
-    // TODO: ~40% of this logic is duplicated in `compute_expr_type` (type_planning/infer.rs).
-    // The shared parts (containers, BuiltinCall, MethodCall) should be extracted into helpers.
     fn infer_deep_expr_type(
         &self,
         expr: &hir::Expr,
@@ -311,15 +312,11 @@ impl<'a> Lowering<'a> {
 
             // === Containers ===
             hir::ExprKind::List(elems) => {
-                if elems.is_empty() {
-                    expr.ty.clone().unwrap_or(Type::List(Box::new(Type::Any)))
-                } else {
-                    let elem_types: Vec<Type> = elems
-                        .iter()
-                        .map(|e| self.infer_deep_expr_type(&module.exprs[*e], module, param_types))
-                        .collect();
-                    Type::List(Box::new(helpers::unify_element_types(elem_types)))
-                }
+                let elem_types: Vec<Type> = elems
+                    .iter()
+                    .map(|e| self.infer_deep_expr_type(&module.exprs[*e], module, param_types))
+                    .collect();
+                helpers::infer_list_type(elem_types, expr.ty.as_ref())
             }
             hir::ExprKind::Tuple(elems) => {
                 let types: Vec<Type> = elems
@@ -329,37 +326,22 @@ impl<'a> Lowering<'a> {
                 Type::Tuple(types)
             }
             hir::ExprKind::Dict(pairs) => {
-                if pairs.is_empty() {
-                    Type::Dict(Box::new(Type::Any), Box::new(Type::Any))
-                } else {
-                    let key_types: Vec<Type> = pairs
-                        .iter()
-                        .map(|(k, _)| {
-                            self.infer_deep_expr_type(&module.exprs[*k], module, param_types)
-                        })
-                        .collect();
-                    let val_types: Vec<Type> = pairs
-                        .iter()
-                        .map(|(_, v)| {
-                            self.infer_deep_expr_type(&module.exprs[*v], module, param_types)
-                        })
-                        .collect();
-                    Type::Dict(
-                        Box::new(helpers::unify_element_types(key_types)),
-                        Box::new(helpers::unify_element_types(val_types)),
-                    )
-                }
+                let key_types: Vec<Type> = pairs
+                    .iter()
+                    .map(|(k, _)| self.infer_deep_expr_type(&module.exprs[*k], module, param_types))
+                    .collect();
+                let val_types: Vec<Type> = pairs
+                    .iter()
+                    .map(|(_, v)| self.infer_deep_expr_type(&module.exprs[*v], module, param_types))
+                    .collect();
+                helpers::infer_dict_type(key_types, val_types)
             }
             hir::ExprKind::Set(elems) => {
-                if elems.is_empty() {
-                    Type::Set(Box::new(Type::Any))
-                } else {
-                    let elem_types: Vec<Type> = elems
-                        .iter()
-                        .map(|e| self.infer_deep_expr_type(&module.exprs[*e], module, param_types))
-                        .collect();
-                    Type::Set(Box::new(helpers::unify_element_types(elem_types)))
-                }
+                let elem_types: Vec<Type> = elems
+                    .iter()
+                    .map(|e| self.infer_deep_expr_type(&module.exprs[*e], module, param_types))
+                    .collect();
+                helpers::infer_set_type(elem_types)
             }
 
             // === Function calls ===

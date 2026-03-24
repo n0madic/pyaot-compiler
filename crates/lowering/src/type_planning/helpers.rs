@@ -157,7 +157,10 @@ pub(crate) fn unwrap_optional(ty: &Type) -> Type {
                 .collect();
             match non_none.len() {
                 0 => ty.clone(),
-                1 => non_none.into_iter().next().unwrap(),
+                1 => non_none
+                    .into_iter()
+                    .next()
+                    .expect("checked: non_none.len() == 1"),
                 _ => Type::Union(non_none),
             }
         }
@@ -459,5 +462,42 @@ pub(crate) fn resolve_builtin_call_type(
 
         // BuiltinException — complex, handled by caller
         Builtin::BuiltinException(_) => None,
+    }
+}
+
+// =============================================================================
+// Container Type Inference Helpers
+// =============================================================================
+
+/// Infer list type from pre-computed element types.
+/// Empty lists use the expression's type annotation if available.
+pub(crate) fn infer_list_type(elem_types: Vec<Type>, expr_ty: Option<&Type>) -> Type {
+    if elem_types.is_empty() {
+        expr_ty.cloned().unwrap_or(Type::List(Box::new(Type::Any)))
+    } else {
+        Type::List(Box::new(unify_element_types(elem_types)))
+    }
+}
+
+/// Infer dict type from pre-computed key and value types.
+/// Empty dicts default to Dict[Any, Any].
+pub(crate) fn infer_dict_type(key_types: Vec<Type>, val_types: Vec<Type>) -> Type {
+    if key_types.is_empty() {
+        Type::Dict(Box::new(Type::Any), Box::new(Type::Any))
+    } else {
+        Type::Dict(
+            Box::new(unify_element_types(key_types)),
+            Box::new(unify_element_types(val_types)),
+        )
+    }
+}
+
+/// Infer set type from pre-computed element types.
+/// Empty sets default to Set[Any].
+pub(crate) fn infer_set_type(elem_types: Vec<Type>) -> Type {
+    if elem_types.is_empty() {
+        Type::Set(Box::new(Type::Any))
+    } else {
+        Type::Set(Box::new(unify_element_types(elem_types)))
     }
 }

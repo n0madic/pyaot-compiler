@@ -133,6 +133,7 @@ impl MirMerger {
                         field_offsets,
                         field_types,
                         method_return_types,
+                        total_field_count: class_def.fields.len(),
                     },
                 );
             }

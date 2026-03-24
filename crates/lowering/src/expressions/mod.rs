@@ -20,14 +20,11 @@ mod stdlib;
 // Re-export ExpandedArg for use in resolve_call_args
 pub(crate) use calls::ExpandedArg;
 
+use crate::context::Lowering;
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
-use pyaot_utils::LocalId;
-
-use crate::context::Lowering;
-use crate::utils::is_heap_type;
 
 impl<'a> Lowering<'a> {
     /// Main entry point for lowering an expression.
@@ -230,7 +227,7 @@ impl<'a> Lowering<'a> {
         if let Some((var_id, var_type)) = self.get_module_var_export(&key).cloned() {
             // This is an imported variable - emit global read
             let result_local = self.alloc_local_id();
-            let is_ptr_type = self.is_global_ptr_type(&var_type);
+            let is_ptr_type = var_type.is_heap();
             mir_func.add_local(mir::Local {
                 id: result_local,
                 name: None,
@@ -248,9 +245,13 @@ impl<'a> Lowering<'a> {
             return Ok(mir::Operand::Local(result_local));
         }
 
-        // Not a variable - might be a function reference (not yet supported as value)
-        // Return None as placeholder
-        Ok(mir::Operand::Constant(mir::Constant::None))
+        Err(pyaot_diagnostics::CompilerError::semantic_error(
+            format!(
+                "cannot resolve imported name '{}' from module '{}'",
+                name, module
+            ),
+            pyaot_utils::Span::dummy(),
+        ))
     }
 
     /// Lower a module attribute access expression.
@@ -270,7 +271,7 @@ impl<'a> Lowering<'a> {
         if let Some((var_id, var_type)) = self.get_module_var_export(&key).cloned() {
             // Emit global read for the module variable
             let result_local = self.alloc_local_id();
-            let is_ptr_type = self.is_global_ptr_type(&var_type);
+            let is_ptr_type = var_type.is_heap();
             mir_func.add_local(mir::Local {
                 id: result_local,
                 name: None,
@@ -288,9 +289,13 @@ impl<'a> Lowering<'a> {
             return Ok(mir::Operand::Local(result_local));
         }
 
-        // Not a variable - could be a function reference (not yet supported)
-        // Return None for now
-        Ok(mir::Operand::Constant(mir::Constant::None))
+        Err(pyaot_diagnostics::CompilerError::semantic_error(
+            format!(
+                "cannot resolve attribute '{}' on module '{}'",
+                attr_name, module
+            ),
+            pyaot_utils::Span::dummy(),
+        ))
     }
 
     /// Lower a class attribute reference expression: ClassName.attr
@@ -310,7 +315,7 @@ impl<'a> Lowering<'a> {
                 class_info.class_attr_types.get(&attr).cloned(),
             ) {
                 // Allocate result local
-                let result_local = self.alloc_typed_local(mir_func, attr_type.clone());
+                let result_local = self.alloc_and_add_local(attr_type.clone(), mir_func);
 
                 // Get the appropriate runtime function based on type
                 let get_func = self.get_class_attr_get_func(&attr_type);
@@ -331,9 +336,11 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // TODO: unknown class attribute — should emit a diagnostic error rather than silently
-        // returning None, so that the user gets a clear compile-time message.
-        Ok(mir::Operand::Constant(mir::Constant::None))
+        let attr_name = self.resolve(attr);
+        Err(pyaot_diagnostics::CompilerError::semantic_error(
+            format!("unknown class attribute '{}'", attr_name),
+            pyaot_utils::Span::dummy(),
+        ))
     }
 
     /// Lower a closure expression.
@@ -396,7 +403,7 @@ impl<'a> Lowering<'a> {
                     }
                     // Check the operand type (more reliable than expression type)
                     let op_type = self.operand_type(&capture_operands[i], mir_func);
-                    Self::type_needs_gc_trace(&op_type)
+                    op_type.is_heap()
                 });
                 if any_needs_gc {
                     0
@@ -486,19 +493,6 @@ impl<'a> Lowering<'a> {
     // Shared Helper Functions
     // =====================================================================
 
-    /// Allocate a local variable with standard configuration.
-    /// Automatically sets is_gc_root based on whether the type is heap-allocated.
-    pub(super) fn alloc_typed_local(&mut self, mir_func: &mut mir::Function, ty: Type) -> LocalId {
-        let local_id = self.alloc_local_id();
-        mir_func.add_local(mir::Local {
-            id: local_id,
-            name: None,
-            ty: ty.clone(),
-            is_gc_root: is_heap_type(&ty),
-        });
-        local_id
-    }
-
     /// Promote an operand to float if needed.
     /// Returns the operand unchanged if already float, otherwise emits IntToFloat conversion.
     pub(super) fn promote_to_float_if_needed(
@@ -508,7 +502,7 @@ impl<'a> Lowering<'a> {
         current_type: &Type,
     ) -> mir::Operand {
         if *current_type != Type::Float {
-            let temp_local = self.alloc_typed_local(mir_func, Type::Float);
+            let temp_local = self.alloc_and_add_local(Type::Float, mir_func);
             self.emit_instruction(mir::InstructionKind::IntToFloat {
                 dest: temp_local,
                 src: operand,

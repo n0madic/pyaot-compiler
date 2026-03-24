@@ -559,9 +559,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        if args.len() != 2 {
-            panic!("hasattr() requires 2 arguments");
-        }
+        self.require_exact_args(args, 2, "hasattr")?;
 
         let obj_expr = &hir_module.exprs[args[0]];
         let _obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
@@ -681,7 +679,10 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         if args.is_empty() || args.len() > 2 {
-            panic!("format() requires 1 or 2 arguments");
+            return Err(pyaot_diagnostics::CompilerError::type_error(
+                format!("format() requires 1 or 2 argument(s), got {}", args.len()),
+                pyaot_utils::Span::dummy(),
+            ));
         }
 
         let value_expr = &hir_module.exprs[args[0]];
@@ -718,9 +719,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        if args.len() != 3 {
-            panic!("setattr() requires 3 arguments");
-        }
+        self.require_exact_args(args, 3, "setattr")?;
 
         let obj_expr = &hir_module.exprs[args[0]];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;

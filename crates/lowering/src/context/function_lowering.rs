@@ -5,8 +5,6 @@ use pyaot_hir as hir;
 use pyaot_mir::{self as mir, ValueKind};
 use pyaot_types::Type;
 
-use crate::utils::is_heap_type;
-
 use super::Lowering;
 
 impl<'a> Lowering<'a> {
@@ -171,7 +169,7 @@ impl<'a> Lowering<'a> {
                 id: local_id,
                 name: None, // Name is in var_to_local mapping
                 ty: param_ty.clone(),
-                is_gc_root: is_cell_param || is_heap_type(&param_ty), // Cells are heap objects
+                is_gc_root: is_cell_param || param_ty.is_heap(), // Cells are heap objects
             };
             params.push(mir_param);
         }

@@ -185,9 +185,11 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // TODO: unknown field or non-class type — this should emit a diagnostic error rather
-        // than silently returning None so the user receives a clear compile-time message.
-        Ok(mir::Operand::Constant(mir::Constant::None))
+        let attr_name = self.resolve(attr);
+        Err(pyaot_diagnostics::CompilerError::semantic_error(
+            format!("unknown attribute '{}'", attr_name),
+            obj_expr.span,
+        ))
     }
 
     /// Lower a super() call: super().method(args)

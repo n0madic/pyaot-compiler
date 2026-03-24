@@ -122,7 +122,7 @@ impl<'a> Lowering<'a> {
         let exp_float = self.promote_to_float_if_needed(mir_func, exp_operand, &exp_type);
 
         // Create result local and emit runtime call
-        let result_local = self.alloc_typed_local(mir_func, Type::Float);
+        let result_local = self.alloc_and_add_local(Type::Float, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
             func: mir::RuntimeFunc::PowFloat,
@@ -263,7 +263,7 @@ impl<'a> Lowering<'a> {
 
                     // Result type matches element type (for heap types, use heap object type)
                     let result_type = elem_type.as_ref().clone();
-                    let result_local = self.alloc_typed_local(mir_func, result_type);
+                    let result_local = self.alloc_and_add_local(result_type, mir_func);
 
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
@@ -290,7 +290,7 @@ impl<'a> Lowering<'a> {
                 } else {
                     (Type::Int, ElementKind::Int)
                 };
-                let result_local = self.alloc_typed_local(mir_func, result_type);
+                let result_local = self.alloc_and_add_local(result_type, mir_func);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -337,7 +337,7 @@ impl<'a> Lowering<'a> {
                     let elem_tag_operand = mir::Operand::Constant(mir::Constant::Int(elem_tag));
 
                     // Result type matches first element type (for heterogeneous tuples)
-                    let result_local = self.alloc_typed_local(mir_func, first_elem_type);
+                    let result_local = self.alloc_and_add_local(first_elem_type, mir_func);
 
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
@@ -364,7 +364,7 @@ impl<'a> Lowering<'a> {
                 } else {
                     (Type::Int, ElementKind::Int)
                 };
-                let result_local = self.alloc_typed_local(mir_func, result_type);
+                let result_local = self.alloc_and_add_local(result_type, mir_func);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -433,7 +433,7 @@ impl<'a> Lowering<'a> {
                     // Unbox the result if it's a primitive type
                     let elem_t = elem_type.as_ref();
                     if matches!(elem_t, Type::Int) {
-                        let unboxed_local = self.alloc_typed_local(mir_func, Type::Int);
+                        let unboxed_local = self.alloc_and_add_local(Type::Int, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: unboxed_local,
                             func: mir::RuntimeFunc::UnboxInt,
@@ -441,7 +441,7 @@ impl<'a> Lowering<'a> {
                         });
                         return Ok(mir::Operand::Local(unboxed_local));
                     } else if matches!(elem_t, Type::Float) {
-                        let unboxed_local = self.alloc_typed_local(mir_func, Type::Float);
+                        let unboxed_local = self.alloc_and_add_local(Type::Float, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: unboxed_local,
                             func: mir::RuntimeFunc::UnboxFloat,
@@ -462,7 +462,7 @@ impl<'a> Lowering<'a> {
                 } else {
                     (Type::Int, ElementKind::Int)
                 };
-                let result_local = self.alloc_typed_local(mir_func, result_type);
+                let result_local = self.alloc_and_add_local(result_type, mir_func);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -508,7 +508,7 @@ impl<'a> Lowering<'a> {
                     args: vec![mir::Operand::Local(iter_local)],
                 });
 
-                let result_local = self.alloc_typed_local(mir_func, iter_result_type.clone());
+                let result_local = self.alloc_and_add_local(iter_result_type.clone(), mir_func);
                 if is_float_iter {
                     // The iterator yields a pointer to a boxed float object (since list[float]
                     // always uses ELEM_HEAP_OBJ storage). Unbox to get the raw f64 value.
@@ -564,7 +564,7 @@ impl<'a> Lowering<'a> {
                 // to get a raw f64 for comparison (list[float] uses ELEM_HEAP_OBJ storage,
                 // so the iterator returns a pointer to a boxed float, not raw float bits).
                 let item_operand = if is_float_iter {
-                    let float_local = self.alloc_typed_local(mir_func, Type::Float);
+                    let float_local = self.alloc_and_add_local(Type::Float, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: float_local,
                         func: mir::RuntimeFunc::UnboxFloat,
@@ -575,7 +575,7 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Local(next_local)
                 };
 
-                let cmp_local = self.alloc_typed_local(mir_func, Type::Bool);
+                let cmp_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 self.emit_instruction(mir::InstructionKind::BinOp {
                     dest: cmp_local,
                     op: cmp_op,
@@ -638,7 +638,7 @@ impl<'a> Lowering<'a> {
         }
 
         // Create result local and initialize with first argument
-        let result_local = self.alloc_typed_local(mir_func, result_type);
+        let result_local = self.alloc_and_add_local(result_type, mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {
             dest: result_local,
             src: operands[0].clone(),
@@ -653,7 +653,7 @@ impl<'a> Lowering<'a> {
         };
 
         for operand in operands.iter().skip(1) {
-            let cmp_local = self.alloc_typed_local(mir_func, Type::Bool);
+            let cmp_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
             // cmp = (operand < result) for min, (operand > result) for max
             self.emit_instruction(mir::InstructionKind::BinOp {
@@ -745,7 +745,7 @@ impl<'a> Lowering<'a> {
         };
 
         // Create result accumulator and initialize
-        let result_local = self.alloc_typed_local(mir_func, result_type.clone());
+        let result_local = self.alloc_and_add_local(result_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {
             dest: result_local,
             src: start_operand,
@@ -808,7 +808,7 @@ impl<'a> Lowering<'a> {
                 mir::Operand::Local(next_local)
             };
 
-            let temp_result = self.alloc_typed_local(mir_func, result_type.clone());
+            let temp_result = self.alloc_and_add_local(result_type.clone(), mir_func);
             self.emit_instruction(mir::InstructionKind::BinOp {
                 dest: temp_result,
                 op: mir::BinOp::Add,
@@ -829,7 +829,7 @@ impl<'a> Lowering<'a> {
         }
 
         // List path: indexed iteration via ListLen + ListGet
-        let len_local = self.alloc_typed_local(mir_func, Type::Int);
+        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: len_local,
             func: mir::RuntimeFunc::ListLen,
@@ -837,7 +837,7 @@ impl<'a> Lowering<'a> {
         });
 
         // Create loop counter and initialize
-        let counter_local = self.alloc_typed_local(mir_func, Type::Int);
+        let counter_local = self.alloc_and_add_local(Type::Int, mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {
             dest: counter_local,
             src: mir::Operand::Constant(mir::Constant::Int(0)),
@@ -858,7 +858,7 @@ impl<'a> Lowering<'a> {
         // Loop header: check counter < len
         self.push_block(loop_header);
 
-        let cmp_local = self.alloc_typed_local(mir_func, Type::Bool);
+        let cmp_local = self.alloc_and_add_local(Type::Bool, mir_func);
         self.emit_instruction(mir::InstructionKind::BinOp {
             dest: cmp_local,
             op: mir::BinOp::Lt,
@@ -893,7 +893,7 @@ impl<'a> Lowering<'a> {
 
         // Unbox float elements (ListGet returns boxed pointer for floats)
         let unboxed_item = if element_type == Type::Float {
-            let unboxed_local = self.alloc_typed_local(mir_func, Type::Float);
+            let unboxed_local = self.alloc_and_add_local(Type::Float, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: unboxed_local,
                 func: mir::RuntimeFunc::UnboxFloat,
@@ -912,7 +912,7 @@ impl<'a> Lowering<'a> {
         };
 
         // result = result + item
-        let temp_result = self.alloc_typed_local(mir_func, result_type.clone());
+        let temp_result = self.alloc_and_add_local(result_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::BinOp {
             dest: temp_result,
             op: mir::BinOp::Add,
@@ -926,7 +926,7 @@ impl<'a> Lowering<'a> {
         });
 
         // counter = counter + 1
-        let temp_counter = self.alloc_typed_local(mir_func, Type::Int);
+        let temp_counter = self.alloc_and_add_local(Type::Int, mir_func);
         self.emit_instruction(mir::InstructionKind::BinOp {
             dest: temp_counter,
             op: mir::BinOp::Add,
@@ -976,7 +976,7 @@ impl<'a> Lowering<'a> {
         let result_elem_ty = if is_float { Type::Float } else { Type::Int };
 
         // Compute a // b
-        let quot_local = self.alloc_typed_local(mir_func, result_elem_ty.clone());
+        let quot_local = self.alloc_and_add_local(result_elem_ty.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::BinOp {
             dest: quot_local,
             op: mir::BinOp::FloorDiv,
@@ -985,7 +985,7 @@ impl<'a> Lowering<'a> {
         });
 
         // Compute a % b
-        let rem_local = self.alloc_typed_local(mir_func, result_elem_ty.clone());
+        let rem_local = self.alloc_and_add_local(result_elem_ty.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::BinOp {
             dest: rem_local,
             op: mir::BinOp::Mod,
@@ -1224,7 +1224,7 @@ impl<'a> Lowering<'a> {
         // For negative step: min is stop + 1 adjusted, max is start
         // Simplified: min(range) with step>0 returns start, max returns last element
 
-        let result_local = self.alloc_typed_local(mir_func, Type::Int);
+        let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
         // We need to handle this at runtime since step can be negative
         // For now, compute directly for the common case of positive step
@@ -1246,13 +1246,13 @@ impl<'a> Lowering<'a> {
                     // Negative step: min is the last element
                     // For negative step, last = start + ((stop + 1 - start) // step) * step
                     // e.g. range(5, 0, -1) -> [5,4,3,2,1], last = 5 + ((1 - 5) // -1) * -1 = 5 + 4*-1 = 1
-                    let stop_local = self.alloc_typed_local(mir_func, Type::Int);
+                    let stop_local = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::Copy {
                         dest: stop_local,
                         src: stop,
                     });
 
-                    let start_local = self.alloc_typed_local(mir_func, Type::Int);
+                    let start_local = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::Copy {
                         dest: start_local,
                         src: start,
@@ -1260,7 +1260,7 @@ impl<'a> Lowering<'a> {
 
                     // stop_plus_1 = stop + 1 (for negative step, we add 1 instead of subtracting)
                     let one = mir::Operand::Constant(mir::Constant::Int(1));
-                    let stop_plus_1 = self.alloc_typed_local(mir_func, Type::Int);
+                    let stop_plus_1 = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::BinOp {
                         dest: stop_plus_1,
                         op: mir::BinOp::Add,
@@ -1269,7 +1269,7 @@ impl<'a> Lowering<'a> {
                     });
 
                     // diff = stop + 1 - start
-                    let diff = self.alloc_typed_local(mir_func, Type::Int);
+                    let diff = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::BinOp {
                         dest: diff,
                         op: mir::BinOp::Sub,
@@ -1277,14 +1277,14 @@ impl<'a> Lowering<'a> {
                         right: mir::Operand::Local(start_local),
                     });
 
-                    let step_local = self.alloc_typed_local(mir_func, Type::Int);
+                    let step_local = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::Copy {
                         dest: step_local,
                         src: step,
                     });
 
                     // n_steps = diff // step
-                    let n_steps = self.alloc_typed_local(mir_func, Type::Int);
+                    let n_steps = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::BinOp {
                         dest: n_steps,
                         op: mir::BinOp::FloorDiv,
@@ -1293,7 +1293,7 @@ impl<'a> Lowering<'a> {
                     });
 
                     // offset = n_steps * step
-                    let offset = self.alloc_typed_local(mir_func, Type::Int);
+                    let offset = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::BinOp {
                         dest: offset,
                         op: mir::BinOp::Mul,
@@ -1330,20 +1330,20 @@ impl<'a> Lowering<'a> {
                 if step_val > 0 {
                     // Positive step: max is the last element
                     // last = start + ((stop - start - 1) / step) * step
-                    let stop_local = self.alloc_typed_local(mir_func, Type::Int);
+                    let stop_local = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::Copy {
                         dest: stop_local,
                         src: stop,
                     });
 
-                    let start_local = self.alloc_typed_local(mir_func, Type::Int);
+                    let start_local = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::Copy {
                         dest: start_local,
                         src: start,
                     });
 
                     let one = mir::Operand::Constant(mir::Constant::Int(1));
-                    let stop_minus_1 = self.alloc_typed_local(mir_func, Type::Int);
+                    let stop_minus_1 = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::BinOp {
                         dest: stop_minus_1,
                         op: mir::BinOp::Sub,
@@ -1351,7 +1351,7 @@ impl<'a> Lowering<'a> {
                         right: one,
                     });
 
-                    let diff = self.alloc_typed_local(mir_func, Type::Int);
+                    let diff = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::BinOp {
                         dest: diff,
                         op: mir::BinOp::Sub,
@@ -1359,13 +1359,13 @@ impl<'a> Lowering<'a> {
                         right: mir::Operand::Local(start_local),
                     });
 
-                    let step_local = self.alloc_typed_local(mir_func, Type::Int);
+                    let step_local = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::Copy {
                         dest: step_local,
                         src: step,
                     });
 
-                    let n_steps = self.alloc_typed_local(mir_func, Type::Int);
+                    let n_steps = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::BinOp {
                         dest: n_steps,
                         op: mir::BinOp::FloorDiv,
@@ -1373,7 +1373,7 @@ impl<'a> Lowering<'a> {
                         right: mir::Operand::Local(step_local),
                     });
 
-                    let offset = self.alloc_typed_local(mir_func, Type::Int);
+                    let offset = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::BinOp {
                         dest: offset,
                         op: mir::BinOp::Mul,
@@ -1402,20 +1402,20 @@ impl<'a> Lowering<'a> {
                 }
             } else {
                 // Dynamic step - assume positive, compute last element
-                let stop_local = self.alloc_typed_local(mir_func, Type::Int);
+                let stop_local = self.alloc_and_add_local(Type::Int, mir_func);
                 self.emit_instruction(mir::InstructionKind::Copy {
                     dest: stop_local,
                     src: stop,
                 });
 
-                let start_local = self.alloc_typed_local(mir_func, Type::Int);
+                let start_local = self.alloc_and_add_local(Type::Int, mir_func);
                 self.emit_instruction(mir::InstructionKind::Copy {
                     dest: start_local,
                     src: start,
                 });
 
                 let one = mir::Operand::Constant(mir::Constant::Int(1));
-                let stop_minus_1 = self.alloc_typed_local(mir_func, Type::Int);
+                let stop_minus_1 = self.alloc_and_add_local(Type::Int, mir_func);
                 self.emit_instruction(mir::InstructionKind::BinOp {
                     dest: stop_minus_1,
                     op: mir::BinOp::Sub,
@@ -1423,7 +1423,7 @@ impl<'a> Lowering<'a> {
                     right: one,
                 });
 
-                let diff = self.alloc_typed_local(mir_func, Type::Int);
+                let diff = self.alloc_and_add_local(Type::Int, mir_func);
                 self.emit_instruction(mir::InstructionKind::BinOp {
                     dest: diff,
                     op: mir::BinOp::Sub,
@@ -1431,13 +1431,13 @@ impl<'a> Lowering<'a> {
                     right: mir::Operand::Local(start_local),
                 });
 
-                let step_local = self.alloc_typed_local(mir_func, Type::Int);
+                let step_local = self.alloc_and_add_local(Type::Int, mir_func);
                 self.emit_instruction(mir::InstructionKind::Copy {
                     dest: step_local,
                     src: step,
                 });
 
-                let n_steps = self.alloc_typed_local(mir_func, Type::Int);
+                let n_steps = self.alloc_and_add_local(Type::Int, mir_func);
                 self.emit_instruction(mir::InstructionKind::BinOp {
                     dest: n_steps,
                     op: mir::BinOp::FloorDiv,
@@ -1445,7 +1445,7 @@ impl<'a> Lowering<'a> {
                     right: mir::Operand::Local(step_local),
                 });
 
-                let offset = self.alloc_typed_local(mir_func, Type::Int);
+                let offset = self.alloc_and_add_local(Type::Int, mir_func);
                 self.emit_instruction(mir::InstructionKind::BinOp {
                     dest: offset,
                     op: mir::BinOp::Mul,

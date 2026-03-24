@@ -6,7 +6,6 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 
 use crate::context::Lowering;
-use crate::utils::is_heap_type;
 
 impl<'a> Lowering<'a> {
     /// Lower an index expression: obj[index]
@@ -123,7 +122,7 @@ impl<'a> Lowering<'a> {
                             id: result_local,
                             name: None,
                             ty: (**elem_ty).clone(),
-                            is_gc_root: is_heap_type(elem_ty),
+                            is_gc_root: elem_ty.is_heap(),
                         });
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: result_local,
@@ -165,7 +164,7 @@ impl<'a> Lowering<'a> {
                     id: result_local,
                     name: None,
                     ty: elem_ty.clone(),
-                    is_gc_root: is_heap_type(&elem_ty),
+                    is_gc_root: elem_ty.is_heap(),
                 });
 
                 // Choose the appropriate getter based on element type and storage
@@ -195,7 +194,7 @@ impl<'a> Lowering<'a> {
                     id: result_local,
                     name: None,
                     ty: (**value_ty).clone(),
-                    is_gc_root: is_heap_type(value_ty),
+                    is_gc_root: value_ty.is_heap(),
                 });
                 // Box key if needed (int/bool keys need boxing)
                 let index_type = self.get_expr_type(index_expr, hir_module);
@@ -260,7 +259,7 @@ impl<'a> Lowering<'a> {
                         id: result_local,
                         name: None,
                         ty: return_ty.clone(),
-                        is_gc_root: is_heap_type(&return_ty),
+                        is_gc_root: return_ty.is_heap(),
                     });
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,

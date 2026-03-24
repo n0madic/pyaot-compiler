@@ -52,6 +52,8 @@ pub struct CrossModuleClassInfo {
     pub field_types: HashMap<String, Type>,
     /// Map method name to its return type
     pub method_return_types: HashMap<String, Type>,
+    /// Total field count including inherited fields (for instance allocation)
+    pub total_field_count: usize,
 }
 
 /// Class information for lowering (compiled from HIR ClassDef)
