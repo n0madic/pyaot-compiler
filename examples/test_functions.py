@@ -1494,4 +1494,30 @@ assert len(_rti_empty) == 0, "bidirectional: empty list in return"
 
 print("Return type inference tests passed!")
 
+# ===== Regression: closure with no captures as key function =====
+# Non-capturing closures (defined as inner functions) should work in sorted/min/max.
+
+def test_non_capturing_key():
+    def by_length(s: str) -> int:
+        return len(s)
+
+    words: list[str] = ["banana", "fig", "apple"]
+    result: list[str] = sorted(words, key=by_length)
+    assert result == ["fig", "apple", "banana"], f"non-capturing key: {result}"
+
+test_non_capturing_key()
+print("Non-capturing closure as key function: PASS")
+
+# ===== Regression: function passed as argument =====
+def apply_fn(f, x: int) -> int:
+    return f(x)
+
+def double_it(x: int) -> int:
+    return x * 2
+
+assert apply_fn(double_it, 5) == 10, "function passed as argument"
+assert apply_fn(double_it, 0) == 0, "function passed as argument (zero)"
+
+print("Function passed as argument: PASS")
+
 print("All function tests passed!")

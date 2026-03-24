@@ -151,4 +151,50 @@ result10 = base_8cap(100)
 assert result10 == 128, f"expected 128, got {result10}"  # 100 + 1+2+3+4+5+6+7 = 128
 print("8 captures (func + 7 args): PASS")
 
+# ===== Regression: indirect call through function parameter in wrapper =====
+# This tests the case where a wrapper function calls `func(x, y)` where `func`
+# is a parameter holding a function pointer. Previously this silently returned None.
+
+def simple_decorator(func):
+    def wrapper(x: int, y: int) -> int:
+        result: int = func(x, y)
+        return result
+    return wrapper
+
+@simple_decorator
+def add_values(x: int, y: int) -> int:
+    return x + y
+
+result_indirect = add_values(10, 20)
+assert result_indirect == 30, f"indirect call in wrapper: expected 30, got {result_indirect}"
+print("Indirect call through wrapper parameter: PASS")
+
+# Decorator wrapper that transforms the result
+def double_result(func):
+    def wrapper(a: int, b: int) -> int:
+        r: int = func(a, b)
+        return r * 2
+    return wrapper
+
+@double_result
+def mul_two(a: int, b: int) -> int:
+    return a * b
+
+result_double = mul_two(3, 4)
+assert result_double == 24, f"double_result decorator: expected 24, got {result_double}"
+print("Decorator wrapper with result transformation: PASS")
+
+# Chained simple decorators (identity-like)
+def log_decorator(func):
+    def wrapper(x: int) -> int:
+        return func(x)
+    return wrapper
+
+@log_decorator
+def inc(x: int) -> int:
+    return x + 1
+
+assert inc(5) == 6, f"chained identity wrapper: expected 6, got {inc(5)}"
+print("Identity wrapper decorator: PASS")
+
 print("All decorator factory tests passed!")

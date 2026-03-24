@@ -1341,4 +1341,63 @@ assert ca.x == 42, "Class attr modified through instance should be 42"
 
 print("Class attribute access through instances: PASS")
 
+# ===== Regression: class attribute access via ClassName.attr =====
+# Tests that class-level attributes are accessible both through
+# the class name and through instances.
+
+class RegClassAttr:
+    count: int = 0
+    label: str = "default"
+
+# Access through class name
+assert RegClassAttr.count == 0, "class attr: initial int value"
+assert RegClassAttr.label == "default", "class attr: initial str value"
+
+# Modify through class name
+RegClassAttr.count = 99
+assert RegClassAttr.count == 99, f"class attr: modified int, got {RegClassAttr.count}"
+
+RegClassAttr.label = "updated"
+assert RegClassAttr.label == "updated", f"class attr: modified str, got {RegClassAttr.label}"
+
+print("Class attribute access regression: PASS")
+
+# ===== Regression: instance field access on user-defined classes =====
+class FieldAccess:
+    def __init__(self, a: int, b: str, c: float):
+        self.a = a
+        self.b = b
+        self.c = c
+
+fa = FieldAccess(42, "hello", 3.14)
+assert fa.a == 42, f"field access: int, got {fa.a}"
+assert fa.b == "hello", f"field access: str, got {fa.b}"
+
+# Modify fields
+fa.a = 100
+fa.b = "world"
+assert fa.a == 100, "field modification: int"
+assert fa.b == "world", "field modification: str"
+
+print("Instance field access regression: PASS")
+
+# ===== Regression: class with __call__ dunder =====
+class CallableAdder:
+    offset: int
+
+    def __init__(self, offset: int):
+        self.offset = offset
+
+    def __call__(self, x: int) -> int:
+        return x + self.offset
+
+cadder = CallableAdder(10)
+result_call = cadder(5)
+assert result_call == 15, f"__call__ dunder: expected 15, got {result_call}"
+
+cadder2 = CallableAdder(100)
+assert cadder2(7) == 107, "__call__ with different offset"
+
+print("Callable class (__call__) regression: PASS")
+
 print("All class tests passed!")

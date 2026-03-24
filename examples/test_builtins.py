@@ -1378,3 +1378,30 @@ assert str(42) == "42", "builtin return type: str(int) → str"
 assert bool(1) == True, "builtin return type: bool(int) → bool"
 
 print("Builtin return type inference tests passed!")
+
+# ===== SECTION: hasattr / setattr / getattr =====
+
+class HasAttrTest:
+    def __init__(self, x: int, name: str):
+        self.x = x
+        self.name = name
+
+hat = HasAttrTest(10, "hello")
+
+# hasattr - existing attributes
+assert hasattr(hat, "x") == True, "hasattr: existing int field"
+assert hasattr(hat, "name") == True, "hasattr: existing str field"
+
+# hasattr - non-existing attribute
+assert hasattr(hat, "missing") == False, "hasattr: non-existing field"
+assert hasattr(hat, "xyz") == False, "hasattr: another non-existing field"
+
+# setattr - modify existing field
+setattr(hat, "x", 42)
+assert hat.x == 42, f"setattr: expected x=42, got {hat.x}"
+
+# setattr - modify string field
+setattr(hat, "name", "world")
+assert hat.name == "world", f"setattr: expected name=world, got {hat.name}"
+
+print("hasattr/setattr tests passed!")

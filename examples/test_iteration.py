@@ -957,4 +957,34 @@ test_enumerate_range_positive_step()
 
 print("Enumerate regression tests passed!")
 
+# ===== Regression: sorted/min/max with non-capturing lambda key =====
+# Non-capturing lambdas (no free variables) should work as key functions.
+
+# sorted with lambda key (no captures)
+words_s: list[str] = ["banana", "fig", "apple", "date"]
+sorted_by_len: list[str] = sorted(words_s, key=lambda w: len(w))
+assert sorted_by_len == ["fig", "date", "apple", "banana"], f"sorted lambda key: {sorted_by_len}"
+
+# sorted with lambda key and reverse
+sorted_rev: list[str] = sorted(words_s, key=lambda w: len(w), reverse=True)
+assert sorted_rev == ["banana", "apple", "date", "fig"], f"sorted lambda key reverse: {sorted_rev}"
+
+# min/max with user-defined key function (no captures)
+def neg(x: int) -> int:
+    return -x
+
+nums_mm: list[int] = [3, 1, 4, 1, 5]
+assert min(nums_mm, key=neg) == 5, "min with negation key"
+assert max(nums_mm, key=neg) == 1, "max with negation key"
+
+# list.sort with user-defined key (no captures)
+def sort_by_len(s: str) -> int:
+    return len(s)
+
+items: list[str] = ["cc", "a", "bbb"]
+items.sort(key=sort_by_len)
+assert items == ["a", "cc", "bbb"], f"list.sort named key: {items}"
+
+print("sorted/min/max key function regression tests passed!")
+
 print("All iteration and comprehension tests passed!")
