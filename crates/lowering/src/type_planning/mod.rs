@@ -22,6 +22,7 @@ impl<'a> Lowering<'a> {
     pub(crate) fn run_type_planning(&mut self, hir_module: &hir::Module) {
         self.precompute_closure_capture_types(hir_module);
         self.process_module_decorated_functions(hir_module);
+        self.refine_empty_container_types(hir_module);
         self.infer_all_return_types(hir_module);
     }
 

@@ -108,9 +108,9 @@ impl<'a> Lowering<'a> {
             .iter()
             .filter(|kw| {
                 let kw_name = self.resolve(kw.name);
-                regular_params.iter().any(|p| {
-                    p.default.is_none() && self.resolve(p.name) == kw_name
-                })
+                regular_params
+                    .iter()
+                    .any(|p| p.default.is_none() && self.resolve(p.name) == kw_name)
             })
             .count();
 
@@ -118,7 +118,11 @@ impl<'a> Lowering<'a> {
         if effective_count < required_count {
             // Find the first missing parameter
             let positional_names: std::collections::HashSet<_> = (0..arg_expr_ids.len())
-                .filter_map(|i| regular_params.get(i).map(|p| self.resolve(p.name).to_string()))
+                .filter_map(|i| {
+                    regular_params
+                        .get(i)
+                        .map(|p| self.resolve(p.name).to_string())
+                })
                 .collect();
             let kwarg_names: std::collections::HashSet<_> = kwargs
                 .iter()
@@ -157,7 +161,10 @@ impl<'a> Lowering<'a> {
         // Check each kwarg type against its matching param type
         for kw in kwargs {
             let kw_name = self.resolve(kw.name);
-            if let Some(param) = regular_params.iter().find(|p| self.resolve(p.name) == kw_name) {
+            if let Some(param) = regular_params
+                .iter()
+                .find(|p| self.resolve(p.name) == kw_name)
+            {
                 if let Some(ref param_ty) = param.ty {
                     self.check_expr_type(kw.value, param_ty, hir_module);
                 }

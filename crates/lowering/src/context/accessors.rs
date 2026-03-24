@@ -56,6 +56,8 @@ impl<'a> Lowering<'a> {
         // First check local var_types
         self.var_types
             .get(var_id)
+            // Then check refined types from empty container analysis
+            .or_else(|| self.refined_var_types.get(var_id))
             // Fall back to global_var_types for global variables
             .or_else(|| self.global_var_types.get(var_id))
     }

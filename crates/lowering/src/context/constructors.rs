@@ -69,6 +69,8 @@ impl<'a> Lowering<'a> {
             class_id_offset: 0,
             pending_varargs_from_unpack: None,
             pending_kwargs_from_unpack: None,
+            // Refined types for empty containers (persists across functions)
+            refined_var_types: IndexMap::with_capacity(16),
             // Memoized expression types (persists across functions)
             expr_types: HashMap::with_capacity(256),
             default_value_slots: IndexMap::with_capacity(func_count / 2 + 1),

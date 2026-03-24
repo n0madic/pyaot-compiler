@@ -33,6 +33,6 @@ examples/simple_out
 examples/*_out
 *.o
 
-*PLAN*
+*PLAN*.md
 test.py
 IMPROVEMENT_PLAN.md

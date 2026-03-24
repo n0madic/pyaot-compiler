@@ -200,6 +200,10 @@ pub struct Lowering<'a> {
     /// Runtime kwargs dict from **kwargs unpacking (used during resolve_call_args)
     /// Contains (dict_operand, value_type) for extracting kwargs at runtime
     pub(crate) pending_kwargs_from_unpack: Option<(LocalId, Type)>,
+    /// Refined types for variables from empty container analysis.
+    /// Persists across function lowerings (unlike var_types which is cleared per function).
+    /// Used to give empty lists/sets the correct elem_tag based on subsequent usage.
+    pub(crate) refined_var_types: IndexMap<VarId, Type>,
     /// Memoized expression types — persists across functions (ExprIds are unique per-module).
     /// Replaces the former RefCell<HashMap> expr_type_cache.
     pub(crate) expr_types: HashMap<hir::ExprId, Type>,
