@@ -444,6 +444,25 @@ impl<'a> Lowering<'a> {
 
                 return Ok(mir::Operand::Local(result_local));
             }
+
+            // General fallback: call through variable as an indirect function pointer.
+            // This handles cases like calling a parameter that holds a function reference
+            // (e.g., `func` parameter in decorator wrappers not detected by is_func_ptr_param).
+            if let Some(local_id) = self.get_var_local(var_id) {
+                let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
+                let result_ty = self
+                    .current_func_return_type
+                    .clone()
+                    .or_else(|| expr.ty.clone())
+                    .unwrap_or(Type::Any);
+                let result_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
+                self.emit_instruction(mir::InstructionKind::Call {
+                    dest: result_local,
+                    func: mir::Operand::Local(local_id),
+                    args: arg_operands,
+                });
+                return Ok(mir::Operand::Local(result_local));
+            }
         }
 
         // We support direct function calls where func is a FuncRef
