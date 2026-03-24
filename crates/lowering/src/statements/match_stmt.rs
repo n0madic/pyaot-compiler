@@ -239,10 +239,15 @@ impl<'a> Lowering<'a> {
                             dest: true_local,
                             value: mir::Constant::Bool(true),
                         });
+                        // For Union/Any subjects, use object comparison to handle boxed values
+                        let cmp_type = match subject_type {
+                            Type::Union(_) | Type::Any => subject_type,
+                            _ => &Type::Bool,
+                        };
                         self.emit_equality_check(
                             subject,
                             mir::Operand::Local(true_local),
-                            &Type::Bool,
+                            cmp_type,
                             mir_func,
                         )?
                     }
@@ -253,10 +258,14 @@ impl<'a> Lowering<'a> {
                             dest: false_local,
                             value: mir::Constant::Bool(false),
                         });
+                        let cmp_type = match subject_type {
+                            Type::Union(_) | Type::Any => subject_type,
+                            _ => &Type::Bool,
+                        };
                         self.emit_equality_check(
                             subject,
                             mir::Operand::Local(false_local),
-                            &Type::Bool,
+                            cmp_type,
                             mir_func,
                         )?
                     }
@@ -310,7 +319,8 @@ impl<'a> Lowering<'a> {
             }
 
             hir::Pattern::MatchOr(patterns) => {
-                // Or pattern: check each alternative with OR
+                // Or pattern: try each alternative in order; bindings come from
+                // whichever alternative actually matched.
                 if patterns.is_empty() {
                     let false_local = self.alloc_and_add_local(Type::Bool, mir_func);
                     self.emit_instruction(mir::InstructionKind::Const {
@@ -320,12 +330,15 @@ impl<'a> Lowering<'a> {
                     return Ok((mir::Operand::Local(false_local), Vec::new()));
                 }
 
-                // Check first pattern and collect bindings (all alternatives must bind same vars)
-                // TODO: bindings should come from whichever alternative actually matched, not
-                // always the first.  Currently incorrect when alternatives bind different values
-                // (e.g. `case 1 | 2 as x` — x is always set from the first alternative's check
-                // even when the second alternative is the one that matched).
-                let (mut result_cond, bindings) = self.generate_pattern_check(
+                // Pre-allocate result local (init false)
+                let or_result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                self.emit_instruction(mir::InstructionKind::Const {
+                    dest: or_result_local,
+                    value: mir::Constant::Bool(false),
+                });
+
+                // Check first alternative to discover binding names/types
+                let (first_cond, first_bindings) = self.generate_pattern_check(
                     &patterns[0],
                     subject.clone(),
                     subject_type,
@@ -333,26 +346,100 @@ impl<'a> Lowering<'a> {
                     mir_func,
                 )?;
 
-                // Check remaining patterns with OR
+                // Pre-allocate shared binding locals for all alternatives
+                let binding_locals: Vec<(pyaot_utils::VarId, pyaot_utils::LocalId, Type)> =
+                    first_bindings
+                        .iter()
+                        .map(|(var_id, _, ty)| {
+                            let local = self.alloc_and_add_local(ty.clone(), mir_func);
+                            (*var_id, local, ty.clone())
+                        })
+                        .collect();
+
+                // Create the final merge block
+                let merge_bb = self.new_block();
+                let merge_bb_id = merge_bb.id;
+
+                // First alternative: if it matches, write bindings and jump to merge
+                let write_bb = self.new_block();
+                let next_bb = self.new_block();
+                let write_bb_id = write_bb.id;
+                let next_bb_id = next_bb.id;
+
+                self.current_block_mut().terminator = mir::Terminator::Branch {
+                    cond: first_cond,
+                    then_block: write_bb_id,
+                    else_block: next_bb_id,
+                };
+
+                self.push_block(write_bb);
+                for (i, (_, value, _)) in first_bindings.iter().enumerate() {
+                    if i < binding_locals.len() {
+                        self.emit_instruction(mir::InstructionKind::Copy {
+                            dest: binding_locals[i].1,
+                            src: value.clone(),
+                        });
+                    }
+                }
+                self.emit_instruction(mir::InstructionKind::Const {
+                    dest: or_result_local,
+                    value: mir::Constant::Bool(true),
+                });
+                self.current_block_mut().terminator = mir::Terminator::Goto(merge_bb_id);
+
+                // Remaining alternatives
+                let mut prev_else_bb = next_bb;
                 for pattern in &patterns[1..] {
-                    let (alt_cond, _) = self.generate_pattern_check(
+                    self.push_block(prev_else_bb);
+                    let (alt_cond, alt_bindings) = self.generate_pattern_check(
                         pattern,
                         subject.clone(),
                         subject_type,
                         hir_module,
                         mir_func,
                     )?;
-                    let or_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                    self.emit_instruction(mir::InstructionKind::BinOp {
-                        dest: or_local,
-                        op: mir::BinOp::Or,
-                        left: result_cond,
-                        right: alt_cond,
+
+                    let alt_write_bb = self.new_block();
+                    let alt_next_bb = self.new_block();
+                    let alt_write_bb_id = alt_write_bb.id;
+                    let alt_next_bb_id = alt_next_bb.id;
+
+                    self.current_block_mut().terminator = mir::Terminator::Branch {
+                        cond: alt_cond,
+                        then_block: alt_write_bb_id,
+                        else_block: alt_next_bb_id,
+                    };
+
+                    self.push_block(alt_write_bb);
+                    for (i, (_, value, _)) in alt_bindings.iter().enumerate() {
+                        if i < binding_locals.len() {
+                            self.emit_instruction(mir::InstructionKind::Copy {
+                                dest: binding_locals[i].1,
+                                src: value.clone(),
+                            });
+                        }
+                    }
+                    self.emit_instruction(mir::InstructionKind::Const {
+                        dest: or_result_local,
+                        value: mir::Constant::Bool(true),
                     });
-                    result_cond = mir::Operand::Local(or_local);
+                    self.current_block_mut().terminator = mir::Terminator::Goto(merge_bb_id);
+
+                    prev_else_bb = alt_next_bb;
                 }
 
-                Ok((result_cond, bindings))
+                // Last else: no alternative matched, jump to merge (or_result_local stays false)
+                self.push_block(prev_else_bb);
+                self.current_block_mut().terminator = mir::Terminator::Goto(merge_bb_id);
+
+                self.push_block(merge_bb);
+
+                let final_bindings: Vec<(pyaot_utils::VarId, mir::Operand, Type)> = binding_locals
+                    .iter()
+                    .map(|(var_id, local, ty)| (*var_id, mir::Operand::Local(*local), ty.clone()))
+                    .collect();
+
+                Ok((mir::Operand::Local(or_result_local), final_bindings))
             }
 
             hir::Pattern::MatchSequence { patterns } => self.generate_sequence_pattern_check(
@@ -491,6 +578,31 @@ impl<'a> Lowering<'a> {
             left: mir::Operand::Local(len_local),
             right: mir::Operand::Local(expected_len_local),
         });
+
+        // Pre-allocate result local for the overall sequence check.
+        // Initialized to false; set to the combined element check result only
+        // inside the elements block (where the length check passed).
+        let sequence_result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+        self.emit_instruction(mir::InstructionKind::Const {
+            dest: sequence_result_local,
+            value: mir::Constant::Bool(false),
+        });
+
+        // Short-circuit: only access elements if the length check passed.
+        // Without this, ListGet/TupleGet at out-of-bounds indices would crash.
+        let elements_bb = self.new_block();
+        let skip_bb = self.new_block();
+        let elements_bb_id = elements_bb.id;
+        let skip_bb_id = skip_bb.id;
+
+        self.current_block_mut().terminator = mir::Terminator::Branch {
+            cond: mir::Operand::Local(len_check_local),
+            then_block: elements_bb_id,
+            else_block: skip_bb_id,
+        };
+
+        // Elements block: length is verified, safe to access elements
+        self.push_block(elements_bb);
 
         let mut result_cond = mir::Operand::Local(len_check_local);
 
@@ -660,7 +772,19 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        Ok((result_cond, bindings))
+        // Write combined result into sequence_result_local and jump to merge
+        self.emit_instruction(mir::InstructionKind::Copy {
+            dest: sequence_result_local,
+            src: result_cond,
+        });
+        self.current_block_mut().terminator = mir::Terminator::Goto(skip_bb_id);
+
+        // Skip block: merge point for both paths.
+        // On false path, sequence_result_local remains false (pre-initialized).
+        // On true path, it holds the combined element check result.
+        self.push_block(skip_bb);
+
+        Ok((mir::Operand::Local(sequence_result_local), bindings))
     }
 
     /// Generate code to check a mapping pattern (dict)
@@ -702,6 +826,14 @@ impl<'a> Lowering<'a> {
                 args: vec![ctx.subject.clone(), key_operand.clone()],
             });
 
+            // Pre-allocate combined_local and initialize to current result_cond.
+            // This ensures the value is valid on both true and false paths.
+            let combined_local = self.alloc_and_add_local(Type::Bool, mir_func);
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest: combined_local,
+                src: result_cond.clone(),
+            });
+
             // Branch: if key exists, get value; otherwise skip to merge with false
             let get_bb = self.new_block();
             let merge_bb = self.new_block();
@@ -734,29 +866,27 @@ impl<'a> Lowering<'a> {
 
             bindings.extend(pattern_bindings);
 
-            // Combine with current result_cond
-            let combined_local = self.alloc_and_add_local(Type::Bool, mir_func);
+            // Overwrite combined_local with AND(result_cond, pattern_cond) on true path
             self.emit_instruction(mir::InstructionKind::BinOp {
                 dest: combined_local,
                 op: mir::BinOp::And,
                 left: result_cond.clone(),
                 right: pattern_cond,
             });
-            result_cond = mir::Operand::Local(combined_local);
 
             // Jump to merge
             self.current_block_mut().terminator = mir::Terminator::Goto(merge_bb_id);
 
-            // Merge block (false path lands here directly with result_cond unchanged —
-            // since contains was false, the overall AND is already false)
+            // Merge block: combined_local is valid on both paths
+            // (pre-initialized on false path, overwritten on true path)
             self.push_block(merge_bb);
 
-            // After merge: AND result_cond with contains_local to account for the false path
+            // AND combined_local with contains_local to produce false on the false path
             let final_local = self.alloc_and_add_local(Type::Bool, mir_func);
             self.emit_instruction(mir::InstructionKind::BinOp {
                 dest: final_local,
                 op: mir::BinOp::And,
-                left: result_cond,
+                left: mir::Operand::Local(combined_local),
                 right: mir::Operand::Local(contains_local),
             });
             result_cond = mir::Operand::Local(final_local);
@@ -884,12 +1014,13 @@ impl<'a> Lowering<'a> {
             result_cond = mir::Operand::Local(combined_local);
         }
 
-        // TODO: positional class patterns require __match_args__ support.
-        // Positional patterns in `case ClassName(p1, p2)` map to the class's
-        // `__match_args__` tuple to resolve attribute names, which we do not
-        // yet support.  Until then, positional sub-patterns are silently
-        // ignored and only keyword patterns (`case ClassName(attr=p)`) work.
-        let _ = patterns;
+        // Positional class patterns require __match_args__ support, which is not
+        // yet implemented.  Emit an error instead of silently ignoring sub-patterns.
+        if !patterns.is_empty() {
+            return Err(pyaot_diagnostics::CompilerError::codegen_error(
+                "positional class patterns are not yet supported (__match_args__ required)",
+            ));
+        }
 
         Ok((result_cond, bindings))
     }

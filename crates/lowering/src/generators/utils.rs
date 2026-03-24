@@ -44,7 +44,9 @@ impl<'a> Lowering<'a> {
                 } else if let Some(&mir_local) = var_to_mir_local.get(var_id) {
                     Ok(mir::Operand::Local(mir_local))
                 } else {
-                    Ok(mir::Operand::Constant(mir::Constant::Int(0)))
+                    Err(pyaot_diagnostics::CompilerError::codegen_error(
+                        "unresolved variable in generator yield expression",
+                    ))
                 }
             }
             hir::ExprKind::Attribute { obj, attr } => {
@@ -117,8 +119,9 @@ impl<'a> Lowering<'a> {
                         }
                     }
                 }
-                // Unsupported attribute access pattern — fall back to None
-                Ok(mir::Operand::Constant(mir::Constant::Int(0)))
+                Err(pyaot_diagnostics::CompilerError::codegen_error(
+                    "unsupported attribute access pattern in generator yield expression",
+                ))
             }
             hir::ExprKind::UnOp { op, operand } => {
                 let operand_expr = &hir_module.exprs[*operand];
@@ -227,10 +230,9 @@ impl<'a> Lowering<'a> {
 
                 Ok(mir::Operand::Local(result_local))
             }
-            _ => {
-                // For other expressions, return 0 as fallback
-                Ok(mir::Operand::Constant(mir::Constant::Int(0)))
-            }
+            _ => Err(pyaot_diagnostics::CompilerError::codegen_error(
+                "unsupported expression in generator yield",
+            )),
         }
     }
 
@@ -256,7 +258,9 @@ impl<'a> Lowering<'a> {
                 } else if let Some(&mir_local) = var_to_mir_local.get(var_id) {
                     Ok(mir::Operand::Local(mir_local))
                 } else {
-                    Ok(mir::Operand::Constant(mir::Constant::Int(0)))
+                    Err(pyaot_diagnostics::CompilerError::codegen_error(
+                        "unresolved variable in generator filter expression",
+                    ))
                 }
             }
             hir::ExprKind::BinOp { op, left, right } => {
@@ -359,10 +363,9 @@ impl<'a> Lowering<'a> {
 
                 Ok(mir::Operand::Local(result_local))
             }
-            _ => {
-                // For other expressions, return false as fallback
-                Ok(mir::Operand::Constant(mir::Constant::Bool(false)))
-            }
+            _ => Err(pyaot_diagnostics::CompilerError::codegen_error(
+                "unsupported expression in generator filter condition",
+            )),
         }
     }
 
@@ -371,17 +374,21 @@ impl<'a> Lowering<'a> {
         &self,
         expr: &hir::Expr,
         var_to_mir_local: &HashMap<VarId, LocalId>,
-    ) -> mir::Operand {
+    ) -> Result<mir::Operand> {
         match &expr.kind {
-            hir::ExprKind::Int(n) => mir::Operand::Constant(mir::Constant::Int(*n)),
+            hir::ExprKind::Int(n) => Ok(mir::Operand::Constant(mir::Constant::Int(*n))),
             hir::ExprKind::Var(var_id) => {
                 if let Some(&mir_local) = var_to_mir_local.get(var_id) {
-                    mir::Operand::Local(mir_local)
+                    Ok(mir::Operand::Local(mir_local))
                 } else {
-                    mir::Operand::Constant(mir::Constant::Int(0))
+                    Err(pyaot_diagnostics::CompilerError::codegen_error(
+                        "unresolved variable in generator operand expression",
+                    ))
                 }
             }
-            _ => mir::Operand::Constant(mir::Constant::Int(0)),
+            _ => Err(pyaot_diagnostics::CompilerError::codegen_error(
+                "unsupported expression in generator operand",
+            )),
         }
     }
 
@@ -561,8 +568,9 @@ impl<'a> Lowering<'a> {
                         hir::ExprKind::BinOp { left, op, right } => {
                             let left_expr = &hir_module.exprs[*left];
                             let right_expr = &hir_module.exprs[*right];
-                            let left_op = self.get_operand_for_expr(left_expr, var_to_mir_local);
-                            let right_op = self.get_operand_for_expr(right_expr, var_to_mir_local);
+                            let left_op = self.get_operand_for_expr(left_expr, var_to_mir_local)?;
+                            let right_op =
+                                self.get_operand_for_expr(right_expr, var_to_mir_local)?;
                             let mir_op = match op {
                                 hir::BinOp::Add => mir::BinOp::Add,
                                 hir::BinOp::Sub => mir::BinOp::Sub,
@@ -621,8 +629,8 @@ impl<'a> Lowering<'a> {
             let left_expr = &hir_module.exprs[*left];
             let right_expr = &hir_module.exprs[*right];
 
-            let left_operand = self.get_operand_for_expr(left_expr, var_to_mir_local);
-            let right_operand = self.get_operand_for_expr(right_expr, var_to_mir_local);
+            let left_operand = self.get_operand_for_expr(left_expr, var_to_mir_local)?;
+            let right_operand = self.get_operand_for_expr(right_expr, var_to_mir_local)?;
 
             let mir_op = match op {
                 hir::CmpOp::Lt => mir::BinOp::Lt,
@@ -669,20 +677,10 @@ impl<'a> Lowering<'a> {
                 });
             }
         } else {
-            // TODO: KNOWN LIMITATION — unrecognized while-condition expression kinds
-            // (anything other than a Compare, `while True`, or a bare variable) are
-            // silently replaced with the constant `true`, turning the generator loop
-            // into an infinite loop.  This will produce silently wrong output for any
-            // generator whose while condition contains a function call, boolean
-            // operator, or other complex expression.  A proper fix requires routing
-            // the full `lower_expr` pipeline through the generator's block-building
-            // machinery instead of the simplified evaluate_while_condition helper.
-            block.instructions.push(mir::Instruction {
-                kind: mir::InstructionKind::Copy {
-                    dest: cond_result_local,
-                    src: mir::Operand::Constant(mir::Constant::Bool(true)),
-                },
-            });
+            return Err(pyaot_diagnostics::CompilerError::codegen_error(
+                "unsupported while-loop condition in generator \
+                 (only comparisons, `while True`, and bare variables are supported)",
+            ));
         }
 
         Ok(cond_result_local)

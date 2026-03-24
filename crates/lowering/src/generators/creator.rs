@@ -217,10 +217,16 @@ impl<'a> Lowering<'a> {
                                 });
                                 mir::Operand::Local(global_local)
                             } else {
-                                mir::Operand::Constant(mir::Constant::Int(0))
+                                return Err(pyaot_diagnostics::CompilerError::codegen_error(
+                                    "unresolved variable in generator creator expression",
+                                ));
                             }
                         }
-                        _ => mir::Operand::Constant(mir::Constant::Int(0)),
+                        _ => {
+                            return Err(pyaot_diagnostics::CompilerError::codegen_error(
+                                "unsupported expression in generator creator argument",
+                            ));
+                        }
                     };
                     arg_operands.push(arg_op);
                 }
@@ -358,14 +364,14 @@ impl<'a> Lowering<'a> {
                     });
                     Ok(mir::Operand::Local(dest_local))
                 } else {
-                    // TODO: handle non-global variables in generator iterables
-                    Ok(mir::Operand::Constant(mir::Constant::Int(0)))
+                    Err(pyaot_diagnostics::CompilerError::codegen_error(
+                        "unresolved variable in generator iterable expression",
+                    ))
                 }
             }
-            _ => {
-                // TODO: support more expression kinds as generator iterables
-                Ok(mir::Operand::Constant(mir::Constant::Int(0)))
-            }
+            _ => Err(pyaot_diagnostics::CompilerError::codegen_error(
+                "unsupported expression kind as generator iterable",
+            )),
         }
     }
 }

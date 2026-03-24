@@ -219,8 +219,9 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    /// Emit runtime check for range with unknown step direction
-    fn emit_range_runtime_check(
+    /// Emit runtime check for range with unknown step direction.
+    /// Used by both range loops and enumerate-range loops.
+    pub(crate) fn emit_range_runtime_check(
         &mut self,
         cond_local: pyaot_utils::LocalId,
         target_local: pyaot_utils::LocalId,

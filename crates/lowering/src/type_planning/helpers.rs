@@ -105,10 +105,20 @@ pub(crate) fn resolve_binop_type(op: &hir::BinOp, left_ty: &Type, right_ty: &Typ
     if matches!(op, hir::BinOp::Div) {
         return Some(Type::Float);
     }
-    // String operations: + (concatenation), * (repeat), % (formatting)
-    if (*left_ty == Type::Str || *right_ty == Type::Str)
-        && matches!(op, hir::BinOp::Add | hir::BinOp::Mul | hir::BinOp::Mod)
+    // String operations:
+    // - Add: str + str (concatenation) — both sides must be Str
+    // - Mul: str * int or int * str (repeat)
+    // - Mod: str % ... (formatting) — left side must be Str
+    if *left_ty == Type::Str && *right_ty == Type::Str && matches!(op, hir::BinOp::Add) {
+        return Some(Type::Str);
+    }
+    if matches!(op, hir::BinOp::Mul)
+        && ((*left_ty == Type::Str && *right_ty == Type::Int)
+            || (*left_ty == Type::Int && *right_ty == Type::Str))
     {
+        return Some(Type::Str);
+    }
+    if *left_ty == Type::Str && matches!(op, hir::BinOp::Mod) {
         return Some(Type::Str);
     }
     // Float promotion

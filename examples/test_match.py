@@ -380,4 +380,112 @@ def test_match_complex_guard():
 
 test_match_complex_guard()
 
+# Issue #1: sequence pattern short-circuit (was crashing on out-of-bounds)
+def test_match_sequence_short_subject():
+    x: list[int] = [1]
+    result: int = 0
+    match x:
+        case [a, b, c]:
+            result = 1
+        case _:
+            result = -1
+    assert result == -1
+
+test_match_sequence_short_subject()
+
+def test_match_sequence_empty_subject():
+    x: list[int] = []
+    result: int = 0
+    match x:
+        case [a]:
+            result = 1
+        case _:
+            result = -1
+    assert result == -1
+
+test_match_sequence_empty_subject()
+
+def test_match_sequence_multiple_fallthrough():
+    x: list[int] = [5]
+    result: int = 0
+    match x:
+        case [a, b, c]:
+            result = 3
+        case [a, b]:
+            result = 2
+        case [a]:
+            result = 1
+        case _:
+            result = -1
+    assert result == 1
+
+test_match_sequence_multiple_fallthrough()
+
+# Issue #3: or-pattern second alternative
+def test_match_or_pattern_second_alt():
+    x: int = 2
+    result: int = 0
+    match x:
+        case 1 | 2 | 3:
+            result = x
+        case _:
+            result = -1
+    assert result == 2
+
+test_match_or_pattern_second_alt()
+
+# Issue #4: mapping pattern key containment (control flow correctness)
+def test_match_mapping_key_missing():
+    d: dict[str, str] = {"a": "hello"}
+    result: str = ""
+    match d:
+        case {"b": v}:
+            result = v
+        case {"a": v}:
+            result = v
+        case _:
+            result = "none"
+    assert result == "hello"
+
+test_match_mapping_key_missing()
+
+def test_match_mapping_multiple_keys():
+    d: dict[str, str] = {"x": "ten", "y": "twenty"}
+    result: str = ""
+    match d:
+        case {"a": v1, "b": v2}:
+            result = v1
+        case {"x": v1, "y": v2}:
+            result = v1
+        case _:
+            result = "none"
+    assert result == "ten"
+
+test_match_mapping_multiple_keys()
+
+# Issue #10: singleton pattern matching
+def test_match_singleton_bool():
+    x: bool = True
+    result: int = 0
+    match x:
+        case True:
+            result = 1
+        case False:
+            result = 2
+    assert result == 1
+
+test_match_singleton_bool()
+
+def test_match_singleton_false():
+    x: bool = False
+    result: int = 0
+    match x:
+        case True:
+            result = 1
+        case False:
+            result = 2
+    assert result == 2
+
+test_match_singleton_false()
+
 print("All match tests passed!")

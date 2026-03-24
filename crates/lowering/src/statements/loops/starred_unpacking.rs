@@ -79,7 +79,12 @@ impl<'a> Lowering<'a> {
         let len_func = match kind {
             IterableKind::List => mir::RuntimeFunc::ListLen,
             IterableKind::Tuple => mir::RuntimeFunc::TupleLen,
-            _ => mir::RuntimeFunc::ListLen,
+            IterableKind::Str => mir::RuntimeFunc::StrLenInt,
+            IterableKind::Bytes => mir::RuntimeFunc::BytesLen,
+            IterableKind::Dict
+            | IterableKind::Set
+            | IterableKind::Iterator
+            | IterableKind::File => unreachable!("handled by lower_for_unpack_iterator"),
         };
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: len_local,
@@ -135,7 +140,12 @@ impl<'a> Lowering<'a> {
         let get_func = match kind {
             IterableKind::List => mir::RuntimeFunc::ListGet,
             IterableKind::Tuple => mir::RuntimeFunc::TupleGet,
-            _ => mir::RuntimeFunc::ListGet,
+            IterableKind::Str => mir::RuntimeFunc::StrGetChar,
+            IterableKind::Bytes => mir::RuntimeFunc::BytesGet,
+            IterableKind::Dict
+            | IterableKind::Set
+            | IterableKind::Iterator
+            | IterableKind::File => unreachable!("handled by lower_for_unpack_iterator"),
         };
 
         // Get the tuple/list element at current index

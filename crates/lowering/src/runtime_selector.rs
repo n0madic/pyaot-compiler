@@ -17,6 +17,8 @@ impl<'a> Lowering<'a> {
         match var_type {
             Type::Int => ValueKind::Int,
             Type::Float => ValueKind::Float,
+            // None uses Bool (i8) storage: None is always represented as 0,
+            // the same bit pattern as `false`, so both fit in i8 storage.
             Type::Bool | Type::None => ValueKind::Bool,
             // Heap types (str, list, dict, tuple, etc.) use pointer storage
             Type::Str
@@ -32,8 +34,9 @@ impl<'a> Lowering<'a> {
             | Type::File
             | Type::Any
             | Type::BuiltinException(_) => ValueKind::Ptr,
-            // Default to int for unknown types (backward compatibility)
-            _ => ValueKind::Int,
+            // Compile-time-only types that should not appear in storage operations.
+            // Explicit matches ensure new Type variants trigger exhaustiveness errors.
+            Type::Function { .. } | Type::Var(_) | Type::Never => ValueKind::Int,
         }
     }
 

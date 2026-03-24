@@ -187,29 +187,44 @@ impl<'a> Lowering<'a> {
         let cond_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
         // Determine step direction for correct comparison operator
-        let cmp_op = if range_args.len() >= 3 {
+        if range_args.len() >= 3 {
             let step_expr = &hir_module.exprs[range_args[2]];
             match crate::utils::get_step_direction(step_expr, hir_module) {
-                crate::utils::StepDirection::Positive => mir::BinOp::Lt,
-                crate::utils::StepDirection::Negative => mir::BinOp::Gt,
-                // TODO: StepDirection::Unknown means the step sign cannot be determined
-                // at compile time (e.g. a variable step).  Defaulting to Lt (positive
-                // step direction) produces correct code only for positive steps; a
-                // negative runtime step will cause an infinite loop.  A full fix
-                // requires emitting a runtime check similar to emit_range_runtime_check
-                // used in the non-enumerate range loop path.
-                crate::utils::StepDirection::Unknown => mir::BinOp::Lt,
+                crate::utils::StepDirection::Positive => {
+                    self.emit_instruction(mir::InstructionKind::BinOp {
+                        dest: cond_local,
+                        op: mir::BinOp::Lt,
+                        left: mir::Operand::Local(elem_local),
+                        right: range_stop,
+                    });
+                }
+                crate::utils::StepDirection::Negative => {
+                    self.emit_instruction(mir::InstructionKind::BinOp {
+                        dest: cond_local,
+                        op: mir::BinOp::Gt,
+                        left: mir::Operand::Local(elem_local),
+                        right: range_stop,
+                    });
+                }
+                crate::utils::StepDirection::Unknown => {
+                    // Use the same runtime direction check as non-enumerate range loops
+                    self.emit_range_runtime_check(
+                        cond_local,
+                        elem_local,
+                        range_stop,
+                        range_step.clone(),
+                        mir_func,
+                    );
+                }
             }
         } else {
-            mir::BinOp::Lt // Default: positive step
-        };
-
-        self.emit_instruction(mir::InstructionKind::BinOp {
-            dest: cond_local,
-            op: cmp_op,
-            left: mir::Operand::Local(elem_local),
-            right: range_stop,
-        });
+            self.emit_instruction(mir::InstructionKind::BinOp {
+                dest: cond_local,
+                op: mir::BinOp::Lt,
+                left: mir::Operand::Local(elem_local),
+                right: range_stop,
+            });
+        }
 
         self.current_block_mut().terminator = mir::Terminator::Branch {
             cond: mir::Operand::Local(cond_local),
@@ -432,14 +447,45 @@ impl<'a> Lowering<'a> {
             IterableKind::Iterator | IterableKind::File => unreachable!(),
         };
 
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: elem_local,
-            func: get_func,
-            args: vec![
-                mir::Operand::Local(actual_iter_local),
-                mir::Operand::Local(idx_local),
-            ],
-        });
+        // Dict/set store elements as boxed heap objects; unbox primitives after ListGet.
+        // Same pattern as iterable.rs lower_for_iterable.
+        let needs_unboxing = (iterable_kind == IterableKind::Dict
+            || iterable_kind == IterableKind::Set)
+            && matches!(elem_type, Type::Int | Type::Bool | Type::Float);
+
+        if needs_unboxing {
+            // Get boxed element into a GC-rooted temporary (GC can run between get and unbox)
+            let boxed_local = self.alloc_gc_local(Type::Str, mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: boxed_local,
+                func: get_func,
+                args: vec![
+                    mir::Operand::Local(actual_iter_local),
+                    mir::Operand::Local(idx_local),
+                ],
+            });
+
+            let unbox_func = match elem_type {
+                Type::Int => mir::RuntimeFunc::UnboxInt,
+                Type::Bool => mir::RuntimeFunc::UnboxBool,
+                Type::Float => mir::RuntimeFunc::UnboxFloat,
+                _ => unreachable!(),
+            };
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: elem_local,
+                func: unbox_func,
+                args: vec![mir::Operand::Local(boxed_local)],
+            });
+        } else {
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: elem_local,
+                func: get_func,
+                args: vec![
+                    mir::Operand::Local(actual_iter_local),
+                    mir::Operand::Local(idx_local),
+                ],
+            });
+        }
 
         self.push_loop(increment_id, exit_id);
 

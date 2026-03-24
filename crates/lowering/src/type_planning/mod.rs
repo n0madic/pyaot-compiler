@@ -234,6 +234,8 @@ impl<'a> Lowering<'a> {
     /// Deep expression type inference for return type analysis.
     /// More comprehensive than the old `infer_expr_return_type_with_params` —
     /// handles Call, MethodCall, Index, Attribute, BuiltinCall, containers.
+    // TODO: ~40% of this logic is duplicated in `compute_expr_type` (type_planning/infer.rs).
+    // The shared parts (containers, BuiltinCall, MethodCall) should be extracted into helpers.
     fn infer_deep_expr_type(
         &self,
         expr: &hir::Expr,

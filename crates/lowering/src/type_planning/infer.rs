@@ -12,6 +12,8 @@ use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
     /// Internal type computation (the actual inference logic).
+    // TODO: ~40% of this logic is duplicated in `infer_deep_expr_type` (type_planning/mod.rs).
+    // The shared parts (containers, BuiltinCall, MethodCall) should be extracted into helpers.
     pub(crate) fn compute_expr_type(&mut self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
         match &expr.kind {
             hir::ExprKind::Var(var_id) => self

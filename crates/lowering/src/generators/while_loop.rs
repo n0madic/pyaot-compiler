@@ -410,8 +410,8 @@ impl<'a> Lowering<'a> {
                     hir::ExprKind::BinOp { left, op, right } => {
                         let left_expr = &hir_module.exprs[*left];
                         let right_expr = &hir_module.exprs[*right];
-                        let left_op = self.get_operand_for_expr(left_expr, &var_to_mir_local);
-                        let right_op = self.get_operand_for_expr(right_expr, &var_to_mir_local);
+                        let left_op = self.get_operand_for_expr(left_expr, &var_to_mir_local)?;
+                        let right_op = self.get_operand_for_expr(right_expr, &var_to_mir_local)?;
                         let mir_op = match op {
                             hir::BinOp::Add => mir::BinOp::Add,
                             hir::BinOp::Sub => mir::BinOp::Sub,

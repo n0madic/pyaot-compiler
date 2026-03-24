@@ -920,4 +920,41 @@ assert _lpi_total == 15, "reduce lambda: sum 1..5"
 
 print("Lambda parameter inference tests passed!")
 
+# ============================================================
+# Enumerate bug-fix regression tests
+# ============================================================
+
+# Issue #6: enumerate over dict with str keys (avoids unboxing path for stability)
+def test_enumerate_dict_str_keys():
+    d: dict[str, int] = {"a": 1, "b": 2, "c": 3}
+    keys: list[str] = []
+    indices: list[int] = []
+    for i, k in enumerate(d):
+        indices.append(i)
+        keys.append(k)
+    assert indices == [0, 1, 2]
+    assert keys == ["a", "b", "c"]
+
+test_enumerate_dict_str_keys()
+
+# Issue #2: enumerate with explicit negative step range
+def test_enumerate_range_negative_step():
+    result: list[int] = []
+    for i, v in enumerate(range(5, 0, -1)):
+        result.append(v)
+    assert result == [5, 4, 3, 2, 1]
+
+test_enumerate_range_negative_step()
+
+# Issue #2 additional: enumerate range with positive step (regression check)
+def test_enumerate_range_positive_step():
+    result: list[int] = []
+    for i, v in enumerate(range(0, 6, 2)):
+        result.append(v)
+    assert result == [0, 2, 4]
+
+test_enumerate_range_positive_step()
+
+print("Enumerate regression tests passed!")
+
 print("All iteration and comprehension tests passed!")
