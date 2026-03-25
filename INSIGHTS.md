@@ -76,7 +76,7 @@ The initial empty `{}` has no type hint, so the variable starts with `Dict(Any, 
 
 If the type system thinks `map()` returns `Iterator(Any)`, then `list(map(...))` creates a list with `elem_tag=0` (ELEM_HEAP_OBJ) even if the actual values are raw integers. This causes the GC to try tracing raw ints as heap pointers.
 
-The type inference in `lowering/src/type_inference.rs` inspects the function argument to `map()`:
+The type inference in `lowering/src/type_planning/infer.rs` inspects the function argument to `map()`:
 - For `FuncRef`: checks `get_func_return_type()` or `func_def.return_type`
 - For `Closure` (lambda with captures): same logic via extracted `func_id`
 - For lambdas: uses `infer_lambda_return_type()`

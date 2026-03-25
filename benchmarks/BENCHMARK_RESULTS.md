@@ -78,6 +78,7 @@ The following optimizations have been implemented but are not adequately measure
 - **Triangular probing**: Eliminates hash table clustering (better than linear probing)
 - **SplitMix64 hashing**: Better integer hash distribution for sequential keys (0, 1, 2...)
 - **Boyer-Moore-Horspool**: O(n/m) string search for find/replace/split (up to 100x faster for long patterns)
+- **StringBuilder**: O(n) string concatenation chains (detects `a + b + c + ...` patterns with 3+ operands)
 
 To see these improvements, test with:
 - Large collections (>100k elements)
@@ -90,7 +91,6 @@ To see these improvements, test with:
 2. **Function Calls**: Inline small functions more aggressively
 3. **Memory Allocator**: Consider custom allocator tuned for workload patterns
 4. **GC Tuning**: Profile and optimize garbage collection performance
-5. **StringBuilder**: O(n) string concatenation chains
 
 ## Benchmark Descriptions
 

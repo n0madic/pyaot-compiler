@@ -2,7 +2,7 @@
 
 ## Project Summary
 
-This project is a **Python AOT (Ahead-of-Time) Compiler** implemented in Rust. It compiles a statically-typed subset of Python into native executables using the Cranelift backend. The compiler features a multi-stage pipeline including parsing, semantic analysis, type checking, and code generation with a precise garbage collector.
+This project is a **Python AOT (Ahead-of-Time) Compiler** implemented in Rust. It compiles a statically-typed subset of Python into native executables using the Cranelift backend. The compiler features a multi-stage pipeline including parsing, semantic analysis, type inference, HIR-to-MIR lowering, and code generation with a precise garbage collector.
 
 **Key Highlights:**
 - Generates standalone native executables from Python code
@@ -57,13 +57,15 @@ The compiler is organized as a Rust workspace with the following key crates:
 - **`frontend-python/`** — Python parser and AST to HIR conversion
 - **`hir/`** — High-level intermediate representation
 - **`semantics/`** — Name resolution and scope analysis
-- **`typecheck/`** — Type inference and validation
+- **`lowering/`** — HIR to MIR transformation (includes `type_planning/` for type inference)
 - **`mir/`** — Mid-level IR with control flow graphs
-- **`lowering/`** — HIR to MIR transformation
+- **`optimizer/`** — MIR optimization passes (function inlining)
 - **`codegen-cranelift/`** — Native code generation
 - **`linker/`** — Linking with runtime library
 - **`runtime/`** — Runtime support and garbage collector
 - **`types/`** — Type system definitions
+- **`core-defs/`** — Shared definitions (exceptions, type tags) — leaf crate
+- **`stdlib-defs/`** — Stdlib module definitions (declarative)
 - **`diagnostics/`** — Error reporting
 - **`utils/`** — Common utilities
 
@@ -76,11 +78,11 @@ cargo build --workspace --release
 # Compile and run a Python program
 ./target/release/pyaot program.py -o /tmp/program --run
 
-# Run all unit tests
+# Run all tests (unit + runtime integration)
 cargo test --workspace
 
-# Run integration tests
-./test_examples.sh
+# Run only runtime integration tests
+cargo test -p pyaot --test runtime
 
 # Format and lint
 cargo fmt && cargo clippy --workspace

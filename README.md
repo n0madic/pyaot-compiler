@@ -31,7 +31,7 @@ This compiler follows a multi-stage compilation pipeline:
 1. **Frontend** (`frontend-python`): Python parsing and AST to HIR conversion
 2. **HIR** (`hir`): High-level intermediate representation
 3. **Semantic Analysis** (`semantics`): Name resolution and scope checking
-4. **Type Checking** (`typecheck`): Type inference and validation
+4. **Type Inference** (`lowering/type_planning`): Bidirectional type inference and validation
 5. **Lowering** (`lowering`): HIR to MIR transformation
 6. **MIR** (`mir`): Mid-level IR with control flow graph (CFG)
 7. **Optimizer** (`optimizer`): MIR optimization passes (function inlining)
@@ -46,7 +46,7 @@ This compiler follows a multi-stage compilation pipeline:
 - **AOT compilation**: Generates native executables
 - **Safe Rust**: Compiler is implemented entirely in safe Rust (except runtime FFI)
 - **Cranelift backend**: Fast, portable code generation
-- **Standard library**: ~20 modules implemented in Rust
+- **Standard library**: 20+ modules implemented in Rust
 
 ## Building
 
@@ -133,12 +133,12 @@ For a complete and up-to-date list of supported features, see **[COMPILER_STATUS
 Key highlights:
 - **Types**: int, float, bool, str, bytes, None, list[T], tuple[T...], dict[K,V], set[T], Union types, Iterator[T], File
 - **Operators**: Arithmetic, comparison, identity (is/is not), logical, bitwise, membership (in/not in), all augmented assignments
-- **Control flow**: if/elif/else, while, for (with unpacking), break/continue, try/except/else/finally, match statements, with (context managers)
-- **Functions**: Type-annotated functions, default parameters, *args/**kwargs, keyword-only params, lambda expressions, generators
-- **Classes**: Single inheritance, @property/@staticmethod/@classmethod/@abstractmethod, virtual dispatch, dunder methods
+- **Control flow**: if/elif/else, while, for (with unpacking), break/continue, try/except/else/finally, match statements (incl. mapping patterns), with (context managers)
+- **Functions**: Type-annotated functions, default parameters, *args/**kwargs, keyword-only params, lambda expressions, generators, user decorators
+- **Classes**: Single inheritance, @property/@staticmethod/@classmethod/@abstractmethod, virtual dispatch, dunder methods (incl. explicit calls)
 - **Built-ins**: print, len, range, map, filter, zip, sorted, enumerate, open, input, and 55+ total
-- **Standard library**: ~20 modules
-- **String operations**: F-strings with format specs, slicing, string interning, 40+ methods
+- **Standard library**: 20+ modules
+- **String operations**: F-strings with format specs (width, alignment, fill, grouping), slicing, string interning, 40+ methods
 - **Collections**: Full list/dict/tuple/set/bytes support with comprehensive methods
 
 ## Type System

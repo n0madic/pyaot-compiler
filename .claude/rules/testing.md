@@ -1,7 +1,7 @@
 ---
 paths:
   - "examples/**"
-  - "test_examples.sh"
+  - "tests/**"
 ---
 
 # Testing Conventions

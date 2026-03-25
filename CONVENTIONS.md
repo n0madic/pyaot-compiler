@@ -84,7 +84,7 @@ All compiler crates must forbid unsafe code at the module level:
 #![forbid(unsafe_code)]
 ```
 
-This applies to: `cli`, `frontend-python`, `hir`, `mir`, `lowering`, `codegen-cranelift`, `linker`, `types`, `utils`, `semantics`, `typecheck`, `diagnostics`.
+This applies to: `cli`, `frontend-python`, `hir`, `mir`, `lowering`, `codegen-cranelift`, `linker`, `types`, `utils`, `semantics`, `diagnostics`, `stdlib-defs`, `core-defs`, `optimizer`.
 
 ### Runtime Crate (Controlled Unsafe)
 
@@ -846,8 +846,7 @@ pub struct Obj {
 
 ```bash
 # After ANY code change, run:
-./test_examples.sh        # All Python example tests
-cargo test --workspace    # All Rust unit tests
+cargo test --workspace    # All tests (unit + runtime integration)
 ```
 
 ### Edge Cases Are Required
@@ -953,14 +952,14 @@ assert len(unique_set) == 3
 ### Running Tests
 
 ```bash
-# Run all example tests
-./test_examples.sh
-
-# Run specific test file
-./target/release/pyaot examples/test_basic.py -o /tmp/test && /tmp/test
-
-# Unit and integration tests
+# Run all tests (unit + runtime integration)
 cargo test --workspace
+
+# Run only runtime integration tests
+cargo test -p pyaot --test runtime
+
+# Run a specific test file
+cargo test -p pyaot --test runtime runtime_strings
 ```
 
 ### When to Create New Test Files

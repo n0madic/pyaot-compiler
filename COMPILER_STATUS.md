@@ -19,9 +19,9 @@ Abstract Syntax Tree (AST)
     ↓
 High-level IR (HIR) - Desugared Python with types
     ↓
-[Semantic Analysis] (placeholder)
+[Semantic Analysis] (name resolution, control flow)
     ↓
-[Type Inference] (integrated in lowering)
+[Type Inference] (type_planning module in lowering)
     ↓
 [HIR → MIR Lowering]
     ↓
@@ -90,7 +90,7 @@ Native Executable
 | Walrus operator `:=` | ✅ | `if (n := len(items)) > 10:` |
 | with (context managers) | ✅ | Exception suppression via `__exit__` returning True |
 | assert | ✅ | Supports f-string messages |
-| match (pattern matching) | ✅ | Literal, singleton, capture, or, sequence, starred patterns; guards |
+| match (pattern matching) | ✅ | Literal, singleton, capture, or, sequence, starred, mapping patterns; guards; `**rest` in mapping |
 | Multiple assignment | ✅ | `a = b = c = 5` |
 
 ### Functions & Classes
@@ -109,14 +109,14 @@ Native Executable
 | Nested functions | ✅ | |
 | nonlocal | ✅ | Cell-based storage |
 | global | ✅ | All types supported |
-| Generators | ✅ | `yield from` supported; throw() not supported |
+| Generators | ✅ | `yield from` supported; yield with ternary conditions; throw() not supported |
 | Classes | ✅ | Single inheritance; class attrs accessible through instances |
 | `__init__` | ✅ | Fields from `self.field = value` auto-discovered |
 | `__str__`, `__repr__` | ✅ | Fallback to default repr for classes without dunder methods |
 | `__eq__`, `__ne__` | ✅ | `__ne__` auto-negates `__eq__` if not defined |
 | `__lt__`, `__le__`, `__gt__`, `__ge__` | ✅ | Enables sorted(), min(), max() on custom objects |
-| `__add__`, `__sub__`, `__mul__` | ✅ | Arithmetic operators on custom objects |
-| `__neg__` | ✅ | Unary minus on custom objects |
+| `__add__`, `__sub__`, `__mul__` | ✅ | Arithmetic operators on custom objects; explicit calls (`a.__add__(b)`) supported |
+| `__neg__` | ✅ | Unary minus on custom objects; explicit call (`a.__neg__()`) supported |
 | `__getitem__`, `__setitem__`, `__delitem__`, `__contains__` | ✅ | Container protocol for custom classes |
 | `__iter__`, `__next__` | ✅ | Iterator protocol for custom classes (for loops, iter(), next()) |
 | `__call__` | ✅ | Callable objects: `obj(args)` dispatches to `__call__` |
@@ -146,7 +146,7 @@ Native Executable
 | enumerate(), zip() | ✅ | zip supports 2 and 3+ iterables |
 | map(), filter() | ✅ | Single iterable only; supports builtin functions as args; proper element type inference for `list(map(...))` |
 | functools.reduce() | ✅ | Supports initial value and closures with captures |
-| format() | ✅ | Format specs: d, b, o, x, X, f, e, g, width, fill, alignment |
+| format() | ✅ | Format specs: d, b, o, x, X, f, e, g, width, fill, alignment, grouping (`,`, `_`) |
 | reversed(), sorted() | ✅ | sorted() supports key= (incl. builtins like abs) and reverse= |
 | min(), max(), sum() | ✅ | Supports lists, tuples, sets, ranges, and iterators/generators |
 | abs(), pow(), round() | ✅ | |
@@ -193,7 +193,7 @@ Native Executable
 | Slicing, indexing | ✅ | |
 | Methods | ✅ | upper, lower, strip, split, join, find, rfind, rindex, replace, removeprefix, removesuffix, splitlines, partition, rpartition, expandtabs, rsplit, encode, etc. |
 | Predicate methods | ✅ | isdigit, isalpha, isalnum, isspace, isupper, islower, isascii |
-| f-strings | ✅ | {expr:.Nf} for floats, {expr!r}, {expr!s}, {expr!a} conversion flags, {expr=} debug format |
+| f-strings | ✅ | {expr:.Nf} for floats, {expr!r}, {expr!s}, {expr!a} conversion flags, {expr=} debug format, width/alignment/fill (`{:>10}`, `{:*^10}`), grouping separators (`{:,}`, `{:_}`) |
 | .format() | ✅ | {}, {0}, {name}, {:>10}, {:<5}, {:^20}, {:*>10}, {:.2f} |
 | String interning | ✅ | Compile-time constants and dict keys under 256 bytes |
 
@@ -374,7 +374,8 @@ Planned enhancements (no timeline):
 - **More unary dunders**: `__pos__`, `__abs__`, `__invert__`
 - **Conversion dunders**: `__int__`, `__float__`, `__bool__`
 - ~~`yield from` support~~ (DONE — generators and iterables, with trailing yields)
-- Match statement: mapping patterns (`case {"key": val}`), class patterns (`case Point(x=0)`)
+- ~~Match statement: mapping patterns (`case {"key": val}`)~~ (DONE — with `**rest` support)
+- Match statement: class patterns (`case Point(x=0)`)
 - Standard library: `collections`, ~~`itertools` (chain, islice)~~ (DONE), `itertools` (zip_longest, product)
 
 ---
@@ -389,7 +390,7 @@ The frontend automatically infers types for literal expressions (Int, Float, Boo
 
 ### Type Inference for Container Constructors
 
-The type checker (`typecheck/src/lib.rs`) implements bidirectional type inference for container constructors and related builtins, inferring element types from arguments:
+The type planning module (`lowering/src/type_planning/`) implements bidirectional type inference for container constructors and related builtins, inferring element types from arguments:
 
 - **Helper method**: `extract_iterable_element_type()` extracts element types from iterable types (DRY pattern)
 - **Container constructors**:
@@ -495,7 +496,7 @@ bare_star(1, y=10)     # OK
   - Keyword args can match both regular and keyword-only params
   - Default values filled for missing keyword-only params
   - Parameter order in call: regular → *args → keyword-only → **kwargs
-- **Type Checker** (`typecheck/src/lib.rs`):
+- **Type Planning** (`lowering/src/type_planning/check.rs`):
   - `check_call_args()` validates parameter kinds separately
   - Checks required regular params satisfied by positional OR keyword args
   - Checks required keyword-only params provided via keyword args
@@ -544,7 +545,7 @@ func(*[], *[1, 2, 3])    # Expanded to: func(1, 2, 3)
   - `convert_call_args()` - handles `py::Expr::Starred` → `CallArg::Starred`
   - `convert_keywords()` - extracts `**kwargs` (keyword with `arg: None`)
   - Returns `(Vec<KeywordArg>, Option<ExprId>)` for both regular kwargs and **kwargs
-- **Type Checker** (`typecheck/src/lib.rs`):
+- **Type Planning** (`lowering/src/type_planning/check.rs`):
   - Expands compile-time literals before argument validation
   - `ExprKind::List/Tuple` elements extracted from starred args
   - `ExprKind::Dict` pairs extracted from **kwargs
@@ -686,7 +687,7 @@ result5: int = with_defaults(*short_list)  # 103 (a=1, b=2, c=100 default)
   - `rt_list_tail_to_tuple(list, start)` - extracts `list[start:]` as tuple
   - `rt_list_tail_to_tuple_float(list, start)` - unboxes float elements
   - `rt_list_tail_to_tuple_bool(list, start)` - unboxes bool elements
-- **Type Checking** (`typecheck/src/lib.rs`):
+- **Type Planning** (`lowering/src/type_planning/check.rs`):
   - `check_call_args()` detects tuple/list types and computes `effective_arg_count`
   - Tracks `tuple_unpack_positions` to validate element types against parameter types
   - Single-element tuples handled correctly
@@ -743,7 +744,7 @@ result: int = f(**d)  # 10 (y uses default)
     - If present: extract value with `DictGet` (raw value, no unboxing needed)
     - If absent: use default value or emit runtime error for required params
   - Tracks consumed keys for potential `**kwargs` remainder handling
-- **Type Checking** (`typecheck/src/lib.rs`):
+- **Type Planning** (`lowering/src/type_planning/check.rs`):
   - Added `has_runtime_kwargs` flag to skip required argument validation
   - Runtime kwargs can't be validated at compile time (keys unknown)
 - **Key Insight**: Dict values are stored as raw values (int/float/bool as i64), not boxed objects, so no unboxing is needed when extracting
@@ -765,7 +766,7 @@ result: int = f(**d)  # 10 (y uses default)
 - `get_expr_type()` handles: literals, containers, BinOp/UnOp, function calls, method calls
 - Mixed-type list inference: `[1, 2, "str"]` → `list[Union[int, str]]` (checks all elements)
 - Mixed-type dict inference: checks all key-value pairs for type consistency
-- Empty containers (`[]`, `{}`) infer `List(Any)` / `Dict(Any, Any)` — use annotation
+- Empty containers (`[]`, `{}`) are refined during type planning when elements are added later; fall back to `List(Any)` / `Dict(Any, Any)` if usage doesn't clarify the type
 
 ### Float Operations
 
@@ -1145,7 +1146,7 @@ result = get_value(10)  # Returns (10 + 5) * 2 = 30
 - **Codegen** (`codegen-cranelift/src/instructions.rs`):
   - `FuncAddr` emits `func_addr` instruction to get function pointer
   - `Call` with operand uses `call_indirect` for indirect function calls
-- **Type inference** (`lowering/src/type_inference.rs`):
+- **Type inference** (`lowering/src/type_planning/infer.rs`):
   - Checks `var_to_wrapper` to return wrapper's return type for decorated function calls
 
 **Chained wrapper decorators** are supported:
@@ -1583,7 +1584,7 @@ result = min([-5, 2, -3], key=abs)  # 2 (smallest absolute value)
 ### Collection Constructors: list(), tuple(), dict()
 
 - **Type**: `list(iterable)` → `list[T]`, `tuple(iterable)` → `tuple[T, ...]`, `dict()` / `dict(**kwargs)` → `dict[K, V]`
-- **Type Inference** (`typecheck/src/lib.rs`): Element types are inferred from arguments (see "Type Inference for Container Constructors")
+- **Type Inference** (`lowering/src/type_planning/`): Element types are inferred from arguments (see "Type Inference for Container Constructors")
 - **HIR**: `Builtin::List`, `Builtin::Tuple`, `Builtin::Dict` variants
 - **MIR**: RuntimeFunc variants for conversions:
   - List: `ListFromTuple`, `ListFromStr`, `ListFromRange`, `ListFromIter`, `ListFromSet`, `ListFromDict`
