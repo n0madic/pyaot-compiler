@@ -1153,6 +1153,61 @@ impl<'a> Lowering<'a> {
         Ok(mir::Operand::Local(result_local))
     }
 
+    /// Lower format integer with grouping separator: fmt_int_grouped(n, sep)
+    pub(super) fn lower_fmt_int_grouped(
+        &mut self,
+        args: &[hir::ExprId],
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
+        self.require_exact_args(args, 2, "fmt_int_grouped")?;
+
+        let n_expr = &hir_module.exprs[args[0]];
+        let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
+
+        let sep_expr = &hir_module.exprs[args[1]];
+        let sep_operand = self.lower_expr(sep_expr, hir_module, mir_func)?;
+
+        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
+
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: result_local,
+            func: mir::RuntimeFunc::IntFmtGrouped,
+            args: vec![n_operand, sep_operand],
+        });
+
+        Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Lower format float with precision and grouping: fmt_float_grouped(f, precision, sep)
+    pub(super) fn lower_fmt_float_grouped(
+        &mut self,
+        args: &[hir::ExprId],
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
+        self.require_exact_args(args, 3, "fmt_float_grouped")?;
+
+        let f_expr = &hir_module.exprs[args[0]];
+        let f_operand = self.lower_expr(f_expr, hir_module, mir_func)?;
+
+        let prec_expr = &hir_module.exprs[args[1]];
+        let prec_operand = self.lower_expr(prec_expr, hir_module, mir_func)?;
+
+        let sep_expr = &hir_module.exprs[args[2]];
+        let sep_operand = self.lower_expr(sep_expr, hir_module, mir_func)?;
+
+        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
+
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: result_local,
+            func: mir::RuntimeFunc::FloatFmtGrouped,
+            args: vec![f_operand, prec_operand, sep_operand],
+        });
+
+        Ok(mir::Operand::Local(result_local))
+    }
+
     /// Lower min(range(...)) or max(range(...)) - compute directly from range parameters
     fn lower_minmax_range(
         &mut self,

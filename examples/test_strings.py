@@ -296,6 +296,34 @@ assert num_default_align == "        42", f"number default align failed: got '{n
 
 print("Format spec type conversion tests passed!")
 
+# ===== SECTION: Grouping option (:, and :_) =====
+
+# Integer grouping with comma
+r_group_comma: str = f"{1000000:,}"
+assert r_group_comma == "1,000,000", f"comma grouping failed: got '{r_group_comma}'"
+
+# Integer grouping with underscore
+r_group_under: str = f"{1000000:_}"
+assert r_group_under == "1_000_000", f"underscore grouping failed: got '{r_group_under}'"
+
+# Small number (no grouping needed)
+r_group_small: str = f"{42:,}"
+assert r_group_small == "42", f"small number grouping failed: got '{r_group_small}'"
+
+# Negative number with grouping
+r_group_neg: str = f"{-1234567:,}"
+assert r_group_neg == "-1,234,567", f"negative grouping failed: got '{r_group_neg}'"
+
+# Zero with grouping
+r_group_zero: str = f"{0:,}"
+assert r_group_zero == "0", f"zero grouping failed: got '{r_group_zero}'"
+
+# Float with grouping and precision
+r_group_float: str = f"{1234567.89:,.2f}"
+assert r_group_float == "1,234,567.89", f"float grouping failed: got '{r_group_float}'"
+
+print("Grouping option tests passed!")
+
 # ===== SECTION: F-string interpolation =====
 
 # Test str() builtin with different types

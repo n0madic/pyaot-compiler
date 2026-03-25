@@ -568,6 +568,10 @@ pub enum RuntimeFunc {
     IntFmtHexUpper,
     /// Format integer as octal without prefix: rt_int_fmt_oct(n: i64) -> *mut Obj (str)
     IntFmtOct,
+    /// Format integer with grouping separator: rt_int_fmt_grouped(n: i64, sep: i64) -> *mut Obj (str)
+    IntFmtGrouped,
+    /// Format float with precision and grouping: rt_float_fmt_grouped(f: f64, precision: i64, sep: i64) -> *mut Obj (str)
+    FloatFmtGrouped,
     /// String representation: rt_repr_* or rt_ascii_* (obj) -> *mut Obj (str)
     ///
     /// - Repr: Standard repr() - show string representation

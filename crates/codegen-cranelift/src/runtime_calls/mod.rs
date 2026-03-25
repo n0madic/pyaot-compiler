@@ -221,6 +221,8 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::IntFmtHex
         | mir::RuntimeFunc::IntFmtHexUpper
         | mir::RuntimeFunc::IntFmtOct
+        | mir::RuntimeFunc::IntFmtGrouped
+        | mir::RuntimeFunc::FloatFmtGrouped
         | mir::RuntimeFunc::ToStringRepr(_, _)
         | mir::RuntimeFunc::TypeName
         | mir::RuntimeFunc::TypeNameExtract

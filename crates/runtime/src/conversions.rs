@@ -597,6 +597,70 @@ pub extern "C" fn rt_int_fmt_bin(n: i64) -> *mut Obj {
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
 }
 
+// ==================== Grouping format functions ====================
+
+/// Insert grouping separators every 3 digits in the integer part of a number string.
+fn insert_grouping(digits: &str, sep: char) -> String {
+    let len = digits.len();
+    if len <= 3 {
+        return digits.to_string();
+    }
+    let mut result = String::with_capacity(len + len / 3);
+    let first_group = len % 3;
+    if first_group > 0 {
+        result.push_str(&digits[..first_group]);
+    }
+    for (i, chunk) in digits[first_group..].as_bytes().chunks(3).enumerate() {
+        if i > 0 || first_group > 0 {
+            result.push(sep);
+        }
+        for &b in chunk {
+            result.push(b as char);
+        }
+    }
+    result
+}
+
+/// Format integer with grouping separator: f"{1000000:,}" → "1,000,000"
+#[no_mangle]
+pub extern "C" fn rt_int_fmt_grouped(n: i64, sep: i64) -> *mut Obj {
+    let sep_char = sep as u8 as char;
+    let s = if n >= 0 {
+        insert_grouping(&format!("{}", n), sep_char)
+    } else {
+        format!("-{}", insert_grouping(&format!("{}", -n), sep_char))
+    };
+    let bytes = s.as_bytes();
+    unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
+}
+
+/// Format float with precision and grouping separator: f"{1234.5:,.2f}" → "1,234.50"
+#[no_mangle]
+pub extern "C" fn rt_float_fmt_grouped(f: f64, precision: i64, sep: i64) -> *mut Obj {
+    let sep_char = sep as u8 as char;
+    let prec = precision as usize;
+    let formatted = format!("{:.prec$}", f);
+    let s = if let Some(dot_pos) = formatted.find('.') {
+        let int_part = &formatted[..dot_pos];
+        let frac_part = &formatted[dot_pos..];
+        let (sign, digits) = if int_part.starts_with('-') {
+            ("-", &int_part[1..])
+        } else {
+            ("", int_part)
+        };
+        format!("{}{}{}", sign, insert_grouping(digits, sep_char), frac_part)
+    } else {
+        let (sign, digits) = if formatted.starts_with('-') {
+            ("-", &formatted[1..])
+        } else {
+            ("", formatted.as_str())
+        };
+        format!("{}{}", sign, insert_grouping(digits, sep_char))
+    };
+    let bytes = s.as_bytes();
+    unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
+}
+
 // ==================== Repr functions ====================
 
 /// repr(int) -> string

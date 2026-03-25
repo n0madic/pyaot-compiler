@@ -14,6 +14,7 @@ struct FormatSpec {
     sign: Option<char>,      // '+', '-', ' '
     zero_pad: bool,          // '0' flag (zero-pad, implies fill='0' and align='=' as defaults)
     width: Option<u32>,      // Minimum field width
+    grouping: Option<char>,  // Grouping option: ',' or '_'
     precision: Option<u32>,  // For floats: decimal places
     type_char: Option<char>, // 'f', 's', 'd', 'x', 'X', 'o', 'b', etc.
 }
@@ -86,7 +87,11 @@ impl FormatSpec {
             result.width = width_str.parse().ok();
         }
 
-        // TODO: Parse grouping option (',' or '_')
+        // Parse grouping option (',' or '_')
+        if i < chars.len() && matches!(chars[i], ',' | '_') {
+            result.grouping = Some(chars[i]);
+            i += 1;
+        }
 
         // Parse precision (.N)
         if i < chars.len() && chars[i] == '.' {
@@ -347,6 +352,47 @@ impl AstToHir {
                     span: fstring_span,
                 });
             }
+        }
+
+        // Apply grouping if specified (e.g., :, or :_)
+        if let Some(sep) = spec.grouping {
+            let sep_expr = self.module.exprs.alloc(Expr {
+                kind: ExprKind::Int(sep as i64),
+                ty: Some(Type::Int),
+                span: fstring_span,
+            });
+
+            // Check if value is float (has precision with f/F type)
+            let is_float_fmt = spec.precision.is_some()
+                && matches!(spec.type_char, Some('f') | Some('F'));
+
+            if is_float_fmt {
+                let precision_expr = self.module.exprs.alloc(Expr {
+                    kind: ExprKind::Int(spec.precision.unwrap() as i64),
+                    ty: Some(Type::Int),
+                    span: fstring_span,
+                });
+                result = self.module.exprs.alloc(Expr {
+                    kind: ExprKind::BuiltinCall {
+                        builtin: Builtin::FmtFloatGrouped,
+                        args: vec![result, precision_expr, sep_expr],
+                        kwargs: vec![],
+                    },
+                    ty: Some(Type::Str),
+                    span: fstring_span,
+                });
+            } else {
+                result = self.module.exprs.alloc(Expr {
+                    kind: ExprKind::BuiltinCall {
+                        builtin: Builtin::FmtIntGrouped,
+                        args: vec![result, sep_expr],
+                        kwargs: vec![],
+                    },
+                    ty: Some(Type::Str),
+                    span: fstring_span,
+                });
+            }
+            return Ok(result);
         }
 
         // Apply integer format type conversions
@@ -631,40 +677,79 @@ impl AstToHir {
             }
         }
 
-        // Convert to string based on type_char
-        let fmt_builtin = match spec.type_char {
-            Some('x') => Some(Builtin::FmtHex),
-            Some('X') => Some(Builtin::FmtHexUpper),
-            Some('o') => Some(Builtin::FmtOct),
-            Some('b') => Some(Builtin::FmtBin),
-            _ => None,
-        };
-
-        if let Some(builtin) = fmt_builtin {
-            // Integer format type: emit format-specific conversion
-            result = self.module.exprs.alloc(Expr {
-                kind: ExprKind::BuiltinCall {
-                    builtin,
-                    args: vec![result],
-                    kwargs: vec![],
-                },
-                ty: Some(Type::Str),
+        // Apply grouping if specified (e.g., :, or :_)
+        if let Some(sep) = spec.grouping {
+            let sep_expr = self.module.exprs.alloc(Expr {
+                kind: ExprKind::Int(sep as i64),
+                ty: Some(Type::Int),
                 span,
             });
-        } else {
-            // Default: convert to string using str()
-            let expr = &self.module.exprs[result];
-            let is_str = matches!(expr.kind, ExprKind::Str(_));
-            if !is_str {
+
+            let is_float_fmt = spec.precision.is_some()
+                && matches!(spec.type_char, Some('f') | Some('F'));
+
+            if is_float_fmt {
+                let precision_expr = self.module.exprs.alloc(Expr {
+                    kind: ExprKind::Int(spec.precision.unwrap() as i64),
+                    ty: Some(Type::Int),
+                    span,
+                });
                 result = self.module.exprs.alloc(Expr {
                     kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::Str,
+                        builtin: Builtin::FmtFloatGrouped,
+                        args: vec![result, precision_expr, sep_expr],
+                        kwargs: vec![],
+                    },
+                    ty: Some(Type::Str),
+                    span,
+                });
+            } else {
+                result = self.module.exprs.alloc(Expr {
+                    kind: ExprKind::BuiltinCall {
+                        builtin: Builtin::FmtIntGrouped,
+                        args: vec![result, sep_expr],
+                        kwargs: vec![],
+                    },
+                    ty: Some(Type::Str),
+                    span,
+                });
+            }
+        } else {
+            // Convert to string based on type_char
+            let fmt_builtin = match spec.type_char {
+                Some('x') => Some(Builtin::FmtHex),
+                Some('X') => Some(Builtin::FmtHexUpper),
+                Some('o') => Some(Builtin::FmtOct),
+                Some('b') => Some(Builtin::FmtBin),
+                _ => None,
+            };
+
+            if let Some(builtin) = fmt_builtin {
+                // Integer format type: emit format-specific conversion
+                result = self.module.exprs.alloc(Expr {
+                    kind: ExprKind::BuiltinCall {
+                        builtin,
                         args: vec![result],
                         kwargs: vec![],
                     },
                     ty: Some(Type::Str),
                     span,
                 });
+            } else {
+                // Default: convert to string using str()
+                let expr = &self.module.exprs[result];
+                let is_str = matches!(expr.kind, ExprKind::Str(_));
+                if !is_str {
+                    result = self.module.exprs.alloc(Expr {
+                        kind: ExprKind::BuiltinCall {
+                            builtin: Builtin::Str,
+                            args: vec![result],
+                            kwargs: vec![],
+                        },
+                        ty: Some(Type::Str),
+                        span,
+                    });
+                }
             }
         }
 

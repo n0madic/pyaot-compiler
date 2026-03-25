@@ -9,8 +9,8 @@ use pyaot_utils::LocalId;
 
 use crate::context::CodegenContext;
 use crate::runtime_helpers::{
-    compile_binary_runtime_call, compile_nullary_runtime_call, compile_to_str,
-    compile_unary_runtime_call,
+    compile_binary_runtime_call, compile_nullary_runtime_call, compile_ternary_runtime_call,
+    compile_to_str, compile_unary_runtime_call,
 };
 use crate::utils::{get_call_result, load_operand};
 
@@ -121,6 +121,36 @@ pub fn compile_conversion_call(
                 cltypes::I64,
                 cltypes::I64,
                 &args[0],
+                dest,
+                ctx,
+                true,
+            )?;
+        }
+        mir::RuntimeFunc::IntFmtGrouped => {
+            compile_binary_runtime_call(
+                builder,
+                "rt_int_fmt_grouped",
+                cltypes::I64,
+                cltypes::I64,
+                cltypes::I64,
+                &args[0],
+                &args[1],
+                dest,
+                ctx,
+                true,
+            )?;
+        }
+        mir::RuntimeFunc::FloatFmtGrouped => {
+            compile_ternary_runtime_call(
+                builder,
+                "rt_float_fmt_grouped",
+                cltypes::F64,
+                cltypes::I64,
+                cltypes::I64,
+                cltypes::I64,
+                &args[0],
+                &args[1],
+                &args[2],
                 dest,
                 ctx,
                 true,

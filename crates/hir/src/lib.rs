@@ -664,10 +664,12 @@ pub enum Builtin {
     Bin,         // bin(n) -> str
     Hex,         // hex(n) -> str
     Oct,         // oct(n) -> str
-    FmtBin,      // format int as binary without prefix
-    FmtHex,      // format int as lowercase hex without prefix
-    FmtHexUpper, // format int as uppercase hex without prefix
-    FmtOct,      // format int as octal without prefix
+    FmtBin,          // format int as binary without prefix
+    FmtHex,          // format int as lowercase hex without prefix
+    FmtHexUpper,     // format int as uppercase hex without prefix
+    FmtOct,          // format int as octal without prefix
+    FmtIntGrouped,   // format int with grouping separator (e.g., 1,000,000)
+    FmtFloatGrouped, // format float with precision and grouping separator
     Repr,        // repr(obj) -> str
     Ascii,       // ascii(obj) -> str (like repr but escapes non-ASCII)
     Type,        // type(obj) -> type string
