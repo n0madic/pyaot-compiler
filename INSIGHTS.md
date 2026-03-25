@@ -353,6 +353,20 @@ This matches Python's MRO: instance dict first, then class dict. Assignment thro
 
 ---
 
+## Type Inference: Two Parallel Functions, Cannot Merge
+
+`compute_expr_type` (codegen, `&mut self`) and `infer_expr_type_inner` (pre-scan, `&self`) in `type_planning/infer.rs` have nearly identical match arms but **cannot be unified into one function** due to a memoization constraint.
+
+During lowering, `var_types` evolves as statements are processed (e.g., after `x = "hello"`, `x` changes from `Any` to `Str`). `compute_expr_type` recurses through `get_type_of_expr_id` which caches sub-expression types in `expr_types`. This cache freezes types at first access, ensuring the same expression consistently returns the same type throughout codegen. Without this cache, the same variable expression would return `Any` before assignment and `Str` after — producing inconsistent MIR that causes runtime segfaults.
+
+`infer_expr_type_inner` runs during pre-scan (before lowering starts) and takes `&self`, so it cannot call `get_type_of_expr_id` (`&mut self`). It also must not write to `expr_types` — doing so would freeze pre-scan types that the codegen path would later read as authoritative.
+
+The two functions share complex logic via `resolve_*` helper methods (`resolve_method_on_type`, `resolve_call_target_type`, `resolve_builtin_with_overrides`, `resolve_attribute_on_type`, `resolve_index_with_getitem`). The remaining duplication is only in the thin match arms that resolve sub-expressions differently and apply fallbacks.
+
+**When adding a new `ExprKind`:** add the match arm to BOTH functions. Do NOT add explicit literal arms to `compute_expr_type` — it relies on the `_ => expr.ty` fallback for literals to preserve consistency with the caching model.
+
+---
+
 ## Decorator `*args` Forwarding — Runtime Trampoline
 
 Decorator wrappers with `*args` use a runtime trampoline (`rt_call_with_tuple_args`) to forward variable-length argument tuples through indirect calls. The caller packs user args into a varargs tuple via `resolve_call_args`, and inside the wrapper, `func(*args)` calls the trampoline which dispatches based on tuple length (up to 8 args). For chained decorators (closure case), captures and args are concatenated via `rt_tuple_concat` before trampolining. The type inference for decorated function calls uses the **original** function's return type (not the wrapper's `Any`) via `module_var_wrappers` lookup.

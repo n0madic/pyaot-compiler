@@ -121,6 +121,9 @@ pub(crate) fn resolve_binop_type(op: &hir::BinOp, left_ty: &Type, right_ty: &Typ
     if *left_ty == Type::Str && matches!(op, hir::BinOp::Mod) {
         return Some(Type::Str);
     }
+    // Bool is subtype of Int in Python (True + True == 2, True + 1.0 == 2.0)
+    let left_ty = if *left_ty == Type::Bool { &Type::Int } else { left_ty };
+    let right_ty = if *right_ty == Type::Bool { &Type::Int } else { right_ty };
     // Float promotion
     if *left_ty == Type::Float || *right_ty == Type::Float {
         return Some(Type::Float);
@@ -130,6 +133,18 @@ pub(crate) fn resolve_binop_type(op: &hir::BinOp, left_ty: &Type, right_ty: &Typ
         return Some(Type::Int);
     }
     None
+}
+
+/// Return the common type of two branches (LogicalOp, IfExpr).
+/// Same type → that type; one is Any → Any; otherwise → Union.
+pub(crate) fn union_or_any(left: Type, right: Type) -> Type {
+    if left == right {
+        left
+    } else if left == Type::Any || right == Type::Any {
+        Type::Any
+    } else {
+        Type::normalize_union(vec![left, right])
+    }
 }
 
 /// Unify a list of types into a single type.

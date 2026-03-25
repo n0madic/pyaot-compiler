@@ -169,6 +169,64 @@ impl<'a> Lowering<'a> {
                 hir::StmtKind::Assign { target, .. } if *target == var => {
                     return Type::Any;
                 }
+                // Recurse into nested blocks
+                hir::StmtKind::For {
+                    body, else_block, ..
+                }
+                | hir::StmtKind::ForUnpack {
+                    body, else_block, ..
+                }
+                | hir::StmtKind::ForUnpackStarred {
+                    body, else_block, ..
+                }
+                | hir::StmtKind::While {
+                    body, else_block, ..
+                } => {
+                    let result = self.find_elem_type_from_usage(var, body, hir_module);
+                    if result != Type::Any {
+                        return result;
+                    }
+                    let result = self.find_elem_type_from_usage(var, else_block, hir_module);
+                    if result != Type::Any {
+                        return result;
+                    }
+                }
+                hir::StmtKind::Try {
+                    body,
+                    handlers,
+                    else_block,
+                    finally_block,
+                } => {
+                    let result = self.find_elem_type_from_usage(var, body, hir_module);
+                    if result != Type::Any {
+                        return result;
+                    }
+                    for handler in handlers {
+                        let result =
+                            self.find_elem_type_from_usage(var, &handler.body, hir_module);
+                        if result != Type::Any {
+                            return result;
+                        }
+                    }
+                    let result = self.find_elem_type_from_usage(var, else_block, hir_module);
+                    if result != Type::Any {
+                        return result;
+                    }
+                    let result =
+                        self.find_elem_type_from_usage(var, finally_block, hir_module);
+                    if result != Type::Any {
+                        return result;
+                    }
+                }
+                hir::StmtKind::Match { cases, .. } => {
+                    for case in cases {
+                        let result =
+                            self.find_elem_type_from_usage(var, &case.body, hir_module);
+                        if result != Type::Any {
+                            return result;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -246,6 +304,64 @@ impl<'a> Lowering<'a> {
                 // Stop at reassignment to the same variable
                 hir::StmtKind::Assign { target, .. } if *target == var => {
                     return (Type::Any, Type::Any);
+                }
+                // Recurse into nested blocks
+                hir::StmtKind::For {
+                    body, else_block, ..
+                }
+                | hir::StmtKind::ForUnpack {
+                    body, else_block, ..
+                }
+                | hir::StmtKind::ForUnpackStarred {
+                    body, else_block, ..
+                }
+                | hir::StmtKind::While {
+                    body, else_block, ..
+                } => {
+                    let result = self.find_dict_types_from_usage(var, body, hir_module);
+                    if result != (Type::Any, Type::Any) {
+                        return result;
+                    }
+                    let result = self.find_dict_types_from_usage(var, else_block, hir_module);
+                    if result != (Type::Any, Type::Any) {
+                        return result;
+                    }
+                }
+                hir::StmtKind::Try {
+                    body,
+                    handlers,
+                    else_block,
+                    finally_block,
+                } => {
+                    let result = self.find_dict_types_from_usage(var, body, hir_module);
+                    if result != (Type::Any, Type::Any) {
+                        return result;
+                    }
+                    for handler in handlers {
+                        let result =
+                            self.find_dict_types_from_usage(var, &handler.body, hir_module);
+                        if result != (Type::Any, Type::Any) {
+                            return result;
+                        }
+                    }
+                    let result = self.find_dict_types_from_usage(var, else_block, hir_module);
+                    if result != (Type::Any, Type::Any) {
+                        return result;
+                    }
+                    let result =
+                        self.find_dict_types_from_usage(var, finally_block, hir_module);
+                    if result != (Type::Any, Type::Any) {
+                        return result;
+                    }
+                }
+                hir::StmtKind::Match { cases, .. } => {
+                    for case in cases {
+                        let result =
+                            self.find_dict_types_from_usage(var, &case.body, hir_module);
+                        if result != (Type::Any, Type::Any) {
+                            return result;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -463,92 +579,35 @@ impl<'a> Lowering<'a> {
                 kwargs,
                 ..
             } => {
-                // For map(func, iterable) and filter(func, iterable), register
-                // parameter type hints so the lambda gets the correct element type
-                // instead of defaulting to Any.
+                // Register lambda parameter type hints for builtin HOFs
+                // map/filter: callback takes 1 element parameter
                 if matches!(builtin, hir::Builtin::Map | hir::Builtin::Filter) && args.len() >= 2 {
-                    let func_arg = &hir_module.exprs[args[0]];
-                    let iterable_arg = &hir_module.exprs[args[1]];
-                    let iterable_type =
-                        self.infer_deep_expr_type(iterable_arg, hir_module, var_types);
-                    let elem_type = extract_iterable_element_type(&iterable_type);
-                    if !matches!(elem_type, Type::Any) {
-                        let func_info = match &func_arg.kind {
-                            hir::ExprKind::FuncRef(func_id) => Some((*func_id, vec![])),
-                            hir::ExprKind::Closure { func, captures } => {
-                                Some((*func, captures.clone()))
-                            }
-                            _ => None,
-                        };
-                        if let Some((func_id, captures)) = func_info {
-                            if let Some(func_def) = hir_module.func_defs.get(&func_id) {
-                                let num_captures = captures.len();
-                                let num_non_capture =
-                                    func_def.params.len().saturating_sub(num_captures);
-                                // map/filter callback takes exactly 1 element parameter
-                                if num_non_capture == 1 {
-                                    let mut param_hints = Vec::new();
-                                    for cap_id in &captures {
-                                        let cap_expr = &hir_module.exprs[*cap_id];
-                                        let cap_type = self
-                                            .infer_deep_expr_type(cap_expr, hir_module, var_types);
-                                        param_hints.push(cap_type);
-                                    }
-                                    param_hints.push(elem_type);
-                                    self.insert_lambda_param_type_hints(func_id, param_hints);
-                                }
-                            }
-                        }
-                    }
+                    self.register_lambda_hints_from_iterable(
+                        &hir_module.exprs[args[0]],
+                        &hir_module.exprs[args[1]],
+                        hir_module,
+                        var_types,
+                        1,
+                        |elem| vec![elem],
+                    );
                 }
-
-                // For reduce(), register parameter type hints for the callback lambda
-                // reduce(func, iterable[, initial]) — func takes (acc, elem) both of element type
+                // reduce: callback takes 2 element parameters (acc, elem)
                 if matches!(builtin, hir::Builtin::Reduce) && args.len() >= 2 {
-                    let func_arg = &hir_module.exprs[args[0]];
-                    let iterable_arg = &hir_module.exprs[args[1]];
-                    let iterable_type =
-                        self.infer_deep_expr_type(iterable_arg, hir_module, var_types);
-                    let elem_type = extract_iterable_element_type(&iterable_type);
-                    if !matches!(elem_type, Type::Any) {
-                        // Extract func_id and captures from FuncRef or Closure
-                        let func_info = match &func_arg.kind {
-                            hir::ExprKind::FuncRef(func_id) => Some((*func_id, vec![])),
-                            hir::ExprKind::Closure { func, captures } => {
-                                Some((*func, captures.clone()))
-                            }
-                            _ => None,
-                        };
-                        if let Some((func_id, captures)) = func_info {
-                            if let Some(func_def) = hir_module.func_defs.get(&func_id) {
-                                let num_captures = captures.len();
-                                let num_non_capture =
-                                    func_def.params.len().saturating_sub(num_captures);
-                                if num_non_capture == 2 {
-                                    let mut param_hints = Vec::new();
-                                    for cap_id in &captures {
-                                        let cap_expr = &hir_module.exprs[*cap_id];
-                                        let cap_type = self
-                                            .infer_deep_expr_type(cap_expr, hir_module, var_types);
-                                        param_hints.push(cap_type);
-                                    }
-                                    param_hints.push(elem_type.clone());
-                                    param_hints.push(elem_type);
-                                    self.insert_lambda_param_type_hints(func_id, param_hints);
-                                }
-                            }
-                        }
-                    }
+                    self.register_lambda_hints_from_iterable(
+                        &hir_module.exprs[args[0]],
+                        &hir_module.exprs[args[1]],
+                        hir_module,
+                        var_types,
+                        2,
+                        |elem| vec![elem.clone(), elem],
+                    );
                 }
-
-                // For sorted(iterable, key=lambda), min(iterable, key=lambda), max(iterable, key=lambda):
-                // The key function receives element type of the iterable
+                // sorted/min/max key=: key callback takes 1 element parameter
                 if matches!(
                     builtin,
                     hir::Builtin::Sorted | hir::Builtin::Min | hir::Builtin::Max
                 ) && !args.is_empty()
                 {
-                    // Find key= kwarg
                     let key_func = kwargs.iter().find_map(|kw| {
                         let kw_name = self.interner.resolve(kw.name);
                         if kw_name == "key" {
@@ -558,38 +617,14 @@ impl<'a> Lowering<'a> {
                         }
                     });
                     if let Some(key_expr) = key_func {
-                        let iterable_arg = &hir_module.exprs[args[0]];
-                        let iterable_type =
-                            self.infer_deep_expr_type(iterable_arg, hir_module, var_types);
-                        let elem_type = extract_iterable_element_type(&iterable_type);
-                        if !matches!(elem_type, Type::Any) {
-                            let func_info = match &key_expr.kind {
-                                hir::ExprKind::FuncRef(func_id) => Some((*func_id, vec![])),
-                                hir::ExprKind::Closure { func, captures } => {
-                                    Some((*func, captures.clone()))
-                                }
-                                _ => None,
-                            };
-                            if let Some((func_id, captures)) = func_info {
-                                if let Some(func_def) = hir_module.func_defs.get(&func_id) {
-                                    let num_captures = captures.len();
-                                    let num_non_capture =
-                                        func_def.params.len().saturating_sub(num_captures);
-                                    if num_non_capture == 1 {
-                                        let mut param_hints = Vec::new();
-                                        for cap_id in &captures {
-                                            let cap_expr = &hir_module.exprs[*cap_id];
-                                            let cap_type = self.infer_deep_expr_type(
-                                                cap_expr, hir_module, var_types,
-                                            );
-                                            param_hints.push(cap_type);
-                                        }
-                                        param_hints.push(elem_type);
-                                        self.insert_lambda_param_type_hints(func_id, param_hints);
-                                    }
-                                }
-                            }
-                        }
+                        self.register_lambda_hints_from_iterable(
+                            key_expr,
+                            &hir_module.exprs[args[0]],
+                            hir_module,
+                            var_types,
+                            1,
+                            |elem| vec![elem],
+                        );
                     }
                 }
 
@@ -671,6 +706,49 @@ impl<'a> Lowering<'a> {
             // Primitives and other simple expressions don't contain closures
             _ => {}
         }
+    }
+
+    // ==================== Lambda Hint Registration ====================
+
+    /// Register lambda parameter type hints for a callback that takes elements from an iterable.
+    /// Shared by map/filter (1 param), reduce (2 params), and sorted/min/max key= (1 param).
+    fn register_lambda_hints_from_iterable(
+        &mut self,
+        func_expr: &hir::Expr,
+        iterable_expr: &hir::Expr,
+        hir_module: &hir::Module,
+        var_types: &IndexMap<VarId, Type>,
+        expected_non_capture: usize,
+        make_hints: impl FnOnce(Type) -> Vec<Type>,
+    ) {
+        let iterable_type = self.infer_deep_expr_type(iterable_expr, hir_module, var_types);
+        let elem_type = extract_iterable_element_type(&iterable_type);
+        if matches!(elem_type, Type::Any) {
+            return;
+        }
+        let func_info = match &func_expr.kind {
+            hir::ExprKind::FuncRef(func_id) => Some((*func_id, vec![])),
+            hir::ExprKind::Closure { func, captures } => Some((*func, captures.clone())),
+            _ => None,
+        };
+        let Some((func_id, captures)) = func_info else {
+            return;
+        };
+        let Some(func_def) = hir_module.func_defs.get(&func_id) else {
+            return;
+        };
+        let num_non_capture = func_def.params.len().saturating_sub(captures.len());
+        if num_non_capture != expected_non_capture {
+            return;
+        }
+        let mut param_hints = Vec::new();
+        for cap_id in &captures {
+            let cap_expr = &hir_module.exprs[*cap_id];
+            let cap_type = self.infer_deep_expr_type(cap_expr, hir_module, var_types);
+            param_hints.push(cap_type);
+        }
+        param_hints.extend(make_hints(elem_type));
+        self.insert_lambda_param_type_hints(func_id, param_hints);
     }
 
     // ==================== Lambda Parameter Type Inference ====================

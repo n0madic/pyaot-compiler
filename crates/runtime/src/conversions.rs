@@ -610,7 +610,7 @@ fn insert_grouping(digits: &str, sep: char) -> String {
     if first_group > 0 {
         result.push_str(&digits[..first_group]);
     }
-    for (i, chunk) in digits[first_group..].as_bytes().chunks(3).enumerate() {
+    for (i, chunk) in digits.as_bytes()[first_group..].chunks(3).enumerate() {
         if i > 0 || first_group > 0 {
             result.push(sep);
         }
@@ -643,15 +643,15 @@ pub extern "C" fn rt_float_fmt_grouped(f: f64, precision: i64, sep: i64) -> *mut
     let s = if let Some(dot_pos) = formatted.find('.') {
         let int_part = &formatted[..dot_pos];
         let frac_part = &formatted[dot_pos..];
-        let (sign, digits) = if int_part.starts_with('-') {
-            ("-", &int_part[1..])
+        let (sign, digits) = if let Some(stripped) = int_part.strip_prefix('-') {
+            ("-", stripped)
         } else {
             ("", int_part)
         };
         format!("{}{}{}", sign, insert_grouping(digits, sep_char), frac_part)
     } else {
-        let (sign, digits) = if formatted.starts_with('-') {
-            ("-", &formatted[1..])
+        let (sign, digits) = if let Some(stripped) = formatted.strip_prefix('-') {
+            ("-", stripped)
         } else {
             ("", formatted.as_str())
         };
