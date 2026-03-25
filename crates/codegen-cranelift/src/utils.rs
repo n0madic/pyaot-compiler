@@ -35,17 +35,6 @@ pub fn get_call_result(builder: &FunctionBuilder, call_inst: Inst) -> Value {
         .expect("internal compiler error: call instruction should have return value")
 }
 
-/// Look up variable with descriptive error
-#[allow(dead_code)]
-pub fn get_variable(var_map: &IndexMap<LocalId, Variable>, local_id: &LocalId) -> Result<Variable> {
-    var_map.get(local_id).copied().ok_or_else(|| {
-        CompilerError::codegen_error(format!(
-            "Internal compiler error: local {:?} not in var_map - this indicates a bug in lowering",
-            local_id
-        ))
-    })
-}
-
 /// Convert MIR type to Cranelift type
 pub fn type_to_cranelift(ty: &Type) -> cltypes::Type {
     match ty {

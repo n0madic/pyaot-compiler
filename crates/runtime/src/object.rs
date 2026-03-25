@@ -120,11 +120,8 @@ pub struct BytesObj {
     pub data: [u8; 0], // Flexible array member
 }
 
-/// Element storage tag for containers
-/// Indicates whether elements are boxed heap objects or raw values
-pub const ELEM_HEAP_OBJ: u8 = 0; // Elements are *mut Obj with valid headers
-pub const ELEM_RAW_INT: u8 = 1; // Elements are raw i64 values
-pub const ELEM_RAW_BOOL: u8 = 2; // Elements are raw i8 cast to pointer
+// Re-export element storage tags from core-defs (single source of truth)
+pub use pyaot_core_defs::{ELEM_HEAP_OBJ, ELEM_RAW_BOOL, ELEM_RAW_INT};
 
 /// Tombstone marker for deleted entries in hash tables (dict and set).
 /// Using the alignment of Obj as the marker value because:

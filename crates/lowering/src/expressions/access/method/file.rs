@@ -67,10 +67,7 @@ impl<'a> Lowering<'a> {
                 // .write(data) - write data to file, returns bytes written
                 let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
-                let data_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let data_arg = crate::first_arg_or_none(arg_operands);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,

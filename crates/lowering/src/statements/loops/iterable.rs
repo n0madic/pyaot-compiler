@@ -317,15 +317,7 @@ impl<'a> Lowering<'a> {
                     _ => mir::RuntimeFunc::ListGet,
                 }
             }
-            IterableKind::Tuple => {
-                // Use specialized tuple get functions for primitive types
-                match &elem_type {
-                    Type::Int => mir::RuntimeFunc::TupleGetInt,
-                    Type::Float => mir::RuntimeFunc::TupleGetFloat,
-                    Type::Bool => mir::RuntimeFunc::TupleGetBool,
-                    _ => mir::RuntimeFunc::TupleGet,
-                }
-            }
+            IterableKind::Tuple => Self::tuple_get_func(&elem_type),
             IterableKind::Str => mir::RuntimeFunc::StrGetChar,
             IterableKind::Bytes => mir::RuntimeFunc::BytesGet,
             IterableKind::Iterator | IterableKind::File => {

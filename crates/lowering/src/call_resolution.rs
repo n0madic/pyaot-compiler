@@ -128,12 +128,7 @@ impl<'a> Lowering<'a> {
         if let Type::Tuple(elem_types) = tuple_type {
             for (i, elem_type) in elem_types.iter().enumerate() {
                 let elem_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
-                let get_func = match elem_type {
-                    Type::Int => mir::RuntimeFunc::TupleGetInt,
-                    Type::Float => mir::RuntimeFunc::TupleGetFloat,
-                    Type::Bool => mir::RuntimeFunc::TupleGetBool,
-                    _ => mir::RuntimeFunc::TupleGet,
-                };
+                let get_func = Self::tuple_get_func(elem_type);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: elem_local,
                     func: get_func,

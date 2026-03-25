@@ -433,10 +433,77 @@ impl<'a> Lowering<'a> {
     /// raw elements before calling key functions (sorted, min, max with key=).
     pub(crate) fn elem_tag_for_type(elem_type: &Type) -> i64 {
         match elem_type {
-            Type::Int => 1,  // ELEM_RAW_INT
-            Type::Bool => 0, // Bool in lists is boxed (ELEM_HEAP_OBJ)
-            _ => 0,          // ELEM_HEAP_OBJ (Float, Str, etc.)
+            Type::Int => pyaot_core_defs::ELEM_RAW_INT as i64,
+            Type::Bool => pyaot_core_defs::ELEM_HEAP_OBJ as i64,
+            _ => pyaot_core_defs::ELEM_HEAP_OBJ as i64,
         }
+    }
+
+    /// Select the appropriate TupleGet runtime function for the given element type.
+    /// Primitive types (Int, Float, Bool) use specialized getters that handle unboxing.
+    pub(crate) fn tuple_get_func(elem_type: &Type) -> mir::RuntimeFunc {
+        match elem_type {
+            Type::Int => mir::RuntimeFunc::TupleGetInt,
+            Type::Float => mir::RuntimeFunc::TupleGetFloat,
+            Type::Bool => mir::RuntimeFunc::TupleGetBool,
+            _ => mir::RuntimeFunc::TupleGet,
+        }
+    }
+
+    /// Shared helper for split/rsplit methods (used by both str and bytes).
+    pub(crate) fn lower_split_variant_impl(
+        &mut self,
+        obj_operand: mir::Operand,
+        arg_operands: Vec<mir::Operand>,
+        runtime_func: mir::RuntimeFunc,
+        elem_type: Type,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
+        // sep argument - use null pointer (0) to signal split on whitespace
+        let sep_operand = arg_operands
+            .first()
+            .cloned()
+            .unwrap_or(mir::Operand::Constant(mir::Constant::Int(0)));
+
+        // maxsplit argument (-1 = no limit)
+        let maxsplit_operand = arg_operands
+            .get(1)
+            .cloned()
+            .unwrap_or(mir::Operand::Constant(mir::Constant::Int(-1)));
+
+        let result_local = self.alloc_and_add_local(Type::List(Box::new(elem_type)), mir_func);
+
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: result_local,
+            func: runtime_func,
+            args: vec![obj_operand, sep_operand, maxsplit_operand],
+        });
+
+        Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Shared helper for join methods (used by both str and bytes).
+    pub(crate) fn lower_join_impl(
+        &mut self,
+        obj_operand: mir::Operand,
+        arg_operands: Vec<mir::Operand>,
+        runtime_func: mir::RuntimeFunc,
+        result_type: Type,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
+        if arg_operands.is_empty() {
+            return Ok(mir::Operand::Constant(mir::Constant::None));
+        }
+
+        let result_local = self.alloc_and_add_local(result_type, mir_func);
+
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: result_local,
+            func: runtime_func,
+            args: vec![obj_operand, arg_operands[0].clone()],
+        });
+
+        Ok(mir::Operand::Local(result_local))
     }
 
     /// Determine the elem_tag to pass to runtime for key functions.

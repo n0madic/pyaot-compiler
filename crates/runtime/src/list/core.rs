@@ -116,54 +116,53 @@ pub extern "C" fn rt_list_len(list: *mut Obj) -> i64 {
     }
 }
 
+/// Shared bounds-checking and element access for typed list getters.
+/// Returns the raw element pointer on success, or None if out of bounds / null.
+unsafe fn list_get_element(list: *mut Obj, index: i64) -> Option<*mut Obj> {
+    if list.is_null() {
+        return None;
+    }
+
+    debug_assert_type_tag!(list, TypeTagKind::List, "list_get_element");
+    let list_obj = list as *mut ListObj;
+    let len = (*list_obj).len as i64;
+
+    let idx = if index < 0 { len + index } else { index };
+
+    if idx < 0 || idx >= len {
+        return None;
+    }
+
+    let data = (*list_obj).data;
+    if data.is_null() {
+        return None;
+    }
+
+    Some(*data.add(idx as usize))
+}
+
 /// Get integer element from list, unboxing if necessary
 /// Handles both raw integer storage and boxed IntObj storage transparently
 #[no_mangle]
 pub extern "C" fn rt_list_get_int(list: *mut Obj, index: i64) -> i64 {
     use crate::object::{IntObj, ELEM_HEAP_OBJ, ELEM_RAW_INT};
 
-    if list.is_null() {
-        return 0;
-    }
-
     unsafe {
-        debug_assert_type_tag!(list, TypeTagKind::List, "rt_list_get_int");
-        let list_obj = list as *mut ListObj;
-        let len = (*list_obj).len as i64;
-
-        // Handle negative index
-        let idx = if index < 0 { len + index } else { index };
-
-        // Bounds check
-        if idx < 0 || idx >= len {
-            return 0;
-        }
-
-        let data = (*list_obj).data;
-        if data.is_null() {
-            return 0;
-        }
-
-        let elem = *data.add(idx as usize);
-        let elem_tag = (*list_obj).elem_tag;
+        let elem = match list_get_element(list, index) {
+            Some(e) => e,
+            None => return 0,
+        };
+        let elem_tag = (*(list as *mut ListObj)).elem_tag;
 
         match elem_tag {
-            ELEM_RAW_INT => {
-                // Element is stored as raw i64
-                elem as i64
-            }
+            ELEM_RAW_INT => elem as i64,
             ELEM_HEAP_OBJ => {
-                // Element is boxed - unbox it
                 if elem.is_null() {
                     return 0;
                 }
-                let int_obj = elem as *mut IntObj;
-                (*int_obj).value
+                (*(elem as *mut IntObj)).value
             }
-            _ => {
-                // Unknown tag, treat as raw
-                elem as i64
-            }
+            _ => elem as i64,
         }
     }
 }
@@ -174,44 +173,21 @@ pub extern "C" fn rt_list_get_int(list: *mut Obj, index: i64) -> i64 {
 pub extern "C" fn rt_list_get_float(list: *mut Obj, index: i64) -> f64 {
     use crate::object::{FloatObj, ELEM_HEAP_OBJ};
 
-    if list.is_null() {
-        return 0.0;
-    }
-
     unsafe {
-        debug_assert_type_tag!(list, TypeTagKind::List, "rt_list_get_float");
-        let list_obj = list as *mut ListObj;
-        let len = (*list_obj).len as i64;
-
-        // Handle negative index
-        let idx = if index < 0 { len + index } else { index };
-
-        // Bounds check
-        if idx < 0 || idx >= len {
-            return 0.0;
-        }
-
-        let data = (*list_obj).data;
-        if data.is_null() {
-            return 0.0;
-        }
-
-        let elem = *data.add(idx as usize);
-        let elem_tag = (*list_obj).elem_tag;
+        let elem = match list_get_element(list, index) {
+            Some(e) => e,
+            None => return 0.0,
+        };
+        let elem_tag = (*(list as *mut ListObj)).elem_tag;
 
         match elem_tag {
             ELEM_HEAP_OBJ => {
-                // Element is boxed - unbox it
                 if elem.is_null() {
                     return 0.0;
                 }
-                let float_obj = elem as *mut FloatObj;
-                (*float_obj).value
+                (*(elem as *mut FloatObj)).value
             }
-            _ => {
-                // Raw storage: element is f64 bitcast to pointer
-                f64::from_bits(elem as u64)
-            }
+            _ => f64::from_bits(elem as u64),
         }
     }
 }
@@ -222,52 +198,26 @@ pub extern "C" fn rt_list_get_float(list: *mut Obj, index: i64) -> f64 {
 pub extern "C" fn rt_list_get_bool(list: *mut Obj, index: i64) -> i8 {
     use crate::object::{BoolObj, ELEM_HEAP_OBJ, ELEM_RAW_BOOL};
 
-    if list.is_null() {
-        return 0;
-    }
-
     unsafe {
-        debug_assert_type_tag!(list, TypeTagKind::List, "rt_list_get_bool");
-        let list_obj = list as *mut ListObj;
-        let len = (*list_obj).len as i64;
-
-        // Handle negative index
-        let idx = if index < 0 { len + index } else { index };
-
-        // Bounds check
-        if idx < 0 || idx >= len {
-            return 0;
-        }
-
-        let data = (*list_obj).data;
-        if data.is_null() {
-            return 0;
-        }
-
-        let elem = *data.add(idx as usize);
-        let elem_tag = (*list_obj).elem_tag;
+        let elem = match list_get_element(list, index) {
+            Some(e) => e,
+            None => return 0,
+        };
+        let elem_tag = (*(list as *mut ListObj)).elem_tag;
 
         match elem_tag {
-            ELEM_RAW_BOOL => {
-                // Element is stored as raw i8
-                elem as i8
-            }
+            ELEM_RAW_BOOL => elem as i8,
             ELEM_HEAP_OBJ => {
-                // Element is boxed - unbox it
                 if elem.is_null() {
                     return 0;
                 }
-                let bool_obj = elem as *mut BoolObj;
-                if (*bool_obj).value {
+                if (*(elem as *mut BoolObj)).value {
                     1
                 } else {
                     0
                 }
             }
-            _ => {
-                // Unknown tag, treat as raw
-                elem as i8
-            }
+            _ => elem as i8,
         }
     }
 }

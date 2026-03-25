@@ -405,14 +405,8 @@ impl<'a> Lowering<'a> {
 
             let temp_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
 
-            // Choose appropriate Get function based on element type
             let get_func = if is_tuple {
-                match &elem_type {
-                    Type::Int => mir::RuntimeFunc::TupleGetInt,
-                    Type::Float => mir::RuntimeFunc::TupleGetFloat,
-                    Type::Bool => mir::RuntimeFunc::TupleGetBool,
-                    _ => mir::RuntimeFunc::TupleGet,
-                }
+                Self::tuple_get_func(&elem_type)
             } else {
                 mir::RuntimeFunc::ListGet
             };
@@ -479,14 +473,8 @@ impl<'a> Lowering<'a> {
 
             let temp_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
 
-            // Choose appropriate Get function based on element type
             let get_func = if is_tuple {
-                match &elem_type {
-                    Type::Int => mir::RuntimeFunc::TupleGetInt,
-                    Type::Float => mir::RuntimeFunc::TupleGetFloat,
-                    Type::Bool => mir::RuntimeFunc::TupleGetBool,
-                    _ => mir::RuntimeFunc::TupleGet,
-                }
+                Self::tuple_get_func(&elem_type)
             } else {
                 mir::RuntimeFunc::ListGet
             };
@@ -882,12 +870,7 @@ impl<'a> Lowering<'a> {
                 hir::UnpackTarget::Var(var_id) => {
                     // Simple variable - extract and assign directly
                     let get_func = if is_tuple {
-                        match &elem_type {
-                            Type::Int => mir::RuntimeFunc::TupleGetInt,
-                            Type::Float => mir::RuntimeFunc::TupleGetFloat,
-                            Type::Bool => mir::RuntimeFunc::TupleGetBool,
-                            _ => mir::RuntimeFunc::TupleGet,
-                        }
+                        Self::tuple_get_func(&elem_type)
                     } else {
                         mir::RuntimeFunc::ListGet
                     };

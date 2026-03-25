@@ -92,11 +92,8 @@ impl<'a> Lowering<'a> {
         // memoized types from other functions remain valid.
 
         // Copy cell_vars and nonlocal_vars from HIR function
-        for var_id in &func.cell_vars {
-            self.cell_vars.insert(*var_id);
-        }
-        for var_id in &func.nonlocal_vars {
-            // nonlocal_vars will be mapped to cell locals during parameter processing
+        // (nonlocal_vars will be mapped to cell locals during parameter processing)
+        for var_id in func.cell_vars.iter().chain(func.nonlocal_vars.iter()) {
             self.cell_vars.insert(*var_id);
         }
 

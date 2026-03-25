@@ -169,13 +169,7 @@ impl<'a> Lowering<'a> {
 
                 // Choose the appropriate getter based on element type and storage
                 let runtime_func = if uses_heap_obj {
-                    match &elem_ty {
-                        Type::Int => mir::RuntimeFunc::TupleGetInt,
-                        Type::Float => mir::RuntimeFunc::TupleGetFloat,
-                        Type::Bool => mir::RuntimeFunc::TupleGetBool,
-                        // Heap types and Union types use generic TupleGet
-                        _ => mir::RuntimeFunc::TupleGet,
-                    }
+                    Self::tuple_get_func(&elem_ty)
                 } else {
                     // ELEM_RAW_INT storage - all elements are raw i64
                     mir::RuntimeFunc::TupleGet

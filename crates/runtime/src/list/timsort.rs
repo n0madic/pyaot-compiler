@@ -68,49 +68,6 @@ pub fn timsort_int(data: &mut [i64]) {
     merge_force_collapse_int(data, &mut runs);
 }
 
-/// Sort a slice of floats in-place using Timsort
-#[allow(dead_code)]
-pub fn timsort_float(data: &mut [f64]) {
-    let len = data.len();
-    if len < 2 {
-        return;
-    }
-
-    // For small arrays, use insertion sort directly
-    if len < MIN_RUN {
-        insertion_sort_float(data, 0, len);
-        return;
-    }
-
-    // Find runs and push them onto stack
-    let mut runs = Vec::with_capacity(MAX_MERGE_STACK);
-    let min_run = compute_min_run(len);
-
-    let mut start = 0;
-    while start < len {
-        let mut run_len = count_run_float(data, start);
-
-        // If run is too small, extend it with insertion sort
-        if run_len < min_run {
-            let force = min_run.min(len - start);
-            insertion_sort_float(data, start, start + force);
-            run_len = force;
-        }
-
-        runs.push(Run {
-            start,
-            len: run_len,
-        });
-        start += run_len;
-
-        // Merge runs to maintain invariants
-        merge_collapse_float(data, &mut runs);
-    }
-
-    // Final merges
-    merge_force_collapse_float(data, &mut runs);
-}
-
 /// Sort with a comparison function
 pub fn timsort_with_cmp<T: Clone, F>(data: &mut [T], mut cmp: F)
 where
@@ -195,31 +152,6 @@ fn count_run_int(data: &mut [i64], start: usize) -> usize {
     end - start
 }
 
-fn count_run_float(data: &mut [f64], start: usize) -> usize {
-    let len = data.len();
-    if start + 1 >= len {
-        return len - start;
-    }
-
-    let mut end = start + 1;
-
-    // Check if descending
-    if data[end] < data[start] {
-        while end < len && data[end] < data[end - 1] {
-            end += 1;
-        }
-        // Reverse the descending run
-        reverse_float(data, start, end);
-    } else {
-        // Ascending run
-        while end < len && data[end] >= data[end - 1] {
-            end += 1;
-        }
-    }
-
-    end - start
-}
-
 fn count_run_with_cmp<T, F>(data: &mut [T], start: usize, cmp: &mut F) -> usize
 where
     F: FnMut(&T, &T) -> Ordering,
@@ -259,30 +191,8 @@ fn reverse_int(data: &mut [i64], start: usize, end: usize) {
     }
 }
 
-fn reverse_float(data: &mut [f64], start: usize, end: usize) {
-    let mut i = start;
-    let mut j = end - 1;
-    while i < j {
-        data.swap(i, j);
-        i += 1;
-        j -= 1;
-    }
-}
-
 /// Insertion sort for a range [start, end)
 fn insertion_sort_int(data: &mut [i64], start: usize, end: usize) {
-    for i in (start + 1)..end {
-        let key = data[i];
-        let mut j = i;
-        while j > start && data[j - 1] > key {
-            data[j] = data[j - 1];
-            j -= 1;
-        }
-        data[j] = key;
-    }
-}
-
-fn insertion_sort_float(data: &mut [f64], start: usize, end: usize) {
     for i in (start + 1)..end {
         let key = data[i];
         let mut j = i;
@@ -328,24 +238,6 @@ fn merge_collapse_int(data: &mut [i64], runs: &mut Vec<Run>) {
     }
 }
 
-fn merge_collapse_float(data: &mut [f64], runs: &mut Vec<Run>) {
-    while runs.len() > 1 {
-        let n = runs.len();
-
-        if n >= 3 && runs[n - 3].len <= runs[n - 2].len + runs[n - 1].len {
-            if runs[n - 3].len < runs[n - 1].len {
-                merge_at_float(data, runs, n - 3);
-            } else {
-                merge_at_float(data, runs, n - 2);
-            }
-        } else if runs[n - 2].len <= runs[n - 1].len {
-            merge_at_float(data, runs, n - 2);
-        } else {
-            break;
-        }
-    }
-}
-
 fn merge_collapse_with_cmp<T: Clone, F>(data: &mut [T], runs: &mut Vec<Run>, cmp: &mut F)
 where
     F: FnMut(&T, &T) -> Ordering,
@@ -375,17 +267,6 @@ fn merge_force_collapse_int(data: &mut [i64], runs: &mut Vec<Run>) {
             merge_at_int(data, runs, n - 3);
         } else {
             merge_at_int(data, runs, n - 2);
-        }
-    }
-}
-
-fn merge_force_collapse_float(data: &mut [f64], runs: &mut Vec<Run>) {
-    while runs.len() > 1 {
-        let n = runs.len();
-        if n >= 3 && runs[n - 3].len < runs[n - 1].len {
-            merge_at_float(data, runs, n - 3);
-        } else {
-            merge_at_float(data, runs, n - 2);
         }
     }
 }
@@ -423,24 +304,6 @@ fn merge_at_int(data: &mut [i64], runs: &mut Vec<Run>, i: usize) {
     runs.remove(i + 1);
 }
 
-fn merge_at_float(data: &mut [f64], runs: &mut Vec<Run>, i: usize) {
-    let run1 = runs[i];
-    let run2 = runs[i + 1];
-
-    merge_float(
-        data,
-        run1.start,
-        run1.start + run1.len,
-        run1.start + run1.len + run2.len,
-    );
-
-    runs[i] = Run {
-        start: run1.start,
-        len: run1.len + run2.len,
-    };
-    runs.remove(i + 1);
-}
-
 fn merge_at_with_cmp<T: Clone, F>(data: &mut [T], runs: &mut Vec<Run>, i: usize, cmp: &mut F)
 where
     F: FnMut(&T, &T) -> Ordering,
@@ -465,45 +328,6 @@ where
 
 /// Merge two sorted runs [start, mid) and [mid, end)
 fn merge_int(data: &mut [i64], start: usize, mid: usize, end: usize) {
-    let len1 = mid - start;
-    let len2 = end - mid;
-
-    if len1 == 0 || len2 == 0 {
-        return;
-    }
-
-    // Copy first run to temporary buffer
-    let mut temp = Vec::with_capacity(len1);
-    unsafe {
-        ptr::copy_nonoverlapping(data.as_ptr().add(start), temp.as_mut_ptr(), len1);
-        temp.set_len(len1);
-    }
-
-    let mut i = 0; // Index into temp
-    let mut j = mid; // Index into second run
-    let mut k = start; // Index into output
-
-    // Merge
-    while i < len1 && j < end {
-        if temp[i] <= data[j] {
-            data[k] = temp[i];
-            i += 1;
-        } else {
-            data[k] = data[j];
-            j += 1;
-        }
-        k += 1;
-    }
-
-    // Copy remaining elements from temp
-    while i < len1 {
-        data[k] = temp[i];
-        i += 1;
-        k += 1;
-    }
-}
-
-fn merge_float(data: &mut [f64], start: usize, mid: usize, end: usize) {
     let len1 = mid - start;
     let len2 = end - mid;
 
@@ -624,12 +448,5 @@ mod tests {
         let mut data = [3, 7, 1, 9, 2, 5, 8, 4, 6];
         timsort_int(&mut data);
         assert_eq!(data, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    }
-
-    #[test]
-    fn test_timsort_float() {
-        let mut data = [3.5, 1.2, 4.8, 2.1, 5.9];
-        timsort_float(&mut data);
-        assert_eq!(data, [1.2, 2.1, 3.5, 4.8, 5.9]);
     }
 }

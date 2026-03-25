@@ -22,6 +22,13 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::{LocalId, VarId};
 
+/// Extract the first argument from an operands vec, defaulting to None.
+fn first_arg_or_none(args: Vec<mir::Operand>) -> mir::Operand {
+    args.into_iter()
+        .next()
+        .unwrap_or(mir::Operand::Constant(mir::Constant::None))
+}
+
 impl<'a> Lowering<'a> {
     /// Helper to emit a boxing instruction and return the boxed operand.
     fn emit_box_primitive(

@@ -316,13 +316,10 @@ impl ModuleDiscovery {
         self.parsed_modules.insert(
             full_module_path.clone(),
             ParsedModule {
-                name: module_name.to_string(),
-                full_module_path,
                 path: module_path.clone(),
                 source,
                 hir: hir_module,
                 interner,
-                is_package_init,
                 parent_package,
             },
         );

@@ -22,10 +22,7 @@ impl<'a> Lowering<'a> {
                 // .add(elem) - adds element to set
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
-                let elem_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let elem_arg = crate::first_arg_or_none(arg_operands);
                 // Use actual argument type for boxing decision
                 let elem_type = arg_types.first().cloned().unwrap_or(Type::Any);
                 let boxed_elem = self.box_primitive_if_needed(elem_arg, &elem_type, mir_func);
@@ -42,10 +39,7 @@ impl<'a> Lowering<'a> {
                 // .remove(elem) - removes element, raises KeyError if missing
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
-                let elem_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let elem_arg = crate::first_arg_or_none(arg_operands);
                 let elem_type = arg_types.first().cloned().unwrap_or(Type::Any);
                 let boxed_elem = self.box_primitive_if_needed(elem_arg, &elem_type, mir_func);
 
@@ -61,10 +55,7 @@ impl<'a> Lowering<'a> {
                 // .discard(elem) - removes element if present, no error if missing
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
-                let elem_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let elem_arg = crate::first_arg_or_none(arg_operands);
                 let elem_type = arg_types.first().cloned().unwrap_or(Type::Any);
                 let boxed_elem = self.box_primitive_if_needed(elem_arg, &elem_type, mir_func);
 
@@ -106,10 +97,7 @@ impl<'a> Lowering<'a> {
                 let result_local =
                     self.alloc_and_add_local(Type::Set(Box::new(Type::Any)), mir_func);
 
-                let other_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let other_arg = crate::first_arg_or_none(arg_operands);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -124,10 +112,7 @@ impl<'a> Lowering<'a> {
                 let result_local =
                     self.alloc_and_add_local(Type::Set(Box::new(Type::Any)), mir_func);
 
-                let other_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let other_arg = crate::first_arg_or_none(arg_operands);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -142,10 +127,7 @@ impl<'a> Lowering<'a> {
                 let result_local =
                     self.alloc_and_add_local(Type::Set(Box::new(Type::Any)), mir_func);
 
-                let other_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let other_arg = crate::first_arg_or_none(arg_operands);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -160,10 +142,7 @@ impl<'a> Lowering<'a> {
                 let result_local =
                     self.alloc_and_add_local(Type::Set(Box::new(Type::Any)), mir_func);
 
-                let other_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let other_arg = crate::first_arg_or_none(arg_operands);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -177,10 +156,7 @@ impl<'a> Lowering<'a> {
                 // .issubset(other) - returns True if all elements in self are in other
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
-                let other_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let other_arg = crate::first_arg_or_none(arg_operands);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -194,10 +170,7 @@ impl<'a> Lowering<'a> {
                 // .issuperset(other) - returns True if all elements in other are in self
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
-                let other_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let other_arg = crate::first_arg_or_none(arg_operands);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -211,10 +184,7 @@ impl<'a> Lowering<'a> {
                 // .isdisjoint(other) - returns True if no elements in common
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
-                let other_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let other_arg = crate::first_arg_or_none(arg_operands);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -289,10 +259,7 @@ impl<'a> Lowering<'a> {
                 // .update(other) - adds all elements from other
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
-                let other_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let other_arg = crate::first_arg_or_none(arg_operands);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -306,10 +273,7 @@ impl<'a> Lowering<'a> {
                 // .intersection_update(other) - keeps only elements also in other
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
-                let other_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let other_arg = crate::first_arg_or_none(arg_operands);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -323,10 +287,7 @@ impl<'a> Lowering<'a> {
                 // .difference_update(other) - removes elements also in other
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
-                let other_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let other_arg = crate::first_arg_or_none(arg_operands);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -340,10 +301,7 @@ impl<'a> Lowering<'a> {
                 // .symmetric_difference_update(other) - keeps elements in exactly one set
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
-                let other_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let other_arg = crate::first_arg_or_none(arg_operands);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,

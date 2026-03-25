@@ -3,10 +3,42 @@
 use pyaot_diagnostics::Result;
 use pyaot_mir as mir;
 use pyaot_types::Type;
+use pyaot_utils::LocalId;
 
 use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
+    /// Emit a runtime call and optionally unbox the result for primitive dict values.
+    /// Returns the final result local (unboxed if needed).
+    fn emit_dict_call_and_unbox(
+        &mut self,
+        result_local: LocalId,
+        unbox_func: Option<mir::RuntimeFunc>,
+        call_func: mir::RuntimeFunc,
+        args: Vec<mir::Operand>,
+        mir_func: &mut mir::Function,
+    ) {
+        if let Some(unbox_func) = unbox_func {
+            let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: boxed_local,
+                func: call_func,
+                args,
+            });
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: unbox_func,
+                args: vec![mir::Operand::Local(boxed_local)],
+            });
+        } else {
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: call_func,
+                args,
+            });
+        }
+    }
+
     /// Lower dict method calls.
     pub(super) fn lower_dict_method(
         &mut self,
@@ -28,62 +60,33 @@ impl<'a> Lowering<'a> {
         match method_name {
             "get" => {
                 // .get(key) or .get(key, default)
-                // Dict values are stored as boxed pointers, so we need to unbox primitives
                 let result_local = self.alloc_and_add_local((*value_ty).clone(), mir_func);
 
                 if arg_operands.len() >= 2 {
-                    // .get(key, default) - box key and default based on dict's types
                     let boxed_key =
                         self.box_primitive_if_needed(arg_operands[0].clone(), &key_ty, mir_func);
                     let boxed_default =
                         self.box_primitive_if_needed(arg_operands[1].clone(), &value_ty, mir_func);
-
-                    if let Some(unbox_func) = unbox_func {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::DictGetDefault,
-                            args: vec![obj_operand, boxed_key, boxed_default],
-                        });
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: result_local,
-                            func: unbox_func,
-                            args: vec![mir::Operand::Local(boxed_local)],
-                        });
-                    } else {
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: result_local,
-                            func: mir::RuntimeFunc::DictGetDefault,
-                            args: vec![obj_operand, boxed_key, boxed_default],
-                        });
-                    }
+                    self.emit_dict_call_and_unbox(
+                        result_local,
+                        unbox_func,
+                        mir::RuntimeFunc::DictGetDefault,
+                        vec![obj_operand, boxed_key, boxed_default],
+                        mir_func,
+                    );
                 } else {
-                    // .get(key) - returns None if not found
                     let key_arg = arg_operands
                         .into_iter()
                         .next()
                         .unwrap_or(mir::Operand::Constant(mir::Constant::None));
                     let boxed_key = self.box_primitive_if_needed(key_arg, &key_ty, mir_func);
-
-                    if let Some(unbox_func) = unbox_func {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::DictGet,
-                            args: vec![obj_operand, boxed_key],
-                        });
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: result_local,
-                            func: unbox_func,
-                            args: vec![mir::Operand::Local(boxed_local)],
-                        });
-                    } else {
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: result_local,
-                            func: mir::RuntimeFunc::DictGet,
-                            args: vec![obj_operand, boxed_key],
-                        });
-                    }
+                    self.emit_dict_call_and_unbox(
+                        result_local,
+                        unbox_func,
+                        mir::RuntimeFunc::DictGet,
+                        vec![obj_operand, boxed_key],
+                        mir_func,
+                    );
                 }
 
                 Ok(mir::Operand::Local(result_local))
@@ -92,31 +95,15 @@ impl<'a> Lowering<'a> {
                 // .pop(key) - removes and returns value
                 let result_local = self.alloc_and_add_local((*value_ty).clone(), mir_func);
 
-                let key_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let key_arg = crate::first_arg_or_none(arg_operands);
                 let boxed_key = self.box_primitive_if_needed(key_arg, &key_ty, mir_func);
-
-                if let Some(unbox_func) = unbox_func {
-                    let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: boxed_local,
-                        func: mir::RuntimeFunc::DictPop,
-                        args: vec![obj_operand, boxed_key],
-                    });
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: unbox_func,
-                        args: vec![mir::Operand::Local(boxed_local)],
-                    });
-                } else {
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::DictPop,
-                        args: vec![obj_operand, boxed_key],
-                    });
-                }
+                self.emit_dict_call_and_unbox(
+                    result_local,
+                    unbox_func,
+                    mir::RuntimeFunc::DictPop,
+                    vec![obj_operand, boxed_key],
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }
@@ -195,10 +182,7 @@ impl<'a> Lowering<'a> {
                 // .update(other) - merges another dict
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
-                let other_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let other_arg = crate::first_arg_or_none(arg_operands);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::DictUpdate,
@@ -223,25 +207,13 @@ impl<'a> Lowering<'a> {
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
                 let boxed_default = self.box_primitive_if_needed(default_arg, &value_ty, mir_func);
 
-                if let Some(unbox_func) = unbox_func {
-                    let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: boxed_local,
-                        func: mir::RuntimeFunc::DictSetDefault,
-                        args: vec![obj_operand, boxed_key, boxed_default],
-                    });
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: unbox_func,
-                        args: vec![mir::Operand::Local(boxed_local)],
-                    });
-                } else {
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::DictSetDefault,
-                        args: vec![obj_operand, boxed_key, boxed_default],
-                    });
-                }
+                self.emit_dict_call_and_unbox(
+                    result_local,
+                    unbox_func,
+                    mir::RuntimeFunc::DictSetDefault,
+                    vec![obj_operand, boxed_key, boxed_default],
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }

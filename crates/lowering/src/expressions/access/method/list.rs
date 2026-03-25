@@ -26,10 +26,7 @@ impl<'a> Lowering<'a> {
                 // .append(value) - mutates list, returns None
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
-                let value_operand = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let value_operand = crate::first_arg_or_none(arg_operands);
 
                 // When elem_ty is Any (e.g., `li = []` without annotation), the list was
                 // created with ELEM_HEAP_OBJ. If the actual value is Int, we need to
@@ -185,10 +182,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
                 // Box the search value if the element type requires it (Bool/Float)
-                let value_operand = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let value_operand = crate::first_arg_or_none(arg_operands);
 
                 let boxed_value = match &*elem_ty {
                     Type::Bool => {
@@ -290,10 +284,7 @@ impl<'a> Lowering<'a> {
                 // .extend(iterable) - mutates list, returns None
                 let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
-                let other_arg = arg_operands
-                    .into_iter()
-                    .next()
-                    .unwrap_or(mir::Operand::Constant(mir::Constant::None));
+                let other_arg = crate::first_arg_or_none(arg_operands);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,

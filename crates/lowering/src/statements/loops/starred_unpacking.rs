@@ -345,14 +345,8 @@ impl<'a> Lowering<'a> {
             let target_ty = target_types.get(i).cloned().unwrap_or(Type::Any);
 
             let func = if is_tuple {
-                match &target_ty {
-                    Type::Int => mir::RuntimeFunc::TupleGetInt,
-                    Type::Float => mir::RuntimeFunc::TupleGetFloat,
-                    Type::Bool => mir::RuntimeFunc::TupleGetBool,
-                    _ => mir::RuntimeFunc::TupleGet,
-                }
+                Self::tuple_get_func(&target_ty)
             } else {
-                // Lists always use ListGet (no typed variants)
                 mir::RuntimeFunc::ListGet
             };
 
@@ -437,14 +431,8 @@ impl<'a> Lowering<'a> {
             let negative_idx = -((after_star.len() - i) as i64);
 
             let func = if is_tuple {
-                match &target_ty {
-                    Type::Int => mir::RuntimeFunc::TupleGetInt,
-                    Type::Float => mir::RuntimeFunc::TupleGetFloat,
-                    Type::Bool => mir::RuntimeFunc::TupleGetBool,
-                    _ => mir::RuntimeFunc::TupleGet,
-                }
+                Self::tuple_get_func(&target_ty)
             } else {
-                // Lists always use ListGet (no typed variants)
                 mir::RuntimeFunc::ListGet
             };
 

@@ -177,13 +177,7 @@ impl<'a> Lowering<'a> {
         for (i, &target_local) in target_locals.iter().enumerate() {
             let target_ty = target_types.get(i).cloned().unwrap_or(Type::Any);
 
-            // Use typed TupleGet for primitive types to handle unboxing
-            let func = match &target_ty {
-                Type::Int => mir::RuntimeFunc::TupleGetInt,
-                Type::Float => mir::RuntimeFunc::TupleGetFloat,
-                Type::Bool => mir::RuntimeFunc::TupleGetBool,
-                _ => mir::RuntimeFunc::TupleGet, // Heap types: str, list, etc.
-            };
+            let func = Self::tuple_get_func(&target_ty);
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: target_local,
@@ -320,13 +314,7 @@ impl<'a> Lowering<'a> {
         for (i, &target_local) in target_locals.iter().enumerate() {
             let target_ty = target_types.get(i).cloned().unwrap_or(Type::Any);
 
-            // Use typed TupleGet for primitive types to handle unboxing
-            let func = match &target_ty {
-                Type::Int => mir::RuntimeFunc::TupleGetInt,
-                Type::Float => mir::RuntimeFunc::TupleGetFloat,
-                Type::Bool => mir::RuntimeFunc::TupleGetBool,
-                _ => mir::RuntimeFunc::TupleGet, // Heap types: str, list, etc.
-            };
+            let func = Self::tuple_get_func(&target_ty);
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: target_local,

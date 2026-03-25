@@ -18,6 +18,7 @@
 #![forbid(unsafe_code)]
 
 pub mod builtins;
+pub mod elem_tags;
 pub mod exceptions;
 pub mod type_tags;
 
@@ -29,3 +30,5 @@ pub use exceptions::{
 pub use type_tags::{is_type_tag_name, type_tag_to_name, TypeTagKind, TYPE_TAG_COUNT};
 
 pub use builtins::{BuiltinFunctionKind, BUILTIN_FUNCTION_COUNT};
+
+pub use elem_tags::{ELEM_HEAP_OBJ, ELEM_RAW_BOOL, ELEM_RAW_INT};

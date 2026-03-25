@@ -9,23 +9,11 @@ pub use pyaot_lowering::CrossModuleClassInfo;
 
 /// Information about a parsed module
 pub struct ParsedModule {
-    /// Simple module name (e.g., "utils" or "__init__")
-    /// Stored for debugging and potential future logging
-    #[allow(dead_code)]
-    pub name: String,
-    /// Full dotted module path (e.g., "pkg.submodule" or "pkg")
-    /// Stored for debugging and potential future logging
-    #[allow(dead_code)]
-    pub full_module_path: String,
     /// Filesystem path to the source file
     pub path: PathBuf,
     pub source: String,
     pub hir: hir::Module,
     pub interner: StringInterner,
-    /// True if this is a package __init__.py
-    /// Stored for debugging and potential future use
-    #[allow(dead_code)]
-    pub is_package_init: bool,
     /// Parent package name (e.g., "pkg" for "pkg.submodule")
     pub parent_package: Option<String>,
 }
