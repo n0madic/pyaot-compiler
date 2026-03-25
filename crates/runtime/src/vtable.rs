@@ -200,7 +200,7 @@ use std::sync::Once;
 static INIT_BUILTIN_EXCEPTIONS: Once = Once::new();
 
 /// Initialize built-in exception classes in the class registry.
-/// This maps exception type tags (0-12) to class IDs with proper inheritance:
+/// This maps exception type tags (0-27) to class IDs with proper inheritance:
 /// - Exception (0) is the root (no parent)
 /// - All other built-in exceptions inherit from Exception (0)
 ///
@@ -214,8 +214,9 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
                 parent_class_id: NO_PARENT,
                 heap_field_mask: u64::MAX,
             };
-            // All other built-in exceptions inherit from Exception (0)
-            for i in 1..=12 {
+            // All other built-in exceptions (tags 1-27) inherit from Exception (0)
+            let last_tag = pyaot_core_defs::BUILTIN_EXCEPTION_COUNT - 1;
+            for i in 1..=last_tag as usize {
                 registry[i] = ClassInfo {
                     parent_class_id: 0,
                     heap_field_mask: u64::MAX,
@@ -226,5 +227,5 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
 }
 
 /// Get the first available class ID for user classes.
-/// Built-in exception classes use IDs 0-12, so user classes start at 13.
-pub const FIRST_USER_CLASS_ID: u8 = 13;
+/// Built-in exception classes use IDs 0-27, so user classes start at 28.
+pub const FIRST_USER_CLASS_ID: u8 = pyaot_core_defs::BUILTIN_EXCEPTION_COUNT;

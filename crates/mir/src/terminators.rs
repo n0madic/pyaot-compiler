@@ -51,6 +51,8 @@ pub enum Terminator {
     RaiseCustom {
         class_id: u8,
         message: Option<Operand>,
+        /// Pre-created exception instance (eagerly allocated with __init__ called)
+        instance: Option<Operand>,
     },
 
     /// Re-raise current exception (diverging)

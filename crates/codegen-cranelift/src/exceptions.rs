@@ -433,25 +433,47 @@ pub fn compile_raise_custom(
     builder: &mut FunctionBuilder,
     class_id: u8,
     message: &Option<Operand>,
+    instance: &Option<Operand>,
     ctx: &mut CodegenContext,
 ) -> Result<()> {
     let class_id_val = builder.ins().iconst(cltypes::I8, class_id as i64);
     let (msg_ptr, msg_len) = extract_message_operand(builder, message, ctx)?;
 
-    let mut sig = ctx.module.make_signature();
-    sig.call_conv = CallConv::SystemV;
-    sig.params.push(AbiParam::new(cltypes::I8)); // class_id
-    sig.params.push(AbiParam::new(cltypes::I64)); // message ptr
-    sig.params.push(AbiParam::new(cltypes::I64)); // message len
+    if let Some(inst_operand) = instance {
+        // Eager instance creation: pass pre-created instance to runtime
+        let instance_val = load_operand(builder, inst_operand, ctx.var_map);
 
-    let func_id = declare_runtime_function(ctx.module, "rt_exc_raise_custom", &sig)?;
-    let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+        let mut sig = ctx.module.make_signature();
+        sig.call_conv = CallConv::SystemV;
+        sig.params.push(AbiParam::new(cltypes::I8)); // class_id
+        sig.params.push(AbiParam::new(cltypes::I64)); // message ptr
+        sig.params.push(AbiParam::new(cltypes::I64)); // message len
+        sig.params.push(AbiParam::new(cltypes::I64)); // instance ptr
 
-    builder
-        .ins()
-        .call(func_ref, &[class_id_val, msg_ptr, msg_len]);
+        let func_id =
+            declare_runtime_function(ctx.module, "rt_exc_raise_custom_with_instance", &sig)?;
+        let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
 
-    // rt_exc_raise_custom never returns, so add an unreachable trap
+        builder
+            .ins()
+            .call(func_ref, &[class_id_val, msg_ptr, msg_len, instance_val]);
+    } else {
+        // No instance (lazy creation at catch time)
+        let mut sig = ctx.module.make_signature();
+        sig.call_conv = CallConv::SystemV;
+        sig.params.push(AbiParam::new(cltypes::I8)); // class_id
+        sig.params.push(AbiParam::new(cltypes::I64)); // message ptr
+        sig.params.push(AbiParam::new(cltypes::I64)); // message len
+
+        let func_id = declare_runtime_function(ctx.module, "rt_exc_raise_custom", &sig)?;
+        let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+
+        builder
+            .ins()
+            .call(func_ref, &[class_id_val, msg_ptr, msg_len]);
+    }
+
+    // rt_exc_raise never returns, so add an unreachable trap
     builder
         .ins()
         .trap(cranelift_codegen::ir::TrapCode::unwrap_user(4));

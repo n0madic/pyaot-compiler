@@ -422,3 +422,19 @@ Generator-created instructions (state machine, dispatch) use `span: None` since 
 ## Traceback Stack Depth Unwinding on longjmp
 
 When an exception is raised and a handler exists, `longjmp` skips all intermediate function returns — their `rt_stack_pop` calls never execute. To keep the traceback stack consistent, each `ExceptionFrame` saves the traceback depth at try-block entry (`rt_exc_push_frame`). All raise functions restore this depth before `longjmp`, exactly like the GC shadow stack unwinding pattern.
+
+## Exception Instances Survive longjmp via GC Root Scanning
+
+Exception instances are heap-allocated `InstanceObj` objects. When `longjmp` unwinds the GC shadow stack, roots pushed after `setjmp` are lost. But exception instances stored in `ExceptionObject.instance` (thread-local `ExceptionState`) survive because `gc::mark_roots()` explicitly scans `ExceptionState` via `mark_exception_pointers()`. This walks both `current_exception` and `handling_exception` chains (including cause/context).
+
+## Lazy vs Eager Exception Instance Creation
+
+Built-in exceptions (ValueError, etc.) create instances lazily — only when `except E as e:` binds the variable. The instance is created by `create_builtin_exception_instance()` with a single `.args` field containing a tuple of the message. Custom exception classes with `__init__` create instances eagerly at raise time via `lower_class_instantiation()`, so custom fields (e.g., `self.status`) are preserved. The instance pointer is passed to `rt_exc_raise_custom_with_instance()`.
+
+## Exception Class ID Space
+
+Built-in exception type tags 0-27 are reserved in the class registry. `FIRST_USER_CLASS_ID = BUILTIN_EXCEPTION_COUNT` (28). All 28 built-in exceptions are registered in `rt_init_builtin_exception_classes()`. User-defined exception classes get IDs starting at 28+. Exception isinstance checks and raise operations use raw class_id (not offset-adjusted), which is consistent within single-module compilation. Multi-module exception class IDs may need adjustment.
+
+## str(e) Reads Message from ExceptionState, Not Instance Fields
+
+`rt_exc_instance_str()` first checks thread-local `ExceptionState` for the message (matching by instance pointer), then falls back to reading field 0 (.args) from the instance. This is necessary because custom exception instances may not have `.args` as field 0 — their fields come from `__init__` (e.g., `self.status`). The ExceptionState always has the original message string from the raise site.

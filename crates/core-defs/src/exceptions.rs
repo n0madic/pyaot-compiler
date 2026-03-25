@@ -1,7 +1,7 @@
 //! Central definition of built-in exception types.
 //!
 //! This module provides a single source of truth for all built-in exception types,
-//! their tags (0-13), and lookup functions. The `define_exceptions!` macro generates
+//! their tags (0-27), and lookup functions. The `define_exceptions!` macro generates
 //! the `BuiltinExceptionKind` enum and all lookup functions at compile time.
 //!
 //! # Usage

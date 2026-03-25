@@ -75,9 +75,23 @@ impl<'a> Lowering<'a> {
             // Use get_expr_type for proper type inference
             let arg_type = self.get_expr_type(arg_expr, hir_module);
 
+            // For exception instances, convert to string via rt_exc_instance_str, then print
+            if matches!(&arg_type, Type::BuiltinException(_)) {
+                let str_local = self.alloc_and_add_local(Type::Str, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: str_local,
+                    func: mir::RuntimeFunc::ExcInstanceStr,
+                    args: vec![arg_operand],
+                });
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: dummy_local,
+                    func: mir::RuntimeFunc::PrintValue(PrintKind::StrObj),
+                    args: vec![mir::Operand::Local(str_local)],
+                });
+            }
             // For class instances, convert to string via __str__/__repr__ first,
             // then print the resulting string (matches CPython behavior)
-            if let Type::Class { class_id, .. } = &arg_type {
+            else if let Type::Class { class_id, .. } = &arg_type {
                 let str_local = self.alloc_and_add_local(Type::Str, mir_func);
                 if let Some(class_info) = self.get_class_info(class_id) {
                     if let Some(str_func) = class_info.str_func {
@@ -90,6 +104,13 @@ impl<'a> Lowering<'a> {
                         self.emit_instruction(mir::InstructionKind::CallDirect {
                             dest: str_local,
                             func: repr_func,
+                            args: vec![arg_operand],
+                        });
+                    } else if class_info.is_exception_class {
+                        // Exception class without __str__/__repr__ - extract message
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: str_local,
+                            func: mir::RuntimeFunc::ExcInstanceStr,
                             args: vec![arg_operand],
                         });
                     } else {

@@ -90,6 +90,22 @@ impl<'a> Lowering<'a> {
             return Ok(mir::Operand::Local(result_local));
         }
 
+        // Handle built-in exception attributes (.args)
+        if matches!(&obj_type, Type::BuiltinException(_)) {
+            if attr_name == "args" {
+                let result_local = self.alloc_and_add_local(Type::Tuple(vec![Type::Str]), mir_func);
+                // .args is field 0 on built-in exception instances
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::InstanceGetField,
+                    args: vec![obj_operand, mir::Operand::Constant(mir::Constant::Int(0))],
+                });
+                return Ok(mir::Operand::Local(result_local));
+            }
+            // Other built-in exception attributes not supported yet
+            return Ok(mir::Operand::Constant(mir::Constant::None));
+        }
+
         // Determine the field type and offset from class info
         if let Type::Class { class_id, .. } = &obj_type {
             // Try local class_info first

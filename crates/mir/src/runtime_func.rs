@@ -285,6 +285,8 @@ pub enum RuntimeFunc {
     ExcRaiseCustom,
     /// Register exception class name: rt_exc_register_class_name(class_id: u8, name: *const u8, len: usize)
     ExcRegisterClassName,
+    /// Convert exception instance to string: rt_exc_instance_str(instance: *mut Obj) -> *mut Obj
+    ExcInstanceStr,
 
     // ==================== Instance (class) runtime functions ====================
     /// Create instance: rt_make_instance(class_id, field_count) -> *mut Obj

@@ -140,13 +140,14 @@ fn get_exc_type_tag_from_type(ty: &Type) -> Option<(u8, bool)> {
 }
 
 /// Exception info result from extract_exc_info
-/// Built-in exceptions: (type_tag, message, None)
-/// Custom exception classes: (class_id, message, Some(class_id))
+/// Built-in exceptions: (type_tag, message, None, None)
+/// Custom exception classes: (class_id, message, Some(class_id), Some(instance))
 #[derive(Debug)]
 pub struct ExcInfo {
     pub type_tag: u8,
     pub message: Option<mir::Operand>,
     pub custom_class_id: Option<u8>, // Some(id) for custom exception classes
+    pub instance: Option<mir::Operand>, // Pre-created instance for custom exceptions
 }
 
 impl<'a> Lowering<'a> {
@@ -215,22 +216,56 @@ impl<'a> Lowering<'a> {
                                     ),
                                 });
                             }
-                            // Custom exception class
+                            let id = class_id.0 as u8;
+
+                            // Extract message from first arg (for traceback display)
+                            // Only use the first arg if it's a string type
                             let msg = if let Some(arg) = args.first() {
                                 let arg_id = match arg {
                                     hir::CallArg::Regular(id) => id,
                                     hir::CallArg::Starred(id) => id,
                                 };
                                 let arg_expr = &hir_module.exprs[*arg_id];
-                                Some(self.lower_expr(arg_expr, hir_module, mir_func)?)
+                                let arg_type = self.get_expr_type(arg_expr, hir_module);
+                                if arg_type == Type::Str {
+                                    Some(self.lower_expr(arg_expr, hir_module, mir_func)?)
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
                             };
-                            let id = class_id.0 as u8;
+
+                            // Create instance eagerly via lower_class_instantiation
+                            // This allocates the instance and calls __init__
+                            let expanded_args: Vec<crate::expressions::ExpandedArg> = args
+                                .iter()
+                                .map(|arg| match arg {
+                                    hir::CallArg::Regular(id) => {
+                                        crate::expressions::ExpandedArg::Regular(*id)
+                                    }
+                                    hir::CallArg::Starred(id) => {
+                                        crate::expressions::ExpandedArg::Regular(*id)
+                                    }
+                                })
+                                .collect();
+                            let kwargs_from_call = match &exc_expr.kind {
+                                hir::ExprKind::Call { kwargs, .. } => kwargs.clone(),
+                                _ => vec![],
+                            };
+                            let instance = self.lower_class_instantiation(
+                                *class_id,
+                                &expanded_args,
+                                &kwargs_from_call,
+                                hir_module,
+                                mir_func,
+                            )?;
+
                             return Ok(ExcInfo {
                                 type_tag: id,
                                 message: msg,
                                 custom_class_id: Some(id),
+                                instance: Some(instance),
                             });
                         }
                     }
@@ -250,6 +285,7 @@ impl<'a> Lowering<'a> {
                     type_tag: 0,
                     message: msg,
                     custom_class_id: None,
+                    instance: None,
                 })
             }
             hir::ExprKind::BuiltinCall { builtin, args, .. } => {
@@ -264,6 +300,7 @@ impl<'a> Lowering<'a> {
                     type_tag: tag,
                     message: msg,
                     custom_class_id: None,
+                    instance: None,
                 })
             }
             hir::ExprKind::Str(s) => {
@@ -277,12 +314,14 @@ impl<'a> Lowering<'a> {
                     type_tag: 0,
                     message: Some(mir::Operand::Local(result_local)),
                     custom_class_id: None,
+                    instance: None,
                 })
             }
             _ => Ok(ExcInfo {
                 type_tag: 0,
                 message: None,
                 custom_class_id: None,
+                instance: None,
             }),
         }
     }
@@ -310,6 +349,7 @@ impl<'a> Lowering<'a> {
                 self.current_block_mut().terminator = mir::Terminator::RaiseCustom {
                     class_id,
                     message: exc_info.message,
+                    instance: exc_info.instance,
                 };
             } else {
                 // Built-in exception - use Raise terminator
@@ -557,12 +597,19 @@ impl<'a> Lowering<'a> {
 
                 // If handler has a name binding (except Exception as e:), bind it
                 if let Some(var_id) = handler.name {
-                    // Create local for the exception object
-                    let exc_local = self.alloc_and_add_local(Type::Str, mir_func);
-                    // Get current exception as string
+                    // Use the handler's exception type for the bound variable.
+                    // For built-in exceptions: Type::BuiltinException(kind)
+                    // For custom exception classes: Type::Class { class_id, name }
+                    // For bare except: defaults to Type::BuiltinException(Exception)
+                    let exc_type = handler.ty.clone().unwrap_or(Type::BuiltinException(
+                        pyaot_core_defs::BuiltinExceptionKind::Exception,
+                    ));
+                    let exc_local = self.alloc_and_add_local(exc_type.clone(), mir_func);
+                    // Get current exception instance
                     self.emit_instruction(mir::InstructionKind::ExcGetCurrent { dest: exc_local });
-                    // Map VarId to LocalId
+                    // Map VarId to LocalId and register the type for type inference
                     self.insert_var_local(var_id, exc_local);
+                    self.insert_var_type(var_id, exc_type);
                 }
 
                 // Clear exception (it's been handled)

@@ -366,6 +366,20 @@ fn mark_roots(state: &mut GcState) {
     // the mark bit on every surviving object, so we must re-mark them here on
     // every collection cycle to prevent them from being freed.
     crate::boxing::mark_pools();
+
+    // Mark exception instance pointers stored in thread-local ExceptionState.
+    // Exception instances survive longjmp (which unwinds the shadow stack) because
+    // they are stored in Rust heap-allocated ExceptionObject, not in GC roots.
+    mark_exception_pointers();
+}
+
+/// Mark all heap objects stored in exception state (current/handling exceptions)
+fn mark_exception_pointers() {
+    for ptr in crate::exceptions::get_exception_pointers() {
+        if !ptr.is_null() {
+            mark_object(ptr);
+        }
+    }
 }
 
 /// Mark all heap objects stored in global variables

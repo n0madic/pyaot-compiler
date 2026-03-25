@@ -444,7 +444,8 @@ pub fn compile_runtime_call(
         // Exception-related operations
         mir::RuntimeFunc::ExcIsinstanceClass
         | mir::RuntimeFunc::ExcRaiseCustom
-        | mir::RuntimeFunc::ExcRegisterClassName => {
+        | mir::RuntimeFunc::ExcRegisterClassName
+        | mir::RuntimeFunc::ExcInstanceStr => {
             compile_exception_call(builder, dest, func, args, ctx)?;
             Ok(())
         }
@@ -502,6 +503,30 @@ fn compile_exception_call(
         }
         mir::RuntimeFunc::ExcRaiseCustom => {
             // Handled in exceptions.rs via compile_raise_custom — no-op here
+        }
+        mir::RuntimeFunc::ExcInstanceStr => {
+            // rt_exc_instance_str(instance: *mut Obj) -> *mut Obj
+            let instance_val = load_operand(builder, &args[0], ctx.var_map);
+
+            let mut sig = ctx.module.make_signature();
+            sig.call_conv = CallConv::SystemV;
+            sig.params.push(AbiParam::new(cltypes::I64)); // instance ptr
+            sig.returns.push(AbiParam::new(cltypes::I64)); // result str ptr
+
+            let func_id = declare_runtime_function(ctx.module, "rt_exc_instance_str", &sig)?;
+            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+            let call = builder.ins().call(func_ref, &[instance_val]);
+            let result = builder.inst_results(call)[0];
+
+            // Store result in destination variable
+            let var = *ctx
+                .var_map
+                .get(&_dest)
+                .expect("internal error: local not in var_map");
+            builder.def_var(var, result);
+
+            // Update GC root if needed (result is a heap string)
+            crate::gc::update_gc_root_if_needed(builder, &_dest, result, ctx.gc_frame_data);
         }
         _ => unreachable!("Non-exception function passed to compile_exception_call"),
     }

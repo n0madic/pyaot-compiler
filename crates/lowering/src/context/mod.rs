@@ -126,6 +126,8 @@ pub struct LoweredClassInfo {
     pub properties: IndexMap<InternedString, (FuncId, Option<FuncId>)>,
     /// Map property name to property type (return type of getter)
     pub property_types: IndexMap<InternedString, Type>,
+    /// Whether this class is an exception class (inherits from Exception)
+    pub is_exception_class: bool,
 }
 
 impl LoweredClassInfo {

@@ -253,6 +253,10 @@ pub struct ExceptionObject {
     pub suppress_context: bool,
     /// Captured traceback at the point where the exception was raised
     pub traceback: Option<Vec<crate::traceback::TracebackEntry>>,
+    /// Heap-allocated exception instance (for full exception objects).
+    /// Scanned by GC via `get_exception_pointers()`.
+    /// null if no instance has been created yet (lazy creation for built-ins).
+    pub instance: *mut crate::object::Obj,
 }
 
 impl Drop for ExceptionObject {
@@ -308,6 +312,39 @@ where
     F: FnOnce(&mut ExceptionState) -> R,
 {
     EXCEPTION_STATE.with(|state| f(&mut state.borrow_mut()))
+}
+
+// ==================== GC Integration ====================
+
+/// Collect all heap object pointers from exception state for GC root scanning.
+///
+/// Exception instances are stored in thread-local `ExceptionState` (Rust heap),
+/// not in the GC shadow stack. When `longjmp` unwinds the shadow stack, these
+/// pointers would be lost without explicit scanning. This function walks the
+/// current and handling exceptions (including cause/context chains) and returns
+/// all non-null instance pointers so the GC can mark them as roots.
+pub fn get_exception_pointers() -> Vec<*mut crate::object::Obj> {
+    with_exception_state(|state| {
+        let mut ptrs = Vec::new();
+        fn collect_from(exc: &ExceptionObject, ptrs: &mut Vec<*mut crate::object::Obj>) {
+            if !exc.instance.is_null() {
+                ptrs.push(exc.instance);
+            }
+            if let Some(ref cause) = exc.cause {
+                collect_from(cause, ptrs);
+            }
+            if let Some(ref context) = exc.context {
+                collect_from(context, ptrs);
+            }
+        }
+        if let Some(ref exc) = state.current_exception {
+            collect_from(exc, &mut ptrs);
+        }
+        if let Some(ref exc) = state.handling_exception {
+            collect_from(exc, &mut ptrs);
+        }
+        ptrs
+    })
 }
 
 // ==================== Public API (C ABI) ====================
@@ -400,6 +437,7 @@ pub unsafe extern "C" fn rt_exc_raise(exc_type_tag: u8, message: *const u8, len:
         context,
         suppress_context: false, // Plain raise doesn't suppress context
         traceback,
+        instance: std::ptr::null_mut(),
     });
 
     let handler_frame = with_exception_state(|state| {
@@ -491,6 +529,7 @@ pub unsafe extern "C" fn rt_exc_raise_from(
         context: None,
         suppress_context: false,
         traceback: None,
+        instance: std::ptr::null_mut(),
     });
 
     // Capture traceback at the point of raise
@@ -508,6 +547,7 @@ pub unsafe extern "C" fn rt_exc_raise_from(
         context,
         suppress_context: true, // Explicit cause suppresses context display
         traceback,
+        instance: std::ptr::null_mut(),
     });
 
     let handler_frame = with_exception_state(|state| {
@@ -574,6 +614,7 @@ pub unsafe extern "C" fn rt_exc_raise_from_none(
         context,
         suppress_context: true, // "from None" suppresses context display
         traceback,
+        instance: std::ptr::null_mut(),
     });
 
     let handler_frame = with_exception_state(|state| {
@@ -908,8 +949,51 @@ pub unsafe extern "C" fn rt_exc_raise_memory_error(message: *const u8, len: usiz
     rt_exc_raise(ExceptionType::MemoryError as u8, message, len)
 }
 
-/// Get the current exception as a string object (for `except Exception as e:`)
-/// Returns a heap-allocated StrObj with the exception message, or an empty string if no message.
+/// Number of fields in a built-in exception instance (just `.args`).
+const BUILTIN_EXC_FIELD_COUNT: i64 = 1;
+
+/// Create a heap-allocated exception instance for a built-in exception.
+///
+/// The instance is a regular `InstanceObj` with:
+/// - class_id = exception type tag (0-27)
+/// - field 0 = `.args` tuple (single-element tuple containing the message string)
+///
+/// # Safety
+/// The `exc` must have valid message pointer/length if non-null.
+unsafe fn create_builtin_exception_instance(exc: &ExceptionObject) -> *mut crate::object::Obj {
+    use crate::object::ELEM_HEAP_OBJ;
+
+    // Determine class_id: use custom_class_id if set, otherwise use exc_type tag
+    let class_id = if exc.custom_class_id != NOT_CUSTOM_CLASS {
+        exc.custom_class_id
+    } else {
+        exc.exc_type as u8
+    };
+
+    // Allocate instance with 1 field (.args)
+    let instance = crate::instance::rt_make_instance(class_id, BUILTIN_EXC_FIELD_COUNT);
+
+    // Create the message string object
+    let msg_str = if exc.message_len > 0 && !exc.message.is_null() {
+        crate::string::rt_make_str(exc.message, exc.message_len)
+    } else {
+        crate::string::rt_make_str(std::ptr::null(), 0)
+    };
+
+    // Create a 1-element tuple for .args containing the message
+    let args_tuple = crate::tuple::rt_make_tuple(1, ELEM_HEAP_OBJ);
+    crate::tuple::rt_tuple_set(args_tuple, 0, msg_str);
+
+    // Set field 0 = .args tuple
+    crate::instance::rt_instance_set_field(instance, 0, args_tuple as i64);
+
+    instance
+}
+
+/// Get the current exception as a heap-allocated exception instance.
+/// Returns an `InstanceObj` with `.args` tuple and exception class_id.
+/// For built-in exceptions, the instance is created lazily on first access.
+/// For custom exceptions with a pre-created instance, returns that instance.
 /// Returns null if no exception is pending.
 ///
 /// This function checks both current_exception and handling_exception, as the exception
@@ -921,21 +1005,124 @@ pub extern "C" fn rt_exc_get_current() -> *mut crate::object::Obj {
         // (handling_exception is set when we're in an except block)
         let exc = state
             .current_exception
+            .as_mut()
+            .or(state.handling_exception.as_mut());
+
+        if let Some(exc) = exc {
+            // Return existing instance if already created (custom exception or previous lazy call)
+            if !exc.instance.is_null() {
+                return exc.instance;
+            }
+            // Create instance lazily for built-in exceptions
+            let instance = unsafe { create_builtin_exception_instance(exc) };
+            exc.instance = instance;
+            instance
+        } else {
+            std::ptr::null_mut()
+        }
+    })
+}
+
+/// Get the current exception message as a string object.
+/// This is the backward-compatible version for internal use (traceback printing, etc.).
+/// Returns a heap-allocated StrObj with the exception message, or an empty string.
+#[no_mangle]
+pub extern "C" fn rt_exc_get_current_message() -> *mut crate::object::Obj {
+    with_exception_state(|state| {
+        let exc = state
+            .current_exception
             .as_ref()
             .or(state.handling_exception.as_ref());
 
         if let Some(exc) = exc {
-            // Create a string object with the exception message
             if exc.message_len > 0 && !exc.message.is_null() {
                 unsafe { crate::string::rt_make_str(exc.message, exc.message_len) }
             } else {
-                // Return empty string
                 unsafe { crate::string::rt_make_str(std::ptr::null(), 0) }
             }
         } else {
             std::ptr::null_mut()
         }
     })
+}
+
+/// Convert an exception instance to its string representation.
+///
+/// First tries to get the message from the thread-local ExceptionState (which stores
+/// the original message from the raise site). Falls back to reading field 0 (.args tuple)
+/// from the instance for built-in exception instances created lazily.
+///
+/// This implements `str(e)` for exception objects, matching CPython behavior
+/// where `str(ValueError("msg"))` returns `"msg"`.
+#[no_mangle]
+pub extern "C" fn rt_exc_instance_str(
+    instance: *mut crate::object::Obj,
+) -> *mut crate::object::Obj {
+    // Try to get message from ExceptionState first
+    // This works for both built-in and custom exceptions
+    let msg = with_exception_state(|state| {
+        let exc = state
+            .current_exception
+            .as_ref()
+            .or(state.handling_exception.as_ref());
+        if let Some(exc) = exc {
+            // Check if this is the same instance
+            if !instance.is_null() && exc.instance == instance {
+                if exc.message_len > 0 && !exc.message.is_null() {
+                    return Some(unsafe {
+                        crate::string::rt_make_str(exc.message, exc.message_len)
+                    });
+                }
+                return Some(unsafe { crate::string::rt_make_str(std::ptr::null(), 0) });
+            }
+        }
+        None
+    });
+
+    if let Some(msg) = msg {
+        return msg;
+    }
+
+    // Fallback: try to read .args from instance (for lazy-created built-in exception instances)
+    if instance.is_null() {
+        return unsafe { crate::string::rt_make_str(std::ptr::null(), 0) };
+    }
+
+    unsafe {
+        // Get field 0 (.args tuple) from the instance
+        let args_raw = crate::instance::rt_instance_get_field(instance, 0);
+        let args_tuple = args_raw as *mut crate::object::Obj;
+
+        if args_tuple.is_null() {
+            return crate::string::rt_make_str(std::ptr::null(), 0);
+        }
+
+        // Verify it's actually a tuple (not a custom field)
+        let header = &*(args_tuple as *const crate::object::ObjHeader);
+        if header.type_tag != crate::object::TypeTagKind::Tuple {
+            return crate::string::rt_make_str(std::ptr::null(), 0);
+        }
+
+        let tuple_obj = args_tuple as *mut crate::object::TupleObj;
+        let len = (*tuple_obj).len;
+        if len == 0 {
+            return crate::string::rt_make_str(std::ptr::null(), 0);
+        }
+
+        let data_ptr = (*tuple_obj).data.as_ptr();
+        let first_elem = *data_ptr;
+
+        if first_elem.is_null() {
+            return crate::string::rt_make_str(std::ptr::null(), 0);
+        }
+
+        let elem_header = &*(first_elem as *const crate::object::ObjHeader);
+        if elem_header.type_tag == crate::object::TypeTagKind::Str {
+            return first_elem;
+        }
+
+        crate::conversions::rt_obj_to_str(first_elem)
+    }
 }
 
 /// Check if current exception matches the given type tag
@@ -993,6 +1180,7 @@ pub unsafe extern "C" fn rt_exc_raise_custom(class_id: u8, message: *const u8, l
         context,
         suppress_context: false,
         traceback,
+        instance: std::ptr::null_mut(),
     });
 
     let handler_frame = with_exception_state(|state| {
@@ -1025,6 +1213,63 @@ pub unsafe extern "C" fn rt_exc_raise_custom(class_id: u8, message: *const u8, l
     });
 
     // Jump to handler
+    longjmp((*handler_frame).jmp_buf.as_mut_ptr(), 1);
+}
+
+/// Raise a custom exception with a pre-created instance.
+/// The instance was allocated and __init__ called at the raise site.
+/// This function stores the instance pointer in the ExceptionObject so that
+/// `rt_exc_get_current()` returns it directly without lazy creation.
+///
+/// # Safety
+/// - If `len > 0`, `message` must be a valid pointer to `len` bytes.
+/// - `instance` must be a valid heap-allocated Obj pointer or null.
+#[no_mangle]
+pub unsafe extern "C" fn rt_exc_raise_custom_with_instance(
+    class_id: u8,
+    message: *const u8,
+    len: usize,
+    instance: *mut crate::object::Obj,
+) -> ! {
+    let (msg_ptr, msg_len, msg_capacity) = copy_message_to_owned(message, len);
+    let context = with_exception_state(|state| state.handling_exception.take());
+    let traceback = Some(crate::traceback::capture_traceback());
+
+    let exc_obj = Box::new(ExceptionObject {
+        exc_type: ExceptionType::Exception,
+        custom_class_id: class_id,
+        message: msg_ptr,
+        message_len: msg_len,
+        message_capacity: msg_capacity,
+        cause: None,
+        context,
+        suppress_context: false,
+        traceback,
+        instance, // Store pre-created instance
+    });
+
+    let handler_frame = with_exception_state(|state| {
+        state.current_exception = Some(exc_obj);
+        state.handler_stack
+    });
+
+    if handler_frame.is_null() {
+        with_exception_state(|state| {
+            if let Some(ref exc) = state.current_exception {
+                print_unhandled_exception_full(exc);
+            }
+        });
+        std::process::exit(1);
+    }
+
+    let gc_stack_top = (*handler_frame).gc_stack_top;
+    if !gc_stack_top.is_null() {
+        crate::gc::unwind_to(gc_stack_top as *mut crate::gc::ShadowFrame);
+    }
+    crate::traceback::unwind_to((*handler_frame).traceback_depth);
+    with_exception_state(|state| {
+        state.handler_stack = (*handler_frame).prev;
+    });
     longjmp((*handler_frame).jmp_buf.as_mut_ptr(), 1);
 }
 

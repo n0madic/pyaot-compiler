@@ -229,14 +229,6 @@ for i in range(1000000):
 
 ---
 
-### 🟢 SIMD for Collection Operations
-
-**Why**: Operations like `sum(list)`, `"".join(strings)`, string search, and list comparison can benefit from SIMD (ARM NEON on Apple Silicon, SSE/AVX on x86).
-
-**Implementation**: Use `std::simd` (nightly) or manual intrinsics for hot paths. Start with `sum()` on `list[int]` and string search.
-
----
-
 ## 4. Language Features
 
 ### 🔴 Full Exception Objects

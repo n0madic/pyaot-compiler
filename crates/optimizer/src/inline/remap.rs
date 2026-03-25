@@ -240,9 +240,14 @@ impl InlineRemapper {
                 }),
                 suppress_context: *suppress_context,
             },
-            Terminator::RaiseCustom { class_id, message } => Terminator::RaiseCustom {
+            Terminator::RaiseCustom {
+                class_id,
+                message,
+                instance,
+            } => Terminator::RaiseCustom {
                 class_id: *class_id,
                 message: message.as_ref().map(|o| self.remap_operand(o)),
+                instance: instance.as_ref().map(|o| self.remap_operand(o)),
             },
             Terminator::Reraise => Terminator::Reraise,
         }

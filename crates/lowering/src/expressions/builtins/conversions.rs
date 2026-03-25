@@ -89,6 +89,14 @@ impl<'a> Lowering<'a> {
                         args: vec![],
                     });
                 }
+                Type::BuiltinException(_) => {
+                    // str(exception) returns the message from .args tuple
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: result_local,
+                        func: mir::RuntimeFunc::ExcInstanceStr,
+                        args: vec![arg_operand],
+                    });
+                }
                 Type::Class { class_id, .. } => {
                     // Check for __str__ or __repr__ methods
                     if let Some(class_info) = self.get_class_info(&class_id) {
@@ -108,7 +116,15 @@ impl<'a> Lowering<'a> {
                                 args: vec![arg_operand],
                             });
                         }
-                        // Use default repr
+                        // For exception classes without __str__/__repr__, extract message
+                        else if class_info.is_exception_class {
+                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                                dest: result_local,
+                                func: mir::RuntimeFunc::ExcInstanceStr,
+                                args: vec![arg_operand],
+                            });
+                        }
+                        // Use default repr for non-exception classes
                         else {
                             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                                 dest: result_local,

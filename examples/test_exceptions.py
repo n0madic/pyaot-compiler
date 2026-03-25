@@ -1387,4 +1387,67 @@ print("test_context_chain_multiple_levels passed")
 test_context_reraise_preserves()
 print("test_context_reraise_preserves passed")
 
+# ===== SECTION: Full Exception Objects =====
+# Tests for exception instances with .args, custom fields, str(e)
+
+def test_builtin_exception_str():
+    """Test str(e) returns the message for built-in exceptions."""
+    try:
+        raise ValueError("test message")
+    except ValueError as e:
+        msg: str = str(e)
+        assert msg == "test message", "str(e) should return the message"
+
+def test_builtin_exception_args():
+    """Test e.args returns a tuple with the message."""
+    try:
+        raise ValueError("args test")
+    except ValueError as e:
+        args: tuple[str] = e.args
+        assert args[0] == "args test", "args[0] should be the message"
+
+class HttpError(Exception):
+    def __init__(self, status: int, msg: str):
+        self.status = status
+        self.msg = msg
+
+def test_custom_exception_fields():
+    """Test custom exception with __init__ fields."""
+    try:
+        raise HttpError(404, "Not Found")
+    except HttpError as e:
+        assert e.status == 404, "status field should be 404"
+        assert e.msg == "Not Found", "msg field should be 'Not Found'"
+
+def test_custom_exception_str_simple():
+    """Test str(e) for simple custom exception (no __init__)."""
+    try:
+        raise MyError("simple message")
+    except MyError as e:
+        msg: str = str(e)
+        assert msg == "simple message", "str(e) should return the message"
+
+def test_print_builtin_exception():
+    """Test print(e) works for built-in exceptions."""
+    try:
+        raise TypeError("print test")
+    except TypeError as e:
+        # Just verify it doesn't crash
+        print(e)
+
+test_builtin_exception_str()
+print("test_builtin_exception_str passed")
+
+test_builtin_exception_args()
+print("test_builtin_exception_args passed")
+
+test_custom_exception_fields()
+print("test_custom_exception_fields passed")
+
+test_custom_exception_str_simple()
+print("test_custom_exception_str_simple passed")
+
+test_print_builtin_exception()
+print("test_print_builtin_exception passed")
+
 print("All exception tests passed!")

@@ -402,6 +402,7 @@ impl<'a> Lowering<'a> {
                 class_methods,
                 properties,
                 property_types,
+                is_exception_class: class_def.is_exception_class,
             };
             self.insert_class_info(class_id, info);
         }

@@ -149,8 +149,12 @@ pub fn compile_terminator(
             compile_reraise(builder, ctx)?;
         }
 
-        mir::Terminator::RaiseCustom { class_id, message } => {
-            compile_raise_custom(builder, *class_id, message, ctx)?;
+        mir::Terminator::RaiseCustom {
+            class_id,
+            message,
+            instance,
+        } => {
+            compile_raise_custom(builder, *class_id, message, instance, ctx)?;
         }
     }
     Ok(())

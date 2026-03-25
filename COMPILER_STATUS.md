@@ -84,7 +84,7 @@ Native Executable
 | for | ✅ | range, iterables (list/tuple/dict/str/set/bytes/file), unpacking with starred expressions |
 | for...else / while...else | ✅ | else block runs when loop completes without break |
 | break/continue | ✅ | |
-| try/except/else/finally | ✅ | Binding gets message string, not exception object |
+| try/except/else/finally | ✅ | Full exception objects with `.args`, custom fields, `str(e)` |
 | Multiple except types | ✅ | `except (ValueError, TypeError) as e:` |
 | del statement | ✅ | `del dict[key]`, `del list[index]` |
 | Walrus operator `:=` | ✅ | `if (n := len(items)) > 10:` |
@@ -339,7 +339,6 @@ lldb -o "b add" -o "r" -o "bt" program
 ## Known Limitations
 
 1. **Type Annotations**: Function parameters require type annotations; local variables infer types from initializers
-2. **Exception Binding**: `except E as e:` binds the error message string, not a full exception object
 
 ---
 
@@ -357,7 +356,6 @@ These features are intentionally not supported because they conflict with AOT co
 | Multiple inheritance | Complex MRO, vtable conflicts |
 | `import *` | Unclear namespace pollution, complicates static analysis |
 | `globals()`, `locals()` | Requires runtime introspection of symbol tables |
-| Exception chaining details | `__cause__`, `__context__` require full exception objects |
 | Stack traces | Would require debug info overhead in optimized code |
 | `inspect` module | Runtime introspection incompatible with AOT |
 | Dynamic class creation | `type(name, bases, dict)` requires runtime class generation |
@@ -942,10 +940,13 @@ Uses setjmp/longjmp (no overhead on happy path):
   - **Adding new exceptions:** See "Adding New Built-in Exceptions" below
 - **Runtime** (`exceptions.rs`):
   - `ExceptionFrame`: prev + jmp_buf (200 bytes) + gc_stack_top = 216 bytes
-  - `ExceptionObject`: exc_type, custom_class_id, message, cause (`__cause__`), context (`__context__`), suppress_context
+  - `ExceptionObject`: exc_type, custom_class_id, message, cause (`__cause__`), context (`__context__`), suppress_context, instance (heap-allocated exception object)
   - Core functions: `rt_exc_push_frame`, `rt_exc_pop_frame`, `rt_exc_setjmp`, `rt_exc_raise`, `rt_exc_raise_from`, `rt_exc_raise_from_none`, `rt_exc_reraise`, `rt_exc_clear`
   - Handling markers: `rt_exc_start_handling`, `rt_exc_end_handling` (for `__context__` capture)
-  - `rt_exc_get_current()` - returns current exception message as string object
+  - `rt_exc_get_current()` - returns current exception as heap-allocated instance (lazy for built-ins, eager for custom classes)
+  - `rt_exc_get_current_message()` - returns exception message as string (backward compat)
+  - `rt_exc_instance_str()` - converts exception instance to string (for `str(e)`)
+  - `rt_exc_raise_custom_with_instance()` - raises custom exception with pre-created instance
   - `rt_exc_isinstance(type_tag)` - checks if current exception matches type
   - `gc::unwind_to()` - unwinds shadow stack to target frame (for exception unwinding)
 - **Exception Chaining (PEP 3134)**:
