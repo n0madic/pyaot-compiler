@@ -299,40 +299,24 @@ impl<'a> Lowering<'a> {
                 }
             }
 
-            // Lower the yield value expression
+            // Lower the yield value expression.
+            // For IfExpr we need branching blocks, so the "continuation" block
+            // (where SetState + Return go) may differ from state_block.
+            let mut cur_block_id = state_block_id;
+
             let value_operand = match &yield_info.yield_value {
                 Some(expr_id) => {
                     let expr = &hir_module.exprs[*expr_id];
-                    match &expr.kind {
-                        hir::ExprKind::Int(n) => mir::Operand::Constant(mir::Constant::Int(*n)),
-                        hir::ExprKind::Float(f) => mir::Operand::Constant(mir::Constant::Float(*f)),
-                        hir::ExprKind::Bool(b) => {
-                            mir::Operand::Constant(mir::Constant::Int(if *b { 1 } else { 0 }))
-                        }
-                        hir::ExprKind::None => mir::Operand::Constant(mir::Constant::Int(0)),
-                        hir::ExprKind::Var(var_id) => {
-                            // Load from generator locals (includes params and assigned vars)
-                            if let Some(&gen_local_idx) = var_to_gen_local.get(var_id) {
-                                let var_local = self.alloc_and_add_local(Type::Int, &mut mir_func);
-                                state_block.instructions.push(mir::Instruction {
-                                    kind: mir::InstructionKind::RuntimeCall {
-                                        dest: var_local,
-                                        func: mir::RuntimeFunc::GeneratorGetLocal,
-                                        args: vec![
-                                            mir::Operand::Local(gen_param_local),
-                                            mir::Operand::Constant(mir::Constant::Int(
-                                                gen_local_idx as i64,
-                                            )),
-                                        ],
-                                    },
-                                });
-                                mir::Operand::Local(var_local)
-                            } else {
-                                mir::Operand::Constant(mir::Constant::Int(0))
-                            }
-                        }
-                        _ => mir::Operand::Constant(mir::Constant::Int(0)),
-                    }
+                    self.eval_yield_value_for_resume(
+                        expr,
+                        hir_module,
+                        &mut state_block,
+                        &mut cur_block_id,
+                        &mut mir_func,
+                        &mut next_block_id,
+                        gen_param_local,
+                        &var_to_gen_local,
+                    )?
                 }
                 None => mir::Operand::Constant(mir::Constant::Int(0)),
             };
@@ -353,7 +337,7 @@ impl<'a> Lowering<'a> {
             // Return the yielded value
             state_block.terminator = mir::Terminator::Return(Some(value_operand));
 
-            mir_func.blocks.insert(state_block_id, state_block);
+            mir_func.blocks.insert(cur_block_id, state_block);
         }
 
         // Final state block: set exhausted
@@ -380,5 +364,155 @@ impl<'a> Lowering<'a> {
         mir_func.entry_block = entry_block_id;
 
         Ok(mir_func)
+    }
+
+    /// Evaluate a yield value expression for the generic resume generator.
+    /// For most expressions this pushes instructions into `block`.
+    /// For IfExpr, it creates branching blocks, inserts the original block
+    /// into `mir_func`, and replaces `block`/`cur_block_id` with a merge block.
+    #[allow(clippy::too_many_arguments)]
+    fn eval_yield_value_for_resume(
+        &mut self,
+        expr: &hir::Expr,
+        hir_module: &hir::Module,
+        block: &mut mir::BasicBlock,
+        cur_block_id: &mut BlockId,
+        mir_func: &mut mir::Function,
+        next_block_id: &mut u32,
+        gen_param_local: pyaot_utils::LocalId,
+        var_to_gen_local: &HashMap<VarId, u32>,
+    ) -> Result<mir::Operand> {
+        match &expr.kind {
+            hir::ExprKind::Int(n) => Ok(mir::Operand::Constant(mir::Constant::Int(*n))),
+            hir::ExprKind::Float(f) => Ok(mir::Operand::Constant(mir::Constant::Float(*f))),
+            hir::ExprKind::Bool(b) => {
+                Ok(mir::Operand::Constant(mir::Constant::Int(if *b { 1 } else { 0 })))
+            }
+            hir::ExprKind::None => Ok(mir::Operand::Constant(mir::Constant::Int(0))),
+            hir::ExprKind::Var(var_id) => {
+                if let Some(&gen_local_idx) = var_to_gen_local.get(var_id) {
+                    let var_local = self.alloc_and_add_local(Type::Int, mir_func);
+                    block.instructions.push(mir::Instruction {
+                        kind: mir::InstructionKind::RuntimeCall {
+                            dest: var_local,
+                            func: mir::RuntimeFunc::GeneratorGetLocal,
+                            args: vec![
+                                mir::Operand::Local(gen_param_local),
+                                mir::Operand::Constant(mir::Constant::Int(gen_local_idx as i64)),
+                            ],
+                        },
+                    });
+                    Ok(mir::Operand::Local(var_local))
+                } else {
+                    Ok(mir::Operand::Constant(mir::Constant::Int(0)))
+                }
+            }
+            hir::ExprKind::IfExpr {
+                cond,
+                then_val,
+                else_val,
+            } => {
+                // Evaluate condition
+                let cond_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                let cond_expr = &hir_module.exprs[*cond];
+
+                if let hir::ExprKind::Compare { left, op, right } = &cond_expr.kind {
+                    let l_op = self.eval_yield_value_for_resume(
+                        &hir_module.exprs[*left], hir_module, block, cur_block_id,
+                        mir_func, next_block_id, gen_param_local, var_to_gen_local,
+                    )?;
+                    let r_op = self.eval_yield_value_for_resume(
+                        &hir_module.exprs[*right], hir_module, block, cur_block_id,
+                        mir_func, next_block_id, gen_param_local, var_to_gen_local,
+                    )?;
+                    let mir_cmp = match op {
+                        hir::CmpOp::Lt => mir::BinOp::Lt,
+                        hir::CmpOp::LtE => mir::BinOp::LtE,
+                        hir::CmpOp::Gt => mir::BinOp::Gt,
+                        hir::CmpOp::GtE => mir::BinOp::GtE,
+                        hir::CmpOp::Eq => mir::BinOp::Eq,
+                        hir::CmpOp::NotEq => mir::BinOp::NotEq,
+                        _ => mir::BinOp::Eq,
+                    };
+                    block.instructions.push(mir::Instruction {
+                        kind: mir::InstructionKind::BinOp {
+                            dest: cond_local,
+                            op: mir_cmp,
+                            left: l_op,
+                            right: r_op,
+                        },
+                    });
+                } else if matches!(&cond_expr.kind, hir::ExprKind::Var(_)) {
+                    let cond_op = self.eval_yield_value_for_resume(
+                        cond_expr, hir_module, block, cur_block_id,
+                        mir_func, next_block_id, gen_param_local, var_to_gen_local,
+                    )?;
+                    block.instructions.push(mir::Instruction {
+                        kind: mir::InstructionKind::Copy { dest: cond_local, src: cond_op },
+                    });
+                } else if let hir::ExprKind::Bool(b) = &cond_expr.kind {
+                    block.instructions.push(mir::Instruction {
+                        kind: mir::InstructionKind::Copy {
+                            dest: cond_local,
+                            src: mir::Operand::Constant(mir::Constant::Bool(*b)),
+                        },
+                    });
+                }
+
+                // Result local for both branches
+                let result_local = self.alloc_and_add_local(Type::Int, mir_func);
+
+                // Allocate then / else / merge blocks
+                let then_bb_id = BlockId::from(*next_block_id); *next_block_id += 1;
+                let else_bb_id = BlockId::from(*next_block_id); *next_block_id += 1;
+                let merge_bb_id = BlockId::from(*next_block_id); *next_block_id += 1;
+
+                // Current block branches on condition
+                block.terminator = mir::Terminator::Branch {
+                    cond: mir::Operand::Local(cond_local),
+                    then_block: then_bb_id,
+                    else_block: else_bb_id,
+                };
+                mir_func.blocks.insert(*cur_block_id, std::mem::replace(block, mir::BasicBlock {
+                    id: merge_bb_id,
+                    instructions: Vec::new(),
+                    terminator: mir::Terminator::Unreachable,
+                }));
+                *cur_block_id = merge_bb_id;
+
+                // Then block
+                let then_expr = &hir_module.exprs[*then_val];
+                let mut then_bb = mir::BasicBlock {
+                    id: then_bb_id, instructions: Vec::new(),
+                    terminator: mir::Terminator::Goto(merge_bb_id),
+                };
+                let then_op = self.eval_yield_value_for_resume(
+                    then_expr, hir_module, &mut then_bb, &mut then_bb_id.clone(),
+                    mir_func, next_block_id, gen_param_local, var_to_gen_local,
+                )?;
+                then_bb.instructions.push(mir::Instruction {
+                    kind: mir::InstructionKind::Copy { dest: result_local, src: then_op },
+                });
+                mir_func.blocks.insert(then_bb_id, then_bb);
+
+                // Else block
+                let else_expr = &hir_module.exprs[*else_val];
+                let mut else_bb = mir::BasicBlock {
+                    id: else_bb_id, instructions: Vec::new(),
+                    terminator: mir::Terminator::Goto(merge_bb_id),
+                };
+                let else_op = self.eval_yield_value_for_resume(
+                    else_expr, hir_module, &mut else_bb, &mut else_bb_id.clone(),
+                    mir_func, next_block_id, gen_param_local, var_to_gen_local,
+                )?;
+                else_bb.instructions.push(mir::Instruction {
+                    kind: mir::InstructionKind::Copy { dest: result_local, src: else_op },
+                });
+                mir_func.blocks.insert(else_bb_id, else_bb);
+
+                Ok(mir::Operand::Local(result_local))
+            }
+            _ => Ok(mir::Operand::Constant(mir::Constant::Int(0))),
+        }
     }
 }

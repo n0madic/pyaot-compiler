@@ -698,6 +698,41 @@ def test_yield_from_partial():
 test_yield_from_partial()
 
 # =============================================================================
+# Yield with ternary expression
+# =============================================================================
+
+# Ternary where then branch is taken
+def gen_ternary_then():
+    x: int = 5
+    y: int = 3
+    yield x if x > y else y
+
+gt = gen_ternary_then()
+assert next(gt) == 5, "ternary then branch failed"
+
+# Ternary where else branch is taken
+def gen_ternary_else():
+    x: int = 2
+    y: int = 7
+    yield x if x > y else y
+
+ge = gen_ternary_else()
+assert next(ge) == 7, "ternary else branch failed"
+
+# Multiple yields with ternary
+def gen_ternary_multi():
+    a: int = 10
+    b: int = 3
+    yield a if a > b else b
+    yield b if b > a else a
+
+gm = gen_ternary_multi()
+assert next(gm) == 10, "multi ternary first yield failed"
+assert next(gm) == 10, "multi ternary second yield failed"
+
+print("Yield with ternary expression tests passed!")
+
+# =============================================================================
 # All tests passed
 # =============================================================================
 

@@ -109,6 +109,59 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        // Initialize local variables assigned before the first yield.
+        // Walk body statements until the first yield and emit GeneratorSetLocal
+        // for constant assignments (e.g., x: int = 5).
+        'init_loop: for stmt_id in &func.body {
+            let stmt = &hir_module.stmts[*stmt_id];
+            match &stmt.kind {
+                hir::StmtKind::Assign {
+                    target, value, ..
+                } => {
+                    if let Some(gen_var) =
+                        gen_vars.iter().find(|v| v.var_id == *target)
+                    {
+                        let val_expr = &hir_module.exprs[*value];
+                        let val_op = match &val_expr.kind {
+                            hir::ExprKind::Int(n) => {
+                                Some(mir::Operand::Constant(mir::Constant::Int(*n)))
+                            }
+                            hir::ExprKind::Float(f) => {
+                                Some(mir::Operand::Constant(mir::Constant::Float(*f)))
+                            }
+                            hir::ExprKind::Bool(b) => Some(mir::Operand::Constant(
+                                mir::Constant::Int(if *b { 1 } else { 0 }),
+                            )),
+                            _ => None,
+                        };
+                        if let Some(op) = val_op {
+                            entry_block.instructions.push(mir::Instruction {
+                                kind: mir::InstructionKind::RuntimeCall {
+                                    dest: dummy_local,
+                                    func: mir::RuntimeFunc::GeneratorSetLocal,
+                                    args: vec![
+                                        mir::Operand::Local(gen_local),
+                                        mir::Operand::Constant(mir::Constant::Int(
+                                            gen_var.gen_local_idx as i64,
+                                        )),
+                                        op,
+                                    ],
+                                },
+                            });
+                        }
+                    }
+                }
+                hir::StmtKind::Expr(expr_id) => {
+                    // Check if this is a yield — stop scanning
+                    let expr = &hir_module.exprs[*expr_id];
+                    if matches!(expr.kind, hir::ExprKind::Yield(_)) {
+                        break 'init_loop;
+                    }
+                }
+                _ => {}
+            }
+        }
+
         // For for-loop generators, we need to initialize the iterator
         if let Some(for_gen) = self.detect_for_loop_generator(&func.body, hir_module) {
             // Allocate local for iterator

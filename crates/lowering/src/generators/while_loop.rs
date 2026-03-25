@@ -348,9 +348,9 @@ impl<'a> Lowering<'a> {
 
         // ===== States 1..N: Each yield state =====
         for (i, section) in while_gen.yield_sections.iter().enumerate() {
-            let yield_block_id = yield_state_blocks[i];
+            let mut cur_block_id = yield_state_blocks[i];
             let mut yield_block = mir::BasicBlock {
-                id: yield_block_id,
+                id: cur_block_id,
                 instructions: Vec::new(),
                 terminator: mir::Terminator::Unreachable,
             };
@@ -435,9 +435,120 @@ impl<'a> Lowering<'a> {
                             },
                         });
                     }
+                    hir::ExprKind::IfExpr {
+                        cond,
+                        then_val,
+                        else_val,
+                    } => {
+                        // Evaluate condition into a bool local
+                        let cond_local =
+                            self.alloc_and_add_local(Type::Bool, &mut mir_func);
+                        let cond_expr = &hir_module.exprs[*cond];
+
+                        if let hir::ExprKind::Compare {
+                            left,
+                            op,
+                            right,
+                        } = &cond_expr.kind
+                        {
+                            let l_expr = &hir_module.exprs[*left];
+                            let r_expr = &hir_module.exprs[*right];
+                            let l_op =
+                                self.get_operand_for_expr(l_expr, &var_to_mir_local)?;
+                            let r_op =
+                                self.get_operand_for_expr(r_expr, &var_to_mir_local)?;
+                            let mir_cmp = match op {
+                                hir::CmpOp::Lt => mir::BinOp::Lt,
+                                hir::CmpOp::LtE => mir::BinOp::LtE,
+                                hir::CmpOp::Gt => mir::BinOp::Gt,
+                                hir::CmpOp::GtE => mir::BinOp::GtE,
+                                hir::CmpOp::Eq => mir::BinOp::Eq,
+                                hir::CmpOp::NotEq => mir::BinOp::NotEq,
+                                _ => mir::BinOp::Eq,
+                            };
+                            yield_block.instructions.push(mir::Instruction {
+                                kind: mir::InstructionKind::BinOp {
+                                    dest: cond_local,
+                                    op: mir_cmp,
+                                    left: l_op,
+                                    right: r_op,
+                                },
+                            });
+                        } else if let hir::ExprKind::Var(var_id) = &cond_expr.kind {
+                            if let Some(&mir_local) = var_to_mir_local.get(var_id) {
+                                yield_block.instructions.push(mir::Instruction {
+                                    kind: mir::InstructionKind::Copy {
+                                        dest: cond_local,
+                                        src: mir::Operand::Local(mir_local),
+                                    },
+                                });
+                            }
+                        } else if let hir::ExprKind::Bool(b) = &cond_expr.kind {
+                            yield_block.instructions.push(mir::Instruction {
+                                kind: mir::InstructionKind::Copy {
+                                    dest: cond_local,
+                                    src: mir::Operand::Constant(mir::Constant::Bool(*b)),
+                                },
+                            });
+                        }
+
+                        // Allocate then / else / merge blocks
+                        let then_bb_id = BlockId::from(next_block_id);
+                        next_block_id += 1;
+                        let else_bb_id = BlockId::from(next_block_id);
+                        next_block_id += 1;
+                        let merge_bb_id = BlockId::from(next_block_id);
+                        next_block_id += 1;
+
+                        // yield_block terminates with Branch on condition
+                        yield_block.terminator = mir::Terminator::Branch {
+                            cond: mir::Operand::Local(cond_local),
+                            then_block: then_bb_id,
+                            else_block: else_bb_id,
+                        };
+                        mir_func.blocks.insert(cur_block_id, yield_block);
+
+                        // Then block: yield_value = then_val → Goto merge
+                        let then_expr = &hir_module.exprs[*then_val];
+                        let then_op =
+                            self.get_operand_for_expr(then_expr, &var_to_mir_local)?;
+                        let then_bb = mir::BasicBlock {
+                            id: then_bb_id,
+                            instructions: vec![mir::Instruction {
+                                kind: mir::InstructionKind::Copy {
+                                    dest: yield_value_local,
+                                    src: then_op,
+                                },
+                            }],
+                            terminator: mir::Terminator::Goto(merge_bb_id),
+                        };
+                        mir_func.blocks.insert(then_bb_id, then_bb);
+
+                        // Else block: yield_value = else_val → Goto merge
+                        let else_expr = &hir_module.exprs[*else_val];
+                        let else_op =
+                            self.get_operand_for_expr(else_expr, &var_to_mir_local)?;
+                        let else_bb = mir::BasicBlock {
+                            id: else_bb_id,
+                            instructions: vec![mir::Instruction {
+                                kind: mir::InstructionKind::Copy {
+                                    dest: yield_value_local,
+                                    src: else_op,
+                                },
+                            }],
+                            terminator: mir::Terminator::Goto(merge_bb_id),
+                        };
+                        mir_func.blocks.insert(else_bb_id, else_bb);
+
+                        // Replace yield_block with the merge block for continuation
+                        yield_block = mir::BasicBlock {
+                            id: merge_bb_id,
+                            instructions: Vec::new(),
+                            terminator: mir::Terminator::Unreachable,
+                        };
+                        cur_block_id = merge_bb_id;
+                    }
                     _ => {
-                        // TODO: support more expression kinds in generator yield
-                        // For now, use 0 as fallback for unsupported expressions
                         yield_block.instructions.push(mir::Instruction {
                             kind: mir::InstructionKind::Copy {
                                 dest: yield_value_local,
@@ -496,7 +607,7 @@ impl<'a> Lowering<'a> {
             // Return yield value
             yield_block.terminator =
                 mir::Terminator::Return(Some(mir::Operand::Local(yield_value_local)));
-            mir_func.blocks.insert(yield_block_id, yield_block);
+            mir_func.blocks.insert(cur_block_id, yield_block);
         }
 
         // ===== State N+1: Update and loop back =====
