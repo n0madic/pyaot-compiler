@@ -180,10 +180,9 @@ pub fn define_function(
 
             // Instructions
             for inst in &block.instructions {
-                // Set source location for debug info
-                if let (Some(span), Some(lm)) = (inst.span, codegen_ctx.line_map) {
-                    let line = lm.line_number(span.start);
-                    builder.set_srcloc(cranelift_codegen::ir::SourceLoc::new(line));
+                // Set source location for debug info (byte offset for line+column)
+                if let (Some(span), Some(_)) = (inst.span, codegen_ctx.line_map) {
+                    builder.set_srcloc(cranelift_codegen::ir::SourceLoc::new(span.start));
                 } else {
                     builder.set_srcloc(cranelift_codegen::ir::SourceLoc::default());
                 }

@@ -402,8 +402,13 @@ Source locations flow through the compiler via an "ambient span" pattern to mini
    - `lower_stmt()` sets `self.current_span = Some(stmt.span)` before dispatch
    - `lower_expr()` saves/restores: sets span from `expr.span`, restores previous span after
 3. **MIR**: `Instruction.span: Option<Span>` is populated from `current_span` in `emit_instruction()`
-4. **Codegen**: For each instruction, `LineMap.line_number(span.start)` converts byte offset to line, then `builder.set_srcloc(SourceLoc::new(line))` attaches it to Cranelift IR
-5. **Cranelift**: Preserves `SourceLoc` through compilation. `compiled_code().buffer.get_srclocs_sorted()` returns `Vec<MachSrcLoc>` mapping code offsets to source lines
-6. **DWARF**: `DebugInfoBuilder` collects srclocs per function, then `gimli::write` generates the `.debug_line` section
+4. **Codegen**: For each instruction, `builder.set_srcloc(SourceLoc::new(span.start))` stores the byte offset in Cranelift IR (not line number — byte offset preserves column information)
+5. **Cranelift**: Preserves `SourceLoc` through compilation. `compiled_code().buffer.get_srclocs_sorted()` returns `Vec<MachSrcLoc>` mapping code offsets to byte offsets
+6. **DWARF**: `DebugInfoBuilder` collects srclocs per function, converts byte offsets to `(line, column)` via `LineMap.line_col()`, then `gimli::write` generates the `.debug_line` section with column precision
+
+Additional DWARF entries:
+- `DW_TAG_base_type` for `int`, `float`, `bool`, `str` — created once at compilation unit root
+- `DW_TAG_formal_parameter` with `DW_AT_name` + `DW_AT_type` — parameter names come from `MIR Local.name` (set from `hir_param.name` during lowering)
+- Compiler-internal functions (`__pyaot_*`, `__module_*`) are filtered out of DWARF output
 
 Generator-created instructions (state machine, dispatch) use `span: None` since they are synthetic. The `Lowering.current_span` is `None` during generator lowering, so these instructions correctly get no debug location.

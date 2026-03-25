@@ -170,7 +170,7 @@ impl<'a> Lowering<'a> {
 
             let mir_param = mir::Local {
                 id: local_id,
-                name: None, // Name is in var_to_local mapping
+                name: Some(hir_param.name),
                 ty: param_ty.clone(),
                 is_gc_root: is_cell_param || param_ty.is_heap(), // Cells are heap objects
             };

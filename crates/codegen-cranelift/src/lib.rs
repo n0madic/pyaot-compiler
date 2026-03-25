@@ -135,6 +135,7 @@ impl Codegen {
         let mut debug_builder = if self.enable_debug {
             source_info.map(|si| {
                 let address_size = self.module.isa().pointer_bytes();
+                let lm = LineMap::new(&si.source);
                 debug_info::DebugInfoBuilder::new(
                     debug_info::SourceInfo {
                         filename: si.filename.clone(),
@@ -142,6 +143,7 @@ impl Codegen {
                         source: si.source.clone(),
                     },
                     address_size,
+                    lm,
                 )
             })
         } else {
@@ -199,12 +201,24 @@ impl Codegen {
                         .expect("line_map must exist in debug mode");
                     let start_line = lm.line_number(func_span.start);
 
+                    let params: Vec<debug_info::ParamDebugInfo> = func
+                        .params
+                        .iter()
+                        .filter_map(|p| {
+                            p.name.map(|n| debug_info::ParamDebugInfo {
+                                name: interner.resolve(n).to_string(),
+                                type_name: format!("{:?}", p.ty),
+                            })
+                        })
+                        .collect();
+
                     builder.add_function(debug_info::FunctionDebugInfo {
                         name: func.name.clone(),
                         start_line,
                         cl_func_id,
                         srclocs,
                         code_size,
+                        params,
                     });
                 }
             }

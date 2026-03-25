@@ -6,17 +6,24 @@
 use cranelift_codegen::{Final, MachSrcLoc};
 use cranelift_module::FuncId as ClFuncId;
 use gimli::write::{
-    Address, AttributeValue, DwarfUnit, EndianVec, LineProgram, LineString, Sections,
+    Address, AttributeValue, DwarfUnit, EndianVec, LineProgram, LineString, Sections, UnitEntryId,
 };
 use gimli::{Encoding, Format, LineEncoding, LittleEndian};
 use object::write::{Object, Relocation as ObjRelocation, SectionId, SymbolId};
 use object::{RelocationEncoding, RelocationFlags, RelocationKind, SectionKind};
+use pyaot_utils::LineMap;
 
 /// Source file information for DWARF generation.
 pub struct SourceInfo {
     pub filename: String,
     pub directory: String,
     pub source: String,
+}
+
+/// Debug info for a function parameter.
+pub struct ParamDebugInfo {
+    pub name: String,
+    pub type_name: String,
 }
 
 /// Collected debug info for one compiled function.
@@ -26,6 +33,8 @@ pub struct FunctionDebugInfo {
     pub cl_func_id: ClFuncId,
     pub srclocs: Vec<MachSrcLoc<Final>>,
     pub code_size: u64,
+    /// Parameter names and types for DW_TAG_formal_parameter
+    pub params: Vec<ParamDebugInfo>,
 }
 
 /// Accumulates debug info during compilation and generates DWARF sections.
@@ -35,6 +44,8 @@ pub struct DebugInfoBuilder {
     functions: Vec<FunctionDebugInfo>,
     /// Map from user symbol index (usize) to object SymbolId.
     symbol_map: Vec<SymbolId>,
+    /// Line map for column number lookup
+    line_map: LineMap,
 }
 
 /// Writer wrapper that tracks relocations for gimli sections.
@@ -71,9 +82,48 @@ impl gimli::write::RelocateWriter for DebugSection {
     }
 }
 
+/// Map from Python type name to DWARF base type DIE ID.
+struct BaseTypeMap {
+    entries: Vec<(String, UnitEntryId)>,
+}
+
+impl BaseTypeMap {
+    fn lookup(&self, type_name: &str) -> Option<UnitEntryId> {
+        self.entries
+            .iter()
+            .find(|(name, _)| name == type_name)
+            .map(|(_, id)| *id)
+    }
+}
+
 impl DebugInfoBuilder {
+    /// Create DW_TAG_base_type DIEs for Python primitive types.
+    fn create_base_types(dwarf: &mut DwarfUnit, root: UnitEntryId) -> BaseTypeMap {
+        let types = [
+            ("Int", "int", 8, gimli::DW_ATE_signed),
+            ("Float", "float", 8, gimli::DW_ATE_float),
+            ("Bool", "bool", 1, gimli::DW_ATE_boolean),
+            ("Str", "str", 8, gimli::DW_ATE_address), // pointer to string object
+        ];
+
+        let mut entries = Vec::new();
+        for (rust_name, py_name, byte_size, encoding) in types {
+            let type_id = dwarf.unit.add(root, gimli::DW_TAG_base_type);
+            let type_die = dwarf.unit.get_mut(type_id);
+            type_die.set(
+                gimli::DW_AT_name,
+                AttributeValue::String(py_name.as_bytes().to_vec()),
+            );
+            type_die.set(gimli::DW_AT_byte_size, AttributeValue::Udata(byte_size));
+            type_die.set(gimli::DW_AT_encoding, AttributeValue::Encoding(encoding));
+            entries.push((rust_name.to_string(), type_id));
+        }
+
+        BaseTypeMap { entries }
+    }
+
     /// Create a new debug info builder.
-    pub fn new(file: SourceInfo, address_size: u8) -> Self {
+    pub fn new(file: SourceInfo, address_size: u8, line_map: LineMap) -> Self {
         Self {
             encoding: Encoding {
                 format: Format::Dwarf32,
@@ -83,6 +133,7 @@ impl DebugInfoBuilder {
             file,
             functions: Vec::new(),
             symbol_map: Vec::new(),
+            line_map,
         }
     }
 
@@ -128,6 +179,9 @@ impl DebugInfoBuilder {
             );
         }
 
+        // Create base type DIEs for Python primitive types
+        let base_types = Self::create_base_types(&mut dwarf, root);
+
         // Create line program
         let line_encoding = LineEncoding::default();
         let comp_dir = LineString::new(
@@ -164,6 +218,11 @@ impl DebugInfoBuilder {
                 continue;
             }
 
+            // Skip compiler-internal functions
+            if func.name.starts_with("__pyaot_") || func.name.starts_with("__module_") {
+                continue;
+            }
+
             let sym_idx = func_symbol_indices[func_idx];
 
             let func_address = Address::Symbol {
@@ -190,6 +249,21 @@ impl DebugInfoBuilder {
             subprogram.set(gimli::DW_AT_low_pc, AttributeValue::Address(func_address));
             subprogram.set(gimli::DW_AT_high_pc, AttributeValue::Udata(func.code_size));
 
+            // Add DW_TAG_formal_parameter for each parameter
+            for param in &func.params {
+                let param_die_id = dwarf
+                    .unit
+                    .add(subprogram_id, gimli::DW_TAG_formal_parameter);
+                let param_die = dwarf.unit.get_mut(param_die_id);
+                param_die.set(
+                    gimli::DW_AT_name,
+                    AttributeValue::String(param.name.as_bytes().to_vec()),
+                );
+                if let Some(type_die_id) = base_types.lookup(&param.type_name) {
+                    param_die.set(gimli::DW_AT_type, AttributeValue::UnitRef(type_die_id));
+                }
+            }
+
             // Add line program entries for this function
             line_program.begin_sequence(Some(func_address));
 
@@ -198,7 +272,10 @@ impl DebugInfoBuilder {
                 if srcloc.loc.is_default() {
                     continue;
                 }
-                let line = srcloc.loc.bits() as u64;
+                // SourceLoc stores byte offset — convert to line/column
+                let byte_offset = srcloc.loc.bits();
+                let (line, col) = self.line_map.line_col(byte_offset);
+                let line = line as u64;
                 if line == 0 || line == prev_line {
                     continue;
                 }
@@ -206,7 +283,7 @@ impl DebugInfoBuilder {
                 let row = line_program.row();
                 row.file = file_id;
                 row.line = line;
-                row.column = 0;
+                row.column = col as u64;
                 row.address_offset = srcloc.start as u64;
                 row.is_statement = true;
                 if prev_line == 0 {

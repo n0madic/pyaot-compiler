@@ -183,13 +183,15 @@ lldb -o "b my_function" -o "r" program
 
 **What `--debug` provides:**
 - DWARF sections (`.debug_info`, `.debug_line`, `.debug_abbrev`, `.debug_str`) in object files
-- Source line mappings: machine code addresses mapped to Python source lines
-- Function entries (`DW_TAG_subprogram`) with declaration file and line
+- Source line+column mappings: machine code addresses mapped to Python source lines with column precision
+- Function entries (`DW_TAG_subprogram`) with declaration file and line; compiler internals filtered out
+- Function parameter info (`DW_TAG_formal_parameter`) with names and type references
+- Base type definitions (`DW_TAG_base_type`) for `int`, `float`, `bool`, `str`
 - Preserved symbols and frame pointers, optimizations disabled
 - macOS: automatic `dsymutil` invocation and `.o` file preservation
 
 **Limitations:**
-- Variable inspection not yet supported (no `DW_TAG_variable` entries)
+- Variable locations not tracked — names and types appear in DWARF, but debugger can't print values (`p my_var` won't work)
 - Only the main source file gets debug info (imported modules excluded)
 - macOS: source-level breakpoints (`b file.py:10`) require the `.o` file to remain available; function-name breakpoints (`b func_name`) work without it
 - Linux (ELF): DWARF sections are embedded in the executable — source-level breakpoints work directly

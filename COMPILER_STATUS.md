@@ -306,8 +306,10 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 
 What `--debug` provides:
 - ✅ **DWARF debug info** — `.debug_info`, `.debug_line`, `.debug_abbrev`, `.debug_str` sections in object files
-- ✅ **Source line mappings** — line number table maps machine code addresses to Python source lines
-- ✅ **Function debug entries** — `DW_TAG_subprogram` DIEs for all Python functions with `DW_AT_decl_line`
+- ✅ **Source line+column mappings** — line number table maps machine code addresses to Python source lines with column precision
+- ✅ **Function debug entries** — `DW_TAG_subprogram` DIEs for user-defined Python functions (compiler internals filtered out)
+- ✅ **Parameter info** — `DW_TAG_formal_parameter` with names and type references for each function parameter
+- ✅ **Base type definitions** — `DW_TAG_base_type` for `int`, `float`, `bool`, `str` with correct sizes and encodings
 - ✅ **Disables Cranelift optimizations** (sets `opt_level` to `none` instead of `speed`)
 - ✅ **Preserves all symbols** (disables symbol stripping during linking)
 - ✅ **Enables frame pointers** for better stack traces and profiling
@@ -315,7 +317,7 @@ What `--debug` provides:
 - ✅ **macOS**: Automatically runs `dsymutil` after linking; preserves `.o` file for debug map
 
 What `--debug` does NOT provide (yet):
-- ❌ **No variable names** — local variables not visible in debugger
+- ❌ **No variable locations** — parameter/variable names and types visible in DWARF, but runtime locations (register/stack) not tracked — debugger can't print values
 - ❌ **No multi-file DWARF** — only the main source file gets debug info (imported modules excluded)
 
 **Debugging with lldb/gdb:**

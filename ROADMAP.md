@@ -10,23 +10,32 @@ Development roadmap for the Python AOT Compiler. Items are grouped by area and r
 
 ### ✅ DWARF Debug Information (MVP — done)
 
-**Implemented**: The `--debug` flag now generates DWARF debug information:
+**Implemented**: The `--debug` flag generates DWARF debug information:
 - `Span` propagated from HIR → MIR → Cranelift via ambient span pattern in lowering context
-- `LineMap` utility converts byte offsets to line numbers (`crates/utils/src/line_map.rs`)
-- `FunctionBuilder::set_srcloc()` called per instruction during codegen
+- `LineMap` utility converts byte offsets to line+column (`crates/utils/src/line_map.rs`)
+- `FunctionBuilder::set_srcloc()` called per instruction during codegen (stores byte offset for line+column)
 - `gimli::write` generates `.debug_info`, `.debug_line`, `.debug_abbrev`, `.debug_str` sections
-- `DW_TAG_compile_unit` (Python language, pyaot producer) + `DW_TAG_subprogram` per function
+- `DW_TAG_compile_unit` (Python language, pyaot producer) + `DW_TAG_subprogram` per user-defined function
+- `DW_TAG_formal_parameter` with `DW_AT_name` and `DW_AT_type` for each function parameter
+- `DW_TAG_base_type` for `int`, `float`, `bool`, `str` with correct sizes and DWARF encodings
+- Compiler-internal functions (`__pyaot_*`, `__module_*`) filtered from DWARF output
 - macOS: `dsymutil` runs automatically after linking; `.o` file preserved for debug map
 
 **What remains (follow-up work)**:
 
-### 🟡 DWARF Variable Information
+### 🟡 DWARF Variable Location Tracking
 
-**Why**: Currently only line tables and function entries are emitted. Users can set breakpoints and see function names in backtraces, but cannot inspect local variables in the debugger (`p my_var` doesn't work).
+**Why**: Function parameters and their types are now visible in DWARF (`DW_TAG_formal_parameter` with `DW_AT_name` and `DW_AT_type`), but without `DW_AT_location` the debugger can't print their values at runtime (`p my_var` shows "no location"). Local variables similarly need `DW_TAG_variable` entries with locations.
 
-**Implementation plan**: Add `DW_TAG_variable` / `DW_TAG_formal_parameter` DIEs inside each `DW_TAG_subprogram`. Requires mapping MIR locals to Cranelift `Variable`s, then tracking which register or stack slot each variable occupies at each code point. Cranelift's `ValueLabelsRanges` in `CompiledCode` may provide this information.
+**What's done**: Parameter names/types, base type definitions (`int`, `float`, `bool`, `str`).
 
-**Complexity**: Medium-high. Cranelift already tracks value locations; the challenge is encoding them as DWARF location lists.
+**What remains**: Track where each variable lives (register or stack slot) at each code address. Cranelift's `ValueLabelsRanges` in `CompiledCode` maps `ValueLabel → Vec<ValueLocRange { loc: Reg|CFAOffset, start, end }>`. To use it:
+1. Call `func.dfg.collect_debug_info()` before codegen to enable value label tracking
+2. Call `builder.set_val_label(value, label)` after each `def_var` / `use_var`
+3. Read `compiled_code.value_labels_ranges` after compilation
+4. Encode as DWARF `DW_AT_location` with `DW_OP_reg*` / `DW_OP_fbreg` operations (architecture-dependent: ARM64 vs x86-64)
+
+**Complexity**: Medium-high. Steps 1-3 are straightforward; step 4 requires platform-specific register mapping.
 
 ### 🟡 Multi-File DWARF
 
