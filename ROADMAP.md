@@ -231,25 +231,22 @@ for i in range(1000000):
 
 ## 4. Language Features
 
-### 🔴 Full Exception Objects
+### ✅ Full Exception Objects (done)
 
-**Why**: Currently `except E as e` binds only the message string. Real Python code accesses `e.args`, `e.__class__.__name__`, and custom exception attributes. This limits interoperability with idiomatic Python patterns.
+**Implemented**: `except E as e` now binds `e` to a heap-allocated exception instance:
+- Built-in exceptions: lazy instance creation at catch time with `.args` tuple (field 0)
+- Custom exceptions: eager instance creation at raise time via `lower_class_instantiation` — `__init__` is called, custom fields preserved
+- `str(e)` extracts the message from `ExceptionState` (matching by instance pointer) or falls back to `.args[0]`
+- `print(e)` works for both built-in and custom exception types
+- `e.args` accessible on built-in exceptions (requires type annotation: `args: tuple[str] = e.args`)
+- Custom fields accessible: `e.status`, `e.msg`, etc.
+- GC root scanning of `ExceptionState` keeps exception instances alive across `longjmp`
+- Fixed class ID space: all 28 built-in exceptions registered (0-27), `FIRST_USER_CLASS_ID = 28`
 
-**Current state**: Exception handling uses setjmp/longjmp. Exception data is stored in a global `ExceptionState` with type tag, class ID, message, `__cause__`, `__context__`, and `suppress_context`. But the bound variable `e` receives only the message string.
-
-**Implementation plan**:
-1. **Exception as heap object**: Allocate exception as a regular class instance with `ObjHeader`. Store type tag, message, args tuple, and custom attributes.
-2. **`as e` binding**: Bind `e` to the exception object pointer, not the message string. Allow attribute access: `e.args`, `e.message`, custom fields.
-3. **Custom exception fields**: User-defined exceptions with `__init__` that store attributes should work:
-   ```python
-   class HttpError(Exception):
-       def __init__(self, status: int, msg: str):
-           self.status = status
-           super().__init__(msg)
-   ```
-4. **Backward compatibility**: Continue to support `str(e)` for the message string (via `__str__`).
-
-**Complexity**: Medium-high. Requires changes to exception raising, catching, and the longjmp protocol to pass an object pointer.
+**What remains (not yet supported)**:
+- `e.__class__.__name__` (requires class name attribute on instances)
+- `e.__traceback__` (traceback stored in `ExceptionObject` but not exposed as attribute)
+- `e.__cause__`, `e.__context__` (stored in `ExceptionObject` but not exposed as attributes)
 
 ---
 
@@ -511,11 +508,11 @@ These are specific issues found in the codebase that should be addressed:
 For maximum impact with reasonable effort:
 
 1. **Constant folding + DCE** — low effort, immediate wins, enables other optimizations
-2. **Stack traces** — moderate effort, huge usability improvement
+2. ~~**Stack traces**~~ — ✅ done (Python-style tracebacks with exception chaining)
 3. **List ordering comparisons** — low effort, closes a common feature gap
 4. **Escape analysis** — high effort, but the single biggest performance unlock
 5. ~~**DWARF debug info**~~ — ✅ done (MVP: line tables + function entries)
-6. **Full exception objects** — medium effort, needed for idiomatic Python patterns
+6. ~~**Full exception objects**~~ — ✅ done (heap instances, `.args`, custom fields, `str(e)`)
 7. **Incremental compilation** — medium effort, quality-of-life for larger projects
 8. **Collection optimizations (SSO, allocator)** — medium effort, closes the CPython gap
 9. **Generational GC** — high effort, long-term performance foundation
