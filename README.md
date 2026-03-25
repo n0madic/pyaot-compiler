@@ -76,7 +76,7 @@ pyaot input.py -o output --verbose
 # Compile with function inlining optimization
 pyaot input.py -o output --inline
 
-# Compile with debug information (disables optimizations, preserves symbols, no DWARF yet)
+# Compile with debug information (DWARF line tables, symbols preserved)
 pyaot input.py -o output --debug
 
 # Compile with module search paths (for imports)
@@ -166,6 +166,33 @@ Each compiled function:
 2. Registers GC roots (local variables holding heap objects)
 3. Updates roots before any allocation
 4. Unregisters frame on exit
+
+## Debug Information
+
+The `--debug` flag generates DWARF debug information for source-level debugging:
+
+```bash
+pyaot program.py -o program --debug
+
+# Inspect DWARF sections in the object file
+dwarfdump program.o
+
+# Debug with lldb (set breakpoint on function name)
+lldb -o "b my_function" -o "r" program
+```
+
+**What `--debug` provides:**
+- DWARF sections (`.debug_info`, `.debug_line`, `.debug_abbrev`, `.debug_str`) in object files
+- Source line mappings: machine code addresses mapped to Python source lines
+- Function entries (`DW_TAG_subprogram`) with declaration file and line
+- Preserved symbols and frame pointers, optimizations disabled
+- macOS: automatic `dsymutil` invocation and `.o` file preservation
+
+**Limitations:**
+- Variable inspection not yet supported (no `DW_TAG_variable` entries)
+- Only the main source file gets debug info (imported modules excluded)
+- macOS: source-level breakpoints (`b file.py:10`) require the `.o` file to remain available; function-name breakpoints (`b func_name`) work without it
+- Linux (ELF): DWARF sections are embedded in the executable — source-level breakpoints work directly
 
 ## Runtime Library
 

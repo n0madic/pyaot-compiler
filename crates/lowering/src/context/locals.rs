@@ -94,8 +94,9 @@ impl<'a> Lowering<'a> {
 
     /// Emit an instruction to the current basic block
     pub(crate) fn emit_instruction(&mut self, kind: mir::InstructionKind) {
+        let span = self.current_span;
         self.current_block_mut()
             .instructions
-            .push(mir::Instruction { kind });
+            .push(mir::Instruction { kind, span });
     }
 }

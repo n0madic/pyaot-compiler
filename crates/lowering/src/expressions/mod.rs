@@ -51,7 +51,9 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        match &expr.kind {
+        let prev_span = self.current_span;
+        self.current_span = Some(expr.span);
+        let result = match &expr.kind {
             // Literals (literals.rs)
             hir::ExprKind::Int(val) => Ok(mir::Operand::Constant(mir::Constant::Int(*val))),
             hir::ExprKind::Float(val) => Ok(mir::Operand::Constant(mir::Constant::Float(*val))),
@@ -210,7 +212,9 @@ impl<'a> Lowering<'a> {
 
             // Standard library compile-time constant (math.pi, math.e)
             hir::ExprKind::StdlibConst(const_def) => self.lower_stdlib_const(const_def, mir_func),
-        }
+        };
+        self.current_span = prev_span;
+        result
     }
 
     /// Lower an imported reference expression.

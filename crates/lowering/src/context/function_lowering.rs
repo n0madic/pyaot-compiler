@@ -208,6 +208,7 @@ impl<'a> Lowering<'a> {
         self.current_func_return_type = Some(return_type.clone());
 
         let mut mir_func = mir::Function::new(func.id, func_name, params.clone(), return_type);
+        mir_func.span = Some(func.span);
 
         // Add parameters to locals
         for param in params {

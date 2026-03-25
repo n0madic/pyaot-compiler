@@ -49,6 +49,7 @@ fn create_add_function(func_id: FuncId) -> Function {
             left: Operand::Local(param_a.id),
             right: Operand::Local(param_b.id),
         },
+        span: None,
     }];
     entry.terminator = Terminator::Return(Some(Operand::Local(result.id)));
 
@@ -90,12 +91,14 @@ fn create_caller_function(func_id: FuncId, add_func_id: FuncId) -> Function {
                 dest: x.id,
                 value: Constant::Int(10),
             },
+            span: None,
         },
         Instruction {
             kind: InstructionKind::Const {
                 dest: y.id,
                 value: Constant::Int(20),
             },
+            span: None,
         },
         Instruction {
             kind: InstructionKind::CallDirect {
@@ -103,6 +106,7 @@ fn create_caller_function(func_id: FuncId, add_func_id: FuncId) -> Function {
                 func: add_func_id,
                 args: vec![Operand::Local(x.id), Operand::Local(y.id)],
             },
+            span: None,
         },
     ];
     entry.terminator = Terminator::Return(Some(Operand::Local(result.id)));
@@ -192,6 +196,7 @@ fn test_recursive_detection() {
             func: fac_id, // Recursive call
             args: vec![Operand::Local(param_n.id)],
         },
+        span: None,
     }];
     entry.terminator = Terminator::Return(Some(Operand::Local(result.id)));
 
@@ -273,6 +278,7 @@ fn test_no_inline_recursive() {
             func: fac_id,
             args: vec![Operand::Local(param_n.id)],
         },
+        span: None,
     }];
     entry.terminator = Terminator::Return(Some(Operand::Local(result.id)));
 
@@ -304,6 +310,7 @@ fn test_no_inline_recursive() {
                 dest: x.id,
                 value: Constant::Int(5),
             },
+            span: None,
         },
         Instruction {
             kind: InstructionKind::CallDirect {
@@ -311,6 +318,7 @@ fn test_no_inline_recursive() {
                 func: fac_id,
                 args: vec![Operand::Local(x.id)],
             },
+            span: None,
         },
     ];
     entry.terminator = Terminator::Return(Some(Operand::Local(res.id)));
@@ -368,6 +376,7 @@ fn test_generator_not_inlined() {
             dest: result.id,
             src: Operand::Local(param.id),
         },
+        span: None,
     }];
     entry.terminator = Terminator::Return(Some(Operand::Local(result.id)));
 
@@ -399,6 +408,7 @@ fn test_generator_not_inlined() {
                 dest: x.id,
                 value: Constant::Int(5),
             },
+            span: None,
         },
         Instruction {
             kind: InstructionKind::CallDirect {
@@ -406,6 +416,7 @@ fn test_generator_not_inlined() {
                 func: gen_id,
                 args: vec![Operand::Local(x.id)],
             },
+            span: None,
         },
     ];
     entry.terminator = Terminator::Return(Some(Operand::Local(res.id)));
@@ -500,6 +511,7 @@ fn test_multi_block_callee_inlined() {
                     dest: result.id,
                     value: Constant::Int(0),
                 },
+                span: None,
             }],
             terminator: Terminator::Return(Some(Operand::Local(result.id))),
         },
@@ -533,6 +545,7 @@ fn test_multi_block_callee_inlined() {
                 dest: x.id,
                 value: Constant::Int(42),
             },
+            span: None,
         },
         Instruction {
             kind: InstructionKind::CallDirect {
@@ -540,6 +553,7 @@ fn test_multi_block_callee_inlined() {
                 func: callee_id,
                 args: vec![Operand::Local(x.id)],
             },
+            span: None,
         },
     ];
     entry.terminator = Terminator::Return(Some(Operand::Local(res.id)));
@@ -613,12 +627,14 @@ fn test_multiple_call_sites_in_same_function() {
                 dest: x.id,
                 value: Constant::Int(1),
             },
+            span: None,
         },
         Instruction {
             kind: InstructionKind::Const {
                 dest: y.id,
                 value: Constant::Int(2),
             },
+            span: None,
         },
         Instruction {
             kind: InstructionKind::CallDirect {
@@ -626,6 +642,7 @@ fn test_multiple_call_sites_in_same_function() {
                 func: add_id,
                 args: vec![Operand::Local(x.id), Operand::Local(y.id)],
             },
+            span: None,
         },
         Instruction {
             kind: InstructionKind::CallDirect {
@@ -633,6 +650,7 @@ fn test_multiple_call_sites_in_same_function() {
                 func: add_id,
                 args: vec![Operand::Local(r1.id), Operand::Local(y.id)],
             },
+            span: None,
         },
     ];
     entry.terminator = Terminator::Return(Some(Operand::Local(r2.id)));
@@ -692,6 +710,7 @@ fn test_transitive_inlining() {
             left: Operand::Local(a_param.id),
             right: Operand::Constant(Constant::Int(1)),
         },
+        span: None,
     }];
     entry.terminator = Terminator::Return(Some(Operand::Local(a_result.id)));
 
@@ -717,6 +736,7 @@ fn test_transitive_inlining() {
             func: a_id,
             args: vec![Operand::Local(b_param.id)],
         },
+        span: None,
     }];
     entry.terminator = Terminator::Return(Some(Operand::Local(b_result.id)));
 
@@ -743,6 +763,7 @@ fn test_transitive_inlining() {
                 dest: c_x.id,
                 value: Constant::Int(10),
             },
+            span: None,
         },
         Instruction {
             kind: InstructionKind::CallDirect {
@@ -750,6 +771,7 @@ fn test_transitive_inlining() {
                 func: b_id,
                 args: vec![Operand::Local(c_x.id)],
             },
+            span: None,
         },
     ];
     entry.terminator = Terminator::Return(Some(Operand::Local(c_result.id)));
@@ -819,6 +841,7 @@ fn test_consider_decision_medium_function() {
                 dest: local.id,
                 value: Constant::Int(i as i64),
             },
+            span: None,
         });
     }
     entry.instructions = instructions;
@@ -872,6 +895,7 @@ fn test_gc_roots_excluded_from_always_inline() {
             dest: result.id,
             src: Operand::Local(param.id),
         },
+        span: None,
     }];
     entry.terminator = Terminator::Return(Some(Operand::Local(result.id)));
 
@@ -920,6 +944,7 @@ fn test_max_iterations_limits_inlining() {
             dest: a_result.id,
             src: Operand::Local(a_param.id),
         },
+        span: None,
     }];
     entry.terminator = Terminator::Return(Some(Operand::Local(a_result.id)));
 
@@ -945,6 +970,7 @@ fn test_max_iterations_limits_inlining() {
             func: a_id,
             args: vec![Operand::Local(b_param.id)],
         },
+        span: None,
     }];
     entry.terminator = Terminator::Return(Some(Operand::Local(b_result.id)));
 
@@ -971,6 +997,7 @@ fn test_max_iterations_limits_inlining() {
                 dest: c_x.id,
                 value: Constant::Int(10),
             },
+            span: None,
         },
         Instruction {
             kind: InstructionKind::CallDirect {
@@ -978,6 +1005,7 @@ fn test_max_iterations_limits_inlining() {
                 func: b_id,
                 args: vec![Operand::Local(c_x.id)],
             },
+            span: None,
         },
     ];
     entry.terminator = Terminator::Return(Some(Operand::Local(c_result.id)));

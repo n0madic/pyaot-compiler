@@ -17,6 +17,7 @@
 #![forbid(unsafe_code)]
 
 mod context;
+mod debug_info;
 mod exceptions;
 mod function;
 mod gc;
@@ -25,6 +26,8 @@ mod runtime_calls;
 mod runtime_helpers;
 mod terminators;
 mod utils;
+
+pub use debug_info::SourceInfo;
 
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
@@ -57,6 +60,7 @@ pub struct Codegen {
     func_builder_ctx: FunctionBuilderContext,
     gc_push_id: Option<ClFuncId>,
     gc_pop_id: Option<ClFuncId>,
+    enable_debug: bool,
 }
 
 impl Codegen {
@@ -109,6 +113,7 @@ impl Codegen {
             func_builder_ctx: FunctionBuilderContext::new(),
             gc_push_id: None,
             gc_pop_id: None,
+            enable_debug,
         })
     }
 
@@ -117,7 +122,31 @@ impl Codegen {
         mut self,
         mir_module: &mir::Module,
         interner: &StringInterner,
+        source_info: Option<&SourceInfo>,
     ) -> Result<Vec<u8>> {
+        use pyaot_utils::LineMap;
+
+        // Build line map and debug info builder if in debug mode
+        let line_map = if self.enable_debug {
+            source_info.map(|si| LineMap::new(&si.source))
+        } else {
+            None
+        };
+        let mut debug_builder = if self.enable_debug {
+            source_info.map(|si| {
+                let address_size = self.module.isa().pointer_bytes();
+                debug_info::DebugInfoBuilder::new(
+                    debug_info::SourceInfo {
+                        filename: si.filename.clone(),
+                        directory: si.directory.clone(),
+                        source: si.source.clone(),
+                    },
+                    address_size,
+                )
+            })
+        } else {
+            None
+        };
         // Declare runtime functions
         let (rt_init_id, rt_shutdown_id) = declare_runtime_functions(&mut self.module);
 
@@ -156,8 +185,29 @@ impl Codegen {
                 interner,
                 gc_push_id: self.gc_push_id,
                 gc_pop_id: self.gc_pop_id,
+                line_map: line_map.as_ref(),
             };
             define_function(&mut compiler, func, cl_func_id)?;
+
+            // Collect debug info after function compilation
+            if let Some(ref mut builder) = debug_builder {
+                if let Some(func_span) = func.span {
+                    let srclocs = debug_info::get_compiled_srclocs(&self.ctx);
+                    let code_size = debug_info::get_compiled_function_size(&self.ctx).unwrap_or(0);
+                    let lm = line_map
+                        .as_ref()
+                        .expect("line_map must exist in debug mode");
+                    let start_line = lm.line_number(func_span.start);
+
+                    builder.add_function(debug_info::FunctionDebugInfo {
+                        name: func.name.clone(),
+                        start_line,
+                        cl_func_id,
+                        srclocs,
+                        code_size,
+                    });
+                }
+            }
         }
 
         // Collect generator resume functions for the dispatcher
@@ -221,7 +271,16 @@ impl Codegen {
         )?;
 
         // Finalize and get object file
-        let product = self.module.finish();
+        let mut product = self.module.finish();
+
+        // Write DWARF debug sections if enabled
+        if let Some(mut builder) = debug_builder {
+            builder.resolve_symbols(&product);
+            builder
+                .emit_dwarf(&mut product.object)
+                .expect("failed to generate DWARF debug info");
+        }
+
         Ok(product
             .emit()
             .expect("failed to emit object file from Cranelift module"))

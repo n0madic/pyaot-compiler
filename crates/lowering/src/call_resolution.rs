@@ -544,6 +544,7 @@ impl<'a> Lowering<'a> {
                     func: mir::RuntimeFunc::AssertFail,
                     args: vec![msg_operand],
                 },
+                span: None,
             });
         self.current_block_mut().terminator = mir::Terminator::Unreachable;
     }

@@ -8,26 +8,44 @@ Development roadmap for the Python AOT Compiler. Items are grouped by area and r
 
 ## 1. Debugging & Diagnostics
 
-### 🔴 DWARF Debug Information
+### ✅ DWARF Debug Information (MVP — done)
 
-**Why**: Without source-level debugging, users can only debug at the assembly level with `lldb`/`gdb`. This is the single biggest usability gap — you can't set breakpoints on Python lines, inspect variables, or step through code.
+**Implemented**: The `--debug` flag now generates DWARF debug information:
+- `Span` propagated from HIR → MIR → Cranelift via ambient span pattern in lowering context
+- `LineMap` utility converts byte offsets to line numbers (`crates/utils/src/line_map.rs`)
+- `FunctionBuilder::set_srcloc()` called per instruction during codegen
+- `gimli::write` generates `.debug_info`, `.debug_line`, `.debug_abbrev`, `.debug_str` sections
+- `DW_TAG_compile_unit` (Python language, pyaot producer) + `DW_TAG_subprogram` per function
+- macOS: `dsymutil` runs automatically after linking; `.o` file preserved for debug map
 
-**Current state**: The `--debug` flag preserves symbols and disables optimizations, but generates no DWARF sections. Span information (source locations) exists in HIR but is not propagated through MIR to Cranelift.
+**What remains (follow-up work)**:
 
-**Implementation plan**:
-1. **Propagate Span through the pipeline**: HIR already has `Span` (byte offset + length). Add `span: Option<Span>` to MIR `Instruction` and `BasicBlock`. During HIR→MIR lowering, copy spans from HIR expressions/statements to corresponding MIR instructions.
-2. **Byte offset → line/column mapping**: Build a `LineMap` from the source file (scan for newline positions). Convert byte offsets to `(line, column)` pairs. This should live in the `diagnostics` crate.
-3. **Set Cranelift source locations**: Use `FuncBuilder::set_srcloc(SourceLoc)` to attach source locations to Cranelift instructions. Encode line numbers into `SourceLoc` values.
-4. **Generate DWARF sections**: Use `gimli::write` (or Cranelift's built-in DWARF support via `cranelift-object`) to emit:
-   - `DW_TAG_compile_unit` — source file info
-   - `DW_TAG_subprogram` — function entries with line ranges
-   - `.debug_line` — line number table mapping code addresses to Python source lines
-   - `DW_TAG_variable` — local variable names and locations (stretch goal)
-5. **Emit debug sections in object file**: The `cranelift-object` crate supports adding custom sections. Write DWARF sections (`.debug_info`, `.debug_line`, `.debug_abbrev`, `.debug_str`) into the object file before linking.
+### 🟡 DWARF Variable Information
 
-**Complexity**: High. Touches every stage of the pipeline. Start with line mappings only (no variable info) for an MVP.
+**Why**: Currently only line tables and function entries are emitted. Users can set breakpoints and see function names in backtraces, but cannot inspect local variables in the debugger (`p my_var` doesn't work).
 
-**References**: Cranelift has `SourceLoc` on instructions. The `gimli` crate is the standard Rust library for DWARF reading/writing. See also `wasmtime`'s DWARF generation for a real-world example with Cranelift.
+**Implementation plan**: Add `DW_TAG_variable` / `DW_TAG_formal_parameter` DIEs inside each `DW_TAG_subprogram`. Requires mapping MIR locals to Cranelift `Variable`s, then tracking which register or stack slot each variable occupies at each code point. Cranelift's `ValueLabelsRanges` in `CompiledCode` may provide this information.
+
+**Complexity**: Medium-high. Cranelift already tracks value locations; the challenge is encoding them as DWARF location lists.
+
+### 🟡 Multi-File DWARF
+
+**Why**: In multi-module compilation, only the main source file gets debug info. Functions from imported modules have no DWARF entries.
+
+**Implementation plan**: Each module needs its own `SourceInfo` (filename + source). During `MirMerger`, propagate per-module source info alongside the MIR. In codegen, track `file_index` per MIR function and register multiple files in the DWARF line program. The `SourceLoc` encoding could use `file_index << 20 | line_number` for multi-file support.
+
+**Complexity**: Medium. The DWARF generation already supports multiple files; the work is plumbing source info through the multi-module pipeline.
+
+### 🟡 macOS Source-Level Breakpoints
+
+**Why**: On macOS, `lldb` source-level breakpoints (`b file.py:10`) don't work because the macOS linker doesn't copy `__DWARF` sections from `.o` files to the executable. It relies on debug maps (STABS entries) + `dsymutil`. Cranelift doesn't generate STABS entries.
+
+**Possible approaches**:
+1. **Generate N_OSO stab entries** in the object file so `dsymutil` can find the `.o` file and extract DWARF
+2. **Embed DWARF in the executable directly** by adding sections to the linked binary after linking (post-processing)
+3. **Use `ld -r` (relocatable link)** to merge DWARF sections before final linking
+
+Function-name breakpoints (`b add`) already work on macOS. Source-level breakpoints work on Linux (ELF embeds DWARF directly).
 
 ---
 
@@ -502,7 +520,7 @@ For maximum impact with reasonable effort:
 2. **Stack traces** — moderate effort, huge usability improvement
 3. **List ordering comparisons** — low effort, closes a common feature gap
 4. **Escape analysis** — high effort, but the single biggest performance unlock
-5. **DWARF debug info** — high effort, but transforms the debugging experience
+5. ~~**DWARF debug info**~~ — ✅ done (MVP: line tables + function entries)
 6. **Full exception objects** — medium effort, needed for idiomatic Python patterns
 7. **Incremental compilation** — medium effort, quality-of-life for larger projects
 8. **Collection optimizations (SSO, allocator)** — medium effort, closes the CPython gap

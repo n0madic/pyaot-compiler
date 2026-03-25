@@ -370,3 +370,40 @@ The two functions share complex logic via `resolve_*` helper methods (`resolve_m
 ## Decorator `*args` Forwarding — Runtime Trampoline
 
 Decorator wrappers with `*args` use a runtime trampoline (`rt_call_with_tuple_args`) to forward variable-length argument tuples through indirect calls. The caller packs user args into a varargs tuple via `resolve_call_args`, and inside the wrapper, `func(*args)` calls the trampoline which dispatches based on tuple length (up to 8 args). For chained decorators (closure case), captures and args are concatenated via `rt_tuple_concat` before trampolining. The type inference for decorated function calls uses the **original** function's return type (not the wrapper's `Any`) via `module_var_wrappers` lookup.
+
+---
+
+## DWARF Debug Info: macOS vs Linux
+
+DWARF debug sections (`.debug_info`, `.debug_line`, `.debug_abbrev`, `.debug_str`) are generated in the `.o` object file by `codegen-cranelift/src/debug_info.rs` using `gimli::write`. The behavior differs by platform:
+
+**Linux (ELF)**: The linker copies DWARF sections from `.o` into the executable. Source-level breakpoints (`b file.py:10`) work directly in `gdb`/`lldb` because the debugger reads DWARF from the executable.
+
+**macOS (Mach-O)**: The macOS linker (`ld`) does NOT copy `__DWARF` sections from `.o` files to the executable. Instead, it creates "debug map" entries (N_OSO stabs) pointing to the `.o` files, and `dsymutil` later reads both to build a `.dSYM` bundle. Since Cranelift doesn't generate N_OSO stab entries, `dsymutil` doesn't know to extract our DWARF sections from the `.o` file.
+
+**Consequences on macOS**:
+- Function-name breakpoints (`b add`, `b my_function`) work — these use the symbol table, not DWARF
+- Source-level breakpoints (`b file.py:10`) do NOT work — `lldb` can't find the line table
+- `dwarfdump program.o` shows correct DWARF data (line tables, subprograms)
+- The `.o` file is kept in debug mode (not deleted after linking) so `dwarfdump` can inspect it
+
+**Workaround**: Use `dwarfdump --debug-line program.o` to find the address for a source line, then set an address breakpoint in lldb: `breakpoint set -a 0x<address>`.
+
+**Future fix options**: Generate N_OSO stab entries, embed DWARF in the executable post-link, or use `ld -r` (relocatable link) to merge DWARF before final linking.
+
+---
+
+## DWARF Span Propagation: Ambient Span Pattern
+
+Source locations flow through the compiler via an "ambient span" pattern to minimize code churn:
+
+1. **HIR**: Every `Stmt` and `Expr` carries `span: Span` (byte offset range in source file)
+2. **Lowering**: `Lowering.current_span: Option<Span>` is set at statement/expression entry:
+   - `lower_stmt()` sets `self.current_span = Some(stmt.span)` before dispatch
+   - `lower_expr()` saves/restores: sets span from `expr.span`, restores previous span after
+3. **MIR**: `Instruction.span: Option<Span>` is populated from `current_span` in `emit_instruction()`
+4. **Codegen**: For each instruction, `LineMap.line_number(span.start)` converts byte offset to line, then `builder.set_srcloc(SourceLoc::new(line))` attaches it to Cranelift IR
+5. **Cranelift**: Preserves `SourceLoc` through compilation. `compiled_code().buffer.get_srclocs_sorted()` returns `Vec<MachSrcLoc>` mapping code offsets to source lines
+6. **DWARF**: `DebugInfoBuilder` collects srclocs per function, then `gimli::write` generates the `.debug_line` section
+
+Generator-created instructions (state machine, dispatch) use `span: None` since they are synthetic. The `Lowering.current_span` is `None` during generator lowering, so these instructions correctly get no debug location.

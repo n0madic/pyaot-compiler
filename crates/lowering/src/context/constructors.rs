@@ -84,6 +84,8 @@ impl<'a> Lowering<'a> {
             module_var_funcs: IndexMap::with_capacity(8),
             // Expected type for current expression (set by assignment context for type propagation)
             expected_type: None,
+            // Source span for debug info (set by lower_stmt/lower_expr)
+            current_span: None,
         }
     }
 

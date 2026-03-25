@@ -158,8 +158,28 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
     }
     let codegen = pyaot_codegen_cranelift::Codegen::new(target, options.debug).into_diagnostic()?;
 
+    let source_info = if options.debug {
+        Some(pyaot_codegen_cranelift::SourceInfo {
+            filename: options
+                .input
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown.py")
+                .to_string(),
+            directory: options
+                .input
+                .parent()
+                .and_then(|p| p.to_str())
+                .unwrap_or(".")
+                .to_string(),
+            source: fs::read_to_string(&options.input).into_diagnostic()?,
+        })
+    } else {
+        None
+    };
+
     let object_code = codegen
-        .compile_module(&mir_module, &interner)
+        .compile_module(&mir_module, &interner, source_info.as_ref())
         .into_diagnostic()?;
 
     // Write object file

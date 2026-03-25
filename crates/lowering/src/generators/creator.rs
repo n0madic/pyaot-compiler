@@ -52,6 +52,7 @@ impl<'a> Lowering<'a> {
 
         let mut mir_func =
             mir::Function::new(func.id, func_name.clone(), params.clone(), return_type);
+        mir_func.span = Some(func.span);
 
         // Add parameters to locals
         for param in &params {
@@ -83,6 +84,7 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Constant(mir::Constant::Int(num_locals as i64)),
                 ],
             },
+            span: None,
         });
 
         // Save all parameters to generator locals
@@ -104,6 +106,7 @@ impl<'a> Lowering<'a> {
                                 mir::Operand::Local(param_local),
                             ],
                         },
+                        span: None,
                     });
                 }
             }
@@ -147,6 +150,7 @@ impl<'a> Lowering<'a> {
                                         op,
                                     ],
                                 },
+                                span: None,
                             });
                         }
                     }
@@ -200,6 +204,7 @@ impl<'a> Lowering<'a> {
                         iter_operand,
                     ],
                 },
+                span: None,
             });
         }
 
@@ -266,6 +271,7 @@ impl<'a> Lowering<'a> {
                                             effective_var_id,
                                         ))],
                                     },
+                                    span: None,
                                 });
                                 mir::Operand::Local(global_local)
                             } else {
@@ -291,6 +297,7 @@ impl<'a> Lowering<'a> {
                             func: fid,
                             args: arg_operands,
                         },
+                        span: None,
                     });
                 }
 
@@ -314,6 +321,7 @@ impl<'a> Lowering<'a> {
                             mir::Operand::Constant(mir::Constant::Int(1)), // ELEM_RAW_INT
                         ],
                     },
+                    span: None,
                 });
 
                 // Add elements
@@ -331,6 +339,7 @@ impl<'a> Lowering<'a> {
                             func: mir::RuntimeFunc::ListPush,
                             args: vec![mir::Operand::Local(list_local), elem_op],
                         },
+                        span: None,
                     });
                 }
 
@@ -344,6 +353,7 @@ impl<'a> Lowering<'a> {
                         },
                         args: vec![mir::Operand::Local(list_local)],
                     },
+                    span: None,
                 });
 
                 Ok(mir::Operand::Local(dest_local))
@@ -373,6 +383,7 @@ impl<'a> Lowering<'a> {
                             },
                             args: vec![mir::Operand::Local(mir_local)],
                         },
+                        span: None,
                     });
                     Ok(mir::Operand::Local(dest_local))
                 } else if self.is_global(var_id) {
@@ -393,6 +404,7 @@ impl<'a> Lowering<'a> {
                                 effective_var_id,
                             ))],
                         },
+                        span: None,
                     });
 
                     // Create iterator from the fetched global variable
@@ -413,6 +425,7 @@ impl<'a> Lowering<'a> {
                             },
                             args: vec![mir::Operand::Local(global_local)],
                         },
+                        span: None,
                     });
                     Ok(mir::Operand::Local(dest_local))
                 } else {

@@ -144,6 +144,7 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::GeneratorGetState,
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
+            span: None,
         });
 
         // Check exhausted
@@ -153,6 +154,7 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::GeneratorIsExhausted,
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
+            span: None,
         });
 
         // Exhausted block
@@ -196,6 +198,7 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::GeneratorSetExhausted,
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
+            span: None,
         });
         mark_exhausted_block.terminator =
             mir::Terminator::Return(Some(mir::Operand::Constant(mir::Constant::Int(0))));
@@ -254,6 +257,7 @@ impl<'a> Lowering<'a> {
                     left: mir::Operand::Local(state_local),
                     right: mir::Operand::Constant(mir::Constant::Int(state_value)),
                 },
+                span: None,
             });
 
             dispatch_block.terminator = mir::Terminator::Branch {
@@ -295,6 +299,7 @@ impl<'a> Lowering<'a> {
                                 )),
                             ],
                         },
+                        span: None,
                     });
                 }
             }
@@ -334,6 +339,7 @@ impl<'a> Lowering<'a> {
                             mir::Operand::Local(mir_local),
                         ],
                     },
+                    span: None,
                 });
             }
         }
@@ -369,6 +375,7 @@ impl<'a> Lowering<'a> {
                                 )),
                             ],
                         },
+                        span: None,
                     });
                 }
             }
@@ -396,6 +403,7 @@ impl<'a> Lowering<'a> {
                                     dest: yield_value_local,
                                     src: mir::Operand::Local(src_mir_local),
                                 },
+                                span: None,
                             });
                         }
                     }
@@ -405,6 +413,7 @@ impl<'a> Lowering<'a> {
                                 dest: yield_value_local,
                                 src: mir::Operand::Constant(mir::Constant::Int(*n)),
                             },
+                            span: None,
                         });
                     }
                     hir::ExprKind::BinOp { left, op, right } => {
@@ -433,6 +442,7 @@ impl<'a> Lowering<'a> {
                                 left: left_op,
                                 right: right_op,
                             },
+                            span: None,
                         });
                     }
                     hir::ExprKind::IfExpr {
@@ -465,6 +475,7 @@ impl<'a> Lowering<'a> {
                                     left: l_op,
                                     right: r_op,
                                 },
+                                span: None,
                             });
                         } else if let hir::ExprKind::Var(var_id) = &cond_expr.kind {
                             if let Some(&mir_local) = var_to_mir_local.get(var_id) {
@@ -473,6 +484,7 @@ impl<'a> Lowering<'a> {
                                         dest: cond_local,
                                         src: mir::Operand::Local(mir_local),
                                     },
+                                    span: None,
                                 });
                             }
                         } else if let hir::ExprKind::Bool(b) = &cond_expr.kind {
@@ -481,6 +493,7 @@ impl<'a> Lowering<'a> {
                                     dest: cond_local,
                                     src: mir::Operand::Constant(mir::Constant::Bool(*b)),
                                 },
+                                span: None,
                             });
                         }
 
@@ -510,6 +523,7 @@ impl<'a> Lowering<'a> {
                                     dest: yield_value_local,
                                     src: then_op,
                                 },
+                                span: None,
                             }],
                             terminator: mir::Terminator::Goto(merge_bb_id),
                         };
@@ -525,6 +539,7 @@ impl<'a> Lowering<'a> {
                                     dest: yield_value_local,
                                     src: else_op,
                                 },
+                                span: None,
                             }],
                             terminator: mir::Terminator::Goto(merge_bb_id),
                         };
@@ -544,6 +559,7 @@ impl<'a> Lowering<'a> {
                                 dest: yield_value_local,
                                 src: mir::Operand::Constant(mir::Constant::Int(0)),
                             },
+                            span: None,
                         });
                     }
                 }
@@ -554,6 +570,7 @@ impl<'a> Lowering<'a> {
                         dest: yield_value_local,
                         src: mir::Operand::Constant(mir::Constant::Int(0)),
                     },
+                    span: None,
                 });
             }
 
@@ -572,6 +589,7 @@ impl<'a> Lowering<'a> {
                                 mir::Operand::Local(mir_local),
                             ],
                         },
+                        span: None,
                     });
                 }
             }
@@ -592,6 +610,7 @@ impl<'a> Lowering<'a> {
                         mir::Operand::Constant(mir::Constant::Int(next_state)),
                     ],
                 },
+                span: None,
             });
 
             // Return yield value
@@ -621,6 +640,7 @@ impl<'a> Lowering<'a> {
                             )),
                         ],
                     },
+                    span: None,
                 });
             }
         }
@@ -659,6 +679,7 @@ impl<'a> Lowering<'a> {
                             mir::Operand::Local(mir_local),
                         ],
                     },
+                    span: None,
                 });
             }
         }

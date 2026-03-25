@@ -14,7 +14,7 @@ use cranelift_object::ObjectModule;
 use indexmap::IndexMap;
 use pyaot_diagnostics::Result;
 use pyaot_mir as mir;
-use pyaot_utils::{FuncId, LocalId, StringInterner};
+use pyaot_utils::{FuncId, LineMap, LocalId, StringInterner};
 
 use crate::context::{CodegenContext, GcFrameData};
 use crate::instructions::compile_instruction;
@@ -32,6 +32,7 @@ pub struct FunctionCompiler<'a> {
     pub interner: &'a StringInterner,
     pub gc_push_id: Option<ClFuncId>,
     pub gc_pop_id: Option<ClFuncId>,
+    pub line_map: Option<&'a LineMap>,
 }
 
 /// Declare a MIR function in the Cranelift module
@@ -165,6 +166,7 @@ pub fn define_function(
             func_name_ids: compiler.func_name_ids,
             func_param_types: compiler.func_param_types,
             return_type: &func.return_type,
+            line_map: compiler.line_map,
         };
 
         for (block_id, block) in &func.blocks {
@@ -178,6 +180,13 @@ pub fn define_function(
 
             // Instructions
             for inst in &block.instructions {
+                // Set source location for debug info
+                if let (Some(span), Some(lm)) = (inst.span, codegen_ctx.line_map) {
+                    let line = lm.line_number(span.start);
+                    builder.set_srcloc(cranelift_codegen::ir::SourceLoc::new(line));
+                } else {
+                    builder.set_srcloc(cranelift_codegen::ir::SourceLoc::default());
+                }
                 compile_instruction(&mut builder, inst, &mut codegen_ctx)?;
             }
 

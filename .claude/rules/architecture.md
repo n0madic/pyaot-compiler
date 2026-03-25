@@ -11,10 +11,10 @@
 | `lowering` | HIR → MIR transformation | `context/`, `expressions/`, `statements/` |
 | `mir` | Mid-level IR (CFG) | `lib.rs` |
 | `optimizer` | MIR optimization passes | `inline/` |
-| `codegen-cranelift` | Native code generation | `instructions.rs`, `runtime_calls/` |
+| `codegen-cranelift` | Native code generation | `instructions.rs`, `runtime_calls/`, `debug_info.rs` |
 | `linker` | Object → Executable | `lib.rs` |
 | `runtime` | Runtime library (staticlib) | `gc.rs`, `object.rs`, collections, stdlib |
-| `utils` | IDs, string interning | `ids.rs`, `interner.rs` |
+| `utils` | IDs, string interning, line mapping | `ids.rs`, `interner.rs`, `line_map.rs` |
 | `semantics` | Name resolution, control flow | `lib.rs` |
 | `lowering` (type_planning) | Bidirectional type inference during HIR→MIR lowering | `type_planning/infer.rs`, `type_planning/check.rs`, `type_planning/pre_scan.rs` |
 | `diagnostics` | Error reporting | `lib.rs` |

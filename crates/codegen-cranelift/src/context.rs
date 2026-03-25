@@ -6,7 +6,7 @@ use cranelift_object::ObjectModule;
 use indexmap::IndexMap;
 use pyaot_mir as mir;
 use pyaot_types::Type;
-use pyaot_utils::{BlockId, FuncId, LocalId, StringInterner};
+use pyaot_utils::{BlockId, FuncId, LineMap, LocalId, StringInterner};
 
 /// GC frame data passed through function compilation
 /// Contains information about the shadow frame and root tracking
@@ -33,4 +33,6 @@ pub struct CodegenContext<'a> {
     pub func_param_types: &'a IndexMap<FuncId, Vec<Type>>,
     /// The function's declared return type (needed for return terminator codegen)
     pub return_type: &'a Type,
+    /// Line map for source-level debug info (None when --debug is not set)
+    pub line_map: Option<&'a LineMap>,
 }

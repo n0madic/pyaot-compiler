@@ -22,7 +22,7 @@ use pyaot_diagnostics::CompilerWarnings;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
-use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, StringInterner, VarId};
+use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, Span, StringInterner, VarId};
 use std::collections::HashMap;
 
 /// Key function source for sort/sorted operations
@@ -220,6 +220,8 @@ pub struct Lowering<'a> {
     /// Expected type for the current expression being lowered (set by assignment context).
     /// Used by empty list/dict/set literals to infer the correct elem_tag.
     pub(crate) expected_type: Option<Type>,
+    /// Current source span (set by lower_stmt/lower_expr, used by emit_instruction for debug info)
+    pub(crate) current_span: Option<Span>,
     /// Track original types of narrowed Union variables (for unboxing during reads)
     /// Key: VarId, Value: Original Union type before narrowing
     pub(crate) narrowed_union_vars: IndexMap<VarId, Type>,

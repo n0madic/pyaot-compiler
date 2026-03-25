@@ -96,6 +96,7 @@ impl<'a> Lowering<'a> {
                                             )),
                                         ],
                                     },
+                                    span: None,
                                 });
 
                                 // For float fields: box the f64 into a heap FloatObj so the
@@ -110,6 +111,7 @@ impl<'a> Lowering<'a> {
                                             func: mir::RuntimeFunc::BoxFloat,
                                             args: vec![mir::Operand::Local(raw_local)],
                                         },
+                                        span: None,
                                     });
                                     return Ok(mir::Operand::Local(boxed_local));
                                 }
@@ -147,6 +149,7 @@ impl<'a> Lowering<'a> {
                                 left: mir::Operand::Constant(mir::Constant::Int(0)),
                                 right: operand_val,
                             },
+                            span: None,
                         });
                         Ok(mir::Operand::Local(result_local))
                     }
@@ -166,6 +169,7 @@ impl<'a> Lowering<'a> {
                                 left: operand_val,
                                 right: mir::Operand::Constant(mir::Constant::Int(0)),
                             },
+                            span: None,
                         });
                         Ok(mir::Operand::Local(result_local))
                     }
@@ -226,6 +230,7 @@ impl<'a> Lowering<'a> {
                         left: left_op,
                         right: right_op,
                     },
+                    span: None,
                 });
 
                 Ok(mir::Operand::Local(result_local))
@@ -311,6 +316,7 @@ impl<'a> Lowering<'a> {
                         left: left_op,
                         right: right_op,
                     },
+                    span: None,
                 });
 
                 Ok(mir::Operand::Local(result_local))
@@ -359,6 +365,7 @@ impl<'a> Lowering<'a> {
                         left: left_op,
                         right: right_op,
                     },
+                    span: None,
                 });
 
                 Ok(mir::Operand::Local(result_local))
@@ -553,6 +560,7 @@ impl<'a> Lowering<'a> {
                                     dest: dest_mir_local,
                                     src: mir::Operand::Constant(mir::Constant::Int(*n)),
                                 },
+                                span: None,
                             });
                         }
                         hir::ExprKind::Var(src_var) => {
@@ -562,6 +570,7 @@ impl<'a> Lowering<'a> {
                                         dest: dest_mir_local,
                                         src: mir::Operand::Local(src_mir_local),
                                     },
+                                    span: None,
                                 });
                             }
                         }
@@ -592,6 +601,7 @@ impl<'a> Lowering<'a> {
                                     left: left_op,
                                     right: right_op,
                                 },
+                                span: None,
                             });
                         }
                         _ => {
@@ -649,6 +659,7 @@ impl<'a> Lowering<'a> {
                     left: left_operand,
                     right: right_operand,
                 },
+                span: None,
             });
         } else if matches!(cond_expr.kind, hir::ExprKind::Bool(true)) {
             // while True: — always true
@@ -657,6 +668,7 @@ impl<'a> Lowering<'a> {
                     dest: cond_result_local,
                     src: mir::Operand::Constant(mir::Constant::Bool(true)),
                 },
+                span: None,
             });
         } else if let hir::ExprKind::Var(var_id) = &cond_expr.kind {
             // while some_var: — copy the variable's boolean value
@@ -666,6 +678,7 @@ impl<'a> Lowering<'a> {
                         dest: cond_result_local,
                         src: mir::Operand::Local(mir_local),
                     },
+                    span: None,
                 });
             } else {
                 // Variable not in generator scope, default to true
@@ -674,6 +687,7 @@ impl<'a> Lowering<'a> {
                         dest: cond_result_local,
                         src: mir::Operand::Constant(mir::Constant::Bool(true)),
                     },
+                    span: None,
                 });
             }
         } else {

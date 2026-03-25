@@ -10,8 +10,10 @@
 
 pub mod ids;
 pub mod interner;
+pub mod line_map;
 pub mod span;
 
 pub use ids::*;
 pub use interner::*;
+pub use line_map::LineMap;
 pub use span::*;

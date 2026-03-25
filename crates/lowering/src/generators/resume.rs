@@ -133,6 +133,7 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::GeneratorGetState,
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
+            span: None,
         });
 
         // Check if exhausted
@@ -144,6 +145,7 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::GeneratorIsExhausted,
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
+            span: None,
         });
 
         // Exhausted block: return sentinel value (0) - runtime will handle StopIteration
@@ -198,6 +200,7 @@ impl<'a> Lowering<'a> {
                     left: mir::Operand::Local(state_local),
                     right: mir::Operand::Constant(mir::Constant::Int(0)),
                 },
+                span: None,
             });
             let else_block = if actual_yield_count > 1 {
                 let next_dispatch = BlockId::from(next_block_id);
@@ -236,6 +239,7 @@ impl<'a> Lowering<'a> {
                         left: mir::Operand::Local(state_local),
                         right: mir::Operand::Constant(mir::Constant::Int(state_idx as i64)),
                     },
+                    span: None,
                 });
 
                 let next_else = if state_idx + 1 < actual_yield_count {
@@ -280,6 +284,7 @@ impl<'a> Lowering<'a> {
                                 func: mir::RuntimeFunc::GeneratorGetSentValue,
                                 args: vec![mir::Operand::Local(gen_param_local)],
                             },
+                            span: None,
                         });
 
                         state_block.instructions.push(mir::Instruction {
@@ -294,6 +299,7 @@ impl<'a> Lowering<'a> {
                                     mir::Operand::Local(sent_value_local),
                                 ],
                             },
+                            span: None,
                         });
                     }
                 }
@@ -332,6 +338,7 @@ impl<'a> Lowering<'a> {
                         mir::Operand::Constant(mir::Constant::Int(next_state)),
                     ],
                 },
+                span: None,
             });
 
             // Return the yielded value
@@ -354,6 +361,7 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::GeneratorSetExhausted,
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
+            span: None,
         });
 
         // Return 0 (sentinel) - runtime will raise StopIteration
@@ -403,6 +411,7 @@ impl<'a> Lowering<'a> {
                                 mir::Operand::Constant(mir::Constant::Int(gen_local_idx as i64)),
                             ],
                         },
+                        span: None,
                     });
                     Ok(mir::Operand::Local(var_local))
                 } else {
@@ -455,6 +464,7 @@ impl<'a> Lowering<'a> {
                             left: l_op,
                             right: r_op,
                         },
+                        span: None,
                     });
                 } else if matches!(&cond_expr.kind, hir::ExprKind::Var(_)) {
                     let cond_op = self.eval_yield_value_for_resume(
@@ -472,6 +482,7 @@ impl<'a> Lowering<'a> {
                             dest: cond_local,
                             src: cond_op,
                         },
+                        span: None,
                     });
                 } else if let hir::ExprKind::Bool(b) = &cond_expr.kind {
                     block.instructions.push(mir::Instruction {
@@ -479,6 +490,7 @@ impl<'a> Lowering<'a> {
                             dest: cond_local,
                             src: mir::Operand::Constant(mir::Constant::Bool(*b)),
                         },
+                        span: None,
                     });
                 }
 
@@ -534,6 +546,7 @@ impl<'a> Lowering<'a> {
                         dest: result_local,
                         src: then_op,
                     },
+                    span: None,
                 });
                 mir_func.blocks.insert(then_bb_id, then_bb);
 
@@ -559,6 +572,7 @@ impl<'a> Lowering<'a> {
                         dest: result_local,
                         src: else_op,
                     },
+                    span: None,
                 });
                 mir_func.blocks.insert(else_bb_id, else_bb);
 

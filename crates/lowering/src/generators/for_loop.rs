@@ -225,6 +225,7 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::GeneratorGetState,
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
+            span: None,
         });
 
         entry_block.instructions.push(mir::Instruction {
@@ -233,6 +234,7 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::GeneratorIsExhausted,
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
+            span: None,
         });
 
         entry_block.terminator = mir::Terminator::Branch {
@@ -263,6 +265,7 @@ impl<'a> Lowering<'a> {
                     left: mir::Operand::Local(state_local),
                     right: mir::Operand::Constant(mir::Constant::Int(i as i64)),
                 },
+                span: None,
             });
 
             let else_block = if i + 1 < state_targets.len() {
@@ -296,6 +299,7 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::GeneratorSetExhausted,
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
+            span: None,
         });
 
         mark_exhausted_block.terminator =
@@ -320,6 +324,7 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Constant(mir::Constant::Int(0)),
                 ],
             },
+            span: None,
         });
 
         state0_block.instructions.push(mir::Instruction {
@@ -331,6 +336,7 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Constant(mir::Constant::Int(1)),
                 ],
             },
+            span: None,
         });
 
         state0_block.terminator = mir::Terminator::Goto(iter_next_block_id);
@@ -352,6 +358,7 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Constant(mir::Constant::Int(0)),
                 ],
             },
+            span: None,
         });
 
         state1_block.terminator = mir::Terminator::Goto(iter_next_block_id);
@@ -370,6 +377,7 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::IterNextNoExc,
                 args: vec![mir::Operand::Local(iter_local)],
             },
+            span: None,
         });
 
         iter_next_block.instructions.push(mir::Instruction {
@@ -378,6 +386,7 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::IterIsExhausted,
                 args: vec![mir::Operand::Local(iter_local)],
             },
+            span: None,
         });
 
         iter_next_block.terminator = mir::Terminator::Goto(check_iter_done_block_id);
@@ -429,6 +438,7 @@ impl<'a> Lowering<'a> {
                     dest: target_mir_local,
                     src: mir::Operand::Local(next_value_local),
                 },
+                span: None,
             });
 
             if let Some(&gen_idx) = var_to_gen_local.get(&for_gen.target_var) {
@@ -442,6 +452,7 @@ impl<'a> Lowering<'a> {
                             mir::Operand::Local(target_mir_local),
                         ],
                     },
+                    span: None,
                 });
             }
 
@@ -462,6 +473,7 @@ impl<'a> Lowering<'a> {
                     dest: filter_cond_local,
                     src: filter_operand,
                 },
+                span: None,
             });
 
             assign_block.terminator = mir::Terminator::Branch {
@@ -487,6 +499,7 @@ impl<'a> Lowering<'a> {
                         mir::Operand::Local(iter_local),
                     ],
                 },
+                span: None,
             });
 
             let yield_value_operand = if let Some(yield_expr_id) = for_gen.yield_expr {
@@ -520,6 +533,7 @@ impl<'a> Lowering<'a> {
                     dest: target_mir_local,
                     src: mir::Operand::Local(next_value_local),
                 },
+                span: None,
             });
 
             yield_block.instructions.push(mir::Instruction {
@@ -532,6 +546,7 @@ impl<'a> Lowering<'a> {
                         mir::Operand::Local(iter_local),
                     ],
                 },
+                span: None,
             });
 
             let yield_value_operand = if let Some(yield_expr_id) = for_gen.yield_expr {
@@ -578,6 +593,7 @@ impl<'a> Lowering<'a> {
                         mir::Operand::Constant(mir::Constant::Int(next_state)),
                     ],
                 },
+                span: None,
             });
 
             // Compute and return the yield value
@@ -604,6 +620,7 @@ impl<'a> Lowering<'a> {
                                         )),
                                     ],
                                 },
+                                span: None,
                             });
                             mir::Operand::Local(var_local)
                         } else {

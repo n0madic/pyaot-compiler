@@ -4,12 +4,16 @@ use pyaot_core_defs::BuiltinFunctionKind;
 use pyaot_types::Type;
 use pyaot_utils::{FuncId, LocalId};
 
+use pyaot_utils::Span;
+
 use crate::{BinOp, Constant, Operand, RuntimeFunc, UnOp};
 
 /// MIR Instruction
 #[derive(Debug, Clone)]
 pub struct Instruction {
     pub kind: InstructionKind,
+    /// Source location from HIR (None for synthetic instructions)
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone)]

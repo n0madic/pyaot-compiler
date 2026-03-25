@@ -300,30 +300,37 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 
 | Feature | Status | CLI Flag | Description |
 |---------|--------|----------|-------------|
-| Debug Information | ⚠️ Partial | `--debug` | Disables optimizations and preserves symbols (no DWARF yet) |
+| Debug Information | ✅ | `--debug` | DWARF debug info with source line mappings |
 
 **Debug Flag Details:**
 
 What `--debug` provides:
+- ✅ **DWARF debug info** — `.debug_info`, `.debug_line`, `.debug_abbrev`, `.debug_str` sections in object files
+- ✅ **Source line mappings** — line number table maps machine code addresses to Python source lines
+- ✅ **Function debug entries** — `DW_TAG_subprogram` DIEs for all Python functions with `DW_AT_decl_line`
 - ✅ **Disables Cranelift optimizations** (sets `opt_level` to `none` instead of `speed`)
 - ✅ **Preserves all symbols** (disables symbol stripping during linking)
 - ✅ **Enables frame pointers** for better stack traces and profiling
 - ✅ **Enables Cranelift IR verifier** for compiler correctness checks
-- ✅ **Symbol count**: ~3x more symbols preserved (e.g., 402 → 1327 symbols)
+- ✅ **macOS**: Automatically runs `dsymutil` after linking; preserves `.o` file for debug map
 
 What `--debug` does NOT provide (yet):
-- ❌ **No DWARF debug info** - cannot set breakpoints on Python source lines
-- ❌ **No source line mappings** - debugger shows assembly, not Python code
-- ❌ **No variable names** - local variables not visible in debugger
+- ❌ **No variable names** — local variables not visible in debugger
+- ❌ **No multi-file DWARF** — only the main source file gets debug info (imported modules excluded)
 
-**Current debugging capabilities:**
-- Assembly-level debugging with `lldb`/`gdb`
-- Set breakpoints on function names: `b fibonacci`
-- View disassembly and step through instructions
-- Inspect registers and memory
-- Better stack traces with preserved symbols
+**Debugging with lldb/gdb:**
+```bash
+pyaot program.py -o program --debug
 
-**Planned:** Full DWARF debug info support (see Roadmap)
+# Inspect DWARF info in object file
+dwarfdump program.o
+
+# Set breakpoints on function names
+lldb -o "b add" -o "r" program
+
+# View backtrace with Python function names
+lldb -o "b add" -o "r" -o "bt" program
+```
 
 ---
 

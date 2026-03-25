@@ -2,7 +2,7 @@
 
 use indexmap::IndexMap;
 use pyaot_types::Type;
-use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId};
+use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, Span};
 
 use crate::{Instruction, Terminator};
 
@@ -40,6 +40,8 @@ pub struct Function {
     pub locals: IndexMap<LocalId, Local>,
     pub blocks: IndexMap<BlockId, BasicBlock>,
     pub entry_block: BlockId,
+    /// Source location of the function definition (for DWARF DW_TAG_subprogram)
+    pub span: Option<Span>,
 }
 
 /// Local variable in MIR
@@ -100,6 +102,7 @@ impl Function {
             locals: IndexMap::new(),
             blocks,
             entry_block,
+            span: None,
         }
     }
 

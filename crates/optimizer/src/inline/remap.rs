@@ -194,7 +194,10 @@ impl InlineRemapper {
                 builtin: *builtin,
             },
         };
-        Instruction { kind }
+        Instruction {
+            kind,
+            span: instr.span,
+        }
     }
 
     /// Remap a terminator

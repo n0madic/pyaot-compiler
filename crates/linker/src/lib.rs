@@ -83,13 +83,36 @@ impl Linker {
             )));
         }
 
-        // Clean up the object file after successful linking
-        if let Err(e) = fs::remove_file(object_file) {
-            eprintln!(
-                "Warning: Failed to remove object file {}: {}",
-                object_file.display(),
-                e
-            );
+        // On macOS with debug info, run dsymutil to create .dSYM bundle
+        // dsymutil must run BEFORE deleting the .o file (it reads debug map from it)
+        #[cfg(target_os = "macos")]
+        if self.debug {
+            let dsym_output = Command::new("dsymutil").arg(output).output();
+            match dsym_output {
+                Ok(result) if !result.status.success() => {
+                    eprintln!(
+                        "Warning: dsymutil failed: {}",
+                        String::from_utf8_lossy(&result.stderr)
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to run dsymutil: {}", e);
+                }
+                _ => {}
+            }
+        }
+
+        // Clean up the object file after successful linking (and dsymutil)
+        // On macOS debug builds, keep the .o file — dsymutil references it from the debug map
+        let should_keep_object = cfg!(target_os = "macos") && self.debug;
+        if !should_keep_object {
+            if let Err(e) = fs::remove_file(object_file) {
+                eprintln!(
+                    "Warning: Failed to remove object file {}: {}",
+                    object_file.display(),
+                    e
+                );
+            }
         }
 
         Ok(())
