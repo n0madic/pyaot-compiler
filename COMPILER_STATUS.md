@@ -358,25 +358,7 @@ These features are intentionally not supported because they conflict with AOT co
 
 ## Roadmap
 
-Planned enhancements (no timeline):
-
-- **DWARF Debug Information**: Full source-level debugging support
-  - Track source locations (Span) through HIR → MIR → Cranelift pipeline
-  - Convert byte offsets to line/column numbers
-  - Generate DWARF sections with source line mappings
-  - Enable source-level debugging: set breakpoints on Python lines, view Python code in debugger, inspect variables
-  - Integration with `lldb`/`gdb` for stepping through Python source code
-- **Container dunders (advanced)**: `__len__` + container dunders for full MutableSequence protocol
-- ~~**Iterator protocol**: `__iter__`, `__next__` for user-defined classes~~ (DONE)
-- ~~**Callable protocol**: `__call__` for user-defined classes~~ (DONE)
-- ~~**Context manager protocol**: `__enter__`, `__exit__` for user-defined classes~~ (DONE)
-- **Reverse arithmetic**: `__radd__`, `__rsub__`, `__rmul__` etc.
-- **More unary dunders**: `__pos__`, `__abs__`, `__invert__`
-- **Conversion dunders**: `__int__`, `__float__`, `__bool__`
-- ~~`yield from` support~~ (DONE — generators and iterables, with trailing yields)
-- ~~Match statement: mapping patterns (`case {"key": val}`)~~ (DONE — with `**rest` support)
-- Match statement: class patterns (`case Point(x=0)`)
-- Standard library: `collections`, ~~`itertools` (chain, islice)~~ (DONE), `itertools` (zip_longest, product)
+See **[ROADMAP.md](ROADMAP.md)** for the full development roadmap with detailed implementation plans.
 
 ---
 
