@@ -17,7 +17,7 @@
 //!
 //! ## Usage
 //!
-//! ```ignore
+//! ```text
 //! use pyaot_stdlib_defs::{get_module, get_function, is_stdlib_module};
 //!
 //! // Check if a module is stdlib

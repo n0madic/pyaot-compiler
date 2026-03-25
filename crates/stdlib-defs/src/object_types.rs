@@ -13,7 +13,7 @@
 //!
 //! ## Usage
 //!
-//! ```ignore
+//! ```text
 //! use pyaot_stdlib_defs::object_types::{lookup_object_type, lookup_object_field};
 //!
 //! // Look up an object type by TypeTagKind

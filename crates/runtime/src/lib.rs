@@ -15,7 +15,7 @@
 /// Only active in debug builds; compiles to nothing in release.
 ///
 /// # Usage
-/// ```ignore
+/// ```text
 /// unsafe {
 ///     debug_assert_type_tag!(obj, TypeTagKind::List, "rt_list_get");
 ///     let list_obj = obj as *mut ListObj;
