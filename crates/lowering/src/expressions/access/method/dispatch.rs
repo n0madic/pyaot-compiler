@@ -92,6 +92,7 @@ impl<'a> Lowering<'a> {
                 method,
                 arg_operands,
                 class_id,
+                &obj_type,
                 hir_module,
                 mir_func,
             ),

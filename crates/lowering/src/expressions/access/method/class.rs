@@ -12,12 +12,14 @@ impl<'a> Lowering<'a> {
     /// Lower instance method calls on user-defined classes.
     /// Uses virtual dispatch via vtable for polymorphic method calls.
     /// Also handles @staticmethod and @classmethod calls.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn lower_class_method_call(
         &mut self,
         obj_operand: mir::Operand,
         method: InternedString,
         arg_operands: Vec<mir::Operand>,
         class_id: &pyaot_utils::ClassId,
+        obj_type: &Type,
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
@@ -69,13 +71,65 @@ impl<'a> Lowering<'a> {
                 return Ok(mir::Operand::Local(result_local));
             }
 
-            // 3. Check for regular instance method with vtable dispatch
+            // 3. Check for dunder methods stored in special fields
+            // These are not in method_funcs/vtable_slots — they use static dispatch via CallDirect
+            let method_name = self.resolve(method);
+            let dunder_func = class_info.get_dunder_func(method_name);
+
+            if let Some(func_id) = dunder_func {
+                // Return type: inferred > HIR annotation > dunder-specific default
+                let default_return_type = match method_name {
+                    // Comparison/boolean dunders return bool
+                    "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__" | "__ge__"
+                    | "__bool__" | "__contains__" => Type::Bool,
+                    // String dunders return str
+                    "__str__" | "__repr__" => Type::Str,
+                    // Integer dunders return int
+                    "__hash__" | "__len__" => Type::Int,
+                    // Mutating dunders return None
+                    "__setitem__" | "__delitem__" => Type::None,
+                    // Arithmetic/unary dunders typically return same class type
+                    _ => obj_type.clone(),
+                };
+
+                let return_type = self
+                    .get_func_return_type(&func_id)
+                    .cloned()
+                    .or_else(|| {
+                        hir_module
+                            .func_defs
+                            .get(&func_id)
+                            .and_then(|f| f.return_type.clone())
+                    })
+                    .unwrap_or(default_return_type);
+
+                let result_local = self.alloc_and_add_local(return_type.clone(), mir_func);
+
+                // Dunder methods use static dispatch: self is first arg
+                let mut call_args = vec![obj_operand];
+                call_args.extend(arg_operands);
+
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest: result_local,
+                    func: func_id,
+                    args: call_args,
+                });
+
+                return Ok(mir::Operand::Local(result_local));
+            }
+
+            // 4. Check for regular instance method with vtable dispatch
             if let Some(&method_func_id) = class_info.method_funcs.get(&method) {
-                // Get the method's return type
-                let return_type = hir_module
-                    .func_defs
-                    .get(&method_func_id)
-                    .and_then(|f| f.return_type.clone())
+                // Get the method's return type: inferred > HIR annotation > None
+                let return_type = self
+                    .get_func_return_type(&method_func_id)
+                    .cloned()
+                    .or_else(|| {
+                        hir_module
+                            .func_defs
+                            .get(&method_func_id)
+                            .and_then(|f| f.return_type.clone())
+                    })
                     .unwrap_or(Type::None);
 
                 let result_local = self.alloc_and_add_local(return_type.clone(), mir_func);

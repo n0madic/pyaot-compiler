@@ -128,6 +128,42 @@ pub struct LoweredClassInfo {
     pub property_types: IndexMap<InternedString, Type>,
 }
 
+impl LoweredClassInfo {
+    /// Look up a dunder method by name from the dedicated fields.
+    /// Returns `None` for non-dunder names or dunders not defined on this class.
+    pub fn get_dunder_func(&self, name: &str) -> Option<FuncId> {
+        match name {
+            "__str__" => self.str_func,
+            "__repr__" => self.repr_func,
+            "__eq__" => self.eq_func,
+            "__ne__" => self.ne_func,
+            "__lt__" => self.lt_func,
+            "__le__" => self.le_func,
+            "__gt__" => self.gt_func,
+            "__ge__" => self.ge_func,
+            "__hash__" => self.hash_func,
+            "__len__" => self.len_func,
+            "__add__" => self.add_func,
+            "__sub__" => self.sub_func,
+            "__mul__" => self.mul_func,
+            "__truediv__" => self.truediv_func,
+            "__floordiv__" => self.floordiv_func,
+            "__mod__" => self.mod_func,
+            "__pow__" => self.pow_func,
+            "__neg__" => self.neg_func,
+            "__bool__" => self.bool_func,
+            "__getitem__" => self.getitem_func,
+            "__setitem__" => self.setitem_func,
+            "__delitem__" => self.delitem_func,
+            "__contains__" => self.contains_func,
+            "__iter__" => self.iter_func,
+            "__next__" => self.next_func,
+            "__call__" => self.call_func,
+            _ => None,
+        }
+    }
+}
+
 /// Main lowering context that transforms HIR to MIR
 pub struct Lowering<'a> {
     pub(crate) interner: &'a mut StringInterner,

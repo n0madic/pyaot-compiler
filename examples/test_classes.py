@@ -1400,4 +1400,84 @@ assert cadder2(7) == 107, "__call__ with different offset"
 
 print("Callable class (__call__) regression: PASS")
 
+# ===== Explicit dunder method calls: obj.__method__(args) =====
+# Must produce the same result as operator syntax.
+
+class DunderVec:
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    def __add__(self, other):
+        return DunderVec(self.x + other.x, self.y + other.y)
+
+    def __sub__(self, other):
+        return DunderVec(self.x - other.x, self.y - other.y)
+
+    def __mul__(self, other):
+        return DunderVec(self.x * other.x, self.y * other.y)
+
+    def __eq__(self, other):
+        return self.x == other.x and self.y == other.y
+
+    def __ne__(self, other):
+        return self.x != other.x or self.y != other.y
+
+    def __str__(self):
+        return "DunderVec(" + str(self.x) + ", " + str(self.y) + ")"
+
+    def __len__(self):
+        return self.x + self.y
+
+    def __neg__(self):
+        return DunderVec(-self.x, -self.y)
+
+    def __bool__(self):
+        return self.x != 0 or self.y != 0
+
+    def get_x(self):
+        return self.x
+
+da = DunderVec(2, 3)
+db = DunderVec(4, 5)
+
+# Arithmetic dunders via explicit call
+dc = da.__add__(db)
+assert dc.x == 6 and dc.y == 8, "explicit __add__"
+
+dd = da.__sub__(db)
+assert dd.x == -2 and dd.y == -2, "explicit __sub__"
+
+de = da.__mul__(db)
+assert de.x == 8 and de.y == 15, "explicit __mul__"
+
+# Comparison dunders
+assert da.__eq__(da) == True, "explicit __eq__ (same)"
+assert da.__ne__(db) == True, "explicit __ne__ (diff)"
+assert da.__eq__(db) == False, "explicit __eq__ (diff)"
+
+# String dunder
+assert da.__str__() == "DunderVec(2, 3)", "explicit __str__"
+
+# Len dunder
+assert da.__len__() == 5, "explicit __len__"
+
+# Neg dunder
+df = da.__neg__()
+assert df.x == -2 and df.y == -3, "explicit __neg__"
+
+# Bool dunder
+assert da.__bool__() == True, "explicit __bool__ (nonzero)"
+dzero = DunderVec(0, 0)
+assert dzero.__bool__() == False, "explicit __bool__ (zero)"
+
+# Regular method still works alongside dunders
+assert da.get_x() == 2, "regular method after dunder"
+
+# Operators still produce same result as explicit calls
+dh = da + db
+assert dh.x == dc.x and dh.y == dc.y, "operator == explicit dunder"
+
+print("Explicit dunder method calls: PASS")
+
 print("All class tests passed!")

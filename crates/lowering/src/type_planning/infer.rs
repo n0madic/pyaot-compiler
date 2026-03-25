@@ -63,6 +63,29 @@ impl<'a> Lowering<'a> {
                                     }
                                 }
                             }
+
+                            // Check dunder methods stored in special fields
+                            let dunder_func = class_info.get_dunder_func(method_name);
+                            if let Some(func_id) = dunder_func {
+                                if let Some(ret_ty) = self.func_return_types.get(&func_id) {
+                                    return ret_ty.clone();
+                                }
+                                if let Some(func_def) = hir_module.func_defs.get(&func_id) {
+                                    if let Some(ret_ty) = func_def.return_type.clone() {
+                                        return ret_ty;
+                                    }
+                                }
+                                // Default return types for dunders
+                                return match method_name {
+                                    "__eq__" | "__ne__" | "__lt__" | "__le__" | "__gt__"
+                                    | "__ge__" | "__bool__" | "__contains__" => Type::Bool,
+                                    "__str__" | "__repr__" => Type::Str,
+                                    "__hash__" | "__len__" => Type::Int,
+                                    "__setitem__" | "__delitem__" => Type::None,
+                                    // Arithmetic/unary dunders return same class type
+                                    _ => obj_ty.clone(),
+                                };
+                            }
                         }
                         expr.ty.clone().unwrap_or(Type::Any)
                     }
