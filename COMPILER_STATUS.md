@@ -125,7 +125,7 @@ Native Executable
 | @staticmethod | ✅ | |
 | @classmethod | ✅ | cls receives class_id as int |
 | @property | ✅ | Getter and setter |
-| User decorators | ✅ | Identity, wrapper, and chained decorators; `*args` forwarding not supported |
+| User decorators | ✅ | Identity, wrapper, chained decorators, and `*args` forwarding (up to 8 args) |
 | @abstractmethod | ✅ | Compile-time enforcement |
 | `__slots__` | ✅ | Parsed and ignored (AOT compiler handles memory layout statically) |
 | Inheritance | ✅ | Single only |
@@ -1198,8 +1198,15 @@ result = get_value(10)  # Returns (10 + 5) * 3 = 45
 - Closures use nested tuple format `(func_ptr, (cap0, cap1, ...))` to capture factory arguments
 - `emit_closure_call()` extracts func_ptr and captures tuple, dispatches based on capture count (0-8 supported)
 
+**`*args` wrapper support**:
+- Wrapper functions can use `*args` to forward arguments to the decorated function
+- Caller packs args into a varargs tuple via `resolve_call_args` + `build_varargs_tuple`
+- Inside the wrapper, `func(*args)` uses `rt_call_with_tuple_args` runtime trampoline
+- Supports up to 8 arguments; handles both raw function pointers and closure tuples
+- Type inference uses the original function's return type (not the wrapper's `Any`)
+
 **Limitations**:
-- `*args, **kwargs` in wrapper signatures not supported
+- `**kwargs` in wrapper signatures not supported
 
 ### Class Definition
 

@@ -727,7 +727,7 @@ impl<'a> Lowering<'a> {
         wrapper_func_id: pyaot_utils::FuncId,
         original_func_id: pyaot_utils::FuncId,
         args: &[ExpandedArg],
-        _kwargs: &[hir::KeywordArg],
+        kwargs: &[hir::KeywordArg],
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
@@ -742,16 +742,55 @@ impl<'a> Lowering<'a> {
         // 2. Build arguments: func_ptr + user args
         let mut all_args = vec![mir::Operand::Local(func_ptr_local)];
 
-        // Lower user arguments with runtime unpacking support
-        let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
-        all_args.extend(arg_operands);
+        // Check if the wrapper has *args — if so, use resolve_call_args to properly
+        // pack user arguments into a varargs tuple matching the wrapper's signature
+        let has_varargs = hir_module
+            .func_defs
+            .get(&wrapper_func_id)
+            .map(|f| {
+                f.params
+                    .iter()
+                    .any(|p| p.kind == hir::ParamKind::VarPositional)
+            })
+            .unwrap_or(false);
 
-        // 3. Get return type from wrapper function
-        let func_def = hir_module.func_defs.get(&wrapper_func_id);
+        if has_varargs {
+            // Get the wrapper's user-facing params (skip the capture 'func' param)
+            let user_params: Vec<hir::Param> = hir_module
+                .func_defs
+                .get(&wrapper_func_id)
+                .map(|f| f.params.iter().skip(1).cloned().collect())
+                .unwrap_or_default();
+
+            let user_arg_operands = self.resolve_call_args(
+                args,
+                kwargs,
+                &user_params,
+                Some(wrapper_func_id),
+                1, // offset for capture param
+                pyaot_utils::Span::dummy(),
+                hir_module,
+                mir_func,
+            )?;
+            all_args.extend(user_arg_operands);
+        } else {
+            // No *args — lower directly (existing behavior)
+            let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
+            all_args.extend(arg_operands);
+        }
+
+        // 3. Get return type: prefer original function's return type (more precise),
+        // fall back to wrapper's return type
         let result_ty = self
-            .get_func_return_type(&wrapper_func_id)
+            .get_func_return_type(&original_func_id)
             .cloned()
-            .or_else(|| func_def.and_then(|f| f.return_type.clone()))
+            .or_else(|| {
+                hir_module
+                    .func_defs
+                    .get(&original_func_id)
+                    .and_then(|f| f.return_type.clone())
+            })
+            .or_else(|| self.get_func_return_type(&wrapper_func_id).cloned())
             .unwrap_or(Type::Any);
 
         let result_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
@@ -780,7 +819,21 @@ impl<'a> Lowering<'a> {
             .get_var_local(&func_var_id)
             .expect("Function pointer parameter not found");
 
-        // Lower the arguments
+        // Check if this is a *args forwarding pattern: func(*args) where args is VarPositional.
+        // In this case we can't statically unpack the tuple (unknown arity at compile time),
+        // so we use a runtime trampoline that dispatches based on tuple length.
+        let varargs_tuple_local = self.detect_varargs_forward(args, hir_module, mir_func)?;
+
+        if let Some(args_tuple_local) = varargs_tuple_local {
+            // *args forwarding: use runtime trampoline
+            return self.lower_indirect_call_with_varargs(
+                func_local,
+                args_tuple_local,
+                mir_func,
+            );
+        }
+
+        // Non-varargs case: lower arguments normally
         let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
 
         // Use the wrapper function's return type for the indirect call result
@@ -861,6 +914,162 @@ impl<'a> Lowering<'a> {
         self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
 
         // === Merge block ===
+        self.push_block(merge_bb);
+
+        Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Detect if args contain a *args forwarding pattern (func(*varargs_param)).
+    /// Returns the tuple local if detected, None otherwise.
+    fn detect_varargs_forward(
+        &mut self,
+        args: &[ExpandedArg],
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<Option<pyaot_utils::LocalId>> {
+        // Look for exactly one RuntimeUnpackTuple arg that references a VarPositional param
+        if args.len() != 1 {
+            return Ok(None);
+        }
+        if let ExpandedArg::RuntimeUnpackTuple(expr_id) = &args[0] {
+            let expr = &hir_module.exprs[*expr_id];
+            if let hir::ExprKind::Var(var_id) = &expr.kind {
+                if self.varargs_params.contains(var_id) {
+                    // This is func(*args) where args is a VarPositional param
+                    let tuple_operand = self.lower_expr(expr, hir_module, mir_func)?;
+                    let tuple_local = match tuple_operand {
+                        mir::Operand::Local(local) => local,
+                        _ => {
+                            let local = self.alloc_and_add_local(Type::Any, mir_func);
+                            self.emit_instruction(mir::InstructionKind::Copy {
+                                dest: local,
+                                src: tuple_operand,
+                            });
+                            local
+                        }
+                    };
+                    return Ok(Some(tuple_local));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Lower an indirect call with *args forwarding via runtime trampoline.
+    /// Handles both raw function pointers and closure tuples.
+    fn lower_indirect_call_with_varargs(
+        &mut self,
+        func_local: pyaot_utils::LocalId,
+        args_tuple_local: pyaot_utils::LocalId,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
+        let result_ty = mir_func.return_type.clone();
+        let result_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
+
+        // Check if func is a closure (tuple) or raw function pointer
+        let type_tag_local = self.alloc_and_add_local(Type::Int, mir_func);
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: type_tag_local,
+            func: mir::RuntimeFunc::GetTypeTag,
+            args: vec![mir::Operand::Local(func_local)],
+        });
+
+        let is_tuple_local = self.alloc_and_add_local(Type::Bool, mir_func);
+        self.emit_instruction(mir::InstructionKind::BinOp {
+            dest: is_tuple_local,
+            op: mir::BinOp::Eq,
+            left: mir::Operand::Local(type_tag_local),
+            right: mir::Operand::Constant(mir::Constant::Int(TypeTagKind::Tuple.tag() as i64)),
+        });
+
+        let closure_bb = self.new_block();
+        let direct_bb = self.new_block();
+        let merge_bb = self.new_block();
+        let closure_id = closure_bb.id;
+        let direct_id = direct_bb.id;
+        let merge_id = merge_bb.id;
+
+        self.current_block_mut().terminator = mir::Terminator::Branch {
+            cond: mir::Operand::Local(is_tuple_local),
+            then_block: closure_id,
+            else_block: direct_id,
+        };
+
+        // === Closure case: extract func_ptr from closure, prepend captures to args ===
+        self.push_block(closure_bb);
+        {
+            // Extract func_ptr from closure tuple index 0
+            let real_func = self.alloc_and_add_local(Type::Any, mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: real_func,
+                func: mir::RuntimeFunc::TupleGet,
+                args: vec![
+                    mir::Operand::Local(func_local),
+                    mir::Operand::Constant(mir::Constant::Int(0)),
+                ],
+            });
+
+            // Extract captures tuple from closure tuple index 1
+            let captures_tuple = self.alloc_and_add_local(Type::Any, mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: captures_tuple,
+                func: mir::RuntimeFunc::TupleGet,
+                args: vec![
+                    mir::Operand::Local(func_local),
+                    mir::Operand::Constant(mir::Constant::Int(1)),
+                ],
+            });
+
+            // Concatenate captures + args into a single tuple
+            let combined = self.alloc_and_add_local(Type::Any, mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: combined,
+                func: mir::RuntimeFunc::TupleConcat,
+                args: vec![
+                    mir::Operand::Local(captures_tuple),
+                    mir::Operand::Local(args_tuple_local),
+                ],
+            });
+
+            // Call via trampoline with combined args
+            let closure_result = self.alloc_and_add_local(result_ty.clone(), mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: closure_result,
+                func: mir::RuntimeFunc::CallWithTupleArgs,
+                args: vec![
+                    mir::Operand::Local(real_func),
+                    mir::Operand::Local(combined),
+                ],
+            });
+
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest: result_local,
+                src: mir::Operand::Local(closure_result),
+            });
+        }
+        self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
+
+        // === Direct case: call via trampoline with args tuple ===
+        self.push_block(direct_bb);
+        {
+            let direct_result = self.alloc_and_add_local(result_ty, mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: direct_result,
+                func: mir::RuntimeFunc::CallWithTupleArgs,
+                args: vec![
+                    mir::Operand::Local(func_local),
+                    mir::Operand::Local(args_tuple_local),
+                ],
+            });
+
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest: result_local,
+                src: mir::Operand::Local(direct_result),
+            });
+        }
+        self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
+
+        // === Merge ===
         self.push_block(merge_bb);
 
         Ok(mir::Operand::Local(result_local))

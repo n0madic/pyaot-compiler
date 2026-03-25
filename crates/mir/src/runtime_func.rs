@@ -113,6 +113,10 @@ pub enum RuntimeFunc {
     TupleGetFloat,
     /// Tuple get bool element (with automatic unboxing): rt_tuple_get_bool(tuple, index) -> i8
     TupleGetBool,
+    /// Call a function pointer with arguments unpacked from a tuple.
+    /// Used for *args forwarding in decorator wrappers: func(*args)
+    /// rt_call_with_tuple_args(func_ptr, args_tuple) -> result
+    CallWithTupleArgs,
     /// Concatenate two tuples: rt_tuple_concat(tuple1, tuple2) -> tuple
     /// Used for combining extra positional args with list-unpacked varargs
     TupleConcat,

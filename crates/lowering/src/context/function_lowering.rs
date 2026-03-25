@@ -76,6 +76,7 @@ impl<'a> Lowering<'a> {
         self.var_to_closure.clear();
         self.var_to_wrapper.clear();
         self.func_ptr_params.clear();
+        self.varargs_params.clear();
         self.current_blocks.clear();
         self.current_block_idx = 0;
         self.next_block_id = 0;
@@ -145,6 +146,11 @@ impl<'a> Lowering<'a> {
                     Type::Any
                 }
             });
+
+            // Track VarPositional params for runtime *args forwarding
+            if hir_param.kind == hir::ParamKind::VarPositional {
+                self.varargs_params.insert(hir_param.var);
+            }
 
             // For nonlocal parameters, the type is a cell pointer (use Str as placeholder)
             let param_ty = if is_cell_param { Type::Str } else { base_ty };

@@ -197,6 +197,9 @@ pub struct Lowering<'a> {
     /// Track wrapper function IDs (closures returned by decorators)
     /// These functions have a function pointer as their first capture parameter
     pub(crate) wrapper_func_ids: IndexSet<FuncId>,
+    /// Track VarPositional (*args) parameter VarIds for the current function.
+    /// Used to detect *args forwarding in indirect calls (e.g., func(*args) in decorator wrappers).
+    pub(crate) varargs_params: IndexSet<VarId>,
     /// Return type of the current function being lowered
     /// Used to infer the result type of indirect calls through func_ptr_params
     pub(crate) current_func_return_type: Option<Type>,

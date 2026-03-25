@@ -197,4 +197,81 @@ def inc(x: int) -> int:
 assert inc(5) == 6, f"chained identity wrapper: expected 6, got {inc(5)}"
 print("Identity wrapper decorator: PASS")
 
+# ===== Decorator with *args wrapper =====
+# Tests for decorators that use *args to forward arguments to the wrapped function
+
+def varargs_decorator(func):
+    def wrapper(*args):
+        return func(*args)
+    return wrapper
+
+# *args with two int args
+@varargs_decorator
+def add_va(x: int, y: int) -> int:
+    return x + y
+
+result_va1 = add_va(1, 2)
+assert result_va1 == 3, f"*args 2 ints: expected 3, got {result_va1}"
+print("*args wrapper (2 ints): PASS")
+
+# *args with single int arg
+@varargs_decorator
+def double_va(x: int) -> int:
+    return x * 2
+
+result_va2 = double_va(5)
+assert result_va2 == 10, f"*args 1 int: expected 10, got {result_va2}"
+print("*args wrapper (1 int): PASS")
+
+# *args with three int args
+@varargs_decorator
+def add3_va(x: int, y: int, z: int) -> int:
+    return x + y + z
+
+result_va3 = add3_va(1, 2, 3)
+assert result_va3 == 6, f"*args 3 ints: expected 6, got {result_va3}"
+print("*args wrapper (3 ints): PASS")
+
+# *args with string arg
+@varargs_decorator
+def greet_va(name: str) -> str:
+    return "Hello, " + name
+
+result_va4 = greet_va("World")
+assert result_va4 == "Hello, World", f"*args str: expected 'Hello, World', got '{result_va4}'"
+print("*args wrapper (str): PASS")
+
+# *args with no args
+@varargs_decorator
+def zero_va() -> int:
+    return 42
+
+result_va5 = zero_va()
+assert result_va5 == 42, f"*args 0 args: expected 42, got {result_va5}"
+print("*args wrapper (0 args): PASS")
+
+# *args wrapper with side effects
+def logging_decorator(func):
+    def wrapper(*args):
+        result = func(*args)
+        return result * 2
+    return wrapper
+
+@logging_decorator
+def mul_va(x: int, y: int) -> int:
+    return x * y
+
+result_va6 = mul_va(3, 4)
+assert result_va6 == 24, f"*args with modification: expected 24, got {result_va6}"
+print("*args wrapper with result modification: PASS")
+
+# Multiple functions decorated with the same *args decorator
+@varargs_decorator
+def sub_va(x: int, y: int) -> int:
+    return x - y
+
+result_va7 = sub_va(10, 3)
+assert result_va7 == 7, f"*args reuse: expected 7, got {result_va7}"
+print("*args wrapper reuse: PASS")
+
 print("All decorator factory tests passed!")

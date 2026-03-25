@@ -198,12 +198,21 @@ impl<'a> Lowering<'a> {
                         return Type::Any;
                     }
                     // Check if this is a wrapped function (decorator that returns wrapper closure)
-                    if let Some((wrapper_func_id, _)) = self.get_var_wrapper(var_id) {
-                        // Return the wrapper function's return type
-                        if let Some(return_type) = self.get_func_return_type(&wrapper_func_id) {
+                    if let Some((_, original_func_id)) = self.get_var_wrapper(var_id) {
+                        // Use the ORIGINAL function's return type (not wrapper's)
+                        if let Some(return_type) = self.get_func_return_type(&original_func_id) {
                             return return_type.clone();
                         }
-                        if let Some(func_def) = hir_module.func_defs.get(&wrapper_func_id) {
+                        if let Some(func_def) = hir_module.func_defs.get(&original_func_id) {
+                            return func_def.return_type.clone().unwrap_or(Type::None);
+                        }
+                    }
+                    // Check module-level wrapper decorators
+                    if let Some((_, original_func_id)) = self.get_module_var_wrapper(var_id) {
+                        if let Some(return_type) = self.get_func_return_type(&original_func_id) {
+                            return return_type.clone();
+                        }
+                        if let Some(func_def) = hir_module.func_defs.get(&original_func_id) {
                             return func_def.return_type.clone().unwrap_or(Type::None);
                         }
                     }

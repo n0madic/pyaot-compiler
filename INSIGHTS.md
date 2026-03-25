@@ -353,17 +353,6 @@ This matches Python's MRO: instance dict first, then class dict. Assignment thro
 
 ---
 
-## Known Pre-Existing Codegen Issues
+## Decorator `*args` Forwarding — Runtime Trampoline
 
-**Decorator with `*args` wrapper — argument count mismatch**
-```python
-def decorator(func):
-    def wrapper(*args):
-        return func(*args)
-    return wrapper
-@decorator
-def multiply(a: int, b: int) -> int:
-    return a * b
-print(multiply(3, 4))  # CRASH: got 3 args, expected 2
-```
-This is a feature gap, not a codegen bug. Supporting `*args` forwarding in decorator wrappers requires tuple packing at call sites, tuple unpacking for `func(*args)` indirect calls, and integration with the closure dispatch mechanism. Workaround: use explicit typed parameters in wrapper functions instead of `*args`.
+Decorator wrappers with `*args` use a runtime trampoline (`rt_call_with_tuple_args`) to forward variable-length argument tuples through indirect calls. The caller packs user args into a varargs tuple via `resolve_call_args`, and inside the wrapper, `func(*args)` calls the trampoline which dispatches based on tuple length (up to 8 args). For chained decorators (closure case), captures and args are concatenated via `rt_tuple_concat` before trampolining. The type inference for decorated function calls uses the **original** function's return type (not the wrapper's `Any`) via `module_var_wrappers` lookup.

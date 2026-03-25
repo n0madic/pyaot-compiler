@@ -1198,3 +1198,90 @@ pub extern "C" fn rt_tuple_count(tuple: *mut Obj, value: *mut Obj) -> i64 {
         count
     }
 }
+
+/// Maximum number of arguments supported for *args forwarding via indirect call.
+const MAX_CALL_ARGS: usize = 8;
+
+/// Call a function pointer with arguments unpacked from a tuple.
+/// Used for *args forwarding in decorator wrappers: `func(*args)`.
+///
+/// All arguments are passed as i64 (raw ints stay as i64, heap objects as pointers cast to i64).
+/// The function pointer must use the SystemV calling convention.
+#[no_mangle]
+pub extern "C" fn rt_call_with_tuple_args(func_ptr: i64, args_tuple: *mut Obj) -> i64 {
+    use crate::object::TupleObj;
+
+    if func_ptr == 0 {
+        return 0;
+    }
+
+    unsafe {
+        let len = if args_tuple.is_null() {
+            0
+        } else {
+            let tuple_obj = args_tuple as *mut TupleObj;
+            (*tuple_obj).len
+        };
+
+        // Extract arguments from tuple
+        let mut call_args = [0i64; MAX_CALL_ARGS];
+        if !args_tuple.is_null() && len > 0 {
+            let tuple_obj = args_tuple as *mut TupleObj;
+            let data_ptr = (*tuple_obj).data.as_ptr();
+            for (slot, i) in (0..len.min(MAX_CALL_ARGS)).enumerate() {
+                call_args[slot] = *data_ptr.add(i) as i64;
+            }
+        }
+
+        // Dispatch based on argument count
+        type F0 = extern "C" fn() -> i64;
+        type F1 = extern "C" fn(i64) -> i64;
+        type F2 = extern "C" fn(i64, i64) -> i64;
+        type F3 = extern "C" fn(i64, i64, i64) -> i64;
+        type F4 = extern "C" fn(i64, i64, i64, i64) -> i64;
+        type F5 = extern "C" fn(i64, i64, i64, i64, i64) -> i64;
+        type F6 = extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64;
+        type F7 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64;
+        type F8 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+
+        match len {
+            0 => {
+                let f: F0 = std::mem::transmute(func_ptr as usize);
+                f()
+            }
+            1 => {
+                let f: F1 = std::mem::transmute(func_ptr as usize);
+                f(call_args[0])
+            }
+            2 => {
+                let f: F2 = std::mem::transmute(func_ptr as usize);
+                f(call_args[0], call_args[1])
+            }
+            3 => {
+                let f: F3 = std::mem::transmute(func_ptr as usize);
+                f(call_args[0], call_args[1], call_args[2])
+            }
+            4 => {
+                let f: F4 = std::mem::transmute(func_ptr as usize);
+                f(call_args[0], call_args[1], call_args[2], call_args[3])
+            }
+            5 => {
+                let f: F5 = std::mem::transmute(func_ptr as usize);
+                f(call_args[0], call_args[1], call_args[2], call_args[3], call_args[4])
+            }
+            6 => {
+                let f: F6 = std::mem::transmute(func_ptr as usize);
+                f(call_args[0], call_args[1], call_args[2], call_args[3], call_args[4], call_args[5])
+            }
+            7 => {
+                let f: F7 = std::mem::transmute(func_ptr as usize);
+                f(call_args[0], call_args[1], call_args[2], call_args[3], call_args[4], call_args[5], call_args[6])
+            }
+            8 => {
+                let f: F8 = std::mem::transmute(func_ptr as usize);
+                f(call_args[0], call_args[1], call_args[2], call_args[3], call_args[4], call_args[5], call_args[6], call_args[7])
+            }
+            _ => 0, // Unsupported arity
+        }
+    }
+}

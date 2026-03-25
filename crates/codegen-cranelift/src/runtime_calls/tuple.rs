@@ -312,6 +312,21 @@ pub fn compile_tuple_call(
             builder.def_var(var, result);
             update_gc_root_if_needed(builder, &dest, result, ctx.gc_frame_data);
         }
+        mir::RuntimeFunc::CallWithTupleArgs => {
+            // rt_call_with_tuple_args(func_ptr: i64, args_tuple: *mut Obj) -> i64
+            compile_binary_runtime_call(
+                builder,
+                "rt_call_with_tuple_args",
+                cltypes::I64,
+                cltypes::I64,
+                cltypes::I64,
+                &args[0],
+                &args[1],
+                dest,
+                ctx,
+                false, // result is i64, not a heap object
+            )?;
+        }
         mir::RuntimeFunc::TupleConcat => {
             // rt_tuple_concat(tuple1: *mut Obj, tuple2: *mut Obj) -> *mut Obj
             compile_binary_runtime_call(

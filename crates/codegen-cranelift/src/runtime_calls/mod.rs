@@ -171,7 +171,8 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::TupleFromDict
         | mir::RuntimeFunc::TupleConcat
         | mir::RuntimeFunc::TupleIndex
-        | mir::RuntimeFunc::TupleCount => {
+        | mir::RuntimeFunc::TupleCount
+        | mir::RuntimeFunc::CallWithTupleArgs => {
             tuple::compile_tuple_call(builder, dest, func, args, ctx)?;
             Ok(())
         }
