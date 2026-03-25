@@ -1267,19 +1267,49 @@ pub extern "C" fn rt_call_with_tuple_args(func_ptr: i64, args_tuple: *mut Obj) -
             }
             5 => {
                 let f: F5 = std::mem::transmute(func_ptr as usize);
-                f(call_args[0], call_args[1], call_args[2], call_args[3], call_args[4])
+                f(
+                    call_args[0],
+                    call_args[1],
+                    call_args[2],
+                    call_args[3],
+                    call_args[4],
+                )
             }
             6 => {
                 let f: F6 = std::mem::transmute(func_ptr as usize);
-                f(call_args[0], call_args[1], call_args[2], call_args[3], call_args[4], call_args[5])
+                f(
+                    call_args[0],
+                    call_args[1],
+                    call_args[2],
+                    call_args[3],
+                    call_args[4],
+                    call_args[5],
+                )
             }
             7 => {
                 let f: F7 = std::mem::transmute(func_ptr as usize);
-                f(call_args[0], call_args[1], call_args[2], call_args[3], call_args[4], call_args[5], call_args[6])
+                f(
+                    call_args[0],
+                    call_args[1],
+                    call_args[2],
+                    call_args[3],
+                    call_args[4],
+                    call_args[5],
+                    call_args[6],
+                )
             }
             8 => {
                 let f: F8 = std::mem::transmute(func_ptr as usize);
-                f(call_args[0], call_args[1], call_args[2], call_args[3], call_args[4], call_args[5], call_args[6], call_args[7])
+                f(
+                    call_args[0],
+                    call_args[1],
+                    call_args[2],
+                    call_args[3],
+                    call_args[4],
+                    call_args[5],
+                    call_args[6],
+                    call_args[7],
+                )
             }
             _ => 0, // Unsupported arity
         }

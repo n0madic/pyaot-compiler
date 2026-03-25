@@ -87,9 +87,7 @@ impl<'a> Lowering<'a> {
                                 return Some(ret_ty.clone());
                             }
                             if let Some(func_def) = module.func_defs.get(&method_func_id) {
-                                return Some(
-                                    func_def.return_type.clone().unwrap_or(Type::None),
-                                );
+                                return Some(func_def.return_type.clone().unwrap_or(Type::None));
                             }
                         }
                     }
@@ -142,11 +140,11 @@ impl<'a> Lowering<'a> {
             }
         }
         if let hir::ExprKind::Var(var_id) = &func_expr.kind {
-            if let Some(Type::Class { class_id, .. }) =
-                self.get_var_type(var_id).cloned().as_ref()
+            if let Some(Type::Class { class_id, .. }) = self.get_var_type(var_id).cloned().as_ref()
             {
-                if let Some(call_func_id) =
-                    self.get_class_info(class_id).and_then(|info| info.call_func)
+                if let Some(call_func_id) = self
+                    .get_class_info(class_id)
+                    .and_then(|info| info.call_func)
                 {
                     if let Some(return_type) = self.get_func_return_type(&call_func_id) {
                         return Some(return_type.clone());
@@ -195,7 +193,11 @@ impl<'a> Lowering<'a> {
                 });
             }
         }
-        if let hir::ExprKind::ModuleAttr { module: mod_name, attr } = &func_expr.kind {
+        if let hir::ExprKind::ModuleAttr {
+            module: mod_name,
+            attr,
+        } = &func_expr.kind
+        {
             let attr_name = self.resolve(*attr).to_string();
             let key = (mod_name.clone(), attr_name);
             if let Some((class_id, _)) = self.get_module_class_export(&key) {
@@ -205,7 +207,11 @@ impl<'a> Lowering<'a> {
                 });
             }
         }
-        if let hir::ExprKind::ImportedRef { module: mod_name, name } = &func_expr.kind {
+        if let hir::ExprKind::ImportedRef {
+            module: mod_name,
+            name,
+        } = &func_expr.kind
+        {
             let key = (mod_name.clone(), name.clone());
             if let Some(return_type) = self.get_module_func_export(&key) {
                 return Some(return_type.clone());
@@ -278,11 +284,7 @@ impl<'a> Lowering<'a> {
 
     /// Resolve attribute type on an already-resolved object type.
     /// Returns `None` if no resolution found (caller applies fallback).
-    fn resolve_attribute_on_type(
-        &self,
-        obj_ty: &Type,
-        attr: InternedString,
-    ) -> Option<Type> {
+    fn resolve_attribute_on_type(&self, obj_ty: &Type, attr: InternedString) -> Option<Type> {
         if let Type::RuntimeObject(type_tag) = obj_ty {
             let attr_name = self.resolve(attr);
             if let Some(field_def) = lookup_object_field(*type_tag, attr_name) {
@@ -341,11 +343,7 @@ impl<'a> Lowering<'a> {
     /// Codegen entry point for type inference.
     /// Called from `get_type_of_expr_id` (memoized) and `get_expr_type`.
     /// Uses `get_type_of_expr_id` for sub-expressions to ensure caching.
-    pub(crate) fn compute_expr_type(
-        &mut self,
-        expr: &hir::Expr,
-        hir_module: &hir::Module,
-    ) -> Type {
+    pub(crate) fn compute_expr_type(&mut self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
         match &expr.kind {
             hir::ExprKind::Var(var_id) => self
                 .get_var_type(var_id)
@@ -415,9 +413,7 @@ impl<'a> Lowering<'a> {
                 self.resolve_method_on_type(&obj_ty, *method, method_name, hir_module)
                     .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
             }
-            hir::ExprKind::Slice { obj, .. } => {
-                self.get_type_of_expr_id(*obj, hir_module)
-            }
+            hir::ExprKind::Slice { obj, .. } => self.get_type_of_expr_id(*obj, hir_module),
             hir::ExprKind::Index { obj, index } => {
                 let obj_ty = self.get_type_of_expr_id(*obj, hir_module);
                 let index_expr = &hir_module.exprs[*index];
@@ -614,8 +610,7 @@ impl<'a> Lowering<'a> {
                 self.infer_expr_type_inner(&module.exprs[*obj], module, param_types)
             }
             hir::ExprKind::Index { obj, index } => {
-                let obj_ty =
-                    self.infer_expr_type_inner(&module.exprs[*obj], module, param_types);
+                let obj_ty = self.infer_expr_type_inner(&module.exprs[*obj], module, param_types);
                 let index_expr = &module.exprs[*index];
                 self.resolve_index_with_getitem(&obj_ty, index_expr)
                     .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
@@ -628,9 +623,7 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::BuiltinCall { builtin, args, .. } => {
                 let arg_types: Vec<Type> = args
                     .iter()
-                    .map(|id| {
-                        self.infer_expr_type_inner(&module.exprs[*id], module, param_types)
-                    })
+                    .map(|id| self.infer_expr_type_inner(&module.exprs[*id], module, param_types))
                     .collect();
                 self.resolve_builtin_with_overrides(builtin, args, &arg_types, module)
                     .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
@@ -639,8 +632,7 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::StdlibAttr(attr_def) => typespec_to_type(&attr_def.ty),
             hir::ExprKind::StdlibConst(const_def) => typespec_to_type(&const_def.ty),
             hir::ExprKind::Attribute { obj, attr } => {
-                let obj_ty =
-                    self.infer_expr_type_inner(&module.exprs[*obj], module, param_types);
+                let obj_ty = self.infer_expr_type_inner(&module.exprs[*obj], module, param_types);
                 self.resolve_attribute_on_type(&obj_ty, *attr)
                     .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
             }
@@ -669,7 +661,10 @@ impl<'a> Lowering<'a> {
                     Type::Any
                 }
             }
-            hir::ExprKind::ModuleAttr { module: mod_name, attr } => {
+            hir::ExprKind::ModuleAttr {
+                module: mod_name,
+                attr,
+            } => {
                 let attr_name = self.resolve(*attr).to_string();
                 let key = (mod_name.clone(), attr_name);
                 if let Some((_var_id, var_type)) = self.get_module_var_export(&key) {
@@ -677,7 +672,10 @@ impl<'a> Lowering<'a> {
                 }
                 Type::Any
             }
-            hir::ExprKind::ImportedRef { module: mod_name, name } => {
+            hir::ExprKind::ImportedRef {
+                module: mod_name,
+                name,
+            } => {
                 let key = (mod_name.clone(), name.clone());
                 if let Some((_var_id, var_type)) = self.get_module_var_export(&key) {
                     return var_type.clone();

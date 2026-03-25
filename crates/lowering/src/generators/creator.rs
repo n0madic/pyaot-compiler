@@ -115,12 +115,8 @@ impl<'a> Lowering<'a> {
         'init_loop: for stmt_id in &func.body {
             let stmt = &hir_module.stmts[*stmt_id];
             match &stmt.kind {
-                hir::StmtKind::Assign {
-                    target, value, ..
-                } => {
-                    if let Some(gen_var) =
-                        gen_vars.iter().find(|v| v.var_id == *target)
-                    {
+                hir::StmtKind::Assign { target, value, .. } => {
+                    if let Some(gen_var) = gen_vars.iter().find(|v| v.var_id == *target) {
                         let val_expr = &hir_module.exprs[*value];
                         let val_op = match &val_expr.kind {
                             hir::ExprKind::Int(n) => {
@@ -129,9 +125,13 @@ impl<'a> Lowering<'a> {
                             hir::ExprKind::Float(f) => {
                                 Some(mir::Operand::Constant(mir::Constant::Float(*f)))
                             }
-                            hir::ExprKind::Bool(b) => Some(mir::Operand::Constant(
-                                mir::Constant::Int(if *b { 1 } else { 0 }),
-                            )),
+                            hir::ExprKind::Bool(b) => {
+                                Some(mir::Operand::Constant(mir::Constant::Int(if *b {
+                                    1
+                                } else {
+                                    0
+                                })))
+                            }
                             _ => None,
                         };
                         if let Some(op) = val_op {

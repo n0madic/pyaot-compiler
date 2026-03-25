@@ -221,7 +221,6 @@ impl<'a> Lowering<'a> {
     pub(crate) fn is_wrapper_func(&self, func_id: &FuncId) -> bool {
         self.wrapper_func_ids.contains(func_id)
     }
-
 }
 
 // =============================================================================

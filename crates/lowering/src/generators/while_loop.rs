@@ -441,22 +441,14 @@ impl<'a> Lowering<'a> {
                         else_val,
                     } => {
                         // Evaluate condition into a bool local
-                        let cond_local =
-                            self.alloc_and_add_local(Type::Bool, &mut mir_func);
+                        let cond_local = self.alloc_and_add_local(Type::Bool, &mut mir_func);
                         let cond_expr = &hir_module.exprs[*cond];
 
-                        if let hir::ExprKind::Compare {
-                            left,
-                            op,
-                            right,
-                        } = &cond_expr.kind
-                        {
+                        if let hir::ExprKind::Compare { left, op, right } = &cond_expr.kind {
                             let l_expr = &hir_module.exprs[*left];
                             let r_expr = &hir_module.exprs[*right];
-                            let l_op =
-                                self.get_operand_for_expr(l_expr, &var_to_mir_local)?;
-                            let r_op =
-                                self.get_operand_for_expr(r_expr, &var_to_mir_local)?;
+                            let l_op = self.get_operand_for_expr(l_expr, &var_to_mir_local)?;
+                            let r_op = self.get_operand_for_expr(r_expr, &var_to_mir_local)?;
                             let mir_cmp = match op {
                                 hir::CmpOp::Lt => mir::BinOp::Lt,
                                 hir::CmpOp::LtE => mir::BinOp::LtE,
@@ -510,8 +502,7 @@ impl<'a> Lowering<'a> {
 
                         // Then block: yield_value = then_val → Goto merge
                         let then_expr = &hir_module.exprs[*then_val];
-                        let then_op =
-                            self.get_operand_for_expr(then_expr, &var_to_mir_local)?;
+                        let then_op = self.get_operand_for_expr(then_expr, &var_to_mir_local)?;
                         let then_bb = mir::BasicBlock {
                             id: then_bb_id,
                             instructions: vec![mir::Instruction {
@@ -526,8 +517,7 @@ impl<'a> Lowering<'a> {
 
                         // Else block: yield_value = else_val → Goto merge
                         let else_expr = &hir_module.exprs[*else_val];
-                        let else_op =
-                            self.get_operand_for_expr(else_expr, &var_to_mir_local)?;
+                        let else_op = self.get_operand_for_expr(else_expr, &var_to_mir_local)?;
                         let else_bb = mir::BasicBlock {
                             id: else_bb_id,
                             instructions: vec![mir::Instruction {

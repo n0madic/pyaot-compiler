@@ -97,9 +97,7 @@ impl<'a> Lowering<'a> {
             hir::Builtin::FmtOct => {
                 self.lower_fmt_int(args, hir_module, mir_func, mir::RuntimeFunc::IntFmtOct)
             }
-            hir::Builtin::FmtIntGrouped => {
-                self.lower_fmt_int_grouped(args, hir_module, mir_func)
-            }
+            hir::Builtin::FmtIntGrouped => self.lower_fmt_int_grouped(args, hir_module, mir_func),
             hir::Builtin::FmtFloatGrouped => {
                 self.lower_fmt_float_grouped(args, hir_module, mir_func)
             }

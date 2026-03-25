@@ -122,8 +122,16 @@ pub(crate) fn resolve_binop_type(op: &hir::BinOp, left_ty: &Type, right_ty: &Typ
         return Some(Type::Str);
     }
     // Bool is subtype of Int in Python (True + True == 2, True + 1.0 == 2.0)
-    let left_ty = if *left_ty == Type::Bool { &Type::Int } else { left_ty };
-    let right_ty = if *right_ty == Type::Bool { &Type::Int } else { right_ty };
+    let left_ty = if *left_ty == Type::Bool {
+        &Type::Int
+    } else {
+        left_ty
+    };
+    let right_ty = if *right_ty == Type::Bool {
+        &Type::Int
+    } else {
+        right_ty
+    };
     // Float promotion
     if *left_ty == Type::Float || *right_ty == Type::Float {
         return Some(Type::Float);

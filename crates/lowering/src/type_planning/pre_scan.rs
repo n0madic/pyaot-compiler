@@ -202,8 +202,7 @@ impl<'a> Lowering<'a> {
                         return result;
                     }
                     for handler in handlers {
-                        let result =
-                            self.find_elem_type_from_usage(var, &handler.body, hir_module);
+                        let result = self.find_elem_type_from_usage(var, &handler.body, hir_module);
                         if result != Type::Any {
                             return result;
                         }
@@ -212,16 +211,14 @@ impl<'a> Lowering<'a> {
                     if result != Type::Any {
                         return result;
                     }
-                    let result =
-                        self.find_elem_type_from_usage(var, finally_block, hir_module);
+                    let result = self.find_elem_type_from_usage(var, finally_block, hir_module);
                     if result != Type::Any {
                         return result;
                     }
                 }
                 hir::StmtKind::Match { cases, .. } => {
                     for case in cases {
-                        let result =
-                            self.find_elem_type_from_usage(var, &case.body, hir_module);
+                        let result = self.find_elem_type_from_usage(var, &case.body, hir_module);
                         if result != Type::Any {
                             return result;
                         }
@@ -348,16 +345,14 @@ impl<'a> Lowering<'a> {
                     if result != (Type::Any, Type::Any) {
                         return result;
                     }
-                    let result =
-                        self.find_dict_types_from_usage(var, finally_block, hir_module);
+                    let result = self.find_dict_types_from_usage(var, finally_block, hir_module);
                     if result != (Type::Any, Type::Any) {
                         return result;
                     }
                 }
                 hir::StmtKind::Match { cases, .. } => {
                     for case in cases {
-                        let result =
-                            self.find_dict_types_from_usage(var, &case.body, hir_module);
+                        let result = self.find_dict_types_from_usage(var, &case.body, hir_module);
                         if result != (Type::Any, Type::Any) {
                             return result;
                         }

@@ -826,11 +826,7 @@ impl<'a> Lowering<'a> {
 
         if let Some(args_tuple_local) = varargs_tuple_local {
             // *args forwarding: use runtime trampoline
-            return self.lower_indirect_call_with_varargs(
-                func_local,
-                args_tuple_local,
-                mir_func,
-            );
+            return self.lower_indirect_call_with_varargs(func_local, args_tuple_local, mir_func);
         }
 
         // Non-varargs case: lower arguments normally

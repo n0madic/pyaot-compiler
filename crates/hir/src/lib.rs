@@ -633,56 +633,56 @@ pub enum Builtin {
     Print,
     Range,
     Len,
-    Str,         // str() conversion function
-    Int,         // int() conversion function
-    Float,       // float() conversion function
-    Bool,        // bool() conversion function
-    Bytes,       // bytes() constructor
-    Abs,         // abs() absolute value
-    Pow,         // pow() exponentiation
-    Min,         // min() minimum value
-    Max,         // max() maximum value
-    Round,       // round() round float
-    Sum,         // sum() sum sequence
-    All,         // all() test all true
-    Any,         // any() test any true
-    Chr,         // chr() int to character
-    Ord,         // ord() character to int
-    Isinstance,  // isinstance() type check
-    Issubclass,  // issubclass() subclass check
-    Hash,        // hash() hash value
-    Id,          // id() object identity
-    Iter,        // iter() create iterator
-    Next,        // next() get next element from iterator
-    Reversed,    // reversed() create reverse iterator
-    Sorted,      // sorted() return new sorted list
-    Set,         // set() constructor
-    Open,        // open() file open
-    Enumerate,   // enumerate() create (index, element) iterator
-    Divmod,      // divmod(a, b) -> (a // b, a % b)
-    Input,       // input(prompt) -> str
-    Bin,         // bin(n) -> str
-    Hex,         // hex(n) -> str
-    Oct,         // oct(n) -> str
+    Str,             // str() conversion function
+    Int,             // int() conversion function
+    Float,           // float() conversion function
+    Bool,            // bool() conversion function
+    Bytes,           // bytes() constructor
+    Abs,             // abs() absolute value
+    Pow,             // pow() exponentiation
+    Min,             // min() minimum value
+    Max,             // max() maximum value
+    Round,           // round() round float
+    Sum,             // sum() sum sequence
+    All,             // all() test all true
+    Any,             // any() test any true
+    Chr,             // chr() int to character
+    Ord,             // ord() character to int
+    Isinstance,      // isinstance() type check
+    Issubclass,      // issubclass() subclass check
+    Hash,            // hash() hash value
+    Id,              // id() object identity
+    Iter,            // iter() create iterator
+    Next,            // next() get next element from iterator
+    Reversed,        // reversed() create reverse iterator
+    Sorted,          // sorted() return new sorted list
+    Set,             // set() constructor
+    Open,            // open() file open
+    Enumerate,       // enumerate() create (index, element) iterator
+    Divmod,          // divmod(a, b) -> (a // b, a % b)
+    Input,           // input(prompt) -> str
+    Bin,             // bin(n) -> str
+    Hex,             // hex(n) -> str
+    Oct,             // oct(n) -> str
     FmtBin,          // format int as binary without prefix
     FmtHex,          // format int as lowercase hex without prefix
     FmtHexUpper,     // format int as uppercase hex without prefix
     FmtOct,          // format int as octal without prefix
     FmtIntGrouped,   // format int with grouping separator (e.g., 1,000,000)
     FmtFloatGrouped, // format float with precision and grouping separator
-    Repr,        // repr(obj) -> str
-    Ascii,       // ascii(obj) -> str (like repr but escapes non-ASCII)
-    Type,        // type(obj) -> type string
-    Callable,    // callable(obj) -> bool
-    Hasattr,     // hasattr(obj, name) -> bool
-    Getattr,     // getattr(obj, name, default) -> value
-    Setattr,     // setattr(obj, name, value)
-    Zip,         // zip(iter1, iter2) -> iterator of tuples
-    Map,         // map(func, iterable) -> iterator
-    Filter,      // filter(func, iterable) -> iterator
-    Format,      // format(value, format_spec) -> str
-    Reduce,      // functools.reduce(func, iterable, initial?) -> value
-    Chain,       // itertools.chain(*iterables) -> iterator
+    Repr,            // repr(obj) -> str
+    Ascii,           // ascii(obj) -> str (like repr but escapes non-ASCII)
+    Type,            // type(obj) -> type string
+    Callable,        // callable(obj) -> bool
+    Hasattr,         // hasattr(obj, name) -> bool
+    Getattr,         // getattr(obj, name, default) -> value
+    Setattr,         // setattr(obj, name, value)
+    Zip,             // zip(iter1, iter2) -> iterator of tuples
+    Map,             // map(func, iterable) -> iterator
+    Filter,          // filter(func, iterable) -> iterator
+    Format,          // format(value, format_spec) -> str
+    Reduce,          // functools.reduce(func, iterable, initial?) -> value
+    Chain,           // itertools.chain(*iterables) -> iterator
     ISlice, // itertools.islice(iterable, stop) or islice(iterable, start, stop[, step]) -> iterator
     List,   // list() / list(iterable) -> list constructor
     Tuple,  // tuple() / tuple(iterable) -> tuple constructor

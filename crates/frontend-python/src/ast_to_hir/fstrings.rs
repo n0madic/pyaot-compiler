@@ -369,8 +369,8 @@ impl AstToHir {
             });
 
             // Check if value is float (has precision with f/F type)
-            let is_float_fmt = spec.precision.is_some()
-                && matches!(spec.type_char, Some('f') | Some('F'));
+            let is_float_fmt =
+                spec.precision.is_some() && matches!(spec.type_char, Some('f') | Some('F'));
 
             if is_float_fmt {
                 let precision_expr = self.module.exprs.alloc(Expr {
@@ -743,8 +743,8 @@ impl AstToHir {
                 span,
             });
 
-            let is_float_fmt = spec.precision.is_some()
-                && matches!(spec.type_char, Some('f') | Some('F'));
+            let is_float_fmt =
+                spec.precision.is_some() && matches!(spec.type_char, Some('f') | Some('F'));
 
             if is_float_fmt {
                 let precision_expr = self.module.exprs.alloc(Expr {

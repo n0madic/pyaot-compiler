@@ -937,7 +937,11 @@ impl<'a> Lowering<'a> {
                 });
             }
 
-            bindings.push((*rest_var, mir::Operand::Local(rest_local), ctx.subject_type.clone()));
+            bindings.push((
+                *rest_var,
+                mir::Operand::Local(rest_local),
+                ctx.subject_type.clone(),
+            ));
         }
 
         Ok((result_cond, bindings))
