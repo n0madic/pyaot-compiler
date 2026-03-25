@@ -324,6 +324,54 @@ assert r_group_float == "1,234,567.89", f"float grouping failed: got '{r_group_f
 
 print("Grouping option tests passed!")
 
+# ===== SECTION: F-string width and alignment =====
+
+# Right-align string
+fa_right: str = f"{'hello':>10}"
+assert fa_right == "     hello", f"f-string right-align failed: got '{fa_right}'"
+
+# Left-align string
+fa_left: str = f"{'hello':<10}"
+assert fa_left == "hello     ", f"f-string left-align failed: got '{fa_left}'"
+
+# Center-align string
+fa_center: str = f"{'hello':^11}"
+assert fa_center == "   hello   ", f"f-string center-align failed: got '{fa_center}'"
+
+# Zero-pad integer
+fa_zeropad: str = f"{42:05d}"
+assert fa_zeropad == "00042", f"f-string zero-pad failed: got '{fa_zeropad}'"
+
+# Right-align integer with spaces (default for numbers)
+fa_int_right: str = f"{42:8d}"
+assert fa_int_right == "      42", f"f-string int right-align failed: got '{fa_int_right}'"
+
+# Left-align integer
+fa_int_left: str = f"{42:<8d}"
+assert fa_int_left == "42      ", f"f-string int left-align failed: got '{fa_int_left}'"
+
+# Fill with custom char
+fa_custom_fill: str = f"{'hi':*^10}"
+assert fa_custom_fill == "****hi****", f"f-string custom fill failed: got '{fa_custom_fill}'"
+
+# Width with no alignment (string defaults to left)
+fa_str_default: str = f"{'ab':5}"
+assert fa_str_default == "ab   ", f"f-string default string align failed: got '{fa_str_default}'"
+
+# Width with no alignment (int defaults to right)
+fa_int_default: str = f"{7:5}"
+assert fa_int_default == "    7", f"f-string default int align failed: got '{fa_int_default}'"
+
+# Zero-pad hex
+fa_hex_pad: str = f"{255:08x}"
+assert fa_hex_pad == "000000ff", f"f-string zero-pad hex failed: got '{fa_hex_pad}'"
+
+# Grouping combined with width
+fa_group_width: str = f"{1000000:>15,}"
+assert fa_group_width == "      1,000,000", f"f-string grouping+width failed: got '{fa_group_width}'"
+
+print("F-string width and alignment tests passed!")
+
 # ===== SECTION: F-string interpolation =====
 
 # Test str() builtin with different types

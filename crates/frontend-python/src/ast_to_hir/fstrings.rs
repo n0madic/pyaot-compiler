@@ -333,6 +333,12 @@ impl AstToHir {
         let spec = FormatSpec::parse(&spec_str);
         let mut result = expr_id;
 
+        // Check if the original expression is numeric (for default alignment)
+        let is_numeric = matches!(
+            self.module.exprs[expr_id].ty,
+            Some(Type::Int) | Some(Type::Float)
+        );
+
         // Apply precision for floats
         if let Some(precision) = spec.precision {
             if spec.type_char == Some('f') || spec.type_char == Some('F') {
@@ -354,7 +360,7 @@ impl AstToHir {
             }
         }
 
-        // Apply grouping if specified (e.g., :, or :_)
+        // Apply grouping OR type_char conversions (mutually exclusive)
         if let Some(sep) = spec.grouping {
             let sep_expr = self.module.exprs.alloc(Expr {
                 kind: ExprKind::Int(sep as i64),
@@ -392,15 +398,64 @@ impl AstToHir {
                     span: fstring_span,
                 });
             }
-            return Ok(result);
+        } else {
+            // Apply integer format type conversions
+            match spec.type_char {
+                Some('x') => {
+                    result = self.module.exprs.alloc(Expr {
+                        kind: ExprKind::BuiltinCall {
+                            builtin: Builtin::FmtHex,
+                            args: vec![result],
+                            kwargs: vec![],
+                        },
+                        ty: Some(Type::Str),
+                        span: fstring_span,
+                    });
+                }
+                Some('X') => {
+                    result = self.module.exprs.alloc(Expr {
+                        kind: ExprKind::BuiltinCall {
+                            builtin: Builtin::FmtHexUpper,
+                            args: vec![result],
+                            kwargs: vec![],
+                        },
+                        ty: Some(Type::Str),
+                        span: fstring_span,
+                    });
+                }
+                Some('o') => {
+                    result = self.module.exprs.alloc(Expr {
+                        kind: ExprKind::BuiltinCall {
+                            builtin: Builtin::FmtOct,
+                            args: vec![result],
+                            kwargs: vec![],
+                        },
+                        ty: Some(Type::Str),
+                        span: fstring_span,
+                    });
+                }
+                Some('b') => {
+                    result = self.module.exprs.alloc(Expr {
+                        kind: ExprKind::BuiltinCall {
+                            builtin: Builtin::FmtBin,
+                            args: vec![result],
+                            kwargs: vec![],
+                        },
+                        ty: Some(Type::Str),
+                        span: fstring_span,
+                    });
+                }
+                _ => {}
+            }
         }
 
-        // Apply integer format type conversions
-        match spec.type_char {
-            Some('x') => {
+        // Apply width/alignment if specified
+        if let Some(width) = spec.width {
+            // Ensure the value is a string before applying alignment
+            if !matches!(self.module.exprs[result].ty, Some(Type::Str)) {
                 result = self.module.exprs.alloc(Expr {
                     kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::FmtHex,
+                        builtin: Builtin::Str,
                         args: vec![result],
                         kwargs: vec![],
                     },
@@ -408,40 +463,43 @@ impl AstToHir {
                     span: fstring_span,
                 });
             }
-            Some('X') => {
-                result = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::FmtHexUpper,
-                        args: vec![result],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Str),
-                    span: fstring_span,
-                });
-            }
-            Some('o') => {
-                result = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::FmtOct,
-                        args: vec![result],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Str),
-                    span: fstring_span,
-                });
-            }
-            Some('b') => {
-                result = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::FmtBin,
-                        args: vec![result],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Str),
-                    span: fstring_span,
-                });
-            }
-            _ => {}
+
+            let width_expr = self.module.exprs.alloc(Expr {
+                kind: ExprKind::Int(width as i64),
+                ty: Some(Type::Int),
+                span: fstring_span,
+            });
+
+            let fill_char = spec.fill.unwrap_or(' ');
+            let fill_str = fill_char.to_string();
+            let fill_interned = self.interner.intern(&fill_str);
+            let fill_expr = self.module.exprs.alloc(Expr {
+                kind: ExprKind::Str(fill_interned),
+                ty: Some(Type::Str),
+                span: fstring_span,
+            });
+
+            // Default alignment: '>' (right) for numbers, '<' (left) for strings
+            let default_align = if is_numeric { '>' } else { '<' };
+            let align = spec.align.unwrap_or(default_align);
+            let method_name = match align {
+                '<' => "ljust",
+                '>' | '=' => "rjust",
+                '^' => "center",
+                _ => "ljust",
+            };
+
+            let method = self.interner.intern(method_name);
+            result = self.module.exprs.alloc(Expr {
+                kind: ExprKind::MethodCall {
+                    obj: result,
+                    method,
+                    args: vec![width_expr, fill_expr],
+                    kwargs: vec![],
+                },
+                ty: Some(Type::Str),
+                span: fstring_span,
+            });
         }
 
         Ok(result)
