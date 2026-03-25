@@ -22,10 +22,11 @@ use crate::utils::{
 const JMP_BUF_SIZE: usize = 200;
 
 /// ExceptionFrame layout (must match runtime's #[repr(C)] ExceptionFrame):
-///   prev: *mut ExceptionFrame  (8 bytes, offset 0)
-///   jmp_buf: [u8; JMP_BUF_SIZE] (JMP_BUF_SIZE bytes, offset 8)
-///   gc_stack_top: *mut u8      (8 bytes, offset 8 + JMP_BUF_SIZE)
-const EXCEPTION_FRAME_SIZE: u32 = 8 + JMP_BUF_SIZE as u32 + 8;
+///   prev: *mut ExceptionFrame    (8 bytes, offset 0)
+///   jmp_buf: [u8; JMP_BUF_SIZE]  (JMP_BUF_SIZE bytes, offset 8)
+///   gc_stack_top: *mut u8        (8 bytes, offset 8 + JMP_BUF_SIZE)
+///   traceback_depth: usize       (8 bytes, offset 8 + JMP_BUF_SIZE + 8)
+const EXCEPTION_FRAME_SIZE: u32 = 8 + JMP_BUF_SIZE as u32 + 8 + 8;
 const JMP_BUF_OFFSET: i64 = 8;
 
 /// Compile ExcPushFrame instruction

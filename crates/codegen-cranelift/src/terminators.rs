@@ -24,6 +24,12 @@ pub fn compile_terminator(
 ) -> Result<()> {
     match term {
         mir::Terminator::Return(val) => {
+            // Pop traceback frame before returning (always — every function pushed one)
+            if let Some(stack_pop_id) = ctx.stack_pop_id {
+                let stack_pop_ref = ctx.module.declare_func_in_func(stack_pop_id, builder.func);
+                builder.ins().call(stack_pop_ref, &[]);
+            }
+
             // Call gc_pop before returning if we have GC roots
             if ctx.gc_frame_data.is_some() {
                 if let Some(gc_pop_id) = ctx.gc_pop_id {

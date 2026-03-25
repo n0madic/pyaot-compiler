@@ -19,7 +19,8 @@ use pyaot_utils::{FuncId, LineMap, LocalId, StringInterner};
 use crate::context::{CodegenContext, GcFrameData};
 use crate::instructions::compile_instruction;
 use crate::terminators::compile_terminator;
-use crate::utils::{mangle_function_name, type_to_cranelift};
+use crate::utils::{create_traceback_string_data, mangle_function_name, type_to_cranelift};
+use pyaot_utils::Span;
 
 /// Context for function compilation, grouping related parameters
 pub struct FunctionCompiler<'a> {
@@ -32,7 +33,11 @@ pub struct FunctionCompiler<'a> {
     pub interner: &'a StringInterner,
     pub gc_push_id: Option<ClFuncId>,
     pub gc_pop_id: Option<ClFuncId>,
+    pub stack_push_id: Option<ClFuncId>,
+    pub stack_pop_id: Option<ClFuncId>,
     pub line_map: Option<&'a LineMap>,
+    pub file_name_data_id: Option<cranelift_module::DataId>,
+    pub file_name_len: usize,
 }
 
 /// Declare a MIR function in the Cranelift module
@@ -141,6 +146,20 @@ pub fn define_function(
         None
     };
 
+    // Generate traceback stack push (for every function, regardless of GC roots)
+    if let Some(stack_push_id) = compiler.stack_push_id {
+        emit_stack_push(
+            &mut builder,
+            compiler.module,
+            stack_push_id,
+            &func.name,
+            func.span,
+            compiler.line_map,
+            compiler.file_name_data_id,
+            compiler.file_name_len,
+        );
+    }
+
     // Generate code for each block
     let mut block_map = IndexMap::new();
     for (block_id, _) in &func.blocks {
@@ -163,6 +182,7 @@ pub fn define_function(
             gc_frame_data: &gc_frame_data,
             block_map: &block_map,
             gc_pop_id: compiler.gc_pop_id,
+            stack_pop_id: compiler.stack_pop_id,
             func_name_ids: compiler.func_name_ids,
             func_param_types: compiler.func_param_types,
             return_type: &func.return_type,
@@ -382,4 +402,61 @@ pub fn generate_main_entry_point_with_module_inits(
         .expect("failed to define main function");
 
     Ok(())
+}
+
+/// Emit a call to `rt_stack_push` at function entry for traceback support.
+#[allow(clippy::too_many_arguments)]
+fn emit_stack_push(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    stack_push_id: ClFuncId,
+    func_name: &str,
+    func_span: Option<Span>,
+    line_map: Option<&LineMap>,
+    file_name_data_id: Option<cranelift_module::DataId>,
+    file_name_len: usize,
+) {
+    // Translate internal function names to Python-style display names
+    let display_name = if func_name == "__pyaot_module_init__"
+        || (func_name.starts_with("__module_") && func_name.ends_with("_init__"))
+    {
+        "<module>"
+    } else if let Some(base) = func_name.strip_suffix("$resume") {
+        base
+    } else {
+        func_name
+    };
+
+    // Embed function name as a static data section
+    let fn_data_id = create_traceback_string_data(module, display_name);
+    let fn_gv = module.declare_data_in_func(fn_data_id, builder.func);
+    let fn_ptr = builder.ins().global_value(cltypes::I64, fn_gv);
+    let fn_len = builder
+        .ins()
+        .iconst(cltypes::I64, display_name.len() as i64);
+
+    // File name — use pre-created data section (shared across all functions)
+    let (file_ptr, file_len_val) = if let Some(data_id) = file_name_data_id {
+        let gv = module.declare_data_in_func(data_id, builder.func);
+        let ptr = builder.ins().global_value(cltypes::I64, gv);
+        let len = builder.ins().iconst(cltypes::I64, file_name_len as i64);
+        (ptr, len)
+    } else {
+        let zero = builder.ins().iconst(cltypes::I64, 0);
+        (zero, zero)
+    };
+
+    // Compute line number from function span
+    let line_number = match (func_span, line_map) {
+        (Some(span), Some(lm)) => lm.line_number(span.start),
+        _ => 0,
+    };
+    let line_val = builder.ins().iconst(cltypes::I32, line_number as i64);
+
+    // Call rt_stack_push(func_name_ptr, func_name_len, file_name_ptr, file_name_len, line_number)
+    let func_ref = module.declare_func_in_func(stack_push_id, builder.func);
+    builder.ins().call(
+        func_ref,
+        &[fn_ptr, fn_len, file_ptr, file_len_val, line_val],
+    );
 }

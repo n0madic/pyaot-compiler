@@ -204,6 +204,8 @@ pub struct ExceptionFrame {
     pub jmp_buf: [u8; JMP_BUF_SIZE],
     /// Saved GC shadow stack top - restored when unwinding
     pub gc_stack_top: *mut u8,
+    /// Saved traceback call stack depth - restored when unwinding
+    pub traceback_depth: usize,
 }
 
 impl ExceptionFrame {
@@ -213,6 +215,7 @@ impl ExceptionFrame {
             prev: ptr::null_mut(),
             jmp_buf: [0u8; JMP_BUF_SIZE],
             gc_stack_top: ptr::null_mut(),
+            traceback_depth: 0,
         }
     }
 }
@@ -248,6 +251,8 @@ pub struct ExceptionObject {
     pub context: Option<Box<ExceptionObject>>,
     /// Whether to suppress context display (True for `raise X from Y` including `from None`)
     pub suppress_context: bool,
+    /// Captured traceback at the point where the exception was raised
+    pub traceback: Option<Vec<crate::traceback::TracebackEntry>>,
 }
 
 impl Drop for ExceptionObject {
@@ -327,6 +332,9 @@ pub unsafe extern "C" fn rt_exc_push_frame(frame: *mut ExceptionFrame) {
         // Save current GC stack top for unwinding
         // This is obtained from the GC module
         (*frame).gc_stack_top = crate::gc::get_stack_top() as *mut u8;
+
+        // Save current traceback stack depth for unwinding
+        (*frame).traceback_depth = crate::traceback::current_depth();
     });
 }
 
@@ -378,6 +386,9 @@ pub unsafe extern "C" fn rt_exc_raise(exc_type_tag: u8, message: *const u8, len:
     // This implements Python's __context__ (PEP 3134)
     let context = with_exception_state(|state| state.handling_exception.take());
 
+    // Capture traceback at the point of raise
+    let traceback = Some(crate::traceback::capture_traceback());
+
     // Store exception object
     let exc_obj = Box::new(ExceptionObject {
         exc_type,
@@ -388,6 +399,7 @@ pub unsafe extern "C" fn rt_exc_raise(exc_type_tag: u8, message: *const u8, len:
         cause: None,
         context,
         suppress_context: false, // Plain raise doesn't suppress context
+        traceback,
     });
 
     let handler_frame = with_exception_state(|state| {
@@ -410,6 +422,9 @@ pub unsafe extern "C" fn rt_exc_raise(exc_type_tag: u8, message: *const u8, len:
     if !gc_stack_top.is_null() {
         crate::gc::unwind_to(gc_stack_top as *mut crate::gc::ShadowFrame);
     }
+
+    // Unwind traceback stack to saved position
+    crate::traceback::unwind_to((*handler_frame).traceback_depth);
 
     // Pop the handler frame (we're jumping to it)
     with_exception_state(|state| {
@@ -465,7 +480,7 @@ pub unsafe extern "C" fn rt_exc_raise_from(
     // Capture implicit context (may still be relevant for debugging)
     let context = with_exception_state(|state| state.handling_exception.take());
 
-    // Build cause exception object
+    // Build cause exception object (no traceback of its own)
     let cause_obj = Box::new(ExceptionObject {
         exc_type: cause_type,
         custom_class_id: NOT_CUSTOM_CLASS,
@@ -475,7 +490,11 @@ pub unsafe extern "C" fn rt_exc_raise_from(
         cause: None,
         context: None,
         suppress_context: false,
+        traceback: None,
     });
+
+    // Capture traceback at the point of raise
+    let traceback = Some(crate::traceback::capture_traceback());
 
     // Build main exception object with cause
     // When explicit cause is provided, suppress_context = true
@@ -488,6 +507,7 @@ pub unsafe extern "C" fn rt_exc_raise_from(
         cause: Some(cause_obj),
         context,
         suppress_context: true, // Explicit cause suppresses context display
+        traceback,
     });
 
     let handler_frame = with_exception_state(|state| {
@@ -510,6 +530,9 @@ pub unsafe extern "C" fn rt_exc_raise_from(
     if !gc_stack_top.is_null() {
         crate::gc::unwind_to(gc_stack_top as *mut crate::gc::ShadowFrame);
     }
+
+    // Unwind traceback stack to saved position
+    crate::traceback::unwind_to((*handler_frame).traceback_depth);
 
     // Pop the handler frame
     with_exception_state(|state| {
@@ -537,6 +560,9 @@ pub unsafe extern "C" fn rt_exc_raise_from_none(
     // Still capture context for debugging (it's stored but not displayed)
     let context = with_exception_state(|state| state.handling_exception.take());
 
+    // Capture traceback at the point of raise
+    let traceback = Some(crate::traceback::capture_traceback());
+
     // Build exception with suppressed context (no cause, context suppressed)
     let exc_obj = Box::new(ExceptionObject {
         exc_type,
@@ -547,6 +573,7 @@ pub unsafe extern "C" fn rt_exc_raise_from_none(
         cause: None,
         context,
         suppress_context: true, // "from None" suppresses context display
+        traceback,
     });
 
     let handler_frame = with_exception_state(|state| {
@@ -567,6 +594,9 @@ pub unsafe extern "C" fn rt_exc_raise_from_none(
     if !gc_stack_top.is_null() {
         crate::gc::unwind_to(gc_stack_top as *mut crate::gc::ShadowFrame);
     }
+
+    // Unwind traceback stack to saved position
+    crate::traceback::unwind_to((*handler_frame).traceback_depth);
 
     with_exception_state(|state| {
         state.handler_stack = (*handler_frame).prev;
@@ -651,6 +681,11 @@ unsafe fn print_unhandled_exception_full(exc: &ExceptionObject) {
         }
     }
 
+    // Print traceback before the exception line
+    if let Some(ref tb) = exc.traceback {
+        crate::traceback::format_traceback(tb);
+    }
+
     // Print this exception
     if exc.custom_class_id == NOT_CUSTOM_CLASS {
         let type_name = exception_type_name(exc.exc_type);
@@ -703,6 +738,9 @@ pub unsafe extern "C" fn rt_exc_reraise() -> ! {
     if !gc_stack_top.is_null() {
         crate::gc::unwind_to(gc_stack_top as *mut crate::gc::ShadowFrame);
     }
+
+    // Unwind traceback stack to saved position
+    crate::traceback::unwind_to((*handler_frame).traceback_depth);
 
     // Pop the handler frame
     with_exception_state(|state| {
@@ -940,6 +978,9 @@ pub unsafe extern "C" fn rt_exc_raise_custom(class_id: u8, message: *const u8, l
     // Capture implicit context from any exception being handled
     let context = with_exception_state(|state| state.handling_exception.take());
 
+    // Capture traceback at the point of raise
+    let traceback = Some(crate::traceback::capture_traceback());
+
     // Store exception object with custom class ID
     // Use Exception as the base exc_type for custom exceptions
     let exc_obj = Box::new(ExceptionObject {
@@ -951,6 +992,7 @@ pub unsafe extern "C" fn rt_exc_raise_custom(class_id: u8, message: *const u8, l
         cause: None,
         context,
         suppress_context: false,
+        traceback,
     });
 
     let handler_frame = with_exception_state(|state| {
@@ -973,6 +1015,9 @@ pub unsafe extern "C" fn rt_exc_raise_custom(class_id: u8, message: *const u8, l
     if !gc_stack_top.is_null() {
         crate::gc::unwind_to(gc_stack_top as *mut crate::gc::ShadowFrame);
     }
+
+    // Unwind traceback stack to saved position
+    crate::traceback::unwind_to((*handler_frame).traceback_depth);
 
     // Pop the handler frame (we're jumping to it)
     with_exception_state(|state| {

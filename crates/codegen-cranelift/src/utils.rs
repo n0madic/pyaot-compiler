@@ -176,6 +176,15 @@ pub fn create_raw_string_data(
     create_data_section_impl(module, bytes, &RAW_STRING_COUNTER, "__rawstr_")
 }
 
+/// Create a data section containing raw string bytes for traceback info.
+/// Used for function names and file names embedded in the binary.
+pub fn create_traceback_string_data(module: &mut ObjectModule, s: &str) -> DataId {
+    use std::sync::atomic::AtomicUsize;
+    static TB_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    create_data_section_impl(module, s.as_bytes().to_vec(), &TB_COUNTER, "__tbstr_")
+}
+
 /// Create a data section containing raw bytes (no null terminator)
 /// Used for rt_make_bytes which takes a length parameter
 pub fn create_raw_bytes_data(module: &mut ObjectModule, bytes: &[u8]) -> DataId {

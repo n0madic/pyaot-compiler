@@ -41,6 +41,7 @@ pub mod exceptions;
 pub mod gc;
 pub mod object;
 pub mod ops;
+pub mod traceback;
 
 // Type operations
 pub mod boxing;

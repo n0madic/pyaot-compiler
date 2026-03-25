@@ -25,6 +25,7 @@ mod instructions;
 mod runtime_calls;
 mod runtime_helpers;
 mod terminators;
+mod traceback;
 mod utils;
 
 pub use debug_info::SourceInfo;
@@ -60,6 +61,8 @@ pub struct Codegen {
     func_builder_ctx: FunctionBuilderContext,
     gc_push_id: Option<ClFuncId>,
     gc_pop_id: Option<ClFuncId>,
+    stack_push_id: Option<ClFuncId>,
+    stack_pop_id: Option<ClFuncId>,
     enable_debug: bool,
 }
 
@@ -113,6 +116,8 @@ impl Codegen {
             func_builder_ctx: FunctionBuilderContext::new(),
             gc_push_id: None,
             gc_pop_id: None,
+            stack_push_id: None,
+            stack_pop_id: None,
             enable_debug,
         })
     }
@@ -126,12 +131,8 @@ impl Codegen {
     ) -> Result<Vec<u8>> {
         use pyaot_utils::LineMap;
 
-        // Build line map and debug info builder if in debug mode
-        let line_map = if self.enable_debug {
-            source_info.map(|si| LineMap::new(&si.source))
-        } else {
-            None
-        };
+        // Build line map (always needed for tracebacks; also used for DWARF debug info)
+        let line_map = source_info.map(|si| LineMap::new(&si.source));
         let mut debug_builder = if self.enable_debug {
             source_info.map(|si| {
                 let address_size = self.module.isa().pointer_bytes();
@@ -156,6 +157,10 @@ impl Codegen {
         self.gc_push_id = Some(declare_gc_push(&mut self.module));
         self.gc_pop_id = Some(declare_gc_pop(&mut self.module));
 
+        // Declare traceback functions
+        self.stack_push_id = Some(traceback::declare_stack_push(&mut self.module));
+        self.stack_pop_id = Some(traceback::declare_stack_pop(&mut self.module));
+
         // Declare all functions first and collect parameter types
         let mut func_ids = IndexMap::new();
         let mut func_name_ids = IndexMap::new();
@@ -172,6 +177,11 @@ impl Codegen {
         // Create vtable data sections and collect their IDs
         let vtable_data_ids = self.create_vtable_data_sections(mir_module, &func_ids)?;
 
+        // Create file name data section once (shared by all functions for tracebacks)
+        let file_name_data_id = source_info
+            .map(|si| utils::create_traceback_string_data(&mut self.module, &si.filename));
+        let file_name_len = source_info.map_or(0, |si| si.filename.len());
+
         // Define all functions
         for (fid, func) in &mir_module.functions {
             let cl_func_id = *func_ids
@@ -187,7 +197,11 @@ impl Codegen {
                 interner,
                 gc_push_id: self.gc_push_id,
                 gc_pop_id: self.gc_pop_id,
+                stack_push_id: self.stack_push_id,
+                stack_pop_id: self.stack_pop_id,
                 line_map: line_map.as_ref(),
+                file_name_data_id,
+                file_name_len,
             };
             define_function(&mut compiler, func, cl_func_id)?;
 

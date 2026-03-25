@@ -58,25 +58,18 @@ Function-name breakpoints (`b add`) already work on macOS. Source-level breakpoi
 
 ---
 
-### 🔴 Stack Traces / Tracebacks
+### 🟢 Stack Traces / Tracebacks *(Implemented)*
 
-**Why**: When a compiled program crashes or raises an exception, you see only an error message with no indication of where it happened. This makes debugging compiled programs painful.
+Python-style tracebacks are now displayed for unhandled exceptions:
+```
+Traceback (most recent call last):
+  File "main.py", line 10, in <module>
+  File "main.py", line 7, in level1
+  File "main.py", line 4, in level2
+ZeroDivisionError: division by zero
+```
 
-**Current state**: `longjmp`-based exceptions carry only a message string. No call stack is recorded.
-
-**Implementation plan**:
-1. **Runtime call stack tracking**: Maintain a lightweight call stack in the runtime — each function entry pushes `(func_name, source_line)` onto a thread-local stack, each exit pops. Since the project is single-threaded, a global stack suffices.
-2. **MIR instrumentation**: Add `StackPush(func_name, line)` / `StackPop` MIR instructions. Emit `StackPush` at function entry (after `gc_push`) and `StackPop` before every return and before `gc_pop`.
-3. **Exception formatting**: When an exception is raised, the runtime captures the current call stack snapshot and formats it as a Python-style traceback:
-   ```
-   Traceback (most recent call last):
-     File "main.py", line 15, in main
-     File "main.py", line 8, in process
-   ValueError: invalid value
-   ```
-4. **Overhead control**: The push/pop is cheap (pointer bump on a pre-allocated array). For release builds, could be gated behind a `--traceback` flag if overhead is measurable.
-
-**Complexity**: Medium. Mostly runtime work + MIR instrumentation. Benefits from DWARF work (source line numbers).
+**Implementation**: Codegen-level instrumentation (no MIR changes). `rt_stack_push`/`rt_stack_pop` emitted alongside GC prologue/epilogue. Always-on — overhead is a pointer bump on a pre-allocated 256-entry array. Traceback is captured at raise time and stored in `ExceptionObject`. Exception chaining preserves tracebacks. `ExceptionFrame` carries `traceback_depth` for correct unwinding on longjmp.
 
 ---
 

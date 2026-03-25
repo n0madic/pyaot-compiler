@@ -412,3 +412,13 @@ Additional DWARF entries:
 - Compiler-internal functions (`__pyaot_*`, `__module_*`) are filtered out of DWARF output
 
 Generator-created instructions (state machine, dispatch) use `span: None` since they are synthetic. The `Lowering.current_span` is `None` during generator lowering, so these instructions correctly get no debug location.
+
+---
+
+## ExceptionFrame Size Must Match Between Runtime and Codegen
+
+`ExceptionFrame` is `#[repr(C)]` and its size is hardcoded in codegen as `EXCEPTION_FRAME_SIZE` (`codegen-cranelift/src/exceptions.rs`). The runtime struct definition (`runtime/src/exceptions.rs`) and the codegen constant **must be updated in lockstep**. If they diverge, `jmp_buf` offsets will be wrong, causing SIGILL on longjmp. Current layout (224 bytes): `prev` (8) + `jmp_buf` (200) + `gc_stack_top` (8) + `traceback_depth` (8).
+
+## Traceback Stack Depth Unwinding on longjmp
+
+When an exception is raised and a handler exists, `longjmp` skips all intermediate function returns — their `rt_stack_pop` calls never execute. To keep the traceback stack consistent, each `ExceptionFrame` saves the traceback depth at try-block entry (`rt_exc_push_frame`). All raise functions restore this depth before `longjmp`, exactly like the GC shadow stack unwinding pattern.

@@ -130,4 +130,17 @@ runtime_cases!(
     (runtime_stdlib_urllib, "test_stdlib_urllib.py"),
     // File I/O
     (runtime_file_io, "test_file_io.py"),
+    // Tracebacks
+    (
+        runtime_traceback,
+        "test_traceback.py",
+        "caught ZeroDivisionError\n\
+         skip zero\n\
+         100\n\
+         50\n\
+         inner caught\n\
+         after inner try\n\
+         outer ok\n\
+         done"
+    ),
 );

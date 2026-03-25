@@ -340,7 +340,6 @@ lldb -o "b add" -o "r" -o "bt" program
 
 1. **Type Annotations**: Function parameters require type annotations; local variables infer types from initializers
 2. **Exception Binding**: `except E as e:` binds the error message string, not a full exception object
-3. **No Stack Traces**: Just error messages, no traceback
 
 ---
 

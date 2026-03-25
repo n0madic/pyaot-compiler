@@ -27,6 +27,7 @@ pub struct CodegenContext<'a> {
     pub gc_frame_data: &'a Option<GcFrameData>,
     pub block_map: &'a IndexMap<BlockId, cranelift_codegen::ir::Block>,
     pub gc_pop_id: Option<ClFuncId>,
+    pub stack_pop_id: Option<ClFuncId>,
     /// Map from function name to Cranelift FuncId (for CallNamed instruction)
     pub func_name_ids: &'a IndexMap<String, ClFuncId>,
     /// Map from FuncId to parameter types (for type coercion at call sites)
