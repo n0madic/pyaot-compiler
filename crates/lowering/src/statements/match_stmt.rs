@@ -915,12 +915,29 @@ impl<'a> Lowering<'a> {
             result_cond = mir::Operand::Local(final_local);
         }
 
-        // TODO: **rest should bind a new dict excluding already-matched keys.
-        // Currently binds the full dict.  A correct implementation would call a
-        // runtime helper that copies the subject dict and removes the matched keys,
-        // leaving only the unmatched entries in the **rest binding.
+        // **rest binds a copy of the subject dict with matched keys removed.
         if let Some(rest_var) = rest {
-            bindings.push((*rest_var, ctx.subject.clone(), ctx.subject_type.clone()));
+            // Copy the subject dict
+            let rest_local = self.alloc_and_add_local(ctx.subject_type.clone(), mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: rest_local,
+                func: mir::RuntimeFunc::DictCopy,
+                args: vec![ctx.subject.clone()],
+            });
+
+            // Pop each matched key from the copy
+            for key_expr_id in keys {
+                let key_expr = &ctx.hir_module.exprs[*key_expr_id];
+                let key_operand = self.lower_expr(key_expr, ctx.hir_module, mir_func)?;
+                let dummy = self.alloc_and_add_local(Type::Str, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: dummy,
+                    func: mir::RuntimeFunc::DictPop,
+                    args: vec![mir::Operand::Local(rest_local), key_operand],
+                });
+            }
+
+            bindings.push((*rest_var, mir::Operand::Local(rest_local), ctx.subject_type.clone()));
         }
 
         Ok((result_cond, bindings))

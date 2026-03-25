@@ -488,4 +488,40 @@ def test_match_singleton_false():
 
 test_match_singleton_false()
 
+# ===== SECTION: Mapping Patterns with **rest =====
+
+# Basic: **rest excludes matched keys
+d_rest1: dict[str, int] = {"a": 1, "b": 2, "c": 3}
+match d_rest1:
+    case {"a": val_a, **rest1}:
+        pass
+assert val_a == 1, f"matched value wrong: {val_a}"
+assert "a" not in rest1, "'a' should be excluded from rest"
+assert rest1["b"] == 2 and rest1["c"] == 3, f"wrong rest values: {rest1}"
+assert len(rest1) == 2, f"wrong rest length: {len(rest1)}"
+
+# Multiple matched keys
+d_rest2: dict[str, int] = {"x": 10, "y": 20, "z": 30}
+match d_rest2:
+    case {"x": vx, "y": vy, **rest2}:
+        pass
+assert vx == 10 and vy == 20
+assert len(rest2) == 1 and rest2["z"] == 30, f"wrong rest: {rest2}"
+
+# All keys matched — rest is empty
+d_rest3: dict[str, int] = {"a": 1}
+match d_rest3:
+    case {"a": va, **rest3}:
+        pass
+assert len(rest3) == 0, f"expected empty rest: {rest3}"
+
+# Original dict is not modified (copy semantics)
+d_rest4: dict[str, int] = {"a": 1, "b": 2}
+match d_rest4:
+    case {"a": _, **rest4}:
+        pass
+assert len(d_rest4) == 2 and d_rest4["a"] == 1, f"original modified: {d_rest4}"
+
+print("Mapping pattern **rest tests passed!")
+
 print("All match tests passed!")
