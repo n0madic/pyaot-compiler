@@ -81,8 +81,12 @@ pub unsafe fn hash_hashable_obj(obj: *mut Obj) -> u64 {
 /// # Safety
 /// `a` and `b` must be null or valid pointers to Obj.
 pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
+    // Fast path: pointer equality (catches interned strings, pooled ints, bool singletons)
+    if a == b {
+        return true;
+    }
     if a.is_null() || b.is_null() {
-        return a == b;
+        return false;
     }
     let tag_a = (*a).type_tag();
     let tag_b = (*b).type_tag();
@@ -148,18 +152,13 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
         TypeTagKind::Str => {
             let str_a = a as *mut StrObj;
             let str_b = b as *mut StrObj;
-            if (*str_a).len != (*str_b).len {
+            let len = (*str_a).len;
+            if len != (*str_b).len {
                 return false;
             }
-            let len = (*str_a).len;
             let data_a = (*str_a).data.as_ptr();
             let data_b = (*str_b).data.as_ptr();
-            for i in 0..len {
-                if *data_a.add(i) != *data_b.add(i) {
-                    return false;
-                }
-            }
-            true
+            std::slice::from_raw_parts(data_a, len) == std::slice::from_raw_parts(data_b, len)
         }
         TypeTagKind::Bool => {
             let bool_a = a as *mut BoolObj;

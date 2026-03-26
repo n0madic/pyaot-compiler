@@ -2,6 +2,7 @@
 
 # Benchmark runner script
 # Compares performance of compiled Python vs CPython
+# Uses high-precision timing with warm-up to avoid first-run overhead
 
 set -e
 
@@ -37,71 +38,8 @@ if [ ! -f "$RUNTIME_LIB" ]; then
     exit 1
 fi
 
-# Function to run a single benchmark
-run_benchmark() {
-    local name=$1
-    local file=$2
-
-    echo -e "${BLUE}Benchmark: $name${NC}"
-    echo "----------------------------------------"
-
-    # Compile with pyaot
-    local executable="$SCRIPT_DIR/bench_$name"
-    echo "Compiling..."
-    "$PYAOT" "$file" -o "$executable" --runtime-lib "$RUNTIME_LIB" 2>&1 | grep -v "^$" || true
-
-    if [ ! -f "$executable" ]; then
-        echo -e "${RED}Compilation failed${NC}"
-        return 1
-    fi
-
-    # Run compiled version
-    echo -e "\n${GREEN}Compiled (pyaot):${NC}"
-    /usr/bin/time -p "$executable" 2>&1 | tee /tmp/pyaot_output.txt
-    local pyaot_time=$(grep "^real" /tmp/pyaot_output.txt | awk '{print $2}')
-
-    # Run CPython version
-    echo -e "\n${YELLOW}CPython 3:${NC}"
-    /usr/bin/time -p python3 "$file" 2>&1 | tee /tmp/cpython_output.txt
-    local cpython_time=$(grep "^real" /tmp/cpython_output.txt | awk '{print $2}')
-
-    # Calculate speedup using Python (more portable than bc)
-    echo -e "\n${GREEN}Results:${NC}"
-    echo "  Compiled: ${pyaot_time}s"
-    echo "  CPython:  ${cpython_time}s"
-
-    # Use Python for calculation to handle different locales
-    local speedup=$(python3 -c "
-import sys
-try:
-    pyaot = float('${pyaot_time}'.replace(',', '.'))
-    cpython = float('${cpython_time}'.replace(',', '.'))
-    if pyaot > 0:
-        ratio = cpython / pyaot
-        if ratio >= 1:
-            print(f'{ratio:.2f}x faster')
-        else:
-            print(f'{1/ratio:.2f}x slower')
-    else:
-        print('N/A')
-except:
-    print('N/A')
-" 2>/dev/null || echo "N/A")
-
-    if [[ "$speedup" == *"faster"* ]]; then
-        echo -e "  ${GREEN}Speedup:  $speedup${NC}"
-    elif [[ "$speedup" == *"slower"* ]]; then
-        echo -e "  ${RED}Speedup:  $speedup${NC}"
-    else
-        echo "  Speedup:  $speedup"
-    fi
-
-    # Cleanup
-    rm -f "$executable"
-    echo ""
-}
-
-# Run all benchmarks
+# Compile all benchmarks first
+echo -e "${BLUE}Compiling all benchmarks...${NC}"
 benchmarks=(
     "arithmetic_intensive:bench_arithmetic_intensive.py"
     "matrix_multiply:bench_matrix_multiply.py"
@@ -115,14 +53,96 @@ benchmarks=(
     "dict_ops:bench_dict_ops.py"
 )
 
-echo -e "${BLUE}Running benchmarks...${NC}"
-echo ""
-
+executables=()
 for benchmark in "${benchmarks[@]}"; do
     IFS=':' read -r name file <<< "$benchmark"
-    run_benchmark "$name" "$SCRIPT_DIR/$file"
-    echo "========================================"
-    echo ""
+    executable="$SCRIPT_DIR/bench_$name"
+    "$PYAOT" "$SCRIPT_DIR/$file" -o "$executable" --runtime-lib "$RUNTIME_LIB" 2>&1 | grep -v "^$" || true
+    if [ -f "$executable" ]; then
+        # Warm-up run (macOS Gatekeeper check)
+        "$executable" > /dev/null 2>&1
+        executables+=("$name:$executable:$SCRIPT_DIR/$file")
+    else
+        echo -e "${RED}Failed to compile $file${NC}"
+    fi
+done
+echo ""
+
+# Run benchmarks with high-precision timing
+echo -e "${BLUE}Running benchmarks (best of 5 runs, after warm-up)...${NC}"
+echo ""
+
+printf "${BLUE}%-28s %10s %10s %12s${NC}\n" "Benchmark" "Compiled" "CPython" "Speedup"
+echo "--------------------------------------------------------------"
+
+for entry in "${executables[@]}"; do
+    IFS=':' read -r name executable file <<< "$entry"
+
+    # High-precision timing via Python
+    result=$(python3 -c "
+import subprocess, time
+
+# Compiled version (5 runs, take 2nd best)
+times_c = []
+for _ in range(5):
+    start = time.perf_counter()
+    subprocess.run(['$executable'], capture_output=True)
+    times_c.append((time.perf_counter() - start) * 1000)
+times_c.sort()
+compiled = times_c[1]
+
+# CPython version (5 runs, take 2nd best)
+times_p = []
+for _ in range(5):
+    start = time.perf_counter()
+    subprocess.run(['python3', '$file'], capture_output=True)
+    times_p.append((time.perf_counter() - start) * 1000)
+times_p.sort()
+cpython = times_p[1]
+
+ratio = cpython / compiled if compiled > 0 else 0
+if ratio >= 1:
+    speedup = f'{ratio:.1f}x faster'
+else:
+    speedup = f'{1/ratio:.1f}x slower'
+
+if compiled >= 1000:
+    c_str = f'{compiled/1000:.2f}s'
+elif compiled >= 100:
+    c_str = f'{compiled:.0f}ms'
+else:
+    c_str = f'{compiled:.1f}ms'
+
+if cpython >= 1000:
+    p_str = f'{cpython/1000:.2f}s'
+elif cpython >= 100:
+    p_str = f'{cpython:.0f}ms'
+else:
+    p_str = f'{cpython:.1f}ms'
+
+print(f'{c_str}|{p_str}|{speedup}|{ratio}')
+" 2>/dev/null)
+
+    compiled_str=$(echo "$result" | cut -d'|' -f1)
+    cpython_str=$(echo "$result" | cut -d'|' -f2)
+    speedup=$(echo "$result" | cut -d'|' -f3)
+    ratio=$(echo "$result" | cut -d'|' -f4)
+
+    if echo "$speedup" | grep -q "faster"; then
+        color="${GREEN}"
+    else
+        color="${RED}"
+    fi
+
+    printf "%-28s %10s %10s ${color}%12s${NC}\n" "$name" "$compiled_str" "$cpython_str" "$speedup"
+done
+
+echo ""
+
+# Cleanup
+for entry in "${executables[@]}"; do
+    IFS=':' read -r name executable file <<< "$entry"
+    rm -f "$executable"
 done
 
 echo -e "${GREEN}All benchmarks completed!${NC}"

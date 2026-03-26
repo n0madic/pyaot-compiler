@@ -4,11 +4,10 @@
 //! Strings under 256 bytes are interned (shared), reducing memory usage
 //! for repetitive strings like dictionary keys in JSON workloads.
 //!
-//! ## Sharded Locks
+//! ## Lock-free Design
 //!
-//! The pool uses 8 shards, each with its own mutex. This reduces lock contention
-//! when multiple threads access the pool concurrently. The shard is selected by
-//! `hash % NUM_SHARDS`.
+//! The runtime is single-threaded (AOT-compiled Python has no threading),
+//! so the pool uses `UnsafeCell` for zero-overhead access instead of Mutex.
 //!
 //! ## GC Integration
 //!
@@ -18,14 +17,11 @@
 
 use crate::object::{Obj, StrObj, TypeTagKind};
 use crate::string::core::rt_make_str_impl;
+use std::cell::UnsafeCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// Maximum string length to intern (balanced approach)
 const MAX_INTERN_LENGTH: usize = 256;
-
-/// Number of shards for reduced lock contention
-const NUM_SHARDS: usize = 8;
 
 /// Entry in the string pool
 struct PoolEntry {
@@ -33,34 +29,17 @@ struct PoolEntry {
     str_ptr: *mut Obj,
 }
 
-// PoolEntry needs to be Send because it's stored in a static Mutex
-// The raw pointers are only accessed while holding the mutex
-unsafe impl Send for PoolEntry {}
-
-/// A single shard of the string pool
-struct PoolShard {
-    map: Option<HashMap<u64, Vec<PoolEntry>>>,
+/// Lock-free string pool for single-threaded access
+struct StringPool {
+    data: UnsafeCell<Option<HashMap<u64, Vec<PoolEntry>>>>,
 }
 
-/// Global sharded string pool - 8 shards for reduced lock contention
-/// Each shard is independently locked, so concurrent access to different
-/// shards doesn't block.
-static STRING_POOL_SHARDS: [Mutex<PoolShard>; NUM_SHARDS] = [
-    Mutex::new(PoolShard { map: None }),
-    Mutex::new(PoolShard { map: None }),
-    Mutex::new(PoolShard { map: None }),
-    Mutex::new(PoolShard { map: None }),
-    Mutex::new(PoolShard { map: None }),
-    Mutex::new(PoolShard { map: None }),
-    Mutex::new(PoolShard { map: None }),
-    Mutex::new(PoolShard { map: None }),
-];
+// Safety: The runtime is single-threaded (AOT-compiled Python has no threading)
+unsafe impl Sync for StringPool {}
 
-/// Get the shard index for a given hash
-#[inline]
-fn get_shard_index(hash: u64) -> usize {
-    (hash as usize) % NUM_SHARDS
-}
+static STRING_POOL: StringPool = StringPool {
+    data: UnsafeCell::new(None),
+};
 
 /// FNV-1a hash constants (64-bit)
 const FNV_OFFSET_BASIS: u64 = 14695981039346656037;
@@ -80,7 +59,7 @@ unsafe fn compute_fnv1a_hash(data: *const u8, len: usize) -> u64 {
     hash
 }
 
-/// Compare two byte slices for equality
+/// Compare two byte slices for equality using optimized slice comparison
 ///
 /// # Safety
 /// Both pointers must be valid for their respective lengths.
@@ -89,40 +68,25 @@ unsafe fn bytes_equal(a: *const u8, a_len: usize, b: *const u8, b_len: usize) ->
     if a_len != b_len {
         return false;
     }
-    for i in 0..a_len {
-        if *a.add(i) != *b.add(i) {
-            return false;
-        }
+    if a_len == 0 {
+        return true;
     }
-    true
+    std::slice::from_raw_parts(a, a_len) == std::slice::from_raw_parts(b, b_len)
 }
 
 /// Initialize the string pool (lazy - strings interned on demand)
 /// Called from rt_init()
-///
-/// Uses lazy initialization instead of pre-populating single-char strings.
-/// This reduces startup time by ~10-12ms while still providing deduplication
-/// for strings that are actually used.
 pub fn init_string_pool() {
-    // Initialize all shards with empty maps
-    // Strings will be interned on demand when rt_make_str_interned is called
-    for shard in STRING_POOL_SHARDS.iter() {
-        let mut guard = shard
-            .lock()
-            .expect("STRING_POOL shard mutex poisoned - another thread panicked");
-        guard.map = Some(HashMap::new());
+    unsafe {
+        *STRING_POOL.data.get() = Some(HashMap::new());
     }
 }
 
 /// Shutdown the string pool
 /// Called from rt_shutdown()
 pub fn shutdown_string_pool() {
-    // Shutdown all shards
-    for shard in STRING_POOL_SHARDS.iter() {
-        let mut guard = shard
-            .lock()
-            .expect("STRING_POOL shard mutex poisoned - another thread panicked");
-        guard.map = None;
+    unsafe {
+        *STRING_POOL.data.get() = None;
     }
 }
 
@@ -134,9 +98,6 @@ pub fn shutdown_string_pool() {
 ///
 /// For strings >= 256 bytes, falls back to regular rt_make_str().
 ///
-/// Uses sharded locks to reduce contention - only the relevant shard
-/// is locked based on the string's hash.
-///
 /// # Safety
 /// If `len > 0`, `data` must be a valid pointer to at least `len` bytes.
 #[no_mangle]
@@ -147,45 +108,35 @@ pub unsafe extern "C" fn rt_make_str_interned(data: *const u8, len: usize) -> *m
     }
 
     let hash = compute_fnv1a_hash(data, len);
-    let shard_idx = get_shard_index(hash);
+    let pool = &mut *STRING_POOL.data.get();
 
-    // First, check if the string already exists in the pool
-    {
-        let shard_guard = STRING_POOL_SHARDS[shard_idx]
-            .lock()
-            .expect("STRING_POOL shard mutex poisoned");
+    if let Some(ref pool_map) = pool {
+        if let Some(entries) = pool_map.get(&hash) {
+            for entry in entries {
+                let str_obj = entry.str_ptr as *mut StrObj;
 
-        if let Some(ref pool) = shard_guard.map {
-            if let Some(entries) = pool.get(&hash) {
-                for entry in entries {
-                    let str_obj = entry.str_ptr as *mut StrObj;
+                if (*entry.str_ptr).header.type_tag != TypeTagKind::Str {
+                    continue;
+                }
 
-                    if (*entry.str_ptr).header.type_tag != TypeTagKind::Str {
-                        continue;
-                    }
+                let existing_len = (*str_obj).len;
+                let existing_data = (*str_obj).data.as_ptr();
 
-                    let existing_len = (*str_obj).len;
-                    let existing_data = (*str_obj).data.as_ptr();
-
-                    if bytes_equal(data, len, existing_data, existing_len) {
-                        return entry.str_ptr;
-                    }
+                if bytes_equal(data, len, existing_data, existing_len) {
+                    return entry.str_ptr;
                 }
             }
         }
     }
-    // shard_guard dropped here — safe to allocate
 
     // Create new string (may trigger GC which calls prune_string_pool)
     let new_str = rt_make_str_impl(data, len);
 
-    // Re-acquire lock and insert into pool
-    let mut shard_guard = STRING_POOL_SHARDS[shard_idx]
-        .lock()
-        .expect("STRING_POOL shard mutex poisoned");
-
-    if let Some(ref mut pool) = shard_guard.map {
-        pool.entry(hash)
+    // Insert into pool
+    let pool = &mut *STRING_POOL.data.get();
+    if let Some(ref mut pool_map) = pool {
+        pool_map
+            .entry(hash)
             .or_insert_with(Vec::new)
             .push(PoolEntry { str_ptr: new_str });
     }
@@ -198,31 +149,23 @@ pub unsafe extern "C" fn rt_make_str_interned(data: *const u8, len: usize) -> *m
 /// Called BEFORE clearing mark bits in sweep phase.
 /// Removes entries whose strings were not marked as reachable.
 ///
-/// Iterates through all shards, locking each one in turn.
-///
 /// # Safety
 /// Must only be called during GC sweep phase before marks are cleared.
 pub unsafe fn prune_string_pool() {
-    // Prune all shards
-    for shard in STRING_POOL_SHARDS.iter() {
-        let mut guard = shard
-            .lock()
-            .expect("STRING_POOL shard mutex poisoned - another thread panicked");
+    let pool = &mut *STRING_POOL.data.get();
 
-        if let Some(ref mut pool) = guard.map {
-            // Retain only entries where the string is still marked
-            pool.retain(|_hash, entries| {
-                entries.retain(|entry| {
-                    if entry.str_ptr.is_null() {
-                        return false;
-                    }
-                    // Keep entry only if the string object is marked
-                    (*entry.str_ptr).is_marked()
-                });
-                // Remove hash bucket if empty
-                !entries.is_empty()
+    if let Some(ref mut pool_map) = pool {
+        pool_map.retain(|_hash, entries| {
+            entries.retain(|entry| {
+                if entry.str_ptr.is_null() {
+                    return false;
+                }
+                // Keep entry only if the string object is marked
+                (*entry.str_ptr).is_marked()
             });
-        }
+            // Remove hash bucket if empty
+            !entries.is_empty()
+        });
     }
 }
 

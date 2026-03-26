@@ -1346,24 +1346,29 @@ fn get_custom_exception_name(class_id: u8) -> String {
 
 // ==================== Exception Class Name Registry ====================
 
-use std::sync::RwLock;
+use std::cell::UnsafeCell;
 
 /// Maximum number of exception classes that can be registered
 const MAX_EXCEPTION_CLASSES: usize = 256;
 
-/// Registry for custom exception class names
-static EXCEPTION_NAME_REGISTRY: RwLock<[Option<String>; MAX_EXCEPTION_CLASSES]> =
-    RwLock::new([const { None }; MAX_EXCEPTION_CLASSES]);
+/// Lock-free registry for single-threaded access
+struct ExcNameRegistry(UnsafeCell<[Option<String>; MAX_EXCEPTION_CLASSES]>);
+
+// Safety: The runtime is single-threaded (AOT-compiled Python has no threading)
+unsafe impl Sync for ExcNameRegistry {}
+
+static EXCEPTION_NAME_REGISTRY: ExcNameRegistry =
+    ExcNameRegistry(UnsafeCell::new([const { None }; MAX_EXCEPTION_CLASSES]));
 
 /// Register a custom exception class name for display purposes.
 /// This is called during module initialization to register exception class names.
 #[no_mangle]
 pub extern "C" fn rt_exc_register_class_name(class_id: u8, name: *const u8, len: usize) {
-    if let Ok(mut registry) = EXCEPTION_NAME_REGISTRY.write() {
-        if !name.is_null() && len > 0 {
-            let name_slice = unsafe { std::slice::from_raw_parts(name, len) };
-            if let Ok(name_str) = std::str::from_utf8(name_slice) {
-                registry[class_id as usize] = Some(name_str.to_string());
+    if !name.is_null() && len > 0 {
+        let name_slice = unsafe { std::slice::from_raw_parts(name, len) };
+        if let Ok(name_str) = std::str::from_utf8(name_slice) {
+            unsafe {
+                (*EXCEPTION_NAME_REGISTRY.0.get())[class_id as usize] = Some(name_str.to_string());
             }
         }
     }
@@ -1371,9 +1376,5 @@ pub extern "C" fn rt_exc_register_class_name(class_id: u8, name: *const u8, len:
 
 /// Get the registered name for an exception class
 fn get_registered_exception_name(class_id: u8) -> Option<String> {
-    if let Ok(registry) = EXCEPTION_NAME_REGISTRY.read() {
-        registry[class_id as usize].clone()
-    } else {
-        None
-    }
+    unsafe { (*EXCEPTION_NAME_REGISTRY.0.get())[class_id as usize].clone() }
 }

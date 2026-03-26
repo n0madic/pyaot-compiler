@@ -6,16 +6,16 @@
 
 use crate::gc;
 use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind};
+use std::cell::UnsafeCell;
 use std::ffi::CStr;
-use std::sync::Mutex;
 
-/// Wrapper for raw pointer to make it Send + Sync
-struct ObjPtr(*mut Obj);
-unsafe impl Send for ObjPtr {}
-unsafe impl Sync for ObjPtr {}
+/// Lock-free global storage for sys.argv list
+struct SysArgvStorage(UnsafeCell<*mut Obj>);
 
-/// Global storage for sys.argv list
-static SYS_ARGV: Mutex<Option<ObjPtr>> = Mutex::new(None);
+// Safety: The runtime is single-threaded (AOT-compiled Python has no threading)
+unsafe impl Sync for SysArgvStorage {}
+
+static SYS_ARGV: SysArgvStorage = SysArgvStorage(UnsafeCell::new(std::ptr::null_mut()));
 
 /// Initialize sys.argv from main's argc/argv
 ///
@@ -26,10 +26,7 @@ pub unsafe fn init_sys_argv(argc: i32, argv: *const *const i8) {
     let list_ptr = create_argv_list(argc, argv);
 
     // Store in global
-    let mut guard = SYS_ARGV
-        .lock()
-        .expect("SYS_ARGV mutex poisoned - another thread panicked");
-    *guard = Some(ObjPtr(list_ptr));
+    *SYS_ARGV.0.get() = list_ptr;
 }
 
 /// Create the argv list from C argc/argv
@@ -105,30 +102,25 @@ unsafe fn create_argv_list(argc: i32, argv: *const *const i8) -> *mut Obj {
 /// Returns a pointer to the list of command-line arguments
 #[no_mangle]
 pub extern "C" fn rt_sys_get_argv() -> *mut Obj {
-    let guard = SYS_ARGV
-        .lock()
-        .expect("SYS_ARGV mutex poisoned - another thread panicked");
-    match &*guard {
-        Some(ObjPtr(ptr)) => *ptr,
-        None => {
-            // Return empty list if not initialized
-            // This shouldn't happen in normal usage
-            unsafe {
-                let list_size = std::mem::size_of::<ListObj>();
-                let list_ptr = gc::gc_alloc(list_size, TypeTagKind::List as u8) as *mut ListObj;
+    let argv_ptr = unsafe { *SYS_ARGV.0.get() };
+    if !argv_ptr.is_null() {
+        return argv_ptr;
+    }
+    // Return empty list if not initialized (shouldn't happen in normal usage)
+    unsafe {
+        let list_size = std::mem::size_of::<ListObj>();
+        let list_ptr = gc::gc_alloc(list_size, TypeTagKind::List as u8) as *mut ListObj;
 
-                (*list_ptr).header = ObjHeader {
-                    type_tag: TypeTagKind::List,
-                    marked: false,
-                    size: list_size,
-                };
-                (*list_ptr).len = 0;
-                (*list_ptr).capacity = 0;
-                (*list_ptr).data = std::ptr::null_mut();
+        (*list_ptr).header = ObjHeader {
+            type_tag: TypeTagKind::List,
+            marked: false,
+            size: list_size,
+        };
+        (*list_ptr).len = 0;
+        (*list_ptr).capacity = 0;
+        (*list_ptr).data = std::ptr::null_mut();
 
-                list_ptr as *mut Obj
-            }
-        }
+        list_ptr as *mut Obj
     }
 }
 

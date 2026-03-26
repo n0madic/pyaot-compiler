@@ -861,9 +861,8 @@ while __idx < __len:
 Runtime string interning reduces memory usage by deduplicating strings:
 
 - **Location**: `runtime/src/string/interning.rs`
-- **Pool structure**: 8 shards, each with `HashMap<u64, Vec<PoolEntry>>` keyed by FNV-1a hash
-- **Sharded locks**: Shard selected by `hash % 8`, reduces lock contention for concurrent access
-- **Thread safety**: Each shard protected by independent `Mutex`
+- **Pool structure**: Single `HashMap<u64, Vec<PoolEntry>>` keyed by FNV-1a hash
+- **Lock-free access**: Uses `UnsafeCell` for zero-overhead single-threaded access
 - **Size threshold**: Only strings under 256 bytes are interned (balanced approach)
 - **When strings are interned**:
   - **Compile-time constants**: Codegen calls `rt_make_str_interned()` for string literals
@@ -906,14 +905,17 @@ String operations use Boyer-Moore-Horspool algorithm for efficient substring sea
 - **Threshold**: Falls back to naive search for patterns < 4 chars (less overhead)
 - **Performance**: Up to 100x faster for long patterns in large strings
 
-### String Interning Sharded Locks
+### Lock-Free Runtime
 
-Concurrent string interning uses sharded locks to reduce contention:
+The runtime uses lock-free data structures for zero-overhead access in single-threaded AOT-compiled programs:
 
-- **Location**: `runtime/src/string/interning.rs`
-- **8 shards**: Hash-based shard selection (`hash % 8`) distributes locks across buckets
-- **Independent locking**: Different hash values don't block each other
-- **Benefit**: Improved throughput for concurrent string operations
+- **GC state**: `AtomicPtr<GcState>` — gc_push/gc_pop/gc_alloc have zero synchronization overhead
+- **Boxing pools**: `UnsafeCell`-based storage — small int pool (-5..256) and bool singletons accessed without locking
+- **String pool**: Single `UnsafeCell<HashMap>` — no sharded mutexes
+- **Globals/class attrs**: `UnsafeCell<HashMap>` — lock-free get/set
+- **VTable/class registry**: `UnsafeCell<[T; 256]>` — direct array access
+- **Key comparison**: Pointer equality fast path in `eq_hashable_obj` catches interned strings, pooled ints, and bool singletons
+- **String comparison**: Uses `slice` comparison (SIMD-optimized `memcmp`) instead of byte-by-byte loops
 
 ### Lazy String Pool Initialization
 
@@ -2247,7 +2249,7 @@ assert get_count() == 2
 - **HIR** (`hir/lib.rs`):
   - `Module.globals: IndexSet<VarId>` tracks all global VarIds
 - **Runtime** (`runtime/src/globals.rs`):
-  - `GLOBALS: Mutex<HashMap<u32, GlobalEntry>>` - typed global storage keyed by VarId
+  - `GLOBALS: UnsafeCell<HashMap<u32, GlobalEntry>>` - typed global storage keyed by VarId
   - `GlobalEntry { tag: GlobalTag, value: i64 }` with tags: Int, Float, Bool, Ptr
   - Type-specific API: `rt_global_set_int/get_int`, `rt_global_set_float/get_float`, `rt_global_set_bool/get_bool`, `rt_global_set_ptr/get_ptr`
   - GC integration: `mark_global_pointers()` and `get_global_pointers()` for heap object tracking

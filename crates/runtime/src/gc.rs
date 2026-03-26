@@ -30,7 +30,7 @@ use crate::object::{
 // Note: BytesObj has no object children (like StrObj), so no special handling needed in mark_object
 use std::alloc::{alloc, dealloc, Layout};
 use std::ptr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 // ============================================================================
 // Compile-time alignment verification
@@ -107,50 +107,53 @@ struct GcState {
     stack_depth: usize,
 }
 
-// Safety: GcState contains raw pointers (*mut ShadowFrame and *mut Obj) which are
-// not automatically Send. However, all access to GcState is gated behind a Mutex,
-// so sending it to another thread is safe — the pointers are only dereferenced
-// while holding the lock.
+// Safety: GcState is accessed from a single thread (AOT-compiled Python is single-threaded).
+// The AtomicPtr provides the necessary Sync for the static, but actual access is unsynchronized.
 unsafe impl Send for GcState {}
+unsafe impl Sync for GcState {}
 
-static GC_STATE: OnceLock<Mutex<GcState>> = OnceLock::new();
+static GC_STATE_PTR: AtomicPtr<GcState> = AtomicPtr::new(ptr::null_mut());
+
+/// Get a mutable reference to the GC state.
+///
+/// # Safety
+/// Must only be called after `init()` and from a single thread.
+#[inline(always)]
+unsafe fn gc_state() -> &'static mut GcState {
+    &mut *GC_STATE_PTR.load(Ordering::Relaxed)
+}
 
 /// Initialize the GC (idempotent - safe to call multiple times)
 pub fn init() {
-    GC_STATE.get_or_init(|| {
-        Mutex::new(GcState {
-            stack_top: ptr::null_mut(),
-            objects: Vec::new(),
-            total_allocated: 0,
-            threshold: 1024 * 1024,
-            stack_depth: 0,
-        })
-    });
+    if !GC_STATE_PTR.load(Ordering::Relaxed).is_null() {
+        return;
+    }
+    let state = Box::into_raw(Box::new(GcState {
+        stack_top: ptr::null_mut(),
+        objects: Vec::new(),
+        total_allocated: 0,
+        threshold: 1024 * 1024,
+        stack_depth: 0,
+    }));
+    GC_STATE_PTR.store(state, Ordering::Release);
 }
 
 /// Shutdown the GC (free all objects)
 pub fn shutdown() {
-    if let Some(gc) = GC_STATE.get() {
-        let mut state = gc.lock().expect("GC_STATE mutex poisoned");
-        unsafe {
-            for obj_ptr in &state.objects {
-                let obj = &**obj_ptr;
-                let layout = Layout::from_size_align(obj.header.size, std::mem::align_of::<Obj>())
-                    .expect("Invalid layout during GC shutdown");
-                dealloc(*obj_ptr as *mut u8, layout);
-            }
+    let state_ptr = GC_STATE_PTR.load(Ordering::Relaxed);
+    if state_ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let state = &mut *state_ptr;
+        for obj_ptr in &state.objects {
+            let obj = &**obj_ptr;
+            let layout = Layout::from_size_align(obj.header.size, std::mem::align_of::<Obj>())
+                .expect("Invalid layout during GC shutdown");
+            dealloc(*obj_ptr as *mut u8, layout);
         }
         state.objects.clear();
     }
-}
-
-fn with_gc_state<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut GcState) -> R,
-{
-    let gc = GC_STATE.get().expect("GC not initialized");
-    let mut state = gc.lock().expect("GC_STATE mutex poisoned");
-    f(&mut state)
 }
 
 /// Push a shadow frame onto the stack
@@ -163,34 +166,33 @@ pub unsafe extern "C" fn gc_push(frame: *mut ShadowFrame) {
     if frame.is_null() {
         return;
     }
-    with_gc_state(|state| {
-        state.stack_depth += 1;
+    let state = gc_state();
+    state.stack_depth += 1;
 
-        // Detect shadow stack leaks: if depth exceeds 10000, likely a leak from exception paths
-        if state.stack_depth > 10000 {
-            panic!(
-                "Shadow stack depth limit exceeded ({}). This likely indicates a memory leak \
-                from exception paths not properly calling gc_pop()",
-                state.stack_depth
-            );
-        }
+    // Detect shadow stack leaks: if depth exceeds 10000, likely a leak from exception paths
+    #[cfg(debug_assertions)]
+    if state.stack_depth > 10000 {
+        panic!(
+            "Shadow stack depth limit exceeded ({}). This likely indicates a memory leak \
+            from exception paths not properly calling gc_pop()",
+            state.stack_depth
+        );
+    }
 
-        (*frame).prev = state.stack_top;
-        state.stack_top = frame;
-    });
+    (*frame).prev = state.stack_top;
+    state.stack_top = frame;
 }
 
 /// Pop a shadow frame from the stack
 #[no_mangle]
 pub extern "C" fn gc_pop() {
-    with_gc_state(|state| unsafe {
+    unsafe {
+        let state = gc_state();
         if !state.stack_top.is_null() {
             state.stack_top = (*state.stack_top).prev;
-            state.stack_depth = state.stack_depth.saturating_sub(1);
+            state.stack_depth -= 1;
         } else {
             // Double-pop detected! This is a bug in exception handling or codegen.
-            // In debug mode, panic immediately to catch the bug.
-            // In release mode, log to stderr to help diagnose the issue without crashing.
             #[cfg(debug_assertions)]
             panic!("gc_pop() called with empty shadow stack - double-pop detected!");
             #[cfg(not(debug_assertions))]
@@ -199,13 +201,13 @@ pub extern "C" fn gc_pop() {
                  exception handling or mismatched push/pop calls."
             );
         }
-    });
+    }
 }
 
 /// Get current shadow stack depth (for debugging/testing)
 #[no_mangle]
 pub extern "C" fn gc_get_stack_depth() -> usize {
-    with_gc_state(|state| state.stack_depth)
+    unsafe { gc_state().stack_depth }
 }
 
 /// Allocate an object
@@ -215,14 +217,16 @@ pub extern "C" fn gc_alloc(size: usize, type_tag: u8) -> *mut Obj {
     let validated_type_tag = TypeTagKind::from_tag(type_tag)
         .unwrap_or_else(|| panic!("gc_alloc: invalid type tag {}", type_tag));
 
-    assert!(
+    debug_assert!(
         size >= std::mem::size_of::<ObjHeader>(),
         "gc_alloc: size {} is smaller than ObjHeader ({})",
         size,
         std::mem::size_of::<ObjHeader>()
     );
 
-    with_gc_state(|state| {
+    unsafe {
+        let state = gc_state();
+
         // GC stress testing mode: collect on every allocation
         // Enable with: RUSTFLAGS="--cfg gc_stress_test" cargo build
         #[cfg(gc_stress_test)]
@@ -238,48 +242,46 @@ pub extern "C" fn gc_alloc(size: usize, type_tag: u8) -> *mut Obj {
             }
         }
 
-        unsafe {
-            let layout = Layout::from_size_align(size, std::mem::align_of::<Obj>())
-                .expect("gc_alloc: invalid layout");
-            let ptr = alloc(layout) as *mut Obj;
-            if ptr.is_null() {
-                panic!("Out of memory");
-            }
-
-            // Initialize header with pre-validated type tag
-            (*ptr).header = ObjHeader {
-                type_tag: validated_type_tag,
-                marked: false,
-                size,
-            };
-
-            // Zero the rest
-            ptr::write_bytes(
-                (ptr as *mut u8).add(std::mem::size_of::<ObjHeader>()),
-                0,
-                size - std::mem::size_of::<ObjHeader>(),
-            );
-
-            state.objects.push(ptr);
-            state.total_allocated += size;
-
-            ptr
+        let layout = Layout::from_size_align(size, std::mem::align_of::<Obj>())
+            .expect("gc_alloc: invalid layout");
+        let ptr = alloc(layout) as *mut Obj;
+        if ptr.is_null() {
+            panic!("Out of memory");
         }
-    })
+
+        // Initialize header with pre-validated type tag
+        (*ptr).header = ObjHeader {
+            type_tag: validated_type_tag,
+            marked: false,
+            size,
+        };
+
+        // Zero the rest
+        ptr::write_bytes(
+            (ptr as *mut u8).add(std::mem::size_of::<ObjHeader>()),
+            0,
+            size - std::mem::size_of::<ObjHeader>(),
+        );
+
+        state.objects.push(ptr);
+        state.total_allocated += size;
+
+        ptr
+    }
 }
 
 /// Trigger garbage collection
 #[no_mangle]
 pub extern "C" fn gc_collect() {
-    with_gc_state(|state| {
-        collect_impl(state);
-    });
+    unsafe {
+        collect_impl(gc_state());
+    }
 }
 
 /// Get the current stack top (for exception handling)
 /// Returns the current top of the shadow stack
 pub fn get_stack_top() -> *mut ShadowFrame {
-    with_gc_state(|state| state.stack_top)
+    unsafe { gc_state().stack_top }
 }
 
 /// Unwind the shadow stack to the given frame
@@ -287,7 +289,8 @@ pub fn get_stack_top() -> *mut ShadowFrame {
 ///
 /// This counts how many frames are being popped and updates stack_depth accordingly.
 pub fn unwind_to(target: *mut ShadowFrame) {
-    with_gc_state(|state| unsafe {
+    unsafe {
+        let state = gc_state();
         // Count how many frames we're unwinding
         let mut frames_popped = 0;
         let mut current = state.stack_top;
@@ -309,7 +312,7 @@ pub fn unwind_to(target: *mut ShadowFrame) {
             );
             std::process::abort();
         }
-    });
+    }
 }
 
 /// Internal collection implementation

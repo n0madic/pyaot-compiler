@@ -6,50 +6,72 @@
 
 use crate::gc;
 use crate::object::{BoolObj, FloatObj, IntObj, Obj, TypeTagKind};
-use std::sync::Mutex;
+use std::cell::UnsafeCell;
 
 /// Range of small integers to pre-allocate (inclusive)
 const SMALL_INT_MIN: i64 = -5;
 const SMALL_INT_MAX: i64 = 256;
 const SMALL_INT_POOL_SIZE: usize = (SMALL_INT_MAX - SMALL_INT_MIN + 1) as usize; // 262
 
-/// Wrapper to make raw pointer Send+Sync for use in static Mutex
-/// Safety: The pool is only accessed while holding the mutex lock
-struct PoolWrapper([*mut Obj; SMALL_INT_POOL_SIZE]);
-unsafe impl Send for PoolWrapper {}
-unsafe impl Sync for PoolWrapper {}
+/// Lock-free pool storage for single-threaded access.
+/// Safety: The runtime is single-threaded (AOT-compiled Python has no threading).
+struct PoolStorage<const N: usize> {
+    data: UnsafeCell<[*mut Obj; N]>,
+    initialized: UnsafeCell<bool>,
+}
+
+unsafe impl<const N: usize> Sync for PoolStorage<N> {}
+
+impl<const N: usize> PoolStorage<N> {
+    const fn new() -> Self {
+        Self {
+            data: UnsafeCell::new([std::ptr::null_mut(); N]),
+            initialized: UnsafeCell::new(false),
+        }
+    }
+
+    #[inline(always)]
+    fn is_initialized(&self) -> bool {
+        unsafe { *self.initialized.get() }
+    }
+
+    fn set_initialized(&self) {
+        unsafe {
+            *self.initialized.get() = true;
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn get(&self, index: usize) -> *mut Obj {
+        (*self.data.get())[index]
+    }
+
+    unsafe fn set(&self, index: usize, val: *mut Obj) {
+        (*self.data.get())[index] = val;
+    }
+
+    unsafe fn iter(&self) -> std::slice::Iter<'_, *mut Obj> {
+        (*self.data.get()).iter()
+    }
+}
 
 /// Pool of pre-allocated small integers
 /// Initialized by init_small_int_pool() during rt_init()
-static SMALL_INT_POOL: Mutex<Option<PoolWrapper>> = Mutex::new(None);
+static SMALL_INT_POOL: PoolStorage<SMALL_INT_POOL_SIZE> = PoolStorage::new();
 
 /// Pre-allocated boolean singletons (index 0 = False, index 1 = True)
 /// Initialized by init_bool_pool() during rt_init()
-struct BoolPoolWrapper([*mut Obj; 2]);
-unsafe impl Send for BoolPoolWrapper {}
-unsafe impl Sync for BoolPoolWrapper {}
-
-static BOOL_POOL: Mutex<Option<BoolPoolWrapper>> = Mutex::new(None);
+static BOOL_POOL: PoolStorage<2> = PoolStorage::new();
 
 /// Initialize the small integer pool
 /// Pre-allocates IntObj for integers -5 to 256
 /// Called from rt_init()
 pub fn init_small_int_pool() {
-    // Check if already initialized (fast path without allocation)
-    {
-        let pool_guard = SMALL_INT_POOL
-            .lock()
-            .expect("SMALL_INT_POOL mutex poisoned");
-        if pool_guard.is_some() {
-            return;
-        }
+    if SMALL_INT_POOL.is_initialized() {
+        return;
     }
 
-    // Allocate all pool objects WITHOUT holding the mutex
-    // This prevents deadlock with GC's mark_pools which also locks SMALL_INT_POOL
-    let mut pool: [*mut Obj; SMALL_INT_POOL_SIZE] = [std::ptr::null_mut(); SMALL_INT_POOL_SIZE];
-
-    for (i, slot) in pool.iter_mut().enumerate() {
+    for i in 0..SMALL_INT_POOL_SIZE {
         let value = SMALL_INT_MIN + i as i64;
         let size = std::mem::size_of::<IntObj>();
         let obj = gc::gc_alloc(size, TypeTagKind::Int as u8);
@@ -57,70 +79,50 @@ pub fn init_small_int_pool() {
         unsafe {
             let int_obj = obj as *mut IntObj;
             (*int_obj).value = value;
+            SMALL_INT_POOL.set(i, obj);
         }
-
-        *slot = obj;
     }
 
-    // Now store under the lock
-    let mut pool_guard = SMALL_INT_POOL
-        .lock()
-        .expect("SMALL_INT_POOL mutex poisoned");
-    if pool_guard.is_none() {
-        *pool_guard = Some(PoolWrapper(pool));
-    }
+    SMALL_INT_POOL.set_initialized();
 }
 
 /// Shutdown the small integer pool
 /// Called from rt_shutdown()
 pub fn shutdown_small_int_pool() {
-    let mut pool_guard = SMALL_INT_POOL
-        .lock()
-        .expect("SMALL_INT_POOL mutex poisoned - another thread panicked");
-    *pool_guard = None;
+    // Objects are freed by GC shutdown, just mark as uninitialized
+    unsafe {
+        *SMALL_INT_POOL.initialized.get() = false;
+    }
 }
 
 /// Initialize the boolean singleton pool
 /// Pre-allocates BoolObj for False (index 0) and True (index 1)
 /// Called from rt_init()
 pub fn init_bool_pool() {
-    // Check if already initialized (fast path)
-    {
-        let pool_guard = BOOL_POOL.lock().expect("BOOL_POOL mutex poisoned");
-        if pool_guard.is_some() {
-            return;
-        }
+    if BOOL_POOL.is_initialized() {
+        return;
     }
 
-    // Allocate outside the mutex to prevent deadlock with GC
-    let mut pool: [*mut Obj; 2] = [std::ptr::null_mut(); 2];
-
-    for (i, slot) in pool.iter_mut().enumerate() {
+    for i in 0..2 {
         let size = std::mem::size_of::<BoolObj>();
         let obj = gc::gc_alloc(size, TypeTagKind::Bool as u8);
 
         unsafe {
             let bool_obj = obj as *mut BoolObj;
             (*bool_obj).value = i != 0;
+            BOOL_POOL.set(i, obj);
         }
-
-        *slot = obj;
     }
 
-    // Store under lock
-    let mut pool_guard = BOOL_POOL.lock().expect("BOOL_POOL mutex poisoned");
-    if pool_guard.is_none() {
-        *pool_guard = Some(BoolPoolWrapper(pool));
-    }
+    BOOL_POOL.set_initialized();
 }
 
 /// Shutdown the boolean singleton pool
 /// Called from rt_shutdown()
 pub fn shutdown_bool_pool() {
-    let mut pool_guard = BOOL_POOL
-        .lock()
-        .expect("BOOL_POOL mutex poisoned - another thread panicked");
-    *pool_guard = None;
+    unsafe {
+        *BOOL_POOL.initialized.get() = false;
+    }
 }
 
 /// Mark all pool objects (small integers and boolean singletons) as reachable.
@@ -131,28 +133,21 @@ pub fn shutdown_bool_pool() {
 /// so we must re-mark them at the start of every mark phase instead.
 pub fn mark_pools() {
     // Mark small integer pool
-    let int_guard = SMALL_INT_POOL
-        .lock()
-        .expect("SMALL_INT_POOL mutex poisoned - another thread panicked");
-    if let Some(ref wrapper) = *int_guard {
-        for &obj in &wrapper.0 {
-            if !obj.is_null() {
-                unsafe {
+    if SMALL_INT_POOL.is_initialized() {
+        unsafe {
+            for &obj in SMALL_INT_POOL.iter() {
+                if !obj.is_null() {
                     (*obj).set_marked(true);
                 }
             }
         }
     }
-    drop(int_guard);
 
     // Mark boolean singleton pool
-    let bool_guard = BOOL_POOL
-        .lock()
-        .expect("BOOL_POOL mutex poisoned - another thread panicked");
-    if let Some(ref wrapper) = *bool_guard {
-        for &obj in &wrapper.0 {
-            if !obj.is_null() {
-                unsafe {
+    if BOOL_POOL.is_initialized() {
+        unsafe {
+            for &obj in BOOL_POOL.iter() {
+                if !obj.is_null() {
                     (*obj).set_marked(true);
                 }
             }
@@ -166,15 +161,9 @@ pub fn mark_pools() {
 #[no_mangle]
 pub extern "C" fn rt_box_int(value: i64) -> *mut Obj {
     // Check if value is in the small integer range
-    if (SMALL_INT_MIN..=SMALL_INT_MAX).contains(&value) {
-        let pool_guard = SMALL_INT_POOL
-            .lock()
-            .expect("SMALL_INT_POOL mutex poisoned - another thread panicked");
-
-        if let Some(ref wrapper) = *pool_guard {
-            let index = (value - SMALL_INT_MIN) as usize;
-            return wrapper.0[index];
-        }
+    if (SMALL_INT_MIN..=SMALL_INT_MAX).contains(&value) && SMALL_INT_POOL.is_initialized() {
+        let index = (value - SMALL_INT_MIN) as usize;
+        return unsafe { SMALL_INT_POOL.get(index) };
     }
 
     // Fall back to regular allocation for integers outside the pool range
@@ -194,15 +183,10 @@ pub extern "C" fn rt_box_int(value: i64) -> *mut Obj {
 /// Used for dict keys when the key type is bool
 #[no_mangle]
 pub extern "C" fn rt_box_bool(value: i8) -> *mut Obj {
-    let pool_guard = BOOL_POOL
-        .lock()
-        .expect("BOOL_POOL mutex poisoned - another thread panicked");
-
-    if let Some(ref wrapper) = *pool_guard {
+    if BOOL_POOL.is_initialized() {
         let index = if value != 0 { 1 } else { 0 };
-        return wrapper.0[index];
+        return unsafe { BOOL_POOL.get(index) };
     }
-    drop(pool_guard);
 
     // Fallback: pool not yet initialized (should not happen in normal operation)
     let size = std::mem::size_of::<BoolObj>();
