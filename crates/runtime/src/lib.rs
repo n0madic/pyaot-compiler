@@ -94,20 +94,25 @@ pub mod builtins;
 
 // Standard library modules
 pub mod abc;
+#[cfg(feature = "stdlib-base64")]
 pub mod base64_mod;
 pub mod copy;
 pub mod format;
 pub mod functools;
+#[cfg(feature = "stdlib-crypto")]
 pub mod hashlib;
+#[cfg(feature = "stdlib-json")]
 pub mod json;
 pub mod os;
 pub mod random;
+#[cfg(feature = "stdlib-regex")]
 pub mod re;
 pub mod stringio;
 pub mod subprocess;
 pub mod sys;
 pub mod time;
 pub mod urllib_parse;
+#[cfg(feature = "stdlib-network")]
 pub mod urllib_request;
 
 // Tests

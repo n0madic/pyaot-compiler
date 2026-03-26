@@ -80,6 +80,7 @@ const_assert_align!(FilterIterObj);
 const_assert_align!(ZipIterObj);
 const_assert_align!(ChainIterObj);
 const_assert_align!(ISliceIterObj);
+#[cfg(feature = "stdlib-crypto")]
 const_assert_align!(crate::hashlib::HashObj);
 const_assert_align!(crate::stringio::StringIOObj);
 const_assert_align!(crate::stringio::BytesIOObj);

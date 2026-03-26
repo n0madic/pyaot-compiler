@@ -81,6 +81,10 @@ pyaot input.py -o output --inline --dce    # Both (recommended)
 # Compile with debug information (DWARF line tables, symbols preserved)
 pyaot input.py -o output --debug
 
+# Smaller binaries: build minimal runtime (without json/regex/crypto/network)
+cargo build -p pyaot-runtime --release --no-default-features
+pyaot input.py -o output     # Links against minimal runtime (~347KB vs ~396KB)
+
 # Compile with module search paths (for imports)
 pyaot input.py --module-path /path/to/libs -o output
 

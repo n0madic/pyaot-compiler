@@ -25,6 +25,7 @@ AOT compiler for a Python subset, implemented in Rust with Cranelift backend.
 ```bash
 cargo build --workspace --release      # Build all (release)
 cargo build -p pyaot-runtime --release # Runtime library (required for linking)
+cargo build -p pyaot-runtime --release --no-default-features  # Minimal runtime (no json/regex/crypto/network)
 cargo test --workspace                 # Run all tests (including runtime integration tests)
 cargo test -p pyaot --test runtime     # Run only runtime integration tests
 cargo fmt && cargo clippy --workspace  # Format and lint

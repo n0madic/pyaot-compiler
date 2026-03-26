@@ -304,6 +304,23 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 - Iterates to fixpoint for cascading dead code removal
 - Preserves all side-effectful instructions (calls, GC, exception handling, arithmetic that may raise)
 
+### Binary Size Optimization
+
+| Optimization | Status | Description |
+|--------------|--------|-------------|
+| Post-link strip | ✅ | Automatic `strip` after linking removes symbol tables |
+| panic = "abort" | ✅ | Eliminates unwinding infrastructure |
+| Linux --gc-sections | ✅ | Removes unused code sections on ELF targets |
+| Runtime feature-gating | ✅ | Optional deps (json, regex, crypto, network, base64) behind cargo features |
+
+**Hello world binary size (macOS arm64):**
+- Full runtime (default): ~396 KB
+- Minimal runtime (`--no-default-features`): ~347 KB
+
+**Minimal runtime build:** `cargo build -p pyaot-runtime --release --no-default-features`
+
+Available runtime features: `stdlib-json` (serde_json), `stdlib-regex` (regex-lite), `stdlib-crypto` (sha2, md-5), `stdlib-base64` (base64), `stdlib-network` (ureq). Default: all enabled via `stdlib-full`.
+
 ### Debugging
 
 | Feature | Status | CLI Flag | Description |
