@@ -15,7 +15,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "abs")?;
+        self.require_exact_args(args, 1, "abs", self.call_span())?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -117,7 +117,7 @@ impl<'a> Lowering<'a> {
         if args.len() != 2 {
             return Err(pyaot_diagnostics::CompilerError::type_error(
                 "pow() requires exactly 2 arguments",
-                pyaot_utils::Span::dummy(),
+                self.call_span(),
             ));
         }
 
@@ -153,7 +153,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_min_args(args, 1, "round")?;
+        self.require_min_args(args, 1, "round", self.call_span())?;
 
         let x_expr = &hir_module.exprs[args[0]];
         let x_operand = self.lower_expr(x_expr, hir_module, mir_func)?;
@@ -202,7 +202,7 @@ impl<'a> Lowering<'a> {
                     "{}() requires at least 1 argument",
                     if is_min { "min" } else { "max" }
                 ),
-                pyaot_utils::Span::dummy(),
+                self.call_span(),
             ));
         }
 
@@ -226,7 +226,7 @@ impl<'a> Lowering<'a> {
                     "{}() with key= requires exactly one iterable argument",
                     if is_min { "min" } else { "max" }
                 ),
-                pyaot_utils::Span::dummy(),
+                self.call_span(),
             ));
         }
 
@@ -972,7 +972,7 @@ impl<'a> Lowering<'a> {
         if args.len() != 2 {
             return Err(pyaot_diagnostics::CompilerError::type_error(
                 "divmod() requires exactly 2 arguments",
-                pyaot_utils::Span::dummy(),
+                self.call_span(),
             ));
         }
 
@@ -1081,7 +1081,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "bin")?;
+        self.require_exact_args(args, 1, "bin", self.call_span())?;
 
         let n_expr = &hir_module.exprs[args[0]];
         let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
@@ -1104,7 +1104,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "hex")?;
+        self.require_exact_args(args, 1, "hex", self.call_span())?;
 
         let n_expr = &hir_module.exprs[args[0]];
         let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
@@ -1127,7 +1127,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "oct")?;
+        self.require_exact_args(args, 1, "oct", self.call_span())?;
 
         let n_expr = &hir_module.exprs[args[0]];
         let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
@@ -1151,7 +1151,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
         runtime_func: mir::RuntimeFunc,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "fmt_int")?;
+        self.require_exact_args(args, 1, "fmt_int", self.call_span())?;
 
         let n_expr = &hir_module.exprs[args[0]];
         let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
@@ -1174,7 +1174,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 2, "fmt_int_grouped")?;
+        self.require_exact_args(args, 2, "fmt_int_grouped", self.call_span())?;
 
         let n_expr = &hir_module.exprs[args[0]];
         let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
@@ -1200,7 +1200,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 3, "fmt_float_grouped")?;
+        self.require_exact_args(args, 3, "fmt_float_grouped", self.call_span())?;
 
         let f_expr = &hir_module.exprs[args[0]];
         let f_operand = self.lower_expr(f_expr, hir_module, mir_func)?;

@@ -19,7 +19,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 2, "isinstance")?;
+        self.require_exact_args(args, 2, "isinstance", self.call_span())?;
 
         let obj_expr = &hir_module.exprs[args[0]];
         let type_expr = &hir_module.exprs[args[1]];
@@ -122,7 +122,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 2, "issubclass")?;
+        self.require_exact_args(args, 2, "issubclass", self.call_span())?;
 
         let class_expr = &hir_module.exprs[args[0]];
         let parent_expr = &hir_module.exprs[args[1]];
@@ -165,7 +165,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "hash")?;
+        self.require_exact_args(args, 1, "hash", self.call_span())?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -298,7 +298,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "id")?;
+        self.require_exact_args(args, 1, "id", self.call_span())?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -369,7 +369,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "repr")?;
+        self.require_exact_args(args, 1, "repr", self.call_span())?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -433,7 +433,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "ascii")?;
+        self.require_exact_args(args, 1, "ascii", self.call_span())?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -478,7 +478,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "type")?;
+        self.require_exact_args(args, 1, "type", self.call_span())?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -533,7 +533,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "callable")?;
+        self.require_exact_args(args, 1, "callable", self.call_span())?;
 
         let arg_expr = &hir_module.exprs[args[0]];
         let _arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
@@ -559,7 +559,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 2, "hasattr")?;
+        self.require_exact_args(args, 2, "hasattr", self.call_span())?;
 
         let obj_expr = &hir_module.exprs[args[0]];
         let _obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
@@ -610,7 +610,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_min_args(args, 2, "getattr")?;
+        self.require_min_args(args, 2, "getattr", self.call_span())?;
 
         let obj_expr = &hir_module.exprs[args[0]];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
@@ -681,7 +681,7 @@ impl<'a> Lowering<'a> {
         if args.is_empty() || args.len() > 2 {
             return Err(pyaot_diagnostics::CompilerError::type_error(
                 format!("format() requires 1 or 2 argument(s), got {}", args.len()),
-                pyaot_utils::Span::dummy(),
+                self.call_span(),
             ));
         }
 
@@ -719,7 +719,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 3, "setattr")?;
+        self.require_exact_args(args, 3, "setattr", self.call_span())?;
 
         let obj_expr = &hir_module.exprs[args[0]];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;

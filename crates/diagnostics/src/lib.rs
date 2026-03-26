@@ -26,19 +26,19 @@ impl From<DiagnosticSpan> for SourceSpan {
     }
 }
 
-#[derive(Debug, Error, Diagnostic)]
+#[derive(Debug, Clone, Error, Diagnostic)]
 pub enum CompilerError {
     #[error("Parse error: {message}")]
     ParseError {
         message: String,
-        #[label("here")]
+        #[label("parse error")]
         span: DiagnosticSpan,
     },
 
     #[error("Type error: {message}")]
     TypeError {
         message: String,
-        #[label("here")]
+        #[label("type mismatch")]
         span: DiagnosticSpan,
     },
 
@@ -52,36 +52,39 @@ pub enum CompilerError {
     #[error("Semantic error: {message}")]
     SemanticError {
         message: String,
-        #[label("here")]
+        #[label("{message}")]
         span: DiagnosticSpan,
     },
 
     #[error("Too many positional arguments: expected {expected}, got {got}")]
+    #[diagnostic(help("check the function signature for the expected number of parameters"))]
     TooManyPositionalArguments {
         expected: usize,
         got: usize,
-        #[label("too many arguments")]
+        #[label("expected {expected} argument(s)")]
         span: DiagnosticSpan,
     },
 
     #[error("Duplicate keyword argument: '{name}'")]
     DuplicateKeywordArgument {
         name: String,
-        #[label("duplicate argument")]
+        #[label("'{name}' already provided")]
         span: DiagnosticSpan,
     },
 
     #[error("Unexpected keyword argument: '{name}'")]
+    #[diagnostic(help("remove the '{name}' argument or check the function signature"))]
     UnexpectedKeywordArgument {
         name: String,
-        #[label("unexpected keyword argument")]
+        #[label("not a valid parameter")]
         span: DiagnosticSpan,
     },
 
     #[error("Missing required argument: '{name}'")]
+    #[diagnostic(help("add the missing '{name}' argument"))]
     MissingRequiredArgument {
         name: String,
-        #[label("missing argument")]
+        #[label("missing argument '{name}'")]
         span: DiagnosticSpan,
     },
 
@@ -92,7 +95,13 @@ pub enum CompilerError {
     LinkError { message: String },
 
     #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
+    IoError(String),
+}
+
+impl From<std::io::Error> for CompilerError {
+    fn from(e: std::io::Error) -> Self {
+        Self::IoError(e.to_string())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, CompilerError>;
@@ -272,6 +281,37 @@ impl CompilerError {
         Self::MissingRequiredArgument {
             name: name.into(),
             span: span.into(),
+        }
+    }
+
+    /// Format the error for display using miette's graphical renderer.
+    /// Provides the same beautiful rendering as `CompilerWarning::format()`.
+    pub fn format(&self, source_name: &str, source: &str) -> String {
+        let has_span = matches!(
+            self,
+            Self::ParseError { .. }
+                | Self::TypeError { .. }
+                | Self::NameError { .. }
+                | Self::SemanticError { .. }
+                | Self::TooManyPositionalArguments { .. }
+                | Self::DuplicateKeywordArgument { .. }
+                | Self::UnexpectedKeywordArgument { .. }
+                | Self::MissingRequiredArgument { .. }
+        );
+
+        if has_span {
+            use miette::{GraphicalReportHandler, NamedSource};
+
+            let report = miette::Report::new(self.clone())
+                .with_source_code(NamedSource::new(source_name, source.to_string()));
+
+            let mut output = String::new();
+            GraphicalReportHandler::new()
+                .render_report(&mut output, report.as_ref())
+                .expect("failed to render error");
+            output
+        } else {
+            format!("  x {}\n", self)
         }
     }
 }

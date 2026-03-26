@@ -541,7 +541,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "chr")?;
+        self.require_exact_args(args, 1, "chr", self.call_span())?;
 
         let i_expr = &hir_module.exprs[args[0]];
         let i_operand = self.lower_expr(i_expr, hir_module, mir_func)?;
@@ -564,7 +564,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "ord")?;
+        self.require_exact_args(args, 1, "ord", self.call_span())?;
 
         let s_expr = &hir_module.exprs[args[0]];
         let s_operand = self.lower_expr(s_expr, hir_module, mir_func)?;

@@ -19,6 +19,13 @@ pub enum FuncOrBuiltin {
 }
 
 impl<'a> Lowering<'a> {
+    /// Get the current ambient source span, falling back to a dummy span.
+    /// Safe to call in any expression-lowering context because `lower_expr()`
+    /// always sets `self.current_span = Some(expr.span)` before dispatching.
+    pub(crate) fn call_span(&self) -> pyaot_utils::Span {
+        self.current_span.unwrap_or_else(pyaot_utils::Span::dummy)
+    }
+
     /// Get the effective (offset-adjusted) VarId for a global variable
     pub(crate) fn get_effective_var_id(&self, var_id: pyaot_utils::VarId) -> i64 {
         (var_id.0 + self.var_id_offset) as i64
@@ -48,6 +55,7 @@ impl<'a> Lowering<'a> {
         args: &[hir::ExprId],
         count: usize,
         func_name: &str,
+        call_span: pyaot_utils::Span,
     ) -> pyaot_diagnostics::Result<()> {
         if args.len() != count {
             return Err(pyaot_diagnostics::CompilerError::type_error(
@@ -55,7 +63,7 @@ impl<'a> Lowering<'a> {
                     "{func_name}() requires exactly {count} argument(s), got {}",
                     args.len()
                 ),
-                pyaot_utils::Span::dummy(),
+                call_span,
             ));
         }
         Ok(())
@@ -67,6 +75,7 @@ impl<'a> Lowering<'a> {
         args: &[hir::ExprId],
         min: usize,
         func_name: &str,
+        call_span: pyaot_utils::Span,
     ) -> pyaot_diagnostics::Result<()> {
         if args.len() < min {
             return Err(pyaot_diagnostics::CompilerError::type_error(
@@ -74,7 +83,7 @@ impl<'a> Lowering<'a> {
                     "{func_name}() requires at least {min} argument(s), got {}",
                     args.len()
                 ),
-                pyaot_utils::Span::dummy(),
+                call_span,
             ));
         }
         Ok(())

@@ -303,7 +303,7 @@ impl<'a> Lowering<'a> {
                 if !arg_operands.is_empty() {
                     return Err(CompilerError::type_error(
                         "list.sort() takes no positional arguments",
-                        pyaot_utils::Span::dummy(),
+                        self.call_span(),
                     ));
                 }
 

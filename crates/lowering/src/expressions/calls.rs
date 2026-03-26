@@ -105,7 +105,7 @@ impl<'a> Lowering<'a> {
                     // directly (without resolve_call_args).
                     return Err(pyaot_diagnostics::CompilerError::semantic_error(
                         "Star unpacking of non-literal lists is not yet supported in this call context",
-                        pyaot_utils::Span::dummy(),
+                        self.call_span(),
                     ));
                 }
             }
@@ -774,7 +774,7 @@ impl<'a> Lowering<'a> {
                 &user_params,
                 Some(wrapper_func_id),
                 1, // offset for capture param
-                pyaot_utils::Span::dummy(),
+                self.call_span(),
                 hir_module,
                 mir_func,
             )?;
@@ -1139,8 +1139,8 @@ impl<'a> Lowering<'a> {
                         kwargs,
                         &init_params,
                         Some(init_func_id),
-                        1,                          // Offset by 1 because self is skipped
-                        pyaot_utils::Span::dummy(), // class instantiation has no call expr
+                        1, // Offset by 1 because self is skipped
+                        self.call_span(),
                         hir_module,
                         mir_func,
                     )?;
@@ -1165,7 +1165,7 @@ impl<'a> Lowering<'a> {
         } else {
             Err(pyaot_diagnostics::CompilerError::semantic_error(
                 "cannot instantiate unknown class",
-                pyaot_utils::Span::dummy(),
+                self.call_span(),
             ))
         }
     }

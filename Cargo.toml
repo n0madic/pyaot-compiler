@@ -42,7 +42,6 @@ object = { version = "0.37", default-features = false, features = ["write", "std
 # Diagnostics
 miette = { version = "7", features = ["fancy"] }
 thiserror = "1.0"
-codespan-reporting = "0.11"
 
 # Data structures
 indexmap = "2.0"

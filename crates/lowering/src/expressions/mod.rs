@@ -259,7 +259,7 @@ impl<'a> Lowering<'a> {
                 "cannot resolve imported name '{}' from module '{}'",
                 name, module
             ),
-            pyaot_utils::Span::dummy(),
+            self.call_span(),
         ))
     }
 
@@ -303,7 +303,7 @@ impl<'a> Lowering<'a> {
                 "cannot resolve attribute '{}' on module '{}'",
                 attr_name, module
             ),
-            pyaot_utils::Span::dummy(),
+            self.call_span(),
         ))
     }
 
@@ -348,7 +348,7 @@ impl<'a> Lowering<'a> {
         let attr_name = self.resolve(attr);
         Err(pyaot_diagnostics::CompilerError::semantic_error(
             format!("unknown class attribute '{}'", attr_name),
-            pyaot_utils::Span::dummy(),
+            self.call_span(),
         ))
     }
 

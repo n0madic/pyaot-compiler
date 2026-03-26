@@ -250,7 +250,7 @@ impl<'a> Lowering<'a> {
             return Err(CompilerError::too_many_positional_arguments(
                 param_class.regular.len(),
                 positional.len(),
-                pyaot_utils::Span::dummy(),
+                call_span,
             ));
         }
 

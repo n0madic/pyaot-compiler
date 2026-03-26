@@ -58,14 +58,6 @@ Function-name breakpoints (`b add`) already work on macOS. Source-level breakpoi
 
 ---
 
-### 🟡 Improved Error Messages with Source Context
-
-**Why**: Compiler errors currently show type names and descriptions but don't always point to the exact source location with context (like `rustc` does with `^^^` underlines).
-
-**Implementation plan**: Extend the `diagnostics` crate to render source snippets with span highlighting. The `ariadne` or `miette` crates provide beautiful error rendering out of the box and integrate with byte-offset spans.
-
----
-
 ## 2. Optimizations
 
 ### 🟡 Escape Analysis + Stack Allocation
@@ -145,12 +137,6 @@ for i in range(1000000):
 ---
 
 ## 4. Language Features
-
-### 🟢 Three-Level Closure Nesting
-
-**Why**: Currently closures only capture from their immediate parent. A closure inside a closure inside a function cannot capture variables from the outermost function. See INSIGHTS.md "Closure Cell Variables".
-
-**Implementation plan**: When a middle function captures a cell from its parent and an inner closure needs it, the middle function must forward the cell reference as part of the inner closure's capture tuple. Requires the frontend to transitively discover captured variables across nesting levels.
 
 ---
 
