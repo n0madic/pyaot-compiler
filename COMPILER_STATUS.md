@@ -294,6 +294,7 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 | Function Inlining | ✅ | `--inline` | Inlines small functions at call sites to reduce call overhead |
 | Constant Folding & Propagation | ✅ | `--constfold` | Evaluates constant expressions at compile time and propagates known values |
 | Dead Code Elimination | ✅ | `--dce` | Removes unreachable blocks, dead instructions, and unused locals |
+| Cold Block Annotation | ✅ | (always on) | Marks exception handlers and error paths as cold for better register allocation |
 
 **Function Inlining Details:**
 - Inlines leaf functions with ≤10 instructions automatically
@@ -320,6 +321,13 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 - Dead local elimination: cleans up unused local variable entries
 - Iterates to fixpoint for cascading dead code removal
 - Preserves all side-effectful instructions (calls, GC, exception handling, arithmetic that may raise)
+
+**Cold Block Annotation Details:**
+- Uses Cranelift's `set_cold_block()` to hint the register allocator and code layout engine
+- Exception handler entries (TrySetjmp handler blocks) are marked cold
+- Error paths (blocks ending in Raise/RaiseCustom/Reraise/Unreachable) are marked cold
+- Transitive propagation: blocks reachable only from cold blocks are also marked cold
+- Effect: register allocator spills more aggressively in cold blocks, keeping registers free for hot paths; cold code is placed farther away, improving instruction cache locality
 
 ### Binary Size Optimization
 

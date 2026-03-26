@@ -16,11 +16,13 @@ use pyaot_diagnostics::Result;
 use pyaot_mir as mir;
 use pyaot_utils::{FuncId, LineMap, LocalId, StringInterner};
 
+use std::collections::HashSet;
+
 use crate::context::{CodegenContext, GcFrameData};
 use crate::instructions::compile_instruction;
 use crate::terminators::compile_terminator;
 use crate::utils::{create_traceback_string_data, mangle_function_name, type_to_cranelift};
-use pyaot_utils::Span;
+use pyaot_utils::{BlockId, Span};
 
 /// Context for function compilation, grouping related parameters
 pub struct FunctionCompiler<'a> {
@@ -168,6 +170,14 @@ pub fn define_function(
             block_map.insert(*block_id, cl_block);
         } else {
             block_map.insert(*block_id, entry_block);
+        }
+    }
+
+    // Mark cold blocks (exception handlers, raise paths) for better register allocation
+    let cold_blocks = find_cold_blocks(func);
+    for cold_block_id in &cold_blocks {
+        if let Some(&cl_block) = block_map.get(cold_block_id) {
+            builder.set_cold_block(cl_block);
         }
     }
 
@@ -402,6 +412,95 @@ pub fn generate_main_entry_point_with_module_inits(
         .expect("failed to define main function");
 
     Ok(())
+}
+
+/// Identify cold blocks in a MIR function for register allocation hints.
+///
+/// Cold blocks are those unlikely to execute at runtime. Marking them as cold
+/// tells Cranelift's register allocator to spill values more aggressively in
+/// these blocks, keeping registers available for hot paths. Cold blocks are also
+/// placed further from hot code in the binary layout, improving instruction
+/// cache locality.
+///
+/// Cold blocks include:
+/// - Exception handler entries (from TrySetjmp terminators)
+/// - Blocks ending in Raise/RaiseCustom/Reraise (error paths)
+/// - Blocks ending in Unreachable (dead code)
+/// - Blocks reachable only from other cold blocks (transitive closure)
+fn find_cold_blocks(func: &mir::Function) -> HashSet<BlockId> {
+    let mut cold = HashSet::new();
+
+    // Phase 1: Identify directly cold blocks
+    for (block_id, block) in &func.blocks {
+        match &block.terminator {
+            // Raise/error paths are cold
+            mir::Terminator::Raise { .. }
+            | mir::Terminator::RaiseCustom { .. }
+            | mir::Terminator::Reraise
+            | mir::Terminator::Unreachable => {
+                cold.insert(*block_id);
+            }
+            // Exception handler entries are cold
+            mir::Terminator::TrySetjmp { handler_entry, .. } => {
+                cold.insert(*handler_entry);
+            }
+            _ => {}
+        }
+    }
+
+    // Phase 2: Propagate coldness to blocks only reachable from cold blocks.
+    // Build predecessor map: for each block, which blocks jump to it.
+    let mut predecessors: std::collections::HashMap<BlockId, Vec<BlockId>> =
+        std::collections::HashMap::new();
+    for (block_id, block) in &func.blocks {
+        for succ in terminator_successors(&block.terminator) {
+            predecessors.entry(succ).or_default().push(*block_id);
+        }
+    }
+
+    // A block is cold if ALL of its predecessors are cold (and it's not the entry block).
+    // Iterate to fixpoint.
+    loop {
+        let mut changed = false;
+        for (block_id, _) in &func.blocks {
+            if *block_id == func.entry_block || cold.contains(block_id) {
+                continue;
+            }
+            if let Some(preds) = predecessors.get(block_id) {
+                if !preds.is_empty() && preds.iter().all(|p| cold.contains(p)) {
+                    cold.insert(*block_id);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    cold
+}
+
+/// Extract successor block IDs from a terminator (codegen-local helper).
+fn terminator_successors(term: &mir::Terminator) -> Vec<BlockId> {
+    match term {
+        mir::Terminator::Goto(b) => vec![*b],
+        mir::Terminator::Branch {
+            then_block,
+            else_block,
+            ..
+        } => vec![*then_block, *else_block],
+        mir::Terminator::TrySetjmp {
+            try_body,
+            handler_entry,
+            ..
+        } => vec![*try_body, *handler_entry],
+        mir::Terminator::Return(_)
+        | mir::Terminator::Unreachable
+        | mir::Terminator::Raise { .. }
+        | mir::Terminator::RaiseCustom { .. }
+        | mir::Terminator::Reraise => vec![],
+    }
 }
 
 /// Emit a call to `rt_stack_push` at function entry for traceback support.
