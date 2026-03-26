@@ -58,21 +58,6 @@ Function-name breakpoints (`b add`) already work on macOS. Source-level breakpoi
 
 ---
 
-### 🟢 Stack Traces / Tracebacks *(Implemented)*
-
-Python-style tracebacks are now displayed for unhandled exceptions:
-```
-Traceback (most recent call last):
-  File "main.py", line 10, in <module>
-  File "main.py", line 7, in level1
-  File "main.py", line 4, in level2
-ZeroDivisionError: division by zero
-```
-
-**Implementation**: Codegen-level instrumentation (no MIR changes). `rt_stack_push`/`rt_stack_pop` emitted alongside GC prologue/epilogue. Always-on — overhead is a pointer bump on a pre-allocated 256-entry array. Traceback is captured at raise time and stored in `ExceptionObject`. Exception chaining preserves tracebacks. `ExceptionFrame` carries `traceback_depth` for correct unwinding on longjmp.
-
----
-
 ### 🟡 Improved Error Messages with Source Context
 
 **Why**: Compiler errors currently show type names and descriptions but don't always point to the exact source location with context (like `rustc` does with `^^^` underlines).
@@ -124,19 +109,6 @@ ZeroDivisionError: division by zero
 3. **Builtin constant evaluation**: Evaluate pure builtins on constant args: `len("abc")` → `3`, `int("42")` → `42`, `abs(-5)` → `5`.
 
 **Complexity**: Low-medium. A clean MIR pass with no architectural changes.
-
----
-
-### 🟢 Dead Code Elimination (DCE) — Completed
-
-**Why**: After constant folding and inlining, dead basic blocks and unused computations remain. Removing them reduces code size and improves cache behavior.
-
-**Implementation** (`crates/optimizer/src/dce/`):
-1. **Unreachable block elimination**: BFS from entry block, removes blocks not reachable via CFG edges.
-2. **Dead instruction elimination**: Removes pure instructions (Const, Copy, FuncAddr, type conversions) whose results are never used. BinOp/UnOp are conservatively kept because they can raise OverflowError/ZeroDivisionError.
-3. **Dead variable elimination**: Cleans up unused local variable entries from `func.locals`.
-
-Iterates to fixpoint for cascading dead code removal. Enabled via `--dce` CLI flag.
 
 ---
 
@@ -230,83 +202,6 @@ for i in range(1000000):
 ---
 
 ## 4. Language Features
-
-### ✅ Full Exception Objects (done)
-
-**Implemented**: `except E as e` now binds `e` to a heap-allocated exception instance:
-- Built-in exceptions: lazy instance creation at catch time with `.args` tuple (field 0)
-- Custom exceptions: eager instance creation at raise time via `lower_class_instantiation` — `__init__` is called, custom fields preserved
-- `str(e)` extracts the message from `ExceptionState` (matching by instance pointer) or falls back to `.args[0]`
-- `print(e)` works for both built-in and custom exception types
-- `e.args` accessible on built-in exceptions (requires type annotation: `args: tuple[str] = e.args`)
-- Custom fields accessible: `e.status`, `e.msg`, etc.
-- GC root scanning of `ExceptionState` keeps exception instances alive across `longjmp`
-- Fixed class ID space: all 28 built-in exceptions registered (0-27), `FIRST_USER_CLASS_ID = 28`
-
-**What remains (not yet supported)**:
-- `e.__class__.__name__` (requires class name attribute on instances)
-- `e.__traceback__` (traceback stored in `ExceptionObject` but not exposed as attribute)
-- `e.__cause__`, `e.__context__` (stored in `ExceptionObject` but not exposed as attributes)
-
----
-
-### 🔴 List Ordering Comparisons *(Implemented)*
-
-**Why**: `list1 < list2` (lexicographic comparison) doesn't work. This is a common Python pattern used in sorting, priority queues, and general comparisons. There is a TODO in `crates/lowering/src/expressions/operators.rs:731`.
-
-**Implementation plan**: Add `rt_list_compare(a, b, op) -> bool` to the runtime that does element-wise comparison with short-circuit. Handle nested lists recursively. Support `<`, `<=`, `>`, `>=`, `==`, `!=`.
-
-**Complexity**: Low-medium. Straightforward runtime function + codegen hookup.
-
----
-
-### 🟡 Truthiness for Heap Types in Generators *(Implemented)*
-
-**Why**: `not []`, `not {}` etc. inside generators incorrectly evaluate because generators use raw pointer comparison instead of calling truthiness. There is a TODO in `crates/lowering/src/generators/utils.rs:159`.
-
-**Implementation plan**: Add `rt_truthiness(obj) -> bool` runtime function that dispatches on type tag: empty list/dict/set/string → false, zero int/float → false, None → false, else true. Use this instead of raw pointer comparison in generator lowering.
-
----
-
-### 🟡 `__exit__` with Exception Info *(Implemented)*
-
-**Why**: Context managers receive `(exc_type, exc_val, exc_tb)` in `__exit__`. Currently we pass `(0, 0, 0)` or `(1, 0, 0)`. This prevents context managers from inspecting the exception. See TODO in `crates/frontend-python/src/ast_to_hir/statements/context_managers.rs:292`.
-
-**Implementation plan**: Pass the actual exception type tag and message to `__exit__`. Full traceback object is not needed initially — `exc_type` (as int class ID) and `exc_val` (as string message or exception object if feature #4.1 is done) are sufficient for most use cases.
-
----
-
-### ✅ Reverse Arithmetic Dunders
-
-**Implemented**: `__radd__`, `__rsub__`, `__rmul__`, `__rtruediv__`, `__rfloordiv__`, `__rmod__`, `__rpow__`. When the left operand doesn't have a forward dunder (or isn't a class), the right operand's reverse dunder is called with swapped argument order.
-
----
-
-### ✅ More Unary Dunders: `__pos__`, `__abs__`, `__invert__`
-
-**Implemented**: `+obj` calls `__pos__`, `abs(obj)` calls `__abs__`, `~obj` calls `__invert__` on custom classes. Same pattern as `__neg__`.
-
----
-
-### ✅ Conversion Dunders: `__int__`, `__float__`, `__bool__`
-
-**Implemented**: `int(obj)`, `float(obj)`, `bool(obj)` on custom classes. `bool()` falls back to `__len__` if `__bool__` is not defined (Python semantics).
-
----
-
-### ✅ Match Statement: Class Patterns
-
-**Implemented**: `case Point(x=0, y=y)` — isinstance check + keyword attribute matching with short-circuit branching. Supports inheritance (`case Shape(name=n)` matches subclasses). Positional patterns (`case Point(1, 2)`) not yet supported (requires `__match_args__`).
-
----
-
-### ✅ Container Dunders: `__len__` + MutableSequence Protocol
-
-**Why**: User-defined classes that implement `__len__`, `__contains__` (already done), `__getitem__`/`__setitem__`/`__delitem__` (already done) should work with `len()`, `in`, indexing. `__len__` is the main missing piece — currently `len(custom_obj)` raises a compile error.
-
-**Already in COMPILER_STATUS.md roadmap.**
-
----
 
 ### 🟢 Three-Level Closure Nesting
 
@@ -410,20 +305,6 @@ Low priority but occasionally needed:
 
 ---
 
-### 🟡 Language Server Protocol (LSP) Server
-
-**Why**: IDE integration (VS Code, etc.) with autocompletion, go-to-definition, type hover, and error highlighting for the Python subset. Makes the developer experience much better.
-
-**Implementation plan**: Build on the existing frontend (parser + type system). The LSP server would:
-- Parse on every keystroke (incremental parsing)
-- Report type errors as diagnostics
-- Provide hover info (types of variables/expressions)
-- Go-to-definition for functions, classes, imports
-
-**Complexity**: Medium-high. A separate binary/crate. Can use the `tower-lsp` crate.
-
----
-
 ### 🟢 Benchmark Suite Improvements
 
 **Why**: Current benchmarks have ~0.25s startup overhead that dominates small workloads, making results misleading (e.g., Primes shows 11x slower but the actual compute might be similar).
@@ -488,20 +369,3 @@ These are specific issues found in the codebase that should be addressed:
 | `frontend-python/ast_to_hir/statements/context_managers.rs:292` | `__exit__` receives `(0,0,0)` / `(1,0,0)` instead of actual `(exc_type, exc_val, exc_tb)` | 🟡 |
 | `lowering/type_planning/pre_scan.rs:433` | Decorated function ID found but unused — should link decorated function to its wrapper for better type inference | 🟢 |
 | `lowering/expressions/calls.rs:101` | Full list unpacking for all call paths not yet complete | 🟢 |
-
----
-
-## Summary: Suggested Priority Order
-
-For maximum impact with reasonable effort:
-
-1. **Constant folding + DCE** — low effort, immediate wins, enables other optimizations
-2. ~~**Stack traces**~~ — ✅ done (Python-style tracebacks with exception chaining)
-3. **List ordering comparisons** — low effort, closes a common feature gap
-4. **Escape analysis** — high effort, but the single biggest performance unlock
-5. ~~**DWARF debug info**~~ — ✅ done (MVP: line tables + function entries)
-6. ~~**Full exception objects**~~ — ✅ done (heap instances, `.args`, custom fields, `str(e)`)
-7. **Incremental compilation** — medium effort, quality-of-life for larger projects
-8. **Collection optimizations (SSO, allocator)** — medium effort, closes the CPython gap
-9. **Generational GC** — high effort, long-term performance foundation
-10. ~~**Remaining dunders** (`__radd__`, `__int__`, `__pos__`, etc.)~~ — ✅ implemented

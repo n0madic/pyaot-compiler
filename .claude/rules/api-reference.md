@@ -75,7 +75,9 @@ pub struct ShadowFrame {
 
 - Heap types: `str`, `list`, `dict`, `tuple`, class instances, iterators
 - Lowering marks heap locals as `is_gc_root: true`
-- Codegen: `gc_push` on entry, `gc_pop` on exit
+- Codegen: `gc_push` on entry, `gc_pop` on exit (skipped when `nroots == 0`)
+- Lock-free: GC state accessed via `AtomicPtr<GcState>`, no mutex
+- Slab allocator: objects ≤ 64 bytes bump-allocated from 4KB pages (`slab.rs`), not tracked in `GcState.objects` Vec
 
 ## Runtime Object Header
 
@@ -119,3 +121,6 @@ Runtime string pool for deduplication (strings < 256 bytes):
 - Compile-time literals → `rt_make_str_interned`
 - Dict keys auto-interned
 - Python API: `sys.intern(string)`
+- Lock-free: single `UnsafeCell<HashMap>` (no sharded mutexes)
+- Small string optimization: sizes rounded to slab classes (24/32/48/64) in `rt_make_str_impl`
+- `eq_hashable_obj` checks pointer equality first (`a == b`), then `slice`-based memcmp

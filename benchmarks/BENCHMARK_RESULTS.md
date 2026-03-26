@@ -13,16 +13,25 @@ Comparison of the Rust-based Python AOT compiler (pyaot) with CPython 3.
 
 | Benchmark | Compiled | CPython | Speedup | Category |
 |-----------|----------|---------|---------|----------|
-| Arithmetic Intensive (Fibonacci) | 180ms | 1539ms | **8.6x faster** | Computation |
-| Arithmetic (Mixed) | 11ms | 114ms | **10.4x faster** | Computation |
-| Primes | 2.0ms | 17ms | **8.5x faster** | Computation |
-| Matrix Multiply | 4.3ms | 42ms | **9.9x faster** | Computation |
-| Function Calls | 2.7ms | 24ms | **9.1x faster** | Control Flow |
-| Classes | 2.1ms | 17ms | **8.1x faster** | OOP |
-| List Intensive | 4.3ms | 31ms | **7.2x faster** | Collections |
-| List Operations | 1.9ms | 16ms | **8.4x faster** | Collections |
-| String Operations | 34ms | 60ms | **1.7x faster** | Collections |
-| Dictionary Operations | 3.0ms | 17ms | **5.7x faster** | Collections |
+| Arithmetic Intensive (Fibonacci) | 197ms | 1512ms | **7.7x faster** | Computation |
+| Arithmetic (Mixed) | 11ms | 112ms | **10.5x faster** | Computation |
+| Primes | 1.9ms | 17ms | **9.0x faster** | Computation |
+| Matrix Multiply | 4.0ms | 42ms | **10.6x faster** | Computation |
+| Function Calls | 2.7ms | 26ms | **9.6x faster** | Control Flow |
+| Classes | 2.1ms | 18ms | **8.6x faster** | OOP |
+| List Intensive | 3.8ms | 30ms | **7.9x faster** | Collections |
+| List Operations | 2.1ms | 16ms | **7.8x faster** | Collections |
+| String Operations | 34ms | 59ms | **1.8x faster** | Collections |
+| Dictionary Operations | 2.2ms | 17ms | **7.6x faster** | Collections |
+
+### Heavy Allocation Benchmarks (100K iterations)
+
+| Benchmark | Compiled | CPython | Speedup |
+|-----------|----------|---------|---------|
+| Class instances + method calls | 3.7ms | 29ms | **7.8x faster** |
+| Dict 100K insertions + lookups | 6.4ms | 25ms | **3.8x faster** |
+| String creation + concatenation | 5.0ms | 19ms | **3.7x faster** |
+| List append + iteration | 2.2ms | 20ms | **9.0x faster** |
 
 ## Key Findings
 
@@ -59,9 +68,12 @@ All benchmarks used `Mutex`/`RwLock` on every hot-path operation (gc_push/gc_pop
 
 ### Optimizations Applied
 1. **Lock-free runtime** — Replaced 10+ `Mutex`/`RwLock` statics with `UnsafeCell`/`AtomicPtr` (safe for single-threaded AOT-compiled Python)
-2. **Pointer equality fast path** — `eq_hashable_obj` checks `a == b` first, catching interned strings and pooled integers
-3. **Optimized string comparison** — Replaced byte-by-byte loops with `slice` comparison (uses SIMD `memcmp`)
-4. **Prior optimizations** — Timsort, triangular probing, SplitMix64 hashing, Boyer-Moore-Horspool string search, StringBuilder
+2. **Slab allocator** — Bump-pointer allocation from 4KB pages for objects ≤64 bytes (IntObj, FloatObj, StrObj, ListObj, DictObj, InstanceObj). Replaces system malloc (~50ns) with O(1) bump (~3ns). Free-list recycling on sweep.
+3. **Eliminated Vec tracking for small objects** — Slab-allocated objects are swept by iterating slab pages directly, avoiding `Vec::push` per allocation and `Vec::retain` per sweep cycle
+4. **Small string optimization** — String allocation sizes rounded to slab classes (24/32/48/64 bytes), ensuring most strings use slab bump allocation
+5. **Pointer equality fast path** — `eq_hashable_obj` checks `a == b` first, catching interned strings and pooled integers
+6. **Optimized string comparison** — Replaced byte-by-byte loops with `slice` comparison (uses SIMD `memcmp`)
+7. **Prior optimizations** — Timsort, triangular probing, SplitMix64 hashing, Boyer-Moore-Horspool string search, StringBuilder
 
 ## Important Note: First-Run Overhead
 

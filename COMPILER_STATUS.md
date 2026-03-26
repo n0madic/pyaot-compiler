@@ -910,12 +910,24 @@ String operations use Boyer-Moore-Horspool algorithm for efficient substring sea
 The runtime uses lock-free data structures for zero-overhead access in single-threaded AOT-compiled programs:
 
 - **GC state**: `AtomicPtr<GcState>` — gc_push/gc_pop/gc_alloc have zero synchronization overhead
-- **Boxing pools**: `UnsafeCell`-based storage — small int pool (-5..256) and bool singletons accessed without locking
+- **Boxing pools**: `UnsafeCell`-based `PoolStorage` — small int pool (-5..256) and bool singletons accessed without locking
 - **String pool**: Single `UnsafeCell<HashMap>` — no sharded mutexes
 - **Globals/class attrs**: `UnsafeCell<HashMap>` — lock-free get/set
 - **VTable/class registry**: `UnsafeCell<[T; 256]>` — direct array access
 - **Key comparison**: Pointer equality fast path in `eq_hashable_obj` catches interned strings, pooled ints, and bool singletons
 - **String comparison**: Uses `slice` comparison (SIMD-optimized `memcmp`) instead of byte-by-byte loops
+
+### Slab Allocator
+
+Objects ≤ 64 bytes use a slab allocator instead of system malloc:
+
+- **Location**: `runtime/src/slab.rs`
+- **Size classes**: 24 bytes (IntObj, FloatObj), 32 bytes (SetObj, short strings), 48 bytes (InstanceObj, medium strings), 64 bytes (ListObj, DictObj, longer strings)
+- **Allocation strategy**: Bump pointer from 4KB pages (~3ns per alloc vs ~50ns for system malloc). Falls back to free-list of recycled slots when available. New pages allocated on demand.
+- **GC integration**: Slab-allocated objects are NOT tracked in `GcState.objects` Vec. Sweep iterates slab pages directly, checking each slot's mark bit. Free slots identified by `ObjHeader.size == 0`.
+- **Small string optimization**: `rt_make_str_impl` rounds string allocation sizes up to the nearest slab class, ensuring most strings (≤40 chars) use slab bump allocation.
+- **Objects > 64 bytes**: Use system `alloc`/`dealloc`, tracked in `GcState.objects` Vec as before.
+- **Shutdown**: `slab().shutdown()` frees all pages in bulk.
 
 ### Lazy String Pool Initialization
 

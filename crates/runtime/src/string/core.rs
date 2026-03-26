@@ -17,13 +17,27 @@ pub unsafe fn rt_make_str_impl(data: *const u8, len: usize) -> *mut Obj {
 
     // Calculate size: header + len field + data bytes
     // Use checked arithmetic to prevent overflow
-    let size = std::mem::size_of::<ObjHeader>()
+    let raw_size = std::mem::size_of::<ObjHeader>()
         .checked_add(std::mem::size_of::<usize>())
         .and_then(|s| s.checked_add(len))
         .unwrap_or_else(|| {
             let msg = b"MemoryError: string size overflow";
             rt_exc_raise(ExceptionType::MemoryError as u8, msg.as_ptr(), msg.len());
         });
+
+    // Round up to slab size class for small strings to benefit from
+    // O(1) bump allocation instead of system malloc
+    let size = if raw_size <= 24 {
+        24
+    } else if raw_size <= 32 {
+        32
+    } else if raw_size <= 48 {
+        48
+    } else if raw_size <= 64 {
+        64
+    } else {
+        raw_size
+    };
 
     // Allocate using GC
     let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);

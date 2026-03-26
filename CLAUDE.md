@@ -52,7 +52,6 @@ Detailed structure in `.claude/rules/architecture.md`. Key APIs in `.claude/rule
 ```rust
 // Project-specific .expect() patterns:
 var_map.get(&id).expect("internal error: local not in var_map");
-mutex.lock().expect("GLOBALS mutex poisoned");
 Layout::from_size_align(...).expect("Allocation size overflow");
 ```
 

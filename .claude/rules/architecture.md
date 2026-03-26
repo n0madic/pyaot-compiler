@@ -23,7 +23,7 @@
 
 ```
 crates/runtime/src/
-├── gc.rs, object.rs, exceptions.rs, vtable.rs    # Core
+├── gc.rs, object.rs, slab.rs, exceptions.rs, vtable.rs    # Core
 ├── boxing.rs, conversions.rs, hash.rs, instance.rs, math_ops.rs  # Type ops
 ├── dict.rs, set.rs, bytes.rs, tuple.rs, list/, string/  # Collections
 ├── iterator/, sorted.rs, generator.rs  # Iteration

@@ -171,7 +171,9 @@ Strings under 256 bytes are interned (deduplicated) at runtime:
 - Dict keys are automatically interned (performance optimization for lookups)
 - `sys.intern()` exposes this to Python code
 
-Interned strings enable pointer equality for dict key comparisons instead of byte-by-byte comparison. This is why dict lookup is fast but only works correctly when keys are interned consistently.
+Interned strings enable pointer equality for dict key comparisons — `eq_hashable_obj` checks `a == b` before any byte comparison. This is why dict lookup is fast but only works correctly when keys are interned consistently.
+
+**Small string optimization**: `rt_make_str_impl` rounds allocation sizes to slab size classes (24/32/48/64 bytes). Strings ≤8 bytes → 32-byte slot, ≤24 → 48-byte slot, ≤40 → 64-byte slot. This ensures most strings use the slab allocator's O(1) bump allocation instead of system malloc.
 
 ---
 
@@ -285,19 +287,19 @@ If the runtime always creates `ELEM_HEAP_OBJ` lists from dict/set, the compiler'
 
 **Codegen note**: The `elem_tag` parameter uses `u8` in runtime but `i64` in MIR constants. The codegen must `ireduce` from i64 to i8 before the call.
 
-## GC Global State Limitations
+## GC Architecture
 
-The GC uses a single `static GC_STATE: OnceLock<Mutex<GcState>>` (`runtime/src/gc.rs:115`). This has important implications:
+The GC uses lock-free global state via `static GC_STATE_PTR: AtomicPtr<GcState>` (`runtime/src/gc.rs`). All access is through `unsafe fn gc_state() -> &'static mut GcState` — no mutex, no locking.
 
-**Single shadow stack**: `state.stack_top` is a single linked list of `ShadowFrame` pointers. Every compiled function pushes/pops to this one stack. If multiple threads execute compiled code simultaneously, their shadow frames will interleave in this list. GC mark phase would follow frames from mixed threads, leading to missed roots or dangling frame traversal.
+**Single-threaded design**: The project has no threading support (no async/await, no threading module). All runtime statics (`GcState`, boxing pools, string pool, globals, class attrs, vtable/class registries) use `UnsafeCell` for zero-overhead access. Any future work on parallelism must add synchronization.
 
-**Mutex on hot path**: `gc_push`, `gc_pop`, `gc_alloc` all acquire the mutex through `with_gc_state()`. These are the hottest paths in compiled code — every function call does push+pop, every heap allocation takes the lock. Under contention this becomes a severe bottleneck.
+**Slab allocator**: Objects ≤ 64 bytes are allocated from a slab allocator (`runtime/src/slab.rs`) with 4 size classes (24/32/48/64 bytes). Bump-pointer allocation from 4KB pages is ~10x faster than system malloc. Slab-allocated objects are NOT tracked in `GcState.objects` Vec — they are swept by iterating slab pages directly. Only objects > 64 bytes use system malloc and the Vec.
 
-**OnceLock prevents reinit**: `gc::init()` uses `get_or_init()` — it's a no-op after first call. `gc::shutdown()` frees all objects but cannot reset the `OnceLock`. This means test isolation requires external synchronization (see `RUNTIME_TEST_LOCK` in `lib.rs`).
+**Shadow stack leaf optimization**: Functions with `nroots == 0` (no heap-type locals) skip `gc_push`/`gc_pop` entirely. The codegen checks this at compile time (`function.rs:135`). Pure-computation functions (only int/float/bool locals) have zero GC overhead.
 
 **Map iterator boxing flag**: The map callback ABI is `fn(*mut Obj) -> *mut Obj` for all callbacks. User-defined functions compiled by Cranelift receive raw native types (i64 for int), so raw int elements from `ELEM_RAW_INT` lists pass through correctly. But builtin functions (like `str`, `int`) genuinely expect `*mut Obj` pointers. To distinguish, the compiler sets bit 7 of `capture_count` in `MapIterObj` (0x80 flag) for builtins, causing `iter_next_map` to box raw elements via `box_if_raw_int_iterator` before calling the callback. See `lowering/src/expressions/builtins/iteration.rs` and `runtime/src/iterator/next.rs`.
 
-**Current safety**: The project is single-threaded by design (no async/await, no threading module). The mutex is uncontended and adds negligible overhead. But any future work on parallelism must address the GC architecture first.
+**Test isolation**: `gc::init()` is idempotent (checks for null AtomicPtr). `gc::shutdown()` frees all objects but doesn't reset the AtomicPtr. Tests use `RUNTIME_TEST_LOCK` mutex in `lib.rs` for serialization.
 
 ---
 

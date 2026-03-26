@@ -146,6 +146,8 @@ pub fn shutdown() {
     }
     unsafe {
         let state = &mut *state_ptr;
+
+        // Free large objects tracked in Vec
         for obj_ptr in &state.objects {
             let obj = &**obj_ptr;
             let layout = Layout::from_size_align(obj.header.size, std::mem::align_of::<Obj>())
@@ -153,6 +155,9 @@ pub fn shutdown() {
             dealloc(*obj_ptr as *mut u8, layout);
         }
         state.objects.clear();
+
+        // Free all slab pages (small objects freed in bulk)
+        crate::slab::slab().shutdown();
     }
 }
 
@@ -242,12 +247,20 @@ pub extern "C" fn gc_alloc(size: usize, type_tag: u8) -> *mut Obj {
             }
         }
 
-        let layout = Layout::from_size_align(size, std::mem::align_of::<Obj>())
-            .expect("gc_alloc: invalid layout");
-        let ptr = alloc(layout) as *mut Obj;
-        if ptr.is_null() {
-            panic!("Out of memory");
-        }
+        let ptr = if crate::slab::is_slab_size(size) {
+            // Small object: allocate from slab (bump pointer, no Vec push)
+            crate::slab::slab().alloc(size) as *mut Obj
+        } else {
+            // Large object: allocate from system malloc, track in Vec
+            let layout = Layout::from_size_align(size, std::mem::align_of::<Obj>())
+                .expect("gc_alloc: invalid layout");
+            let p = alloc(layout) as *mut Obj;
+            if p.is_null() {
+                panic!("Out of memory");
+            }
+            state.objects.push(p);
+            p
+        };
 
         // Initialize header with pre-validated type tag
         (*ptr).header = ObjHeader {
@@ -263,7 +276,6 @@ pub extern "C" fn gc_alloc(size: usize, type_tag: u8) -> *mut Obj {
             size - std::mem::size_of::<ObjHeader>(),
         );
 
-        state.objects.push(ptr);
         state.total_allocated += size;
 
         ptr
@@ -746,43 +758,18 @@ fn sweep(state: &mut GcState) {
         crate::string::prune_string_pool();
     }
 
+    // 1. Sweep slab-allocated objects (small objects tracked via slab pages)
+    unsafe {
+        let bytes_freed = crate::slab::slab().sweep();
+        state.total_allocated = state.total_allocated.saturating_sub(bytes_freed);
+    }
+
+    // 2. Sweep large objects (tracked in state.objects Vec)
     state.objects.retain(|obj_ptr| unsafe {
         let obj = &mut **obj_ptr;
         if !obj.is_marked() {
             // Finalize objects before freeing to release auxiliary allocations
-            match obj.type_tag() {
-                TypeTagKind::File => {
-                    // Close unclosed files
-                    crate::file::file_finalize(*obj_ptr);
-                }
-                TypeTagKind::List => {
-                    // Free list data array
-                    crate::list::list_finalize(*obj_ptr);
-                }
-                TypeTagKind::Dict => {
-                    // Free dict entries array
-                    crate::dict::dict_finalize(*obj_ptr);
-                }
-                TypeTagKind::Set => {
-                    // Free set entries array
-                    crate::set::set_finalize(*obj_ptr);
-                }
-                TypeTagKind::Generator => {
-                    // Free generator type_tags array
-                    crate::generator::finalize_generator(*obj_ptr);
-                }
-                TypeTagKind::StringBuilder => {
-                    // Free StringBuilder buffer
-                    crate::string::string_builder_finalize(*obj_ptr);
-                }
-                TypeTagKind::StringIO => {
-                    crate::stringio::stringio_finalize(*obj_ptr);
-                }
-                TypeTagKind::BytesIO => {
-                    crate::stringio::bytesio_finalize(*obj_ptr);
-                }
-                _ => {}
-            }
+            crate::slab::finalize_object_pub(*obj_ptr);
             // Free this object
             let layout = Layout::from_size_align(obj.header.size, std::mem::align_of::<Obj>())
                 .expect("sweep: invalid layout during dealloc");
