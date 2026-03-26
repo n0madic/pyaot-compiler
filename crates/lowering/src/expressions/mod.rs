@@ -61,6 +61,11 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::Str(s) => self.lower_str_literal(*s, mir_func),
             hir::ExprKind::Bytes(b) => self.lower_bytes_literal(b, mir_func),
             hir::ExprKind::None => Ok(mir::Operand::Constant(mir::Constant::None)),
+            hir::ExprKind::ExcCurrentValue => {
+                let dest = self.alloc_and_add_local(Type::Any, mir_func);
+                self.emit_instruction(mir::InstructionKind::ExcGetCurrent { dest });
+                Ok(mir::Operand::Local(dest))
+            }
             hir::ExprKind::Var(var_id) => self.lower_var(*var_id, expr, mir_func),
 
             // Operators (operators.rs)

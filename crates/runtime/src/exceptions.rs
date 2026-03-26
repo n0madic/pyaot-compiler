@@ -793,11 +793,17 @@ pub unsafe extern "C" fn rt_exc_reraise() -> ! {
 }
 
 /// Get the current exception type tag
-/// Returns the type tag of current exception, or -1 if no exception
+/// Returns the type tag of current exception, or -1 if no exception.
+/// Checks both current_exception and handling_exception (the latter is set
+/// after ExcStartHandling in except handlers, e.g. context manager __exit__).
 #[no_mangle]
 pub extern "C" fn rt_exc_get_type() -> i32 {
     with_exception_state(|state| {
-        if let Some(ref exc) = state.current_exception {
+        let exc = state
+            .current_exception
+            .as_ref()
+            .or(state.handling_exception.as_ref());
+        if let Some(exc) = exc {
             exc.exc_type as i32
         } else {
             -1

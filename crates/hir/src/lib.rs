@@ -577,6 +577,12 @@ pub enum ExprKind {
     /// Compile-time constant from stdlib (e.g., math.pi, math.e)
     /// These are inlined as literal values at compile time
     StdlibConst(&'static pyaot_stdlib_defs::StdlibConstDef),
+
+    // ==================== Exception Intrinsics ====================
+    /// Current exception instance (*mut Obj as i64). Only valid inside an except handler.
+    /// Lowers to MIR ExcGetCurrent → rt_exc_get_current().
+    /// Used by context manager desugaring to pass exception info to __exit__.
+    ExcCurrentValue,
 }
 
 /// Binary operators

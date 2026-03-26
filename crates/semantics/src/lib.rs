@@ -432,7 +432,8 @@ impl<'a> SemanticAnalyzer<'a> {
             | ExprKind::ModuleAttr { .. }
             | ExprKind::StdlibAttr(_)
             | ExprKind::StdlibConst(_)
-            | ExprKind::BuiltinRef(_) => {}
+            | ExprKind::BuiltinRef(_)
+            | ExprKind::ExcCurrentValue => {}
         }
 
         Ok(())

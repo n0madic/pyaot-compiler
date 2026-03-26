@@ -493,8 +493,9 @@ def test_context_nested():
     assert ctx2.exited, "ctx2.exited should be True"
 
 # Exception info passed to __exit__
-# CPython passes None to __exit__ when no exception occurred
-# Our compiler passes 0 to match the method signature (int)
+# exc_type: exception instance pointer (truthy) or None/0 (falsy)
+# exc_val:  exception instance pointer or None/0
+# exc_tb:   None (traceback not yet supported)
 class ExcInfoChecker:
     had_exception: bool
 
@@ -505,10 +506,8 @@ class ExcInfoChecker:
         return 0
 
     def __exit__(self, exc_type: int, exc_val: int, exc_tb: int) -> bool:
-        # CPython: exc_type is None when no exception (use "is not None")
-        # Our compiler: exc_type is 0 when no exception (use "!= 0")
-        # Handle both cases: check if truthy (None is falsy, 0 is falsy)
-        self.had_exception = bool(exc_type)
+        # exc_type is the exception instance (truthy) or None/0 (falsy)
+        self.had_exception = exc_type != 0
         return False
 
 def test_exc_info_no_exception():
@@ -1449,5 +1448,48 @@ print("test_custom_exception_str_simple passed")
 
 test_print_builtin_exception()
 print("test_print_builtin_exception passed")
+
+# ===== SECTION: __exit__ receives real exception info =====
+
+class ExcValueReceiver:
+    exc_type_received: int
+    exc_val_received: int
+
+    def __init__(self):
+        self.exc_type_received = 0
+        self.exc_val_received = 0
+
+    def __enter__(self) -> int:
+        return 0
+
+    def __exit__(self, exc_type: int, exc_val: int, exc_tb: int) -> bool:
+        self.exc_type_received = exc_type
+        self.exc_val_received = exc_val
+        return False
+
+def test_exit_exc_val_on_exception():
+    ctx = ExcValueReceiver()
+    try:
+        with ctx:
+            raise ValueError("hello")
+    except:
+        pass
+    # exc_type and exc_val should both be non-zero (exception instance pointer)
+    assert ctx.exc_type_received != 0, "exc_type should be non-zero on exception"
+    assert ctx.exc_val_received != 0, "exc_val should be non-zero on exception"
+
+def test_exit_exc_val_on_normal():
+    ctx = ExcValueReceiver()
+    with ctx:
+        x: int = 1
+    # No exception: both should be 0
+    assert ctx.exc_type_received == 0, "exc_type should be 0 on normal exit"
+    assert ctx.exc_val_received == 0, "exc_val should be 0 on normal exit"
+
+test_exit_exc_val_on_exception()
+print("test_exit_exc_val_on_exception passed")
+
+test_exit_exc_val_on_normal()
+print("test_exit_exc_val_on_normal passed")
 
 print("All exception tests passed!")

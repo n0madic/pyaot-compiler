@@ -268,7 +268,7 @@ for i in range(1000000):
 
 ---
 
-### 🟡 `__exit__` with Exception Info
+### 🟡 `__exit__` with Exception Info *(Implemented)*
 
 **Why**: Context managers receive `(exc_type, exc_val, exc_tb)` in `__exit__`. Currently we pass `(0, 0, 0)` or `(1, 0, 0)`. This prevents context managers from inspecting the exception. See TODO in `crates/frontend-python/src/ast_to_hir/statements/context_managers.rs:292`.
 

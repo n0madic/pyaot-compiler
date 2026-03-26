@@ -88,7 +88,7 @@ Native Executable
 | Multiple except types | ✅ | `except (ValueError, TypeError) as e:` |
 | del statement | ✅ | `del dict[key]`, `del list[index]` |
 | Walrus operator `:=` | ✅ | `if (n := len(items)) > 10:` |
-| with (context managers) | ✅ | Exception suppression via `__exit__` returning True |
+| with (context managers) | ✅ | Exception suppression; `__exit__` receives `(exc_instance, exc_instance, None)` on exception, `(None, None, None)` otherwise |
 | assert | ✅ | Supports f-string messages |
 | match (pattern matching) | ✅ | Literal, singleton, capture, or, sequence, starred, mapping patterns; guards; `**rest` in mapping |
 | Multiple assignment | ✅ | `a = b = c = 5` |
@@ -1000,7 +1000,9 @@ Uses setjmp/longjmp (no overhead on happy path):
 - **Context Managers** (`with` statements):
   - Desugared to try/except/finally with `__enter__`/`__exit__` calls
   - Exception suppression: `__exit__` returning True prevents exception propagation
-  - Proper frame management ensures `__exit__` called exactly once with correct exc_type
+  - `__exit__` receives `(exc_instance, exc_instance, None)` on exception, `(None, None, None)` otherwise
+  - `exc_type` arg is the exception instance (truthy) rather than a type object (not yet supported)
+  - `exc_tb` is always None (traceback objects not yet supported)
 - **Variable Preservation Across Exception Unwinding**:
   - Variables assigned in try blocks are automatically wrapped in heap-allocated cells
   - Cells preserve values across setjmp/longjmp exception unwinding (immune to register restoration)

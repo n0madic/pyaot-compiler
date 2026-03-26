@@ -33,12 +33,12 @@ impl AstToHir {
     ///     BODY
     /// except:
     ///     __ctx_had_exc = True
-    ///     __ctx_suppress = __ctx_mgr.__exit__(1, 0, 0)  # 1 = exception occurred
+    ///     __ctx_suppress = __ctx_mgr.__exit__(exc_type, exc_val, exc_tb)
     ///     if not __ctx_suppress:
     ///         raise  # re-raise if not suppressed
     /// finally:
     ///     if not __ctx_had_exc:
-    ///         __ctx_mgr.__exit__(0, 0, 0)  # 0 = no exception
+    ///         __ctx_mgr.__exit__(None, None, None)
     /// ```
     fn convert_with_stmt(&mut self, with_stmt: py::StmtWith) -> Result<StmtId> {
         let with_span = Self::span_from(&with_stmt);
@@ -188,32 +188,36 @@ impl AstToHir {
             span: with_span,
         });
 
-        // 7b. __ctx_suppress = __ctx_mgr.__exit__(1, 0, 0)
+        // 7b. __ctx_suppress = __ctx_mgr.__exit__(exc_type, exc_val, exc_tb)
         let ctx_mgr_ref_except = self.module.exprs.alloc(Expr {
             kind: ExprKind::Var(ctx_mgr_var),
             ty: None,
             span: with_span,
         });
-        let one = self.module.exprs.alloc(Expr {
-            kind: ExprKind::Int(1),
-            ty: Some(Type::Int),
+        // exc_type: pass exception instance as a truthy stand-in for the type.
+        // CPython passes type(exc) which is always truthy; we don't have type
+        // objects, so we pass the instance pointer (non-null = truthy, matching
+        // the `if exc_type:` / `exc_type != 0` idiom used in context managers).
+        let exc_type_arg = self.module.exprs.alloc(Expr {
+            kind: ExprKind::ExcCurrentValue,
+            ty: None,
             span: with_span,
         });
-        let zero_exc1 = self.module.exprs.alloc(Expr {
-            kind: ExprKind::Int(0),
-            ty: Some(Type::Int),
+        let exc_val_arg = self.module.exprs.alloc(Expr {
+            kind: ExprKind::ExcCurrentValue,
+            ty: None,
             span: with_span,
         });
-        let zero_exc2 = self.module.exprs.alloc(Expr {
-            kind: ExprKind::Int(0),
-            ty: Some(Type::Int),
+        let exc_tb_arg = self.module.exprs.alloc(Expr {
+            kind: ExprKind::None,
+            ty: Some(Type::None),
             span: with_span,
         });
         let exit_call_exc = self.module.exprs.alloc(Expr {
             kind: ExprKind::MethodCall {
                 obj: ctx_mgr_ref_except,
                 method: self.interner.intern("__exit__"),
-                args: vec![one, zero_exc1, zero_exc2],
+                args: vec![exc_type_arg, exc_val_arg, exc_tb_arg],
                 kwargs: vec![],
             },
             ty: None,
@@ -289,32 +293,27 @@ impl AstToHir {
             ty: None,
             span: with_span,
         });
-        // TODO: CPython passes (exc_type, exc_val, exc_tb) to __exit__.
-        // We pass (0, 0, 0) for no exception and (1, 0, 0) for exception,
-        // which means context managers that inspect their arguments will behave
-        // incorrectly. Full support requires propagating exception info from the
-        // runtime's exception handling mechanism.
-        // When no exception occurs, pass 0 to __exit__ (0 represents "no exception")
-        let zero1 = self.module.exprs.alloc(Expr {
-            kind: ExprKind::Int(0),
-            ty: Some(Type::Int),
+        // No exception occurred: pass (None, None, None) matching CPython behavior
+        let none1 = self.module.exprs.alloc(Expr {
+            kind: ExprKind::None,
+            ty: Some(Type::None),
             span: with_span,
         });
-        let zero2 = self.module.exprs.alloc(Expr {
-            kind: ExprKind::Int(0),
-            ty: Some(Type::Int),
+        let none2 = self.module.exprs.alloc(Expr {
+            kind: ExprKind::None,
+            ty: Some(Type::None),
             span: with_span,
         });
-        let zero3 = self.module.exprs.alloc(Expr {
-            kind: ExprKind::Int(0),
-            ty: Some(Type::Int),
+        let none3 = self.module.exprs.alloc(Expr {
+            kind: ExprKind::None,
+            ty: Some(Type::None),
             span: with_span,
         });
         let exit_call_finally = self.module.exprs.alloc(Expr {
             kind: ExprKind::MethodCall {
                 obj: ctx_mgr_ref_finally,
                 method: self.interner.intern("__exit__"),
-                args: vec![zero1, zero2, zero3],
+                args: vec![none1, none2, none3],
                 kwargs: vec![],
             },
             ty: None,
