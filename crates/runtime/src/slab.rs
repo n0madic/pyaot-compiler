@@ -123,13 +123,6 @@ impl SizeClass {
         page
     }
 
-    /// Add a pointer to the free list (called during sweep)
-    #[inline]
-    unsafe fn free_slot(&mut self, ptr: *mut u8) {
-        *(ptr as *mut *mut u8) = self.free_head;
-        self.free_head = ptr;
-    }
-
     /// Free all pages (called during shutdown)
     unsafe fn free_all_pages(&mut self) {
         let layout =

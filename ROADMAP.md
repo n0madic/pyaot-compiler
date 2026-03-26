@@ -68,11 +68,18 @@ Function-name breakpoints (`b add`) already work on macOS. Source-level breakpoi
 
 ## 2. Optimizations
 
-### 🔴 Escape Analysis + Stack Allocation
+### 🟡 Escape Analysis + Stack Allocation
 
-**Why**: The GC is the biggest runtime overhead. Many objects (especially small temporaries like tuples, short strings, iterators) are created and die within the same function. Allocating them on the stack instead of the heap eliminates GC pressure entirely.
+**Why**: In allocation-heavy tight loops, heap allocation still accounts for 50-75% of execution time even with the slab allocator. Stack-allocating non-escaping temporaries would eliminate this overhead entirely.
 
-**Current state**: All heap types go through `gc_alloc`. No escape analysis exists.
+**Current state**: All heap types go through `gc_alloc` → slab allocator (≤64 bytes) or system malloc (>64 bytes). Slab bump allocation costs ~5ns per object. Stack allocation would cost ~0ns (just a stack pointer adjustment) and eliminate GC root registration and sweep overhead.
+
+**Measured overhead** (100K iterations):
+
+| Scenario | Total time | Allocation overhead | Savings with escape analysis |
+|----------|-----------|--------------------|-----------------------------|
+| String concat loop | 4.6ms | 2.6ms (56%) | ~2.6ms → **1.5-2x faster** |
+| Dict create loop | 7.9ms | 5.9ms (74%) | ~5.9ms → **2-3x faster** |
 
 **Implementation plan**:
 1. **MIR-level escape analysis**: For each allocation in a function, track whether the allocated value:
@@ -86,9 +93,9 @@ Function-name breakpoints (`b add`) already work on macOS. Source-level breakpoi
    - Iterator objects from `range()`, `enumerate()`, `zip()` that don't escape the loop
    - String concatenation intermediates
 
-**Expected impact**: 2-5x improvement on code with heavy temporary allocation (loops creating short-lived objects). This is the single highest-impact optimization for collection benchmarks.
+**Expected impact**: 1.5-3x improvement on code with heavy temporary allocation in tight loops. The absolute time savings are modest (ms-level for 100K iterations) since the slab allocator already handles the common case efficiently.
 
-**Complexity**: High. Requires a new MIR analysis pass. But the payoff is enormous.
+**Complexity**: High. Requires a new MIR analysis pass.
 
 ---
 
@@ -152,52 +159,31 @@ for i in range(1000000):
 
 ## 3. Runtime Performance
 
-### 🔴 Collection Operations Optimization
-
-**Why**: Benchmarks show 3-13x slower than CPython on collections. This is the biggest real-world performance gap.
-
-**Current state**: Timsort, triangular probing, SplitMix64 hashing, and StringBuilder already implemented. But allocation overhead and GC pressure remain high.
-
-**Specific targets**:
-
-1. **Small String Optimization (SSO)**: Strings under ~22 bytes stored inline in the object header, no separate heap allocation. Most strings in real programs are short (variable names, keys, error messages). This eliminates a heap allocation + pointer indirection per small string.
-
-2. **Custom allocator for small objects**: A slab/arena allocator for objects under 256 bytes (which covers most runtime objects). Reduces malloc overhead and improves cache locality. Could use a bump allocator for nursery-like behavior.
-
-3. **Method dispatch optimization**: Currently vtable dispatch goes through an indirect call for every method. For monomorphic call sites (one type seen at runtime), inline caching or call-site specialization would eliminate the indirection.
-
-4. **Dict key comparison fast path**: When both keys are interned strings, use pointer comparison instead of `memcmp`. This is already partially done for dict keys but could be extended to all string comparisons when both operands are known-interned.
-
-5. **List growth factor tuning**: Profile real workloads to find optimal growth factor (currently likely 2x like `Vec`). CPython uses ~1.125x for large lists to reduce memory waste.
-
----
-
 ### 🟡 Generational GC
 
-**Why**: Mark-sweep scans all live objects every collection. Most objects die young (generational hypothesis). A nursery generation with bump allocation + minor collection is much cheaper for short-lived objects.
+**Why**: The current mark-sweep GC scans ALL slab pages and large objects every collection. For programs with many long-lived objects and few short-lived allocations, this is wasteful. A generational approach (nursery + old gen) would scope minor collections to the nursery only.
 
-**Current state**: Single-generation shadow-stack mark-sweep. Global mutex (uncontended, single-threaded). See INSIGHTS.md for GC architecture details.
+**Current state**: Single-generation mark-sweep with slab allocator. The slab already provides bump-pointer allocation (similar to a nursery), but sweep still iterates all pages.
 
 **Implementation plan**:
-1. **Nursery (young generation)**: A contiguous memory region with bump-pointer allocation. No free-list overhead, allocation is just a pointer increment.
-2. **Minor collection**: When the nursery fills, scan shadow stack roots. Copy surviving nursery objects to the old generation. Dead nursery objects need no work (just reset the bump pointer).
-3. **Write barrier**: When an old-gen object stores a reference to a nursery object, record it in a "remembered set". Minor collection scans remembered set as additional roots.
-4. **Fallback to full collection**: If old-gen grows too large, do a full mark-sweep as today.
+1. **Nursery**: Repurpose the slab allocator's bump region as a nursery. Minor collection only scans nursery pages + remembered set.
+2. **Promotion**: Objects surviving a minor collection move to the old generation (system malloc tracked in Vec).
+3. **Write barrier**: When an old-gen object stores a reference to a nursery object, record it in a remembered set. Minor collection scans remembered set as additional roots.
+4. **Full collection fallback**: If old-gen grows too large, do a full mark-sweep.
 
-**Expected impact**: 2-10x improvement on allocation-heavy code. Nursery allocation (pointer bump) is essentially free compared to `malloc`.
+**Expected impact**: Reduced GC pause times for programs with many long-lived objects. For short-lived programs (current benchmarks), minimal benefit since collections are rare.
 
-**Complexity**: High. Requires write barriers in codegen (every pointer store to a heap object must check if it crosses generation boundary). But it's the standard approach for high-performance GCs.
+**Complexity**: High. Requires write barriers in codegen (every pointer store to a heap object must check generation boundary).
 
 ---
 
 ### 🟡 Object Model Optimization
 
-**Why**: Class instantiation is 13x slower than CPython. The current approach allocates a generic object and sets fields individually.
+**Why**: Class instances are already 8.6x faster than CPython for basic usage. Further gains possible for call-heavy code.
 
 **Targets**:
-1. **Inline instance fields**: Allocate instance as a single blob with fields at fixed offsets (already done via vtable). Optimize the allocation path to a single `gc_alloc` + field initialization without per-field function calls.
-2. **Monomorphic inline caches**: At call sites that always see the same class, cache the vtable pointer and skip the lookup on subsequent calls.
-3. **Flatten property access**: For simple `@property` getters that just return a field, inline the field access directly instead of going through a function call.
+1. **Monomorphic inline caches**: At call sites that always see the same class, cache the vtable pointer and skip the lookup on subsequent calls. Requires codegen changes to emit inline cache checks.
+2. **Flatten property access**: For simple `@property` getters that just return a field, inline the field access directly instead of going through a function call.
 
 ---
 
@@ -305,16 +291,10 @@ Low priority but occasionally needed:
 
 ---
 
-### 🟢 Benchmark Suite Improvements
+### ✅ Benchmark Suite Improvements (done)
 
-**Why**: Current benchmarks have ~0.25s startup overhead that dominates small workloads, making results misleading (e.g., Primes shows 11x slower but the actual compute might be similar).
-
-**Targets**:
-- Increase workload sizes so compute dominates startup
-- Add warm-up iterations
-- Measure compilation time separately
-- Add benchmarks for specific optimizations (escape analysis, constant folding)
 - Memory usage benchmarks (peak RSS, allocation count)
+- Benchmarks for specific optimizations (escape analysis, constant folding)
 
 ---
 
@@ -322,11 +302,11 @@ Low priority but occasionally needed:
 
 ### 🟡 Thread Safety Preparation
 
-**Why**: The current GC uses a single global mutex and single shadow stack (see INSIGHTS.md "GC Global State Limitations"). Any future work on parallelism requires addressing this first.
+**Why**: The runtime uses `UnsafeCell`/`AtomicPtr` for zero-overhead single-threaded access. All synchronization was removed. Any future work on parallelism requires re-adding thread-safe primitives.
 
 **Implementation plan** (no need to implement threading yet, but prepare the architecture):
 1. **Thread-local shadow stacks**: Replace global `stack_top` with `thread_local!` storage.
-2. **Per-thread nursery**: Each thread gets its own nursery for allocation without locking.
+2. **Per-thread nursery**: Each thread gets its own slab allocator for allocation without locking.
 3. **Stop-the-world for major GC**: When a full collection is needed, pause all threads.
 
 **Complexity**: High. Invasive change to the runtime. But preparation (thread-local storage) can be done incrementally.
@@ -362,10 +342,15 @@ Low priority but occasionally needed:
 
 These are specific issues found in the codebase that should be addressed:
 
-| Location | Issue | Priority |
-|----------|-------|----------|
-| `lowering/expressions/operators.rs:731` | List ordering comparisons (`<`, `<=`, `>`, `>=`) not implemented — need lexicographic runtime function | 🔴 |
-| `lowering/generators/utils.rs:159` | Truthiness check for heap types in generators uses raw pointer comparison instead of proper truthiness | 🟡 |
-| `frontend-python/ast_to_hir/statements/context_managers.rs:292` | `__exit__` receives `(0,0,0)` / `(1,0,0)` instead of actual `(exc_type, exc_val, exc_tb)` | 🟡 |
-| `lowering/type_planning/pre_scan.rs:433` | Decorated function ID found but unused — should link decorated function to its wrapper for better type inference | 🟢 |
-| `lowering/expressions/calls.rs:101` | Full list unpacking for all call paths not yet complete | 🟢 |
+| Location | Issue | Status |
+|----------|-------|--------|
+| `lowering/type_planning/pre_scan.rs:433` | Decorated function ID found but unused — should link decorated function to its wrapper for better type inference | 🟢 Open |
+| `lowering/expressions/calls.rs:101` | Full list unpacking for all call paths not yet complete | 🟢 Open |
+
+Previously resolved:
+
+| Location | Issue | Resolved In |
+|----------|-------|-------------|
+| `lowering/expressions/operators.rs` | List ordering comparisons (`<`, `<=`, `>`, `>=`) | ✅ `3b39c77` — lexicographic comparison via `rt_list_lt/lte/gt/gte` |
+| `lowering/generators/utils.rs` | Truthiness check for heap types in generators | ✅ `2e5b6ae` — proper truthiness via `convert_to_bool_in_block` |
+| `frontend-python/ast_to_hir/statements/context_managers.rs` | `__exit__` receives `(0,0,0)` instead of exception info | ✅ `6104e35` — real exception objects passed |
