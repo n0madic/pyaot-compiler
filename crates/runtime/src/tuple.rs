@@ -157,6 +157,19 @@ pub extern "C" fn rt_tuple_slice(tuple: *mut Obj, start: i64, end: i64) -> *mut 
             for i in 0..slice_len {
                 *dst_data.add(i) = *src_data.add(start as usize + i);
             }
+
+            // Propagate heap_field_mask: extract bits [start..start+slice_len) from the
+            // source mask and place them at [0..slice_len) in the new tuple's mask.
+            // A right-shift by `start` aligns the relevant bits to position 0.
+            let src_shift = start as u32;
+            let shifted = (*src).heap_field_mask >> src_shift;
+            // Build a mask covering exactly slice_len bits to clear any bits beyond the slice.
+            let keep_mask = if slice_len >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << slice_len) - 1
+            };
+            (*new_tuple_obj).heap_field_mask = shifted & keep_mask;
         }
 
         new_tuple

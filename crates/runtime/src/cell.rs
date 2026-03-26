@@ -81,8 +81,13 @@ pub extern "C" fn rt_make_cell_ptr(value: *mut Obj) -> *mut Obj {
 // ==================== Cell Get Functions ====================
 
 /// Get integer value from cell
+///
+/// Returns `0` if `cell` is null, matching zero-initialisation semantics.
 #[no_mangle]
 pub extern "C" fn rt_cell_get_int(cell: *mut Obj) -> i64 {
+    if cell.is_null() {
+        return 0;
+    }
     unsafe {
         let cell = cell as *mut CellObj;
         (*cell).value
@@ -90,8 +95,13 @@ pub extern "C" fn rt_cell_get_int(cell: *mut Obj) -> i64 {
 }
 
 /// Get float value from cell
+///
+/// Returns `0.0` if `cell` is null, matching zero-initialisation semantics.
 #[no_mangle]
 pub extern "C" fn rt_cell_get_float(cell: *mut Obj) -> f64 {
+    if cell.is_null() {
+        return 0.0;
+    }
     unsafe {
         let cell = cell as *mut CellObj;
         f64::from_bits((*cell).value as u64)
@@ -99,8 +109,13 @@ pub extern "C" fn rt_cell_get_float(cell: *mut Obj) -> f64 {
 }
 
 /// Get boolean value from cell
+///
+/// Returns `0` if `cell` is null, matching zero-initialisation semantics.
 #[no_mangle]
 pub extern "C" fn rt_cell_get_bool(cell: *mut Obj) -> i8 {
+    if cell.is_null() {
+        return 0;
+    }
     unsafe {
         let cell = cell as *mut CellObj;
         (*cell).value as i8
@@ -108,8 +123,13 @@ pub extern "C" fn rt_cell_get_bool(cell: *mut Obj) -> i8 {
 }
 
 /// Get pointer value from cell
+///
+/// Returns `null` if `cell` is null, matching zero-initialisation semantics.
 #[no_mangle]
 pub extern "C" fn rt_cell_get_ptr(cell: *mut Obj) -> *mut Obj {
+    if cell.is_null() {
+        return std::ptr::null_mut();
+    }
     unsafe {
         let cell = cell as *mut CellObj;
         (*cell).value as *mut Obj

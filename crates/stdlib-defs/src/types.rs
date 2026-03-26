@@ -155,6 +155,14 @@ pub struct LoweringHints {
     /// When true, lowering will box Int/Float/Bool arguments for Any params.
     /// Default is true for most functions - set to false to disable.
     pub auto_box: bool,
+
+    /// Append the actual user-supplied argument count as an extra trailing i64
+    /// argument after all regular parameters (including filled-in defaults).
+    ///
+    /// This allows runtime functions to distinguish "called with N args" from
+    /// "called with N+1 args where some are filled by defaults". Useful when a
+    /// sentinel default value collides with a valid user-supplied value.
+    pub pass_arg_count: bool,
 }
 
 impl LoweringHints {
@@ -162,18 +170,29 @@ impl LoweringHints {
     pub const DEFAULT: Self = Self {
         variadic_to_list: false,
         auto_box: true,
+        pass_arg_count: false,
     };
 
     /// Hints for variadic functions that collect args to list
     pub const VARIADIC_TO_LIST: Self = Self {
         variadic_to_list: true,
         auto_box: true,
+        pass_arg_count: false,
     };
 
     /// Hints with no auto-boxing (for functions that handle primitives directly)
     pub const NO_AUTO_BOX: Self = Self {
         variadic_to_list: false,
         auto_box: false,
+        pass_arg_count: false,
+    };
+
+    /// Hints with no auto-boxing and an appended argument count parameter.
+    /// Use for functions where a sentinel default would collide with a valid seed value.
+    pub const NO_AUTO_BOX_PASS_ARG_COUNT: Self = Self {
+        variadic_to_list: false,
+        auto_box: false,
+        pass_arg_count: true,
     };
 }
 

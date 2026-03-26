@@ -139,6 +139,73 @@ fn parse_format_spec(spec_str: &str) -> Result<FormatSpec, String> {
     Ok(spec)
 }
 
+/// Insert a grouping separator every 3 digits from the right into `digits`.
+/// `digits` must contain only ASCII digit characters (no sign, no prefix).
+fn insert_grouping(digits: &str, sep: char) -> String {
+    let len = digits.len();
+    if len <= 3 {
+        return digits.to_string();
+    }
+    let mut result = String::with_capacity(len + len / 3);
+    let first_group = len % 3;
+    if first_group > 0 {
+        result.push_str(&digits[..first_group]);
+    }
+    let mut i = first_group;
+    while i < len {
+        if !result.is_empty() {
+            result.push(sep);
+        }
+        result.push_str(&digits[i..i + 3]);
+        i += 3;
+    }
+    result
+}
+
+/// Apply grouping separators to a formatted integer or float string.
+///
+/// `s` may start with an optional sign char (`+`, `-`, ` `) and an optional
+/// prefix (`0x`, `0b`, `0o`). Grouping is applied only to the digit run that
+/// precedes any `.` or `e`/`E`.
+fn apply_grouping_to_number(s: &str, sep: char) -> String {
+    let chars: &[u8] = s.as_bytes();
+    let mut i = 0;
+
+    // Consume optional sign
+    let sign_len = if !chars.is_empty() && matches!(chars[0], b'+' | b'-' | b' ') {
+        1
+    } else {
+        0
+    };
+    i += sign_len;
+
+    // Consume optional prefix (0x, 0X, 0b, 0B, 0o, 0O)
+    let prefix_len = if i + 1 < chars.len()
+        && chars[i] == b'0'
+        && matches!(chars[i + 1], b'x' | b'X' | b'b' | b'B' | b'o' | b'O')
+    {
+        2
+    } else {
+        0
+    };
+    i += prefix_len;
+
+    // Find the end of the integer digit run (stop at '.', 'e', 'E', '%')
+    let digit_start = i;
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        i += 1;
+    }
+    let digit_end = i;
+    let tail = &s[digit_end..]; // everything after the integer digits
+
+    let sign = &s[..sign_len];
+    let prefix = &s[sign_len..sign_len + prefix_len];
+    let digits = &s[digit_start..digit_end];
+
+    let grouped = insert_grouping(digits, sep);
+    format!("{}{}{}{}", sign, prefix, grouped, tail)
+}
+
 /// Apply padding to a string
 fn apply_padding(s: &str, spec: &FormatSpec) -> String {
     let width = match spec.width {
@@ -250,7 +317,7 @@ fn format_int(value: i64, spec: &FormatSpec) -> Result<String, String> {
                 return Err("%c requires int in range(0x110000)".to_string());
             }
             if let Some(ch) = char::from_u32(value as u32) {
-                return Ok(ch.to_string()); // No padding for character
+                ch.to_string()
             } else {
                 return Err(format!("Invalid character code: {}", value));
             }
@@ -264,7 +331,7 @@ fn format_int(value: i64, spec: &FormatSpec) -> Result<String, String> {
     };
 
     // Add alternate form prefix
-    if spec.alternate && value != 0 {
+    if spec.alternate {
         match type_spec {
             'b' => {
                 if value < 0 {
@@ -307,6 +374,15 @@ fn format_int(value: i64, spec: &FormatSpec) -> Result<String, String> {
                 _ => {}
             }
         }
+    }
+
+    // Apply grouping separator (only for decimal; CPython also supports '_' for b/o/x/X)
+    if let Some(sep) = spec.grouping {
+        let allowed = matches!(type_spec, 'd' | 'n' | 'b' | 'o' | 'x' | 'X');
+        if !allowed {
+            return Err(format!("Cannot specify '{}' with '{}'", sep, type_spec));
+        }
+        result = apply_grouping_to_number(&result, sep);
     }
 
     // Apply padding
@@ -460,6 +536,15 @@ fn format_float(value: f64, spec: &FormatSpec) -> Result<String, String> {
                 _ => {}
             }
         }
+    }
+
+    // Apply grouping separator to the integer portion (before the decimal point)
+    if let Some(sep) = spec.grouping {
+        let allowed = matches!(type_spec, 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | '%' | 'n');
+        if !allowed {
+            return Err(format!("Cannot specify '{}' with '{}'", sep, type_spec));
+        }
+        result = apply_grouping_to_number(&result, sep);
     }
 
     // Apply padding

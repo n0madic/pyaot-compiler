@@ -4,7 +4,7 @@
 use crate::debug_assert_type_tag;
 use crate::gc;
 use crate::hash_table_utils::hash_hashable_obj;
-use crate::object::{ListObj, Obj, SetObj, TypeTagKind, TOMBSTONE};
+use crate::object::{ListObj, Obj, SetObj, TypeTagKind, ELEM_HEAP_OBJ, TOMBSTONE};
 use std::alloc::{alloc_zeroed, Layout};
 
 use crate::hash_table_utils::find_slot_generic;
@@ -75,10 +75,28 @@ fn set_resize(set: *mut crate::object::SetObj, new_capacity: usize) {
                 let hash = (*old_entry).hash;
                 let base = hash as usize;
 
-                // Find empty slot in new table using triangular probing
+                // Find empty slot in new table using triangular probing.
                 // offset = i*(i+1)/2: 0, 1, 3, 6, 10, 15, ...
+                // With a power-of-2 capacity and a load factor <= 2/3, triangular
+                // probing visits every slot exactly once before cycling, so an empty
+                // slot is always found within `new_capacity` steps.  The bound check
+                // below is a defensive safety guard; it should never trigger in
+                // practice because set_resize is only called when there is spare
+                // capacity, and the new_capacity is always a power of 2.
                 let mut probe_i = 0usize;
                 loop {
+                    if probe_i >= new_capacity {
+                        // This can only happen if new_capacity is too small for the
+                        // existing elements, which indicates a bug in the caller.
+                        // Panic here rather than looping forever.
+                        panic!(
+                            "set_resize: failed to find empty slot after {} probes \
+                             (new_capacity={}, len={}); resize target too small",
+                            probe_i,
+                            new_capacity,
+                            (*set).len,
+                        );
+                    }
                     let offset = (probe_i * (probe_i + 1)) >> 1;
                     let index = (base + offset) & mask;
                     let entry = new_entries.add(index);
@@ -924,6 +942,7 @@ pub extern "C" fn rt_set_to_list(set: *mut Obj) -> *mut Obj {
             .expect("Allocation size overflow - capacity too large");
         let data = alloc_zeroed(data_layout) as *mut *mut Obj;
 
+        (*list).elem_tag = ELEM_HEAP_OBJ;
         (*list).len = set_len;
         (*list).capacity = set_len;
         (*list).data = data;

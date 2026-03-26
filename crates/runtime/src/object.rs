@@ -298,6 +298,7 @@ pub struct GeneratorObj {
     pub closing: bool, // True when close() was called (GeneratorExit pending)
     pub num_locals: u32, // Number of local variables stored
     pub sent_value: i64, // Value sent via send() (stored as i64, could be ptr or int)
+    pub sent_value_tag: u8, // Type tag for sent_value (LOCAL_TYPE_PTR if heap pointer)
     pub type_tags: *mut u8, // Type tag array for each local (for precise GC)
     pub locals: [i64; 0], // Flexible array: local variables (i64 for int/float/bool/ptr)
 }

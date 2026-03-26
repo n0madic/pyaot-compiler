@@ -36,7 +36,7 @@ unsafe impl<T: Copy, const N: usize> Sync for RegistryStorage<T, N> {}
 static CLASS_REGISTRY: RegistryStorage<ClassInfo, MAX_CLASSES> = RegistryStorage(UnsafeCell::new(
     [ClassInfo {
         parent_class_id: NO_PARENT,
-        heap_field_mask: u64::MAX, // Default: treat all fields as heap (conservative)
+        heap_field_mask: 0, // Default: treat no fields as heap (fail-safe; classes must register)
     }; MAX_CLASSES],
 ));
 

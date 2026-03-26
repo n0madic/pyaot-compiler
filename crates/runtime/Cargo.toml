@@ -16,7 +16,7 @@ stdlib-full = ["stdlib-json", "stdlib-regex", "stdlib-crypto", "stdlib-base64", 
 # Individual stdlib features
 stdlib-json = ["dep:serde_json"]
 stdlib-regex = ["dep:regex-lite"]
-stdlib-crypto = ["dep:sha2", "dep:md-5"]
+stdlib-crypto = ["dep:sha2", "dep:md-5", "dep:sha1"]
 stdlib-base64 = ["dep:base64"]
 stdlib-network = ["dep:ureq"]
 
@@ -29,5 +29,6 @@ regex-lite = { version = "0.1", optional = true }
 serde_json = { version = "1", optional = true }
 ureq = { version = "3", optional = true }
 sha2 = { version = "0.10", optional = true }
+sha1 = { version = "0.10", optional = true }
 md-5 = { version = "0.10", optional = true }
 base64 = { version = "0.22", optional = true }

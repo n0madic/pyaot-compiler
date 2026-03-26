@@ -293,17 +293,26 @@ pub extern "C" fn rt_sorted_range(start: i64, stop: i64, step: i64, reverse: i64
         return rt_make_list(0, ELEM_HEAP_OBJ);
     }
 
-    // Calculate range length
+    // Calculate range length using i128 arithmetic to prevent overflow.
+    // Plain i64 subtraction can wrap when operands span the full i64 range
+    // (e.g. stop = i64::MAX, start = i64::MIN).
     let len = if step > 0 {
-        if stop > start {
-            ((stop - start + step - 1) / step) as usize
+        let diff = (stop as i128).checked_sub(start as i128).unwrap_or(0);
+        if diff <= 0 {
+            0usize
         } else {
-            0
+            let count = (diff + step as i128 - 1) / step as i128;
+            count.min(i64::MAX as i128) as usize
         }
-    } else if start > stop {
-        ((start - stop - step - 1) / (-step)) as usize
     } else {
-        0
+        // step < 0 (step == 0 handled above)
+        let diff = (start as i128).checked_sub(stop as i128).unwrap_or(0);
+        if diff <= 0 {
+            0usize
+        } else {
+            let count = (diff + (-step as i128) - 1) / (-step as i128);
+            count.min(i64::MAX as i128) as usize
+        }
     };
 
     let new_list = rt_make_list(len as i64, ELEM_RAW_INT);
@@ -337,12 +346,42 @@ pub extern "C" fn rt_sorted_range(start: i64, stop: i64, step: i64, reverse: i64
 
 // ==================== Sorted with key functions ====================
 
+/// Determine if a pointer value is a valid heap object by validating its object header.
+///
+/// This is safer than the raw `is_heap_obj` address heuristic because it also checks
+/// that the `type_tag` field at the target address contains a known `TypeTagKind` value.
+/// A raw integer that happens to be address-aligned and in a plausible range but does
+/// not point to a real object will almost certainly not have a valid type tag byte at
+/// that address.
+///
+/// Steps:
+/// 1. Coarse address check: non-null, minimum address, 8-byte aligned.
+/// 2. Read the first byte of the putative object header (the `type_tag` field).
+/// 3. Verify the byte is a known `TypeTagKind` discriminant.
+///
+/// This can still theoretically misidentify a raw integer whose value points to
+/// memory that happens to contain a valid type tag byte, but that scenario is
+/// vanishingly unlikely in practice given the combination of checks.
+unsafe fn is_heap_obj_validated(ptr: *mut Obj) -> bool {
+    use crate::object::TypeTagKind;
+    let addr = ptr as usize;
+    // Coarse address / alignment check first (cheap).
+    if addr < 0x10000 || (addr & 0x7) != 0 {
+        return false;
+    }
+    // Validate by reading the type_tag byte at the object header.
+    let tag_byte = (ptr as *const u8).read();
+    TypeTagKind::from_tag(tag_byte).is_some()
+}
+
 /// Compare two key values returned by key functions.
-/// Key functions can return heap objects (strings, etc.) or raw integers (e.g. len()),
-/// so we detect the storage type using a heuristic.
+/// Key functions can return heap objects (strings, etc.) or raw integers (e.g. len()).
+/// The storage type is detected by validating the object header's type_tag field rather
+/// than relying solely on address-range heuristics, which could misidentify a large raw
+/// integer that happens to be address-aligned as a heap object.
 pub(crate) unsafe fn compare_key_values(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
-    let a_is_heap = crate::utils::is_heap_obj(a);
-    let b_is_heap = crate::utils::is_heap_obj(b);
+    let a_is_heap = is_heap_obj_validated(a);
+    let b_is_heap = is_heap_obj_validated(b);
     let elem_tag = if a_is_heap && b_is_heap {
         ELEM_HEAP_OBJ
     } else if !a_is_heap && !b_is_heap {

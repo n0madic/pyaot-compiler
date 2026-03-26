@@ -123,8 +123,14 @@ pub unsafe extern "C" fn rt_stringio_write(sio: *mut Obj, s: *mut Obj) -> i64 {
         return 0;
     }
 
-    // Calculate required capacity (write at current position)
-    let end_pos = (*sio_obj).position + str_len;
+    // Calculate required capacity (write at current position) with overflow check
+    let end_pos = (*sio_obj).position.checked_add(str_len).unwrap_or_else(|| {
+        crate::exceptions::rt_exc_raise(
+            pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
+            b"StringIO write position overflow" as *const u8,
+            "StringIO write position overflow".len(),
+        )
+    });
     ensure_capacity(&mut (*sio_obj).buffer, &mut (*sio_obj).capacity, end_pos);
 
     // Write data at current position
@@ -252,7 +258,8 @@ pub unsafe extern "C" fn rt_stringio_truncate(sio: *mut Obj, size: i64) -> i64 {
     let new_len = if size < 0 {
         (*sio_obj).position
     } else {
-        size as usize
+        // Clamp to current length: truncate cannot extend beyond existing content
+        (size as usize).min((*sio_obj).len)
     };
 
     (*sio_obj).len = new_len;
@@ -314,8 +321,17 @@ pub unsafe extern "C" fn rt_bytesio_write(bio: *mut Obj, b: *mut Obj) -> i64 {
         return 0;
     }
 
-    // Calculate required capacity (write at current position)
-    let end_pos = (*bio_obj).position + bytes_len;
+    // Calculate required capacity (write at current position) with overflow check
+    let end_pos = (*bio_obj)
+        .position
+        .checked_add(bytes_len)
+        .unwrap_or_else(|| {
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
+                b"BytesIO write position overflow" as *const u8,
+                "BytesIO write position overflow".len(),
+            )
+        });
     ensure_capacity(&mut (*bio_obj).buffer, &mut (*bio_obj).capacity, end_pos);
 
     // Write data at current position
@@ -389,7 +405,7 @@ pub unsafe extern "C" fn rt_bytesio_seek(bio: *mut Obj, pos: i64) -> i64 {
         );
     }
 
-    let new_pos = (pos as usize).min((*bio_obj).len);
+    let new_pos = pos as usize; // Allow seeking past end (matches CPython BytesIO)
     (*bio_obj).position = new_pos;
     new_pos as i64
 }

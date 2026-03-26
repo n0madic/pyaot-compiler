@@ -6,7 +6,7 @@
 use crate::gc::gc_alloc;
 use crate::object::{FileMode, FileObj, Obj, StrObj, TypeTagKind};
 use std::fs::OpenOptions;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::ptr;
 
 /// Open a file with the given mode
@@ -106,10 +106,25 @@ pub unsafe extern "C" fn rt_file_read(file: *mut Obj) -> *mut Obj {
     }
 
     let handle = &mut *(*file_obj).handle;
+
+    // Cap unbounded reads at 1 GB to prevent OOM on unexpectedly large files.
+    // Reads that need more than this should use read(n) with explicit sizes.
+    const MAX_READ_ALL_SIZE: u64 = 1 << 30; // 1 GB
+                                            // Read one byte beyond the limit so we can detect overflow without consuming
+                                            // more memory than necessary.
+    let mut limited = Read::take(handle, MAX_READ_ALL_SIZE + 1);
     let mut buffer = Vec::new();
 
-    match handle.read_to_end(&mut buffer) {
+    match limited.read_to_end(&mut buffer) {
         Ok(_) => {
+            if buffer.len() as u64 > MAX_READ_ALL_SIZE {
+                let msg = b"read(): file too large; use read(n) for files over 1 GB";
+                crate::exceptions::rt_exc_raise(
+                    pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+                    msg.as_ptr(),
+                    msg.len(),
+                );
+            }
             if (*file_obj).binary {
                 // Return bytes object
                 crate::bytes::rt_make_bytes(buffer.as_ptr(), buffer.len())
@@ -189,15 +204,27 @@ pub unsafe extern "C" fn rt_file_readline(file: *mut Obj) -> *mut Obj {
 
     let handle = &mut *(*file_obj).handle;
     let mut line = Vec::new();
-    let mut byte = [0u8; 1];
 
+    // Read in chunks for efficiency instead of 1-byte-at-a-time syscalls.
+    // After finding a newline, seek back so subsequent reads start correctly.
+    const CHUNK_SIZE: usize = 4096;
+    let mut buf = [0u8; CHUNK_SIZE];
     loop {
-        match handle.read(&mut byte) {
+        match handle.read(&mut buf) {
             Ok(0) => break, // EOF
-            Ok(_) => {
-                line.push(byte[0]);
-                if byte[0] == b'\n' {
+            Ok(n) => {
+                if let Some(pos) = buf[..n].iter().position(|&b| b == b'\n') {
+                    // Found newline — take up to and including it
+                    line.extend_from_slice(&buf[..=pos]);
+                    // Seek back to right after the newline
+                    let rewind = (n - pos - 1) as i64;
+                    if rewind > 0 {
+                        let _ = handle.seek(std::io::SeekFrom::Current(-rewind));
+                    }
                     break;
+                } else {
+                    // No newline in this chunk — append all and keep reading
+                    line.extend_from_slice(&buf[..n]);
                 }
             }
             Err(e) => {
@@ -230,41 +257,56 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
     }
 
     let handle = &mut *(*file_obj).handle;
-    let mut content = String::new();
 
-    match handle.read_to_string(&mut content) {
-        Ok(_) => {
-            // Create a list to hold the lines
-            let list = crate::list::rt_make_list(0, crate::object::ELEM_HEAP_OBJ);
-
-            // Split on '\n' to preserve whether the file ended with a newline.
-            // Splitting "a\nb\n" yields ["a", "b", ""] — the trailing empty
-            // element signals that the content ended with '\n' and should not
-            // become an extra empty line in the output.
-            let lines: Vec<&str> = content.split('\n').collect();
-            for (idx, line) in lines.iter().enumerate() {
-                let is_last = idx == lines.len() - 1;
-                if is_last && line.is_empty() {
-                    // Trailing '\n' produced an empty last element — skip it.
-                    break;
-                }
-                let line_str = if is_last && !content.ends_with('\n') {
-                    // Last line has no trailing newline — don't add one.
-                    line.to_string()
-                } else {
-                    format!("{}\n", line)
-                };
-                let line_obj = crate::string::rt_make_str(line_str.as_ptr(), line_str.len());
-                crate::list::rt_list_push(list, line_obj);
-            }
-
-            list
-        }
+    // Cap unbounded reads at 1 GB to prevent OOM on unexpectedly large files.
+    const MAX_READ_ALL_SIZE: u64 = 1 << 30; // 1 GB
+    let mut limited = Read::take(handle, MAX_READ_ALL_SIZE + 1);
+    let mut raw = Vec::new();
+    if let Err(e) = limited.read_to_end(&mut raw) {
+        let msg = format!("read error: {}", e);
+        crate::utils::raise_io_error(&msg);
+    }
+    if raw.len() as u64 > MAX_READ_ALL_SIZE {
+        let msg = b"readlines(): file too large; use read(n) for files over 1 GB";
+        crate::exceptions::rt_exc_raise(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+            msg.as_ptr(),
+            msg.len(),
+        );
+    }
+    let content = match String::from_utf8(raw) {
+        Ok(s) => s,
         Err(e) => {
-            let msg = format!("read error: {}", e);
+            let msg = format!("read error: invalid UTF-8: {}", e);
             crate::utils::raise_io_error(&msg);
         }
+    };
+
+    // Create a list to hold the lines
+    let list = crate::list::rt_make_list(0, crate::object::ELEM_HEAP_OBJ);
+
+    // Split on '\n' to preserve whether the file ended with a newline.
+    // Splitting "a\nb\n" yields ["a", "b", ""] — the trailing empty
+    // element signals that the content ended with '\n' and should not
+    // become an extra empty line in the output.
+    let lines: Vec<&str> = content.split('\n').collect();
+    for (idx, line) in lines.iter().enumerate() {
+        let is_last = idx == lines.len() - 1;
+        if is_last && line.is_empty() {
+            // Trailing '\n' produced an empty last element — skip it.
+            break;
+        }
+        let line_str = if is_last && !content.ends_with('\n') {
+            // Last line has no trailing newline — don't add one.
+            line.to_string()
+        } else {
+            format!("{}\n", line)
+        };
+        let line_obj = crate::string::rt_make_str(line_str.as_ptr(), line_str.len());
+        crate::list::rt_list_push(list, line_obj);
     }
+
+    list
 }
 
 /// Write data to the file

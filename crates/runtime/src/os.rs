@@ -12,6 +12,18 @@ use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+/// Convert a Path to a UTF-8 str, raising ValueError on non-UTF-8 paths instead of silently
+/// replacing bytes (which `to_string_lossy` does).
+fn path_to_utf8_str(path: &Path) -> &str {
+    path.to_str().unwrap_or_else(|| unsafe {
+        crate::exceptions::rt_exc_raise(
+            BuiltinExceptionKind::ValueError.tag(),
+            b"path is not valid UTF-8".as_ptr(),
+            "path is not valid UTF-8".len(),
+        )
+    })
+}
+
 /// Normalize a path by resolving `.` and `..` components without touching the filesystem.
 /// This matches Python's os.path.normpath behaviour.
 fn normalize_path(path: &Path) -> PathBuf {
@@ -92,9 +104,9 @@ pub extern "C" fn rt_os_path_join(parts: *mut Obj) -> *mut Obj {
             }
         }
 
-        // Convert result to string
-        let result = path.to_string_lossy().to_string();
-        make_str_from_rust(&result)
+        // Convert result to string (raises ValueError on non-UTF-8 paths)
+        let result = path_to_utf8_str(&path);
+        make_str_from_rust(result)
     }
 }
 
@@ -181,8 +193,8 @@ pub extern "C" fn rt_os_getcwd() -> *mut Obj {
     unsafe {
         match env::current_dir() {
             Ok(path) => {
-                let path_str = path.to_string_lossy().to_string();
-                make_str_from_rust(&path_str)
+                let path_str = path_to_utf8_str(&path);
+                make_str_from_rust(path_str)
             }
             Err(e) => {
                 let msg = format!("Error getting current directory: {}\0", e);
@@ -345,9 +357,9 @@ pub extern "C" fn rt_os_path_abspath(path: *mut Obj) -> *mut Obj {
             };
 
             let normalized = normalize_path(&abs_path);
-            // Convert to string (lossy, as CPython does for non-UTF-8 paths)
-            let result = normalized.to_string_lossy().to_string();
-            make_str_from_rust(&result)
+            // Convert to string (raises ValueError on non-UTF-8 paths)
+            let result = path_to_utf8_str(&normalized);
+            make_str_from_rust(result)
         } else {
             crate::exceptions::rt_exc_raise(
                 BuiltinExceptionKind::IOError.tag(),

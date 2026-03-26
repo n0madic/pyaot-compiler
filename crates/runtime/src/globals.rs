@@ -70,7 +70,14 @@ pub extern "C" fn rt_global_set(var_id: u32, value: i64) {
     }
 }
 
-/// Get a global variable value (legacy API - assumes integer)
+/// Get a global variable value (legacy API - assumes integer).
+///
+/// Returns 0 when the variable has not been set yet.  This does **not** raise
+/// `NameError` because the AOT compiler statically guarantees that every
+/// `GlobalGet` is dominated by a `GlobalSet` in the same compilation unit.
+/// The only way to reach this function with an unknown `var_id` is via a
+/// programming error in the compiler itself, not in user Python code.
+/// The type-specific `rt_global_get_*` functions share the same invariant.
 #[no_mangle]
 pub extern "C" fn rt_global_get(var_id: u32) -> i64 {
     unsafe {

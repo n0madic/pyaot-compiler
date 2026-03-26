@@ -219,15 +219,20 @@ thread_local! {
 
 // ==================== Public runtime functions ====================
 
-/// random.seed(n) - seed the RNG.
-/// n=i64::MIN is the sentinel for "no argument / seed(None)" — uses system entropy.
-/// All other values (including 0) seed deterministically, matching CPython's seed(int).
+/// random.seed(n, arg_count) - seed the RNG.
+///
+/// `arg_count` is the number of arguments the Python caller supplied:
+/// - `arg_count == 0`: seed() or seed(None) — use system entropy
+/// - `arg_count == 1`: seed(n) — seed deterministically with `n`
+///
+/// Using an explicit arg_count avoids the former i64::MIN sentinel, which
+/// made it impossible to seed with i64::MIN as an actual value.
 #[no_mangle]
-pub unsafe extern "C" fn rt_random_seed(n: i64) {
+pub unsafe extern "C" fn rt_random_seed(n: i64, arg_count: i64) {
     RNG.with(|rng| {
         let mut rng = rng.borrow_mut();
-        if n == i64::MIN {
-            // Sentinel for seed(None) or seed() with no arg — use system entropy
+        if arg_count == 0 {
+            // seed() or seed(None) — use system entropy
             *rng = MersenneTwister::from_entropy();
         } else {
             *rng = MersenneTwister::seed_from_int(n);

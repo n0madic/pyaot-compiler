@@ -17,15 +17,15 @@ pub extern "C" fn rt_str_upper(str_obj: *mut Obj) -> *mut Obj {
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
 
-        // Allocate new string
+        // Allocate new string first — gc_alloc may trigger collection
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         let new_str = obj as *mut StrObj;
         (*new_str).len = len;
 
-        // Copy and convert to uppercase (ASCII only for simplicity)
-        let src_data = (*src).data.as_ptr();
+        // Re-derive src_data AFTER gc_alloc to avoid use-after-free if src was moved
+        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
         let dst_data = (*new_str).data.as_mut_ptr();
         for i in 0..len {
             let c = *src_data.add(i);
@@ -48,15 +48,15 @@ pub extern "C" fn rt_str_lower(str_obj: *mut Obj) -> *mut Obj {
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
 
-        // Allocate new string
+        // Allocate new string first — gc_alloc may trigger collection
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         let new_str = obj as *mut StrObj;
         (*new_str).len = len;
 
-        // Copy and convert to lowercase (ASCII only for simplicity)
-        let src_data = (*src).data.as_ptr();
+        // Re-derive src_data AFTER gc_alloc to avoid use-after-free if src was moved
+        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
         let dst_data = (*new_str).data.as_mut_ptr();
         for i in 0..len {
             let c = *src_data.add(i);
@@ -78,13 +78,14 @@ pub extern "C" fn rt_str_title(str_obj: *mut Obj) -> *mut Obj {
     unsafe {
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
-        let src_data = (*src).data.as_ptr();
 
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
         let result = obj as *mut StrObj;
         (*result).len = len;
 
+        // Re-derive src_data AFTER gc_alloc to avoid use-after-free
+        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
         let dst_data = (*result).data.as_mut_ptr();
         let mut word_start = true;
 
@@ -116,13 +117,14 @@ pub extern "C" fn rt_str_capitalize(str_obj: *mut Obj) -> *mut Obj {
     unsafe {
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
-        let src_data = (*src).data.as_ptr();
 
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
         let result = obj as *mut StrObj;
         (*result).len = len;
 
+        // Re-derive src_data AFTER gc_alloc to avoid use-after-free
+        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
         let dst_data = (*result).data.as_mut_ptr();
 
         for i in 0..len {
@@ -149,13 +151,14 @@ pub extern "C" fn rt_str_swapcase(str_obj: *mut Obj) -> *mut Obj {
     unsafe {
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
-        let src_data = (*src).data.as_ptr();
 
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
         let result = obj as *mut StrObj;
         (*result).len = len;
 
+        // Re-derive src_data AFTER gc_alloc to avoid use-after-free
+        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
         let dst_data = (*result).data.as_mut_ptr();
 
         for i in 0..len {

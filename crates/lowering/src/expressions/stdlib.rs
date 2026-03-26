@@ -90,7 +90,17 @@ impl<'a> Lowering<'a> {
         }
 
         // Lower arguments with auto-boxing and default value support
-        let mir_args = self.lower_stdlib_args(func_def, args, hir_module, mir_func)?;
+        let mut mir_args = self.lower_stdlib_args(func_def, args, hir_module, mir_func)?;
+
+        // When requested, append the actual number of user-supplied arguments as
+        // a trailing i64. This lets the runtime distinguish "no arg given (default
+        // used)" from "arg explicitly provided", even when the default value would
+        // otherwise be a valid argument value (e.g., random.seed(i64::MIN)).
+        if hints.pass_arg_count {
+            mir_args.push(mir::Operand::Constant(
+                mir::Constant::Int(args.len() as i64),
+            ));
+        }
 
         let result_type = typespec_to_type(&func_def.return_type);
         let result_local = self.alloc_and_add_local(result_type, mir_func);

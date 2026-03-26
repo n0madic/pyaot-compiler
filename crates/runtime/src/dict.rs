@@ -272,8 +272,9 @@ pub extern "C" fn rt_dict_set(dict: *mut Obj, mut key: *mut Obj, value: *mut Obj
 
         let dict_obj = dict as *mut DictObj;
 
-        // Check if we need to resize (entries_len * 3 >= indices_capacity * 2 → >66% full)
-        if (*dict_obj).entries_len * 3 >= (*dict_obj).indices_capacity * 2 {
+        // Check if we need to resize (len * 3 >= indices_capacity * 2 → >66% full)
+        // Use live count (len), not entries_len which includes tombstones
+        if (*dict_obj).len * 3 >= (*dict_obj).indices_capacity * 2 {
             dict_resize(dict_obj);
         }
 
@@ -818,6 +819,7 @@ pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
                 (*entry).value = std::ptr::null_mut();
 
                 // Find and mark the corresponding index slot as DUMMY
+                // Must skip DUMMY_INDEX entries (tombstones) to follow the full probe chain
                 let cap = (*dict_obj).indices_capacity;
                 let mask = cap - 1;
                 let base = hash as usize;
@@ -830,8 +832,9 @@ pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
                         break;
                     }
                     if idx == EMPTY_INDEX {
-                        break; // Shouldn't happen, but be safe
+                        break;
                     }
+                    // DUMMY_INDEX: continue probing (tombstone in probe chain)
                 }
 
                 (*dict_obj).len -= 1;

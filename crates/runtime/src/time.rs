@@ -293,7 +293,11 @@ pub extern "C" fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
         let fmt_c = std::ffi::CString::new(format_str)
             .unwrap_or_else(|_| std::ffi::CString::new("").unwrap());
 
-        // Use a retry loop to handle format strings that produce long output
+        // Use a retry loop to handle format strings that produce long output.
+        // Double the buffer on each failed attempt, up to a 1 MB hard limit.
+        // The POSIX spec states strftime returns 0 on truncation (not error),
+        // so we keep doubling until the output fits or we exceed the limit.
+        const MAX_STRFTIME_BUF: usize = 1 << 20; // 1 MB
         let mut buf_size = 256usize;
         let result = loop {
             let mut buffer = vec![0i8; buf_size];
@@ -304,9 +308,14 @@ pub extern "C" fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
                     .into_owned();
                 break s;
             }
-            if buf_size >= 8192 {
-                // Give up — return empty string
-                break String::new();
+            if buf_size >= MAX_STRFTIME_BUF {
+                // Output still doesn't fit after 1 MB — raise an error.
+                let msg = b"strftime: formatted string too long";
+                crate::exceptions::rt_exc_raise(
+                    pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+                    msg.as_ptr(),
+                    msg.len(),
+                );
             }
             buf_size *= 2;
         };
@@ -320,13 +329,12 @@ pub extern "C" fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_time_strptime(string: *mut Obj, format: *mut Obj) -> *mut Obj {
     if string.is_null() || format.is_null() {
-        // Return a zeroed struct_time on error
         unsafe {
-            let mut tm: libc::tm = std::mem::zeroed();
-            tm.tm_year = 70; // 1970
-            tm.tm_mon = 0;
-            tm.tm_mday = 1;
-            return create_struct_time_obj(&tm);
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+                b"strptime: string and format must not be None" as *const u8,
+                "strptime: string and format must not be None".len(),
+            );
         }
     }
 
@@ -347,11 +355,17 @@ pub extern "C" fn rt_time_strptime(string: *mut Obj, format: *mut Obj) -> *mut O
         let result = libc::strptime(string_cstr.as_ptr(), format_cstr.as_ptr(), &mut tm);
 
         if result.is_null() {
-            // Parse failed - return default struct_time (epoch)
-            tm = std::mem::zeroed();
-            tm.tm_year = 70;
-            tm.tm_mon = 0;
-            tm.tm_mday = 1;
+            // Parse failed — raise ValueError matching CPython's behaviour
+            let msg = format!(
+                "time data '{}' does not match format '{}'",
+                crate::utils::str_obj_to_rust_string(string),
+                crate::utils::str_obj_to_rust_string(format)
+            );
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
         }
 
         create_struct_time_obj(&tm)

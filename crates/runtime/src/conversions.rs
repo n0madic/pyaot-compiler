@@ -1128,17 +1128,13 @@ pub extern "C" fn rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64 {
                     (10, trimmed)
                 }
             } else {
-                // Allow explicit base with prefix
-                let trimmed_str = if trimmed.starts_with("0x")
-                    || trimmed.starts_with("0X")
-                    || trimmed.starts_with("0b")
-                    || trimmed.starts_with("0B")
-                    || trimmed.starts_with("0o")
-                    || trimmed.starts_with("0O")
-                {
-                    &trimmed[2..]
-                } else {
-                    trimmed
+                // Only strip a prefix when it matches the requested base.
+                // CPython raises ValueError for mismatches such as int("0b10", 16).
+                let trimmed_str = match base {
+                    16 if trimmed.starts_with("0x") || trimmed.starts_with("0X") => &trimmed[2..],
+                    2 if trimmed.starts_with("0b") || trimmed.starts_with("0B") => &trimmed[2..],
+                    8 if trimmed.starts_with("0o") || trimmed.starts_with("0O") => &trimmed[2..],
+                    _ => trimmed,
                 };
                 (base as u32, trimmed_str)
             };

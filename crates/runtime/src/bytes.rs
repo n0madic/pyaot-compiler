@@ -629,6 +629,10 @@ pub extern "C" fn rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj
     }
 
     unsafe {
+        if old.is_null() || new.is_null() {
+            return bytes;
+        }
+
         let bytes_obj = bytes as *mut BytesObj;
         let old_obj = old as *mut BytesObj;
         let new_obj = new as *mut BytesObj;

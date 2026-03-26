@@ -100,12 +100,35 @@ pub extern "C" fn rt_urlopen(url: *mut Obj, data: *mut Obj, timeout: f64) -> *mu
                     rt_dict_set(headers_dict, key_obj, value_obj);
                 }
 
-                // Read the response body
-                let body_bytes = match response.into_body().read_to_vec() {
+                // Read the response body, capped at 1 GB to prevent OOM.
+                // ureq's into_with_config().limit() raises an error if the body
+                // exceeds the given size, so we don't need a manual take wrapper.
+                const MAX_BODY_SIZE: u64 = 1 << 30; // 1 GB
+                let body_bytes = match response
+                    .into_body()
+                    .into_with_config()
+                    .limit(MAX_BODY_SIZE)
+                    .read_to_vec()
+                {
                     Ok(bytes) => bytes,
                     Err(e) => {
-                        let msg = format!("urlopen: failed to read response body: {}", e);
-                        raise_io_error(&msg);
+                        // Distinguish limit-exceeded from other I/O errors so we
+                        // raise a descriptive RuntimeError rather than a generic IOError.
+                        let msg = if e.to_string().contains("BodyExceedsLimit")
+                            || e.to_string().contains("body")
+                        {
+                            format!(
+                                "urlopen: response body exceeds maximum allowed size ({} bytes)",
+                                MAX_BODY_SIZE
+                            )
+                        } else {
+                            format!("urlopen: failed to read response body: {}", e)
+                        };
+                        crate::exceptions::rt_exc_raise(
+                            pyaot_core_defs::BuiltinExceptionKind::RuntimeError.tag(),
+                            msg.as_ptr(),
+                            msg.len(),
+                        );
                     }
                 };
 

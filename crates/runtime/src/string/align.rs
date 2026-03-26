@@ -36,6 +36,8 @@ pub extern "C" fn rt_str_center(str_obj: *mut Obj, width: i64, fillchar: *mut Ob
         let right_pad = padding - left_pad;
 
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + width;
+        // gc_alloc may trigger a collection, which would invalidate any raw pointer
+        // derived from str_obj before this call. Re-derive src_data afterwards.
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
         let result = obj as *mut StrObj;
         (*result).len = width;
@@ -47,8 +49,9 @@ pub extern "C" fn rt_str_center(str_obj: *mut Obj, width: i64, fillchar: *mut Ob
             *dst_data.add(i) = fill;
         }
 
-        // Content
-        std::ptr::copy_nonoverlapping((*src).data.as_ptr(), dst_data.add(left_pad), src_len);
+        // Content — re-derive src_data AFTER gc_alloc to avoid use-after-free.
+        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
+        std::ptr::copy_nonoverlapping(src_data, dst_data.add(left_pad), src_len);
 
         // Right padding
         for i in 0..right_pad {
@@ -88,14 +91,17 @@ pub extern "C" fn rt_str_ljust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj
         };
 
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + width;
+        // gc_alloc may trigger a collection, which would invalidate any raw pointer
+        // derived from str_obj before this call. Re-derive src_data afterwards.
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
         let result = obj as *mut StrObj;
         (*result).len = width;
 
         let dst_data = (*result).data.as_mut_ptr();
 
-        // Content
-        std::ptr::copy_nonoverlapping((*src).data.as_ptr(), dst_data, src_len);
+        // Content — re-derive src_data AFTER gc_alloc to avoid use-after-free.
+        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
+        std::ptr::copy_nonoverlapping(src_data, dst_data, src_len);
 
         // Right padding
         for i in src_len..width {
@@ -137,6 +143,8 @@ pub extern "C" fn rt_str_rjust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj
         let padding = width - src_len;
 
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + width;
+        // gc_alloc may trigger a collection, which would invalidate any raw pointer
+        // derived from str_obj before this call. Re-derive src_data afterwards.
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
         let result = obj as *mut StrObj;
         (*result).len = width;
@@ -148,8 +156,9 @@ pub extern "C" fn rt_str_rjust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj
             *dst_data.add(i) = fill;
         }
 
-        // Content
-        std::ptr::copy_nonoverlapping((*src).data.as_ptr(), dst_data.add(padding), src_len);
+        // Content — re-derive src_data AFTER gc_alloc to avoid use-after-free.
+        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
+        std::ptr::copy_nonoverlapping(src_data, dst_data.add(padding), src_len);
 
         obj
     }
@@ -172,23 +181,27 @@ pub extern "C" fn rt_str_zfill(str_obj: *mut Obj, width: i64) -> *mut Obj {
             return str_obj;
         }
 
-        let src_data = (*src).data.as_ptr();
         let padding = width - src_len;
 
+        // Read has_sign from src_data before gc_alloc; no collection can occur yet.
+        let has_sign = if src_len > 0 {
+            let first = *(*src).data.as_ptr();
+            first == b'+' || first == b'-'
+        } else {
+            false
+        };
+
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + width;
+        // gc_alloc may trigger a collection, which would invalidate any raw pointer
+        // derived from str_obj before this call. Re-derive src_data afterwards.
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
         let result = obj as *mut StrObj;
         (*result).len = width;
 
         let dst_data = (*result).data.as_mut_ptr();
 
-        // Check for sign prefix
-        let has_sign = if src_len > 0 {
-            let first = *src_data;
-            first == b'+' || first == b'-'
-        } else {
-            false
-        };
+        // Re-derive src_data AFTER gc_alloc to avoid use-after-free.
+        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
 
         if has_sign {
             // Copy sign first

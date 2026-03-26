@@ -16,6 +16,9 @@ pub extern "C" fn rt_str_strip(str_obj: *mut Obj) -> *mut Obj {
     unsafe {
         let src = str_obj as *mut StrObj;
         let len = (*src).len;
+
+        // Compute start/end offsets using a temporary data pointer — this is safe
+        // because we have not called gc_alloc yet, so no collection can occur here.
         let data = (*src).data.as_ptr();
 
         // Find start (skip leading whitespace)
@@ -40,17 +43,21 @@ pub extern "C" fn rt_str_strip(str_obj: *mut Obj) -> *mut Obj {
 
         let result_len = end - start;
 
-        // Allocate new string
+        // Allocate new string — gc_alloc may trigger a collection, which would
+        // invalidate any raw pointer derived from str_obj before this call.
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         let new_str = obj as *mut StrObj;
         (*new_str).len = result_len;
 
-        // Copy trimmed data
+        // Re-derive src data pointer AFTER gc_alloc to avoid use-after-free.
+        // str_obj is a GC root held by the caller, so the object is still live;
+        // we just need a fresh pointer into it.
         if result_len > 0 {
+            let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
             std::ptr::copy_nonoverlapping(
-                data.add(start),
+                src_data.add(start),
                 (*new_str).data.as_mut_ptr(),
                 result_len,
             );
@@ -71,8 +78,9 @@ pub extern "C" fn rt_str_lstrip(str_obj: *mut Obj, chars: *mut Obj) -> *mut Obj 
     unsafe {
         let src = str_obj as *mut StrObj;
         let src_len = (*src).len;
-        let src_data = (*src).data.as_ptr();
 
+        // Compute the start offset before gc_alloc; no collection can occur here.
+        let src_data = (*src).data.as_ptr();
         let mut start = 0;
 
         if chars.is_null() {
@@ -106,7 +114,27 @@ pub extern "C" fn rt_str_lstrip(str_obj: *mut Obj, chars: *mut Obj) -> *mut Obj 
             }
         }
 
-        rt_make_str(src_data.add(start), src_len - start)
+        let result_len = src_len - start;
+
+        // Allocate result string — gc_alloc may trigger a collection, which would
+        // invalidate src_data. Re-derive it from str_obj (a live GC root) afterwards.
+        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
+        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
+
+        let new_str = obj as *mut StrObj;
+        (*new_str).len = result_len;
+
+        if result_len > 0 {
+            // Re-derive src_data AFTER gc_alloc to avoid use-after-free.
+            let fresh_src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
+            std::ptr::copy_nonoverlapping(
+                fresh_src_data.add(start),
+                (*new_str).data.as_mut_ptr(),
+                result_len,
+            );
+        }
+
+        obj
     }
 }
 
@@ -121,8 +149,9 @@ pub extern "C" fn rt_str_rstrip(str_obj: *mut Obj, chars: *mut Obj) -> *mut Obj 
     unsafe {
         let src = str_obj as *mut StrObj;
         let src_len = (*src).len;
-        let src_data = (*src).data.as_ptr();
 
+        // Compute the end offset before gc_alloc; no collection can occur here.
+        let src_data = (*src).data.as_ptr();
         let mut end = src_len;
 
         if chars.is_null() {
@@ -156,6 +185,22 @@ pub extern "C" fn rt_str_rstrip(str_obj: *mut Obj, chars: *mut Obj) -> *mut Obj 
             }
         }
 
-        rt_make_str(src_data, end)
+        let result_len = end;
+
+        // Allocate result string — gc_alloc may trigger a collection, which would
+        // invalidate src_data. Re-derive it from str_obj (a live GC root) afterwards.
+        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
+        let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
+
+        let new_str = obj as *mut StrObj;
+        (*new_str).len = result_len;
+
+        if result_len > 0 {
+            // Re-derive src_data AFTER gc_alloc to avoid use-after-free.
+            let fresh_src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
+            std::ptr::copy_nonoverlapping(fresh_src_data, (*new_str).data.as_mut_ptr(), result_len);
+        }
+
+        obj
     }
 }

@@ -120,14 +120,17 @@ static GC_STATE_PTR: AtomicPtr<GcState> = AtomicPtr::new(ptr::null_mut());
 /// Must only be called after `init()` and from a single thread.
 #[inline(always)]
 unsafe fn gc_state() -> &'static mut GcState {
-    &mut *GC_STATE_PTR.load(Ordering::Relaxed)
+    let ptr = GC_STATE_PTR.load(Ordering::Relaxed);
+    debug_assert!(!ptr.is_null(), "gc_state() called before init()");
+    if ptr.is_null() {
+        eprintln!("FATAL: GC accessed before initialization. Call rt_init() first.");
+        std::process::abort();
+    }
+    &mut *ptr
 }
 
 /// Initialize the GC (idempotent - safe to call multiple times)
 pub fn init() {
-    if !GC_STATE_PTR.load(Ordering::Relaxed).is_null() {
-        return;
-    }
     let state = Box::into_raw(Box::new(GcState {
         stack_top: ptr::null_mut(),
         objects: Vec::new(),
@@ -135,7 +138,16 @@ pub fn init() {
         threshold: 1024 * 1024,
         stack_depth: 0,
     }));
-    GC_STATE_PTR.store(state, Ordering::Release);
+    // Use compare_exchange to prevent double-init race (TOCTOU)
+    if GC_STATE_PTR
+        .compare_exchange(ptr::null_mut(), state, Ordering::Release, Ordering::Relaxed)
+        .is_err()
+    {
+        // Another init already completed — drop our allocation
+        unsafe {
+            drop(Box::from_raw(state));
+        }
+    }
 }
 
 /// Shutdown the GC (free all objects)
@@ -159,6 +171,9 @@ pub fn shutdown() {
         // Free all slab pages (small objects freed in bulk)
         crate::slab::slab().shutdown();
     }
+
+    // Null out state pointer to prevent post-shutdown use-after-free
+    GC_STATE_PTR.store(ptr::null_mut(), Ordering::Release);
 }
 
 /// Push a shadow frame onto the stack
@@ -195,16 +210,19 @@ pub extern "C" fn gc_pop() {
         let state = gc_state();
         if !state.stack_top.is_null() {
             state.stack_top = (*state.stack_top).prev;
-            state.stack_depth -= 1;
+            state.stack_depth = state.stack_depth.saturating_sub(1);
         } else {
             // Double-pop detected! This is a bug in exception handling or codegen.
             #[cfg(debug_assertions)]
             panic!("gc_pop() called with empty shadow stack - double-pop detected!");
             #[cfg(not(debug_assertions))]
-            eprintln!(
-                "WARNING: gc_pop() called with empty shadow stack. This indicates a bug in \
-                 exception handling or mismatched push/pop calls."
-            );
+            {
+                eprintln!(
+                    "WARNING: gc_pop() called with empty shadow stack. This indicates a bug in \
+                     exception handling or mismatched push/pop calls."
+                );
+                state.stack_depth = 0;
+            }
         }
     }
 }
@@ -468,18 +486,12 @@ fn mark_object(obj: *mut Obj) {
                 // Skip if no fields need tracing (ELEM_RAW_INT or mask == 0)
                 if mask != 0 {
                     let len = (*tuple).len;
-                    // Warn if tuple has more fields than the bitmask can track
-                    if len > 64 {
-                        eprintln!(
-                            "WARNING: Tuple with {} fields exceeds heap_field_mask capacity (64). Fields beyond 64 will not be GC-traced.",
-                            len
-                        );
-                    }
+                    // Cap traversal at 64 fields (bitmask capacity)
+                    let trace_count = len.min(64);
                     let data = (*tuple).data.as_ptr();
-                    for i in 0..len {
+                    for i in 0..trace_count {
                         // Only trace fields marked as heap pointers in the bitmask.
-                        // Use checked_shl to prevent shift overflow when i >= 64.
-                        if mask & 1u64.checked_shl(i as u32).unwrap_or(0) != 0 {
+                        if mask & (1u64 << i) != 0 {
                             let elem = *data.add(i);
                             if !elem.is_null() {
                                 mark_object(elem);
@@ -535,19 +547,14 @@ fn mark_object(obj: *mut Obj) {
             TypeTagKind::Instance => {
                 let instance = obj as *mut InstanceObj;
                 let field_count = (*instance).field_count;
-                if field_count > 64 {
-                    eprintln!(
-                        "WARNING: Instance with {} fields exceeds heap_field_mask capacity (64). Fields beyond 64 will not be GC-traced.",
-                        field_count
-                    );
-                }
+                // Cap traversal at 64 fields (bitmask capacity) to prevent reading past allocation
+                let trace_count = field_count.min(64);
                 let fields = (*instance).fields.as_ptr();
                 // Only mark fields that are heap objects (pointers), not raw int/float/bool values.
                 // The heap_field_mask tells us which fields are heap types.
                 let mask = crate::vtable::get_class_heap_field_mask((*instance).class_id);
-                for i in 0..field_count {
-                    // Use checked_shl to prevent shift overflow when i >= 64.
-                    if mask & 1u64.checked_shl(i as u32).unwrap_or(0) != 0 {
+                for i in 0..trace_count {
+                    if mask & (1u64 << i) != 0 {
                         let field = *fields.add(i);
                         if !field.is_null() {
                             mark_object(field);
@@ -659,14 +666,11 @@ fn mark_object(obj: *mut Obj) {
                     }
                 }
 
-                // Trace sent_value if it might be a heap pointer
-                // sent_value is stored as i64; if it's a valid-looking heap pointer, trace it
-                let sent = (*gen).sent_value;
-                if sent != 0 {
-                    let sent_ptr = sent as *mut Obj;
-                    if (sent_ptr as usize) >= 0x1000
-                        && (sent_ptr as usize).is_multiple_of(std::mem::align_of::<Obj>())
-                    {
+                // Trace sent_value only if its type tag indicates a heap pointer.
+                // The sent_value_tag is set by the runtime when send() stores a value.
+                if (*gen).sent_value_tag == LOCAL_TYPE_PTR {
+                    let sent_ptr = (*gen).sent_value as *mut Obj;
+                    if !sent_ptr.is_null() {
                         mark_object(sent_ptr);
                     }
                 }

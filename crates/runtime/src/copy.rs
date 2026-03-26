@@ -326,14 +326,26 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
             // Register in memo before recursing
             memo.insert(obj_addr, new_inst as *mut Obj);
 
-            // Deep copy each field
+            // Deep copy each field, using heap_field_mask to distinguish
+            // pointer fields from raw int/float/bool fields. Bits set in the
+            // mask correspond to fields that hold heap pointers; unset bits
+            // hold raw scalar bit-patterns (int/float/bool) that must be
+            // copied verbatim — interpreting them as pointers would be UB.
             if field_count > 0 {
+                let heap_mask = crate::vtable::get_class_heap_field_mask(class_id);
                 let orig_fields = (*orig).fields.as_ptr();
                 let new_fields = (*new_inst).fields.as_mut_ptr();
                 for i in 0..field_count {
-                    let field = *orig_fields.add(i);
-                    let new_field = deep_copy_recursive(field, memo);
-                    *new_fields.add(i) = new_field;
+                    let raw: *mut Obj = *orig_fields.add(i);
+                    let copied: *mut Obj = if heap_mask & (1u64 << i) != 0 {
+                        // Heap pointer field: recurse to produce a deep copy
+                        deep_copy_recursive(raw, memo)
+                    } else {
+                        // Raw scalar field (int / float bits / bool): copy the
+                        // bit-pattern verbatim without treating it as a pointer
+                        raw
+                    };
+                    *new_fields.add(i) = copied;
                 }
             }
 

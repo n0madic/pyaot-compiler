@@ -121,8 +121,18 @@ unsafe fn obj_to_json_value(obj: *mut Obj) -> Value {
     }
 }
 
-/// Convert a serde_json::Value to a Python runtime object
-unsafe fn json_value_to_obj(value: &Value) -> *mut Obj {
+/// Maximum JSON nesting depth (matches serde_json default of 128 plus headroom)
+const MAX_JSON_DEPTH: u32 = 200;
+
+/// Convert a serde_json::Value to a Python runtime object.
+///
+/// `depth` tracks the current recursion depth to prevent stack overflow on
+/// deeply-nested JSON inputs. The public entry point passes `depth = 0`.
+unsafe fn json_value_to_obj(value: &Value, depth: u32) -> *mut Obj {
+    if depth >= MAX_JSON_DEPTH {
+        crate::utils::raise_value_error("ValueError: Exceeded maximum JSON nesting depth");
+    }
+
     match value {
         Value::Null => crate::object::none_obj(),
         Value::Bool(b) => crate::boxing::rt_box_bool(if *b { 1 } else { 0 }),
@@ -140,7 +150,7 @@ unsafe fn json_value_to_obj(value: &Value) -> *mut Obj {
         Value::Array(arr) => {
             let list = crate::list::rt_make_list(arr.len() as i64, ELEM_HEAP_OBJ);
             for item in arr {
-                let obj = json_value_to_obj(item);
+                let obj = json_value_to_obj(item, depth + 1);
                 crate::list::rt_list_push(list, obj);
             }
             list
@@ -149,7 +159,7 @@ unsafe fn json_value_to_obj(value: &Value) -> *mut Obj {
             let dict = crate::dict::rt_make_dict(map.len() as i64);
             for (key, val) in map {
                 let key_obj = make_str_from_rust(key);
-                let val_obj = json_value_to_obj(val);
+                let val_obj = json_value_to_obj(val, depth + 1);
                 crate::dict::rt_dict_set(dict, key_obj, val_obj);
             }
             dict
@@ -228,7 +238,7 @@ pub unsafe extern "C" fn rt_json_loads(s: *mut Obj) -> *mut Obj {
 
     let json_str = crate::utils::extract_str_unchecked(s);
     match serde_json::from_str::<Value>(&json_str) {
-        Ok(value) => json_value_to_obj(&value),
+        Ok(value) => json_value_to_obj(&value, 0),
         Err(e) => {
             let msg = format!("json.decoder.JSONDecodeError: {}", e);
             crate::utils::raise_value_error(&msg);
@@ -306,7 +316,7 @@ pub unsafe extern "C" fn rt_json_load(fp: *mut Obj) -> *mut Obj {
     }
 
     match serde_json::from_str::<Value>(&content) {
-        Ok(value) => json_value_to_obj(&value),
+        Ok(value) => json_value_to_obj(&value, 0),
         Err(e) => {
             let msg = format!("json.decoder.JSONDecodeError: {}", e);
             crate::utils::raise_value_error(&msg);

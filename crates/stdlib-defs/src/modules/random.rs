@@ -54,19 +54,21 @@ pub static RANDOM_SHUFFLE: StdlibFunctionDef = StdlibFunctionDef {
 };
 
 /// random.seed(n) -> None
-/// When called with no argument or None, i64::MIN is the sentinel for "use system entropy".
+/// The runtime receives the user-supplied argument count as a second i64 parameter.
+/// When arg_count == 0, the runtime uses system entropy regardless of the seed value.
+/// This avoids the i64::MIN sentinel collision problem.
 pub static RANDOM_SEED: StdlibFunctionDef = StdlibFunctionDef {
     name: "seed",
     runtime_name: "rt_random_seed",
     params: &[ParamDef::optional_with_default(
         "n",
         TypeSpec::Int,
-        ConstValue::Int(i64::MIN),
+        ConstValue::Int(0), // placeholder; ignored when arg_count == 0
     )],
     return_type: TypeSpec::None,
     min_args: 0,
     max_args: 1,
-    hints: LoweringHints::NO_AUTO_BOX,
+    hints: LoweringHints::NO_AUTO_BOX_PASS_ARG_COUNT,
 };
 
 /// random.uniform(a, b) -> float

@@ -596,7 +596,7 @@ pub extern "C" fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, va
         };
 
         let old_len = (*list_obj).len;
-        let new_len = old_len - slice_len + values_len;
+        let new_len = old_len.saturating_sub(slice_len) + values_len;
 
         // Ensure capacity
         let capacity = (*list_obj).capacity;

@@ -5,7 +5,14 @@
 use crate::gc;
 use crate::object::{CompletedProcessObj, ListObj, Obj, ObjHeader, TypeTagKind};
 use crate::utils::make_str_from_rust;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// Default maximum wall-clock time allowed for a subprocess before it is killed.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Polling interval used while waiting for a subprocess to exit.
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Extract list of strings from ListObj
 unsafe fn extract_string_list(obj: *mut Obj) -> Vec<String> {
@@ -41,6 +48,8 @@ unsafe fn extract_string_list(obj: *mut Obj) -> Vec<String> {
 /// - returncode: int - Exit status
 /// - stdout: Optional[str] - Captured stdout if capture_output=True
 /// - stderr: Optional[str] - Captured stderr if capture_output=True
+///
+/// Raises TimeoutError if the subprocess does not exit within DEFAULT_TIMEOUT (300 s).
 #[no_mangle]
 pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i8) -> *mut Obj {
     unsafe {
@@ -58,26 +67,56 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
         let mut command = Command::new(program);
         command.args(arguments);
 
-        // Execute command
-        let output = if capture_output != 0 {
-            // Capture stdout and stderr
-            match command.output() {
-                Ok(output) => output,
-                Err(e) => {
-                    let msg = format!("subprocess.run: failed to execute command: {}", e);
-                    crate::utils::raise_runtime_error(&msg);
-                }
+        // Configure stdio redirection based on capture_output
+        if capture_output != 0 {
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
+
+        // Spawn child process
+        let mut child = match command.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = format!("subprocess.run: failed to execute command: {}", e);
+                crate::utils::raise_runtime_error(&msg);
             }
-        } else {
-            // Don't capture output - inherit stdio
-            match command.status() {
-                Ok(status) => std::process::Output {
-                    status,
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                },
+        };
+
+        // Poll for completion, enforcing DEFAULT_TIMEOUT to prevent hangs.
+        let start = Instant::now();
+        let output = loop {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    // Process finished; collect output.
+                    match child.wait_with_output() {
+                        Ok(out) => break out,
+                        Err(e) => {
+                            let msg = format!("subprocess.run: failed to collect output: {}", e);
+                            crate::utils::raise_runtime_error(&msg);
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Process still running; check timeout.
+                    if start.elapsed() >= DEFAULT_TIMEOUT {
+                        // Kill the child before raising so it doesn't become a zombie.
+                        child.kill().ok();
+                        // Reap the child to release OS resources.
+                        child.wait().ok();
+                        let msg = format!(
+                            "subprocess.run: command '{}' timed out after {} seconds",
+                            cmd_args.join(" "),
+                            DEFAULT_TIMEOUT.as_secs()
+                        );
+                        crate::exceptions::rt_exc_raise(
+                            crate::exceptions::ExceptionType::TimeoutError as u8,
+                            msg.as_ptr(),
+                            msg.len(),
+                        );
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
+                }
                 Err(e) => {
-                    let msg = format!("subprocess.run: failed to execute command: {}", e);
+                    let msg = format!("subprocess.run: wait failed: {}", e);
                     crate::utils::raise_runtime_error(&msg);
                 }
             }
@@ -98,16 +137,34 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
 
         // Create stdout string if captured
         let stdout_obj = if capture_output != 0 {
-            let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
-            make_str_from_rust(&stdout_str)
+            match String::from_utf8(output.stdout) {
+                Ok(s) => make_str_from_rust(&s),
+                Err(e) => {
+                    let msg = format!("subprocess stdout is not valid UTF-8: {}", e.utf8_error());
+                    crate::exceptions::rt_exc_raise(
+                        crate::exceptions::ExceptionType::ValueError as u8,
+                        msg.as_ptr(),
+                        msg.len(),
+                    );
+                }
+            }
         } else {
             crate::object::none_obj()
         };
 
         // Create stderr string if captured
         let stderr_obj = if capture_output != 0 {
-            let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
-            make_str_from_rust(&stderr_str)
+            match String::from_utf8(output.stderr) {
+                Ok(s) => make_str_from_rust(&s),
+                Err(e) => {
+                    let msg = format!("subprocess stderr is not valid UTF-8: {}", e.utf8_error());
+                    crate::exceptions::rt_exc_raise(
+                        crate::exceptions::ExceptionType::ValueError as u8,
+                        msg.as_ptr(),
+                        msg.len(),
+                    );
+                }
+            }
         } else {
             crate::object::none_obj()
         };

@@ -835,8 +835,24 @@ pub extern "C" fn rt_exc_clear() {
     });
 }
 
-/// Get current exception message as a pointer and length
-/// Returns null pointer and 0 length if no exception
+/// Get current exception message as a pointer and length.
+/// Returns null pointer and 0 length if no exception.
+///
+/// # Lifetime constraint
+/// The returned pointer borrows the message buffer that is owned by the
+/// `ExceptionObject` stored in thread-local `EXCEPTION_STATE.current_exception`.
+/// The pointer is valid only for as long as the current exception remains set —
+/// i.e., until `rt_exc_clear`, `rt_exc_reraise`, or any call that mutates
+/// `current_exception` is made.
+///
+/// In generated AOT code this function is called in the immediate preamble of an
+/// `except` handler, before any call that could clear or replace the exception,
+/// so the pointer is always valid at the point of use. **Do not store the returned
+/// pointer across a call that may raise or clear an exception.**
+///
+/// If a longer-lived copy of the message is required, copy the bytes into an
+/// owned buffer before calling any other runtime function that might disturb the
+/// exception state.
 ///
 /// # Safety
 /// The caller must ensure `out_len` is either null or points to valid writable memory.

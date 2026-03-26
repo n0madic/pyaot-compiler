@@ -13,6 +13,45 @@ type ReduceFn3 = extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj)
 /// Reduce function with 4 captures
 type ReduceFn4 =
     extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj) -> *mut Obj;
+/// Reduce function with 5 captures
+type ReduceFn5 =
+    extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj) -> *mut Obj;
+/// Reduce function with 6 captures
+type ReduceFn6 = extern "C" fn(
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+) -> *mut Obj;
+/// Reduce function with 7 captures
+type ReduceFn7 = extern "C" fn(
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+) -> *mut Obj;
+/// Reduce function with 8 captures
+type ReduceFn8 = extern "C" fn(
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+) -> *mut Obj;
 
 /// Helper to call reduce function with captures.
 /// Captures are prepended to the argument list: func(c0, c1, ..., acc, elem)
@@ -54,8 +93,50 @@ unsafe fn call_reduce_with_captures(
             let c3 = rt_tuple_get(captures, 3);
             func(c0, c1, c2, c3, acc, elem)
         }
+        5 => {
+            let func: ReduceFn5 = std::mem::transmute(func_ptr);
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            func(c0, c1, c2, c3, c4, acc, elem)
+        }
+        6 => {
+            let func: ReduceFn6 = std::mem::transmute(func_ptr);
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let c5 = rt_tuple_get(captures, 5);
+            func(c0, c1, c2, c3, c4, c5, acc, elem)
+        }
+        7 => {
+            let func: ReduceFn7 = std::mem::transmute(func_ptr);
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let c5 = rt_tuple_get(captures, 5);
+            let c6 = rt_tuple_get(captures, 6);
+            func(c0, c1, c2, c3, c4, c5, c6, acc, elem)
+        }
+        8 => {
+            let func: ReduceFn8 = std::mem::transmute(func_ptr);
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let c5 = rt_tuple_get(captures, 5);
+            let c6 = rt_tuple_get(captures, 6);
+            let c7 = rt_tuple_get(captures, 7);
+            func(c0, c1, c2, c3, c4, c5, c6, c7, acc, elem)
+        }
         _ => {
-            let msg = b"reduce: unsupported capture count";
+            let msg = b"reduce: unsupported capture count (max 8)";
             crate::exceptions::rt_exc_raise(
                 pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
                 msg.as_ptr(),

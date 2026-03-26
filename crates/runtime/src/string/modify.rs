@@ -33,7 +33,13 @@ pub extern "C" fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj
                 Vec::with_capacity((*src).len + (new_bytes.len() * (src_bytes.len() + 1)));
 
             // Iterate over characters (not bytes) for multi-byte safety
-            let src_str = std::str::from_utf8_unchecked(src_bytes);
+            let src_str = std::str::from_utf8(src_bytes).unwrap_or_else(|_| {
+                crate::exceptions::rt_exc_raise(
+                    pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
+                    b"invalid UTF-8 in string" as *const u8,
+                    "invalid UTF-8 in string".len(),
+                )
+            });
             for ch in src_str.chars() {
                 result.extend_from_slice(new_bytes);
                 let mut buf = [0u8; 4];
@@ -168,15 +174,17 @@ pub extern "C" fn rt_str_mul(str_obj: *mut Obj, count: i64) -> *mut Obj {
             }
         };
 
-        // Allocate new string
+        // Allocate new string — gc_alloc may trigger a collection, which would
+        // invalidate any raw pointer derived from str_obj before this call.
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         let new_str = obj as *mut StrObj;
         (*new_str).len = result_len;
 
-        // Copy the string count times
-        let src_data = (*src).data.as_ptr();
+        // Re-derive src_data AFTER gc_alloc to avoid use-after-free.
+        // str_obj is a live GC root held by the caller.
+        let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
         let dst_data = (*new_str).data.as_mut_ptr();
         for i in 0..count {
             std::ptr::copy_nonoverlapping(src_data, dst_data.add(i * len), len);
