@@ -136,6 +136,22 @@ impl<'a> Lowering<'a> {
         func: &hir::Function,
         hir_module: &hir::Module,
     ) -> Type {
+        let ty = self.infer_generator_yield_type_raw(func, hir_module);
+        // Generator resume functions always return i64 through the iterator
+        // protocol, so Bool (i8) must be widened to Int to avoid a Cranelift
+        // type mismatch when the caller stores the IterNext result.
+        match ty {
+            Type::Bool => Type::Int,
+            other => other,
+        }
+    }
+
+    /// Raw yield type inference without generator-protocol normalization.
+    fn infer_generator_yield_type_raw(
+        &mut self,
+        func: &hir::Function,
+        hir_module: &hir::Module,
+    ) -> Type {
         // Try to detect the for-loop generator pattern
         if let Some(for_gen) = self.detect_for_loop_generator(&func.body, hir_module) {
             // First compute the iterable element type; we need it for attribute resolution.

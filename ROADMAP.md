@@ -260,7 +260,7 @@ for i in range(1000000):
 
 ---
 
-### 🟡 Truthiness for Heap Types in Generators
+### 🟡 Truthiness for Heap Types in Generators *(Implemented)*
 
 **Why**: `not []`, `not {}` etc. inside generators incorrectly evaluate because generators use raw pointer comparison instead of calling truthiness. There is a TODO in `crates/lowering/src/generators/utils.rs:159`.
 

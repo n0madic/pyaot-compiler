@@ -109,7 +109,7 @@ Native Executable
 | Nested functions | ✅ | |
 | nonlocal | ✅ | Cell-based storage |
 | global | ✅ | All types supported |
-| Generators | ✅ | `yield from` supported; yield with ternary conditions; throw() not supported |
+| Generators | ✅ | `yield from` supported; yield with ternary conditions; `not` with truthiness in filter conditions; throw() not supported |
 | Classes | ✅ | Single inheritance; class attrs accessible through instances |
 | `__init__` | ✅ | Fields from `self.field = value` auto-discovered |
 | `__str__`, `__repr__` | ✅ | Fallback to default repr for classes without dunder methods |
@@ -2315,7 +2315,7 @@ for x in simple_gen():
     - `resume.rs` - `create_generator_resume()` for generic state machine generation
     - `while_loop.rs` - `detect_while_loop_generator()`, `create_while_loop_generator_resume()`
     - `for_loop.rs` - `detect_for_loop_generator()`, `create_for_loop_generator_resume()`
-    - `utils.rs` - Helper functions for expression lowering in generators
+    - `utils.rs` - Helper functions for expression lowering in generators (truthiness, unary ops)
   - `lower_generator_function()` - transforms generator to creator + resume functions
   - Generator creator: allocates generator object with func_id, returns it
   - Generator resume: complete state machine with state dispatch

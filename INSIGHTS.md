@@ -449,3 +449,13 @@ In the optimizer's dead code elimination pass, `BinOp` and `UnOp` must **not** b
 - `Neg` (UnOp) can overflow on `i64::MIN`
 
 If DCE removes a "dead" `x = 10 // 0` because `x` is unused, the `ZeroDivisionError` that should fire inside a `try` block is silently lost. Only `Const`, `Copy`, `FuncAddr`, `BuiltinAddr`, and safe type conversions (`BoolToInt`, `IntToFloat`, `FloatBits`, `IntBitsToFloat`, `FloatAbs`) are truly pure. See `optimizer/src/dce/mod.rs:instruction_is_pure()`.
+
+---
+
+## Generator Truthiness and Bool Yield
+
+Generator expressions use `compute_yield_expr_for_generator` and `lower_simple_expr_for_generator` in `lowering/src/generators/utils.rs` — these are separate code paths from the normal expression lowering. The `not` operator in these paths uses `convert_to_bool_in_block` (a block-parameterized variant of `convert_to_bool` from `context/helpers.rs`) to dispatch on the operand type for correct truthiness: len-based checks for collections, `!= 0` for int/float.
+
+**Key pitfalls** (all addressed):
+- Generator resume functions always return i64, so `Bool` yield values must be widened via `BoolToInt` before return, and `infer_generator_yield_type` normalizes `Bool` → `Int`.
+- `get_expr_type` returns `Any` for generator loop variables (not registered in `var_types` at inference time). Code must use `loop_var_ty` when available, and fall back to `Type::Int` (not `IsTruthy`) for `Any`-typed operands since generator values are raw i64.

@@ -242,6 +242,174 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Emit boolean truthiness check for a collection via its length,
+    /// pushing instructions to an explicit block (for generator lowering).
+    fn emit_collection_bool_via_len_in_block(
+        &mut self,
+        len_func: mir::RuntimeFunc,
+        operand: mir::Operand,
+        result_local: pyaot_utils::LocalId,
+        mir_func: &mut mir::Function,
+        block: &mut mir::BasicBlock,
+    ) {
+        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
+        block.instructions.push(mir::Instruction {
+            kind: mir::InstructionKind::RuntimeCall {
+                dest: len_local,
+                func: len_func,
+                args: vec![operand],
+            },
+            span: None,
+        });
+        let zero = mir::Operand::Constant(mir::Constant::Int(0));
+        block.instructions.push(mir::Instruction {
+            kind: mir::InstructionKind::BinOp {
+                dest: result_local,
+                op: mir::BinOp::NotEq,
+                left: mir::Operand::Local(len_local),
+                right: zero,
+            },
+            span: None,
+        });
+    }
+
+    /// Convert an operand to a boolean, pushing instructions to an explicit block.
+    /// This is the block-parameterized variant of `convert_to_bool` for use in
+    /// generator lowering where instructions must go to a local block rather than
+    /// `self.current_block_mut()`.
+    pub(crate) fn convert_to_bool_in_block(
+        &mut self,
+        operand: mir::Operand,
+        operand_type: &Type,
+        mir_func: &mut mir::Function,
+        block: &mut mir::BasicBlock,
+    ) -> mir::Operand {
+        match operand_type {
+            Type::Bool => operand,
+            Type::Int => {
+                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                let zero = mir::Operand::Constant(mir::Constant::Int(0));
+                block.instructions.push(mir::Instruction {
+                    kind: mir::InstructionKind::BinOp {
+                        dest: result_local,
+                        op: mir::BinOp::NotEq,
+                        left: operand,
+                        right: zero,
+                    },
+                    span: None,
+                });
+                mir::Operand::Local(result_local)
+            }
+            Type::Float => {
+                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                let zero = mir::Operand::Constant(mir::Constant::Float(0.0));
+                block.instructions.push(mir::Instruction {
+                    kind: mir::InstructionKind::BinOp {
+                        dest: result_local,
+                        op: mir::BinOp::NotEq,
+                        left: operand,
+                        right: zero,
+                    },
+                    span: None,
+                });
+                mir::Operand::Local(result_local)
+            }
+            Type::Str => {
+                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                self.emit_collection_bool_via_len_in_block(
+                    mir::RuntimeFunc::StrLenInt,
+                    operand,
+                    result_local,
+                    mir_func,
+                    block,
+                );
+                mir::Operand::Local(result_local)
+            }
+            Type::None => mir::Operand::Constant(mir::Constant::Bool(false)),
+            Type::Bytes => {
+                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                self.emit_collection_bool_via_len_in_block(
+                    mir::RuntimeFunc::BytesLen,
+                    operand,
+                    result_local,
+                    mir_func,
+                    block,
+                );
+                mir::Operand::Local(result_local)
+            }
+            Type::List(_) | Type::Dict(_, _) | Type::Tuple(_) | Type::Set(_) => {
+                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                let runtime_func = match operand_type {
+                    Type::List(_) => mir::RuntimeFunc::ListLen,
+                    Type::Tuple(_) => mir::RuntimeFunc::TupleLen,
+                    Type::Dict(_, _) => mir::RuntimeFunc::DictLen,
+                    Type::Set(_) => mir::RuntimeFunc::SetLen,
+                    _ => unreachable!(),
+                };
+                self.emit_collection_bool_via_len_in_block(
+                    runtime_func,
+                    operand,
+                    result_local,
+                    mir_func,
+                    block,
+                );
+                mir::Operand::Local(result_local)
+            }
+            Type::Union(_) | Type::Any => {
+                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                block.instructions.push(mir::Instruction {
+                    kind: mir::InstructionKind::RuntimeCall {
+                        dest: result_local,
+                        func: mir::RuntimeFunc::IsTruthy,
+                        args: vec![operand],
+                    },
+                    span: None,
+                });
+                mir::Operand::Local(result_local)
+            }
+            Type::Class { class_id, .. } => {
+                if let Some(class_info) = self.get_class_info(class_id).cloned() {
+                    if let Some(bool_func_id) = class_info.bool_func {
+                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                        block.instructions.push(mir::Instruction {
+                            kind: mir::InstructionKind::CallDirect {
+                                dest: result_local,
+                                func: bool_func_id,
+                                args: vec![operand],
+                            },
+                            span: None,
+                        });
+                        return mir::Operand::Local(result_local);
+                    } else if let Some(len_func_id) = class_info.len_func {
+                        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
+                        block.instructions.push(mir::Instruction {
+                            kind: mir::InstructionKind::CallDirect {
+                                dest: len_local,
+                                func: len_func_id,
+                                args: vec![operand],
+                            },
+                            span: None,
+                        });
+                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                        let zero = mir::Operand::Constant(mir::Constant::Int(0));
+                        block.instructions.push(mir::Instruction {
+                            kind: mir::InstructionKind::BinOp {
+                                dest: result_local,
+                                op: mir::BinOp::NotEq,
+                                left: mir::Operand::Local(len_local),
+                                right: zero,
+                            },
+                            span: None,
+                        });
+                        return mir::Operand::Local(result_local);
+                    }
+                }
+                mir::Operand::Constant(mir::Constant::Bool(true))
+            }
+            _ => mir::Operand::Constant(mir::Constant::Bool(true)),
+        }
+    }
+
     /// Check if object type matches the isinstance check type (compile-time)
     pub(crate) fn types_match_isinstance(&self, obj_type: &Type, check_type: &Type) -> bool {
         match (obj_type, check_type) {

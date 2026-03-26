@@ -154,24 +154,58 @@ impl<'a> Lowering<'a> {
                         Ok(mir::Operand::Local(result_local))
                     }
                     hir::UnOp::Not => {
-                        // For integer types, `not x` is `x == 0`.
-                        // For pointer/heap types, `x == 0` checks for a null pointer
-                        // which is correct for None but not for empty containers
-                        // (an empty list is a non-null pointer, so `not []` would
-                        // incorrectly evaluate to false).
-                        // TODO: use a runtime truthiness check for heap types so that
-                        // `not []`, `not {}`, etc. produce the correct result.
-                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                        // Convert operand to bool via proper truthiness check,
+                        // then negate. This handles heap types correctly: empty
+                        // containers are falsy, non-empty containers are truthy.
+                        //
+                        // Use loop_var_ty when the operand is the loop variable,
+                        // because get_expr_type returns Any for it (the variable
+                        // hasn't been registered in var_types at inference time).
+                        let operand_type = {
+                            let ty = if let hir::ExprKind::Var(vid) = &operand_expr.kind {
+                                if *vid == loop_var_id {
+                                    loop_var_ty.cloned().unwrap_or(Type::Any)
+                                } else {
+                                    self.get_expr_type(operand_expr, hir_module)
+                                }
+                            } else {
+                                self.get_expr_type(operand_expr, hir_module)
+                            };
+                            // Generator values are always raw i64; Any-typed
+                            // operands must use Int truthiness (not IsTruthy
+                            // which expects *mut Obj pointers).
+                            if matches!(ty, Type::Any) {
+                                Type::Int
+                            } else {
+                                ty
+                            }
+                        };
+                        let bool_operand = self.convert_to_bool_in_block(
+                            operand_val,
+                            &operand_type,
+                            mir_func,
+                            block,
+                        );
+                        let not_local = self.alloc_and_add_local(Type::Bool, mir_func);
                         block.instructions.push(mir::Instruction {
-                            kind: mir::InstructionKind::BinOp {
-                                dest: result_local,
-                                op: mir::BinOp::Eq,
-                                left: operand_val,
-                                right: mir::Operand::Constant(mir::Constant::Int(0)),
+                            kind: mir::InstructionKind::UnOp {
+                                dest: not_local,
+                                op: mir::UnOp::Not,
+                                operand: bool_operand,
                             },
                             span: None,
                         });
-                        Ok(mir::Operand::Local(result_local))
+                        // Generator resume functions return i64, so widen the
+                        // bool (i8) to int (i64) to avoid a Cranelift type mismatch.
+                        let int_local = self.alloc_and_add_local(Type::Int, mir_func);
+                        block.instructions.push(mir::Instruction {
+                            kind: mir::InstructionKind::BoolToInt {
+                                dest: int_local,
+                                src: mir::Operand::Local(not_local),
+                            },
+                            span: None,
+                        });
+                        Ok(mir::Operand::Local(int_local))
                     }
                     _ => Ok(operand_val),
                 }
@@ -369,6 +403,63 @@ impl<'a> Lowering<'a> {
                 });
 
                 Ok(mir::Operand::Local(result_local))
+            }
+            hir::ExprKind::UnOp { op, operand } => {
+                let operand_expr = &hir_module.exprs[*operand];
+                let operand_val = self.lower_simple_expr_for_generator(
+                    operand_expr,
+                    hir_module,
+                    block,
+                    mir_func,
+                    var_to_mir_local,
+                    loop_var_local,
+                    loop_var_id,
+                )?;
+
+                match op {
+                    hir::UnOp::Neg => {
+                        let result_local = self.alloc_and_add_local(Type::Int, mir_func);
+                        block.instructions.push(mir::Instruction {
+                            kind: mir::InstructionKind::BinOp {
+                                dest: result_local,
+                                op: mir::BinOp::Sub,
+                                left: mir::Operand::Constant(mir::Constant::Int(0)),
+                                right: operand_val,
+                            },
+                            span: None,
+                        });
+                        Ok(mir::Operand::Local(result_local))
+                    }
+                    hir::UnOp::Not => {
+                        let operand_type = {
+                            let ty = self.get_expr_type(operand_expr, hir_module);
+                            // Same as yield path: generators pass values as raw
+                            // i64, so Any must use Int truthiness.
+                            if matches!(ty, Type::Any) {
+                                Type::Int
+                            } else {
+                                ty
+                            }
+                        };
+                        let bool_operand = self.convert_to_bool_in_block(
+                            operand_val,
+                            &operand_type,
+                            mir_func,
+                            block,
+                        );
+                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                        block.instructions.push(mir::Instruction {
+                            kind: mir::InstructionKind::UnOp {
+                                dest: result_local,
+                                op: mir::UnOp::Not,
+                                operand: bool_operand,
+                            },
+                            span: None,
+                        });
+                        Ok(mir::Operand::Local(result_local))
+                    }
+                    _ => Ok(operand_val),
+                }
             }
             _ => Err(pyaot_diagnostics::CompilerError::codegen_error(
                 "unsupported expression in generator filter condition",

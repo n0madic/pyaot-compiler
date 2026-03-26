@@ -733,6 +733,44 @@ assert next(gm) == 10, "multi ternary second yield failed"
 print("Yield with ternary expression tests passed!")
 
 # =============================================================================
+# Truthiness: not operator in generator expressions
+# =============================================================================
+
+# Test: not operator in generator yield expression
+def test_gen_not_yield():
+    g = (not x for x in range_gen(0, 4))
+    v0: int = next(g)
+    v1: int = next(g)
+    v2: int = next(g)
+    v3: int = next(g)
+    assert v0 == 1, "not 0 should be 1 (True)"
+    assert v1 == 0, "not 1 should be 0 (False)"
+    assert v2 == 0, "not 2 should be 0 (False)"
+    assert v3 == 0, "not 3 should be 0 (False)"
+    print("test_gen_not_yield passed")
+
+test_gen_not_yield()
+
+# Test: not operator in generator expression filter (not x == 0 filters zeros)
+def test_gen_filter_not_eq():
+    g = (x for x in range_gen(0, 6) if not x == 0)
+    v1: int = next(g)
+    assert v1 == 1, "filter not eq first"
+    v2: int = next(g)
+    assert v2 == 2, "filter not eq second"
+    v3: int = next(g)
+    assert v3 == 3, "filter not eq third"
+    v4: int = next(g)
+    assert v4 == 4, "filter not eq fourth"
+    v5: int = next(g)
+    assert v5 == 5, "filter not eq fifth"
+    print("test_gen_filter_not_eq passed")
+
+test_gen_filter_not_eq()
+
+print("Generator truthiness tests passed!")
+
+# =============================================================================
 # All tests passed
 # =============================================================================
 
