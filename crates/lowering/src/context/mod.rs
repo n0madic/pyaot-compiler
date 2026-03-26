@@ -90,9 +90,23 @@ pub struct LoweredClassInfo {
     pub floordiv_func: Option<FuncId>, // __floordiv__ method
     pub mod_func: Option<FuncId>,  // __mod__ method
     pub pow_func: Option<FuncId>,  // __pow__ method
+    /// Reverse arithmetic dunders
+    pub radd_func: Option<FuncId>, // __radd__ method
+    pub rsub_func: Option<FuncId>, // __rsub__ method
+    pub rmul_func: Option<FuncId>, // __rmul__ method
+    pub rtruediv_func: Option<FuncId>, // __rtruediv__ method
+    pub rfloordiv_func: Option<FuncId>, // __rfloordiv__ method
+    pub rmod_func: Option<FuncId>, // __rmod__ method
+    pub rpow_func: Option<FuncId>, // __rpow__ method
     /// Unary dunders
     pub neg_func: Option<FuncId>, // __neg__ method
+    pub pos_func: Option<FuncId>,  // __pos__ method
+    pub abs_func: Option<FuncId>,  // __abs__ method
+    pub invert_func: Option<FuncId>, // __invert__ method
     pub bool_func: Option<FuncId>, // __bool__ method
+    /// Conversion dunders
+    pub int_func: Option<FuncId>, // __int__ method
+    pub float_func: Option<FuncId>, // __float__ method
     /// Container dunders
     pub getitem_func: Option<FuncId>, // __getitem__ method
     pub setitem_func: Option<FuncId>, // __setitem__ method
@@ -152,8 +166,20 @@ impl LoweredClassInfo {
             "__floordiv__" => self.floordiv_func,
             "__mod__" => self.mod_func,
             "__pow__" => self.pow_func,
+            "__radd__" => self.radd_func,
+            "__rsub__" => self.rsub_func,
+            "__rmul__" => self.rmul_func,
+            "__rtruediv__" => self.rtruediv_func,
+            "__rfloordiv__" => self.rfloordiv_func,
+            "__rmod__" => self.rmod_func,
+            "__rpow__" => self.rpow_func,
             "__neg__" => self.neg_func,
+            "__pos__" => self.pos_func,
+            "__abs__" => self.abs_func,
+            "__invert__" => self.invert_func,
             "__bool__" => self.bool_func,
+            "__int__" => self.int_func,
+            "__float__" => self.float_func,
             "__getitem__" => self.getitem_func,
             "__setitem__" => self.setitem_func,
             "__delitem__" => self.delitem_func,

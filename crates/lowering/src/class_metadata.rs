@@ -101,8 +101,20 @@ impl<'a> Lowering<'a> {
                 mut floordiv_func,
                 mut mod_func,
                 mut pow_func,
+                mut radd_func,
+                mut rsub_func,
+                mut rmul_func,
+                mut rtruediv_func,
+                mut rfloordiv_func,
+                mut rmod_func,
+                mut rpow_func,
                 mut neg_func,
+                mut pos_func,
+                mut abs_func,
+                mut invert_func,
                 mut bool_func,
+                mut int_func,
+                mut float_func,
                 mut getitem_func,
                 mut setitem_func,
                 mut delitem_func,
@@ -141,8 +153,20 @@ impl<'a> Lowering<'a> {
                     parent_info.floordiv_func,
                     parent_info.mod_func,
                     parent_info.pow_func,
+                    parent_info.radd_func,
+                    parent_info.rsub_func,
+                    parent_info.rmul_func,
+                    parent_info.rtruediv_func,
+                    parent_info.rfloordiv_func,
+                    parent_info.rmod_func,
+                    parent_info.rpow_func,
                     parent_info.neg_func,
+                    parent_info.pos_func,
+                    parent_info.abs_func,
+                    parent_info.invert_func,
                     parent_info.bool_func,
+                    parent_info.int_func,
+                    parent_info.float_func,
                     parent_info.getitem_func,
                     parent_info.setitem_func,
                     parent_info.delitem_func,
@@ -179,8 +203,20 @@ impl<'a> Lowering<'a> {
                     None, // floordiv_func
                     None, // mod_func
                     None, // pow_func
+                    None, // radd_func
+                    None, // rsub_func
+                    None, // rmul_func
+                    None, // rtruediv_func
+                    None, // rfloordiv_func
+                    None, // rmod_func
+                    None, // rpow_func
                     None, // neg_func
+                    None, // pos_func
+                    None, // abs_func
+                    None, // invert_func
                     None, // bool_func
+                    None, // int_func
+                    None, // float_func
                     None, // getitem_func
                     None, // setitem_func
                     None, // delitem_func
@@ -266,11 +302,47 @@ impl<'a> Lowering<'a> {
                         "__pow__" => {
                             pow_func = Some(*method_id);
                         }
+                        "__radd__" => {
+                            radd_func = Some(*method_id);
+                        }
+                        "__rsub__" => {
+                            rsub_func = Some(*method_id);
+                        }
+                        "__rmul__" => {
+                            rmul_func = Some(*method_id);
+                        }
+                        "__rtruediv__" => {
+                            rtruediv_func = Some(*method_id);
+                        }
+                        "__rfloordiv__" => {
+                            rfloordiv_func = Some(*method_id);
+                        }
+                        "__rmod__" => {
+                            rmod_func = Some(*method_id);
+                        }
+                        "__rpow__" => {
+                            rpow_func = Some(*method_id);
+                        }
                         "__neg__" => {
                             neg_func = Some(*method_id);
                         }
+                        "__pos__" => {
+                            pos_func = Some(*method_id);
+                        }
+                        "__abs__" => {
+                            abs_func = Some(*method_id);
+                        }
+                        "__invert__" => {
+                            invert_func = Some(*method_id);
+                        }
                         "__bool__" => {
                             bool_func = Some(*method_id);
+                        }
+                        "__int__" => {
+                            int_func = Some(*method_id);
+                        }
+                        "__float__" => {
+                            float_func = Some(*method_id);
                         }
                         "__getitem__" => {
                             getitem_func = Some(*method_id);
@@ -383,8 +455,20 @@ impl<'a> Lowering<'a> {
                 floordiv_func,
                 mod_func,
                 pow_func,
+                radd_func,
+                rsub_func,
+                rmul_func,
+                rtruediv_func,
+                rfloordiv_func,
+                rmod_func,
+                rpow_func,
                 neg_func,
+                pos_func,
+                abs_func,
+                invert_func,
                 bool_func,
+                int_func,
+                float_func,
                 getitem_func,
                 setitem_func,
                 delitem_func,

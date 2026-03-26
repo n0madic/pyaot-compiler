@@ -1480,4 +1480,117 @@ assert dh.x == dc.x and dh.y == dc.y, "operator == explicit dunder"
 
 print("Explicit dunder method calls: PASS")
 
+# ==================== Reverse Arithmetic Dunders ====================
+
+class RevNum:
+    def __init__(self, v: int):
+        self.v = v
+
+    def __add__(self, other) -> RevNum:
+        return RevNum(self.v + other.v)
+
+    def __radd__(self, other: int) -> RevNum:
+        return RevNum(other + self.v)
+
+    def __rsub__(self, other: int) -> RevNum:
+        return RevNum(other - self.v)
+
+    def __rmul__(self, other: int) -> RevNum:
+        return RevNum(other * self.v)
+
+# Forward dunder: obj + obj
+rn1 = RevNum(10)
+rn2 = RevNum(3)
+rn3 = rn1 + rn2
+assert rn3.v == 13, "forward __add__"
+
+# Reverse dunders: int op obj
+rn4 = 5 + rn1
+assert rn4.v == 15, "__radd__: 5 + RevNum(10)"
+
+rn5 = 20 - rn1
+assert rn5.v == 10, "__rsub__: 20 - RevNum(10)"
+
+rn6 = 4 * rn2
+assert rn6.v == 12, "__rmul__: 4 * RevNum(3)"
+
+print("Reverse arithmetic dunders: PASS")
+
+# ==================== Unary Dunders: __pos__, __abs__, __invert__ ====================
+
+class UnaryNum:
+    def __init__(self, v: int):
+        self.v = v
+
+    def __pos__(self) -> UnaryNum:
+        return UnaryNum(self.v if self.v >= 0 else -self.v)
+
+    def __neg__(self) -> UnaryNum:
+        return UnaryNum(-self.v)
+
+    def __abs__(self) -> UnaryNum:
+        return UnaryNum(self.v if self.v >= 0 else -self.v)
+
+    def __invert__(self) -> int:
+        return ~self.v
+
+# Unary plus on class
+un1 = UnaryNum(-5)
+un2 = +un1
+assert un2.v == 5, "__pos__: +UnaryNum(-5)"
+
+# Unary neg (already tested, sanity check)
+un3 = -un1
+assert un3.v == 5, "__neg__: -UnaryNum(-5)"
+
+# abs() on class
+un4 = abs(un1)
+assert un4.v == 5, "__abs__: abs(UnaryNum(-5))"
+
+un5 = abs(UnaryNum(7))
+assert un5.v == 7, "__abs__: abs(UnaryNum(7))"
+
+# Bitwise invert on class
+un6 = ~UnaryNum(0)
+assert un6 == -1, "__invert__: ~UnaryNum(0)"
+
+un7 = ~UnaryNum(5)
+assert un7 == -6, "__invert__: ~UnaryNum(5)"
+
+# Unary plus on primitives (identity)
+assert +42 == 42, "unary + on int"
+assert +0 == 0, "unary + on zero"
+
+print("Unary dunders (__pos__, __abs__, __invert__): PASS")
+
+# ==================== Conversion Dunders: __int__, __float__, __bool__ ====================
+
+class ConvNum:
+    def __init__(self, v: int):
+        self.v = v
+
+    def __int__(self) -> int:
+        return self.v
+
+    def __float__(self) -> float:
+        return float(self.v) + 0.5
+
+    def __bool__(self) -> bool:
+        return self.v != 0
+
+# int() on class
+cn1 = ConvNum(42)
+assert int(cn1) == 42, "__int__: int(ConvNum(42))"
+assert int(ConvNum(-7)) == -7, "__int__: int(ConvNum(-7))"
+
+# float() on class
+assert float(cn1) == 42.5, "__float__: float(ConvNum(42))"
+assert float(ConvNum(0)) == 0.5, "__float__: float(ConvNum(0))"
+
+# bool() on class
+assert bool(cn1) == True, "__bool__: bool(ConvNum(42))"
+assert bool(ConvNum(0)) == False, "__bool__: bool(ConvNum(0))"
+
+print("Conversion dunders (__int__, __float__, __bool__): PASS")
+
 print("All class tests passed!")

@@ -86,6 +86,9 @@ impl<'a> Lowering<'a> {
         let result_ty = if matches!(left_ty, Type::Class { .. }) {
             // Class with arithmetic dunders returns the class type
             left_ty.clone()
+        } else if matches!(right_ty, Type::Class { .. }) {
+            // Reverse dunder case: right operand is a class, result is that class type
+            right_ty.clone()
         } else if matches!(left_ty, Type::Str) {
             Type::Str // String operations return strings
         } else if matches!(left_ty, Type::Bytes) && matches!(op, hir::BinOp::Add | hir::BinOp::Mul)
@@ -223,6 +226,35 @@ impl<'a> Lowering<'a> {
                     dest: result_local,
                     func: func_id,
                     args: vec![left_op, right_op],
+                });
+                return Ok(mir::Operand::Local(result_local));
+            }
+        }
+
+        // Check for right operand's reverse arithmetic dunders
+        // e.g., 2 + custom_obj -> custom_obj.__radd__(2)
+        if let Type::Class { class_id, .. } = &right_ty {
+            let rdunder_func = if let Some(class_info) = self.get_class_info(class_id) {
+                match op {
+                    hir::BinOp::Add => class_info.radd_func,
+                    hir::BinOp::Sub => class_info.rsub_func,
+                    hir::BinOp::Mul => class_info.rmul_func,
+                    hir::BinOp::Div => class_info.rtruediv_func,
+                    hir::BinOp::FloorDiv => class_info.rfloordiv_func,
+                    hir::BinOp::Mod => class_info.rmod_func,
+                    hir::BinOp::Pow => class_info.rpow_func,
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            if let Some(func_id) = rdunder_func {
+                // Reverse dunders: self is the right operand, other is the left
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest: result_local,
+                    func: func_id,
+                    args: vec![right_op, left_op],
                 });
                 return Ok(mir::Operand::Local(result_local));
             }
@@ -903,6 +935,7 @@ impl<'a> Lowering<'a> {
             hir::UnOp::Not => Type::Bool,         // not always returns bool
             hir::UnOp::Neg => operand_ty.clone(), // neg preserves operand type
             hir::UnOp::Invert => Type::Int,       // bitwise NOT always returns Int
+            hir::UnOp::Pos => operand_ty.clone(), // unary plus preserves type
         };
 
         let result_local = self.alloc_and_add_local(result_type.clone(), mir_func);
@@ -913,7 +946,8 @@ impl<'a> Lowering<'a> {
                 match op {
                     hir::UnOp::Neg => class_info.neg_func,
                     hir::UnOp::Not => class_info.bool_func,
-                    _ => None,
+                    hir::UnOp::Pos => class_info.pos_func,
+                    hir::UnOp::Invert => class_info.invert_func,
                 }
             } else {
                 None
@@ -949,6 +983,14 @@ impl<'a> Lowering<'a> {
             hir::UnOp::Neg => mir::UnOp::Neg,
             hir::UnOp::Not => mir::UnOp::Not,
             hir::UnOp::Invert => mir::UnOp::Invert,
+            hir::UnOp::Pos => {
+                // For primitives, +x is identity (no-op copy)
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: result_local,
+                    src: operand_op,
+                });
+                return Ok(mir::Operand::Local(result_local));
+            }
         };
 
         // For Not operation, we need to convert the operand to bool first

@@ -276,29 +276,21 @@ for i in range(1000000):
 
 ---
 
-### 🟡 Reverse Arithmetic Dunders
+### ✅ Reverse Arithmetic Dunders
 
-**Why**: `__radd__`, `__rsub__`, `__rmul__` etc. enable expressions like `2 + custom_obj` where the left operand doesn't know how to handle the right type.
-
-**Implementation plan**: When the normal dunder (`__add__`) returns `NotImplemented` (or doesn't exist for the left operand's type), try the right operand's reverse dunder (`__radd__`). This requires a two-step dispatch in the operator lowering.
-
-**Already in COMPILER_STATUS.md roadmap.**
+**Implemented**: `__radd__`, `__rsub__`, `__rmul__`, `__rtruediv__`, `__rfloordiv__`, `__rmod__`, `__rpow__`. When the left operand doesn't have a forward dunder (or isn't a class), the right operand's reverse dunder is called with swapped argument order.
 
 ---
 
-### 🟡 More Unary Dunders: `__pos__`, `__abs__`, `__invert__`
+### ✅ More Unary Dunders: `__pos__`, `__abs__`, `__invert__`
 
-**Why**: `+obj`, `abs(obj)`, `~obj` on custom classes. Straightforward to implement — same pattern as existing `__neg__`.
-
-**Already in COMPILER_STATUS.md roadmap.**
+**Implemented**: `+obj` calls `__pos__`, `abs(obj)` calls `__abs__`, `~obj` calls `__invert__` on custom classes. Same pattern as `__neg__`.
 
 ---
 
-### 🟡 Conversion Dunders: `__int__`, `__float__`, `__bool__`
+### ✅ Conversion Dunders: `__int__`, `__float__`, `__bool__`
 
-**Why**: `int(obj)`, `float(obj)`, `bool(obj)` on custom classes. Needed for numeric-like user types.
-
-**Already in COMPILER_STATUS.md roadmap.**
+**Implemented**: `int(obj)`, `float(obj)`, `bool(obj)` on custom classes. `bool()` falls back to `__len__` if `__bool__` is not defined (Python semantics).
 
 ---
 
@@ -516,4 +508,4 @@ For maximum impact with reasonable effort:
 7. **Incremental compilation** — medium effort, quality-of-life for larger projects
 8. **Collection optimizations (SSO, allocator)** — medium effort, closes the CPython gap
 9. **Generational GC** — high effort, long-term performance foundation
-10. **Remaining dunders** (`__radd__`, `__int__`, `__pos__`, etc.) — low effort each, incremental value
+10. ~~**Remaining dunders** (`__radd__`, `__int__`, `__pos__`, etc.)~~ — ✅ implemented

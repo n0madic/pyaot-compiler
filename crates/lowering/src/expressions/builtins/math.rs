@@ -86,6 +86,20 @@ impl<'a> Lowering<'a> {
                 });
                 Ok(mir::Operand::Local(result_local))
             }
+            Type::Class { class_id, .. } => {
+                // abs(obj) -> call __abs__ dunder if defined
+                if let Some(abs_func) = self.get_class_info(&class_id).and_then(|ci| ci.abs_func) {
+                    let result_local = self.alloc_and_add_local(arg_type.clone(), mir_func);
+                    self.emit_instruction(mir::InstructionKind::CallDirect {
+                        dest: result_local,
+                        func: abs_func,
+                        args: vec![arg_operand],
+                    });
+                    Ok(mir::Operand::Local(result_local))
+                } else {
+                    Ok(arg_operand)
+                }
+            }
             _ => {
                 // For other types, return the value as-is (fallback)
                 Ok(arg_operand)

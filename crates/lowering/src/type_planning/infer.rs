@@ -358,7 +358,7 @@ impl<'a> Lowering<'a> {
             }
             hir::ExprKind::UnOp { op, operand } => match op {
                 hir::UnOp::Not => Type::Bool,
-                hir::UnOp::Neg => self.get_type_of_expr_id(*operand, hir_module),
+                hir::UnOp::Neg | hir::UnOp::Pos => self.get_type_of_expr_id(*operand, hir_module),
                 hir::UnOp::Invert => Type::Int,
             },
             hir::ExprKind::Compare { .. } => Type::Bool,
@@ -541,7 +541,7 @@ impl<'a> Lowering<'a> {
             }
             hir::ExprKind::UnOp { op, operand } => match op {
                 hir::UnOp::Not => Type::Bool,
-                hir::UnOp::Neg => {
+                hir::UnOp::Neg | hir::UnOp::Pos => {
                     self.infer_expr_type_inner(&module.exprs[*operand], module, param_types)
                 }
                 hir::UnOp::Invert => Type::Int,

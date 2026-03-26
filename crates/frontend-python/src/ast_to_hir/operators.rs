@@ -64,17 +64,12 @@ impl AstToHir {
         })
     }
 
-    pub(crate) fn convert_unop(&self, op: &py::UnaryOp, span: Span) -> Result<UnOp> {
+    pub(crate) fn convert_unop(&self, op: &py::UnaryOp, _span: Span) -> Result<UnOp> {
         Ok(match op {
             py::UnaryOp::USub => UnOp::Neg,
             py::UnaryOp::Not => UnOp::Not,
             py::UnaryOp::Invert => UnOp::Invert, // Bitwise NOT (~)
-            _ => {
-                return Err(CompilerError::parse_error(
-                    format!("Unsupported unary operator: {:?}", op),
-                    span,
-                ))
-            }
+            py::UnaryOp::UAdd => UnOp::Pos,      // Unary plus (+)
         })
     }
 

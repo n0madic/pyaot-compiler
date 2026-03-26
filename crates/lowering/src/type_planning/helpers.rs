@@ -84,6 +84,10 @@ pub(crate) fn resolve_binop_type(op: &hir::BinOp, left_ty: &Type, right_ty: &Typ
     if matches!(left_ty, Type::Class { .. }) {
         return Some(left_ty.clone());
     }
+    // Reverse dunder case: right operand is a class, result is that class type
+    if matches!(right_ty, Type::Class { .. }) {
+        return Some(right_ty.clone());
+    }
     // Set operations (|, &, -, ^) return Set type
     if let Type::Set(elem_ty) = left_ty {
         if matches!(

@@ -221,6 +221,21 @@ impl<'a> Lowering<'a> {
                     });
                 }
             }
+            Type::Class { class_id, .. } => {
+                // int(obj) -> call __int__ dunder if defined
+                if let Some(int_func) = self.get_class_info(&class_id).and_then(|ci| ci.int_func) {
+                    self.emit_instruction(mir::InstructionKind::CallDirect {
+                        dest: result_local,
+                        func: int_func,
+                        args: vec![arg_operand],
+                    });
+                } else {
+                    self.emit_instruction(mir::InstructionKind::Const {
+                        dest: result_local,
+                        value: mir::Constant::Int(0),
+                    });
+                }
+            }
             _ => {
                 // For other types, return 0 as fallback
                 self.emit_instruction(mir::InstructionKind::Const {
@@ -289,6 +304,23 @@ impl<'a> Lowering<'a> {
                     },
                     args: vec![arg_operand],
                 });
+            }
+            Type::Class { class_id, .. } => {
+                // float(obj) -> call __float__ dunder if defined
+                if let Some(float_func) =
+                    self.get_class_info(&class_id).and_then(|ci| ci.float_func)
+                {
+                    self.emit_instruction(mir::InstructionKind::CallDirect {
+                        dest: result_local,
+                        func: float_func,
+                        args: vec![arg_operand],
+                    });
+                } else {
+                    self.emit_instruction(mir::InstructionKind::Const {
+                        dest: result_local,
+                        value: mir::Constant::Float(0.0),
+                    });
+                }
             }
             _ => {
                 // For other types, return 0.0 as fallback
@@ -387,6 +419,39 @@ impl<'a> Lowering<'a> {
                     dest: result_local,
                     value: mir::Constant::Bool(false),
                 });
+            }
+            Type::Class { class_id, .. } => {
+                // bool(obj) -> call __bool__ dunder, fall back to __len__, default True
+                if let Some(bool_func) = self.get_class_info(&class_id).and_then(|ci| ci.bool_func)
+                {
+                    self.emit_instruction(mir::InstructionKind::CallDirect {
+                        dest: result_local,
+                        func: bool_func,
+                        args: vec![arg_operand],
+                    });
+                } else if let Some(len_func) =
+                    self.get_class_info(&class_id).and_then(|ci| ci.len_func)
+                {
+                    // Python: __len__() != 0 used for truthiness if __bool__ not defined
+                    let len_local = self.alloc_and_add_local(Type::Int, mir_func);
+                    self.emit_instruction(mir::InstructionKind::CallDirect {
+                        dest: len_local,
+                        func: len_func,
+                        args: vec![arg_operand],
+                    });
+                    self.emit_instruction(mir::InstructionKind::BinOp {
+                        dest: result_local,
+                        op: mir::BinOp::NotEq,
+                        left: mir::Operand::Local(len_local),
+                        right: mir::Operand::Constant(mir::Constant::Int(0)),
+                    });
+                } else {
+                    // No __bool__ or __len__: instances are truthy by default
+                    self.emit_instruction(mir::InstructionKind::Const {
+                        dest: result_local,
+                        value: mir::Constant::Bool(true),
+                    });
+                }
             }
             _ => {
                 // For other types, return True as fallback

@@ -116,7 +116,11 @@ Native Executable
 | `__eq__`, `__ne__` | ✅ | `__ne__` auto-negates `__eq__` if not defined |
 | `__lt__`, `__le__`, `__gt__`, `__ge__` | ✅ | Enables sorted(), min(), max() on custom objects |
 | `__add__`, `__sub__`, `__mul__` | ✅ | Arithmetic operators on custom objects; explicit calls (`a.__add__(b)`) supported |
-| `__neg__` | ✅ | Unary minus on custom objects; explicit call (`a.__neg__()`) supported |
+| `__radd__`, `__rsub__`, `__rmul__`, etc. | ✅ | Reverse arithmetic dunders; enables `2 + obj` when left operand has no forward dunder |
+| `__neg__`, `__pos__` | ✅ | Unary minus/plus on custom objects |
+| `__abs__` | ✅ | `abs(obj)` on custom classes |
+| `__invert__` | ✅ | `~obj` on custom classes |
+| `__int__`, `__float__`, `__bool__` | ✅ | `int(obj)`, `float(obj)`, `bool(obj)` conversion dunders |
 | `__getitem__`, `__setitem__`, `__delitem__`, `__contains__` | ✅ | Container protocol for custom classes |
 | `__iter__`, `__next__` | ✅ | Iterator protocol for custom classes (for loops, iter(), next()) |
 | `__call__` | ✅ | Callable objects: `obj(args)` dispatches to `__call__` |
@@ -1291,17 +1295,22 @@ dog.speak()  # Dispatches to Dog.speak via vtable
 
 **Memory overhead**: +8 bytes per instance (one vtable pointer)
 
-### Dunder Methods (`__str__`, `__repr__`, `__eq__`, `__hash__`, `__len__`)
+### Dunder Methods
 
 Dunder (double-underscore) methods enable custom behavior for built-in operations:
 
 **Tracking (`lowering/src/context.rs`)**:
-- `LoweredClassInfo` stores dunder method FuncIds:
-  - `str_func: Option<FuncId>` - `__str__` for str() conversion
-  - `repr_func: Option<FuncId>` - `__repr__` for repr() conversion
-  - `eq_func: Option<FuncId>` - `__eq__` for == comparison
-  - `hash_func: Option<FuncId>` - `__hash__` for hash() function
-  - `len_func: Option<FuncId>` - `__len__` for len() function
+- `LoweredClassInfo` stores dunder method FuncIds for:
+  - String: `__str__`, `__repr__`
+  - Comparison: `__eq__`, `__ne__`, `__lt__`, `__le__`, `__gt__`, `__ge__`
+  - Hash/len: `__hash__`, `__len__`
+  - Arithmetic: `__add__`, `__sub__`, `__mul__`, `__truediv__`, `__floordiv__`, `__mod__`, `__pow__`
+  - Reverse arithmetic: `__radd__`, `__rsub__`, `__rmul__`, `__rtruediv__`, `__rfloordiv__`, `__rmod__`, `__rpow__`
+  - Unary: `__neg__`, `__pos__`, `__abs__`, `__invert__`, `__bool__`
+  - Conversion: `__int__`, `__float__`
+  - Container: `__getitem__`, `__setitem__`, `__delitem__`, `__contains__`
+  - Iterator: `__iter__`, `__next__`
+  - Callable: `__call__`
 - Dunder methods are detected during class metadata building (`lowering/src/class_metadata.rs`)
 - Inherited from parent classes if not overridden
 

@@ -609,6 +609,7 @@ pub enum UnOp {
     Neg,
     Not,
     Invert, // Bitwise NOT (~)
+    Pos,    // Unary plus (+)
 }
 
 /// Comparison operators
