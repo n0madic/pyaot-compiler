@@ -248,6 +248,54 @@ str_list_a: list[str] = ["hello", "world"]
 str_list_b: list[str] = ["hello", "world"]
 assert str_list_a == str_list_b, "string lists should be equal"
 
+# ===== SECTION: List ordering comparisons (lexicographic) =====
+
+# Basic list[int] ordering
+assert [1, 2, 3] < [1, 2, 4], "[1,2,3] < [1,2,4] failed"
+assert [1, 2, 4] > [1, 2, 3], "[1,2,4] > [1,2,3] failed"
+assert [1, 2, 3] <= [1, 2, 4], "[1,2,3] <= [1,2,4] failed"
+assert [1, 2, 4] >= [1, 2, 3], "[1,2,4] >= [1,2,3] failed"
+
+# Equal lists with <= and >=
+ord_eq_a: list[int] = [1, 2, 3]
+ord_eq_b: list[int] = [1, 2, 3]
+assert ord_eq_a <= ord_eq_b, "equal lists should be <="
+assert ord_eq_a >= ord_eq_b, "equal lists should be >="
+assert not (ord_eq_a < ord_eq_b), "equal lists should not be <"
+assert not (ord_eq_a > ord_eq_b), "equal lists should not be >"
+
+# Different lengths (prefix is less)
+assert [1, 2] < [1, 2, 3], "shorter prefix should be less"
+assert [1, 2, 3] > [1, 2], "longer list should be greater than prefix"
+assert [1, 2] <= [1, 2, 3], "shorter prefix should be <="
+assert [1, 2, 3] >= [1, 2], "longer list should be >= prefix"
+
+# Empty lists
+ord_empty_a: list[int] = []
+ord_empty_b: list[int] = []
+assert ord_empty_a <= ord_empty_b, "empty lists should be <="
+assert ord_empty_a >= ord_empty_b, "empty lists should be >="
+assert not (ord_empty_a < ord_empty_b), "empty lists should not be <"
+assert not (ord_empty_a > ord_empty_b), "empty lists should not be >"
+ord_nonempty: list[int] = [1]
+assert ord_empty_a < ord_nonempty, "empty list should be < non-empty"
+assert ord_nonempty > ord_empty_a, "non-empty list should be > empty"
+
+# list[float] ordering
+assert [1.0, 2.0] < [1.0, 3.0], "float list ordering failed"
+assert [1.5, 2.5] > [1.5, 2.0], "float list ordering failed (gt)"
+assert [1.0, 2.0] <= [1.0, 2.0], "float list <= failed"
+assert [1.0, 2.0] >= [1.0, 2.0], "float list >= failed"
+
+# list[str] ordering
+assert ["a", "b"] < ["a", "c"], "str list ordering failed"
+assert ["b", "a"] > ["a", "z"], "str list ordering failed (gt)"
+assert ["hello"] < ["hello", "world"], "str list prefix ordering failed"
+assert ["a", "b"] <= ["a", "b"], "str list <= failed"
+assert ["a", "b"] >= ["a", "b"], "str list >= failed"
+
+print("list ordering comparisons passed")
+
 # min() and max() with list argument
 numbers_for_minmax: list[int] = [10, 20, 5, 40, 15]
 assert min(numbers_for_minmax) == 5, "min(list) failed"

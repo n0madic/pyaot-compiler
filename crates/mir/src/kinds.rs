@@ -248,6 +248,8 @@ pub enum CompareKind {
     ListStr,
     /// Tuple comparison (supports all comparison ops)
     Tuple,
+    /// List ordering comparison (uses elem_tag for dispatch at runtime)
+    List,
     /// String equality comparison
     Str,
     /// Bytes equality comparison
@@ -272,6 +274,12 @@ impl CompareKind {
             (CompareKind::ListInt, _) => "rt_list_eq_int",
             (CompareKind::ListFloat, _) => "rt_list_eq_float",
             (CompareKind::ListStr, _) => "rt_list_eq_str",
+            // List ordering comparisons (uses elem_tag at runtime)
+            (CompareKind::List, ComparisonOp::Eq) => "rt_list_eq_int", // fallback; equality should use type-specific variants
+            (CompareKind::List, ComparisonOp::Lt) => "rt_list_lt",
+            (CompareKind::List, ComparisonOp::Lte) => "rt_list_lte",
+            (CompareKind::List, ComparisonOp::Gt) => "rt_list_gt",
+            (CompareKind::List, ComparisonOp::Gte) => "rt_list_gte",
             // String and bytes only support Eq
             (CompareKind::Str, _) => "rt_str_eq",
             (CompareKind::Bytes, _) => "rt_bytes_eq",
@@ -293,7 +301,10 @@ impl CompareKind {
     /// Whether this kind supports ordering comparisons (Lt, Lte, Gt, Gte).
     /// Only Tuple and Obj support ordering; List/Str/Bytes only support Eq.
     pub fn supports_ordering(&self) -> bool {
-        matches!(self, CompareKind::Tuple | CompareKind::Obj)
+        matches!(
+            self,
+            CompareKind::List | CompareKind::Tuple | CompareKind::Obj
+        )
     }
 }
 

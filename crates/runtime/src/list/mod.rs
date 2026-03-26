@@ -27,7 +27,10 @@ mod slice;
 mod timsort;
 
 // Re-export all public functions
-pub use compare::{rt_list_eq_float, rt_list_eq_int, rt_list_eq_str};
+pub use compare::{
+    rt_list_eq_float, rt_list_eq_int, rt_list_eq_str, rt_list_gt, rt_list_gte, rt_list_lt,
+    rt_list_lte,
+};
 pub use convert::{
     rt_list_from_dict, rt_list_from_iter, rt_list_from_range, rt_list_from_set, rt_list_from_str,
     rt_list_from_tuple, rt_list_tail_to_tuple, rt_list_tail_to_tuple_bool,

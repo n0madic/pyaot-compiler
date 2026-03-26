@@ -1,6 +1,7 @@
-//! List equality comparison operations
+//! List comparison operations (equality and ordering)
 
 use crate::object::{FloatObj, ListObj, Obj};
+use std::cmp::Ordering;
 
 /// Shared null-check and length comparison for list equality.
 /// Returns Some(result) if a quick answer can be given (both null, one null,
@@ -109,5 +110,84 @@ pub extern "C" fn rt_list_eq_str(a: *mut Obj, b: *mut Obj) -> i8 {
         }
 
         1
+    }
+}
+
+/// Lexicographic ordering comparison for two lists.
+/// Uses elem_tag from the ListObj to dispatch element comparison.
+unsafe fn list_cmp_ordering(a: *mut Obj, b: *mut Obj) -> Ordering {
+    if a.is_null() && b.is_null() {
+        return Ordering::Equal;
+    }
+    if a.is_null() {
+        return Ordering::Less;
+    }
+    if b.is_null() {
+        return Ordering::Greater;
+    }
+
+    let list_a = a as *mut ListObj;
+    let list_b = b as *mut ListObj;
+    let len_a = (*list_a).len;
+    let len_b = (*list_b).len;
+    let min_len = len_a.min(len_b);
+    let elem_tag = (*list_a).elem_tag;
+
+    let data_a = (*list_a).data;
+    let data_b = (*list_b).data;
+
+    for i in 0..min_len {
+        let elem_a = *data_a.add(i);
+        let elem_b = *data_b.add(i);
+        match crate::sorted::compare_list_elements(elem_a, elem_b, elem_tag) {
+            Ordering::Equal => continue,
+            ord => return ord,
+        }
+    }
+
+    len_a.cmp(&len_b)
+}
+
+/// List less-than comparison (lexicographic)
+#[no_mangle]
+pub extern "C" fn rt_list_lt(a: *mut Obj, b: *mut Obj) -> i8 {
+    unsafe {
+        match list_cmp_ordering(a, b) {
+            Ordering::Less => 1,
+            _ => 0,
+        }
+    }
+}
+
+/// List less-than-or-equal comparison (lexicographic)
+#[no_mangle]
+pub extern "C" fn rt_list_lte(a: *mut Obj, b: *mut Obj) -> i8 {
+    unsafe {
+        match list_cmp_ordering(a, b) {
+            Ordering::Greater => 0,
+            _ => 1,
+        }
+    }
+}
+
+/// List greater-than comparison (lexicographic)
+#[no_mangle]
+pub extern "C" fn rt_list_gt(a: *mut Obj, b: *mut Obj) -> i8 {
+    unsafe {
+        match list_cmp_ordering(a, b) {
+            Ordering::Greater => 1,
+            _ => 0,
+        }
+    }
+}
+
+/// List greater-than-or-equal comparison (lexicographic)
+#[no_mangle]
+pub extern "C" fn rt_list_gte(a: *mut Obj, b: *mut Obj) -> i8 {
+    unsafe {
+        match list_cmp_ordering(a, b) {
+            Ordering::Less => 0,
+            _ => 1,
+        }
     }
 }

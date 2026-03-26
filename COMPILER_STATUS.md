@@ -2151,27 +2151,33 @@ f"{name}"    # "hello" (default str() conversion)
   - `!a`: Wraps in `Builtin::Ascii` call (like repr but escapes non-ASCII characters)
   - No flag: Default `str()` conversion for non-strings
 
-### List Equality Comparison
+### List Comparison
 
-Lists can be compared for equality using `==` and `!=`:
+Lists support equality (`==`, `!=`) and ordering (`<`, `<=`, `>`, `>=`) comparisons:
 
 ```python
 a: list[int] = [1, 2, 3]
 b: list[int] = [1, 2, 3]
-assert a == b  # True
+assert a == b           # True
+assert [1, 2, 3] < [1, 2, 4]  # True (lexicographic)
+assert [1, 2] < [1, 2, 3]     # True (shorter prefix is less)
 ```
 
-- **Runtime functions** (`list.rs`):
+- **Equality runtime functions** (`list/compare.rs`):
   - `rt_list_eq_int(a, b)` - compare list[int] elements
   - `rt_list_eq_float(a, b)` - compare list[float] elements
   - `rt_list_eq_str(a, b)` - compare list[str] elements
   - `rt_list_eq_any(a, b)` - compare lists with Any/Union element types using TypeTag dispatch
+- **Ordering runtime functions** (`list/compare.rs`):
+  - `rt_list_lt(a, b)`, `rt_list_lte(a, b)`, `rt_list_gt(a, b)`, `rt_list_gte(a, b)`
+  - Element-wise lexicographic comparison using `elem_tag` for type dispatch
+  - Shorter list is "less" when all compared elements are equal
 - **Implementation**:
-  - First checks length equality
+  - First checks length equality (for eq) or iterates min_len (for ordering)
   - Empty lists (len=0) are always equal regardless of data pointer
   - Element-wise comparison based on element type
   - TypeTag-based dispatch for heterogeneous lists (List[Any])
-- **MIR**: `ListEqInt`, `ListEqFloat`, `ListEqStr`, `ListEqAny` RuntimeFunc variants
+- **MIR**: `CompareKind::ListInt/ListFloat/ListStr` for equality, `CompareKind::List` for ordering
 - **Lowering** (`operators.rs`): `lower_compare()` detects list types and emits appropriate runtime call
 
 ### Identity Comparison (is/is not)

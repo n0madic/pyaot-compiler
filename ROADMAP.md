@@ -250,7 +250,7 @@ for i in range(1000000):
 
 ---
 
-### 🔴 List Ordering Comparisons
+### 🔴 List Ordering Comparisons *(Implemented)*
 
 **Why**: `list1 < list2` (lexicographic comparison) doesn't work. This is a common Python pattern used in sorting, priority queues, and general comparisons. There is a TODO in `crates/lowering/src/expressions/operators.rs:731`.
 

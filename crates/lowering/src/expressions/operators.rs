@@ -728,24 +728,21 @@ impl<'a> Lowering<'a> {
                     });
                 }
             } else {
-                // TODO: list ordering comparisons (<, <=, >, >=) require lexicographic
-                // element-wise comparison, but no dedicated runtime function exists yet.
-                // The runtime's rt_obj_lt/rt_obj_gt don't handle List type tags.
-                // Falling back to pointer comparison here produces KNOWN-INCORRECT results.
-                // A future fix should add rt_list_lt / rt_list_lte / rt_list_gt / rt_list_gte
-                // to the runtime and wire them up via CompareKind, similar to Tuple ordering.
-                let mir_op = match op {
-                    hir::CmpOp::Lt => mir::BinOp::Lt,
-                    hir::CmpOp::LtE => mir::BinOp::LtE,
-                    hir::CmpOp::Gt => mir::BinOp::Gt,
-                    hir::CmpOp::GtE => mir::BinOp::GtE,
-                    _ => mir::BinOp::Eq,
+                // List ordering comparisons (<, <=, >, >=) use lexicographic comparison
+                let compare_op = match op {
+                    hir::CmpOp::Lt => mir::ComparisonOp::Lt,
+                    hir::CmpOp::LtE => mir::ComparisonOp::Lte,
+                    hir::CmpOp::Gt => mir::ComparisonOp::Gt,
+                    hir::CmpOp::GtE => mir::ComparisonOp::Gte,
+                    _ => unreachable!("Already handled Eq/NotEq above"),
                 };
-                self.emit_instruction(mir::InstructionKind::BinOp {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    op: mir_op,
-                    left: left_op,
-                    right: right_op,
+                    func: mir::RuntimeFunc::Compare {
+                        kind: mir::CompareKind::List,
+                        op: compare_op,
+                    },
+                    args: vec![left_op, right_op],
                 });
             }
         } else if let Type::Tuple(_) = &left_type {
