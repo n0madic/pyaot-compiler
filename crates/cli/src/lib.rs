@@ -32,6 +32,8 @@ pub struct CompileOptions {
     pub inline_threshold: usize,
     /// Enable dead code elimination optimization
     pub dce: bool,
+    /// Enable constant folding and propagation
+    pub constfold: bool,
     /// Include debug information
     pub debug: bool,
     /// Verbose output
@@ -54,6 +56,7 @@ impl Default for CompileOptions {
             inline: false,
             inline_threshold: 50,
             dce: false,
+            constfold: false,
             debug: false,
             verbose: false,
             emit_hir: false,
@@ -120,7 +123,7 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
     let parsed_modules = discovery.take_modules();
 
     // Compile modules (single or multi)
-    let (mut mir_module, interner) = if has_imports {
+    let (mut mir_module, mut interner) = if has_imports {
         if options.verbose {
             println!("Compiling {} modules...", sorted_modules.len());
         }
@@ -145,6 +148,7 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
         inline: options.inline,
         inline_threshold: options.inline_threshold,
         dce: options.dce,
+        constfold: options.constfold,
     };
     if options.verbose {
         if opt_config.inline {
@@ -153,11 +157,14 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
                 opt_config.inline_threshold
             );
         }
+        if opt_config.constfold {
+            println!("Running constant folding and propagation...");
+        }
         if opt_config.dce {
             println!("Running dead code elimination...");
         }
     }
-    pyaot_optimizer::optimize_module(&mut mir_module, &opt_config);
+    pyaot_optimizer::optimize_module(&mut mir_module, &opt_config, &mut interner);
 
     if options.emit_mir {
         println!("MIR: {:#?}", mir_module);

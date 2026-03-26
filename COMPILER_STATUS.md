@@ -27,7 +27,7 @@ High-level IR (HIR) - Desugared Python with types
     ↓
 Mid-level IR (MIR) - CFG with basic blocks
     ↓
-[MIR Optimizer] (optional, --inline / --dce flags)
+[MIR Optimizer] (optional, --inline / --constfold / --dce flags)
     ↓
 [Cranelift Code Generator]
     ↓
@@ -292,6 +292,7 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 | Optimization | Status | CLI Flag | Description |
 |--------------|--------|----------|-------------|
 | Function Inlining | ✅ | `--inline` | Inlines small functions at call sites to reduce call overhead |
+| Constant Folding & Propagation | ✅ | `--constfold` | Evaluates constant expressions at compile time and propagates known values |
 | Dead Code Elimination | ✅ | `--dce` | Removes unreachable blocks, dead instructions, and unused locals |
 
 **Function Inlining Details:**
@@ -300,6 +301,18 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 - Never inlines: recursive functions, generators, exception handlers
 - Preserves GC roots during transformation
 - Multiple iterations for transitive inlining
+
+**Constant Folding & Propagation Details:**
+- Folds integer arithmetic (`+`, `-`, `*`, `//`, `%`, `**`, bitwise ops) with overflow checking
+- Folds float arithmetic (`+`, `-`, `*`, `/`, `//`, `%`, `**`)
+- Folds string literal concatenation (`"hello" + " world"`)
+- Folds boolean logic (`and`, `or`, `not`) and all comparisons
+- Folds type conversions (`BoolToInt`, `IntToFloat`, `FloatToInt`, `FloatAbs`) on constants
+- Propagates single-definition constant locals into all uses
+- Simplifies constant conditional branches to unconditional jumps
+- Python-compatible floor division and modulo semantics for negative operands
+- Safe: skips fold on overflow, division by zero, negative int exponents, NaN/infinity conversions
+- Iterates propagation + folding to fixpoint for transitive constant chains
 
 **Dead Code Elimination Details:**
 - Unreachable block elimination: BFS from entry block, removes blocks not reachable via CFG

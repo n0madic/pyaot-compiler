@@ -97,28 +97,6 @@ Function-name breakpoints (`b add`) already work on macOS. Source-level breakpoi
 
 **Complexity**: High. Requires a new MIR analysis pass.
 
----
-
-### 🔴 Constant Folding & Propagation
-
-**Why**: Low-hanging fruit. Expressions like `x = 2 + 3`, `y = "hello" + " world"`, `n = len("abc")` can be evaluated at compile time. This reduces instruction count and enables further optimizations.
-
-**Current state**: No constant folding exists. All arithmetic on literals generates runtime code.
-
-**Implementation plan**:
-1. **MIR constant folding pass**: Walk MIR instructions. For binary/unary ops where both operands are `Constant`, evaluate at compile time and replace with a single `Constant`. Handle:
-   - Integer arithmetic: `+`, `-`, `*`, `//`, `%`, `**`, bitwise ops
-   - Float arithmetic: `+`, `-`, `*`, `/`
-   - String concatenation of literals
-   - Boolean logic: `and`, `or`, `not` on constants
-   - Comparison of constants
-2. **Constant propagation**: If a local variable is assigned a constant and never reassigned, replace all uses with the constant value. This feeds back into folding (transitive constants).
-3. **Builtin constant evaluation**: Evaluate pure builtins on constant args: `len("abc")` → `3`, `int("42")` → `42`, `abs(-5)` → `5`.
-
-**Complexity**: Low-medium. A clean MIR pass with no architectural changes.
-
----
-
 ### 🟡 Loop-Invariant Code Motion (LICM)
 
 **Why**: Expressions computed inside a loop that produce the same result every iteration waste cycles. Moving them before the loop runs them once.

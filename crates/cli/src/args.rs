@@ -55,6 +55,14 @@ pub struct Args {
     #[arg(long)]
     pub dce: bool,
 
+    /// Enable constant folding and propagation optimization
+    #[arg(long)]
+    pub constfold: bool,
+
+    /// Enable all optimizations (inline + constfold + dce)
+    #[arg(short = 'O', long)]
+    pub optimize: bool,
+
     /// Include debug information in the generated executable
     #[arg(long)]
     pub debug: bool,
