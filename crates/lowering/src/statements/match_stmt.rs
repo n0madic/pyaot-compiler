@@ -948,6 +948,9 @@ impl<'a> Lowering<'a> {
     }
 
     /// Generate code to check a class pattern
+    ///
+    /// Uses short-circuit branching: field access only happens after isinstance passes.
+    /// This prevents UB from reading fields of non-instance objects.
     fn generate_class_pattern_check(
         &mut self,
         cls_expr_id: hir::ExprId,
@@ -957,6 +960,14 @@ impl<'a> Lowering<'a> {
         ctx: &PatternContext<'_>,
         mir_func: &mut mir::Function,
     ) -> Result<PatternCheckResult> {
+        // Positional class patterns require __match_args__ support, which is not
+        // yet implemented.  Emit an error instead of silently ignoring sub-patterns.
+        if !patterns.is_empty() {
+            return Err(pyaot_diagnostics::CompilerError::codegen_error(
+                "positional class patterns are not yet supported (__match_args__ required)",
+            ));
+        }
+
         let mut bindings = Vec::new();
 
         // Get class ID from expression
@@ -966,41 +977,63 @@ impl<'a> Lowering<'a> {
             _ => None,
         };
 
-        // isinstance check
+        // isinstance check (uses inherited variant to match Python's isinstance() semantics)
         let isinstance_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
         if let Some(class_id) = class_id {
-            // Get class name for isinstance check
             if self.has_class(&class_id) {
-                // Emit isinstance check using RuntimeFunc
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: isinstance_local,
-                    func: mir::RuntimeFunc::IsinstanceClass,
+                    func: mir::RuntimeFunc::IsinstanceClassInherited,
                     args: vec![
                         ctx.subject.clone(),
                         mir::Operand::Constant(mir::Constant::Int(class_id.index() as i64)),
                     ],
                 });
             } else {
-                // Class info not found - assume false
                 self.emit_instruction(mir::InstructionKind::Const {
                     dest: isinstance_local,
                     value: mir::Constant::Bool(false),
                 });
             }
         } else {
-            // Not a class reference - assume false
             self.emit_instruction(mir::InstructionKind::Const {
                 dest: isinstance_local,
                 value: mir::Constant::Bool(false),
             });
         }
 
+        // If no keyword attrs to check, isinstance result is sufficient
+        if kwd_attrs.is_empty() {
+            return Ok((mir::Operand::Local(isinstance_local), bindings));
+        }
+
+        // Pre-allocate result local (init false); overwritten only on the true path
+        let class_result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+        self.emit_instruction(mir::InstructionKind::Const {
+            dest: class_result_local,
+            value: mir::Constant::Bool(false),
+        });
+
+        // Short-circuit: only access fields if isinstance check passed
+        let fields_bb = self.new_block();
+        let skip_bb = self.new_block();
+        let fields_bb_id = fields_bb.id;
+        let skip_bb_id = skip_bb.id;
+
+        self.current_block_mut().terminator = mir::Terminator::Branch {
+            cond: mir::Operand::Local(isinstance_local),
+            then_block: fields_bb_id,
+            else_block: skip_bb_id,
+        };
+
+        // Fields block: isinstance passed, safe to access instance fields
+        self.push_block(fields_bb);
+
         let mut result_cond = mir::Operand::Local(isinstance_local);
 
         // Check keyword attribute patterns
         for (attr_name, pattern) in kwd_attrs.iter().zip(kwd_patterns.iter()) {
-            // Get attribute value
             let attr_type = if let Some(class_id) = class_id {
                 if let Some(class_info) = self.get_class_info(&class_id) {
                     class_info
@@ -1020,7 +1053,6 @@ impl<'a> Lowering<'a> {
             if let Some(class_id) = class_id {
                 if let Some(class_info) = self.get_class_info(&class_id) {
                     if let Some(&offset) = class_info.field_offsets.get(attr_name) {
-                        // Get field at offset
                         let offset_local = self.alloc_and_add_local(Type::Int, mir_func);
                         self.emit_instruction(mir::InstructionKind::Const {
                             dest: offset_local,
@@ -1036,7 +1068,7 @@ impl<'a> Lowering<'a> {
                 }
             }
 
-            // Check pattern against attribute
+            // Check pattern against attribute value
             let (attr_cond, attr_bindings) = self.generate_pattern_check(
                 pattern,
                 mir::Operand::Local(attr_local),
@@ -1058,15 +1090,17 @@ impl<'a> Lowering<'a> {
             result_cond = mir::Operand::Local(combined_local);
         }
 
-        // Positional class patterns require __match_args__ support, which is not
-        // yet implemented.  Emit an error instead of silently ignoring sub-patterns.
-        if !patterns.is_empty() {
-            return Err(pyaot_diagnostics::CompilerError::codegen_error(
-                "positional class patterns are not yet supported (__match_args__ required)",
-            ));
-        }
+        // Write combined result and jump to merge
+        self.emit_instruction(mir::InstructionKind::Copy {
+            dest: class_result_local,
+            src: result_cond,
+        });
+        self.current_block_mut().terminator = mir::Terminator::Goto(skip_bb_id);
 
-        Ok((result_cond, bindings))
+        // Skip/merge block: on false path class_result_local remains false
+        self.push_block(skip_bb);
+
+        Ok((mir::Operand::Local(class_result_local), bindings))
     }
 
     /// Emit an equality check between two operands

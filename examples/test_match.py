@@ -524,4 +524,245 @@ assert len(d_rest4) == 2 and d_rest4["a"] == 1, f"original modified: {d_rest4}"
 
 print("Mapping pattern **rest tests passed!")
 
+# ===== SECTION: Class Patterns =====
+
+class Point:
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+# Basic class pattern: capture all keyword attrs
+def test_match_class_basic():
+    p: Point = Point(1, 2)
+    result: int = 0
+    match p:
+        case Point(x=a, y=b):
+            result = a + b
+    assert result == 3
+
+test_match_class_basic()
+
+# Class pattern with literal value check
+def test_match_class_literal_match():
+    p: Point = Point(0, 5)
+    result: int = 0
+    match p:
+        case Point(x=0, y=val):
+            result = val
+        case _:
+            result = -1
+    assert result == 5
+
+test_match_class_literal_match()
+
+# Class pattern literal check - no match, falls through
+def test_match_class_literal_no_match():
+    p: Point = Point(3, 5)
+    result: int = 0
+    match p:
+        case Point(x=0, y=val):
+            result = val
+        case Point(x=a, y=b):
+            result = a + b
+    assert result == 8
+
+test_match_class_literal_no_match()
+
+# Class pattern isinstance-only (no attr checks)
+def test_match_class_isinstance_only():
+    p: Point = Point(1, 2)
+    result: int = 0
+    match p:
+        case Point():
+            result = 1
+        case _:
+            result = -1
+    assert result == 1
+
+test_match_class_isinstance_only()
+
+# Class pattern with wildcard fallthrough
+def test_match_class_fallthrough():
+    p: Point = Point(7, 8)
+    result: str = ""
+    match p:
+        case Point(x=0, y=0):
+            result = "origin"
+        case Point(x=a, y=b):
+            result = "point"
+        case _:
+            result = "other"
+    assert result == "point"
+
+test_match_class_fallthrough()
+
+# Multiple class types - isinstance discriminates correctly
+class Color:
+    def __init__(self, r: int, g: int, b: int):
+        self.r = r
+        self.g = g
+        self.b = b
+
+def test_match_class_multiple_types():
+    p: Point = Point(1, 2)
+    result: str = ""
+    match p:
+        case Color(r=r, g=g, b=b):
+            result = "color"
+        case Point(x=x, y=y):
+            result = "point"
+        case _:
+            result = "other"
+    assert result == "point"
+
+test_match_class_multiple_types()
+
+def test_match_class_multiple_types_color():
+    c: Color = Color(255, 0, 128)
+    result: str = ""
+    match c:
+        case Point(x=x, y=y):
+            result = "point"
+        case Color(r=r, g=g, b=b):
+            result = "color"
+        case _:
+            result = "other"
+    assert result == "color"
+
+test_match_class_multiple_types_color()
+
+# Guard with class pattern
+def test_match_class_guard():
+    p: Point = Point(5, 10)
+    result: int = 0
+    match p:
+        case Point(x=x, y=y) if x > 3:
+            result = x + y
+        case Point(x=x, y=y):
+            result = x
+    assert result == 15
+
+test_match_class_guard()
+
+# Guard false - falls to next case
+def test_match_class_guard_false():
+    p: Point = Point(1, 10)
+    result: int = 0
+    match p:
+        case Point(x=x, y=y) if x > 3:
+            result = x + y
+        case Point(x=x, y=y):
+            result = x
+    assert result == 1
+
+test_match_class_guard_false()
+
+# Class pattern matching origin point
+def test_match_class_origin():
+    p: Point = Point(0, 0)
+    result: str = ""
+    match p:
+        case Point(x=0, y=0):
+            result = "origin"
+        case Point(x=0, y=y):
+            result = "y-axis"
+        case Point(x=x, y=0):
+            result = "x-axis"
+        case Point(x=x, y=y):
+            result = "general"
+    assert result == "origin"
+
+test_match_class_origin()
+
+def test_match_class_y_axis():
+    p: Point = Point(0, 5)
+    result: str = ""
+    match p:
+        case Point(x=0, y=0):
+            result = "origin"
+        case Point(x=0, y=y):
+            result = "y-axis"
+        case Point(x=x, y=0):
+            result = "x-axis"
+        case Point(x=x, y=y):
+            result = "general"
+    assert result == "y-axis"
+
+test_match_class_y_axis()
+
+def test_match_class_x_axis():
+    p: Point = Point(3, 0)
+    result: str = ""
+    match p:
+        case Point(x=0, y=0):
+            result = "origin"
+        case Point(x=0, y=y):
+            result = "y-axis"
+        case Point(x=x, y=0):
+            result = "x-axis"
+        case Point(x=x, y=y):
+            result = "general"
+    assert result == "x-axis"
+
+test_match_class_x_axis()
+
+def test_match_class_general():
+    p: Point = Point(3, 7)
+    result: str = ""
+    match p:
+        case Point(x=0, y=0):
+            result = "origin"
+        case Point(x=0, y=y):
+            result = "y-axis"
+        case Point(x=x, y=0):
+            result = "x-axis"
+        case Point(x=x, y=y):
+            result = "general"
+    assert result == "general"
+
+test_match_class_general()
+
+print("Class pattern tests passed!")
+
+# ===== SECTION: Class Patterns with Inheritance =====
+
+class Shape:
+    def __init__(self, name: str):
+        self.name = name
+
+class Circle(Shape):
+    def __init__(self, name: str, radius: int):
+        self.name = name
+        self.radius = radius
+
+# Subclass matches parent pattern (isinstance semantics)
+def test_match_class_inheritance():
+    c: Circle = Circle("circle", 5)
+    result: str = ""
+    match c:
+        case Shape(name=n):
+            result = n
+        case _:
+            result = "other"
+    assert result == "circle"
+
+test_match_class_inheritance()
+
+# More specific pattern first
+def test_match_class_inheritance_specific_first():
+    c: Circle = Circle("mycirc", 10)
+    result: str = ""
+    match c:
+        case Circle(name=n, radius=r):
+            result = "circle"
+        case Shape(name=n):
+            result = "shape"
+        case _:
+            result = "other"
+    assert result == "circle"
+
+test_match_class_inheritance_specific_first()
+
+print("Class pattern inheritance tests passed!")
+
 print("All match tests passed!")

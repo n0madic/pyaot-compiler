@@ -90,7 +90,7 @@ Native Executable
 | Walrus operator `:=` | ✅ | `if (n := len(items)) > 10:` |
 | with (context managers) | ✅ | Exception suppression; `__exit__` receives `(exc_instance, exc_instance, None)` on exception, `(None, None, None)` otherwise |
 | assert | ✅ | Supports f-string messages |
-| match (pattern matching) | ✅ | Literal, singleton, capture, or, sequence, starred, mapping patterns; guards; `**rest` in mapping |
+| match (pattern matching) | ✅ | Literal, singleton, capture, or, sequence, starred, mapping, class patterns; guards; `**rest` in mapping |
 | Multiple assignment | ✅ | `a = b = c = 5` |
 
 ### Functions & Classes
@@ -2578,6 +2578,8 @@ match x:
 - **Or patterns**: `case 1 | 2 | 3` - matches any alternative
 - **Sequence patterns**: `case [a, b, c]` - matches list/tuple with exact length
 - **Starred patterns**: `case [first, *rest]`, `case [*init, last]` - captures remaining elements
+- **Mapping patterns**: `case {"key": value, **rest}` - dict key existence + value matching
+- **Class patterns**: `case Point(x=0, y=val)` - isinstance check + keyword attribute matching; supports inheritance
 - **Guard clauses**: `case n if n > 0` - additional condition after pattern match
 
 **Implementation**:
@@ -2625,7 +2627,5 @@ else:
 ```
 
 **Limitations**:
-- **Mapping patterns**: `case {"key": value}` - dict matching not fully implemented
-- **Class patterns**: `case Point(x=0, y=0)` - basic support via isinstance, positional patterns limited
-- **__match_args__**: Not supported (positional patterns for classes)
+- **__match_args__**: Not supported (positional class patterns require this)
 - **Exhaustiveness checking**: No compile-time check for missing patterns

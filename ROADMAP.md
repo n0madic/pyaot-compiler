@@ -294,17 +294,13 @@ for i in range(1000000):
 
 ---
 
-### 🟡 Match Statement: Class Patterns
+### ✅ Match Statement: Class Patterns
 
-**Why**: `case Point(x=0, y=y)` — matching against class instances by attribute values. Currently only literal, sequence, mapping, and OR patterns are supported.
-
-**Implementation plan**: At match time, check `isinstance(subject, Point)` then extract attributes by name. Requires `getattr`-style field access in the match lowering.
-
-**Already in COMPILER_STATUS.md roadmap.**
+**Implemented**: `case Point(x=0, y=y)` — isinstance check + keyword attribute matching with short-circuit branching. Supports inheritance (`case Shape(name=n)` matches subclasses). Positional patterns (`case Point(1, 2)`) not yet supported (requires `__match_args__`).
 
 ---
 
-### 🟡 Container Dunders: `__len__` + MutableSequence Protocol
+### ✅ Container Dunders: `__len__` + MutableSequence Protocol
 
 **Why**: User-defined classes that implement `__len__`, `__contains__` (already done), `__getitem__`/`__setitem__`/`__delitem__` (already done) should work with `len()`, `in`, indexing. `__len__` is the main missing piece — currently `len(custom_obj)` raises a compile error.
 

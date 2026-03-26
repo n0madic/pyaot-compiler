@@ -228,11 +228,20 @@ impl<'a> Lowering<'a> {
                 )
             };
 
-            // Add this class's own fields (starting after inherited fields)
-            for (i, field) in class_def.fields.iter().enumerate() {
-                let offset = own_field_offset + i;
-                field_offsets.insert(field.name, offset);
-                field_types.insert(field.name, field.ty.clone());
+            // Add this class's own fields (starting after inherited fields).
+            // Skip fields already inherited from parent to maintain consistent offsets
+            // across the inheritance hierarchy (required for class pattern matching).
+            let mut own_field_idx = 0;
+            for field in class_def.fields.iter() {
+                if field_offsets.contains_key(&field.name) {
+                    // Inherited field — keep parent's offset, update type if refined
+                    field_types.insert(field.name, field.ty.clone());
+                } else {
+                    let offset = own_field_offset + own_field_idx;
+                    field_offsets.insert(field.name, offset);
+                    field_types.insert(field.name, field.ty.clone());
+                    own_field_idx += 1;
+                }
             }
 
             // Add/override methods and update vtable slots based on method_kind
@@ -405,7 +414,7 @@ impl<'a> Lowering<'a> {
                 property_types.insert(prop.name, prop.ty.clone());
             }
 
-            let total_field_count = own_field_offset + class_def.fields.len();
+            let total_field_count = own_field_offset + own_field_idx;
 
             // Build class attribute info (inherited from parent + own)
             // For inherited attributes, we keep the parent's (class_id, offset) to ensure
