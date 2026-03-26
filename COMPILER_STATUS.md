@@ -293,6 +293,7 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 |--------------|--------|----------|-------------|
 | Function Inlining | ✅ | `--inline` | Inlines small functions at call sites to reduce call overhead |
 | Constant Folding & Propagation | ✅ | `--constfold` | Evaluates constant expressions at compile time and propagates known values |
+| Peephole Optimizations | ✅ | (with `-O`) | Identity elimination, strength reduction, box/unbox elimination |
 | Dead Code Elimination | ✅ | `--dce` | Removes unreachable blocks, dead instructions, and unused locals |
 | Cold Block Annotation | ✅ | (always on) | Marks exception handlers and error paths as cold for better register allocation |
 
@@ -314,6 +315,17 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 - Python-compatible floor division and modulo semantics for negative operands
 - Safe: skips fold on overflow, division by zero, negative int exponents, NaN/infinity conversions
 - Iterates propagation + folding to fixpoint for transitive constant chains
+
+**Peephole Optimization Details:**
+- Identity elimination: `x + 0` → `x`, `x * 1` → `x`, `x | 0` → `x`, `x & -1` → `x`, `x ** 1` → `x`, etc.
+- Zero/absorbing: `x * 0` → `0`, `x & 0` → `0`, `x | -1` → `-1`, `x ** 0` → `1`
+- Strength reduction: `x * 2` → `x + x`, `x * 2^n` → `x << n`, `x // 2^n` → `x >> n`, `x ** 2` → `x * x`
+- Same-operand: `x - x` → `0`, `x ^ x` → `0`
+- Box/unbox elimination: `UnboxInt(BoxInt(x))` → `x`, same for Float/Bool
+- Bitcast roundtrip: `IntBitsToFloat(FloatBits(x))` → `x` and vice versa
+- Double negation: `Neg(Neg(x))` → `x`, `Not(Not(x))` → `x`, `Invert(Invert(x))` → `x`
+- Float patterns: `x + 0.0` → `x`, `x * 1.0` → `x`, `x / 1.0` → `x`
+- Runs automatically when any optimization pass is enabled; iterates to fixpoint
 
 **Dead Code Elimination Details:**
 - Unreachable block elimination: BFS from entry block, removes blocks not reachable via CFG

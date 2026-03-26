@@ -10,7 +10,7 @@
 | `types` | Type system | `lib.rs` |
 | `lowering` | HIR → MIR transformation | `context/`, `expressions/`, `statements/` |
 | `mir` | Mid-level IR (CFG) | `lib.rs` |
-| `optimizer` | MIR optimization passes | `inline/`, `constfold/`, `dce/` |
+| `optimizer` | MIR optimization passes | `inline/`, `constfold/`, `peephole/`, `dce/` |
 | `codegen-cranelift` | Native code generation | `instructions.rs`, `runtime_calls/`, `debug_info.rs` |
 | `linker` | Object → Executable | `lib.rs` |
 | `runtime` | Runtime library (staticlib) | `gc.rs`, `object.rs`, collections, stdlib |

@@ -114,27 +114,6 @@ for i in range(1000000):
 
 ---
 
-### 🟡 Register Allocation Hints
-
-**Why**: Cranelift handles register allocation automatically, but providing hints (e.g., keeping loop induction variables in registers, preferring specific registers for call arguments) can improve performance.
-
-**Implementation plan**: Use Cranelift's `regalloc2` hints API to suggest register placement for hot variables. Profile-guided: identify frequently-accessed locals in loops.
-
-**Complexity**: Low. Cranelift API already supports this.
-
----
-
-### 🟢 Peephole Optimizations
-
-**Why**: Small local patterns that Cranelift might miss:
-- `x * 1` → `x`, `x + 0` → `x`, `x * 0` → `0`
-- `x * 2` → `x << 1` (strength reduction)
-- Consecutive `box`/`unbox` elimination
-
-**Complexity**: Low. Can be added incrementally as patterns are discovered.
-
----
-
 ## 3. Runtime Performance
 
 ### 🟡 Generational GC

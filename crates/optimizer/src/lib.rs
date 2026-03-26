@@ -9,6 +9,7 @@
 pub mod constfold;
 pub mod dce;
 pub mod inline;
+pub mod peephole;
 
 use pyaot_mir::Module;
 use pyaot_utils::StringInterner;
@@ -39,10 +40,11 @@ impl Default for OptimizeConfig {
 
 /// Run all enabled optimization passes on the MIR module.
 ///
-/// Pass order: inline → constfold → dce
+/// Pass order: inline → constfold → peephole → dce
 /// - Inlining exposes constant expressions across function boundaries
 /// - Constant folding simplifies expressions and branches
-/// - DCE cleans up dead code left by folding and inlining
+/// - Peephole simplifies local patterns (identity ops, strength reduction, box/unbox)
+/// - DCE cleans up dead code left by earlier passes
 pub fn optimize_module(
     module: &mut Module,
     config: &OptimizeConfig,
@@ -53,6 +55,11 @@ pub fn optimize_module(
     }
     if config.constfold {
         constfold::fold_constants(module, interner);
+    }
+    if config.constfold || config.inline {
+        // Peephole runs unconditionally when any optimization is active —
+        // it's lightweight and cleans up patterns from both constfold and inlining
+        peephole::run_peephole(module);
     }
     if config.dce {
         dce::eliminate_dead_code(module);

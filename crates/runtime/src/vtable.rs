@@ -176,9 +176,12 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
             heap_field_mask: u64::MAX,
         };
         // All other built-in exceptions (tags 1-27) inherit from Exception (0)
-        let last_tag = pyaot_core_defs::BUILTIN_EXCEPTION_COUNT - 1;
-        for i in 1..=last_tag as usize {
-            registry[i] = ClassInfo {
+        for entry in registry
+            .iter_mut()
+            .take(pyaot_core_defs::BUILTIN_EXCEPTION_COUNT as usize)
+            .skip(1)
+        {
+            *entry = ClassInfo {
                 parent_class_id: 0,
                 heap_field_mask: u64::MAX,
             };
