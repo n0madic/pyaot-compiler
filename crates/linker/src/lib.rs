@@ -52,7 +52,8 @@ impl Linker {
         #[cfg(target_os = "linux")]
         {
             if !self.debug {
-                cmd.arg("-s"); // Strip debug symbols (only in release mode)
+                cmd.arg("-s"); // Strip debug symbols
+                cmd.arg("-Wl,--gc-sections"); // Remove unused sections (like macOS -dead_strip)
             }
             cmd.arg("-lm"); // Math library
             cmd.arg("-lpthread"); // Thread library
@@ -81,6 +82,12 @@ impl Linker {
                 "Link failed: {}",
                 stderr
             )));
+        }
+
+        // Post-link strip for maximum size reduction (removes symbol table entries
+        // that the linker's -Wl,-x,-S cannot remove)
+        if !self.debug {
+            let _ = Command::new("strip").arg(output).output();
         }
 
         // On macOS with debug info, run dsymutil to create .dSYM bundle
