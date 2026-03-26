@@ -27,7 +27,7 @@ High-level IR (HIR) - Desugared Python with types
     ↓
 Mid-level IR (MIR) - CFG with basic blocks
     ↓
-[MIR Optimizer] (optional, --inline flag)
+[MIR Optimizer] (optional, --inline / --dce flags)
     ↓
 [Cranelift Code Generator]
     ↓
@@ -288,6 +288,7 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 | Optimization | Status | CLI Flag | Description |
 |--------------|--------|----------|-------------|
 | Function Inlining | ✅ | `--inline` | Inlines small functions at call sites to reduce call overhead |
+| Dead Code Elimination | ✅ | `--dce` | Removes unreachable blocks, dead instructions, and unused locals |
 
 **Function Inlining Details:**
 - Inlines leaf functions with ≤10 instructions automatically
@@ -295,6 +296,13 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 - Never inlines: recursive functions, generators, exception handlers
 - Preserves GC roots during transformation
 - Multiple iterations for transitive inlining
+
+**Dead Code Elimination Details:**
+- Unreachable block elimination: BFS from entry block, removes blocks not reachable via CFG
+- Dead instruction elimination: removes pure instructions whose results are never used
+- Dead local elimination: cleans up unused local variable entries
+- Iterates to fixpoint for cascading dead code removal
+- Preserves all side-effectful instructions (calls, GC, exception handling, arithmetic that may raise)
 
 ### Debugging
 

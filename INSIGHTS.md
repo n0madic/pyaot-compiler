@@ -438,3 +438,14 @@ Built-in exception type tags 0-27 are reserved in the class registry. `FIRST_USE
 ## str(e) Reads Message from ExceptionState, Not Instance Fields
 
 `rt_exc_instance_str()` first checks thread-local `ExceptionState` for the message (matching by instance pointer), then falls back to reading field 0 (.args) from the instance. This is necessary because custom exception instances may not have `.args` as field 0 — their fields come from `__init__` (e.g., `self.status`). The ExceptionState always has the original message string from the raise site.
+
+---
+
+## MIR BinOp/UnOp Are NOT Pure for DCE
+
+In the optimizer's dead code elimination pass, `BinOp` and `UnOp` must **not** be treated as side-effect-free. This compiler uses i64 arithmetic, so:
+- `Add`, `Sub`, `Mul`, `Pow` can raise `OverflowError` (i64 overflow)
+- `Div`, `FloorDiv`, `Mod` can raise `ZeroDivisionError`
+- `Neg` (UnOp) can overflow on `i64::MIN`
+
+If DCE removes a "dead" `x = 10 // 0` because `x` is unused, the `ZeroDivisionError` that should fire inside a `try` block is silently lost. Only `Const`, `Copy`, `FuncAddr`, `BuiltinAddr`, and safe type conversions (`BoolToInt`, `IntToFloat`, `FloatBits`, `IntBitsToFloat`, `FloatAbs`) are truly pure. See `optimizer/src/dce/mod.rs:instruction_is_pure()`.

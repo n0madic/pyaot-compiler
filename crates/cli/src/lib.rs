@@ -30,6 +30,8 @@ pub struct CompileOptions {
     pub inline: bool,
     /// Maximum instruction count for inlining
     pub inline_threshold: usize,
+    /// Enable dead code elimination optimization
+    pub dce: bool,
     /// Include debug information
     pub debug: bool,
     /// Verbose output
@@ -51,6 +53,7 @@ impl Default for CompileOptions {
             module_paths: Vec::new(),
             inline: false,
             inline_threshold: 50,
+            dce: false,
             debug: false,
             verbose: false,
             emit_hir: false,
@@ -138,15 +141,23 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
     };
 
     // Run optimizations
-    if options.inline {
-        if options.verbose {
+    let opt_config = pyaot_optimizer::OptimizeConfig {
+        inline: options.inline,
+        inline_threshold: options.inline_threshold,
+        dce: options.dce,
+    };
+    if options.verbose {
+        if opt_config.inline {
             println!(
                 "Running function inlining optimization (threshold: {})...",
-                options.inline_threshold
+                opt_config.inline_threshold
             );
         }
-        pyaot_optimizer::inline::inline_functions(&mut mir_module, options.inline_threshold);
+        if opt_config.dce {
+            println!("Running dead code elimination...");
+        }
     }
+    pyaot_optimizer::optimize_module(&mut mir_module, &opt_config);
 
     if options.emit_mir {
         println!("MIR: {:#?}", mir_module);

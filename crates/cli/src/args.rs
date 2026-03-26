@@ -51,6 +51,10 @@ pub struct Args {
     #[arg(long, default_value = "50")]
     pub inline_threshold: usize,
 
+    /// Enable dead code elimination optimization
+    #[arg(long)]
+    pub dce: bool,
+
     /// Include debug information in the generated executable
     #[arg(long)]
     pub debug: bool,

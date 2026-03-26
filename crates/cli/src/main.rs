@@ -23,6 +23,7 @@ fn main() -> Result<()> {
         module_paths: args.module_path,
         inline: args.inline,
         inline_threshold: args.inline_threshold,
+        dce: args.dce,
         debug: args.debug,
         verbose: args.verbose,
         emit_hir: args.emit_hir,

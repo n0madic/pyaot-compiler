@@ -34,6 +34,7 @@ cargo fmt && cargo clippy --workspace  # Format and lint
 ./target/release/pyaot input.py -o output --run # Compile and run
 ./target/release/pyaot input.py --emit-hir      # Debug: show HIR
 ./target/release/pyaot input.py --emit-mir      # Debug: show MIR
+./target/release/pyaot input.py -o output --inline --dce  # Optimizations: inlining + dead code elimination
 ./target/release/pyaot input.py -o output --debug  # DWARF debug info, symbols preserved, no optimizations
 ```
 

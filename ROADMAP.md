@@ -127,16 +127,16 @@ ZeroDivisionError: division by zero
 
 ---
 
-### 🔴 Dead Code Elimination (DCE)
+### 🟢 Dead Code Elimination (DCE) — Completed
 
 **Why**: After constant folding and inlining, dead basic blocks and unused computations remain. Removing them reduces code size and improves cache behavior.
 
-**Implementation plan**:
-1. **Unreachable block elimination**: After constant folding turns conditional branches into unconditional ones, remove unreachable blocks from the CFG.
-2. **Dead instruction elimination**: If an instruction's result is never used and has no side effects, remove it. Mark instructions as side-effect-free (arithmetic, comparisons) vs. side-effectful (calls, stores, prints).
-3. **Dead variable elimination**: If a local is assigned but never read, remove the assignment (unless it has side effects).
+**Implementation** (`crates/optimizer/src/dce/`):
+1. **Unreachable block elimination**: BFS from entry block, removes blocks not reachable via CFG edges.
+2. **Dead instruction elimination**: Removes pure instructions (Const, Copy, FuncAddr, type conversions) whose results are never used. BinOp/UnOp are conservatively kept because they can raise OverflowError/ZeroDivisionError.
+3. **Dead variable elimination**: Cleans up unused local variable entries from `func.locals`.
 
-**Complexity**: Low. Standard compiler optimization. Pairs naturally with constant folding.
+Iterates to fixpoint for cascading dead code removal. Enabled via `--dce` CLI flag.
 
 ---
 
