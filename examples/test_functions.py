@@ -309,6 +309,87 @@ def test_closure_chain() -> None:
     result: int = level1()
     assert result == 30, "result should equal 30"
 
+# ===== SECTION: Three-level closure nesting =====
+
+def test_lambda_grandparent_capture() -> None:
+    """Lambda inside nested function captures from grandparent scope"""
+    x: int = 10
+    def middle() -> int:
+        f = lambda: x  # lambda captures x from grandparent
+        return f()
+    result: int = middle()
+    assert result == 10, "lambda grandparent capture should equal 10"
+
+def test_lambda_in_nested_with_args() -> None:
+    """Lambda with args captures from grandparent"""
+    base: int = 100
+    def middle() -> int:
+        adder = lambda y: base + y  # captures base from grandparent
+        return adder(5)
+    result: int = middle()
+    assert result == 105, "lambda with args grandparent capture should equal 105"
+
+def test_four_level_readonly() -> None:
+    """Four-level read-only capture"""
+    x: int = 1
+    def level1() -> int:
+        def level2() -> int:
+            def level3() -> int:
+                return x
+            return level3()
+        return level2()
+    result: int = level1()
+    assert result == 1, "four-level read-only capture should equal 1"
+
+def test_four_level_nonlocal() -> None:
+    """Four-level nonlocal chain"""
+    counter: int = 0
+    def level1() -> None:
+        nonlocal counter
+        def level2() -> None:
+            nonlocal counter
+            def level3() -> None:
+                nonlocal counter
+                counter = counter + 10
+            level3()
+        level2()
+    level1()
+    assert counter == 10, "four-level nonlocal should equal 10"
+
+def test_returned_closure_three_levels() -> None:
+    """Closure returned from three-level nesting (deferred execution)"""
+    x: int = 42
+    def middle():
+        def inner() -> int:
+            return x
+        return inner
+    f = middle()
+    result: int = f()
+    assert result == 42, "returned closure three-level should equal 42"
+
+def test_mixed_capture_levels() -> None:
+    """Captures from multiple ancestor scopes"""
+    a: int = 1
+    def level1() -> int:
+        b: int = 2
+        def level2() -> int:
+            c: int = 3
+            def level3() -> int:
+                return a + b + c  # captures from three different levels
+            return level3()
+        return level2()
+    result: int = level1()
+    assert result == 6, "mixed capture levels should equal 6"
+
+def test_lambda_chain_capture() -> None:
+    """Lambda captures variable that was itself captured by enclosing function"""
+    x: int = 7
+    def middle() -> int:
+        f = lambda y: x + y
+        return f(3)
+    result: int = middle()
+    assert result == 10, "lambda chain capture should equal 10"
+
 # ===== SECTION: nonlocal statement =====
 
 def test_basic_nonlocal() -> None:
@@ -567,6 +648,13 @@ test_nested_with_loop()
 test_two_levels()
 test_grandparent_capture()
 test_closure_chain()
+test_lambda_grandparent_capture()
+test_lambda_in_nested_with_args()
+test_four_level_readonly()
+test_four_level_nonlocal()
+test_returned_closure_three_levels()
+test_mixed_capture_levels()
+test_lambda_chain_capture()
 
 # Run all nonlocal tests
 test_basic_nonlocal()

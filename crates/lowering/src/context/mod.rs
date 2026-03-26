@@ -219,6 +219,9 @@ pub struct Lowering<'a> {
     /// Maps: variable -> (wrapper_func_id, original_func_id)
     /// Used when a decorator returns a closure that wraps the original function
     pub(crate) var_to_wrapper: IndexMap<VarId, (FuncId, FuncId)>,
+    /// Track variables that hold dynamically returned closures (e.g., f = middle() where middle returns a closure).
+    /// These need emit_closure_call dispatch since the closure structure is only known at runtime.
+    pub(crate) dynamic_closure_vars: IndexSet<VarId>,
     /// Track variables that are function pointer parameters (for indirect calls)
     /// Used in wrapper functions where the captured `func` parameter is called indirectly
     pub(crate) func_ptr_params: IndexSet<VarId>,

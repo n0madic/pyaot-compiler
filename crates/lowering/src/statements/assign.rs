@@ -249,6 +249,21 @@ impl<'a> Lowering<'a> {
             _ => {}
         }
 
+        // Check if RHS is a call to a function that returns a closure.
+        // If so, mark the target variable as a dynamic closure so f() uses emit_closure_call.
+        if let hir::ExprKind::Call { func, .. } = &expr.kind {
+            let func_expr = &hir_module.exprs[*func];
+            if let Some((called_func_id, _)) =
+                self.extract_func_with_captures(func_expr, hir_module)
+            {
+                if let Some(func_def) = hir_module.func_defs.get(&called_func_id) {
+                    if self.find_returned_closure(func_def, hir_module).is_some() {
+                        self.dynamic_closure_vars.insert(target);
+                    }
+                }
+            }
+        }
+
         // Type check: validate RHS type against type hint (if present)
         if let Some(ref hint) = type_hint {
             self.check_expr_type(value, hint, hir_module);

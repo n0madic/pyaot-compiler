@@ -1768,7 +1768,7 @@ scale = Closure(__lambda_0, [multiplier])
 **Limitations**:
 - Read-only captures (values copied at lambda creation time)
 - Default parameters supported (evaluated at definition time, Python semantics)
-- No nested lambdas
+- Nested lambdas supported (transitive capture across arbitrary nesting depth)
 - Types must be inferable from body expression
 
 ### Nested Functions

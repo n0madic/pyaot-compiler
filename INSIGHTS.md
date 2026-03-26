@@ -184,7 +184,7 @@ Interned strings enable pointer equality for dict key comparisons — `eq_hashab
 - The enclosing function allocates the cell and passes it to the closure
 - Both the enclosing function and closure read/write through the cell
 
-**Three-level nesting limitation**: Currently, closures only capture from their immediate parent. A closure inside a closure inside a function cannot capture variables from the outermost function (the middle closure would need to forward the cell, which is not yet implemented).
+**Transitive capture**: Named nested functions and lambdas capture variables transitively at arbitrary depth. The free variable scanner recurses into nested function bodies and lambda expressions, bubbling up free variables to intermediate scopes. Intermediate functions automatically capture and forward variables (including cell pointers for `nonlocal` chains) to inner closures.
 
 ---
 

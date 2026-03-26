@@ -48,6 +48,7 @@ impl<'a> Lowering<'a> {
             var_to_func: IndexMap::with_capacity(func_count.min(32)),
             var_to_closure: IndexMap::with_capacity(func_count / 4 + 1),
             var_to_wrapper: IndexMap::with_capacity(8),
+            dynamic_closure_vars: IndexSet::new(),
             func_ptr_params: IndexSet::with_capacity(8),
             wrapper_func_ids: IndexSet::with_capacity(8),
             varargs_params: IndexSet::with_capacity(4),

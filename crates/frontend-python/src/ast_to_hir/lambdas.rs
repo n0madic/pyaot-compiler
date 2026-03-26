@@ -303,15 +303,31 @@ impl AstToHir {
                     self.collect_free_variables(exc, local_scope, free_vars);
                 }
             }
+            py::Stmt::Delete(delete_stmt) => {
+                for target in &delete_stmt.targets {
+                    self.collect_free_variables(target, local_scope, free_vars);
+                }
+            }
+            py::Stmt::With(with_stmt) => {
+                for item in &with_stmt.items {
+                    self.collect_free_variables(&item.context_expr, local_scope, free_vars);
+                    if let Some(ref optional_vars) = item.optional_vars {
+                        self.add_target_to_scope(optional_vars, local_scope);
+                    }
+                }
+                self.collect_free_variables_in_stmts(&with_stmt.body, local_scope, free_vars);
+            }
             // Pass, Break, Continue don't reference variables
             py::Stmt::Pass(_) | py::Stmt::Break(_) | py::Stmt::Continue(_) => {}
+            // Nonlocal declarations don't add variables to local scope
+            py::Stmt::Nonlocal(_) => {}
             // Global variables should NOT be captured - they're module-level
             py::Stmt::Global(global_stmt) => {
                 for name in &global_stmt.names {
                     local_scope.insert(name.to_string());
                 }
             }
-            // Other statements - skip for now
+            // Other statements - no variable references to scan
             _ => {}
         }
     }
@@ -414,9 +430,85 @@ impl AstToHir {
                     self.collect_free_variables(elem, local_params, free_vars);
                 }
             }
+            // Lambda expressions introduce a new scope - recurse into body
+            // to find free variables that need transitive capture
+            py::Expr::Lambda(lambda) => {
+                let mut lambda_scope = local_params.clone();
+                for arg in &lambda.args.args {
+                    lambda_scope.insert(arg.def.arg.to_string());
+                }
+                if let Some(ref vararg) = lambda.args.vararg {
+                    lambda_scope.insert(vararg.arg.to_string());
+                }
+                for arg in &lambda.args.kwonlyargs {
+                    lambda_scope.insert(arg.def.arg.to_string());
+                }
+                if let Some(ref kwarg) = lambda.args.kwarg {
+                    lambda_scope.insert(kwarg.arg.to_string());
+                }
+                self.collect_free_variables(&lambda.body, &lambda_scope, free_vars);
+            }
+            // F-string expressions contain variable references
+            py::Expr::JoinedStr(joined) => {
+                for value in &joined.values {
+                    self.collect_free_variables(value, local_params, free_vars);
+                }
+            }
+            py::Expr::FormattedValue(fv) => {
+                self.collect_free_variables(&fv.value, local_params, free_vars);
+            }
+            // Comprehensions introduce loop variables but may reference outer vars
+            py::Expr::ListComp(comp) => {
+                let mut comp_scope = local_params.clone();
+                for gen in &comp.generators {
+                    self.collect_free_variables(&gen.iter, &comp_scope, free_vars);
+                    self.add_target_to_scope(&gen.target, &mut comp_scope);
+                    for cond in &gen.ifs {
+                        self.collect_free_variables(cond, &comp_scope, free_vars);
+                    }
+                }
+                self.collect_free_variables(&comp.elt, &comp_scope, free_vars);
+            }
+            py::Expr::SetComp(comp) => {
+                let mut comp_scope = local_params.clone();
+                for gen in &comp.generators {
+                    self.collect_free_variables(&gen.iter, &comp_scope, free_vars);
+                    self.add_target_to_scope(&gen.target, &mut comp_scope);
+                    for cond in &gen.ifs {
+                        self.collect_free_variables(cond, &comp_scope, free_vars);
+                    }
+                }
+                self.collect_free_variables(&comp.elt, &comp_scope, free_vars);
+            }
+            py::Expr::DictComp(comp) => {
+                let mut comp_scope = local_params.clone();
+                for gen in &comp.generators {
+                    self.collect_free_variables(&gen.iter, &comp_scope, free_vars);
+                    self.add_target_to_scope(&gen.target, &mut comp_scope);
+                    for cond in &gen.ifs {
+                        self.collect_free_variables(cond, &comp_scope, free_vars);
+                    }
+                }
+                self.collect_free_variables(&comp.key, &comp_scope, free_vars);
+                self.collect_free_variables(&comp.value, &comp_scope, free_vars);
+            }
+            py::Expr::GeneratorExp(comp) => {
+                let mut comp_scope = local_params.clone();
+                for gen in &comp.generators {
+                    self.collect_free_variables(&gen.iter, &comp_scope, free_vars);
+                    self.add_target_to_scope(&gen.target, &mut comp_scope);
+                    for cond in &gen.ifs {
+                        self.collect_free_variables(cond, &comp_scope, free_vars);
+                    }
+                }
+                self.collect_free_variables(&comp.elt, &comp_scope, free_vars);
+            }
+            py::Expr::Starred(starred) => {
+                self.collect_free_variables(&starred.value, local_params, free_vars);
+            }
             // Constants don't reference variables
             py::Expr::Constant(_) => {}
-            // Other expressions - recursively handle if needed
+            // Other expressions - no variable references to scan
             _ => {}
         }
     }

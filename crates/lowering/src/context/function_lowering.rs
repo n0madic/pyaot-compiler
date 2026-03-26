@@ -75,6 +75,7 @@ impl<'a> Lowering<'a> {
         self.var_to_func.clear();
         self.var_to_closure.clear();
         self.var_to_wrapper.clear();
+        self.dynamic_closure_vars.clear();
         self.func_ptr_params.clear();
         self.varargs_params.clear();
         self.current_blocks.clear();
