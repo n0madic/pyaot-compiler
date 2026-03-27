@@ -59,7 +59,15 @@ pub struct Args {
     #[arg(long)]
     pub constfold: bool,
 
-    /// Enable all optimizations (inline + constfold + dce)
+    /// Enable devirtualization (replace virtual calls with direct calls)
+    #[arg(long)]
+    pub devirtualize: bool,
+
+    /// Enable property flattening (inline trivial @property getters)
+    #[arg(long)]
+    pub flatten_properties: bool,
+
+    /// Enable all optimizations (inline + constfold + dce + devirtualize + flatten-properties)
     #[arg(short = 'O', long)]
     pub optimize: bool,
 

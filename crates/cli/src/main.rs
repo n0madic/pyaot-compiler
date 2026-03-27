@@ -25,6 +25,8 @@ fn main() -> Result<()> {
         inline_threshold: args.inline_threshold,
         dce: args.dce || args.optimize,
         constfold: args.constfold || args.optimize,
+        devirtualize: args.devirtualize || args.optimize,
+        flatten_properties: args.flatten_properties || args.optimize,
         debug: args.debug,
         verbose: args.verbose,
         emit_hir: args.emit_hir,

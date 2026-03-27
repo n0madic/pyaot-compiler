@@ -27,7 +27,7 @@ High-level IR (HIR) - Desugared Python with types
     ↓
 Mid-level IR (MIR) - CFG with basic blocks
     ↓
-[MIR Optimizer] (optional, --inline / --constfold / --dce flags)
+[MIR Optimizer] (optional, --devirtualize / --flatten-properties / --inline / --constfold / --dce flags)
     ↓
 [Cranelift Code Generator]
     ↓
@@ -291,11 +291,25 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 
 | Optimization | Status | CLI Flag | Description |
 |--------------|--------|----------|-------------|
+| Devirtualization | ✅ | `--devirtualize` | Replaces virtual method calls with direct calls when receiver type is statically known |
+| Property Flattening | ✅ | `--flatten-properties` | Inlines trivial `@property` getters as direct field access |
 | Function Inlining | ✅ | `--inline` | Inlines small functions at call sites to reduce call overhead |
 | Constant Folding & Propagation | ✅ | `--constfold` | Evaluates constant expressions at compile time and propagates known values |
 | Peephole Optimizations | ✅ | (with `-O`) | Identity elimination, strength reduction, box/unbox elimination |
 | Dead Code Elimination | ✅ | `--dce` | Removes unreachable blocks, dead instructions, and unused locals |
 | Cold Block Annotation | ✅ | (always on) | Marks exception handlers and error paths as cold for better register allocation |
+
+**Devirtualization Details:**
+- Converts `CallVirtual` (indirect vtable dispatch) to `CallDirect` (static dispatch) when the receiver's `Type::Class` is statically known
+- Eliminates 2 memory loads (vtable pointer + method pointer) and indirect call overhead
+- Enables downstream inlining: functions previously blocked by `has_uninlinable_calls` become inlinable
+- Pass order: runs before inlining to maximize inlining opportunities
+
+**Property Flattening Details:**
+- Detects trivial `@property` getters whose body is a single `InstanceGetField` return
+- Replaces `CallDirect` to these getters with inline `InstanceGetField`, eliminating function call overhead
+- Example: `@property def x(self): return self._x` → direct field read at known offset
+- Pass order: runs after devirtualization (to catch devirtualized property calls) and before inlining
 
 **Function Inlining Details:**
 - Inlines leaf functions with ≤10 instructions automatically

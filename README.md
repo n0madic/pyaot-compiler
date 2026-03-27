@@ -34,7 +34,7 @@ This compiler follows a multi-stage compilation pipeline:
 4. **Type Inference** (`lowering/type_planning`): Bidirectional type inference and validation
 5. **Lowering** (`lowering`): HIR to MIR transformation
 6. **MIR** (`mir`): Mid-level IR with control flow graph (CFG)
-7. **Optimizer** (`optimizer`): MIR optimization passes (inlining, constant folding & propagation, dead code elimination)
+7. **Optimizer** (`optimizer`): MIR optimization passes (devirtualization, property flattening, inlining, constant folding & propagation, dead code elimination)
 8. **Codegen** (`codegen-cranelift`): Code generation using Cranelift
 9. **Linking** (`linker`): Linking with runtime library
 10. **Runtime** (`runtime`): Runtime support with precise GC
@@ -77,6 +77,8 @@ pyaot input.py -o output --verbose
 pyaot input.py -o output --optimize
 
 # Or enable individual passes
+pyaot input.py -o output --devirtualize    # Replace virtual calls with direct calls
+pyaot input.py -o output --flatten-properties  # Inline trivial @property getters
 pyaot input.py -o output --inline          # Function inlining
 pyaot input.py -o output --constfold       # Constant folding & propagation
 pyaot input.py -o output --dce             # Dead code elimination

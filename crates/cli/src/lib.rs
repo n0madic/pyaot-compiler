@@ -34,6 +34,10 @@ pub struct CompileOptions {
     pub dce: bool,
     /// Enable constant folding and propagation
     pub constfold: bool,
+    /// Enable devirtualization (replace virtual calls with direct calls)
+    pub devirtualize: bool,
+    /// Enable property flattening (inline trivial @property getters)
+    pub flatten_properties: bool,
     /// Include debug information
     pub debug: bool,
     /// Verbose output
@@ -57,6 +61,8 @@ impl Default for CompileOptions {
             inline_threshold: 50,
             dce: false,
             constfold: false,
+            devirtualize: false,
+            flatten_properties: false,
             debug: false,
             verbose: false,
             emit_hir: false,
@@ -145,12 +151,20 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
 
     // Run optimizations
     let opt_config = pyaot_optimizer::OptimizeConfig {
+        devirtualize: options.devirtualize,
+        flatten_properties: options.flatten_properties,
         inline: options.inline,
         inline_threshold: options.inline_threshold,
         dce: options.dce,
         constfold: options.constfold,
     };
     if options.verbose {
+        if opt_config.devirtualize {
+            println!("Running devirtualization...");
+        }
+        if opt_config.flatten_properties {
+            println!("Running property flattening...");
+        }
         if opt_config.inline {
             println!(
                 "Running function inlining optimization (threshold: {})...",
