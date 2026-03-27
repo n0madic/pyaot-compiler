@@ -107,6 +107,45 @@ pub fn compile_object_call(
             builder.def_var(dest_var, result_val);
             update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
         }
+        // Union arithmetic: rt_obj_{add,sub,mul,div,floordiv,mod,pow}(a, b) -> *mut Obj
+        mir::RuntimeFunc::ObjAdd
+        | mir::RuntimeFunc::ObjSub
+        | mir::RuntimeFunc::ObjMul
+        | mir::RuntimeFunc::ObjDiv
+        | mir::RuntimeFunc::ObjFloorDiv
+        | mir::RuntimeFunc::ObjMod
+        | mir::RuntimeFunc::ObjPow => {
+            let rt_name = match func {
+                mir::RuntimeFunc::ObjAdd => "rt_obj_add",
+                mir::RuntimeFunc::ObjSub => "rt_obj_sub",
+                mir::RuntimeFunc::ObjMul => "rt_obj_mul",
+                mir::RuntimeFunc::ObjDiv => "rt_obj_div",
+                mir::RuntimeFunc::ObjFloorDiv => "rt_obj_floordiv",
+                mir::RuntimeFunc::ObjMod => "rt_obj_mod",
+                mir::RuntimeFunc::ObjPow => "rt_obj_pow",
+                _ => unreachable!(),
+            };
+            let mut sig = ctx.module.make_signature();
+            sig.call_conv = CallConv::SystemV;
+            sig.params.push(AbiParam::new(cltypes::I64)); // a
+            sig.params.push(AbiParam::new(cltypes::I64)); // b
+            sig.returns.push(AbiParam::new(cltypes::I64)); // result *mut Obj
+
+            let func_id = declare_runtime_function(ctx.module, rt_name, &sig)?;
+            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+
+            let a = load_operand(builder, &args[0], ctx.var_map);
+            let b = load_operand(builder, &args[1], ctx.var_map);
+            let call_inst = builder.ins().call(func_ref, &[a, b]);
+
+            let result_val = get_call_result(builder, call_inst);
+            let dest_var = *ctx
+                .var_map
+                .get(&dest)
+                .expect("internal error: local not in var_map - codegen bug");
+            builder.def_var(dest_var, result_val);
+            update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
+        }
         _ => unreachable!("Non-object function passed to compile_object_call"),
     }
 

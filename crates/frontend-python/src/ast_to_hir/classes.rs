@@ -98,8 +98,9 @@ impl AstToHir {
         self.class_map.insert(class_name, class_id);
 
         // Parse base class from bases (single inheritance only)
-        // Also detect if this is an exception class
+        // Also detect if this is an exception class or Protocol
         let mut is_exception_class = false;
+        let mut is_protocol = false;
         let mut base_exception_type: Option<u8> = None;
 
         let base_class = if !class_def.bases.is_empty() {
@@ -107,8 +108,24 @@ impl AstToHir {
             if let py::Expr::Name(name) = first_base {
                 let base_name_str = name.id.as_str();
 
+                // Check if this is a Protocol class (from typing import Protocol)
+                if base_name_str == "Protocol" {
+                    let proto_interned = self.interner.intern("Protocol");
+                    if self.typing_imports.contains(&proto_interned) {
+                        is_protocol = true;
+                        None // Protocol has no runtime parent
+                    } else {
+                        return Err(CompilerError::name_error(
+                            format!(
+                                "Base class '{}' must be defined before '{}'",
+                                name.id, class_def.name
+                            ),
+                            class_span,
+                        ));
+                    }
+                }
                 // Check if inheriting from a built-in exception type
-                if let Some(exc_tag) = exception_name_to_tag(base_name_str) {
+                else if let Some(exc_tag) = exception_name_to_tag(base_name_str) {
                     is_exception_class = true;
                     base_exception_type = Some(exc_tag);
                     // Built-in exceptions don't have ClassId - no base_class for them
@@ -390,6 +407,7 @@ impl AstToHir {
             span: class_span,
             is_exception_class,
             base_exception_type,
+            is_protocol,
         };
 
         self.module.class_defs.insert(class_id, class_def);

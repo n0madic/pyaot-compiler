@@ -185,18 +185,24 @@ pub fn compile_instruction(
                         // Extend i8 to i64
                         builder.ins().uextend(cltypes::I64, arg_val)
                     }
-                    // For Any parameters, only convert types that have different Cranelift representations
-                    // Int is already i64, same as Any, so no conversion needed
-                    (Some(Type::Float), Some(Type::Any)) if arg_cl_type == cltypes::F64 => {
+                    // For Any/Union parameters, only convert types that have different Cranelift representations
+                    // Int is already i64, same as Any/Union, so no conversion needed
+                    (Some(Type::Float), Some(Type::Any | Type::Union(_)))
+                        if arg_cl_type == cltypes::F64 =>
+                    {
                         // f64 -> i64: need to box the float
                         box_primitive(builder, ctx.module, "rt_box_float", cltypes::F64, arg_val)?
                     }
-                    (Some(Type::Bool), Some(Type::Any)) if arg_cl_type == cltypes::I8 => {
-                        // i8 -> i64: extend bool to i64 for Any parameter
+                    (Some(Type::Bool), Some(Type::Any | Type::Union(_)))
+                        if arg_cl_type == cltypes::I8 =>
+                    {
+                        // i8 -> i64: extend bool to i64 for Any/Union parameter
                         builder.ins().uextend(cltypes::I64, arg_val)
                     }
-                    (Some(Type::None), Some(Type::Any)) if arg_cl_type == cltypes::I8 => {
-                        // i8 -> i64: extend None to i64 for Any parameter
+                    (Some(Type::None), Some(Type::Any | Type::Union(_)))
+                        if arg_cl_type == cltypes::I8 =>
+                    {
+                        // i8 -> i64: extend None to i64 for Any/Union parameter
                         builder.ins().uextend(cltypes::I64, arg_val)
                     }
                     // None passed for pointer-typed parameters (list, dict, str, tuple, etc.)
@@ -436,6 +442,76 @@ pub fn compile_instruction(
                     .expect("internal error: local not in var_map - codegen bug");
                 builder.def_var(dest_var, result_val);
                 // Update GC root if needed
+                update_gc_root_if_needed(builder, dest, result_val, ctx.gc_frame_data);
+            }
+        }
+
+        mir::InstructionKind::CallVirtualNamed {
+            dest,
+            obj,
+            name_hash,
+            args,
+        } => {
+            // Name-based virtual dispatch for Protocol types.
+            // Calls rt_vtable_lookup_by_name(obj, name_hash) to get the method pointer,
+            // then makes an indirect call.
+            let obj_val = load_operand(builder, obj, ctx.var_map);
+
+            // Declare rt_vtable_lookup_by_name(obj: *mut u8, name_hash: i64) -> *const u8
+            let mut lookup_sig = ctx.module.make_signature();
+            lookup_sig.call_conv = CallConv::SystemV;
+            lookup_sig.params.push(AbiParam::new(cltypes::I64)); // obj
+            lookup_sig.params.push(AbiParam::new(cltypes::I64)); // name_hash
+            lookup_sig.returns.push(AbiParam::new(cltypes::I64)); // fn ptr
+
+            let lookup_func_id = crate::utils::declare_runtime_function(
+                ctx.module,
+                "rt_vtable_lookup_by_name",
+                &lookup_sig,
+            )?;
+            let lookup_ref = ctx
+                .module
+                .declare_func_in_func(lookup_func_id, builder.func);
+
+            let hash_val = builder.ins().iconst(cltypes::I64, *name_hash as i64);
+            let lookup_call = builder.ins().call(lookup_ref, &[obj_val, hash_val]);
+            let method_ptr = crate::utils::get_call_result(builder, lookup_call);
+
+            // Build arguments: self first, then additional args
+            let mut arg_vals = vec![obj_val];
+            for arg in args {
+                let arg_val = load_operand(builder, arg, ctx.var_map);
+                arg_vals.push(arg_val);
+            }
+
+            // Get return type from destination local
+            let dest_local = ctx
+                .locals
+                .get(dest)
+                .expect("internal error: dest local not found for CallVirtualNamed");
+            let return_type = crate::utils::type_to_cranelift(&dest_local.ty);
+
+            // Build signature for indirect call
+            let mut sig = ctx.module.make_signature();
+            sig.call_conv = CallConv::SystemV;
+            for arg_val in &arg_vals {
+                let arg_ty = builder.func.dfg.value_type(*arg_val);
+                sig.params.push(AbiParam::new(arg_ty));
+            }
+            sig.returns.push(AbiParam::new(return_type));
+            let sig_ref = builder.import_signature(sig);
+
+            // Indirect call through the resolved method pointer
+            let call_inst = builder.ins().call_indirect(sig_ref, method_ptr, &arg_vals);
+
+            let results = builder.inst_results(call_inst);
+            if !results.is_empty() {
+                let result_val = results[0];
+                let dest_var = *ctx
+                    .var_map
+                    .get(dest)
+                    .expect("internal error: local not in var_map - codegen bug");
+                builder.def_var(dest_var, result_val);
                 update_gc_root_if_needed(builder, dest, result_val, ctx.gc_frame_data);
             }
         }

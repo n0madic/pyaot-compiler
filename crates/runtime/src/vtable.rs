@@ -192,3 +192,89 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
 /// Get the first available class ID for user classes.
 /// Built-in exception classes use IDs 0-27, so user classes start at 28.
 pub const FIRST_USER_CLASS_ID: u8 = pyaot_core_defs::BUILTIN_EXCEPTION_COUNT;
+
+// ==================== Method Name Registry (for Protocol dispatch) ====================
+// Maps (class_id, method_name_hash) → vtable_slot for name-based virtual dispatch.
+
+const MAX_METHODS_PER_CLASS: usize = 64;
+
+/// Entry in the per-class method name table
+#[derive(Copy, Clone)]
+struct MethodNameEntry {
+    name_hash: u64,
+    slot: usize,
+}
+
+/// Per-class method name table: array of (hash, slot) pairs
+#[derive(Copy, Clone)]
+struct MethodNameTable {
+    entries: [MethodNameEntry; MAX_METHODS_PER_CLASS],
+    count: usize,
+}
+
+impl MethodNameTable {
+    const fn new() -> Self {
+        Self {
+            entries: [MethodNameEntry {
+                name_hash: 0,
+                slot: 0,
+            }; MAX_METHODS_PER_CLASS],
+            count: 0,
+        }
+    }
+}
+
+/// Global method name registry: maps class_id → method name table
+static METHOD_NAME_REGISTRY: RegistryStorage<MethodNameTable, MAX_CLASSES> =
+    RegistryStorage(UnsafeCell::new({
+        // const array initialization
+        const EMPTY: MethodNameTable = MethodNameTable::new();
+        [EMPTY; MAX_CLASSES]
+    }));
+
+/// Register a method name → vtable slot mapping for a class.
+/// Called during class initialization for every instance method.
+#[no_mangle]
+pub extern "C" fn rt_register_method_name(class_id: i64, name_hash: i64, slot: i64) {
+    unsafe {
+        let registry = &mut *METHOD_NAME_REGISTRY.0.get();
+        let table = &mut registry[class_id as usize];
+        if table.count < MAX_METHODS_PER_CLASS {
+            table.entries[table.count] = MethodNameEntry {
+                name_hash: name_hash as u64,
+                slot: slot as usize,
+            };
+            table.count += 1;
+        }
+    }
+}
+
+/// Look up a vtable slot by method name hash on the ACTUAL runtime object.
+/// Returns the function pointer for the method, or null if not found.
+/// This is used for Protocol dispatch where the compile-time Protocol's vtable
+/// slots may differ from the concrete class's slots.
+#[no_mangle]
+pub extern "C" fn rt_vtable_lookup_by_name(obj_ptr: *mut u8, name_hash: i64) -> *const u8 {
+    if obj_ptr.is_null() {
+        return std::ptr::null();
+    }
+    unsafe {
+        // Get class_id from the InstanceObj (offset 25 from obj start)
+        // InstanceObj layout: ObjHeader(16) + vtable_ptr(8) + class_id(1)
+        let class_id = *obj_ptr.add(24) as usize;
+
+        // Look up slot by name hash in the method name table
+        let registry = &*METHOD_NAME_REGISTRY.0.get();
+        let table = &registry[class_id];
+        let target_hash = name_hash as u64;
+        for i in 0..table.count {
+            if table.entries[i].name_hash == target_hash {
+                let slot = table.entries[i].slot;
+                // Now do the standard vtable lookup
+                let vtable_ptr = *(obj_ptr.add(16) as *const *const u8); // vtable at offset 16
+                return rt_vtable_lookup(vtable_ptr, slot);
+            }
+        }
+        std::ptr::null()
+    }
+}

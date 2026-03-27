@@ -58,8 +58,20 @@ impl<'a> Lowering<'a> {
                     let expected = param_types
                         .and_then(|p| p.get(positional_index))
                         .and_then(|p| p.ty.clone());
-                    let operand =
-                        self.lower_expr_expecting(arg_expr, expected, hir_module, mir_func)?;
+                    let operand = self.lower_expr_expecting(
+                        arg_expr,
+                        expected.clone(),
+                        hir_module,
+                        mir_func,
+                    )?;
+
+                    // Box primitives when passing to Union-typed parameters
+                    let operand = if matches!(&expected, Some(Type::Union(_))) {
+                        let arg_type = self.operand_type(&operand, mir_func);
+                        self.box_primitive_if_needed(operand, &arg_type, mir_func)
+                    } else {
+                        operand
+                    };
 
                     operands.push(operand);
                     positional_index += 1;

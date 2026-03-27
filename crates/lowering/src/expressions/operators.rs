@@ -260,6 +260,49 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        // Check if operands are stored as Union (boxed pointers), even if inference
+        // narrowed the type. The storage type determines the runtime representation.
+        let left_is_union = left_ty.is_union()
+            || matches!(&left_op, mir::Operand::Local(id) if mir_func.locals.get(id).is_some_and(|l| l.ty.is_union()));
+        let right_is_union = right_ty.is_union()
+            || matches!(&right_op, mir::Operand::Local(id) if mir_func.locals.get(id).is_some_and(|l| l.ty.is_union()));
+
+        // Union arithmetic: operands are already boxed pointers — use runtime dispatch
+        if left_is_union || right_is_union {
+            let obj_func = match op {
+                hir::BinOp::Add => Some(mir::RuntimeFunc::ObjAdd),
+                hir::BinOp::Sub => Some(mir::RuntimeFunc::ObjSub),
+                hir::BinOp::Mul => Some(mir::RuntimeFunc::ObjMul),
+                hir::BinOp::Div => Some(mir::RuntimeFunc::ObjDiv),
+                hir::BinOp::FloorDiv => Some(mir::RuntimeFunc::ObjFloorDiv),
+                hir::BinOp::Mod => Some(mir::RuntimeFunc::ObjMod),
+                hir::BinOp::Pow => Some(mir::RuntimeFunc::ObjPow),
+                _ => None, // Bitwise ops not supported on Union (yet)
+            };
+
+            if let Some(rt_func) = obj_func {
+                let boxed_left = if left_is_union {
+                    left_op
+                } else {
+                    self.box_primitive_if_needed(left_op, &left_ty, mir_func)
+                };
+                let boxed_right = if right_is_union {
+                    right_op
+                } else {
+                    self.box_primitive_if_needed(right_op, &right_ty, mir_func)
+                };
+                // Result is Union (boxed pointer)
+                let union_result =
+                    self.alloc_and_add_local(Type::Union(vec![Type::Int, Type::Float]), mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: union_result,
+                    func: rt_func,
+                    args: vec![boxed_left, boxed_right],
+                });
+                return Ok(mir::Operand::Local(union_result));
+            }
+        }
+
         let mir_op = match op {
             hir::BinOp::Add => mir::BinOp::Add,
             hir::BinOp::Sub => mir::BinOp::Sub,

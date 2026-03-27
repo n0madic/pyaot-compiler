@@ -61,6 +61,15 @@ impl<'a> Lowering<'a> {
             (Type::Int, Type::Float) | (Type::Bool, Type::Int) | (Type::Bool, Type::Float)
         );
 
+        // Protocol classes accept any type (structural subtyping)
+        if let Type::Class { class_id, .. } = expected {
+            if let Some(class_def) = hir_module.class_defs.get(class_id) {
+                if class_def.is_protocol {
+                    return;
+                }
+            }
+        }
+
         // Check compatibility: inferred must be a subtype of expected
         if !is_python_compatible && !inferred.is_subtype_of(expected) {
             self.warnings

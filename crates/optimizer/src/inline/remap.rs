@@ -118,6 +118,17 @@ impl InlineRemapper {
                 slot: *slot,
                 args: self.remap_operands(args),
             },
+            InstructionKind::CallVirtualNamed {
+                dest,
+                obj,
+                name_hash,
+                args,
+            } => InstructionKind::CallVirtualNamed {
+                dest: self.remap_local(*dest),
+                obj: self.remap_operand(obj),
+                name_hash: *name_hash,
+                args: self.remap_operands(args),
+            },
             InstructionKind::FuncAddr { dest, func } => InstructionKind::FuncAddr {
                 dest: self.remap_local(*dest),
                 func: *func, // FuncId stays the same

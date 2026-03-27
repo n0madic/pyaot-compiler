@@ -80,6 +80,19 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
 /// Infer the type of a binary operation from operand types.
 /// Returns `None` if the type cannot be determined (caller should apply fallback).
 pub(crate) fn resolve_binop_type(op: &hir::BinOp, left_ty: &Type, right_ty: &Type) -> Option<Type> {
+    // Union arithmetic: result is Union since the actual type depends on runtime values.
+    // Division always returns float even for Union (Python 3 semantics).
+    if left_ty.is_union() || right_ty.is_union() {
+        if matches!(op, hir::BinOp::Div) {
+            return Some(Type::Float);
+        }
+        // Return the Union type directly (preserve it through the pipeline)
+        if left_ty.is_union() {
+            return Some(left_ty.clone());
+        }
+        return Some(right_ty.clone());
+    }
+
     // Class types with arithmetic dunders return the class type
     if matches!(left_ty, Type::Class { .. }) {
         return Some(left_ty.clone());

@@ -13,6 +13,15 @@ impl AstToHir {
         assign: py::StmtAssign,
         stmt_span: Span,
     ) -> Result<StmtId> {
+        // Check for TypeVar assignment: T = TypeVar('T', ...)
+        if self.is_typevar_assignment(&assign) {
+            self.handle_typevar_assignment(&assign, stmt_span)?;
+            return Ok(self.module.stmts.alloc(Stmt {
+                kind: StmtKind::Pass,
+                span: stmt_span,
+            }));
+        }
+
         // Chained assignment: a = b = value → b = value; a = value
         // We process right-to-left (Python semantics: value is evaluated once)
         if assign.targets.len() > 1 {
@@ -167,17 +176,48 @@ impl AstToHir {
         ann_assign: py::StmtAnnAssign,
         stmt_span: Span,
     ) -> Result<StmtId> {
+        // Check for TypeAlias: MyType: TypeAlias = int
+        if let py::Expr::Name(ann_name) = &*ann_assign.annotation {
+            if ann_name.id.as_str() == "TypeAlias" {
+                let interned = self.interner.intern(&ann_name.id);
+                if self.typing_imports.contains(&interned) {
+                    if let Some(val) = &ann_assign.value {
+                        let alias_name = if let py::Expr::Name(name) = &*ann_assign.target {
+                            self.interner.intern(&name.id)
+                        } else {
+                            return Err(CompilerError::parse_error(
+                                "TypeAlias target must be a simple name",
+                                stmt_span,
+                            ));
+                        };
+                        let aliased_type = self.convert_type_annotation(val)?;
+                        self.type_aliases.insert(alias_name, aliased_type);
+                        return Ok(self.module.stmts.alloc(Stmt {
+                            kind: StmtKind::Pass,
+                            span: stmt_span,
+                        }));
+                    }
+                }
+            }
+        }
+
         // Annotated assignment: target: Type = value
         self.mark_var_initialized(&ann_assign.target);
         let target_var = self.get_or_create_var_from_expr(&ann_assign.target)?;
-        let type_hint = self.convert_type_annotation(&ann_assign.annotation)?;
+        let raw_type_hint = self.convert_type_annotation(&ann_assign.annotation)?;
+        // TypeVar placeholders → no type hint (let inference determine the type)
+        let type_hint = if matches!(raw_type_hint, Type::Var(_)) {
+            None
+        } else {
+            Some(raw_type_hint)
+        };
         let value = if let Some(val) = ann_assign.value {
             let value_id = self.convert_expr(*val)?;
             // Propagate type hint to the value expression for empty collection literals
             // This allows type inference to use the annotation for empty list/dict/set
             let value_expr = &mut self.module.exprs[value_id];
             if value_expr.ty.is_none() {
-                value_expr.ty = Some(type_hint.clone());
+                value_expr.ty = type_hint.clone();
             }
             value_id
         } else {
@@ -193,7 +233,7 @@ impl AstToHir {
             kind: StmtKind::Assign {
                 target: target_var,
                 value,
-                type_hint: Some(type_hint),
+                type_hint,
             },
             span: stmt_span,
         }))

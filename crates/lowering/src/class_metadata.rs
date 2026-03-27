@@ -71,6 +71,7 @@ impl<'a> Lowering<'a> {
 
         for class_id in sorted_classes {
             let class_def = &hir_module.class_defs[&class_id];
+
             let class_name = self.resolve(class_def.name).to_string();
             self.register_class_name(class_name, class_id);
 
@@ -555,6 +556,9 @@ impl<'a> Lowering<'a> {
         // Register all classes with their parent (or 255 if no parent - sentinel value)
         // Use offset-adjusted ClassIds to avoid collisions across modules
         for (class_id, class_def) in &hir_module.class_defs {
+            if class_def.is_protocol {
+                continue;
+            }
             let effective_class_id = self.get_effective_class_id(*class_id);
 
             // Determine parent class ID:
@@ -614,6 +618,33 @@ impl<'a> Lowering<'a> {
                 ],
             });
 
+            // Register method name→slot mappings for Protocol dispatch.
+            // Collect data first to avoid borrow conflict with emit_instruction.
+            let method_slots: Vec<(i64, i64)> = self
+                .get_class_info(class_id)
+                .map(|ci| {
+                    ci.vtable_slots
+                        .iter()
+                        .map(|(name, &slot)| {
+                            let name_str = self.resolve(*name);
+                            let hash = pyaot_utils::fnv1a_hash(name_str) as i64;
+                            (hash, slot as i64)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (name_hash, slot) in method_slots {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: dummy_local,
+                    func: mir::RuntimeFunc::RegisterMethodName,
+                    args: vec![
+                        mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                        mir::Operand::Constant(mir::Constant::Int(name_hash)),
+                        mir::Operand::Constant(mir::Constant::Int(slot)),
+                    ],
+                });
+            }
+
             // For exception classes, also register the class name for error messages
             if class_def.is_exception_class {
                 // class_def.name is already an InternedString, use it directly
@@ -641,6 +672,9 @@ impl<'a> Lowering<'a> {
 
         // Initialize class attributes for each class
         for (class_id, class_def) in &hir_module.class_defs {
+            if class_def.is_protocol {
+                continue;
+            }
             let effective_class_id = self.get_effective_class_id(*class_id);
 
             // Look up class info for attribute offsets

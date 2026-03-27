@@ -347,7 +347,10 @@ pub enum RuntimeFunc {
     /// - Without key: rt_sorted_{source}(container, reverse) -> *mut Obj
     /// - With key: rt_sorted_{source}_with_key(container, reverse, key_fn) -> *mut Obj
     /// - Range (no key): rt_sorted_range(start, stop, step, reverse) -> *mut Obj
-    Sorted { source: SortableKind, has_key: bool },
+    Sorted {
+        source: SortableKind,
+        has_key: bool,
+    },
 
     // ==================== Container min/max operations (unified) ====================
     /// Find min/max element in a container
@@ -467,7 +470,10 @@ pub enum RuntimeFunc {
     /// Compare two containers or objects
     /// Replaces: ListEqInt, ListEqFloat, ListEqStr, TupleEq, TupleLt, TupleLte, TupleGt, TupleGte,
     /// StrEq, BytesEq, ObjEq, ObjLt, ObjLte, ObjGt, ObjGte (15 variants → 1 parameterized variant)
-    Compare { kind: CompareKind, op: ComparisonOp },
+    Compare {
+        kind: CompareKind,
+        op: ComparisonOp,
+    },
 
     // ==================== Runtime type dispatch for Union types ====================
     /// Check truthiness of an object with runtime type dispatch: rt_is_truthy(obj: *mut Obj) -> i8
@@ -476,6 +482,16 @@ pub enum RuntimeFunc {
     IsTruthy,
     /// Check if element is in container with runtime type dispatch: rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8
     ObjContains,
+    /// Register method name→slot mapping for a class (Protocol dispatch): rt_register_method_name(class_id, name_hash, slot)
+    RegisterMethodName,
+    /// Arithmetic on boxed Union objects: rt_obj_{add,sub,mul,div,floordiv,mod,pow}(a, b) -> *mut Obj
+    ObjAdd,
+    ObjSub,
+    ObjMul,
+    ObjDiv,
+    ObjFloorDiv,
+    ObjMod,
+    ObjPow,
     /// Convert any heap object to string: rt_obj_to_str(obj: *mut Obj) -> *mut Obj
     ObjToStr,
     /// Default repr for objects without __str__ or __repr__: rt_obj_default_repr(obj: *mut Obj) -> *mut Obj

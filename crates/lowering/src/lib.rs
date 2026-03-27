@@ -213,12 +213,13 @@ impl<'a> Lowering<'a> {
             mir_func,
         )?;
 
-        // Step 7.5: Box primitive values passed to Any-typed parameters
+        // Step 7.5: Box primitive values passed to Any-typed or Union-typed parameters.
+        // Union parameters are boxed pointers at runtime, so primitive args must be boxed.
         for (i, operand_opt) in resolved.iter_mut().enumerate() {
             if let Some(operand) = operand_opt {
                 if i < param_class.regular.len() {
                     let param = &param_class.regular[i];
-                    if let Some(Type::Any) = &param.ty {
+                    if matches!(&param.ty, Some(Type::Any) | Some(Type::Union(_))) {
                         let arg_type = self.operand_type(operand, mir_func);
                         *operand =
                             self.box_primitive_if_needed(operand.clone(), &arg_type, mir_func);
@@ -230,7 +231,7 @@ impl<'a> Lowering<'a> {
             if let Some(operand) = operand_opt {
                 if i < param_class.kwonly.len() {
                     let param = &param_class.kwonly[i];
-                    if let Some(Type::Any) = &param.ty {
+                    if matches!(&param.ty, Some(Type::Any) | Some(Type::Union(_))) {
                         let arg_type = self.operand_type(operand, mir_func);
                         *operand =
                             self.box_primitive_if_needed(operand.clone(), &arg_type, mir_func);

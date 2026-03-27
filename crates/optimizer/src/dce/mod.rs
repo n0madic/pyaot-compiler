@@ -53,6 +53,7 @@ pub(crate) fn instruction_dest(kind: &InstructionKind) -> Option<LocalId> {
         | InstructionKind::CallDirect { dest, .. }
         | InstructionKind::CallNamed { dest, .. }
         | InstructionKind::CallVirtual { dest, .. }
+        | InstructionKind::CallVirtualNamed { dest, .. }
         | InstructionKind::FuncAddr { dest, .. }
         | InstructionKind::BuiltinAddr { dest, .. }
         | InstructionKind::RuntimeCall { dest, .. }
@@ -125,7 +126,8 @@ pub(crate) fn instruction_used_locals(kind: &InstructionKind) -> Vec<LocalId> {
                 collect_operand_locals(arg, &mut locals);
             }
         }
-        InstructionKind::CallVirtual { obj, args, .. } => {
+        InstructionKind::CallVirtual { obj, args, .. }
+        | InstructionKind::CallVirtualNamed { obj, args, .. } => {
             collect_operand_locals(obj, &mut locals);
             for arg in args {
                 collect_operand_locals(arg, &mut locals);

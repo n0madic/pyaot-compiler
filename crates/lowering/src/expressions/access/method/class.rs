@@ -136,14 +136,32 @@ impl<'a> Lowering<'a> {
 
                 // Check if this method has a vtable slot (for virtual dispatch)
                 if let Some(&slot) = class_info.vtable_slots.get(&method) {
-                    // Use virtual dispatch via vtable
-                    // Note: args don't include self - it's passed separately as obj
-                    self.emit_instruction(mir::InstructionKind::CallVirtual {
-                        dest: result_local,
-                        obj: obj_operand,
-                        slot,
-                        args: arg_operands,
-                    });
+                    // For Protocol classes, use name-based dispatch since concrete classes
+                    // may have different vtable layouts
+                    let is_protocol = hir_module
+                        .class_defs
+                        .get(class_id)
+                        .is_some_and(|cd| cd.is_protocol);
+
+                    if is_protocol {
+                        let method_name_str = self.resolve(method);
+                        let name_hash = pyaot_utils::fnv1a_hash(method_name_str);
+                        self.emit_instruction(mir::InstructionKind::CallVirtualNamed {
+                            dest: result_local,
+                            obj: obj_operand,
+                            name_hash,
+                            args: arg_operands,
+                        });
+                    } else {
+                        // Use virtual dispatch via vtable
+                        // Note: args don't include self - it's passed separately as obj
+                        self.emit_instruction(mir::InstructionKind::CallVirtual {
+                            dest: result_local,
+                            obj: obj_operand,
+                            slot,
+                            args: arg_operands,
+                        });
+                    }
                 } else {
                     // Fallback to static dispatch (shouldn't happen for class methods)
                     let mut call_args = vec![obj_operand];

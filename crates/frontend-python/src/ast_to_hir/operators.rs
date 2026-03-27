@@ -31,6 +31,7 @@ impl AstToHir {
             }
             py::Constant::Bytes(b) => ExprKind::Bytes(b.clone()),
             py::Constant::None => ExprKind::None,
+            py::Constant::Ellipsis => ExprKind::None, // Ellipsis (...) treated as None for protocol method stubs
             _ => {
                 return Err(CompilerError::parse_error(
                     format!("Unsupported constant: {:?}", constant),

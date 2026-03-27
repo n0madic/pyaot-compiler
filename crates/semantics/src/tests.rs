@@ -329,6 +329,7 @@ fn test_abstract_class_instantiation_fails() {
         span: dummy_span(),
         is_exception_class: false,
         base_exception_type: None,
+        is_protocol: false,
     };
     module.class_defs.insert(class_id, class_def);
 
@@ -390,6 +391,7 @@ fn test_concrete_class_instantiation_succeeds() {
         span: dummy_span(),
         is_exception_class: false,
         base_exception_type: None,
+        is_protocol: false,
     };
     module.class_defs.insert(class_id, class_def);
 

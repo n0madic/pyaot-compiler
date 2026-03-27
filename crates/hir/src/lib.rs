@@ -131,6 +131,8 @@ pub struct ClassDef {
     pub span: Span,
     /// True if this class inherits from Exception or a subclass
     pub is_exception_class: bool,
+    /// True if this class is a Protocol (structural subtyping, compile-time only)
+    pub is_protocol: bool,
     /// For exception classes: the base exception type tag (0-12 for built-in exceptions)
     /// None if not an exception class or if inheriting from a custom exception
     pub base_exception_type: Option<u8>,

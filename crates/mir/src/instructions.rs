@@ -66,6 +66,16 @@ pub enum InstructionKind {
         args: Vec<Operand>, // Additional arguments (self is prepended at codegen)
     },
 
+    /// Name-based virtual method call (Protocol dispatch)
+    /// Looks up the vtable slot by method name hash on the actual runtime object.
+    /// Used when the compile-time type is a Protocol and vtable slots may differ.
+    CallVirtualNamed {
+        dest: LocalId,
+        obj: Operand,       // The receiver (self)
+        name_hash: u64,     // FNV-1a hash of the method name
+        args: Vec<Operand>, // Additional arguments (self is prepended at codegen)
+    },
+
     /// Get function address (pointer) for passing to runtime functions (e.g., sorted key)
     FuncAddr { dest: LocalId, func: FuncId },
 

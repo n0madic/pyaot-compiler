@@ -129,7 +129,9 @@ impl FunctionCost {
                         has_gc_roots = true;
                     }
                     // Uninlinable call types
-                    InstructionKind::CallNamed { .. } | InstructionKind::CallVirtual { .. } => {
+                    InstructionKind::CallNamed { .. }
+                    | InstructionKind::CallVirtual { .. }
+                    | InstructionKind::CallVirtualNamed { .. } => {
                         has_uninlinable_calls = true;
                     }
                     _ => {}

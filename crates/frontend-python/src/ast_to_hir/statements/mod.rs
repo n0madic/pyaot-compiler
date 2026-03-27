@@ -144,6 +144,14 @@ impl AstToHir {
             py::Stmt::Delete(delete_stmt) => {
                 return self.convert_delete(delete_stmt, stmt_span);
             }
+            py::Stmt::TypeAlias(ta) => {
+                // PEP 695: type MyType = int (inside function scope)
+                self.convert_type_alias_stmt(ta, stmt_span)?;
+                return Ok(self.module.stmts.alloc(Stmt {
+                    kind: StmtKind::Pass,
+                    span: stmt_span,
+                }));
+            }
             _ => {
                 return Err(CompilerError::parse_error(
                     format!("Unsupported statement: {:?}", stmt),

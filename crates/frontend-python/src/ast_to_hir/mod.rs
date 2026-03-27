@@ -58,6 +58,15 @@ pub enum StdlibItem {
     Const(&'static pyaot_stdlib_defs::StdlibConstDef),
 }
 
+/// TypeVar definition from `T = TypeVar('T', ...)`
+#[derive(Debug, Clone)]
+pub struct TypeVarDef {
+    /// Constraint types: TypeVar('T', int, str) → [int, str]
+    pub constraints: Vec<Type>,
+    /// Bound type: TypeVar('T', bound=SomeType) → Some(SomeType)
+    pub bound: Option<Type>,
+}
+
 pub struct AstToHir {
     pub(crate) interner: StringInterner,
     pub(crate) module: Module,
@@ -82,6 +91,10 @@ pub struct AstToHir {
     pub(crate) pending_stmts: Vec<StmtId>,
     // Track imported names from typing module (List, Dict, Optional, etc.)
     pub(crate) typing_imports: HashSet<InternedString>,
+    // Type aliases: MyType: TypeAlias = int, or type MyType = int
+    pub(crate) type_aliases: HashMap<InternedString, Type>,
+    // TypeVar definitions: T = TypeVar('T', ...)
+    pub(crate) typevar_defs: HashMap<InternedString, TypeVarDef>,
     // Track variables declared as global in the current function scope
     pub(crate) global_vars: HashSet<InternedString>,
     // Track variables declared as nonlocal in the current function scope
@@ -134,6 +147,8 @@ impl AstToHir {
             current_class: None,
             pending_stmts: Vec::new(),
             typing_imports: HashSet::new(),
+            type_aliases: HashMap::new(),
+            typevar_defs: HashMap::new(),
             global_vars: HashSet::new(),
             nonlocal_vars: HashSet::new(),
             scope_stack: Vec::new(),
@@ -175,6 +190,7 @@ impl AstToHir {
     }
 
     fn convert_top_level_stmt(&mut self, stmt: py::Stmt) -> Result<()> {
+        let stmt_span = Self::span_from(&stmt);
         match stmt {
             py::Stmt::FunctionDef(func_def) => {
                 self.convert_function_def(func_def)?;
@@ -182,7 +198,23 @@ impl AstToHir {
             py::Stmt::ClassDef(class_def) => {
                 self.convert_class_def(class_def)?;
             }
+            // PEP 695: type MyType = int
+            py::Stmt::TypeAlias(ta) => {
+                self.convert_type_alias_stmt(ta, stmt_span)?;
+            }
             _ => {
+                // Check for TypeVar assignment: T = TypeVar('T', ...)
+                if let py::Stmt::Assign(ref assign) = stmt {
+                    if self.is_typevar_assignment(assign) {
+                        // Use module-level scope for type resolution
+                        std::mem::swap(&mut self.var_map, &mut self.module_var_map);
+                        let result = self.handle_typevar_assignment(assign, stmt_span);
+                        std::mem::swap(&mut self.var_map, &mut self.module_var_map);
+                        result?;
+                        return Ok(());
+                    }
+                }
+
                 // Accept all other statements at module level (CPython semantics)
                 // Use module-level variable scope
                 std::mem::swap(&mut self.var_map, &mut self.module_var_map);
@@ -272,6 +304,85 @@ impl AstToHir {
 
     pub(crate) fn take_pending_stmts(&mut self) -> Vec<StmtId> {
         std::mem::take(&mut self.pending_stmts)
+    }
+
+    /// Handle PEP 695 `type MyType = ...` statement
+    fn convert_type_alias_stmt(&mut self, ta: py::StmtTypeAlias, stmt_span: Span) -> Result<()> {
+        if let py::Expr::Name(name) = &*ta.name {
+            let alias_name = self.interner.intern(&name.id);
+            let aliased_type = self.convert_type_annotation(&ta.value)?;
+            self.type_aliases.insert(alias_name, aliased_type);
+            Ok(())
+        } else {
+            Err(CompilerError::parse_error(
+                "type alias name must be a simple name",
+                stmt_span,
+            ))
+        }
+    }
+
+    /// Check if an assignment is `T = TypeVar('T', ...)`
+    fn is_typevar_assignment(&self, assign: &py::StmtAssign) -> bool {
+        if assign.targets.len() != 1 {
+            return false;
+        }
+        if !matches!(&assign.targets[0], py::Expr::Name(_)) {
+            return false;
+        }
+        if let py::Expr::Call(call) = &*assign.value {
+            if let py::Expr::Name(func_name) = &*call.func {
+                if func_name.id.as_str() == "TypeVar" {
+                    // Check if TypeVar was imported from typing
+                    return self
+                        .typing_imports
+                        .iter()
+                        .any(|s| self.interner.resolve(*s) == "TypeVar");
+                }
+            }
+        }
+        false
+    }
+
+    /// Handle `T = TypeVar('T', ...)` assignment
+    fn handle_typevar_assignment(
+        &mut self,
+        assign: &py::StmtAssign,
+        _stmt_span: Span,
+    ) -> Result<()> {
+        let target_name = if let py::Expr::Name(name) = &assign.targets[0] {
+            self.interner.intern(&name.id)
+        } else {
+            unreachable!("is_typevar_assignment checked this");
+        };
+
+        if let py::Expr::Call(call) = &*assign.value {
+            let tv_def = self.parse_typevar_call(call)?;
+            self.typevar_defs.insert(target_name, tv_def);
+        }
+        Ok(())
+    }
+
+    /// Parse a TypeVar('T', int, str, bound=X) call
+    fn parse_typevar_call(&mut self, call: &py::ExprCall) -> Result<TypeVarDef> {
+        let mut constraints = Vec::new();
+        let mut bound = None;
+
+        // Skip first positional arg (the name string 'T')
+        for (i, arg) in call.args.iter().enumerate() {
+            if i == 0 {
+                continue;
+            }
+            constraints.push(self.convert_type_annotation(arg)?);
+        }
+
+        // Check for bound= keyword argument
+        for kw in &call.keywords {
+            if kw.arg.as_deref() == Some("bound") {
+                bound = Some(self.convert_type_annotation(&kw.value)?);
+            }
+        }
+
+        Ok(TypeVarDef { constraints, bound })
     }
 
     /// Infer the type from a literal expression

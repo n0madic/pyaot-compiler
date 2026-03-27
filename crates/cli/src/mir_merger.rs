@@ -355,7 +355,8 @@ impl MirMerger {
                     Self::remap_operand_strings(arg, remap);
                 }
             }
-            InstructionKind::CallVirtual { obj, args, .. } => {
+            InstructionKind::CallVirtual { obj, args, .. }
+            | InstructionKind::CallVirtualNamed { obj, args, .. } => {
                 Self::remap_operand_strings(obj, remap);
                 for arg in args.iter_mut() {
                     Self::remap_operand_strings(arg, remap);

@@ -253,6 +253,7 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::IsinstanceClassInherited
         | mir::RuntimeFunc::RegisterClass
         | mir::RuntimeFunc::RegisterClassFields
+        | mir::RuntimeFunc::RegisterMethodName
         | mir::RuntimeFunc::IsSubclass => {
             instance::compile_instance_call(builder, dest, func, args, ctx)?;
             Ok(())
@@ -369,7 +370,14 @@ pub fn compile_runtime_call(
         mir::RuntimeFunc::IsTruthy
         | mir::RuntimeFunc::ObjContains
         | mir::RuntimeFunc::ObjToStr
-        | mir::RuntimeFunc::ObjDefaultRepr => {
+        | mir::RuntimeFunc::ObjDefaultRepr
+        | mir::RuntimeFunc::ObjAdd
+        | mir::RuntimeFunc::ObjSub
+        | mir::RuntimeFunc::ObjMul
+        | mir::RuntimeFunc::ObjDiv
+        | mir::RuntimeFunc::ObjFloorDiv
+        | mir::RuntimeFunc::ObjMod
+        | mir::RuntimeFunc::ObjPow => {
             object::compile_object_call(builder, dest, func, args, ctx)?;
             Ok(())
         }

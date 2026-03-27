@@ -3,6 +3,7 @@ use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::*;
 use pyaot_stdlib_defs::registry::get_class_type;
 use pyaot_types::{typespec_to_type, Type};
+use pyaot_utils::Span;
 use rustpython_parser::ast as py;
 
 impl AstToHir {
@@ -22,8 +23,28 @@ impl AstToHir {
                     _ => {}
                 }
 
-                // Check for user-defined class names
                 let interned = self.interner.intern(&name.id);
+
+                // Check for type aliases
+                if let Some(aliased_type) = self.type_aliases.get(&interned).cloned() {
+                    return Ok(aliased_type);
+                }
+
+                // Check for TypeVar definitions
+                // Constrained/bounded TypeVars resolve to their constraint type.
+                // Unconstrained TypeVars resolve to Type::Var(name) — a placeholder
+                // that signals "leave untyped for inference" in function parameters.
+                if let Some(tv_def) = self.typevar_defs.get(&interned).cloned() {
+                    if let Some(bound) = &tv_def.bound {
+                        return Ok(bound.clone());
+                    } else if !tv_def.constraints.is_empty() {
+                        return Ok(Type::normalize_union(tv_def.constraints.clone()));
+                    } else {
+                        return Ok(Type::Var(interned));
+                    }
+                }
+
+                // Check for user-defined class names
                 if let Some(&class_id) = self.class_map.get(&interned) {
                     return Ok(Type::Class {
                         class_id,
@@ -32,14 +53,18 @@ impl AstToHir {
                 }
 
                 // Check if it's a typing import that needs to be subscripted
+                // (but not TypeAlias/TypeVar/Protocol which are handled differently)
                 if self.typing_imports.contains(&interned) {
-                    return Err(CompilerError::parse_error(
-                        format!(
-                            "Generic type '{}' from typing module requires type parameters, e.g. {}[...]",
-                            name.id, name.id
-                        ),
-                        ann_span,
-                    ));
+                    let name_str = name.id.as_str();
+                    if name_str != "TypeAlias" && name_str != "TypeVar" && name_str != "Protocol" {
+                        return Err(CompilerError::parse_error(
+                            format!(
+                                "Generic type '{}' from typing module requires type parameters, e.g. {}[...]",
+                                name.id, name.id
+                            ),
+                            ann_span,
+                        ));
+                    }
                 }
 
                 Err(CompilerError::parse_error(
@@ -119,6 +144,19 @@ impl AstToHir {
                                 types.push(self.convert_type_annotation(&sub.slice)?);
                             }
                             Ok(Type::normalize_union(types))
+                        }
+                        "Literal" if is_typing_import => {
+                            // Literal[42] → int, Literal["hello"] → str (type erasure)
+                            // Literal[42, "hello"] → Union[int, str]
+                            if let py::Expr::Tuple(tuple) = &*sub.slice {
+                                let mut types = Vec::new();
+                                for elem in &tuple.elts {
+                                    types.push(self.literal_value_to_type(elem, ann_span)?);
+                                }
+                                Ok(Type::normalize_union(types))
+                            } else {
+                                self.literal_value_to_type(&sub.slice, ann_span)
+                            }
                         }
                         _ => Err(CompilerError::parse_error(
                             format!("Unknown generic type: {}", name.id),
@@ -272,6 +310,47 @@ impl AstToHir {
             _ => Err(CompilerError::parse_error(
                 "isinstance type argument must be a type name",
                 expr_span,
+            )),
+        }
+    }
+
+    /// Convert a literal value to its erased base type for Literal[value] support.
+    /// Literal[42] → int, Literal["hello"] → str, Literal[True] → bool
+    fn literal_value_to_type(&self, expr: &py::Expr, span: Span) -> Result<Type> {
+        match expr {
+            py::Expr::Constant(c) => match &c.value {
+                py::Constant::Int(_) => Ok(Type::Int),
+                py::Constant::Float(_) => Ok(Type::Float),
+                py::Constant::Bool(_) => Ok(Type::Bool),
+                py::Constant::Str(_) => Ok(Type::Str),
+                py::Constant::Bytes(_) => Ok(Type::Bytes),
+                py::Constant::None => Ok(Type::None),
+                _ => Err(CompilerError::parse_error(
+                    "unsupported Literal value",
+                    span,
+                )),
+            },
+            // Handle negative numbers: Literal[-1] parses as UnaryOp(USub, 1)
+            py::Expr::UnaryOp(unop) if matches!(unop.op, py::UnaryOp::USub) => {
+                if let py::Expr::Constant(c) = &*unop.operand {
+                    match &c.value {
+                        py::Constant::Int(_) => Ok(Type::Int),
+                        py::Constant::Float(_) => Ok(Type::Float),
+                        _ => Err(CompilerError::parse_error(
+                            "unsupported Literal value",
+                            span,
+                        )),
+                    }
+                } else {
+                    Err(CompilerError::parse_error(
+                        "Literal type parameters must be literal values",
+                        span,
+                    ))
+                }
+            }
+            _ => Err(CompilerError::parse_error(
+                "Literal type parameters must be literal values",
+                span,
             )),
         }
     }

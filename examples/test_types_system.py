@@ -1,6 +1,6 @@
 # Consolidated test file for type system
 
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Set, Tuple, TypeAlias, Literal, TypeVar, Protocol
 
 # ===== SECTION: typing module imports (List, Dict, Set, Tuple, Optional, Union) =====
 
@@ -767,5 +767,170 @@ test_truthiness_str_none_union()
 test_truthiness_empty_str_is_falsy()
 test_truthiness_combined_with_isinstance()
 test_truthiness_while_loop()
+
+# ===== SECTION: TypeAlias (PEP 613) =====
+
+# TypeAlias with annotation style
+IntList: TypeAlias = list[int]
+ta_nums: IntList = [1, 2, 3]
+assert len(ta_nums) == 3, "TypeAlias IntList should work as list[int]"
+assert ta_nums[0] == 1, "TypeAlias IntList element access"
+
+StrDict: TypeAlias = dict[str, int]
+ta_dict: StrDict = {"a": 1, "b": 2}
+assert ta_dict["a"] == 1, "TypeAlias StrDict should work as dict[str, int]"
+assert len(ta_dict) == 2, "TypeAlias StrDict length"
+
+# Nested type alias
+NestedAlias: TypeAlias = list[dict[str, int]]
+ta_nested: NestedAlias = [{"x": 10}, {"y": 20}]
+assert len(ta_nested) == 2, "Nested TypeAlias should work"
+assert ta_nested[0]["x"] == 10, "Nested TypeAlias element access"
+
+print("TypeAlias tests passed!")
+
+# ===== SECTION: PEP 695 type statement =====
+
+type IntSet = set[int]
+ta_set: IntSet = {1, 2, 3}
+assert 1 in ta_set, "PEP 695 type alias should work as set[int]"
+assert len(ta_set) == 3, "PEP 695 type alias set length"
+
+type OptStr = str | None
+ta_opt1: OptStr = "hello"
+ta_opt2: OptStr = None
+assert ta_opt1 == "hello", "PEP 695 union alias with value"
+assert ta_opt2 is None, "PEP 695 union alias with None"
+
+print("PEP 695 type statement tests passed!")
+
+# ===== SECTION: Literal types =====
+
+lit_mode: Literal["r", "w"] = "r"
+assert lit_mode == "r", "Literal[str, str] should accept string value"
+
+lit_code: Literal[0, 1, 2] = 1
+assert lit_code == 1, "Literal[int, int, int] should accept int value"
+
+lit_flag: Literal[True] = True
+assert lit_flag == True, "Literal[bool] should accept bool value"
+
+lit_neg: Literal[-1, 0, 1] = -1
+assert lit_neg == -1, "Literal with negative int"
+
+lit_none: Literal[None] = None
+assert lit_none is None, "Literal[None] should accept None"
+
+print("Literal type tests passed!")
+
+# ===== SECTION: TypeVar =====
+
+T = TypeVar('T')
+
+# TypeVar with int — the identity function accepts the annotation
+def tv_identity_int(x: T) -> T:
+    return x
+
+tv_int_result: int = tv_identity_int(42)
+assert tv_int_result == 42, "TypeVar identity with int"
+
+# TypeVar with str — separate function since AOT compiles one specialization
+def tv_identity_str(x: T) -> T:
+    return x
+
+tv_str_result: str = tv_identity_str("hello")
+assert tv_str_result == "hello", "TypeVar identity with str"
+
+# TypeVar with constraints — annotation is accepted (resolves to Union[int, float])
+Num = TypeVar('Num', int, float)
+tv_constrained_val: Num = 42
+assert tv_constrained_val == 42, "TypeVar with constraints (annotation accepted)"
+
+# TypeVar with bound — accepted as the bound type
+Comparable = TypeVar('Comparable', bound=int)
+
+def tv_max_val(a: Comparable, b: Comparable) -> Comparable:
+    if a > b:
+        return a
+    return b
+
+assert tv_max_val(3, 7) == 7, "TypeVar with bound"
+assert tv_max_val(10, 2) == 10, "TypeVar with bound (reverse)"
+
+print("TypeVar tests passed!")
+
+# ===== SECTION: Protocol (structural subtyping) =====
+
+# Protocol class definition is accepted — compile-time structural type
+class Drawable(Protocol):
+    def draw(self) -> str: ...
+
+class Circle:
+    def draw(self) -> str:
+        return "circle"
+
+class Square:
+    def draw(self) -> str:
+        return "square"
+
+# Protocol-typed parameter accepts concrete class instances
+def proto_render(shape: Drawable) -> str:
+    return shape.draw()
+
+proto_c = Circle()
+proto_s = Square()
+assert proto_render(proto_c) == "circle", "Protocol accepts Circle"
+assert proto_render(proto_s) == "square", "Protocol accepts Square"
+
+# Protocol can also be used as a variable type annotation
+proto_shape: Drawable = Circle()
+assert proto_shape.draw() == "circle", "Protocol variable annotation"
+
+# Protocol with vtable layout mismatch: Square2 has __init__ + field, so draw is at different slot
+class Sizable(Protocol):
+    def size(self) -> int: ...
+
+class MyBox:
+    count: int
+    def __init__(self, n: int) -> None:
+        self.count = n
+    def size(self) -> int:
+        return self.count
+
+def proto_get_size(obj: Sizable) -> int:
+    return obj.size()
+
+proto_box = MyBox(5)
+assert proto_get_size(proto_box) == 5, "Protocol with different vtable layout"
+
+print("Protocol tests passed!")
+
+# ===== SECTION: Union function parameters and arithmetic =====
+
+from typing import Union
+
+def union_pass(x: Union[int, str]) -> Union[int, str]:
+    return x
+
+assert union_pass(5) == 5, "Union[int, str] param with int"
+assert union_pass("hi") == "hi", "Union[int, str] param with str"
+
+# Union arithmetic on variables
+union_x: int | float = 5
+union_y: int | float = union_x + union_x
+assert union_y == 10, "Union int+int arithmetic"
+
+union_z: int | float = 2.5
+union_w: int | float = union_z + union_z
+assert union_w == 5.0, "Union float+float arithmetic"
+
+# Union function with arithmetic
+def union_double(x: Union[int, float]) -> Union[int, float]:
+    return x + x
+
+assert union_double(7) == 14, "Union function int arithmetic"
+assert union_double(1.5) == 3.0, "Union function float arithmetic"
+
+print("Union function param/arithmetic tests passed!")
 
 print("All type system tests passed!")

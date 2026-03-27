@@ -91,7 +91,8 @@ fn substitute_instruction_operands(
                 changed |= substitute_operand(arg, constants);
             }
         }
-        InstructionKind::CallVirtual { obj, args, .. } => {
+        InstructionKind::CallVirtual { obj, args, .. }
+        | InstructionKind::CallVirtualNamed { obj, args, .. } => {
             changed |= substitute_operand(obj, constants);
             for arg in args {
                 changed |= substitute_operand(arg, constants);

@@ -58,8 +58,10 @@ Native Executable
 | Optional[T] | ✅ | Desugared to Union[T, None] |
 | Iterator[T] | ✅ | |
 | File | ✅ | |
-| Generic TypeVar | ❌ | Not planned |
-| Protocol | ❌ | Not planned |
+| TypeAlias | ✅ | PEP 613 (`x: TypeAlias = T`) and PEP 695 (`type X = T`) |
+| Literal[value] | ✅ | Erased to base type (`Literal[42]` → `int`) |
+| TypeVar | ✅ | Type erasure: unconstrained → untyped (inference), constrained → Union, bounded → bound type |
+| Protocol | ✅ | Structural subtyping with name-based vtable dispatch; works across different vtable layouts |
 
 ### Operators
 

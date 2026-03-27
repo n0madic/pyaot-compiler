@@ -126,16 +126,6 @@ for i in range(1000000):
 
 ---
 
-### 🟡 Object Model Optimization
-
-**Why**: Class instances are already 8.6x faster than CPython for basic usage. Further gains possible for call-heavy code.
-
-**Targets**:
-1. **Monomorphic inline caches**: At call sites that always see the same class, cache the vtable pointer and skip the lookup on subsequent calls. Requires codegen changes to emit inline cache checks.
-2. **Flatten property access**: For simple `@property` getters that just return a field, inline the field access directly instead of going through a function call.
-
----
-
 ## 4. Language Features
 
 ---
@@ -182,13 +172,17 @@ for i in range(1000000):
 
 ---
 
-### 🟡 `typing` Module Extensions
+### ✅ `typing` Module Extensions (done)
 
-**Targets**:
-- `TypeVar` — even limited support (e.g., for generic user functions) would improve ergonomics
-- `Literal[value]` — restricts a type to specific literal values, useful for config/flags
-- `TypeAlias` — `Name = SomeType` for readability
-- `Protocol` — structural subtyping (check if an object has required methods without inheritance)
+**Implemented**:
+- `TypeAlias` — PEP 613 (`x: TypeAlias = T`) and PEP 695 (`type X = T`) for type alias readability
+- `Literal[value]` — type erasure to base type (`Literal[42]` → `int`, `Literal["r", "w"]` → `str`)
+- `TypeVar` — type erasure: unconstrained → untyped (inference), constrained → Union, bounded → bound type
+- `Protocol` — structural subtyping with name-based virtual dispatch (FNV-1a hash); works across different vtable layouts
+
+**What remains (future)**:
+- Structural type checking at call sites (verify methods/signatures match Protocol definition)
+- Protocol inheritance (Protocol extending Protocol)
 
 ---
 
