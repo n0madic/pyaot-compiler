@@ -461,3 +461,21 @@ Generator expressions use `compute_yield_expr_for_generator` and `lower_simple_e
 **Key pitfalls** (all addressed):
 - Generator resume functions always return i64, so `Bool` yield values must be widened via `BoolToInt` before return, and `infer_generator_yield_type` normalizes `Bool` → `Int`.
 - `get_expr_type` returns `Any` for generator loop variables (not registered in `var_types` at inference time). Code must use `loop_var_ty` when available, and fall back to `Type::Int` (not `IsTruthy`) for `Any`-typed operands since generator values are raw i64.
+
+---
+
+## collections.namedtuple Is Fundamentally Incompatible With AOT
+
+`namedtuple("Point", ["x", "y"])` creates a new class dynamically at runtime from string arguments. This is impossible in an AOT compiler where all types must be known at compile time. The class name and field names are arbitrary strings — the compiler cannot generate code for a type whose structure is determined by runtime values.
+
+The `typing.NamedTuple` class-based syntax (`class Point(NamedTuple): x: int; y: int`) could theoretically be supported because the class definition is available at compile time, but it would require auto-generating `__init__`, `__repr__`, `__eq__`, `__hash__`, `__iter__`, `__len__`, `_asdict()`, `_replace()`, and `_fields` in the class compilation pipeline — a significant change.
+
+## collections.defaultdict Factory Is Resolved at Compile Time
+
+Unlike CPython where `defaultdict` stores an arbitrary callable as the factory, this AOT compiler resolves the factory to a numeric tag at compile time. This means only builtin type constructors are supported as factories: `int`, `float`, `str`, `bool`, `list`, `dict`, `set`. User-defined functions or lambdas cannot be used as defaultdict factories.
+
+The factory resolution happens in the frontend (`ast_to_hir/expressions.rs:resolve_defaultdict_factory`), which maps the Python name to an integer tag (0-6). The runtime (`defaultdict.rs:create_default_value`) uses this tag to construct the default value.
+
+## DefaultDict/Counter Use DictObj-Compatible Memory Layout
+
+`DefaultDictObj` has the same initial fields as `DictObj` with `factory_tag: u8` appended. This means `DefaultDictObj*` can be safely cast to `DictObj*` for all standard dict operations (`rt_dict_set`, `rt_dict_get`, `rt_dict_contains`, etc.). Counter uses `DictObj` directly with `TypeTagKind::Counter` — only the type tag differs. Both types use the same dict finalization and GC marking paths.

@@ -195,7 +195,13 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::DictSetDefault
         | mir::RuntimeFunc::DictPopItem
         | mir::RuntimeFunc::DictFromKeys
-        | mir::RuntimeFunc::DictMerge => {
+        | mir::RuntimeFunc::DictMerge
+        | mir::RuntimeFunc::MakeDefaultDict
+        | mir::RuntimeFunc::DefaultDictGet
+        | mir::RuntimeFunc::MakeCounterFromIter
+        | mir::RuntimeFunc::MakeCounterEmpty
+        | mir::RuntimeFunc::MakeDeque
+        | mir::RuntimeFunc::MakeDequeFromIter => {
             dict::compile_dict_call(builder, dest, func, args, ctx)?;
             Ok(())
         }
@@ -377,7 +383,8 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::ObjDiv
         | mir::RuntimeFunc::ObjFloorDiv
         | mir::RuntimeFunc::ObjMod
-        | mir::RuntimeFunc::ObjPow => {
+        | mir::RuntimeFunc::ObjPow
+        | mir::RuntimeFunc::AnyGetItem => {
             object::compile_object_call(builder, dest, func, args, ctx)?;
             Ok(())
         }

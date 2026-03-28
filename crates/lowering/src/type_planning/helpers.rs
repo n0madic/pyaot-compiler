@@ -6,7 +6,7 @@
 //! (return type inference) to ensure consistent behavior.
 
 use pyaot_hir as hir;
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeTagKind};
 
 use super::infer::extract_iterable_element_type;
 
@@ -42,7 +42,7 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
             }
             _ => None,
         },
-        Type::Dict(key_ty, val_ty) => match method_name {
+        Type::Dict(key_ty, val_ty) | Type::DefaultDict(key_ty, val_ty) => match method_name {
             // Note: get() can return None when key is missing, but returning
             // Optional[V] here would change the runtime representation (boxing),
             // which causes crashes in the AOT compiler. Keep as V for safety.
@@ -55,7 +55,7 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
                 Some(Type::List(Box::new(tuple_ty)))
             }
             "popitem" => Some(Type::Tuple(vec![(**key_ty).clone(), (**val_ty).clone()])),
-            "clear" | "update" => Some(Type::None),
+            "clear" | "update" | "move_to_end" => Some(Type::None),
             _ => None,
         },
         Type::Set(elem_ty) => match method_name {
@@ -215,7 +215,7 @@ pub(crate) fn resolve_index_type(obj_ty: &Type, index_expr: &hir::Expr) -> Type 
         Type::Str => Type::Str,
         Type::Bytes => Type::Int,
         Type::List(elem) => (**elem).clone(),
-        Type::Dict(_, val) => (**val).clone(),
+        Type::Dict(_, val) | Type::DefaultDict(_, val) => (**val).clone(),
         Type::Tuple(elems) if !elems.is_empty() => {
             // Try compile-time index resolution for Int literals
             if let hir::ExprKind::Int(idx) = &index_expr.kind {
@@ -504,6 +504,33 @@ pub(crate) fn resolve_builtin_call_type(
 
         // BuiltinException — complex, handled by caller
         Builtin::BuiltinException(_) => None,
+
+        // Collections — type inferred from factory argument
+        Builtin::DefaultDict => {
+            // args[0] is Int(factory_tag) set by the frontend
+            if args.is_empty() {
+                // No factory — behaves like regular dict
+                Some(Type::Dict(Box::new(Type::Any), Box::new(Type::Any)))
+            } else {
+                let factory_expr = &module.exprs[args[0]];
+                let value_type = match &factory_expr.kind {
+                    hir::ExprKind::Int(tag) => match *tag {
+                        0 => Type::Int,
+                        1 => Type::Float,
+                        2 => Type::Str,
+                        3 => Type::Bool,
+                        4 => Type::List(Box::new(Type::Any)),
+                        5 => Type::Dict(Box::new(Type::Any), Box::new(Type::Any)),
+                        6 => Type::Set(Box::new(Type::Any)),
+                        _ => Type::Any,
+                    },
+                    _ => Type::Any,
+                };
+                Some(Type::DefaultDict(Box::new(Type::Any), Box::new(value_type)))
+            }
+        }
+        Builtin::Counter => Some(Type::RuntimeObject(TypeTagKind::Counter)),
+        Builtin::Deque => Some(Type::RuntimeObject(TypeTagKind::Deque)),
     }
 }
 

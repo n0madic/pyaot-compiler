@@ -224,6 +224,45 @@ impl<'a> Lowering<'a> {
                     });
                 }
             }
+            Type::DefaultDict(_key_ty, value_ty) => {
+                // DefaultDict indexing: dd[key] creates default on miss
+                // Uses DefaultDictGet instead of DictGet
+                mir_func.add_local(mir::Local {
+                    id: result_local,
+                    name: None,
+                    ty: (**value_ty).clone(),
+                    is_gc_root: value_ty.is_heap(),
+                });
+                let index_type = self.get_expr_type(index_expr, hir_module);
+                let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
+
+                let unbox_func = match value_ty.as_ref() {
+                    Type::Int => Some(mir::RuntimeFunc::UnboxInt),
+                    Type::Float => Some(mir::RuntimeFunc::UnboxFloat),
+                    Type::Bool => Some(mir::RuntimeFunc::UnboxBool),
+                    _ => None,
+                };
+
+                if let Some(unbox_func) = unbox_func {
+                    let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: boxed_local,
+                        func: mir::RuntimeFunc::DefaultDictGet,
+                        args: vec![obj_operand, boxed_key],
+                    });
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: result_local,
+                        func: unbox_func,
+                        args: vec![mir::Operand::Local(boxed_local)],
+                    });
+                } else {
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: result_local,
+                        func: mir::RuntimeFunc::DefaultDictGet,
+                        args: vec![obj_operand, boxed_key],
+                    });
+                }
+            }
             Type::Bytes => {
                 // Bytes indexing returns an integer (0-255)
                 mir_func.add_local(mir::Local {
@@ -271,13 +310,19 @@ impl<'a> Lowering<'a> {
                 }
             }
             _ => {
+                // Runtime-dispatched subscript for Any/unknown types.
+                // Calls rt_any_getitem which dispatches on the object's type tag.
                 mir_func.add_local(mir::Local {
                     id: result_local,
                     name: None,
                     ty: Type::Any,
-                    is_gc_root: false,
+                    is_gc_root: true, // Result is a heap pointer
                 });
-                return Ok(mir::Operand::Constant(mir::Constant::None));
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::AnyGetItem,
+                    args: vec![obj_operand, index_operand],
+                });
             }
         }
 

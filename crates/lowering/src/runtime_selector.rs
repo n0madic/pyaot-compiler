@@ -24,6 +24,7 @@ impl<'a> Lowering<'a> {
             Type::Str
             | Type::List(_)
             | Type::Dict(_, _)
+            | Type::DefaultDict(_, _)
             | Type::Tuple(_)
             | Type::Set(_)
             | Type::Bytes

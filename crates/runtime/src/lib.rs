@@ -97,7 +97,11 @@ pub mod builtins;
 pub mod abc;
 #[cfg(feature = "stdlib-base64")]
 pub mod base64_mod;
+pub mod collections;
 pub mod copy;
+pub mod counter;
+pub mod defaultdict;
+pub mod deque;
 pub mod format;
 pub mod functools;
 #[cfg(feature = "stdlib-crypto")]

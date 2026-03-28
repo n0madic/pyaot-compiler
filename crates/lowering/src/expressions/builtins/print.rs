@@ -154,14 +154,21 @@ impl<'a> Lowering<'a> {
                         Type::None => PrintKind::None,
                         Type::Str => PrintKind::StrObj,
                         Type::Bytes => PrintKind::BytesObj,
-                        // For heap types like lists, tuples, dicts, sets, Union, etc., use Obj for runtime dispatch
+                        // For heap types, use Obj for runtime dispatch
                         Type::List(_)
                         | Type::Tuple(_)
                         | Type::Dict(_, _)
+                        | Type::DefaultDict(_, _)
                         | Type::Set(_)
                         | Type::Iterator(_)
-                        | Type::Union(_) => PrintKind::Obj,
-                        // For Any and other unknown types, default to Int (raw value)
+                        | Type::Union(_)
+                        | Type::RuntimeObject(_)
+                        | Type::File => PrintKind::Obj,
+                        // For Any: use Int (raw value) as default.
+                        // TODO: proper Any printing requires tracking whether
+                        // the value is a heap pointer vs raw primitive.
+                        Type::Any => PrintKind::Int,
+                        // Compile-time-only types — should not appear at runtime
                         _ => PrintKind::Int,
                     }
                 };

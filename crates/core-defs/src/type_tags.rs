@@ -171,6 +171,9 @@ define_type_tags! {
     Hash = 21 => "Hash" => "<class 'hashlib.HASH'>" => "hashlib.HASH",
     StringIO = 22 => "StringIO" => "<class '_io.StringIO'>" => "io.StringIO",
     BytesIO = 23 => "BytesIO" => "<class '_io.BytesIO'>" => "io.BytesIO",
+    DefaultDict = 24 => "DefaultDict" => "<class 'collections.defaultdict'>" => "collections.defaultdict",
+    Counter = 25 => "Counter" => "<class 'collections.Counter'>" => "collections.Counter",
+    Deque = 26 => "Deque" => "<class 'collections.deque'>" => "collections.deque",
 }
 
 #[cfg(test)]
@@ -226,7 +229,10 @@ mod tests {
         assert_eq!(TypeTagKind::from_tag(21), Some(TypeTagKind::Hash));
         assert_eq!(TypeTagKind::from_tag(22), Some(TypeTagKind::StringIO));
         assert_eq!(TypeTagKind::from_tag(23), Some(TypeTagKind::BytesIO));
-        assert_eq!(TypeTagKind::from_tag(24), None);
+        assert_eq!(TypeTagKind::from_tag(24), Some(TypeTagKind::DefaultDict));
+        assert_eq!(TypeTagKind::from_tag(25), Some(TypeTagKind::Counter));
+        assert_eq!(TypeTagKind::from_tag(26), Some(TypeTagKind::Deque));
+        assert_eq!(TypeTagKind::from_tag(27), None);
         assert_eq!(TypeTagKind::from_tag(255), None);
     }
 

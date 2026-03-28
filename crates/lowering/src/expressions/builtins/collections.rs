@@ -3,7 +3,7 @@
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeTagKind};
 
 use crate::context::Lowering;
 
@@ -47,7 +47,24 @@ impl<'a> Lowering<'a> {
                     args: vec![arg_operand],
                 });
             }
-            Type::Dict(_, _) => {
+            Type::Dict(_, _) | Type::DefaultDict(_, _) => {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::DictLen,
+                    args: vec![arg_operand],
+                });
+            }
+            Type::RuntimeObject(TypeTagKind::Deque) => {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::StdlibCall(
+                        &pyaot_stdlib_defs::modules::collections::DEQUE_LEN,
+                    ),
+                    args: vec![arg_operand],
+                });
+            }
+            Type::RuntimeObject(TypeTagKind::Counter) => {
+                // Counter is a dict, use DictLen
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::DictLen,
@@ -660,6 +677,198 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Local(key_local),
                     boxed_value,
                 ],
+            });
+        }
+
+        Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Lower defaultdict(factory) builtin
+    /// factory is a type constructor: int, str, list, dict, set, float, bool
+    /// Encoded as factory_tag: 0=int, 1=float, 2=str, 3=bool, 4=list, 5=dict, 6=set
+    pub(super) fn lower_defaultdict(
+        &mut self,
+        args: &[hir::ExprId],
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
+        use pyaot_diagnostics::CompilerError;
+
+        // The frontend has already resolved the factory name to an integer tag.
+        // args[0] is an Int literal: 0=int, 1=float, 2=str, 3=bool, 4=list, 5=dict, 6=set
+        let (factory_tag, value_type) = if args.is_empty() {
+            // defaultdict() with no factory — behaves like regular dict
+            (-1i64, Type::Any)
+        } else {
+            let factory_expr = &hir_module.exprs[args[0]];
+            match &factory_expr.kind {
+                hir::ExprKind::Int(tag) => {
+                    let vt = match *tag {
+                        0 => Type::Int,
+                        1 => Type::Float,
+                        2 => Type::Str,
+                        3 => Type::Bool,
+                        4 => Type::List(Box::new(Type::Any)),
+                        5 => Type::Dict(Box::new(Type::Any), Box::new(Type::Any)),
+                        6 => Type::Set(Box::new(Type::Any)),
+                        _ => Type::Any,
+                    };
+                    (*tag, vt)
+                }
+                _ => {
+                    return Err(CompilerError::codegen_error(
+                        "defaultdict factory must be a type name (int, str, list, etc.)",
+                    ));
+                }
+            }
+        };
+
+        // When no factory, use regular Dict type (standard boxing/unboxing)
+        let result_type = if factory_tag < 0 {
+            Type::Dict(Box::new(Type::Any), Box::new(value_type))
+        } else {
+            Type::DefaultDict(Box::new(Type::Any), Box::new(value_type))
+        };
+        let result_local = self.alloc_and_add_local(result_type, mir_func);
+
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: result_local,
+            func: mir::RuntimeFunc::MakeDefaultDict,
+            args: vec![
+                mir::Operand::Constant(mir::Constant::Int(8)), // capacity
+                mir::Operand::Constant(mir::Constant::Int(factory_tag)),
+            ],
+        });
+
+        Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Lower Counter(iterable?) builtin
+    pub(super) fn lower_counter(
+        &mut self,
+        args: &[hir::ExprId],
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
+        let result_local =
+            self.alloc_and_add_local(Type::RuntimeObject(TypeTagKind::Counter), mir_func);
+
+        if args.is_empty() {
+            // Counter() — empty counter
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::MakeCounterEmpty,
+                args: vec![],
+            });
+        } else {
+            // Counter(iterable) — count elements
+            let iter_expr = &hir_module.exprs[args[0]];
+            let iter_type = self.get_expr_type(iter_expr, hir_module);
+
+            // Create iterator from the argument
+            let iter_operand = if matches!(iter_type, Type::Iterator(_)) {
+                self.lower_expr(iter_expr, hir_module, mir_func)?
+            } else {
+                // Need to convert to iterator first
+                let source = self.lower_expr(iter_expr, hir_module, mir_func)?;
+                let iter_local =
+                    self.alloc_and_add_local(Type::Iterator(Box::new(Type::Any)), mir_func);
+                let source_kind = match &iter_type {
+                    Type::List(_) => mir::IterSourceKind::List,
+                    Type::Tuple(_) => mir::IterSourceKind::Tuple,
+                    Type::Dict(_, _) => mir::IterSourceKind::Dict,
+                    Type::Set(_) => mir::IterSourceKind::Set,
+                    Type::Str => mir::IterSourceKind::Str,
+                    _ => mir::IterSourceKind::List,
+                };
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: iter_local,
+                    func: mir::RuntimeFunc::MakeIterator {
+                        source: source_kind,
+                        direction: mir::IterDirection::Forward,
+                    },
+                    args: vec![source],
+                });
+                mir::Operand::Local(iter_local)
+            };
+
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::MakeCounterFromIter,
+                args: vec![iter_operand],
+            });
+        }
+
+        Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Lower deque(iterable?, maxlen?) builtin
+    pub(super) fn lower_deque(
+        &mut self,
+        args: &[hir::ExprId],
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
+        let result_local =
+            self.alloc_and_add_local(Type::RuntimeObject(TypeTagKind::Deque), mir_func);
+
+        // Get maxlen (default -1 = unbounded)
+        let maxlen = if args.len() >= 2 {
+            let maxlen_expr = &hir_module.exprs[args[1]];
+            self.lower_expr(maxlen_expr, hir_module, mir_func)?
+        } else {
+            mir::Operand::Constant(mir::Constant::Int(-1))
+        };
+
+        // Check if the first arg is None (deque(maxlen=3) case where we padded with None)
+        let has_iterable = if args.is_empty() {
+            false
+        } else {
+            let first_expr = &hir_module.exprs[args[0]];
+            !matches!(first_expr.kind, hir::ExprKind::None)
+        };
+
+        if !has_iterable {
+            // deque() or deque(maxlen=N) — empty deque
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::MakeDeque,
+                args: vec![maxlen],
+            });
+        } else {
+            // deque(iterable, maxlen?) — from iterator
+            let iter_expr = &hir_module.exprs[args[0]];
+            let iter_type = self.get_expr_type(iter_expr, hir_module);
+
+            let iter_operand = if matches!(iter_type, Type::Iterator(_)) {
+                self.lower_expr(iter_expr, hir_module, mir_func)?
+            } else {
+                let source = self.lower_expr(iter_expr, hir_module, mir_func)?;
+                let iter_local =
+                    self.alloc_and_add_local(Type::Iterator(Box::new(Type::Any)), mir_func);
+                let source_kind = match &iter_type {
+                    Type::List(_) => mir::IterSourceKind::List,
+                    Type::Tuple(_) => mir::IterSourceKind::Tuple,
+                    Type::Dict(_, _) => mir::IterSourceKind::Dict,
+                    Type::Set(_) => mir::IterSourceKind::Set,
+                    Type::Str => mir::IterSourceKind::Str,
+                    _ => mir::IterSourceKind::List,
+                };
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: iter_local,
+                    func: mir::RuntimeFunc::MakeIterator {
+                        source: source_kind,
+                        direction: mir::IterDirection::Forward,
+                    },
+                    args: vec![source],
+                });
+                mir::Operand::Local(iter_local)
+            };
+
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::MakeDequeFromIter,
+                args: vec![iter_operand, maxlen],
             });
         }
 

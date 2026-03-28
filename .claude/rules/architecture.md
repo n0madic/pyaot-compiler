@@ -33,5 +33,6 @@ crates/runtime/src/
 ├── random.rs, hashlib.rs, subprocess.rs  # Standard library (cont.)
 ├── urllib_parse.rs, urllib_request.rs, base64_mod.rs  # Standard library (cont.)
 ├── copy.rs, functools.rs, abc.rs, builtins.rs  # Standard library (cont.)
+├── collections.rs, defaultdict.rs, counter.rs, deque.rs  # Collections module
 └── hash_table_utils.rs, minmax_utils.rs, slice_utils.rs, utils.rs  # Utilities
 ```

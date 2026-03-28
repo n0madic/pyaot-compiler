@@ -66,6 +66,7 @@ runtime_cases!(
         runtime_collections_dict_set_bytes,
         "test_collections_dict_set_bytes.py"
     ),
+    (runtime_collections, "test_collections.py"),
     // Builtins
     (runtime_builtins, "test_builtins.py"),
     // Print output (with expected output verification)

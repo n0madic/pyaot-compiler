@@ -247,7 +247,16 @@ impl<'a> Lowering<'a> {
             let operand = if i < args.len() {
                 // Argument provided - lower it
                 let arg_expr = &hir_module.exprs[args[i]];
-                self.lower_expr(arg_expr, hir_module, mir_func)?
+                let op = self.lower_expr(arg_expr, hir_module, mir_func)?;
+
+                // Auto-box primitives for Any parameters so the runtime
+                // receives valid *mut Obj pointers (not raw i64/f64 values)
+                if matches!(param.ty, pyaot_stdlib_defs::TypeSpec::Any) {
+                    let arg_type = self.get_expr_type(arg_expr, hir_module);
+                    self.box_primitive_if_needed(op, &arg_type, mir_func)
+                } else {
+                    op
+                }
             } else if let Some(ref default) = param.default {
                 // Use default value
                 mir::Operand::Constant(self.const_value_to_mir(default))

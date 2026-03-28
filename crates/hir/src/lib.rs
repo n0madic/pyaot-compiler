@@ -696,6 +696,9 @@ pub enum Builtin {
     List,   // list() / list(iterable) -> list constructor
     Tuple,  // tuple() / tuple(iterable) -> tuple constructor
     Dict,   // dict() / dict(**kwargs) / dict(iterable) -> dict constructor
+    DefaultDict, // collections.defaultdict(factory) -> defaultdict constructor
+    Counter, // collections.Counter(iterable?) -> Counter constructor
+    Deque,  // collections.deque(iterable?, maxlen?) -> deque constructor
     /// Built-in exception constructors (Exception, ValueError, TypeError, etc.)
     /// Uses BuiltinExceptionKind from types crate
     BuiltinException(BuiltinExceptionKind),

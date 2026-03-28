@@ -60,6 +60,7 @@ impl<'a> Lowering<'a> {
         match method_name {
             "get" => {
                 // .get(key) or .get(key, default)
+                // Use DictGetDefault for both cases (avoids KeyError on missing keys)
                 let result_local = self.alloc_and_add_local((*value_ty).clone(), mir_func);
 
                 if arg_operands.len() >= 2 {
@@ -80,11 +81,17 @@ impl<'a> Lowering<'a> {
                         .next()
                         .unwrap_or(mir::Operand::Constant(mir::Constant::None));
                     let boxed_key = self.box_primitive_if_needed(key_arg, &key_ty, mir_func);
+                    // Use Int(0) as null pointer for default (None is i8, but
+                    // rt_dict_get_default expects i64 for the default parameter)
                     self.emit_dict_call_and_unbox(
                         result_local,
                         unbox_func,
-                        mir::RuntimeFunc::DictGet,
-                        vec![obj_operand, boxed_key],
+                        mir::RuntimeFunc::DictGetDefault,
+                        vec![
+                            obj_operand,
+                            boxed_key,
+                            mir::Operand::Constant(mir::Constant::Int(0)),
+                        ],
                         mir_func,
                     );
                 }
@@ -218,14 +225,23 @@ impl<'a> Lowering<'a> {
                 Ok(mir::Operand::Local(result_local))
             }
             "popitem" => {
-                // .popitem() - removes and returns an arbitrary (key, value) pair as tuple
+                // .popitem() or .popitem(last=True/False)
+                // Use rt_dict_popitem_ordered which supports the `last` parameter
                 let tuple_ty = Type::Tuple(vec![(*key_ty).clone(), (*value_ty).clone()]);
                 let result_local = self.alloc_and_add_local(tuple_ty, mir_func);
 
+                let last_arg = if !arg_operands.is_empty() {
+                    arg_operands[0].clone()
+                } else {
+                    mir::Operand::Constant(mir::Constant::Int(1)) // default: last=True
+                };
+
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::DictPopItem,
-                    args: vec![obj_operand],
+                    func: mir::RuntimeFunc::StdlibCall(
+                        &pyaot_stdlib_defs::modules::collections::ORDERED_DICT_POPITEM_FUNC,
+                    ),
+                    args: vec![obj_operand, last_arg],
                 });
 
                 Ok(mir::Operand::Local(result_local))
@@ -253,6 +269,25 @@ impl<'a> Lowering<'a> {
                     args: vec![keys_arg, boxed_value],
                 });
 
+                Ok(mir::Operand::Local(result_local))
+            }
+            "move_to_end" => {
+                // OrderedDict.move_to_end(key, last=True) — also works on regular dicts
+                let result_local = self.alloc_and_add_local(Type::None, mir_func);
+                let key_arg = crate::first_arg_or_none(arg_operands.clone());
+                let boxed_key = self.box_primitive_if_needed(key_arg, &key_ty, mir_func);
+                let last_arg = if arg_operands.len() >= 2 {
+                    arg_operands[1].clone()
+                } else {
+                    mir::Operand::Constant(mir::Constant::Int(1)) // default: last=True
+                };
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::StdlibCall(
+                        &pyaot_stdlib_defs::modules::collections::ORDERED_DICT_MOVE_TO_END_FUNC,
+                    ),
+                    args: vec![obj_operand, boxed_key, last_arg],
+                });
                 Ok(mir::Operand::Local(result_local))
             }
             _ => {

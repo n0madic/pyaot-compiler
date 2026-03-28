@@ -57,6 +57,10 @@ pub enum TypeSpec {
     StringIO,
     /// BytesIO object (from io module)
     BytesIO,
+    /// Deque object (from collections module)
+    Deque,
+    /// Counter object (from collections module)
+    Counter,
 }
 
 /// Reference to another TypeSpec (used for nested types)

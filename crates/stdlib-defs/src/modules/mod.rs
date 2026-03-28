@@ -4,6 +4,7 @@
 
 pub mod abc;
 pub mod base64_mod;
+pub mod collections;
 pub mod copy;
 pub mod functools;
 pub mod hashlib;
@@ -44,6 +45,7 @@ pub static ALL_MODULES: &[&StdlibModuleDef] = &[
     &functools::FUNCTOOLS_MODULE,
     &itertools::ITERTOOLS_MODULE,
     &io::IO_MODULE,
+    &collections::COLLECTIONS_MODULE,
 ];
 
 /// Get a module definition by name (supports dotted names like "os.path")

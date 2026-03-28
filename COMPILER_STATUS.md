@@ -234,6 +234,7 @@ Native Executable
 | hashlib | md5, sha256, sha1; Hash.hexdigest(), Hash.digest() |
 | base64 | b64encode, b64decode, urlsafe_b64encode, urlsafe_b64decode |
 | copy | copy, deepcopy |
+| collections | defaultdict(int/float/str/bool/list/dict/set), Counter(iterable).most_common/.total/.update/.subtract, deque(maxlen=N).append/.appendleft/.pop/.popleft/.extend/.extendleft/.rotate/.reverse/.clear/.copy/.count, OrderedDict.move_to_end/.popitem(last=) |
 | functools | reduce |
 | itertools | chain, islice (with for-loop and next(); both import styles) |
 | io | StringIO (write, read, readline, getvalue, seek, tell, close, truncate), BytesIO (write, read, readline, getvalue, seek, tell, close, truncate) |
@@ -437,6 +438,7 @@ These features are intentionally not supported because they conflict with AOT co
 | Stack traces | Would require debug info overhead in optimized code |
 | `inspect` module | Runtime introspection incompatible with AOT |
 | Dynamic class creation | `type(name, bases, dict)` requires runtime class generation |
+| `collections.namedtuple` | `namedtuple("Point", ["x", "y"])` creates classes dynamically from string arguments at runtime — fundamentally incompatible with AOT compilation where all types must be known at compile time. The `typing.NamedTuple` class-based syntax could be supported in the future by auto-generating dunder methods during class compilation, but the dynamic form cannot |
 
 ---
 

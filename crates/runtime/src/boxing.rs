@@ -224,7 +224,7 @@ pub extern "C" fn rt_box_float(value: f64) -> *mut Obj {
 #[no_mangle]
 pub extern "C" fn rt_unbox_float(obj: *mut Obj) -> f64 {
     if obj.is_null() {
-        panic!("rt_unbox_float: cannot unbox null pointer");
+        return 0.0;
     }
 
     unsafe {
@@ -238,15 +238,12 @@ pub extern "C" fn rt_unbox_float(obj: *mut Obj) -> f64 {
 }
 
 /// Unbox an integer value from a heap-allocated IntObj
-/// Used for dict keys and set elements when the element type is int
-///
-/// # Panics
-/// Panics if `obj` is null or has wrong type tag. This catches type confusion
-/// bugs in both debug and release builds.
+/// Used for dict keys and set elements when the element type is int.
+/// Returns 0 for null pointers (safe default for .get() returning None).
 #[no_mangle]
 pub extern "C" fn rt_unbox_int(obj: *mut Obj) -> i64 {
     if obj.is_null() {
-        panic!("rt_unbox_int: cannot unbox null pointer");
+        return 0;
     }
 
     unsafe {

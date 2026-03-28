@@ -246,6 +246,21 @@ pub struct DictObj {
     pub entries_capacity: usize, // Allocated capacity of entries array
 }
 
+/// DefaultDict uses the same DictObj layout with factory_tag packed into
+/// the high byte of entries_capacity. See defaultdict.rs for packing details.
+
+/// Deque object — double-ended queue with ring buffer
+#[repr(C)]
+pub struct DequeObj {
+    pub header: ObjHeader,
+    pub data: *mut *mut Obj,
+    pub capacity: usize,
+    pub head: usize,
+    pub len: usize,
+    pub maxlen: i64, // -1 for unbounded
+    pub elem_tag: u8,
+}
+
 /// Set entry (for open-addressing hash table)
 #[repr(C)]
 pub struct SetEntry {

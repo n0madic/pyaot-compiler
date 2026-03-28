@@ -252,6 +252,82 @@ impl AstToHir {
                             }));
                         }
 
+                        // Intercept collections.defaultdict — convert factory name to tag
+                        if stdlib_func.runtime_name == "rt_make_defaultdict" {
+                            let mut hir_args = Vec::new();
+                            if !call.args.is_empty() {
+                                // Convert factory name (int/str/list/etc.) to integer tag
+                                let factory_tag =
+                                    self.resolve_defaultdict_factory(&call.args[0], expr_span)?;
+                                hir_args.push(self.module.exprs.alloc(Expr {
+                                    kind: ExprKind::Int(factory_tag),
+                                    ty: None,
+                                    span: expr_span,
+                                }));
+                            }
+                            return Ok(self.module.exprs.alloc(Expr {
+                                kind: ExprKind::BuiltinCall {
+                                    builtin: Builtin::DefaultDict,
+                                    args: hir_args,
+                                    kwargs,
+                                },
+                                ty: None,
+                                span: expr_span,
+                            }));
+                        }
+
+                        // Intercept collections.Counter
+                        if stdlib_func.runtime_name == "rt_make_counter" {
+                            let mut hir_args = Vec::new();
+                            for arg in call.args.clone() {
+                                hir_args.push(self.convert_expr(arg)?);
+                            }
+                            return Ok(self.module.exprs.alloc(Expr {
+                                kind: ExprKind::BuiltinCall {
+                                    builtin: Builtin::Counter,
+                                    args: hir_args,
+                                    kwargs,
+                                },
+                                ty: None,
+                                span: expr_span,
+                            }));
+                        }
+
+                        // Intercept collections.deque — resolve maxlen kwarg
+                        if stdlib_func.runtime_name == "rt_make_deque" {
+                            let mut hir_args = Vec::new();
+                            // Positional args: deque(iterable) or deque(iterable, maxlen)
+                            for arg in call.args.clone() {
+                                hir_args.push(self.convert_expr(arg)?);
+                            }
+                            // Check for maxlen keyword arg
+                            if hir_args.len() < 2 {
+                                for kw in &call.keywords {
+                                    if kw.arg.as_ref().map(|s| s.as_str()) == Some("maxlen") {
+                                        // Ensure we have an iterable arg first (pad with None)
+                                        while hir_args.is_empty() {
+                                            hir_args.push(self.module.exprs.alloc(Expr {
+                                                kind: ExprKind::None,
+                                                ty: None,
+                                                span: expr_span,
+                                            }));
+                                        }
+                                        hir_args.push(self.convert_expr(kw.value.clone())?);
+                                        break;
+                                    }
+                                }
+                            }
+                            return Ok(self.module.exprs.alloc(Expr {
+                                kind: ExprKind::BuiltinCall {
+                                    builtin: Builtin::Deque,
+                                    args: hir_args,
+                                    kwargs: vec![], // Already handled
+                                },
+                                ty: None,
+                                span: expr_span,
+                            }));
+                        }
+
                         let mut args = Vec::new();
                         for arg in call.args.clone() {
                             args.push(self.convert_expr(arg)?);
@@ -377,6 +453,79 @@ impl AstToHir {
                                             builtin,
                                             args: hir_args,
                                             kwargs,
+                                        },
+                                        ty: None,
+                                        span: expr_span,
+                                    }));
+                                }
+                            }
+
+                            // Intercept collections.defaultdict/Counter/deque
+                            if module == "collections" {
+                                if func_name == "defaultdict" {
+                                    let mut hir_args = Vec::new();
+                                    if !call.args.is_empty() {
+                                        let factory_tag = self.resolve_defaultdict_factory(
+                                            &call.args[0],
+                                            expr_span,
+                                        )?;
+                                        hir_args.push(self.module.exprs.alloc(Expr {
+                                            kind: ExprKind::Int(factory_tag),
+                                            ty: None,
+                                            span: expr_span,
+                                        }));
+                                    }
+                                    return Ok(self.module.exprs.alloc(Expr {
+                                        kind: ExprKind::BuiltinCall {
+                                            builtin: Builtin::DefaultDict,
+                                            args: hir_args,
+                                            kwargs,
+                                        },
+                                        ty: None,
+                                        span: expr_span,
+                                    }));
+                                }
+                                if func_name == "Counter" {
+                                    let mut hir_args = Vec::new();
+                                    for arg in call.args.clone() {
+                                        hir_args.push(self.convert_expr(arg)?);
+                                    }
+                                    return Ok(self.module.exprs.alloc(Expr {
+                                        kind: ExprKind::BuiltinCall {
+                                            builtin: Builtin::Counter,
+                                            args: hir_args,
+                                            kwargs,
+                                        },
+                                        ty: None,
+                                        span: expr_span,
+                                    }));
+                                }
+                                if func_name == "deque" {
+                                    let mut hir_args = Vec::new();
+                                    for arg in call.args.clone() {
+                                        hir_args.push(self.convert_expr(arg)?);
+                                    }
+                                    if hir_args.len() < 2 {
+                                        for kw in &call.keywords {
+                                            if kw.arg.as_ref().map(|s| s.as_str()) == Some("maxlen")
+                                            {
+                                                while hir_args.is_empty() {
+                                                    hir_args.push(self.module.exprs.alloc(Expr {
+                                                        kind: ExprKind::None,
+                                                        ty: None,
+                                                        span: expr_span,
+                                                    }));
+                                                }
+                                                hir_args.push(self.convert_expr(kw.value.clone())?);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    return Ok(self.module.exprs.alloc(Expr {
+                                        kind: ExprKind::BuiltinCall {
+                                            builtin: Builtin::Deque,
+                                            args: hir_args,
+                                            kwargs: vec![],
                                         },
                                         ty: None,
                                         span: expr_span,
@@ -1420,6 +1569,38 @@ impl AstToHir {
             py::Expr::Name(_) | py::Expr::Constant(_) => false,
             // Everything else might have side effects or be expensive
             _ => true,
+        }
+    }
+
+    /// Resolve a defaultdict factory argument (Python AST name) to an integer tag.
+    /// Supports: int(0), float(1), str(2), bool(3), list(4), dict(5), set(6)
+    fn resolve_defaultdict_factory(
+        &self,
+        arg: &py::Expr,
+        span: pyaot_utils::Span,
+    ) -> pyaot_diagnostics::Result<i64> {
+        if let py::Expr::Name(name) = arg {
+            match name.id.as_str() {
+                "int" => Ok(0),
+                "float" => Ok(1),
+                "str" => Ok(2),
+                "bool" => Ok(3),
+                "list" => Ok(4),
+                "dict" => Ok(5),
+                "set" => Ok(6),
+                other => Err(pyaot_diagnostics::CompilerError::parse_error(
+                    format!(
+                        "defaultdict factory must be int, float, str, bool, list, dict, or set, got '{}'",
+                        other
+                    ),
+                    span,
+                )),
+            }
+        } else {
+            Err(pyaot_diagnostics::CompilerError::parse_error(
+                "defaultdict factory must be a type name (int, str, list, etc.)",
+                span,
+            ))
         }
     }
 }

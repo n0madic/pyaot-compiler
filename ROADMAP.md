@@ -161,17 +161,6 @@ for i in range(1000000):
 
 ---
 
-### 🟡 `collections` Module
-
-**Targets**:
-- `defaultdict(factory)` — very commonly used, avoids `setdefault` boilerplate
-- `Counter(iterable)` — frequency counting, a common pattern
-- `deque(iterable, maxlen=None)` — efficient double-ended queue
-- `OrderedDict` — less critical since `dict` preserves order, but used in older code
-- `namedtuple(name, fields)` — could map to compiled classes with named fields
-
----
-
 ### ✅ `typing` Module Extensions (done)
 
 **Implemented**:

@@ -146,6 +146,29 @@ pub fn compile_object_call(
             builder.def_var(dest_var, result_val);
             update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
         }
+        mir::RuntimeFunc::AnyGetItem => {
+            // rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj
+            let mut sig = ctx.module.make_signature();
+            sig.call_conv = CallConv::SystemV;
+            sig.params.push(AbiParam::new(cltypes::I64)); // obj
+            sig.params.push(AbiParam::new(cltypes::I64)); // index
+            sig.returns.push(AbiParam::new(cltypes::I64)); // result
+
+            let func_id = declare_runtime_function(ctx.module, "rt_any_getitem", &sig)?;
+            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+
+            let obj_val = load_operand(builder, &args[0], ctx.var_map);
+            let idx_val = load_operand(builder, &args[1], ctx.var_map);
+            let call_inst = builder.ins().call(func_ref, &[obj_val, idx_val]);
+
+            let result_val = get_call_result(builder, call_inst);
+            let dest_var = *ctx
+                .var_map
+                .get(&dest)
+                .expect("internal error: local not in var_map - codegen bug");
+            builder.def_var(dest_var, result_val);
+            update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
+        }
         _ => unreachable!("Non-object function passed to compile_object_call"),
     }
 

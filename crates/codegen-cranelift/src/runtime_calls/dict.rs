@@ -227,6 +227,64 @@ pub fn compile_dict_call(
                 true,
             )?;
         }
+        // DefaultDict operations
+        mir::RuntimeFunc::MakeDefaultDict => {
+            // rt_make_defaultdict(capacity: i64, factory_tag: i64) -> *mut Obj
+            compile_binary_runtime_call(
+                builder,
+                "rt_make_defaultdict",
+                cltypes::I64, // capacity
+                cltypes::I64, // factory_tag
+                cltypes::I64, // return ptr
+                &args[0],
+                &args[1],
+                dest,
+                ctx,
+                true,
+            )?;
+        }
+        mir::RuntimeFunc::DefaultDictGet => {
+            // rt_defaultdict_get(dd: *mut Obj, key: *mut Obj) -> *mut Obj
+            compile_container_get(builder, "rt_defaultdict_get", &args[0], &args[1], dest, ctx)?;
+        }
+
+        // Counter operations
+        mir::RuntimeFunc::MakeCounterFromIter => {
+            compile_make_container(builder, "rt_make_counter_from_iter", &args[0], dest, ctx)?;
+        }
+        mir::RuntimeFunc::MakeCounterEmpty => {
+            // rt_make_counter_empty() -> *mut Obj
+            let mut sig = ctx.module.make_signature();
+            sig.call_conv = CallConv::SystemV;
+            sig.returns.push(AbiParam::new(cltypes::I64));
+            let func_id = declare_runtime_function(ctx.module, "rt_make_counter_empty", &sig)?;
+            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+            let call_inst = builder.ins().call(func_ref, &[]);
+            let result_val = get_call_result(builder, call_inst);
+            let dest_var = ctx.var_map[&dest];
+            builder.def_var(dest_var, result_val);
+        }
+
+        // Deque operations
+        mir::RuntimeFunc::MakeDeque => {
+            compile_make_container(builder, "rt_make_deque", &args[0], dest, ctx)?;
+        }
+        mir::RuntimeFunc::MakeDequeFromIter => {
+            // rt_deque_from_iter(iter: *mut Obj, maxlen: i64) -> *mut Obj
+            compile_binary_runtime_call(
+                builder,
+                "rt_deque_from_iter",
+                cltypes::I64, // iter
+                cltypes::I64, // maxlen
+                cltypes::I64, // return ptr
+                &args[0],
+                &args[1],
+                dest,
+                ctx,
+                true,
+            )?;
+        }
+
         _ => unreachable!("Non-dict function passed to compile_dict_call"),
     }
 

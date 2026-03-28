@@ -27,6 +27,7 @@
 //! }
 //! ```
 
+use crate::modules::collections;
 use crate::modules::hashlib;
 use crate::modules::io;
 use crate::modules::re;
@@ -398,6 +399,55 @@ pub static BYTESIO: ObjectTypeDef = ObjectTypeDef {
 // Registry
 // =============================================================================
 
+// =============================================================================
+// Counter object (collections module)
+// =============================================================================
+
+static COUNTER_FIELDS: &[ObjectFieldDef] = &[];
+
+static COUNTER_METHODS: &[&StdlibMethodDef] = &[
+    &collections::COUNTER_MOST_COMMON,
+    &collections::COUNTER_TOTAL,
+    &collections::COUNTER_UPDATE,
+    &collections::COUNTER_SUBTRACT,
+];
+
+pub static COUNTER: ObjectTypeDef = ObjectTypeDef {
+    type_tag: TypeTagKind::Counter,
+    name: "Counter",
+    fields: COUNTER_FIELDS,
+    methods: COUNTER_METHODS,
+    display_format: DisplayFormat::Custom("rt_counter_repr"),
+};
+
+// =============================================================================
+// Deque object (collections module)
+// =============================================================================
+
+static DEQUE_FIELDS: &[ObjectFieldDef] = &[];
+
+static DEQUE_METHODS: &[&StdlibMethodDef] = &[
+    &collections::DEQUE_APPEND,
+    &collections::DEQUE_APPENDLEFT,
+    &collections::DEQUE_POP,
+    &collections::DEQUE_POPLEFT,
+    &collections::DEQUE_EXTEND,
+    &collections::DEQUE_EXTENDLEFT,
+    &collections::DEQUE_ROTATE,
+    &collections::DEQUE_CLEAR,
+    &collections::DEQUE_REVERSE,
+    &collections::DEQUE_COPY,
+    &collections::DEQUE_COUNT,
+];
+
+pub static DEQUE: ObjectTypeDef = ObjectTypeDef {
+    type_tag: TypeTagKind::Deque,
+    name: "deque",
+    fields: DEQUE_FIELDS,
+    methods: DEQUE_METHODS,
+    display_format: DisplayFormat::Custom("rt_deque_repr"),
+};
+
 /// All defined object types
 pub static ALL_OBJECT_TYPES: &[&ObjectTypeDef] = &[
     &COMPLETED_PROCESS,
@@ -409,6 +459,8 @@ pub static ALL_OBJECT_TYPES: &[&ObjectTypeDef] = &[
     &HASH,
     &STRINGIO,
     &BYTESIO,
+    &COUNTER,
+    &DEQUE,
 ];
 
 /// Look up an object type definition by TypeTagKind

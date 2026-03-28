@@ -117,6 +117,9 @@ impl<'a> Lowering<'a> {
             hir::Builtin::List => self.lower_list_builtin(args, hir_module, mir_func),
             hir::Builtin::Tuple => self.lower_tuple_builtin(args, hir_module, mir_func),
             hir::Builtin::Dict => self.lower_dict_builtin(args, kwargs, hir_module, mir_func),
+            hir::Builtin::DefaultDict => self.lower_defaultdict(args, hir_module, mir_func),
+            hir::Builtin::Counter => self.lower_counter(args, hir_module, mir_func),
+            hir::Builtin::Deque => self.lower_deque(args, hir_module, mir_func),
             hir::Builtin::Format => self.lower_format(args, hir_module, mir_func),
             hir::Builtin::Reduce => self.lower_reduce(args, hir_module, mir_func),
             // itertools

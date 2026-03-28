@@ -218,7 +218,7 @@ The runtime (`libpyaot_runtime.a`) provides:
 - Exception handling (setjmp/longjmp based)
 - Iterator support (list, tuple, dict, range, generators)
 - File I/O operations
-- Standard library implementations (json, re, os, sys, time, random, subprocess, hashlib, functools, itertools, io, copy, abc, base64, urllib, string)
+- Standard library implementations (json, re, os, sys, time, random, subprocess, hashlib, functools, itertools, io, copy, abc, base64, urllib, string, collections)
 
 ## Safety
 

@@ -746,6 +746,49 @@ fn mark_object(obj: *mut Obj) {
                     mark_object((*hr_obj).body);
                 }
             }
+            // DefaultDict and Counter use the same dict layout — mark entries
+            TypeTagKind::DefaultDict | TypeTagKind::Counter => {
+                let dict = obj as *mut DictObj;
+                let entries = (*dict).entries;
+                let entries_len = (*dict).entries_len;
+                if entries.is_null() && entries_len > 0 {
+                    eprintln!(
+                        "FATAL: DefaultDict/Counter heap corruption - null entries pointer with entries_len={}",
+                        entries_len
+                    );
+                    std::process::abort();
+                }
+                for i in 0..entries_len {
+                    let entry = entries.add(i);
+                    let key = (*entry).key;
+                    if !key.is_null() {
+                        mark_object(key);
+                        let value = (*entry).value;
+                        if !value.is_null() {
+                            mark_object(value);
+                        }
+                    }
+                }
+            }
+            TypeTagKind::Deque => {
+                let deque = obj as *mut crate::object::DequeObj;
+                if (*deque).elem_tag == 0 {
+                    // ELEM_HEAP_OBJ
+                    let data = (*deque).data;
+                    let head = (*deque).head;
+                    let len = (*deque).len;
+                    let cap = (*deque).capacity;
+                    if !data.is_null() && cap > 0 {
+                        for i in 0..len {
+                            let idx = (head + i) % cap;
+                            let elem = *data.add(idx);
+                            if !elem.is_null() {
+                                mark_object(elem);
+                            }
+                        }
+                    }
+                }
+            }
             // Hash, StringIO, BytesIO have no object children to trace
             TypeTagKind::Hash | TypeTagKind::StringIO | TypeTagKind::BytesIO => {}
             // Other types don't have object children

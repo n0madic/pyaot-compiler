@@ -64,14 +64,15 @@ impl<'a> Lowering<'a> {
                 hir_module,
                 mir_func,
             ),
-            Type::Dict(key_ty, value_ty) => self.lower_dict_method(
-                obj_operand,
-                &method_name,
-                arg_operands,
-                key_ty,
-                value_ty,
-                mir_func,
-            ),
+            Type::Dict(key_ty, value_ty) | Type::DefaultDict(key_ty, value_ty) => self
+                .lower_dict_method(
+                    obj_operand,
+                    &method_name,
+                    arg_operands,
+                    key_ty,
+                    value_ty,
+                    mir_func,
+                ),
             Type::Set(elem_ty) => self.lower_set_method(
                 obj_operand,
                 &method_name,

@@ -298,6 +298,9 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
         TypeTagKind::Hash => print!("<{} object>", TypeTagKind::Hash.type_name()),
         TypeTagKind::StringIO => print!("<_io.StringIO object>"),
         TypeTagKind::BytesIO => print!("<_io.BytesIO object>"),
+        TypeTagKind::DefaultDict => print_dict_repr(obj), // Same repr as dict
+        TypeTagKind::Counter => print_dict_repr(obj),     // Same repr as dict
+        TypeTagKind::Deque => print!("<deque at {:p}>", obj),
     }
 }
 
@@ -468,6 +471,9 @@ pub extern "C" fn rt_print_obj(obj: *mut Obj) {
             TypeTagKind::Hash => print!("<{} object>", TypeTagKind::Hash.type_name()),
             TypeTagKind::StringIO => print!("<_io.StringIO object>"),
             TypeTagKind::BytesIO => print!("<_io.BytesIO object>"),
+            TypeTagKind::DefaultDict => print_dict_repr(obj),
+            TypeTagKind::Counter => print_dict_repr(obj),
+            TypeTagKind::Deque => print!("<deque at {:p}>", obj),
         }
     }
 }
@@ -879,6 +885,74 @@ pub extern "C" fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             crate::boxing::rt_box_int(vai.wrapping_pow(vbi as u32))
         } else {
             crate::boxing::rt_box_float(va.powf(vb))
+        }
+    }
+}
+
+/// Runtime-dispatched subscript: obj[index] where obj has unknown type at compile time.
+/// Dispatches to the appropriate getter based on the object's type tag.
+/// Returns boxed value (*mut Obj) for all types.
+#[no_mangle]
+pub extern "C" fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
+    use crate::object::*;
+
+    if obj.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        match (*obj).type_tag() {
+            TypeTagKind::List => {
+                let list = obj as *mut ListObj;
+                let len = (*list).len as i64;
+                let actual_idx = if index < 0 { len + index } else { index };
+                if actual_idx < 0 || actual_idx >= len {
+                    let msg = b"IndexError: list index out of range";
+                    crate::exceptions::rt_exc_raise(
+                        crate::exceptions::ExceptionType::IndexError as u8,
+                        msg.as_ptr(),
+                        msg.len(),
+                    );
+                }
+                let elem = *(*list).data.add(actual_idx as usize);
+                // If list stores raw ints (ELEM_RAW_INT), box them
+                if (*list).elem_tag == ELEM_RAW_INT {
+                    crate::boxing::rt_box_int(elem as i64)
+                } else {
+                    elem
+                }
+            }
+            TypeTagKind::Tuple => {
+                let tuple = obj as *mut TupleObj;
+                let len = (*tuple).len as i64;
+                let actual_idx = if index < 0 { len + index } else { index };
+                if actual_idx < 0 || actual_idx >= len {
+                    let msg = b"IndexError: tuple index out of range";
+                    crate::exceptions::rt_exc_raise(
+                        crate::exceptions::ExceptionType::IndexError as u8,
+                        msg.as_ptr(),
+                        msg.len(),
+                    );
+                }
+                let elem = *(*tuple).data.as_ptr().add(actual_idx as usize);
+                // Check heap_field_mask: if this field is NOT a heap pointer, box it
+                let is_heap = (*tuple).heap_field_mask & (1u64 << actual_idx as u64) != 0;
+                if !is_heap && (*tuple).elem_tag == ELEM_RAW_INT {
+                    crate::boxing::rt_box_int(elem as i64)
+                } else {
+                    elem
+                }
+            }
+            TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
+                // Dict subscript needs a boxed key
+                let boxed_key = crate::boxing::rt_box_int(index);
+                crate::dict::rt_dict_get(obj, boxed_key)
+            }
+            TypeTagKind::Str => {
+                // String subscript returns single-char string
+                crate::string::rt_str_getchar(obj, index)
+            }
+            _ => std::ptr::null_mut(),
         }
     }
 }

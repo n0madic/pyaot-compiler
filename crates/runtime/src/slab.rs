@@ -246,8 +246,15 @@ unsafe fn finalize_object(obj_ptr: *mut Obj) {
         TypeTagKind::List => {
             crate::list::list_finalize(obj_ptr);
         }
-        TypeTagKind::Dict => {
+        TypeTagKind::Dict | TypeTagKind::Counter => {
             crate::dict::dict_finalize(obj_ptr);
+        }
+        TypeTagKind::DefaultDict => {
+            crate::defaultdict::remove_factory_tag(obj_ptr);
+            crate::dict::dict_finalize(obj_ptr);
+        }
+        TypeTagKind::Deque => {
+            crate::deque::deque_finalize(obj_ptr);
         }
         TypeTagKind::Set => {
             crate::set::set_finalize(obj_ptr);

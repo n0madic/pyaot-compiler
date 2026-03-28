@@ -34,6 +34,9 @@ pub enum Type {
     /// Generic dict
     Dict(Box<Type>, Box<Type>),
 
+    /// defaultdict (dict subtype with factory for missing keys)
+    DefaultDict(Box<Type>, Box<Type>),
+
     /// Generic set
     Set(Box<Type>),
 
@@ -260,6 +263,9 @@ impl Type {
             // Container types - match by container kind (ignore element types)
             (Type::List(_), Type::List(_)) => true,
             (Type::Dict(_, _), Type::Dict(_, _)) => true,
+            (Type::DefaultDict(_, _), Type::DefaultDict(_, _)) => true,
+            // defaultdict is a subtype of dict
+            (Type::DefaultDict(_, _), Type::Dict(_, _)) => true,
             (Type::Set(_), Type::Set(_)) => true,
             (Type::Tuple(_), Type::Tuple(_)) => true,
 
@@ -350,7 +356,9 @@ impl Type {
             (Type::Set(a), Type::Set(b)) => {
                 **a == Type::Any || **b == Type::Any || a.is_subtype_of(b)
             }
-            (Type::Dict(k1, v1), Type::Dict(k2, v2)) => {
+            (Type::Dict(k1, v1), Type::Dict(k2, v2))
+            | (Type::DefaultDict(k1, v1), Type::DefaultDict(k2, v2))
+            | (Type::DefaultDict(k1, v1), Type::Dict(k2, v2)) => {
                 (**k1 == Type::Any || **k2 == Type::Any || k1.is_subtype_of(k2))
                     && (**v1 == Type::Any || **v2 == Type::Any || v1.is_subtype_of(v2))
             }
@@ -415,6 +423,7 @@ impl std::fmt::Display for Type {
             Type::None => write!(f, "None"),
             Type::List(t) => write!(f, "list[{}]", t),
             Type::Dict(k, v) => write!(f, "dict[{}, {}]", k, v),
+            Type::DefaultDict(k, v) => write!(f, "defaultdict[{}, {}]", k, v),
             Type::Set(t) => write!(f, "set[{}]", t),
             Type::Tuple(ts) => {
                 write!(f, "tuple[")?;
@@ -515,6 +524,8 @@ pub fn typespec_to_type(spec: &TypeSpec) -> Type {
         TypeSpec::Hash => Type::RuntimeObject(TypeTagKind::Hash),
         TypeSpec::StringIO => Type::RuntimeObject(TypeTagKind::StringIO),
         TypeSpec::BytesIO => Type::RuntimeObject(TypeTagKind::BytesIO),
+        TypeSpec::Deque => Type::RuntimeObject(TypeTagKind::Deque),
+        TypeSpec::Counter => Type::RuntimeObject(TypeTagKind::Counter),
     }
 }
 

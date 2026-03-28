@@ -663,8 +663,8 @@ impl<'a> Lowering<'a> {
             let is_not_in = matches!(op, hir::CmpOp::NotIn);
 
             match right_type {
-                Type::Dict(_, _) => {
-                    // key in dict - use rt_dict_contains
+                Type::Dict(_, _) | Type::DefaultDict(_, _) => {
+                    // key in dict/defaultdict - use rt_dict_contains
                     // Box key if needed (int/bool keys need boxing)
                     let boxed_key = self.box_primitive_if_needed(left_op, &left_type, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -938,7 +938,7 @@ impl<'a> Lowering<'a> {
                 right: right_op,
             });
         } else {
-            // Non-string, non-class comparison
+            // Non-string, non-class, non-Any comparison (primitives)
             let mir_op = match op {
                 hir::CmpOp::Eq => mir::BinOp::Eq,
                 hir::CmpOp::NotEq => mir::BinOp::NotEq,

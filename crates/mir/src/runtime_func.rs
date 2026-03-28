@@ -608,6 +608,24 @@ pub enum RuntimeFunc {
     /// Dict popitem: rt_dict_popitem(dict: *mut Obj) -> *mut Obj (returns tuple)
     DictPopItem,
 
+    // ==================== DefaultDict operations ====================
+    /// Create defaultdict: rt_make_defaultdict(capacity: i64, factory_tag: i64) -> *mut Obj
+    MakeDefaultDict,
+    /// Get from defaultdict (creates default on miss): rt_defaultdict_get(dd: *mut Obj, key: *mut Obj) -> *mut Obj
+    DefaultDictGet,
+
+    // ==================== Counter operations ====================
+    /// Create counter from iterator: rt_make_counter_from_iter(iter: *mut Obj) -> *mut Obj
+    MakeCounterFromIter,
+    /// Create empty counter: rt_make_counter_empty() -> *mut Obj
+    MakeCounterEmpty,
+
+    // ==================== Deque operations ====================
+    /// Create deque: rt_make_deque(maxlen: i64) -> *mut Obj
+    MakeDeque,
+    /// Create deque from iterator: rt_deque_from_iter(iter: *mut Obj, maxlen: i64) -> *mut Obj
+    MakeDequeFromIter,
+
     // ==================== String methods ====================
     /// String count: rt_str_count(s: *mut Obj, sub: *mut Obj) -> i64
     StrCount,
@@ -742,4 +760,9 @@ pub enum RuntimeFunc {
     ChainNew,
     /// Create islice iterator: rt_islice_new(iter: *mut Obj, start: i64, stop: i64, step: i64) -> *mut Obj
     ISliceNew,
+
+    // ==================== Generic subscript ====================
+    /// Runtime-dispatched subscript for Any-typed objects:
+    /// rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj
+    AnyGetItem,
 }

@@ -609,6 +609,23 @@ impl<'a> Lowering<'a> {
                     args: vec![obj_operand, boxed_key, boxed_value],
                 });
             }
+            Type::DefaultDict(ref _key_ty, ref val_ty) => {
+                // defaultdict[key] = value — same as dict assignment, uses DictSet
+                let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
+                // For augmented assignment, value_type may be Any even though the actual
+                // value is a primitive. Use the defaultdict's value type for boxing decision.
+                let box_type = if value_type == Type::Any {
+                    val_ty.as_ref()
+                } else {
+                    &value_type
+                };
+                let boxed_value = self.box_primitive_if_needed(value_operand, box_type, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: dummy_local,
+                    func: mir::RuntimeFunc::DictSet,
+                    args: vec![obj_operand, boxed_key, boxed_value],
+                });
+            }
             Type::List(ref elem_ty) => {
                 // list[index] = value
                 // Box float/bool values before storing (lists use ELEM_HEAP_OBJ for these types)
@@ -681,7 +698,7 @@ impl<'a> Lowering<'a> {
         let dummy_local = self.alloc_and_add_local(Type::Any, mir_func);
 
         match obj_type {
-            Type::Dict(_, _) => {
+            Type::Dict(_, _) | Type::DefaultDict(_, _) => {
                 // del dict[key] → rt_dict_pop(dict, key) and discard result
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
