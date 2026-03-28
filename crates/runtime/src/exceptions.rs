@@ -1457,32 +1457,22 @@ pub extern "C" fn rt_exc_isinstance_class(target_class_id: u8) -> i8 {
                 return 1;
             }
 
-            // Exception (tag 0) catches all EXCEPT SystemExit, KeyboardInterrupt, GeneratorExit
-            if target_class_id == BuiltinExceptionKind::Exception.tag() {
-                if exc.custom_class_id == NOT_CUSTOM_CLASS {
-                    // Built-in exception: check exclusion list
-                    let tag = exc.exc_type as u8;
-                    if tag == BuiltinExceptionKind::SystemExit.tag()
-                        || tag == BuiltinExceptionKind::KeyboardInterrupt.tag()
-                        || tag == BuiltinExceptionKind::GeneratorExit.tag()
-                    {
-                        return 0;
-                    }
-                }
-                // All other exceptions (including custom) are caught by except Exception
-                return 1;
-            }
-
             // Get the class ID of the current exception
             let exc_class_id = if exc.custom_class_id == NOT_CUSTOM_CLASS {
-                // Built-in exception: use the type tag as class ID
+                // Built-in exception: use the type tag as class ID (0-28)
                 exc.exc_type as u8
             } else {
-                // Custom exception: use the custom class ID
+                // Custom exception: use the custom class ID (29+)
                 exc.custom_class_id
             };
 
-            // Use inheritance check from vtable module
+            // Use vtable inheritance check.
+            // The vtable hierarchy correctly models CPython's exception tree:
+            // - BaseException (28) is the root (no parent)
+            // - Exception (0) inherits from BaseException
+            // - SystemExit/KeyboardInterrupt/GeneratorExit inherit from BaseException (NOT Exception)
+            // - All other built-in exceptions inherit from Exception
+            // - User class IDs start at BUILTIN_EXCEPTION_COUNT (29+), never overlapping built-in tags
             crate::vtable::rt_class_inherits_from(exc_class_id, target_class_id)
         } else {
             0

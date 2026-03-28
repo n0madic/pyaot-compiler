@@ -1623,4 +1623,26 @@ print("test_exception_does_not_catch_keyboard_interrupt passed")
 test_bare_except_catches_all()
 print("test_bare_except_catches_all passed")
 
+# Test that custom exceptions inheriting from BaseException-only types
+# are NOT caught by except Exception (vtable-based inheritance check)
+class MyExit(SystemExit):
+    pass
+
+def test_custom_base_exception_not_caught_by_exception():
+    """class MyExit(SystemExit) should NOT be caught by except Exception."""
+    caught_base: bool = False
+    caught_exc: bool = False
+    try:
+        try:
+            raise MyExit(0)
+        except Exception:
+            caught_exc = True
+    except BaseException:
+        caught_base = True
+    assert not caught_exc, "MyExit(SystemExit) should not be caught by except Exception"
+    assert caught_base, "MyExit(SystemExit) should be caught by except BaseException"
+
+test_custom_base_exception_not_caught_by_exception()
+print("test_custom_base_exception_not_caught_by_exception passed")
+
 print("All exception tests passed!")

@@ -136,7 +136,9 @@ impl AstToHir {
             module,
             next_var_id: 0,
             next_func_id: 0,
-            next_class_id: 0,
+            // Start class IDs after built-in exception tags (0-28) to avoid
+            // collisions in the runtime vtable/class registry.
+            next_class_id: pyaot_types::BUILTIN_EXCEPTION_COUNT as u32,
             next_lambda_id: 0,
             next_comp_id: 0,
             next_ctx_id: 0,
