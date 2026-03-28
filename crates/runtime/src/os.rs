@@ -5,6 +5,7 @@
 //! - os.path.join(path1, path2, ...): Join path components
 //! - os.remove(path): Remove a file
 
+use crate::gc::{gc_pop, gc_push, ShadowFrame};
 use crate::object::{ListObj, Obj};
 use crate::utils::make_str_from_rust;
 use pyaot_core_defs::BuiltinExceptionKind;
@@ -68,13 +69,27 @@ pub extern "C" fn rt_os_get_environ() -> *mut Obj {
 
     let dict = crate::dict::rt_make_dict(count as i64);
 
+    // Root dict and an extra slot for the key across the value alloc.
+    // Without rooting, every string allocation can trigger a GC that
+    // collects `dict` (or a previously allocated key).
+    let mut roots: [*mut Obj; 2] = [dict, std::ptr::null_mut()];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 2,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
+
     for (key, value) in vars {
         let key_str = unsafe { make_str_from_rust(&key) };
+        roots[1] = key_str; // root key across the value alloc
         let value_str = unsafe { make_str_from_rust(&value) };
-        crate::dict::rt_dict_set(dict, key_str, value_str);
+        crate::dict::rt_dict_set(roots[0], roots[1], value_str);
+        roots[1] = std::ptr::null_mut();
     }
 
-    dict
+    gc_pop();
+    roots[0]
 }
 
 /// Join path components: os.path.join(path1, path2, ...)
@@ -287,12 +302,22 @@ pub extern "C" fn rt_os_listdir(path: *mut Obj) -> *mut Obj {
                 let count = names.len() as i64;
                 let list_ptr = crate::list::rt_make_list(count, 0 /* ELEM_HEAP_OBJ */);
 
+                // Root list_ptr so GC triggered by make_str_from_rust does not collect it.
+                let mut roots: [*mut Obj; 1] = [list_ptr];
+                let mut frame = ShadowFrame {
+                    prev: std::ptr::null_mut(),
+                    nroots: 1,
+                    roots: roots.as_mut_ptr(),
+                };
+                gc_push(&mut frame);
+
                 for name in &names {
                     let str_obj = make_str_from_rust(name);
-                    crate::list::rt_list_push(list_ptr, str_obj);
+                    crate::list::rt_list_push(roots[0], str_obj);
                 }
 
-                list_ptr
+                gc_pop();
+                roots[0]
             }
             Err(e) => {
                 let (exc_tag, msg) = match e.kind() {
@@ -472,15 +497,25 @@ pub extern "C" fn rt_os_path_split(path: *mut Obj) -> *mut Obj {
             (String::new(), String::new())
         };
 
-        // Create tuple with 2 string elements
+        // Create tuple with 2 string elements.
+        // Root tuple and dirname_obj so they survive subsequent allocs.
         let tuple = crate::tuple::rt_make_tuple(2, 0); // ELEM_HEAP_OBJ
+        let mut roots: [*mut Obj; 2] = [tuple, std::ptr::null_mut()];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
         let dirname_obj = make_str_from_rust(&dirname);
+        roots[1] = dirname_obj; // root dirname_obj across the basename alloc
         let basename_obj = make_str_from_rust(&basename);
+        gc_pop();
 
-        crate::tuple::rt_tuple_set(tuple, 0, dirname_obj);
-        crate::tuple::rt_tuple_set(tuple, 1, basename_obj);
+        crate::tuple::rt_tuple_set(roots[0], 0, roots[1]);
+        crate::tuple::rt_tuple_set(roots[0], 1, basename_obj);
 
-        tuple
+        roots[0]
     }
 }
 

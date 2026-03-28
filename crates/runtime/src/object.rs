@@ -248,7 +248,6 @@ pub struct DictObj {
 
 /// DefaultDict uses the same DictObj layout with factory_tag packed into
 /// the high byte of entries_capacity. See defaultdict.rs for packing details.
-
 /// Deque object — double-ended queue with ring buffer
 #[repr(C)]
 pub struct DequeObj {

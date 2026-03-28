@@ -512,6 +512,8 @@ unsafe fn compare_key_objects(a: *mut Obj, b: *mut Obj) -> i32 {
 ///           Used to box raw elements before passing to key function
 #[no_mangle]
 pub extern "C" fn rt_list_sort_with_key(list: *mut Obj, reverse: i8, key_fn: KeyFn, elem_tag: i64) {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if list.is_null() {
         return;
     }
@@ -530,10 +532,26 @@ pub extern "C" fn rt_list_sort_with_key(list: *mut Obj, reverse: i8, key_fn: Key
             return;
         }
 
+        // Root `list` for the entire key-building phase.  rt_box_int and the
+        // user-supplied key_fn may trigger gc_alloc, which under gc_stress_test
+        // runs a full collection on every allocation.  Without rooting, the
+        // ListObj (and its element array) could be swept while we are still
+        // iterating over it.
+        let mut roots: [*mut Obj; 1] = [list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         // Apply key function to each element and store (key_value, original_value) pairs
         let mut key_value_pairs: Vec<(*mut Obj, *mut Obj)> = Vec::with_capacity(len);
         for i in 0..len {
-            let elem = *data.add(i);
+            // Re-derive data pointer after each gc_alloc (list is non-moving,
+            // but we re-read through the rooted list pointer to be explicit).
+            let current_data = (*(list as *mut ListObj)).data;
+            let elem = *current_data.add(i);
             // Box raw elements before passing to key function
             let boxed_elem = if elem_tag == ELEM_RAW_INT as i64 {
                 crate::boxing::rt_box_int(elem as i64)
@@ -543,6 +561,8 @@ pub extern "C" fn rt_list_sort_with_key(list: *mut Obj, reverse: i8, key_fn: Key
             let key_value = key_fn(boxed_elem);
             key_value_pairs.push((key_value, elem));
         }
+
+        gc_pop();
 
         // Sort by key values using Timsort (stable sort)
         timsort::timsort_with_cmp(&mut key_value_pairs, |(key_a, _), (key_b, _)| {
@@ -563,9 +583,14 @@ pub extern "C" fn rt_list_sort_with_key(list: *mut Obj, reverse: i8, key_fn: Key
             }
         });
 
-        // Write sorted values back to the list
+        // Write sorted values back to the list.
+        // Re-read data from the list in case it was reallocated during key_fn
+        // calls above (though rt_list_sort_with_key does not resize the list
+        // itself, the GC is non-moving so the pointer is stable; re-deriving
+        // makes the liveness explicit and is cheap).
+        let final_data = (*(list as *mut ListObj)).data;
         for (i, (_, value)) in key_value_pairs.iter().enumerate() {
-            *data.add(i) = *value;
+            *final_data.add(i) = *value;
         }
     }
 }

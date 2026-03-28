@@ -149,20 +149,41 @@ unsafe fn json_value_to_obj(value: &Value, depth: u32) -> *mut Obj {
         Value::String(s) => make_str_from_rust(s),
         Value::Array(arr) => {
             let list = crate::list::rt_make_list(arr.len() as i64, ELEM_HEAP_OBJ);
+            // Root the list so GC triggered by recursive allocs does not collect it.
+            let mut roots: [*mut Obj; 1] = [list];
+            let mut frame = crate::gc::ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 1,
+                roots: roots.as_mut_ptr(),
+            };
+            crate::gc::gc_push(&mut frame);
             for item in arr {
                 let obj = json_value_to_obj(item, depth + 1);
-                crate::list::rt_list_push(list, obj);
+                crate::list::rt_list_push(roots[0], obj);
             }
-            list
+            crate::gc::gc_pop();
+            roots[0]
         }
         Value::Object(map) => {
             let dict = crate::dict::rt_make_dict(map.len() as i64);
+            // Root dict so GC triggered by key/value allocs does not collect it.
+            // Also root key_obj across the value alloc (index 1 used as scratch).
+            let mut roots: [*mut Obj; 2] = [dict, std::ptr::null_mut()];
+            let mut frame = crate::gc::ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 2,
+                roots: roots.as_mut_ptr(),
+            };
+            crate::gc::gc_push(&mut frame);
             for (key, val) in map {
                 let key_obj = make_str_from_rust(key);
+                roots[1] = key_obj; // root key across the recursive value alloc
                 let val_obj = json_value_to_obj(val, depth + 1);
-                crate::dict::rt_dict_set(dict, key_obj, val_obj);
+                crate::dict::rt_dict_set(roots[0], roots[1], val_obj);
+                roots[1] = std::ptr::null_mut();
             }
-            dict
+            crate::gc::gc_pop();
+            roots[0]
         }
     }
 }

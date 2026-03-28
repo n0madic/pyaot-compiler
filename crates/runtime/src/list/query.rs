@@ -81,6 +81,8 @@ pub extern "C" fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
 /// Returns: pointer to new allocated ListObj
 #[no_mangle]
 pub extern "C" fn rt_list_copy(list: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if list.is_null() {
         return rt_make_list(0, crate::object::ELEM_HEAP_OBJ);
     }
@@ -88,9 +90,22 @@ pub extern "C" fn rt_list_copy(list: *mut Obj) -> *mut Obj {
     unsafe {
         let src = list as *mut ListObj;
         let len = (*src).len;
+        let elem_tag = (*src).elem_tag;
 
-        let new_list = rt_make_list(len as i64, (*src).elem_tag);
+        // Root the source list across rt_make_list (which calls gc_alloc) so that
+        // a GC collection triggered during that call cannot free the source list.
+        let mut roots: [*mut Obj; 1] = [list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        let new_list = rt_make_list(len as i64, elem_tag);
         let new_list_obj = new_list as *mut ListObj;
+
+        gc_pop();
 
         if len > 0 {
             let src_data = (*src).data;
@@ -109,6 +124,8 @@ pub extern "C" fn rt_list_copy(list: *mut Obj) -> *mut Obj {
 /// Concatenate two lists into a new list: list1 + list2
 #[no_mangle]
 pub extern "C" fn rt_list_concat(list1: *mut Obj, list2: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if list1.is_null() && list2.is_null() {
         return rt_make_list(0, crate::object::ELEM_HEAP_OBJ);
     }
@@ -141,8 +158,20 @@ pub extern "C" fn rt_list_concat(list1: *mut Obj, list2: *mut Obj) -> *mut Obj {
             (*src2).elem_tag
         };
 
+        // Root both source lists across rt_make_list (which calls gc_alloc) so
+        // that a GC collection triggered during that call cannot free them.
+        let mut roots: [*mut Obj; 2] = [list1, list2];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         let new_list = rt_make_list(total_len as i64, elem_tag);
         let new_list_obj = new_list as *mut ListObj;
+
+        gc_pop();
 
         if len1 > 0 {
             let src_data = (*src1).data;

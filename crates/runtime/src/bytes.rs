@@ -84,6 +84,7 @@ pub extern "C" fn rt_make_bytes_zero(len: i64) -> *mut Obj {
 /// Returns: pointer to allocated BytesObj
 #[no_mangle]
 pub extern "C" fn rt_make_bytes_from_list(list: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::{BytesObj, ListObj, ObjHeader, TypeTagKind};
 
     if list.is_null() {
@@ -106,14 +107,29 @@ pub extern "C" fn rt_make_bytes_from_list(list: *mut Obj) -> *mut Obj {
                 );
             });
 
+        // Root `list` across gc_alloc: a GC collection would free the ListObj
+        // and invalidate both the `list_obj` pointer and the element data it
+        // points to if the caller has not rooted it.
+        let mut roots: [*mut Obj; 1] = [list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         // Allocate using GC
         let obj = gc::gc_alloc(size, TypeTagKind::Bytes as u8);
+
+        gc_pop();
 
         let bytes_obj = obj as *mut BytesObj;
         (*bytes_obj).len = len;
 
-        // Copy bytes from list
-        // List elements for int type are stored as raw i64 values cast to *mut Obj
+        // Copy bytes from list.  Re-derive list_obj through the original
+        // pointer (GC is non-moving so the address is stable; re-deriving
+        // makes the live range explicit).
+        let list_obj = list as *mut ListObj;
         let data = (*list_obj).data;
         let bytes_data = (*bytes_obj).data.as_mut_ptr();
         for i in 0..len {
@@ -133,6 +149,7 @@ pub extern "C" fn rt_make_bytes_from_list(list: *mut Obj) -> *mut Obj {
 /// Returns: pointer to allocated BytesObj
 #[no_mangle]
 pub extern "C" fn rt_make_bytes_from_str(str_obj: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::{BytesObj, ObjHeader, StrObj, TypeTagKind};
     use std::ptr;
 
@@ -156,13 +173,27 @@ pub extern "C" fn rt_make_bytes_from_str(str_obj: *mut Obj) -> *mut Obj {
                 );
             });
 
+        // Root `str_obj` across gc_alloc: a GC collection could free the StrObj
+        // and invalidate the `src` pointer and the bytes it contains.
+        let mut roots: [*mut Obj; 1] = [str_obj];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         // Allocate using GC
         let obj = gc::gc_alloc(size, TypeTagKind::Bytes as u8);
+
+        gc_pop();
 
         let bytes_obj = obj as *mut BytesObj;
         (*bytes_obj).len = len;
 
-        // Copy string data as bytes
+        // Copy string data as bytes.  Re-derive src through the original pointer
+        // (GC is non-moving; re-deriving makes the live range explicit).
+        let src = str_obj as *mut StrObj;
         if len > 0 {
             ptr::copy_nonoverlapping((*src).data.as_ptr(), (*bytes_obj).data.as_mut_ptr(), len);
         }

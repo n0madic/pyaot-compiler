@@ -132,6 +132,8 @@ pub extern "C" fn rt_tuple_len(tuple: *mut Obj) -> i64 {
 /// Returns: pointer to new allocated TupleObj (shallow copy)
 #[no_mangle]
 pub extern "C" fn rt_tuple_slice(tuple: *mut Obj, start: i64, end: i64) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if tuple.is_null() {
         return rt_make_tuple(0, ELEM_HEAP_OBJ);
     }
@@ -145,8 +147,22 @@ pub extern "C" fn rt_tuple_slice(tuple: *mut Obj, start: i64, end: i64) -> *mut 
         let (start, end) = normalize_slice_indices(start, end, len, 1);
         let slice_len = slice_length(start, end);
 
-        // Create new tuple
-        let new_tuple = rt_make_tuple(slice_len as i64, (*src).elem_tag);
+        // Root the source tuple across rt_make_tuple which calls gc_alloc.
+        let mut roots: [*mut Obj; 1] = [tuple];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        // Read elem_tag from the (still live) source before allocation.
+        let elem_tag = (*(roots[0] as *mut crate::object::TupleObj)).elem_tag;
+        let new_tuple = rt_make_tuple(slice_len as i64, elem_tag);
+
+        gc_pop();
+
+        let src = tuple as *mut crate::object::TupleObj;
         let new_tuple_obj = new_tuple as *mut crate::object::TupleObj;
 
         if slice_len > 0 {
@@ -183,6 +199,7 @@ pub extern "C" fn rt_tuple_slice(tuple: *mut Obj, start: i64, end: i64) -> *mut 
 /// Returns: pointer to new allocated ListObj (shallow copy of elements)
 #[no_mangle]
 pub extern "C" fn rt_tuple_slice_to_list(tuple: *mut Obj, start: i64, end: i64) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::list::rt_make_list;
 
     if tuple.is_null() {
@@ -198,8 +215,21 @@ pub extern "C" fn rt_tuple_slice_to_list(tuple: *mut Obj, start: i64, end: i64) 
         let (start, end) = normalize_slice_indices(start, end, len, 1);
         let slice_len = slice_length(start, end);
 
-        // Create new list with capacity for slice_len elements, preserving elem_tag
-        let new_list = rt_make_list(slice_len as i64, (*src).elem_tag);
+        // Root the source tuple across rt_make_list which calls gc_alloc.
+        let mut roots: [*mut Obj; 1] = [tuple];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        let elem_tag = (*(roots[0] as *mut crate::object::TupleObj)).elem_tag;
+        let new_list = rt_make_list(slice_len as i64, elem_tag);
+
+        gc_pop();
+
+        let src = tuple as *mut crate::object::TupleObj;
         let new_list_obj = new_list as *mut crate::object::ListObj;
 
         if slice_len > 0 {
@@ -984,6 +1014,7 @@ pub extern "C" fn rt_tuple_from_list(list: *mut Obj) -> *mut Obj {
 /// Returns: pointer to new TupleObj
 #[no_mangle]
 pub extern "C" fn rt_tuple_from_str(str_obj: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::StrObj;
     use crate::string::rt_make_str;
 
@@ -998,14 +1029,29 @@ pub extern "C" fn rt_tuple_from_str(str_obj: *mut Obj) -> *mut Obj {
 
         let tuple = rt_make_tuple(len as i64, ELEM_HEAP_OBJ);
 
+        if len == 0 {
+            return tuple;
+        }
+
+        // Root tuple while rt_make_str allocates one string per character
+        let mut roots: [*mut Obj; 1] = [tuple];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         for i in 0..len {
             let ch = *data.add(i);
             // Create single-character string
             let char_str = rt_make_str(&ch, 1);
-            rt_tuple_set(tuple, i as i64, char_str);
+            rt_tuple_set(roots[0], i as i64, char_str);
         }
 
-        tuple
+        gc_pop();
+
+        roots[0]
     }
 }
 

@@ -129,8 +129,21 @@ pub unsafe extern "C" fn rt_make_str_interned(data: *const u8, len: usize) -> *m
         }
     }
 
+    // Copy the input bytes to a local stack buffer before calling gc_alloc.
+    // The `data` pointer may point into a GC-managed StrObj.  If a GC
+    // collection fires inside rt_make_str_impl → gc_alloc, the source object
+    // may be swept and `data` would become a dangling pointer.  Copying to the
+    // stack keeps the bytes alive independent of the GC heap.
+    //
+    // MAX_INTERN_LENGTH is 256, so the stack array is bounded and safe.
+    let mut local_buf = [0u8; MAX_INTERN_LENGTH];
+    if len > 0 && !data.is_null() {
+        std::ptr::copy_nonoverlapping(data, local_buf.as_mut_ptr(), len);
+    }
+    let stable_data = local_buf.as_ptr();
+
     // Create new string (may trigger GC which calls prune_string_pool)
-    let new_str = rt_make_str_impl(data, len);
+    let new_str = rt_make_str_impl(stable_data, len);
 
     // Insert into pool
     let pool = &mut *STRING_POOL.data.get();
@@ -224,11 +237,23 @@ mod tests {
             let data2 = b"world";
 
             let str1 = rt_make_str_interned(data1.as_ptr(), data1.len());
+
+            // Root str1 across the second allocation so GC stress mode does not
+            // sweep and reuse its slab slot for str2, which would make the
+            // assert_ne! below incorrectly fail.
+            let mut roots: [*mut crate::object::Obj; 1] = [str1];
+            let mut frame = crate::gc::ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 1,
+                roots: roots.as_mut_ptr(),
+            };
+            crate::gc::gc_push(&mut frame);
             let str2 = rt_make_str_interned(data2.as_ptr(), data2.len());
+            crate::gc::gc_pop();
 
             // Different strings should have different pointers
             assert_ne!(
-                str1, str2,
+                roots[0], str2,
                 "Different strings should have different allocations"
             );
         }
@@ -247,10 +272,21 @@ mod tests {
             // Create a string exactly at the threshold
             let large_data = vec![b'x'; MAX_INTERN_LENGTH];
             let str1 = rt_make_str_interned(large_data.as_ptr(), large_data.len());
+
+            // Root str1 across the second allocation so GC stress mode does not
+            // sweep and reuse its slab slot for str2.
+            let mut roots: [*mut crate::object::Obj; 1] = [str1];
+            let mut frame = crate::gc::ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 1,
+                roots: roots.as_mut_ptr(),
+            };
+            crate::gc::gc_push(&mut frame);
             let str2 = rt_make_str_interned(large_data.as_ptr(), large_data.len());
+            crate::gc::gc_pop();
 
             // Strings >= 256 bytes should NOT be interned (different pointers)
-            assert_ne!(str1, str2, "Large strings should not be interned");
+            assert_ne!(roots[0], str2, "Large strings should not be interned");
         }
 
         teardown();

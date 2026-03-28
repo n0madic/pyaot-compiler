@@ -10,23 +10,52 @@ use crate::object::{BytesObj, HttpResponseObj, Obj, ObjHeader, TypeTagKind};
 use crate::utils::{make_str_from_rust, raise_io_error, str_obj_to_rust_string};
 use std::time::Duration;
 
-/// Create an HttpResponseObj from HTTP response data
+/// Create an HttpResponseObj from HTTP response data.
+///
+/// # Safety
+/// `headers` must be a valid pointer to a DictObj (or null).
+/// All pointers are rooted across every allocating call so that a GC triggered
+/// by any allocation cannot sweep them while we are still using them.
 unsafe fn create_http_response(status: i64, url: &str, headers: *mut Obj, body: &[u8]) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
+    // Root `headers` across gc_alloc for the response object.
+    // roots[0] = headers, roots[1] = response ptr (filled after alloc),
+    // roots[2] = url string (filled after make_str_from_rust)
+    let mut roots: [*mut Obj; 3] = [headers, std::ptr::null_mut(), std::ptr::null_mut()];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 3,
+        roots: roots.as_mut_ptr(),
+    };
+    gc_push(&mut frame);
+
     let size = std::mem::size_of::<HttpResponseObj>();
     let ptr = gc::gc_alloc(size, TypeTagKind::HttpResponse as u8) as *mut HttpResponseObj;
+    roots[1] = ptr as *mut Obj; // root the response object across subsequent allocs
 
     (*ptr).header = ObjHeader {
         type_tag: TypeTagKind::HttpResponse,
         marked: false,
         size,
     };
-
     (*ptr).status = status;
-    (*ptr).url = make_str_from_rust(url);
-    (*ptr).headers = headers;
-    (*ptr).body = rt_make_bytes(body.as_ptr(), body.len());
 
-    ptr as *mut Obj
+    // make_str_from_rust may trigger GC; headers and ptr are both rooted.
+    let url_str = make_str_from_rust(url);
+    roots[2] = url_str; // root url string across rt_make_bytes
+    (*(roots[1] as *mut HttpResponseObj)).url = url_str;
+
+    // rt_make_bytes may trigger GC; headers, ptr, and url_str are all rooted.
+    let body_obj = rt_make_bytes(body.as_ptr(), body.len());
+
+    gc_pop();
+
+    let resp = roots[1] as *mut HttpResponseObj;
+    (*resp).headers = roots[0]; // live headers pointer
+    (*resp).body = body_obj;
+
+    roots[1]
 }
 
 /// urllib.request.urlopen(url, data=None, timeout=30.0) - Open a URL
@@ -90,14 +119,30 @@ pub extern "C" fn rt_urlopen(url: *mut Obj, data: *mut Obj, timeout: f64) -> *mu
                 // Get the final URL (after redirects) - ureq 3.x doesn't expose this directly
                 let final_url = url_str.clone();
 
-                // Collect headers into a dict
+                // Collect headers into a dict.
+                // Root [headers_dict, key_obj, value_obj] across every allocating call
+                // (make_str_from_rust, rt_dict_set) so no GC can sweep them.
                 let headers_dict = rt_make_dict(16);
+                let mut hdr_roots: [*mut Obj; 3] =
+                    [headers_dict, std::ptr::null_mut(), std::ptr::null_mut()];
+                let mut hdr_frame = crate::gc::ShadowFrame {
+                    prev: std::ptr::null_mut(),
+                    nroots: 3,
+                    roots: hdr_roots.as_mut_ptr(),
+                };
+                crate::gc::gc_push(&mut hdr_frame);
                 for (name, value) in response.headers().iter() {
                     let key_obj = make_str_from_rust(name.as_str());
+                    hdr_roots[1] = key_obj; // keep key alive across next make_str_from_rust
                     let value_str = value.to_str().unwrap_or("");
                     let value_obj = make_str_from_rust(value_str);
-                    rt_dict_set(headers_dict, key_obj, value_obj);
+                    hdr_roots[2] = value_obj; // keep value alive across rt_dict_set
+                    rt_dict_set(hdr_roots[0], hdr_roots[1], hdr_roots[2]);
+                    hdr_roots[1] = std::ptr::null_mut();
+                    hdr_roots[2] = std::ptr::null_mut();
                 }
+                crate::gc::gc_pop();
+                let headers_dict = hdr_roots[0]; // live pointer after all allocations
 
                 // Read the response body, capped at 1 GB to prevent OOM.
                 // ureq's into_with_config().limit() raises an error if the body

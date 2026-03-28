@@ -324,6 +324,7 @@ unsafe fn iter_next_enumerate(
     iter: *mut crate::object::IteratorObj,
     raise_on_exhausted: bool,
 ) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::TupleObj;
 
     let inner = (*iter).source;
@@ -345,10 +346,43 @@ unsafe fn iter_next_enumerate(
     let counter = (*iter).index;
     (*iter).index += 1;
 
-    // Box both counter and element for ELEM_HEAP_OBJ tuple
+    // rt_box_int (counter > 256) and box_if_raw_int_iterator both call gc_alloc.
+    // rt_make_tuple also calls gc_alloc.  Root each intermediate result before
+    // the next allocation so GC stress test cannot collect them.
+
+    // Step 1: box the counter; root elem across this call.
+    let mut roots1: [*mut Obj; 1] = [elem];
+    let mut frame1 = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots1.as_mut_ptr(),
+    };
+    gc_push(&mut frame1);
     let boxed_counter = crate::boxing::rt_box_int(counter);
+    gc_pop();
+
+    // Step 2: box elem; root boxed_counter across this call.
+    let mut roots2: [*mut Obj; 1] = [boxed_counter];
+    let mut frame2 = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots2.as_mut_ptr(),
+    };
+    gc_push(&mut frame2);
     let boxed_elem = box_if_raw_int_iterator(inner, elem);
+    gc_pop();
+
+    // Step 3: allocate the tuple; root both boxed values.
+    let mut roots3: [*mut Obj; 2] = [boxed_counter, boxed_elem];
+    let mut frame3 = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 2,
+        roots: roots3.as_mut_ptr(),
+    };
+    gc_push(&mut frame3);
     let tuple = crate::tuple::rt_make_tuple(2, ELEM_HEAP_OBJ);
+    gc_pop();
+
     let tuple_obj = tuple as *mut TupleObj;
     *(*tuple_obj).data.as_mut_ptr().add(0) = boxed_counter;
     *(*tuple_obj).data.as_mut_ptr().add(1) = boxed_elem;
@@ -399,12 +433,44 @@ unsafe fn iter_next_zip(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
         return EXHAUSTED_SENTINEL;
     }
 
-    // Box items if they came from raw-int lists
-    // Check inner iterators to determine element types
-    let boxed_item1 = box_if_raw_int_iterator((*zip_iter).iter1, item1);
-    let boxed_item2 = box_if_raw_int_iterator((*zip_iter).iter2, item2);
+    // box_if_raw_int_iterator and rt_make_tuple both call gc_alloc — root all
+    // live heap pointers before each allocation.
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
+    // Step 1: box item1; root item2 (item1 itself may be raw, boxed result needs rooting
+    // before next alloc, but item2 is the unrooted heap value that matters).
+    let mut r1: [*mut Obj; 1] = [item2];
+    let mut f1 = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: r1.as_mut_ptr(),
+    };
+    gc_push(&mut f1);
+    let boxed_item1 = box_if_raw_int_iterator((*zip_iter).iter1, item1);
+    gc_pop();
+
+    // Step 2: box item2; root boxed_item1.
+    let mut r2: [*mut Obj; 1] = [boxed_item1];
+    let mut f2 = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: r2.as_mut_ptr(),
+    };
+    gc_push(&mut f2);
+    let boxed_item2 = box_if_raw_int_iterator((*zip_iter).iter2, item2);
+    gc_pop();
+
+    // Step 3: allocate tuple; root both boxed items.
+    let mut r3: [*mut Obj; 2] = [boxed_item1, boxed_item2];
+    let mut f3 = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 2,
+        roots: r3.as_mut_ptr(),
+    };
+    gc_push(&mut f3);
     let tuple = crate::tuple::rt_make_tuple(2, ELEM_HEAP_OBJ);
+    gc_pop();
+
     crate::tuple::rt_tuple_set(tuple, 0, boxed_item1);
     crate::tuple::rt_tuple_set(tuple, 1, boxed_item2);
     tuple
@@ -466,11 +532,54 @@ unsafe fn iter_next_zip3(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
         return EXHAUSTED_SENTINEL;
     }
 
-    let boxed_item1 = box_if_raw_int_iterator((*zip_iter).iter1, item1);
-    let boxed_item2 = box_if_raw_int_iterator((*zip_iter).iter2, item2);
-    let boxed_item3 = box_if_raw_int_iterator((*zip_iter).iter3, item3);
+    // box_if_raw_int_iterator and rt_make_tuple both call gc_alloc — root all
+    // live heap pointers before each allocation.
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
+    // Step 1: box item1; root the two remaining raw items.
+    let mut r1: [*mut Obj; 2] = [item2, item3];
+    let mut f1 = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 2,
+        roots: r1.as_mut_ptr(),
+    };
+    gc_push(&mut f1);
+    let boxed_item1 = box_if_raw_int_iterator((*zip_iter).iter1, item1);
+    gc_pop();
+
+    // Step 2: box item2; root boxed_item1 and the remaining raw item.
+    let mut r2: [*mut Obj; 2] = [boxed_item1, item3];
+    let mut f2 = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 2,
+        roots: r2.as_mut_ptr(),
+    };
+    gc_push(&mut f2);
+    let boxed_item2 = box_if_raw_int_iterator((*zip_iter).iter2, item2);
+    gc_pop();
+
+    // Step 3: box item3; root the two already-boxed items.
+    let mut r3: [*mut Obj; 2] = [boxed_item1, boxed_item2];
+    let mut f3 = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 2,
+        roots: r3.as_mut_ptr(),
+    };
+    gc_push(&mut f3);
+    let boxed_item3 = box_if_raw_int_iterator((*zip_iter).iter3, item3);
+    gc_pop();
+
+    // Step 4: allocate tuple; root all three boxed items.
+    let mut r4: [*mut Obj; 3] = [boxed_item1, boxed_item2, boxed_item3];
+    let mut f4 = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 3,
+        roots: r4.as_mut_ptr(),
+    };
+    gc_push(&mut f4);
     let tuple = crate::tuple::rt_make_tuple(3, ELEM_HEAP_OBJ);
+    gc_pop();
+
     crate::tuple::rt_tuple_set(tuple, 0, boxed_item1);
     crate::tuple::rt_tuple_set(tuple, 1, boxed_item2);
     crate::tuple::rt_tuple_set(tuple, 2, boxed_item3);
@@ -498,8 +607,10 @@ unsafe fn iter_next_zipn(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
     let iters_list = (*zip_iter).iters as *mut ListObj;
     let iters_data = (*iters_list).data;
 
-    let tuple = crate::tuple::rt_make_tuple(count as i64, ELEM_HEAP_OBJ);
-
+    // Collect all items first (no allocations during rt_iter_next_internal for raw iterators).
+    // We need a fixed-size scratch area; use a Vec for simplicity — it lives on the heap
+    // but is not a GC object, so it won't be collected.
+    let mut items: Vec<(*mut Obj, *mut Obj)> = Vec::with_capacity(count); // (iter, item)
     for i in 0..count {
         let iter_i = *iters_data.add(i);
         let item = rt_iter_next_internal(iter_i, false);
@@ -514,11 +625,29 @@ unsafe fn iter_next_zipn(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
             }
             return EXHAUSTED_SENTINEL;
         }
-        let boxed_item = box_if_raw_int_iterator(iter_i, item);
-        crate::tuple::rt_tuple_set(tuple, i as i64, boxed_item);
+        items.push((iter_i, item));
     }
 
-    tuple
+    // Allocate the result tuple, then box and store each item.
+    // box_if_raw_int_iterator calls gc_alloc, so the tuple must be rooted while we
+    // box each element.  We use a single-element root slot and keep it updated.
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
+    let mut root_tuple: *mut Obj = crate::tuple::rt_make_tuple(count as i64, ELEM_HEAP_OBJ);
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: &mut root_tuple as *mut *mut Obj,
+    };
+    gc_push(&mut frame);
+
+    for (i, &(iter_i, item)) in items.iter().enumerate() {
+        let boxed_item = box_if_raw_int_iterator(iter_i, item);
+        crate::tuple::rt_tuple_set(root_tuple, i as i64, boxed_item);
+    }
+
+    gc_pop();
+    root_tuple
 }
 
 /// Next for map iterator

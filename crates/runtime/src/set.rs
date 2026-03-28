@@ -324,6 +324,8 @@ pub extern "C" fn rt_set_clear(set: *mut Obj) {
 /// Returns: pointer to new SetObj
 #[no_mangle]
 pub extern "C" fn rt_set_copy(set: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if set.is_null() {
         return rt_make_set(8);
     }
@@ -337,17 +339,28 @@ pub extern "C" fn rt_set_copy(set: *mut Obj) -> *mut Obj {
         let new_capacity = ((*src).len * 4 / 3 + 1).next_power_of_two().max(8);
         let new_set = rt_make_set(new_capacity as i64);
 
+        // Root new_set while rt_set_add may trigger GC on resize
+        let mut roots: [*mut Obj; 1] = [new_set];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         // Copy all non-empty, non-tombstone entries
         let capacity = (*src).capacity;
         for i in 0..capacity {
             let src_entry = (*src).entries.add(i);
             let elem = (*src_entry).elem;
             if !elem.is_null() && elem != TOMBSTONE {
-                rt_set_add(new_set, elem);
+                rt_set_add(roots[0], elem);
             }
         }
 
-        new_set
+        gc_pop();
+
+        roots[0]
     }
 }
 
@@ -549,6 +562,8 @@ pub extern "C" fn rt_set_max_float(set: *mut Obj) -> f64 {
 /// Returns: pointer to new SetObj containing elements from a and b
 #[no_mangle]
 pub extern "C" fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if a.is_null() || b.is_null() {
         let msg = b"TypeError: unsupported operand type(s) for set operation";
         unsafe {
@@ -566,8 +581,16 @@ pub extern "C" fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 
         let b_obj = b as *mut SetObj;
 
-        // Copy set a
+        // Copy set a — result must be rooted before rt_set_add may trigger GC
         let result = rt_set_copy(a);
+
+        let mut roots: [*mut Obj; 1] = [result];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
 
         // Add all elements from b
         let b_capacity = (*b_obj).capacity;
@@ -575,11 +598,13 @@ pub extern "C" fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             let entry = (*b_obj).entries.add(i);
             let elem = (*entry).elem;
             if !elem.is_null() && elem != TOMBSTONE {
-                rt_set_add(result, elem);
+                rt_set_add(roots[0], elem);
             }
         }
 
-        result
+        gc_pop();
+
+        roots[0]
     }
 }
 
@@ -587,6 +612,8 @@ pub extern "C" fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 /// Returns: pointer to new SetObj containing elements in both a and b
 #[no_mangle]
 pub extern "C" fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if a.is_null() || b.is_null() {
         let msg = b"TypeError: unsupported operand type(s) for set operation";
         unsafe {
@@ -605,8 +632,16 @@ pub extern "C" fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         let a_obj = a as *mut SetObj;
         let b_obj = b as *mut SetObj;
 
-        // Create new empty set
+        // Create new empty set; root it while rt_set_add may trigger GC
         let result = rt_make_set(8);
+
+        let mut roots: [*mut Obj; 1] = [result];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
 
         // Iterate through a, add elements that are also in b
         let a_capacity = (*a_obj).capacity;
@@ -617,12 +652,14 @@ pub extern "C" fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                 let hash = hash_hashable_obj(elem);
                 let slot = find_set_slot(b_obj, elem, hash, false);
                 if slot >= 0 {
-                    rt_set_add(result, elem);
+                    rt_set_add(roots[0], elem);
                 }
             }
         }
 
-        result
+        gc_pop();
+
+        roots[0]
     }
 }
 
@@ -630,6 +667,8 @@ pub extern "C" fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 /// Returns: pointer to new SetObj containing elements in a but not in b
 #[no_mangle]
 pub extern "C" fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if a.is_null() || b.is_null() {
         let msg = b"TypeError: unsupported operand type(s) for set operation";
         unsafe {
@@ -648,8 +687,16 @@ pub extern "C" fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         let a_obj = a as *mut SetObj;
         let b_obj = b as *mut SetObj;
 
-        // Create new empty set
+        // Create new empty set; root it while rt_set_add may trigger GC
         let result = rt_make_set(8);
+
+        let mut roots: [*mut Obj; 1] = [result];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
 
         // Iterate through a, add elements that are NOT in b
         let a_capacity = (*a_obj).capacity;
@@ -660,12 +707,14 @@ pub extern "C" fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                 let hash = hash_hashable_obj(elem);
                 let slot = find_set_slot(b_obj, elem, hash, false);
                 if slot < 0 {
-                    rt_set_add(result, elem);
+                    rt_set_add(roots[0], elem);
                 }
             }
         }
 
-        result
+        gc_pop();
+
+        roots[0]
     }
 }
 
@@ -673,6 +722,8 @@ pub extern "C" fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 /// Returns: pointer to new SetObj containing elements in a or b but not both
 #[no_mangle]
 pub extern "C" fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if a.is_null() || b.is_null() {
         let msg = b"TypeError: unsupported operand type(s) for set operation";
         unsafe {
@@ -691,8 +742,16 @@ pub extern "C" fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut 
         let a_obj = a as *mut SetObj;
         let b_obj = b as *mut SetObj;
 
-        // Create new empty set
+        // Create new empty set; root it while rt_set_add may trigger GC
         let result = rt_make_set(8);
+
+        let mut roots: [*mut Obj; 1] = [result];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
 
         // Add elements from a that are not in b
         let a_capacity = (*a_obj).capacity;
@@ -703,7 +762,7 @@ pub extern "C" fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut 
                 let hash = hash_hashable_obj(elem);
                 let slot = find_set_slot(b_obj, elem, hash, false);
                 if slot < 0 {
-                    rt_set_add(result, elem);
+                    rt_set_add(roots[0], elem);
                 }
             }
         }
@@ -717,12 +776,14 @@ pub extern "C" fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut 
                 let hash = hash_hashable_obj(elem);
                 let slot = find_set_slot(a_obj, elem, hash, false);
                 if slot < 0 {
-                    rt_set_add(result, elem);
+                    rt_set_add(roots[0], elem);
                 }
             }
         }
 
-        result
+        gc_pop();
+
+        roots[0]
     }
 }
 
@@ -930,12 +991,27 @@ pub extern "C" fn rt_set_to_list(set: *mut Obj) -> *mut Obj {
         let set_len = (*set_obj).len;
         let capacity = (*set_obj).capacity;
 
+        // Root the set across gc_alloc which may trigger a GC collection.
+        let mut roots: [*mut Obj; 1] = [set];
+        let mut frame = crate::gc::ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        crate::gc::gc_push(&mut frame);
+
         // Allocate list with set length
         let list_size = std::mem::size_of::<ListObj>();
         let list_obj = gc::gc_alloc(list_size, TypeTagKind::List as u8);
+
+        crate::gc::gc_pop();
+
+        // Re-derive set pointer through rooted slot after allocation.
+        let set_obj = roots[0] as *mut SetObj;
+
         let list = list_obj as *mut ListObj;
 
-        // Allocate data array
+        // Allocate data array (raw allocator — does not trigger GC)
         let data_layout = Layout::array::<*mut Obj>(set_len)
             .expect("Allocation size overflow - capacity too large");
         let data = alloc_zeroed(data_layout) as *mut *mut Obj;

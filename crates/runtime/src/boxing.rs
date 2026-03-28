@@ -132,24 +132,27 @@ pub fn shutdown_bool_pool() {
 /// set at allocation time is cleared by `sweep` at the end of every collection,
 /// so we must re-mark them at the start of every mark phase instead.
 pub fn mark_pools() {
-    // Mark small integer pool
-    if SMALL_INT_POOL.is_initialized() {
-        unsafe {
-            for &obj in SMALL_INT_POOL.iter() {
-                if !obj.is_null() {
-                    (*obj).set_marked(true);
-                }
+    // Mark small integer pool.
+    // Do NOT guard on is_initialized(): during pool initialization in gc_stress
+    // mode, gc_alloc fires a collection before each IntObj is allocated. At that
+    // point is_initialized() is false even though some slots are already filled.
+    // Skipping those slots causes the partially-built pool objects to be swept
+    // (freed), so every pool[i] ends up at the same address as pool[i-1] was
+    // at — all pointing to the last-allocated object. Marking non-null slots
+    // unconditionally fixes this.
+    unsafe {
+        for &obj in SMALL_INT_POOL.iter() {
+            if !obj.is_null() {
+                (*obj).set_marked(true);
             }
         }
     }
 
-    // Mark boolean singleton pool
-    if BOOL_POOL.is_initialized() {
-        unsafe {
-            for &obj in BOOL_POOL.iter() {
-                if !obj.is_null() {
-                    (*obj).set_marked(true);
-                }
+    // Mark boolean singleton pool (same reasoning applies).
+    unsafe {
+        for &obj in BOOL_POOL.iter() {
+            if !obj.is_null() {
+                (*obj).set_marked(true);
             }
         }
     }

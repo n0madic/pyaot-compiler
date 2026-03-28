@@ -235,12 +235,6 @@ pub unsafe extern "C" fn rt_file_read(file: *mut Obj) -> *mut Obj {
     check_file_valid(file);
     let file_obj = file as *mut FileObj;
 
-    eprintln!(
-        "DEBUG rt_file_read: binary={}, mode={}",
-        (*file_obj).binary,
-        (*file_obj).mode
-    );
-
     if !is_readable(file_obj) {
         crate::utils::raise_io_error("not readable");
     }
@@ -436,6 +430,17 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
 
     let list = crate::list::rt_make_list(0, crate::object::ELEM_HEAP_OBJ);
 
+    // Root [list, line_obj_slot] across all allocating calls (rt_make_str,
+    // rt_make_bytes, rt_list_push).  Without rooting, a GC triggered by any
+    // of those functions sweeps `list` while we still hold a pointer to it.
+    let mut roots: [*mut Obj; 2] = [list, std::ptr::null_mut()];
+    let mut frame = crate::gc::ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 2,
+        roots: roots.as_mut_ptr(),
+    };
+    crate::gc::gc_push(&mut frame);
+
     if (*file_obj).binary {
         // Binary mode: split on b'\n', return list[bytes]
         // Each line includes the trailing b'\n' (except possibly the last)
@@ -444,7 +449,9 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
             if raw[i] == b'\n' {
                 let line = &raw[start..=i]; // include the newline
                 let line_obj = crate::bytes::rt_make_bytes(line.as_ptr(), line.len());
-                crate::list::rt_list_push(list, line_obj);
+                roots[1] = line_obj; // keep line_obj alive across rt_list_push
+                crate::list::rt_list_push(roots[0], roots[1]);
+                roots[1] = std::ptr::null_mut();
                 start = i + 1;
             }
         }
@@ -452,7 +459,8 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
         if start < raw.len() {
             let line = &raw[start..];
             let line_obj = crate::bytes::rt_make_bytes(line.as_ptr(), line.len());
-            crate::list::rt_list_push(list, line_obj);
+            roots[1] = line_obj;
+            crate::list::rt_list_push(roots[0], roots[1]);
         }
     } else {
         // Text mode: decode according to file encoding, then split on '\n'
@@ -460,6 +468,7 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
         let content = match decode_bytes(&raw, enc) {
             Ok(s) => s,
             Err(e) => {
+                crate::gc::gc_pop();
                 crate::utils::raise_io_error_owned(format!("read error: {}", e));
             }
         };
@@ -482,11 +491,14 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
                 format!("{}\n", line)
             };
             let line_obj = crate::string::rt_make_str(line_str.as_ptr(), line_str.len());
-            crate::list::rt_list_push(list, line_obj);
+            roots[1] = line_obj; // keep line_obj alive across rt_list_push
+            crate::list::rt_list_push(roots[0], roots[1]);
+            roots[1] = std::ptr::null_mut();
         }
     }
 
-    list
+    crate::gc::gc_pop();
+    roots[0] // live list pointer
 }
 
 /// Write data to the file

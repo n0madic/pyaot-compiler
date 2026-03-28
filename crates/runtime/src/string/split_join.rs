@@ -338,9 +338,18 @@ pub extern "C" fn rt_str_partition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
 
     if s.is_null() || sep.is_null() {
         // Return (s, '', '')
+        // Root `empty` across rt_make_tuple so GC cannot collect it.
         unsafe {
             let empty = rt_make_str(std::ptr::null(), 0);
+            let mut roots: [*mut Obj; 1] = [empty];
+            let mut frame = ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 1,
+                roots: roots.as_mut_ptr(),
+            };
+            gc_push(&mut frame);
             let tuple = rt_make_tuple(3, ELEM_HEAP_OBJ);
+            gc_pop();
             rt_tuple_set(tuple, 0, s);
             rt_tuple_set(tuple, 1, empty);
             rt_tuple_set(tuple, 2, empty);
@@ -366,7 +375,7 @@ pub extern "C" fn rt_str_partition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
             );
         }
 
-        // Find first occurrence of separator
+        // Find first occurrence of separator (no allocations, no rooting needed)
         let mut found_pos: Option<usize> = None;
 
         if sep_len <= str_len {
@@ -385,19 +394,41 @@ pub extern "C" fn rt_str_partition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
             }
         }
 
+        // Root s and sep across all subsequent allocations.  Use 3 slots so we
+        // can also keep the tuple (slot[2]) and then `before` (slot[0]) alive.
+        // Slot[2] is null initially; we update it via ptr::write after
+        // rt_make_tuple returns so the GC sees the new object.
+        let mut roots: [*mut Obj; 3] = [s, sep, std::ptr::null_mut()];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 3,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         let tuple = rt_make_tuple(3, ELEM_HEAP_OBJ);
+        // Publish tuple to the shadow frame so GC keeps it alive.
+        // SAFETY: roots is on the stack and frame.roots == roots.as_mut_ptr().
+        std::ptr::write(roots.as_mut_ptr().add(2), tuple);
 
         if let Some(pos) = found_pos {
             // Found separator: (before, sep, after)
+            // Re-derive data pointer now that prior gc_alloc calls have run.
+            let str_data = (*(s as *mut StrObj)).data.as_ptr();
             let before = rt_make_str(str_data, pos);
+            // Publish `before` to slot[0]; keep tuple in slot[2], sep in slot[1].
+            std::ptr::write(roots.as_mut_ptr(), before);
+            let str_data = (*(s as *mut StrObj)).data.as_ptr();
             let after = rt_make_str(str_data.add(pos + sep_len), str_len - pos - sep_len);
 
+            gc_pop();
             rt_tuple_set(tuple, 0, before);
             rt_tuple_set(tuple, 1, sep);
             rt_tuple_set(tuple, 2, after);
         } else {
-            // Not found: (str, '', '')
+            // Not found: (str, '', '');  s is still live in slot[0].
             let empty = rt_make_str(std::ptr::null(), 0);
+            gc_pop();
             rt_tuple_set(tuple, 0, s);
             rt_tuple_set(tuple, 1, empty);
             rt_tuple_set(tuple, 2, empty);
@@ -416,9 +447,18 @@ pub extern "C" fn rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
 
     if s.is_null() || sep.is_null() {
         // Return ('', '', s)
+        // Root `empty` across rt_make_tuple so GC cannot collect it.
         unsafe {
             let empty = rt_make_str(std::ptr::null(), 0);
+            let mut roots: [*mut Obj; 1] = [empty];
+            let mut frame = ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 1,
+                roots: roots.as_mut_ptr(),
+            };
+            gc_push(&mut frame);
             let tuple = rt_make_tuple(3, ELEM_HEAP_OBJ);
+            gc_pop();
             rt_tuple_set(tuple, 0, empty);
             rt_tuple_set(tuple, 1, empty);
             rt_tuple_set(tuple, 2, s);
@@ -444,7 +484,7 @@ pub extern "C" fn rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
             );
         }
 
-        // Find last occurrence of separator (search backwards)
+        // Find last occurrence of separator (search backwards, no allocations)
         let mut found_pos: Option<usize> = None;
 
         if sep_len <= str_len {
@@ -463,19 +503,36 @@ pub extern "C" fn rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
             }
         }
 
+        // Same rooting strategy as rt_str_partition above.
+        // Slot layout: [0]=s, [1]=sep, [2]=null then tuple after rt_make_tuple.
+        let mut roots: [*mut Obj; 3] = [s, sep, std::ptr::null_mut()];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 3,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         let tuple = rt_make_tuple(3, ELEM_HEAP_OBJ);
+        std::ptr::write(roots.as_mut_ptr().add(2), tuple);
 
         if let Some(pos) = found_pos {
             // Found separator: (before, sep, after)
+            let str_data = (*(s as *mut StrObj)).data.as_ptr();
             let before = rt_make_str(str_data, pos);
+            // Keep `before` alive while allocating `after`.
+            std::ptr::write(roots.as_mut_ptr(), before);
+            let str_data = (*(s as *mut StrObj)).data.as_ptr();
             let after = rt_make_str(str_data.add(pos + sep_len), str_len - pos - sep_len);
 
+            gc_pop();
             rt_tuple_set(tuple, 0, before);
             rt_tuple_set(tuple, 1, sep);
             rt_tuple_set(tuple, 2, after);
         } else {
-            // Not found: ('', '', str)
+            // Not found: ('', '', str);  s is still live in slot[0].
             let empty = rt_make_str(std::ptr::null(), 0);
+            gc_pop();
             rt_tuple_set(tuple, 0, empty);
             rt_tuple_set(tuple, 1, empty);
             rt_tuple_set(tuple, 2, s);

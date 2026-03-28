@@ -1,4 +1,4 @@
-use crate::gc::gc_alloc;
+use crate::gc::{gc_alloc, gc_pop, gc_push, ShadowFrame};
 use crate::object::{DictObj, InstanceObj, ListObj, Obj, SetObj, TupleObj};
 use pyaot_core_defs::TypeTagKind;
 use std::collections::HashMap;
@@ -48,16 +48,29 @@ pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
             let new_dict = crate::dict::rt_make_dict(len as i64);
 
             if len > 0 {
+                // Root new_dict while rt_dict_set may trigger GC on resize
+                let mut roots: [*mut Obj; 1] = [new_dict];
+                let mut frame = ShadowFrame {
+                    prev: std::ptr::null_mut(),
+                    nroots: 1,
+                    roots: roots.as_mut_ptr(),
+                };
+                gc_push(&mut frame);
+
                 for i in 0..(*orig).entries_len {
                     let entry = (*orig).entries.add(i);
                     let key = (*entry).key;
                     if !key.is_null() {
-                        crate::dict::rt_dict_set(new_dict, key, (*entry).value);
+                        crate::dict::rt_dict_set(roots[0], key, (*entry).value);
                     }
                 }
-            }
 
-            new_dict
+                gc_pop();
+
+                roots[0]
+            } else {
+                new_dict
+            }
         }
 
         // Set - shallow copy
@@ -70,6 +83,15 @@ pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
             let new_set = crate::set::rt_make_set(capacity as i64);
 
             if len > 0 {
+                // Root new_set while rt_set_add may trigger GC on resize
+                let mut roots: [*mut Obj; 1] = [new_set];
+                let mut frame = ShadowFrame {
+                    prev: std::ptr::null_mut(),
+                    nroots: 1,
+                    roots: roots.as_mut_ptr(),
+                };
+                gc_push(&mut frame);
+
                 // Iterate through original entries and copy to new set
                 for i in 0..capacity {
                     let entry = (*orig).entries.add(i);
@@ -80,11 +102,15 @@ pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
                         continue;
                     }
 
-                    crate::set::rt_set_add(new_set, elem);
+                    crate::set::rt_set_add(roots[0], elem);
                 }
-            }
 
-            new_set
+                gc_pop();
+
+                roots[0]
+            } else {
+                new_set
+            }
         }
 
         // Instance - shallow copy fields
@@ -191,18 +217,33 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
             // Register in memo before recursing (for cycle detection)
             memo.insert(obj_addr, new_tuple as *mut Obj);
 
-            // Deep copy each element
+            // Deep copy each element; root new_tuple across recursive allocs
             if len > 0 {
-                let orig_data = (*orig).data.as_ptr();
-                let new_data = (*new_tuple).data.as_mut_ptr();
+                let mut roots: [*mut Obj; 1] = [new_tuple as *mut Obj];
+                let mut frame = ShadowFrame {
+                    prev: std::ptr::null_mut(),
+                    nroots: 1,
+                    roots: roots.as_mut_ptr(),
+                };
+                gc_push(&mut frame);
+
+                let orig_data = (*(obj as *mut TupleObj)).data.as_ptr();
                 for i in 0..len {
                     let elem = *orig_data.add(i);
                     let new_elem = deep_copy_recursive(elem, memo);
-                    *new_data.add(i) = new_elem;
+                    let nt = roots[0] as *mut TupleObj;
+                    *(*nt).data.as_mut_ptr().add(i) = new_elem;
+                    // Keep memo entry current after the GC may have moved nothing
+                    // (mark-sweep doesn't move, but keep memo consistent)
+                    memo.insert(obj_addr, roots[0]);
                 }
-            }
 
-            new_tuple as *mut Obj
+                gc_pop();
+
+                roots[0]
+            } else {
+                new_tuple as *mut Obj
+            }
         }
 
         // List - deep copy each element
@@ -222,17 +263,31 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
             // Register in memo before recursing
             memo.insert(obj_addr, new_list);
 
-            // Deep copy each element
+            // Deep copy each element; root new_list across recursive allocs
             if len > 0 {
-                let orig_data = (*orig).data;
+                let mut roots: [*mut Obj; 1] = [new_list];
+                let mut frame = ShadowFrame {
+                    prev: std::ptr::null_mut(),
+                    nroots: 1,
+                    roots: roots.as_mut_ptr(),
+                };
+                gc_push(&mut frame);
+                memo.insert(obj_addr, roots[0]);
+
+                let orig_data = (*(obj as *mut ListObj)).data;
                 for i in 0..len {
                     let elem = *orig_data.add(i);
                     let new_elem = deep_copy_recursive(elem, memo);
-                    crate::list::rt_list_push(new_list, new_elem);
+                    crate::list::rt_list_push(roots[0], new_elem);
+                    memo.insert(obj_addr, roots[0]);
                 }
-            }
 
-            new_list
+                gc_pop();
+
+                roots[0]
+            } else {
+                new_list
+            }
         }
 
         // Dict - deep copy each key and value
@@ -251,6 +306,16 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
             memo.insert(obj_addr, new_dict);
 
             if len > 0 {
+                // Root new_dict across recursive allocs and rt_dict_set
+                let mut roots: [*mut Obj; 1] = [new_dict];
+                let mut frame = ShadowFrame {
+                    prev: std::ptr::null_mut(),
+                    nroots: 1,
+                    roots: roots.as_mut_ptr(),
+                };
+                gc_push(&mut frame);
+                memo.insert(obj_addr, roots[0]);
+
                 for i in 0..(*orig).entries_len {
                     let entry = (*orig).entries.add(i);
                     let key = (*entry).key;
@@ -258,12 +323,17 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
                         let value = (*entry).value;
                         let new_key = deep_copy_recursive(key, memo);
                         let new_value = deep_copy_recursive(value, memo);
-                        crate::dict::rt_dict_set(new_dict, new_key, new_value);
+                        crate::dict::rt_dict_set(roots[0], new_key, new_value);
+                        memo.insert(obj_addr, roots[0]);
                     }
                 }
-            }
 
-            new_dict
+                gc_pop();
+
+                roots[0]
+            } else {
+                new_dict
+            }
         }
 
         // Set - deep copy each element
@@ -284,6 +354,16 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
             memo.insert(obj_addr, new_set);
 
             if len > 0 {
+                // Root new_set across recursive allocs and rt_set_add
+                let mut roots: [*mut Obj; 1] = [new_set];
+                let mut frame = ShadowFrame {
+                    prev: std::ptr::null_mut(),
+                    nroots: 1,
+                    roots: roots.as_mut_ptr(),
+                };
+                gc_push(&mut frame);
+                memo.insert(obj_addr, roots[0]);
+
                 // Iterate through original entries and deep copy
                 for i in 0..capacity {
                     let entry = (*orig).entries.add(i);
@@ -295,11 +375,16 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
                     }
 
                     let new_elem = deep_copy_recursive(elem, memo);
-                    crate::set::rt_set_add(new_set, new_elem);
+                    crate::set::rt_set_add(roots[0], new_elem);
+                    memo.insert(obj_addr, roots[0]);
                 }
-            }
 
-            new_set
+                gc_pop();
+
+                roots[0]
+            } else {
+                new_set
+            }
         }
 
         // Instance - deep copy each field
@@ -332,9 +417,18 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
             // hold raw scalar bit-patterns (int/float/bool) that must be
             // copied verbatim — interpreting them as pointers would be UB.
             if field_count > 0 {
+                // Root new_inst across recursive allocs
+                let mut roots: [*mut Obj; 1] = [new_inst as *mut Obj];
+                let mut frame = ShadowFrame {
+                    prev: std::ptr::null_mut(),
+                    nroots: 1,
+                    roots: roots.as_mut_ptr(),
+                };
+                gc_push(&mut frame);
+                memo.insert(obj_addr, roots[0]);
+
                 let heap_mask = crate::vtable::get_class_heap_field_mask(class_id);
-                let orig_fields = (*orig).fields.as_ptr();
-                let new_fields = (*new_inst).fields.as_mut_ptr();
+                let orig_fields = (*(obj as *mut InstanceObj)).fields.as_ptr();
                 for i in 0..field_count {
                     let raw: *mut Obj = *orig_fields.add(i);
                     let copied: *mut Obj = if heap_mask & (1u64 << i) != 0 {
@@ -345,11 +439,17 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
                         // bit-pattern verbatim without treating it as a pointer
                         raw
                     };
-                    *new_fields.add(i) = copied;
+                    let ni = roots[0] as *mut InstanceObj;
+                    *(*ni).fields.as_mut_ptr().add(i) = copied;
+                    memo.insert(obj_addr, roots[0]);
                 }
-            }
 
-            new_inst as *mut Obj
+                gc_pop();
+
+                roots[0]
+            } else {
+                new_inst as *mut Obj
+            }
         }
 
         // Stateful I/O and opaque types that cannot be meaningfully deep-copied.

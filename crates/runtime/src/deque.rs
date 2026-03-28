@@ -34,21 +34,36 @@ pub extern "C" fn rt_make_deque(maxlen: i64) -> *mut Obj {
 /// Create a deque from an iterator with optional maxlen
 #[no_mangle]
 pub extern "C" fn rt_deque_from_iter(iter: *mut Obj, maxlen: i64) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     let obj = rt_make_deque(maxlen);
 
     if iter.is_null() {
         return obj;
     }
 
+    // Root the deque object across every rt_iter_next_no_exc call: the iterator's
+    // next() may allocate (e.g., string iterator calls rt_str_getchar), triggering
+    // a GC collection under gc_stress_test.  Without rooting, the deque would be
+    // seen as unreachable and freed.
+    let mut root: *mut Obj = obj;
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: &mut root as *mut *mut Obj,
+    };
+    unsafe { gc_push(&mut frame) };
+
     loop {
         let elem = crate::iterator::rt_iter_next_no_exc(iter);
         if elem.is_null() {
             break;
         }
-        rt_deque_append(obj, elem);
+        rt_deque_append(root, elem);
     }
 
-    obj
+    gc_pop();
+    root
 }
 
 /// deque.append(elem) — add to the right end

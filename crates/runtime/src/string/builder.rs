@@ -131,6 +131,8 @@ pub extern "C" fn rt_string_builder_append(builder: *mut Obj, str_obj: *mut Obj)
 /// After this call, the StringBuilder's buffer is freed and should not be used again.
 #[no_mangle]
 pub extern "C" fn rt_string_builder_to_str(builder: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if builder.is_null() {
         // Return empty string for null builder
         return unsafe { crate::string::core::rt_make_str_impl(std::ptr::null(), 0) };
@@ -147,8 +149,24 @@ pub extern "C" fn rt_string_builder_to_str(builder: *mut Obj) -> *mut Obj {
         let len = (*sb).len;
         let data = (*sb).data;
 
-        // Create the result string
+        // Root `builder` across rt_make_str_impl → gc_alloc.  The builder's
+        // raw buffer (`data`) is a std::alloc allocation invisible to the GC,
+        // so GC cannot free the bytes.  But the StringBuilderObj header itself
+        // is GC-managed: if it is not reachable it will be swept, and the
+        // post-alloc accesses to (*sb).capacity / (*sb).data would be
+        // use-after-free.  Rooting builder keeps the header alive.
+        let mut roots: [*mut Obj; 1] = [builder];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        // Create the result string (may trigger GC)
         let result = crate::string::core::rt_make_str_impl(data, len);
+
+        gc_pop();
 
         // Free the StringBuilder's buffer (the GC will collect the StringBuilder header)
         if !data.is_null() && (*sb).capacity > 0 {
@@ -214,17 +232,28 @@ mod tests {
         unsafe {
             let builder = rt_make_string_builder(100);
 
+            // Root builder across all rt_make_str_impl / rt_string_builder_append calls
+            // so GC stress mode does not sweep it between allocations.
+            let mut roots: [*mut Obj; 1] = [builder];
+            let mut frame = crate::gc::ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 1,
+                roots: roots.as_mut_ptr(),
+            };
+            crate::gc::gc_push(&mut frame);
+
             let s1 = rt_make_str_impl(b"Hello".as_ptr(), 5);
+            rt_string_builder_append(roots[0], s1);
             let s2 = rt_make_str_impl(b", ".as_ptr(), 2);
+            rt_string_builder_append(roots[0], s2);
             let s3 = rt_make_str_impl(b"World".as_ptr(), 5);
+            rt_string_builder_append(roots[0], s3);
             let s4 = rt_make_str_impl(b"!".as_ptr(), 1);
+            rt_string_builder_append(roots[0], s4);
 
-            rt_string_builder_append(builder, s1);
-            rt_string_builder_append(builder, s2);
-            rt_string_builder_append(builder, s3);
-            rt_string_builder_append(builder, s4);
+            let result = rt_string_builder_to_str(roots[0]);
+            crate::gc::gc_pop();
 
-            let result = rt_string_builder_to_str(builder);
             let result_str = result as *mut StrObj;
 
             assert_eq!((*result_str).len, 13);
@@ -266,13 +295,24 @@ mod tests {
             // Start with small capacity
             let builder = rt_make_string_builder(10);
 
+            // Root builder across rt_make_str_impl / rt_string_builder_append calls.
+            let mut roots: [*mut Obj; 1] = [builder];
+            let mut frame = crate::gc::ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 1,
+                roots: roots.as_mut_ptr(),
+            };
+            crate::gc::gc_push(&mut frame);
+
             // Append strings that exceed initial capacity
             for _ in 0..20 {
                 let s = rt_make_str_impl(b"0123456789".as_ptr(), 10);
-                rt_string_builder_append(builder, s);
+                rt_string_builder_append(roots[0], s);
             }
 
-            let result = rt_string_builder_to_str(builder);
+            let result = rt_string_builder_to_str(roots[0]);
+            crate::gc::gc_pop();
+
             let result_str = result as *mut StrObj;
 
             // Should have 200 bytes

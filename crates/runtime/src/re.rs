@@ -12,7 +12,7 @@
 //! - match.groups() -> tuple[str, ...]
 //! - match.span() -> tuple[int, int]
 
-use crate::gc;
+use crate::gc::{self, ShadowFrame};
 use crate::object::{MatchObj, Obj, ObjHeader, TupleObj, TypeTagKind};
 use crate::utils::make_str_from_rust;
 use regex_lite::Regex;
@@ -25,36 +25,52 @@ unsafe fn create_match_obj(
     groups: Vec<Option<&str>>,
     original: *mut Obj,
 ) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push};
+    use crate::object::ELEM_HEAP_OBJ;
+    use crate::tuple::{rt_make_tuple, rt_tuple_set};
+
     if !matched {
         // Return None for no match
         return crate::object::none_obj();
     }
 
-    // Create tuple of groups
     let groups_count = groups.len();
-    let tuple_size =
-        std::mem::size_of::<TupleObj>() + groups_count * std::mem::size_of::<*mut Obj>();
-    let tuple_ptr = gc::gc_alloc(tuple_size, TypeTagKind::Tuple as u8) as *mut TupleObj;
 
-    (*tuple_ptr).header = ObjHeader {
-        type_tag: TypeTagKind::Tuple,
-        marked: false,
-        size: tuple_size,
+    // Allocate the groups tuple using rt_make_tuple so that heap_field_mask is
+    // set to u64::MAX (ELEM_HEAP_OBJ).  Without this the GC sees mask==0 and
+    // skips tracing the tuple's elements, allowing group strings to be swept.
+    //
+    // Root both the groups tuple and original across all allocating calls:
+    //   - make_str_from_rust / gc_alloc for each group string
+    //   - gc_alloc for the MatchObj
+    let groups_tuple = rt_make_tuple(groups_count as i64, ELEM_HEAP_OBJ);
+
+    // roots[0] = groups_tuple, roots[1] = original (the source string)
+    let mut roots: [*mut Obj; 2] = [groups_tuple, original];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 2,
+        roots: roots.as_mut_ptr(),
     };
-    (*tuple_ptr).len = groups_count;
+    gc_push(&mut frame);
 
-    // Fill tuple with group strings (None for unmatched groups)
+    // Fill tuple with group strings (None for unmatched groups).
+    // Re-derive the tuple pointer from roots[0] after each allocating call so
+    // we always use the live pointer (non-moving GC — address is stable, but
+    // being explicit guards against future changes).
     for (i, group) in groups.iter().enumerate() {
         let group_str = match group {
             Some(s) => make_str_from_rust(s),
             None => crate::object::none_obj(),
         };
-        *(*tuple_ptr).data.as_mut_ptr().add(i) = group_str;
+        rt_tuple_set(roots[0], i as i64, group_str);
     }
 
-    // Create MatchObj
+    // Create MatchObj — tuple and original are still rooted.
     let match_size = std::mem::size_of::<MatchObj>();
     let match_ptr = gc::gc_alloc(match_size, TypeTagKind::Match as u8) as *mut MatchObj;
+
+    gc_pop();
 
     (*match_ptr).header = ObjHeader {
         type_tag: TypeTagKind::Match,
@@ -64,8 +80,8 @@ unsafe fn create_match_obj(
     (*match_ptr).matched = matched;
     (*match_ptr).start = start;
     (*match_ptr).end = end;
-    (*match_ptr).groups = tuple_ptr as *mut Obj;
-    (*match_ptr).original = original;
+    (*match_ptr).groups = roots[0]; // live tuple pointer after GC
+    (*match_ptr).original = roots[1]; // live original pointer after GC
 
     match_ptr as *mut Obj
 }

@@ -58,13 +58,27 @@ pub extern "C" fn rt_iter_tuple(tuple: *mut Obj) -> *mut Obj {
 /// Returns: pointer to new IteratorObj
 #[no_mangle]
 pub extern "C" fn rt_iter_dict(dict: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::{IteratorKind, IteratorObj};
 
-    // Get keys list and iterate over that
+    // Get keys list — this is a gc_alloc. Root it before the next gc_alloc
+    // (the iterator allocation below) so GC stress test cannot collect it.
     let keys_list = rt_dict_keys(dict, crate::object::ELEM_HEAP_OBJ);
+
+    let mut roots: [*mut Obj; 1] = [keys_list];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    // SAFETY: frame is a valid stack-allocated ShadowFrame that lives until
+    // gc_pop() is called below.
+    unsafe { gc_push(&mut frame) };
 
     let size = std::mem::size_of::<IteratorObj>();
     let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);
+
+    gc_pop();
 
     unsafe {
         let iter = obj as *mut IteratorObj;
@@ -224,13 +238,27 @@ pub extern "C" fn rt_iter_reversed_str(str_obj: *mut Obj) -> *mut Obj {
 /// Returns: pointer to new IteratorObj starting at end of keys
 #[no_mangle]
 pub extern "C" fn rt_iter_reversed_dict(dict: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::{IteratorKind, IteratorObj, ListObj};
 
-    // Get keys list and iterate over that in reverse
+    // Get keys list — this is a gc_alloc. Root it before the next gc_alloc
+    // (the iterator allocation below) so GC stress test cannot collect it.
     let keys_list = rt_dict_keys(dict, crate::object::ELEM_HEAP_OBJ);
+
+    let mut roots: [*mut Obj; 1] = [keys_list];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    // SAFETY: frame is a valid stack-allocated ShadowFrame that lives until
+    // gc_pop() is called below.
+    unsafe { gc_push(&mut frame) };
 
     let size = std::mem::size_of::<IteratorObj>();
     let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);
+
+    gc_pop();
 
     unsafe {
         let keys = keys_list as *mut ListObj;

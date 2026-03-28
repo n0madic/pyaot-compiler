@@ -174,16 +174,27 @@ pub extern "C" fn rt_str_mul(str_obj: *mut Obj, count: i64) -> *mut Obj {
             }
         };
 
-        // Allocate new string — gc_alloc may trigger a collection, which would
-        // invalidate any raw pointer derived from str_obj before this call.
+        // Root str_obj across gc_alloc which may trigger a full collection.
+        // We cannot rely on the caller having rooted it; root it here to be safe.
+        let mut roots: [*mut Obj; 1] = [str_obj];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
+
+        gc_pop();
 
         let new_str = obj as *mut StrObj;
         (*new_str).len = result_len;
 
-        // Re-derive src_data AFTER gc_alloc to avoid use-after-free.
-        // str_obj is a live GC root held by the caller.
+        // Re-derive src_data AFTER gc_alloc using the original (still valid) pointer.
+        // GC is non-moving, so str_obj address is unchanged, but re-reading makes
+        // the live range explicit.
         let src_data = (*(str_obj as *mut StrObj)).data.as_ptr();
         let dst_data = (*new_str).data.as_mut_ptr();
         for i in 0..count {
@@ -232,15 +243,30 @@ pub extern "C" fn rt_str_removeprefix(s: *mut Obj, prefix: *mut Obj) -> *mut Obj
         }
 
         if matches {
-            // Remove prefix - return substring from prefix_len onwards
+            // Remove prefix - return substring from prefix_len onwards.
+            // Root s and prefix across gc_alloc: the GC may run during
+            // allocation and free them if they are not on the shadow stack.
+            // Data pointers are re-derived after gc_alloc.
+            let mut roots: [*mut Obj; 2] = [s, prefix];
+            let mut frame = ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 2,
+                roots: roots.as_mut_ptr(),
+            };
+            gc_push(&mut frame);
+
             let result_len = str_len - prefix_len;
             let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
             let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
+
+            gc_pop();
 
             let result = obj as *mut StrObj;
             (*result).len = result_len;
 
             if result_len > 0 {
+                // Re-derive str_data after gc_alloc so it reflects the live object.
+                let str_data = (*(s as *mut StrObj)).data.as_ptr();
                 std::ptr::copy_nonoverlapping(
                     str_data.add(prefix_len),
                     (*result).data.as_mut_ptr(),
@@ -295,15 +321,30 @@ pub extern "C" fn rt_str_removesuffix(s: *mut Obj, suffix: *mut Obj) -> *mut Obj
         }
 
         if matches {
-            // Remove suffix - return substring up to start_pos
+            // Remove suffix - return substring up to start_pos.
+            // Root s and suffix across gc_alloc: the GC may run during
+            // allocation and free them if they are not on the shadow stack.
+            // Data pointers are re-derived after gc_alloc.
+            let mut roots: [*mut Obj; 2] = [s, suffix];
+            let mut frame = ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 2,
+                roots: roots.as_mut_ptr(),
+            };
+            gc_push(&mut frame);
+
             let result_len = str_len - suffix_len;
             let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
             let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
+
+            gc_pop();
 
             let result = obj as *mut StrObj;
             (*result).len = result_len;
 
             if result_len > 0 {
+                // Re-derive str_data after gc_alloc so it reflects the live object.
+                let str_data = (*(s as *mut StrObj)).data.as_ptr();
                 std::ptr::copy_nonoverlapping(str_data, (*result).data.as_mut_ptr(), result_len);
             }
 
@@ -359,13 +400,29 @@ pub extern "C" fn rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj {
             }
         }
 
+        // Root s across gc_alloc: the GC may run during allocation and free s
+        // if it is not on the shadow stack.  str_data is re-derived after
+        // gc_alloc so the second pass reads from the still-live object.
+        let mut roots: [*mut Obj; 1] = [s];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         // Allocate result string
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
+        gc_pop();
+
         let result = obj as *mut StrObj;
         (*result).len = result_len;
         let dst_data = (*result).data.as_mut_ptr();
+
+        // Re-derive str_data after gc_alloc so it reflects the live object.
+        let str_data = (*(s as *mut StrObj)).data.as_ptr();
 
         // Second pass: copy with tab expansion
         let mut dst_idx = 0;

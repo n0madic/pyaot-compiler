@@ -115,16 +115,33 @@ fn test_correct_types_no_panic() {
         .unwrap_or_else(|e| e.into_inner());
     gc::init();
 
-    let list_obj = list::rt_make_list(4, 0);
-    let dict_obj = dict::rt_make_dict(4);
-    let set_obj = set::rt_make_set(4);
-    let tuple_obj = tuple::rt_make_tuple(2, 0);
-
     unsafe {
+        // Allocate all objects and root them together so GC stress mode does not
+        // sweep earlier allocations when later ones trigger a collection.
+        let list_obj = list::rt_make_list(4, 0);
+        let mut roots: [*mut object::Obj; 4] = [
+            list_obj,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ];
+        let mut frame = gc::ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 4,
+            roots: roots.as_mut_ptr(),
+        };
+        gc::gc_push(&mut frame);
+
+        roots[1] = dict::rt_make_dict(4);
+        roots[2] = set::rt_make_set(4);
+        roots[3] = tuple::rt_make_tuple(2, 0);
+
+        gc::gc_pop();
+
         // All of these should pass without panic
-        debug_assert_type_tag!(list_obj, object::TypeTagKind::List, "list");
-        debug_assert_type_tag!(dict_obj, object::TypeTagKind::Dict, "dict");
-        debug_assert_type_tag!(set_obj, object::TypeTagKind::Set, "set");
-        debug_assert_type_tag!(tuple_obj, object::TypeTagKind::Tuple, "tuple");
+        debug_assert_type_tag!(roots[0], object::TypeTagKind::List, "list");
+        debug_assert_type_tag!(roots[1], object::TypeTagKind::Dict, "dict");
+        debug_assert_type_tag!(roots[2], object::TypeTagKind::Set, "set");
+        debug_assert_type_tag!(roots[3], object::TypeTagKind::Tuple, "tuple");
     }
 }

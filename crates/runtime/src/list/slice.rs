@@ -1,6 +1,7 @@
 //! List slicing operations
 
 use super::core::rt_make_list;
+use crate::gc::{gc_pop, gc_push, ShadowFrame};
 use crate::object::{ListObj, Obj, ELEM_HEAP_OBJ};
 use crate::slice_utils::{collect_step_indices, normalize_slice_indices, slice_length};
 
@@ -21,12 +22,28 @@ pub extern "C" fn rt_list_slice(list: *mut Obj, start: i64, end: i64) -> *mut Ob
         // Normalize indices using shared utility (step=1 for simple slice)
         let (start, end) = normalize_slice_indices(start, end, len, 1);
         let slice_len = slice_length(start, end);
+        let elem_tag = (*src).elem_tag;
+
+        // Root `list` across rt_make_list → gc_alloc so the source data is
+        // not freed by GC before we copy the elements.
+        let mut roots: [*mut Obj; 1] = [list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
 
         // Create new list with same elem_tag
-        let new_list = rt_make_list(slice_len as i64, (*src).elem_tag);
+        let new_list = rt_make_list(slice_len as i64, elem_tag);
+
+        gc_pop();
+
         let new_list_obj = new_list as *mut ListObj;
 
         if slice_len > 0 {
+            // Re-derive src through the original pointer (GC is non-moving).
+            let src = list as *mut ListObj;
             let src_data = (*src).data;
             let dst_data = (*new_list_obj).data;
 
@@ -60,14 +77,31 @@ pub extern "C" fn rt_list_slice_step(list: *mut Obj, start: i64, end: i64, step:
 
         // Normalize indices using shared utility
         let (start, end) = normalize_slice_indices(start, end, len, step);
+        let elem_tag = (*src).elem_tag;
 
-        // Collect indices using shared utility
+        // Collect indices using shared utility (pure computation, no GC)
         let indices = collect_step_indices(start, end, step);
         let result_len = indices.len();
-        let new_list = rt_make_list(result_len as i64, (*src).elem_tag);
+
+        // Root `list` across rt_make_list → gc_alloc so the source data is
+        // not freed by GC before we copy the elements.
+        let mut roots: [*mut Obj; 1] = [list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        let new_list = rt_make_list(result_len as i64, elem_tag);
+
+        gc_pop();
+
         let new_list_obj = new_list as *mut ListObj;
 
         if result_len > 0 {
+            // Re-derive src through the original pointer (GC is non-moving).
+            let src = list as *mut ListObj;
             let src_data = (*src).data;
             let dst_data = (*new_list_obj).data;
 

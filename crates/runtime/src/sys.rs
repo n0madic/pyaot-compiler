@@ -4,7 +4,7 @@
 //! - sys.argv: Command line arguments as list[str]
 //! - sys.exit(code): Exit program with given code
 
-use crate::gc;
+use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
 use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind};
 use std::cell::UnsafeCell;
 use std::ffi::CStr;
@@ -63,6 +63,16 @@ unsafe fn create_argv_list(argc: i32, argv: *const *const i8) -> *mut Obj {
         (*list_ptr).data = std::ptr::null_mut();
     }
 
+    // Root list_ptr before the loop: each gc_alloc for a string may trigger a
+    // GC collection, and list_ptr would be freed if it is not on the shadow stack.
+    let mut roots: [*mut Obj; 1] = [list_ptr as *mut Obj];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    gc_push(&mut frame);
+
     // Convert each argv element to a StrObj and add to list
     for i in 0..argc {
         let c_str_ptr = *argv.add(i as usize);
@@ -74,7 +84,7 @@ unsafe fn create_argv_list(argc: i32, argv: *const *const i8) -> *mut Obj {
         let bytes = c_str.to_bytes();
         let len = bytes.len();
 
-        // Allocate string object
+        // Allocate string object (GC may run; list_ptr stays alive via frame)
         let str_size = std::mem::size_of::<StrObj>() + len;
         let str_ptr = gc::gc_alloc(str_size, TypeTagKind::Str as u8) as *mut StrObj;
 
@@ -90,12 +100,18 @@ unsafe fn create_argv_list(argc: i32, argv: *const *const i8) -> *mut Obj {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), (*str_ptr).data.as_mut_ptr(), len);
         }
 
+        // Re-derive list_ptr after gc_alloc: the GC is non-moving, so the
+        // address is unchanged, but using the rooted pointer makes ownership
+        // explicit and avoids any confusion about which pointer is authoritative.
+        let list_ptr = roots[0] as *mut ListObj;
+
         // Add to list
         *(*list_ptr).data.add(i as usize) = str_ptr as *mut Obj;
         (*list_ptr).len += 1;
     }
 
-    list_ptr as *mut Obj
+    gc_pop();
+    roots[0]
 }
 
 /// Get sys.argv list

@@ -9,7 +9,7 @@
 //! - parse_qs(query): Parse a query string into a dict
 
 use crate::dict::{rt_dict_set, rt_make_dict};
-use crate::gc;
+use crate::gc::{self, ShadowFrame};
 use crate::list::rt_make_list;
 use crate::object::{DictObj, ListObj, Obj, ObjHeader, ParseResultObj, TypeTagKind};
 use crate::utils::{make_str_from_rust, str_obj_to_rust_string};
@@ -108,14 +108,25 @@ unsafe fn create_parse_result(components: &UrlComponents) -> *mut Obj {
         size,
     };
 
-    (*ptr).scheme = make_str_from_rust(&components.scheme);
-    (*ptr).netloc = make_str_from_rust(&components.netloc);
-    (*ptr).path = make_str_from_rust(&components.path);
-    (*ptr).params = make_str_from_rust(&components.params);
-    (*ptr).query = make_str_from_rust(&components.query);
-    (*ptr).fragment = make_str_from_rust(&components.fragment);
+    // Root ptr so the 6 subsequent string allocations don't collect it.
+    let mut roots: [*mut Obj; 1] = [ptr as *mut Obj];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    gc::gc_push(&mut frame);
 
-    ptr as *mut Obj
+    let pr = roots[0] as *mut ParseResultObj;
+    (*pr).scheme = make_str_from_rust(&components.scheme);
+    (*pr).netloc = make_str_from_rust(&components.netloc);
+    (*pr).path = make_str_from_rust(&components.path);
+    (*pr).params = make_str_from_rust(&components.params);
+    (*pr).query = make_str_from_rust(&components.query);
+    (*pr).fragment = make_str_from_rust(&components.fragment);
+
+    gc::gc_pop();
+    roots[0]
 }
 
 /// Reassemble URL components into a URL string
@@ -472,6 +483,17 @@ pub extern "C" fn rt_parse_qs(query: *mut Obj) -> *mut Obj {
             return dict;
         }
 
+        // Root dict and scratch slots for key_obj / value_obj so that
+        // every intermediate allocation below cannot collect live objects.
+        // roots[0] = dict, roots[1] = key_obj, roots[2] = value_obj
+        let mut roots: [*mut Obj; 3] = [dict, std::ptr::null_mut(), std::ptr::null_mut()];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 3,
+            roots: roots.as_mut_ptr(),
+        };
+        gc::gc_push(&mut frame);
+
         // Parse each key=value pair
         for pair in query_str.split('&') {
             if pair.is_empty() {
@@ -487,28 +509,34 @@ pub extern "C" fn rt_parse_qs(query: *mut Obj) -> *mut Obj {
             let decoded_key = percent_decode(key, true);
             let decoded_value = percent_decode(value, true);
 
-            // Get or create list for this key
+            // Allocate key and value strings; keep them rooted across further allocs.
             let key_obj = make_str_from_rust(&decoded_key);
+            roots[1] = key_obj;
             let value_obj = make_str_from_rust(&decoded_value);
+            roots[2] = value_obj;
 
             // Check if key already exists in dict
-            let existing = get_dict_value(dict, key_obj);
+            let existing = get_dict_value(roots[0], roots[1]);
 
             if existing.is_null() {
-                // Create new list with this value
+                // Create new list with this value — dict/key/value all stay rooted.
                 let list = rt_make_list(1, crate::object::ELEM_HEAP_OBJ);
                 let list_obj = list as *mut ListObj;
                 (*list_obj).len = 1;
-                *(*list_obj).data = value_obj;
+                *(*list_obj).data = roots[2];
 
-                rt_dict_set(dict, key_obj, list);
+                rt_dict_set(roots[0], roots[1], list);
             } else {
                 // Append to existing list
-                crate::list::rt_list_push(existing, value_obj);
+                crate::list::rt_list_push(existing, roots[2]);
             }
+
+            roots[1] = std::ptr::null_mut();
+            roots[2] = std::ptr::null_mut();
         }
 
-        dict
+        gc::gc_pop();
+        roots[0]
     }
 }
 

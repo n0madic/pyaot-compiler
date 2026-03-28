@@ -1,6 +1,7 @@
 //! Sorting operations for Python runtime
 
 use crate::dict::rt_dict_keys;
+use crate::gc::{gc_pop, gc_push, ShadowFrame};
 use crate::list::rt_make_list;
 use crate::object::{Obj, ELEM_HEAP_OBJ, ELEM_RAW_INT};
 use crate::string::rt_str_getchar;
@@ -10,10 +11,27 @@ use crate::object::ListObj;
 /// Convert a sorted ELEM_HEAP_OBJ list of boxed ints to a ELEM_RAW_INT list.
 /// Used when sorted(set[int]) or sorted(dict[int,...]) needs to produce list[int].
 fn convert_heap_list_to_raw_int(heap_list: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     unsafe {
         let src = heap_list as *mut ListObj;
         let len = (*src).len;
+
+        // Root heap_list across rt_make_list which calls gc_alloc and may trigger GC.
+        let mut roots: [*mut Obj; 1] = [heap_list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         let result = rt_make_list(len as i64, ELEM_RAW_INT);
+
+        gc_pop();
+
+        // Re-derive src through the rooted pointer after the allocation.
+        let src = roots[0] as *mut ListObj;
         let dst = result as *mut ListObj;
         for i in 0..len {
             let boxed = *(*src).data.add(i);
@@ -219,7 +237,18 @@ pub extern "C" fn rt_sorted_dict(dict: *mut Obj, reverse: i64, elem_tag: u8) -> 
 
     // Get keys list with the target elem_tag (unboxes if ELEM_RAW_INT)
     let keys_list = rt_dict_keys(dict, elem_tag);
-    rt_sorted_list(keys_list, reverse)
+
+    // Root keys_list before rt_sorted_list which allocates a new list
+    let mut roots: [*mut Obj; 1] = [keys_list];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
+    let result = rt_sorted_list(roots[0], reverse);
+    gc_pop();
+    result
 }
 
 /// Create a sorted list from a set
@@ -233,7 +262,17 @@ pub extern "C" fn rt_sorted_set(set: *mut Obj, reverse: i64, elem_tag: u8) -> *m
 
     // Convert set to list (always ELEM_HEAP_OBJ since set stores boxed elements)
     let list = crate::set::rt_set_to_list(set);
-    let sorted = rt_sorted_list(list, reverse);
+
+    // Root list before rt_sorted_list which allocates a new list
+    let mut roots: [*mut Obj; 1] = [list];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
+    let sorted = rt_sorted_list(roots[0], reverse);
+    gc_pop();
 
     // If caller wants ELEM_RAW_INT, unbox the sorted list
     if elem_tag == ELEM_RAW_INT {
@@ -267,27 +306,50 @@ pub extern "C" fn rt_sorted_str(str_obj: *mut Obj, reverse: i64) -> *mut Obj {
         // Pre-allocate with byte_len as an upper bound (ASCII strings need exactly
         // byte_len slots; multi-byte strings need fewer).
         let new_list = rt_make_list(byte_len as i64, ELEM_HEAP_OBJ);
-        let new_list_obj = new_list as *mut ListObj;
-        let dst_data = (*new_list_obj).data;
 
-        let data = (*src).data.as_ptr();
+        // Root both str_obj and new_list.
+        // rt_str_getchar → rt_make_str → gc_alloc may trigger GC on every call;
+        // str_obj must survive so we can read the next character, and new_list
+        // must survive to receive the new char string.
+        let mut roots: [*mut Obj; 2] = [str_obj, new_list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         let mut byte_idx: usize = 0;
         let mut char_count: usize = 0;
-        while byte_idx < byte_len {
-            let first_byte = *data.add(byte_idx);
+        loop {
+            // Re-derive str_obj and new_list through rooted slots after each alloc.
+            let live_str = roots[0] as *mut StrObj;
+            let live_byte_len = (*live_str).len;
+            if byte_idx >= live_byte_len {
+                break;
+            }
+            let first_byte = *(*live_str).data.as_ptr().add(byte_idx);
             let char_width = utf8_char_width(first_byte);
-            let char_str = rt_str_getchar(str_obj, byte_idx as i64);
-            *dst_data.add(char_count) = char_str;
+            let char_str = rt_str_getchar(roots[0], byte_idx as i64);
+
+            // Write char_str into the list and update len immediately so GC
+            // sees this slot as live on the next collection.
+            let live_list = roots[1] as *mut ListObj;
+            (*live_list).data.add(char_count).write(char_str);
             char_count += 1;
-            byte_idx += char_width.min(byte_len - byte_idx);
+            (*live_list).len = char_count;
+
+            byte_idx += char_width.min(live_byte_len - byte_idx);
         }
-        (*new_list_obj).len = char_count;
 
         // Sort using stable sort (required for CPython compatibility)
-        let data_ptr = (*new_list_obj).data;
+        let live_list = roots[1] as *mut ListObj;
+        let data_ptr = (*live_list).data;
         stable_sort(data_ptr, char_count, reverse != 0, ELEM_HEAP_OBJ);
 
-        new_list
+        gc_pop();
+
+        roots[1]
     }
 }
 
@@ -459,19 +521,40 @@ pub extern "C" fn rt_sorted_list_with_key(
             return rt_make_list(0, ELEM_HEAP_OBJ);
         }
 
-        let src_data = (*src).data;
+        // Allocate a GC-visible list to hold the key objects so they survive
+        // subsequent rt_box_int / key_fn calls that may trigger collections.
+        let keys_list = rt_make_list(len as i64, ELEM_HEAP_OBJ);
 
-        // Apply key function to each element and store (key_value, index) pairs
-        let mut key_index_pairs: Vec<(*mut Obj, usize)> = Vec::with_capacity(len);
+        // Root both the source list and the keys list across all key-function calls
+        let mut roots: [*mut Obj; 2] = [list, keys_list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        // Apply key function to each element; store keys in the GC-visible list
         for i in 0..len {
-            let elem = *src_data.add(i);
-            // Box raw elements before passing to key function
+            let src_live = roots[0] as *mut ListObj;
+            let elem = *(*src_live).data.add(i);
             let boxed_elem = if elem_tag == ELEM_RAW_INT as i64 {
                 crate::boxing::rt_box_int(elem as i64)
             } else {
                 elem
             };
             let key_value = key_fn(boxed_elem);
+            let keys_list_live = roots[1] as *mut ListObj;
+            *(*keys_list_live).data.add(i) = key_value;
+            (*keys_list_live).len = i + 1;
+        }
+
+        // Build (key, orig_index) pairs from the now-stable keys list
+        let keys_list_live = roots[1] as *mut ListObj;
+        let src_live = roots[0] as *mut ListObj;
+        let mut key_index_pairs: Vec<(*mut Obj, usize)> = Vec::with_capacity(len);
+        for i in 0..len {
+            let key_value = *(*keys_list_live).data.add(i);
             key_index_pairs.push((key_value, i));
         }
 
@@ -479,14 +562,17 @@ pub extern "C" fn rt_sorted_list_with_key(
         stable_sort_key_pairs(&mut key_index_pairs, reverse != 0);
 
         // Build result list from sorted indices
-        let new_list = rt_make_list(len as i64, (*src).elem_tag);
+        let new_list = rt_make_list(len as i64, (*src_live).elem_tag);
         let new_list_obj = new_list as *mut ListObj;
         let dst_data = (*new_list_obj).data;
 
+        let src_data_live = (*src_live).data;
         for (i, (_, orig_idx)) in key_index_pairs.iter().enumerate() {
-            *dst_data.add(i) = *src_data.add(*orig_idx);
+            *dst_data.add(i) = *src_data_live.add(*orig_idx);
         }
         (*new_list_obj).len = len;
+
+        gc_pop();
 
         new_list
     }
@@ -516,19 +602,38 @@ pub extern "C" fn rt_sorted_tuple_with_key(
             return rt_make_list(0, ELEM_HEAP_OBJ);
         }
 
-        let src_data = (*src).data.as_ptr();
+        // Allocate a GC-visible list to hold the key objects so they survive
+        // subsequent rt_box_int / key_fn calls that may trigger collections.
+        let keys_list = rt_make_list(len as i64, ELEM_HEAP_OBJ);
 
-        // Apply key function to each element and store (key_value, index) pairs
-        let mut key_index_pairs: Vec<(*mut Obj, usize)> = Vec::with_capacity(len);
+        // Root both the source tuple and the keys list
+        let mut roots: [*mut Obj; 2] = [tuple, keys_list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         for i in 0..len {
-            let elem = *src_data.add(i);
-            // Box raw elements before passing to key function
+            let src_live = roots[0] as *mut TupleObj;
+            let elem = *(*src_live).data.as_ptr().add(i);
             let boxed_elem = if elem_tag == ELEM_RAW_INT as i64 {
                 crate::boxing::rt_box_int(elem as i64)
             } else {
                 elem
             };
             let key_value = key_fn(boxed_elem);
+            let keys_list_live = roots[1] as *mut ListObj;
+            *(*keys_list_live).data.add(i) = key_value;
+            (*keys_list_live).len = i + 1;
+        }
+
+        let keys_list_live = roots[1] as *mut ListObj;
+        let src_live = roots[0] as *mut TupleObj;
+        let mut key_index_pairs: Vec<(*mut Obj, usize)> = Vec::with_capacity(len);
+        for i in 0..len {
+            let key_value = *(*keys_list_live).data.add(i);
             key_index_pairs.push((key_value, i));
         }
 
@@ -536,14 +641,17 @@ pub extern "C" fn rt_sorted_tuple_with_key(
         stable_sort_key_pairs(&mut key_index_pairs, reverse != 0);
 
         // Build result list from sorted indices
-        let new_list = rt_make_list(len as i64, (*src).elem_tag);
+        let new_list = rt_make_list(len as i64, (*src_live).elem_tag);
         let new_list_obj = new_list as *mut ListObj;
         let dst_data = (*new_list_obj).data;
 
+        let src_data_live = (*src_live).data.as_ptr();
         for (i, (_, orig_idx)) in key_index_pairs.iter().enumerate() {
-            *dst_data.add(i) = *src_data.add(*orig_idx);
+            *dst_data.add(i) = *src_data_live.add(*orig_idx);
         }
         (*new_list_obj).len = len;
+
+        gc_pop();
 
         new_list
     }
@@ -559,7 +667,18 @@ pub extern "C" fn rt_sorted_dict_with_key(dict: *mut Obj, reverse: i64, key_fn: 
     // Get keys list first, then sort it with key
     // Dict keys are always boxed (ELEM_HEAP_OBJ = 0)
     let keys_list = rt_dict_keys(dict, ELEM_HEAP_OBJ);
-    rt_sorted_list_with_key(keys_list, reverse, key_fn, ELEM_HEAP_OBJ as i64)
+
+    // Root keys_list before rt_sorted_list_with_key which allocates
+    let mut roots: [*mut Obj; 1] = [keys_list];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
+    let result = rt_sorted_list_with_key(roots[0], reverse, key_fn, ELEM_HEAP_OBJ as i64);
+    gc_pop();
+    result
 }
 
 /// Create a sorted list from a set with a key function
@@ -576,7 +695,18 @@ pub extern "C" fn rt_sorted_set_with_key(
 
     // Convert set to list, then sort with key
     let list = crate::set::rt_set_to_list(set);
-    rt_sorted_list_with_key(list, reverse, key_fn, elem_tag)
+
+    // Root list before rt_sorted_list_with_key which allocates
+    let mut roots: [*mut Obj; 1] = [list];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
+    let result = rt_sorted_list_with_key(roots[0], reverse, key_fn, elem_tag);
+    gc_pop();
+    result
 }
 
 /// Create a sorted list of single-char strings from a string with a key function
@@ -601,20 +731,51 @@ pub extern "C" fn rt_sorted_str_with_key(
             return rt_make_list(0, ELEM_HEAP_OBJ);
         }
 
+        // Allocate two GC-visible lists: one for the char strings, one for the keys.
+        // Both lists are rooted so neither is collected during rt_str_getchar / key_fn
+        // calls that may trigger GC.
+        let chars_list = rt_make_list(byte_len as i64, ELEM_HEAP_OBJ);
+        let keys_list = rt_make_list(byte_len as i64, ELEM_HEAP_OBJ);
+
+        let mut roots: [*mut Obj; 2] = [chars_list, keys_list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         // Walk byte-by-byte, collecting one string per Unicode codepoint.
-        let data = (*src).data.as_ptr();
-        let mut key_index_pairs: Vec<(*mut Obj, *mut Obj)> = Vec::with_capacity(byte_len);
+        let data = (*(str_obj as *mut StrObj)).data.as_ptr();
         let mut byte_idx: usize = 0;
+        let mut char_count: usize = 0;
         while byte_idx < byte_len {
             let first_byte = *data.add(byte_idx);
             let char_width = utf8_char_width(first_byte);
             let char_str = rt_str_getchar(str_obj, byte_idx as i64);
+            let chars_live = roots[0] as *mut ListObj;
+            *(*chars_live).data.add(char_count) = char_str;
+            (*chars_live).len = char_count + 1;
+
             let key_value = key_fn(char_str);
-            key_index_pairs.push((key_value, char_str));
+            let keys_live = roots[1] as *mut ListObj;
+            *(*keys_live).data.add(char_count) = key_value;
+            (*keys_live).len = char_count + 1;
+
+            char_count += 1;
             byte_idx += char_width.min(byte_len - byte_idx);
         }
 
-        let char_count = key_index_pairs.len();
+        let chars_live = roots[0] as *mut ListObj;
+        let keys_live = roots[1] as *mut ListObj;
+
+        // Build (key, char_str) pairs from the stable lists
+        let mut key_index_pairs: Vec<(*mut Obj, *mut Obj)> = Vec::with_capacity(char_count);
+        for i in 0..char_count {
+            let key_value = *(*keys_live).data.add(i);
+            let char_str = *(*chars_live).data.add(i);
+            key_index_pairs.push((key_value, char_str));
+        }
 
         // Sort by key values using stable sort (required for CPython compatibility)
         stable_sort_key_obj_pairs(&mut key_index_pairs, reverse != 0);
@@ -628,6 +789,8 @@ pub extern "C" fn rt_sorted_str_with_key(
             *dst_data.add(i) = *char_str;
         }
         (*new_list_obj).len = char_count;
+
+        gc_pop();
 
         new_list
     }

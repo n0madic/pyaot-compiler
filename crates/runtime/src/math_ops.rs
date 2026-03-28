@@ -311,7 +311,7 @@ pub extern "C" fn rt_math_exp(x: f64) -> f64 {
 /// Arc sine: math.asin(x) -> f64 (result in radians)
 #[no_mangle]
 pub extern "C" fn rt_math_asin(x: f64) -> f64 {
-    if x < -1.0 || x > 1.0 {
+    if !(-1.0..=1.0).contains(&x) {
         let msg = b"ValueError: math domain error";
         unsafe {
             crate::exceptions::rt_exc_raise(
@@ -327,7 +327,7 @@ pub extern "C" fn rt_math_asin(x: f64) -> f64 {
 /// Arc cosine: math.acos(x) -> f64 (result in radians)
 #[no_mangle]
 pub extern "C" fn rt_math_acos(x: f64) -> f64 {
-    if x < -1.0 || x > 1.0 {
+    if !(-1.0..=1.0).contains(&x) {
         let msg = b"ValueError: math domain error";
         unsafe {
             crate::exceptions::rt_exc_raise(

@@ -306,12 +306,26 @@ thread_local! {
     static EXCEPTION_STATE: RefCell<ExceptionState> = const { RefCell::new(ExceptionState::new()) };
 }
 
-/// Helper to access exception state
+/// Helper to access exception state (mutable)
 fn with_exception_state<F, R>(f: F) -> R
 where
     F: FnOnce(&mut ExceptionState) -> R,
 {
     EXCEPTION_STATE.with(|state| f(&mut state.borrow_mut()))
+}
+
+/// Helper to access exception state (read-only, non-panicking).
+/// Used by GC to collect exception pointers. Uses `try_borrow` so it returns a
+/// default value instead of panicking when the RefCell is already mutably borrowed
+/// (a re-entrant scenario that can theoretically occur during gc_stress testing).
+fn with_exception_state_ref<F, R: Default>(f: F) -> R
+where
+    F: FnOnce(&ExceptionState) -> R,
+{
+    EXCEPTION_STATE.with(|state| match state.try_borrow() {
+        Ok(guard) => f(&guard),
+        Err(_) => R::default(),
+    })
 }
 
 // ==================== GC Integration ====================
@@ -324,7 +338,7 @@ where
 /// current and handling exceptions (including cause/context chains) and returns
 /// all non-null instance pointers so the GC can mark them as roots.
 pub fn get_exception_pointers() -> Vec<*mut crate::object::Obj> {
-    with_exception_state(|state| {
+    with_exception_state_ref(|state| {
         let mut ptrs = Vec::new();
         fn collect_from(exc: &ExceptionObject, ptrs: &mut Vec<*mut crate::object::Obj>) {
             if !exc.instance.is_null() {
@@ -963,7 +977,8 @@ const BUILTIN_EXC_FIELD_COUNT: i64 = 1;
 /// # Safety
 /// The `exc` must have valid message pointer/length if non-null.
 unsafe fn create_builtin_exception_instance(exc: &ExceptionObject) -> *mut crate::object::Obj {
-    use crate::object::ELEM_HEAP_OBJ;
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+    use crate::object::{Obj, ELEM_HEAP_OBJ};
 
     // Determine class_id: use custom_class_id if set, otherwise use exc_type tag
     let class_id = if exc.custom_class_id != NOT_CUSTOM_CLASS {
@@ -975,15 +990,36 @@ unsafe fn create_builtin_exception_instance(exc: &ExceptionObject) -> *mut crate
     // Allocate instance with 1 field (.args)
     let instance = crate::instance::rt_make_instance(class_id, BUILTIN_EXC_FIELD_COUNT);
 
-    // Create the message string object
+    // Root `instance` across the subsequent allocations.  rt_make_str and
+    // rt_make_tuple call gc_alloc which fires a full GC in gc_stress mode.
+    // Without rooting, `instance` would be swept before we finish building it.
+    // msg_str also needs rooting across rt_make_tuple.
+    let mut roots: [*mut Obj; 2] = [instance, std::ptr::null_mut()];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 2,
+        roots: roots.as_mut_ptr(),
+    };
+    gc_push(&mut frame);
+
+    // Create the message string object (may trigger GC; instance is rooted)
     let msg_str = if exc.message_len > 0 && !exc.message.is_null() {
         crate::string::rt_make_str(exc.message, exc.message_len)
     } else {
         crate::string::rt_make_str(std::ptr::null(), 0)
     };
+    // Root msg_str across rt_make_tuple
+    roots[1] = msg_str;
 
-    // Create a 1-element tuple for .args containing the message
+    // Create a 1-element tuple for .args (may trigger GC; both are rooted)
     let args_tuple = crate::tuple::rt_make_tuple(1, ELEM_HEAP_OBJ);
+
+    gc_pop();
+
+    // Re-derive pointers through the (non-moving) GC heap
+    let instance = roots[0];
+    let msg_str = roots[1];
+
     crate::tuple::rt_tuple_set(args_tuple, 0, msg_str);
 
     // Set field 0 = .args tuple
@@ -1002,27 +1038,73 @@ unsafe fn create_builtin_exception_instance(exc: &ExceptionObject) -> *mut crate
 /// may have been moved to handling_exception by rt_exc_start_handling().
 #[no_mangle]
 pub extern "C" fn rt_exc_get_current() -> *mut crate::object::Obj {
+    // Fast path: return an already-created instance (no allocation needed).
+    let existing = with_exception_state(|state| {
+        let exc = state
+            .current_exception
+            .as_ref()
+            .or(state.handling_exception.as_ref());
+        exc.map(|e| e.instance)
+    });
+
+    match existing {
+        None => return std::ptr::null_mut(),
+        Some(ptr) if !ptr.is_null() => return ptr,
+        _ => {} // Need to create instance lazily
+    }
+
+    // Collect the exception data needed for instance creation.
+    // Release the RefCell borrow BEFORE calling any allocating functions.
+    // create_builtin_exception_instance calls rt_make_instance / rt_make_str /
+    // rt_make_tuple, all of which call gc_alloc.  In gc_stress mode gc_alloc
+    // fires a full GC that calls get_exception_pointers() → with_exception_state
+    // → borrow_mut() — which panics with BorrowMutError if we are still holding
+    // the outer borrow_mut here.
+    let (exc_type, custom_class_id, msg_ptr, msg_len) = with_exception_state(|state| {
+        let exc = state
+            .current_exception
+            .as_ref()
+            .or(state.handling_exception.as_ref());
+        match exc {
+            Some(e) => (e.exc_type, e.custom_class_id, e.message, e.message_len),
+            None => (
+                ExceptionType::Exception,
+                NOT_CUSTOM_CLASS,
+                std::ptr::null(),
+                0,
+            ),
+        }
+    });
+
+    // Borrow is fully released here; safe to call gc_alloc inside.
+    let tmp_exc = ExceptionObject {
+        exc_type,
+        custom_class_id,
+        message: msg_ptr,
+        message_len: msg_len,
+        message_capacity: 0,
+        cause: None,
+        context: None,
+        suppress_context: false,
+        traceback: None,
+        instance: std::ptr::null_mut(),
+    };
+    let instance = unsafe { create_builtin_exception_instance(&tmp_exc) };
+
+    // Store the created instance back into the exception state.
     with_exception_state(|state| {
-        // Check current_exception first, then handling_exception
-        // (handling_exception is set when we're in an except block)
         let exc = state
             .current_exception
             .as_mut()
             .or(state.handling_exception.as_mut());
-
         if let Some(exc) = exc {
-            // Return existing instance if already created (custom exception or previous lazy call)
-            if !exc.instance.is_null() {
-                return exc.instance;
+            if exc.instance.is_null() {
+                exc.instance = instance;
             }
-            // Create instance lazily for built-in exceptions
-            let instance = unsafe { create_builtin_exception_instance(exc) };
-            exc.instance = instance;
-            instance
-        } else {
-            std::ptr::null_mut()
         }
-    })
+    });
+
+    instance
 }
 
 /// Get the current exception message as a string object.
@@ -1030,7 +1112,11 @@ pub extern "C" fn rt_exc_get_current() -> *mut crate::object::Obj {
 /// Returns a heap-allocated StrObj with the exception message, or an empty string.
 #[no_mangle]
 pub extern "C" fn rt_exc_get_current_message() -> *mut crate::object::Obj {
-    with_exception_state(|state| {
+    // Read message pointer and length inside the borrow, then allocate outside.
+    // rt_make_str calls gc_alloc which fires a full collection in gc_stress mode.
+    // Doing that inside the borrow_mut would trigger get_exception_pointers() →
+    // borrow_mut() → BorrowMutError panic.
+    let (msg_ptr, msg_len) = with_exception_state(|state| {
         let exc = state
             .current_exception
             .as_ref()
@@ -1038,14 +1124,16 @@ pub extern "C" fn rt_exc_get_current_message() -> *mut crate::object::Obj {
 
         if let Some(exc) = exc {
             if exc.message_len > 0 && !exc.message.is_null() {
-                unsafe { crate::string::rt_make_str(exc.message, exc.message_len) }
+                (exc.message, exc.message_len)
             } else {
-                unsafe { crate::string::rt_make_str(std::ptr::null(), 0) }
+                (std::ptr::null(), 0)
             }
         } else {
-            std::ptr::null_mut()
+            (std::ptr::null(), 0)
         }
-    })
+    });
+    // Borrow is released here; safe to call gc_alloc.
+    unsafe { crate::string::rt_make_str(msg_ptr, msg_len) }
 }
 
 /// Convert an exception instance to its string representation.

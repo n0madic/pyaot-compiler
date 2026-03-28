@@ -17,7 +17,20 @@ pub extern "C" fn rt_list_from_tuple(tuple: *mut Obj) -> *mut Obj {
         let len = (*tuple_obj).len;
         let elem_tag = (*tuple_obj).elem_tag;
 
+        // Root the source tuple across rt_make_list which calls gc_alloc.
+        let mut roots: [*mut Obj; 1] = [tuple];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         let list = rt_make_list(len as i64, elem_tag);
+
+        gc_pop();
+
+        let tuple_obj = tuple as *mut TupleObj;
         let list_obj = list as *mut ListObj;
 
         if len > 0 {
@@ -47,29 +60,35 @@ pub extern "C" fn rt_list_from_str(str_obj: *mut Obj) -> *mut Obj {
     unsafe {
         let str = str_obj as *mut StrObj;
         let len = (*str).len;
-        let data = (*str).data.as_ptr();
 
+        // Root both str_obj and the new list across every rt_make_str call.
+        // rt_make_str calls gc_alloc which may trigger a collection, freeing
+        // str_obj (invalidating `data`) or freeing the partially-built list.
+        //
+        // We first allocate the list, then push both into the shadow frame.
         let list = rt_make_list(len as i64, ELEM_HEAP_OBJ);
-        let list_obj = list as *mut ListObj;
 
-        // Root the list across every rt_make_str call: each call invokes gc_alloc,
-        // which may trigger a collection.  Without rooting, a collection would see
-        // the list as unreachable and free it.
-        let mut roots: [*mut Obj; 1] = [list];
+        // Root both str_obj and list.
+        let mut roots: [*mut Obj; 2] = [str_obj, list];
         let mut frame = ShadowFrame {
             prev: std::ptr::null_mut(),
-            nroots: 1,
+            nroots: 2,
             roots: roots.as_mut_ptr(),
         };
         gc_push(&mut frame);
 
         for i in 0..len {
-            let ch = *data.add(i);
-            // Create single-character string
-            let char_str = rt_make_str(&ch, 1);
-            *(*list_obj).data.add(i) = char_str;
+            // Re-derive str pointer through the rooted str_obj after each alloc.
+            let src = roots[0] as *mut StrObj;
+            let ch = (*src).data.as_ptr().add(i);
+            // Create single-character string (may trigger GC)
+            let char_str = rt_make_str(ch, 1);
+            // Re-derive list_obj through the rooted list pointer (non-moving GC)
+            let list_obj = roots[1] as *mut ListObj;
+            (*list_obj).data.add(i).write(char_str);
+            // Update len immediately so GC sees this element as live
+            (*list_obj).len = i + 1;
         }
-        (*list_obj).len = len;
 
         gc_pop();
         list
@@ -136,8 +155,20 @@ pub extern "C" fn rt_list_from_iter(iter: *mut Obj, elem_tag: i64) -> *mut Obj {
         return rt_make_list(0, ELEM_HEAP_OBJ);
     }
 
-    // Create list with initial capacity using the elem_tag from the compiler
+    // Create list with initial capacity using the elem_tag from the compiler.
+    // Root the list across every rt_iter_next_no_exc call: the iterator's next()
+    // may allocate (e.g., string iterator calls rt_str_getchar), which triggers
+    // a GC collection under gc_stress_test.  Without rooting, the list would be
+    // seen as unreachable and freed.
     let list = rt_make_list(8, elem_tag as u8);
+
+    let mut roots: [*mut Obj; 1] = [list];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
 
     // Keep getting elements until exhausted
     loop {
@@ -145,10 +176,11 @@ pub extern "C" fn rt_list_from_iter(iter: *mut Obj, elem_tag: i64) -> *mut Obj {
         if elem.is_null() {
             break;
         }
-        rt_list_push(list, elem);
+        rt_list_push(roots[0], elem);
     }
 
-    list
+    gc_pop();
+    roots[0]
 }
 
 /// Create a list from a set
@@ -194,8 +226,20 @@ pub extern "C" fn rt_list_tail_to_tuple(list: *mut Obj, start: i64) -> *mut Obj 
         let start_idx = start.max(0);
         let tail_len = (list_len - start_idx).max(0);
 
-        // Create tuple with appropriate element tag
+        // Root the source list across rt_make_tuple which calls gc_alloc.
+        let mut roots: [*mut Obj; 1] = [list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         let tuple = rt_make_tuple(tail_len, elem_tag);
+
+        gc_pop();
+
+        let list_obj = list as *mut ListObj;
 
         // Copy elements from list[start..] to tuple
         if tail_len > 0 {
@@ -231,9 +275,22 @@ pub extern "C" fn rt_list_tail_to_tuple_float(list: *mut Obj, start: i64) -> *mu
         let start_idx = start.max(0);
         let tail_len = (list_len - start_idx).max(0);
 
+        // Root the source list across rt_make_tuple which calls gc_alloc.
+        let mut roots: [*mut Obj; 1] = [list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         // Create tuple with ELEM_RAW_INT (floats stored as raw f64 bits)
         // Note: Varargs tuples store raw floats as i64-sized values
         let tuple = rt_make_tuple(tail_len, ELEM_RAW_INT);
+
+        gc_pop();
+
+        let list_obj = list as *mut ListObj;
 
         // Copy and unbox each float element
         if tail_len > 0 {
@@ -273,8 +330,21 @@ pub extern "C" fn rt_list_tail_to_tuple_bool(list: *mut Obj, start: i64) -> *mut
         let start_idx = start.max(0);
         let tail_len = (list_len - start_idx).max(0);
 
+        // Root the source list across rt_make_tuple which calls gc_alloc.
+        let mut roots: [*mut Obj; 1] = [list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         // Create tuple with ELEM_RAW_BOOL (bools stored as raw i8)
         let tuple = rt_make_tuple(tail_len, ELEM_RAW_BOOL);
+
+        gc_pop();
+
+        let list_obj = list as *mut ListObj;
 
         // Copy and unbox each bool element
         if tail_len > 0 {

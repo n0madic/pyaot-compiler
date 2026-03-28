@@ -2,7 +2,7 @@
 //!
 //! Provides subprocess.run() for spawning and managing processes.
 
-use crate::gc;
+use crate::gc::{self, ShadowFrame};
 use crate::object::{CompletedProcessObj, ListObj, Obj, ObjHeader, TypeTagKind};
 use crate::utils::make_str_from_rust;
 use std::process::{Command, Stdio};
@@ -136,11 +136,29 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
             ));
         }
 
+        // Allocate stdout/stderr/args_copy and the CompletedProcess object.
+        // Each of these is a GC allocation, so each can trigger a collection that
+        // would free any previously allocated heap object not on the shadow stack.
+        // We root stdout_obj, stderr_obj, and args_copy in a frame to keep them live.
+        // roots[0] = stdout_obj, roots[1] = stderr_obj, roots[2] = args_copy
+        let mut roots: [*mut Obj; 3] = [
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 3,
+            roots: roots.as_mut_ptr(),
+        };
+        gc::gc_push(&mut frame);
+
         // Create stdout string if captured
-        let stdout_obj = if capture_output != 0 {
+        roots[0] = if capture_output != 0 {
             match String::from_utf8(output.stdout) {
                 Ok(s) => make_str_from_rust(&s),
                 Err(e) => {
+                    gc::gc_pop();
                     crate::raise_exc!(
                         crate::exceptions::ExceptionType::ValueError,
                         "subprocess stdout is not valid UTF-8: {}",
@@ -152,11 +170,12 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
             crate::object::none_obj()
         };
 
-        // Create stderr string if captured
-        let stderr_obj = if capture_output != 0 {
+        // Create stderr string if captured — stdout_obj is now rooted at roots[0].
+        roots[1] = if capture_output != 0 {
             match String::from_utf8(output.stderr) {
                 Ok(s) => make_str_from_rust(&s),
                 Err(e) => {
+                    gc::gc_pop();
                     crate::raise_exc!(
                         crate::exceptions::ExceptionType::ValueError,
                         "subprocess stderr is not valid UTF-8: {}",
@@ -168,25 +187,25 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
             crate::object::none_obj()
         };
 
-        // Copy args list for the result object using the GC-managed list copy, which
-        // allocates the data array via the system allocator in a way that list_finalize
-        // will correctly free when the list is GC-collected.
-        let args_copy = crate::list::rt_list_copy(args);
+        // Copy args list — stdout and stderr are rooted at roots[0..1].
+        roots[2] = crate::list::rt_list_copy(args);
 
-        // Create CompletedProcess object
+        // Create CompletedProcess object — stdout, stderr, and args_copy all rooted.
         let size = std::mem::size_of::<CompletedProcessObj>();
         let ptr =
             gc::gc_alloc(size, TypeTagKind::CompletedProcess as u8) as *mut CompletedProcessObj;
+
+        gc::gc_pop();
 
         (*ptr).header = ObjHeader {
             type_tag: TypeTagKind::CompletedProcess,
             marked: false,
             size,
         };
-        (*ptr).args = args_copy;
+        (*ptr).args = roots[2];
         (*ptr).returncode = returncode;
-        (*ptr).stdout = stdout_obj;
-        (*ptr).stderr = stderr_obj;
+        (*ptr).stdout = roots[0];
+        (*ptr).stderr = roots[1];
 
         ptr as *mut Obj
     }

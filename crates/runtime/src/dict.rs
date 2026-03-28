@@ -278,6 +278,8 @@ pub extern "C" fn rt_make_dict(capacity: i64) -> *mut Obj {
 /// String keys under 256 bytes are interned for memory efficiency.
 #[no_mangle]
 pub extern "C" fn rt_dict_set(dict: *mut Obj, mut key: *mut Obj, value: *mut Obj) {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if dict.is_null() || key.is_null() {
         return;
     }
@@ -285,14 +287,33 @@ pub extern "C" fn rt_dict_set(dict: *mut Obj, mut key: *mut Obj, value: *mut Obj
     unsafe {
         debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_set");
 
-        // Intern string keys under the size threshold
+        // Intern string keys under the size threshold.
+        //
+        // rt_make_str_interned calls gc_alloc which may trigger a full collection.
+        // Root dict, key, and value across the call so none of them are freed.
+        // `data` is an interior pointer into `key`, so `key` must stay alive.
         if (*key).header.type_tag == TypeTagKind::Str {
             let str_obj = key as *mut StrObj;
             let len = (*str_obj).len;
 
             if len < MAX_DICT_KEY_INTERN_LENGTH {
                 let data = (*str_obj).data.as_ptr();
-                key = rt_make_str_interned(data, len);
+
+                // Root dict, key, value across gc_alloc inside rt_make_str_interned.
+                // value may be null (a valid dict value meaning None); include it
+                // anyway since the GC shadow frame accepts null roots.
+                let mut roots: [*mut Obj; 3] = [dict, key, value];
+                let mut frame = ShadowFrame {
+                    prev: std::ptr::null_mut(),
+                    nroots: 3,
+                    roots: roots.as_mut_ptr(),
+                };
+                gc_push(&mut frame);
+                let interned = rt_make_str_interned(data, len);
+                gc_pop();
+
+                // Use the interned key from now on.
+                key = interned;
             }
         }
 
@@ -513,6 +534,8 @@ pub extern "C" fn rt_dict_clear(dict: *mut Obj) {
 /// Returns: pointer to new DictObj
 #[no_mangle]
 pub extern "C" fn rt_dict_copy(dict: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if dict.is_null() {
         return rt_make_dict(8);
     }
@@ -522,15 +545,30 @@ pub extern "C" fn rt_dict_copy(dict: *mut Obj) -> *mut Obj {
         let src = dict as *mut DictObj;
         let new_dict = rt_make_dict((*src).len as i64);
 
-        // Iterate entries in insertion order
-        for i in 0..(*src).entries_len {
-            let entry = (*src).entries.add(i);
+        // Root both the source dict and the new dict across all rt_dict_set calls.
+        // rt_dict_set internally calls rt_make_str_interned and may trigger GC.
+        let mut roots: [*mut Obj; 2] = [dict, new_dict];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        // Iterate entries in insertion order.
+        // Re-read src pointer from roots[0] after each call that may collect.
+        let entries_len = (*(roots[0] as *mut DictObj)).entries_len;
+        for i in 0..entries_len {
+            let src_dict = roots[0] as *mut DictObj;
+            let entry = (*src_dict).entries.add(i);
             let key = (*entry).key;
             if !key.is_null() {
-                rt_dict_set(new_dict, key, (*entry).value);
+                let value = (*entry).value;
+                rt_dict_set(roots[1], key, value);
             }
         }
 
+        gc_pop();
         new_dict
     }
 }
@@ -735,6 +773,8 @@ pub unsafe fn dict_finalize(dict: *mut Obj) {
 /// Update dictionary with entries from another dictionary (preserves insertion order of other)
 #[no_mangle]
 pub extern "C" fn rt_dict_update(dict: *mut Obj, other: *mut Obj) {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     if dict.is_null() || other.is_null() {
         return;
     }
@@ -742,16 +782,29 @@ pub extern "C" fn rt_dict_update(dict: *mut Obj, other: *mut Obj) {
     unsafe {
         debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_update");
         debug_assert_type_tag!(other, TypeTagKind::Dict, "rt_dict_update");
-        let other_dict = other as *mut DictObj;
 
-        // Iterate other's entries in insertion order
-        for i in 0..(*other_dict).entries_len {
+        // Root both dicts across rt_dict_set calls which may trigger GC.
+        let mut roots: [*mut Obj; 2] = [dict, other];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        // Snapshot the entry count before iteration; re-read other from roots each time.
+        let entries_len = (*(roots[1] as *mut DictObj)).entries_len;
+        for i in 0..entries_len {
+            let other_dict = roots[1] as *mut DictObj;
             let entry = (*other_dict).entries.add(i);
             let key = (*entry).key;
             if !key.is_null() {
-                rt_dict_set(dict, key, (*entry).value);
+                let value = (*entry).value;
+                rt_dict_set(roots[0], key, value);
             }
         }
+
+        gc_pop();
     }
 }
 
@@ -760,6 +813,7 @@ pub extern "C" fn rt_dict_update(dict: *mut Obj, other: *mut Obj) {
 /// Returns: pointer to new DictObj
 #[no_mangle]
 pub extern "C" fn rt_dict_from_pairs(pairs: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::{ListObj, TupleObj};
 
     let dict = rt_make_dict(8);
@@ -770,12 +824,21 @@ pub extern "C" fn rt_dict_from_pairs(pairs: *mut Obj) -> *mut Obj {
 
     unsafe {
         debug_assert_type_tag!(pairs, TypeTagKind::List, "rt_dict_from_pairs");
-        let list = pairs as *mut ListObj;
-        let len = (*list).len;
-        let data = (*list).data;
 
+        // Root both the new dict and the source pairs list across rt_dict_set calls
+        // which may trigger GC.
+        let mut roots: [*mut Obj; 2] = [dict, pairs];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        let len = (*(roots[1] as *mut ListObj)).len;
         for i in 0..len {
-            let pair = *data.add(i);
+            let list = roots[1] as *mut ListObj;
+            let pair = *(*list).data.add(i);
             if pair.is_null() {
                 continue;
             }
@@ -785,9 +848,11 @@ pub extern "C" fn rt_dict_from_pairs(pairs: *mut Obj) -> *mut Obj {
             if (*tuple).len >= 2 {
                 let key = *(*tuple).data.as_ptr();
                 let value = *(*tuple).data.as_ptr().add(1);
-                rt_dict_set(dict, key, value);
+                rt_dict_set(roots[0], key, value);
             }
         }
+
+        gc_pop();
     }
 
     dict
@@ -919,6 +984,7 @@ pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
 /// Returns: pointer to new DictObj
 #[no_mangle]
 pub extern "C" fn rt_dict_fromkeys(keys_list: *mut Obj, value: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::list::rt_list_len;
     use crate::object::ListObj;
 
@@ -927,12 +993,22 @@ pub extern "C" fn rt_dict_fromkeys(keys_list: *mut Obj, value: *mut Obj) -> *mut
     }
 
     unsafe {
-        let list_obj = keys_list as *mut ListObj;
         let len = rt_list_len(keys_list);
 
         let dict = rt_make_dict(len);
 
+        // Root the new dict and the source keys_list across rt_dict_set calls
+        // which may trigger GC.
+        let mut roots: [*mut Obj; 2] = [dict, keys_list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
         for i in 0..len as usize {
+            let list_obj = roots[1] as *mut ListObj;
             let key = *(*list_obj).data.add(i);
             // When no value is supplied, Python uses None as the default.
             // Storing null would make rt_dict_get indistinguishable from a
@@ -942,10 +1018,11 @@ pub extern "C" fn rt_dict_fromkeys(keys_list: *mut Obj, value: *mut Obj) -> *mut
             } else {
                 value
             };
-            rt_dict_set(dict, key, val);
+            rt_dict_set(roots[0], key, val);
         }
 
-        dict
+        gc_pop();
+        roots[0]
     }
 }
 
@@ -953,16 +1030,31 @@ pub extern "C" fn rt_dict_fromkeys(keys_list: *mut Obj, value: *mut Obj) -> *mut
 /// Returns: pointer to new DictObj
 #[no_mangle]
 pub extern "C" fn rt_dict_merge(dict1: *mut Obj, dict2: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
     let result = rt_make_dict(0);
+
+    // Root result, dict1, and dict2 across all rt_dict_set calls which may trigger GC.
+    // Null pointers are safe to include in the roots array — the GC skips them.
+    let mut roots: [*mut Obj; 3] = [result, dict1, dict2];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 3,
+        roots: roots.as_mut_ptr(),
+    };
+    unsafe { gc_push(&mut frame) };
 
     if !dict1.is_null() {
         unsafe {
             debug_assert_type_tag!(dict1, TypeTagKind::Dict, "rt_dict_merge");
-            let d1 = dict1 as *mut DictObj;
-            for i in 0..(*d1).entries_len {
+            let entries_len = (*(roots[1] as *mut DictObj)).entries_len;
+            for i in 0..entries_len {
+                let d1 = roots[1] as *mut DictObj;
                 let entry = (*d1).entries.add(i);
                 if !(*entry).key.is_null() {
-                    rt_dict_set(result, (*entry).key, (*entry).value);
+                    let key = (*entry).key;
+                    let value = (*entry).value;
+                    rt_dict_set(roots[0], key, value);
                 }
             }
         }
@@ -971,15 +1063,19 @@ pub extern "C" fn rt_dict_merge(dict1: *mut Obj, dict2: *mut Obj) -> *mut Obj {
     if !dict2.is_null() {
         unsafe {
             debug_assert_type_tag!(dict2, TypeTagKind::Dict, "rt_dict_merge");
-            let d2 = dict2 as *mut DictObj;
-            for i in 0..(*d2).entries_len {
+            let entries_len = (*(roots[2] as *mut DictObj)).entries_len;
+            for i in 0..entries_len {
+                let d2 = roots[2] as *mut DictObj;
                 let entry = (*d2).entries.add(i);
                 if !(*entry).key.is_null() {
-                    rt_dict_set(result, (*entry).key, (*entry).value);
+                    let key = (*entry).key;
+                    let value = (*entry).value;
+                    rt_dict_set(roots[0], key, value);
                 }
             }
         }
     }
 
-    result
+    gc_pop();
+    roots[0]
 }

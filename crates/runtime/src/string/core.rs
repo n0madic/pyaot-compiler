@@ -118,6 +118,7 @@ pub extern "C" fn rt_str_len_int(str_obj: *mut Obj) -> i64 {
 /// Returns: pointer to new allocated StrObj
 #[no_mangle]
 pub extern "C" fn rt_str_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use std::ptr;
 
     if a.is_null() || b.is_null() {
@@ -143,8 +144,27 @@ pub extern "C" fn rt_str_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         // Calculate size: header + len field + data bytes
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + total_len;
 
-        // Allocate using GC
+        // Root a and b across gc_alloc: a GC collection triggered inside
+        // gc_alloc would free a or b if they are not reachable from the shadow
+        // stack.  We re-derive str_a/str_b after gc_alloc to ensure we read
+        // from the still-live objects (the GC is non-moving, so addresses are
+        // unchanged, but re-deriving makes the live-range explicit).
+        let mut roots: [*mut Obj; 2] = [a, b];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        // Allocate using GC (may collect; a and b stay alive via shadow frame)
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
+
+        gc_pop();
+
+        // Re-derive after gc_alloc.
+        let str_a = a as *mut StrObj;
+        let str_b = b as *mut StrObj;
 
         let str_obj = obj as *mut StrObj;
         (*str_obj).len = total_len;
@@ -171,6 +191,7 @@ pub extern "C" fn rt_str_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 #[no_mangle]
 pub extern "C" fn rt_str_encode(s: *mut Obj, _encoding: *mut Obj) -> *mut Obj {
     use crate::bytes::rt_make_bytes;
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if s.is_null() {
         return unsafe { rt_make_bytes(std::ptr::null(), 0) };
@@ -185,6 +206,18 @@ pub extern "C" fn rt_str_encode(s: *mut Obj, _encoding: *mut Obj) -> *mut Obj {
         // For now, only support UTF-8 encoding (which is identity for our internal representation)
         // If encoding is provided and not "utf-8", we could raise an error, but for simplicity
         // we'll just always use UTF-8
-        rt_make_bytes(data, len)
+
+        // Root `s` across rt_make_bytes → gc_alloc: a GC collection could free
+        // the StrObj and invalidate `data` if the caller hasn't rooted it.
+        let mut roots: [*mut Obj; 1] = [s];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+        let result = rt_make_bytes(data, len);
+        gc_pop();
+        result
     }
 }

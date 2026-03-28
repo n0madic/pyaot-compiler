@@ -206,6 +206,22 @@ impl<'a> Lowering<'a> {
                 },
                 span: None,
             });
+
+            // Mark slot 0 as a heap pointer so the GC traces the inner iterator.
+            // LOCAL_TYPE_PTR = 3; without this the default LOCAL_TYPE_RAW_INT (0)
+            // prevents the GC from marking the inner generator, causing use-after-free.
+            entry_block.instructions.push(mir::Instruction {
+                kind: mir::InstructionKind::RuntimeCall {
+                    dest: dummy_local,
+                    func: mir::RuntimeFunc::GeneratorSetLocalType,
+                    args: vec![
+                        mir::Operand::Local(gen_local),
+                        mir::Operand::Constant(mir::Constant::Int(0)), // Slot 0
+                        mir::Operand::Constant(mir::Constant::Int(3)), // LOCAL_TYPE_PTR
+                    ],
+                },
+                span: None,
+            });
         }
 
         // Return the generator object
