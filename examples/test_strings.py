@@ -226,6 +226,20 @@ assert fill_center == "====hi====", "fill center failed"
 fill_dot: str = "{:.>6}".format("x")
 assert fill_dot == ".....x", "fill dot failed"
 
+# = alignment: pad after sign/prefix
+eq_sign: str = format(42, '+010')
+assert eq_sign == "+000000042", f"= align sign: {eq_sign}"
+eq_neg: str = format(-42, '010')
+assert eq_neg == "-000000042", f"= align neg: {eq_neg}"
+eq_hex: str = format(255, '#010x')
+assert eq_hex == "0x000000ff", f"= align hex: {eq_hex}"
+eq_bin: str = format(5, '#010b')
+assert eq_bin == "0b00000101", f"= align bin: {eq_bin}"
+eq_oct: str = format(8, '#010o')
+assert eq_oct == "0o00000010", f"= align oct: {eq_oct}"
+eq_neg_hex: str = format(-255, '#012x')
+assert eq_neg_hex == "-0x0000000ff", f"= align neg hex: {eq_neg_hex}"
+
 # Combined: index/name + format spec
 combined_idx: str = "{0:>10}".format("test")
 assert combined_idx == "      test", "combined index spec failed"

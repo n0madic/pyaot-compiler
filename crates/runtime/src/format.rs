@@ -242,19 +242,27 @@ fn apply_padding(s: &str, spec: &FormatSpec) -> String {
             format!("{}{}{}", l, s, r)
         }
         '=' => {
-            // Pad after sign
-            if let Some(first_char) = s.chars().next() {
-                if matches!(first_char, '+' | '-' | ' ') {
-                    let fill_str: String = std::iter::repeat_n(fill, pad).collect();
-                    let rest: String = s.chars().skip(1).collect();
-                    format!("{}{}{}", first_char, fill_str, rest)
-                } else {
-                    // No sign, treat as right-align
-                    let fill_str: String = std::iter::repeat_n(fill, pad).collect();
-                    format!("{}{}", fill_str, s)
-                }
+            // Pad after sign/prefix (CPython: sign, then 0x/0b/0o prefix, then padding, then digits)
+            let fill_str: String = std::iter::repeat_n(fill, pad).collect();
+            let bytes = s.as_bytes();
+            // Determine prefix length: sign char + optional 0x/0b/0o
+            let mut prefix_len = 0;
+            if !bytes.is_empty() && matches!(bytes[0], b'+' | b'-' | b' ') {
+                prefix_len = 1;
+            }
+            if bytes.len() >= prefix_len + 2
+                && bytes[prefix_len] == b'0'
+                && matches!(bytes[prefix_len + 1], b'x' | b'X' | b'b' | b'o')
+            {
+                prefix_len += 2;
+            }
+            if prefix_len > 0 {
+                let prefix = &s[..prefix_len];
+                let rest = &s[prefix_len..];
+                format!("{}{}{}", prefix, fill_str, rest)
             } else {
-                s.to_string()
+                // No sign or prefix, treat as right-align
+                format!("{}{}", fill_str, s)
             }
         }
         _ => {
