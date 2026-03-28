@@ -178,9 +178,37 @@ impl SlabAllocator {
             // Reset free list — rebuild from scratch during sweep
             class.free_head = std::ptr::null_mut();
 
-            for page_info in &class.pages {
+            // Snapshot the cursor position for the current (last) page.
+            // Under gc_stress_test, a collection can trigger between a bump
+            // allocation and the allocated_up_to update. Using the cursor
+            // as upper bound for the last page ensures no allocated slots
+            // are missed during sweep.
+            let num_pages = class.pages.len();
+
+            for (page_idx, page_info) in class.pages.iter_mut().enumerate() {
+                let sweep_limit = if page_idx == num_pages - 1 {
+                    // For the current (last) page, use the cursor-derived
+                    // high-water mark to catch any slots between
+                    // allocated_up_to and the actual cursor position.
+                    let cursor_offset = if class.cursor >= page_info.ptr
+                        && class.cursor <= page_info.ptr.add(class.slots_per_page * slot_size)
+                    {
+                        class.cursor.offset_from(page_info.ptr) as usize
+                    } else {
+                        page_info.allocated_up_to
+                    };
+                    cursor_offset.max(page_info.allocated_up_to)
+                } else {
+                    // Fully-used pages: allocated_up_to is authoritative
+                    page_info.allocated_up_to
+                };
+
+                // Update allocated_up_to to match the sweep limit so
+                // future sweeps don't miss these slots.
+                page_info.allocated_up_to = sweep_limit;
+
                 let mut offset = 0;
-                while offset < page_info.allocated_up_to {
+                while offset < sweep_limit {
                     let obj_ptr = page_info.ptr.add(offset) as *mut Obj;
                     let header = &mut (*obj_ptr).header;
 
