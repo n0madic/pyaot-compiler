@@ -372,6 +372,10 @@ impl<'a> Lowering<'a> {
                 IterableKind::Tuple => mir::RuntimeFunc::TupleLen,
                 IterableKind::Str => mir::RuntimeFunc::StrLenInt,
                 IterableKind::Bytes => mir::RuntimeFunc::BytesLen,
+                // Dict and Set are handled by the two if-branches above this else block.
+                // Iterator and File never reach this function: get_iterable_info() returns
+                // None for those kinds, so lower_for_enumerate_optimized routes them to
+                // lower_for_enumerate_iterator instead (the fallback at the call site).
                 _ => unreachable!(),
             };
             self.emit_instruction(mir::InstructionKind::RuntimeCall {

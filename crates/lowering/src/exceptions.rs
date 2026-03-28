@@ -495,8 +495,8 @@ impl<'a> Lowering<'a> {
                 mir_func.add_local(mir::Local {
                     id: cell_local,
                     name: None,
-                    ty: Type::Str,    // Placeholder type for cell pointer
-                    is_gc_root: true, // Cells are heap objects
+                    ty: Type::HeapAny, // Cell pointer (heap object)
+                    is_gc_root: true,  // Cells are heap objects
                 });
 
                 // Create cell with current value

@@ -75,156 +75,70 @@ impl<'a> Lowering<'a> {
             let class_name = self.resolve(class_def.name).to_string();
             self.register_class_name(class_name, class_id);
 
-            // Start with inherited fields/methods/vtable from parent
-            let (
-                mut field_offsets,
-                mut field_types,
-                mut method_funcs,
-                mut vtable_slots,
-                mut static_methods,
-                mut class_methods,
-                mut properties,
-                mut property_types,
-                mut str_func,
-                mut repr_func,
-                mut eq_func,
-                mut ne_func,
-                mut lt_func,
-                mut le_func,
-                mut gt_func,
-                mut ge_func,
-                mut hash_func,
-                mut len_func,
-                mut add_func,
-                mut sub_func,
-                mut mul_func,
-                mut truediv_func,
-                mut floordiv_func,
-                mut mod_func,
-                mut pow_func,
-                mut radd_func,
-                mut rsub_func,
-                mut rmul_func,
-                mut rtruediv_func,
-                mut rfloordiv_func,
-                mut rmod_func,
-                mut rpow_func,
-                mut neg_func,
-                mut pos_func,
-                mut abs_func,
-                mut invert_func,
-                mut bool_func,
-                mut int_func,
-                mut float_func,
-                mut getitem_func,
-                mut setitem_func,
-                mut delitem_func,
-                mut contains_func,
-                mut iter_func,
-                mut next_func,
-                mut call_func,
-                own_field_offset,
-            ) = if let Some(base_id) = class_def.base_class {
+            // Start with inherited fields/methods/vtable from parent, or a fresh blank info.
+            let (mut info, own_field_offset) = if let Some(base_id) = class_def.base_class {
                 let parent_info = self
                     .get_class_info(&base_id)
                     .expect("Parent class must be processed first");
-                (
-                    parent_info.field_offsets.clone(),
-                    parent_info.field_types.clone(),
-                    parent_info.method_funcs.clone(),
-                    parent_info.vtable_slots.clone(),
-                    parent_info.static_methods.clone(),
-                    parent_info.class_methods.clone(),
-                    parent_info.properties.clone(),
-                    parent_info.property_types.clone(),
-                    parent_info.str_func,
-                    parent_info.repr_func,
-                    parent_info.eq_func,
-                    parent_info.ne_func,
-                    parent_info.lt_func,
-                    parent_info.le_func,
-                    parent_info.gt_func,
-                    parent_info.ge_func,
-                    parent_info.hash_func,
-                    parent_info.len_func,
-                    parent_info.add_func,
-                    parent_info.sub_func,
-                    parent_info.mul_func,
-                    parent_info.truediv_func,
-                    parent_info.floordiv_func,
-                    parent_info.mod_func,
-                    parent_info.pow_func,
-                    parent_info.radd_func,
-                    parent_info.rsub_func,
-                    parent_info.rmul_func,
-                    parent_info.rtruediv_func,
-                    parent_info.rfloordiv_func,
-                    parent_info.rmod_func,
-                    parent_info.rpow_func,
-                    parent_info.neg_func,
-                    parent_info.pos_func,
-                    parent_info.abs_func,
-                    parent_info.invert_func,
-                    parent_info.bool_func,
-                    parent_info.int_func,
-                    parent_info.float_func,
-                    parent_info.getitem_func,
-                    parent_info.setitem_func,
-                    parent_info.delitem_func,
-                    parent_info.contains_func,
-                    parent_info.iter_func,
-                    parent_info.next_func,
-                    parent_info.call_func,
-                    parent_info.total_field_count,
-                )
+                let offset = parent_info.total_field_count;
+                (parent_info.clone(), offset)
             } else {
                 (
-                    IndexMap::new(),
-                    IndexMap::new(),
-                    IndexMap::new(),
-                    IndexMap::new(),
-                    IndexMap::new(),
-                    IndexMap::new(),
-                    IndexMap::new(),
-                    IndexMap::new(),
-                    None, // str_func
-                    None, // repr_func
-                    None, // eq_func
-                    None, // ne_func
-                    None, // lt_func
-                    None, // le_func
-                    None, // gt_func
-                    None, // ge_func
-                    None, // hash_func
-                    None, // len_func
-                    None, // add_func
-                    None, // sub_func
-                    None, // mul_func
-                    None, // truediv_func
-                    None, // floordiv_func
-                    None, // mod_func
-                    None, // pow_func
-                    None, // radd_func
-                    None, // rsub_func
-                    None, // rmul_func
-                    None, // rtruediv_func
-                    None, // rfloordiv_func
-                    None, // rmod_func
-                    None, // rpow_func
-                    None, // neg_func
-                    None, // pos_func
-                    None, // abs_func
-                    None, // invert_func
-                    None, // bool_func
-                    None, // int_func
-                    None, // float_func
-                    None, // getitem_func
-                    None, // setitem_func
-                    None, // delitem_func
-                    None, // contains_func
-                    None, // iter_func
-                    None, // next_func
-                    None, // call_func
+                    LoweredClassInfo {
+                        field_offsets: IndexMap::new(),
+                        field_types: IndexMap::new(),
+                        method_funcs: IndexMap::new(),
+                        init_func: None,
+                        str_func: None,
+                        repr_func: None,
+                        eq_func: None,
+                        ne_func: None,
+                        lt_func: None,
+                        le_func: None,
+                        gt_func: None,
+                        ge_func: None,
+                        hash_func: None,
+                        len_func: None,
+                        add_func: None,
+                        sub_func: None,
+                        mul_func: None,
+                        truediv_func: None,
+                        floordiv_func: None,
+                        mod_func: None,
+                        pow_func: None,
+                        radd_func: None,
+                        rsub_func: None,
+                        rmul_func: None,
+                        rtruediv_func: None,
+                        rfloordiv_func: None,
+                        rmod_func: None,
+                        rpow_func: None,
+                        neg_func: None,
+                        pos_func: None,
+                        abs_func: None,
+                        invert_func: None,
+                        bool_func: None,
+                        int_func: None,
+                        float_func: None,
+                        getitem_func: None,
+                        setitem_func: None,
+                        delitem_func: None,
+                        contains_func: None,
+                        iter_func: None,
+                        next_func: None,
+                        call_func: None,
+                        base_class: None,
+                        total_field_count: 0,
+                        own_field_offset: 0,
+                        vtable_slots: IndexMap::new(),
+                        class_attr_offsets: IndexMap::new(),
+                        class_attr_types: IndexMap::new(),
+                        static_methods: IndexMap::new(),
+                        class_methods: IndexMap::new(),
+                        properties: IndexMap::new(),
+                        property_types: IndexMap::new(),
+                        is_exception_class: false,
+                    },
                     0,
                 )
             };
@@ -234,13 +148,26 @@ impl<'a> Lowering<'a> {
             // across the inheritance hierarchy (required for class pattern matching).
             let mut own_field_idx = 0;
             for field in class_def.fields.iter() {
-                if field_offsets.contains_key(&field.name) {
-                    // Inherited field — keep parent's offset, update type if refined
-                    field_types.insert(field.name, field.ty.clone());
+                if info.field_offsets.contains_key(&field.name) {
+                    // Inherited field — keep parent's offset, update type if refined.
+                    // Warn when the child declares the field with a different type than
+                    // the parent, because this can cause silent mismatches at runtime.
+                    if let Some(parent_ty) = info.field_types.get(&field.name) {
+                        if *parent_ty != field.ty {
+                            let class_name = self.resolve(class_def.name);
+                            let field_name = self.resolve(field.name);
+                            eprintln!(
+                                "warning: class '{}' overrides inherited field '{}' \
+                                 with a different type (parent: {:?}, child: {:?})",
+                                class_name, field_name, parent_ty, field.ty
+                            );
+                        }
+                    }
+                    info.field_types.insert(field.name, field.ty.clone());
                 } else {
                     let offset = own_field_offset + own_field_idx;
-                    field_offsets.insert(field.name, offset);
-                    field_types.insert(field.name, field.ty.clone());
+                    info.field_offsets.insert(field.name, offset);
+                    info.field_types.insert(field.name, field.ty.clone());
                     own_field_idx += 1;
                 }
             }
@@ -259,149 +186,34 @@ impl<'a> Lowering<'a> {
                         func_name_str
                     };
 
-                    // Detect dunder methods and track them separately
-                    match method_name_str {
-                        "__str__" => {
-                            str_func = Some(*method_id);
-                        }
-                        "__repr__" => {
-                            repr_func = Some(*method_id);
-                        }
-                        "__eq__" => {
-                            eq_func = Some(*method_id);
-                        }
-                        "__ne__" => {
-                            ne_func = Some(*method_id);
-                        }
-                        "__lt__" => {
-                            lt_func = Some(*method_id);
-                        }
-                        "__le__" => {
-                            le_func = Some(*method_id);
-                        }
-                        "__gt__" => {
-                            gt_func = Some(*method_id);
-                        }
-                        "__ge__" => {
-                            ge_func = Some(*method_id);
-                        }
-                        "__hash__" => {
-                            hash_func = Some(*method_id);
-                        }
-                        "__len__" => {
-                            len_func = Some(*method_id);
-                        }
-                        "__add__" => {
-                            add_func = Some(*method_id);
-                        }
-                        "__sub__" => {
-                            sub_func = Some(*method_id);
-                        }
-                        "__mul__" => {
-                            mul_func = Some(*method_id);
-                        }
-                        "__truediv__" => {
-                            truediv_func = Some(*method_id);
-                        }
-                        "__floordiv__" => {
-                            floordiv_func = Some(*method_id);
-                        }
-                        "__mod__" => {
-                            mod_func = Some(*method_id);
-                        }
-                        "__pow__" => {
-                            pow_func = Some(*method_id);
-                        }
-                        "__radd__" => {
-                            radd_func = Some(*method_id);
-                        }
-                        "__rsub__" => {
-                            rsub_func = Some(*method_id);
-                        }
-                        "__rmul__" => {
-                            rmul_func = Some(*method_id);
-                        }
-                        "__rtruediv__" => {
-                            rtruediv_func = Some(*method_id);
-                        }
-                        "__rfloordiv__" => {
-                            rfloordiv_func = Some(*method_id);
-                        }
-                        "__rmod__" => {
-                            rmod_func = Some(*method_id);
-                        }
-                        "__rpow__" => {
-                            rpow_func = Some(*method_id);
-                        }
-                        "__neg__" => {
-                            neg_func = Some(*method_id);
-                        }
-                        "__pos__" => {
-                            pos_func = Some(*method_id);
-                        }
-                        "__abs__" => {
-                            abs_func = Some(*method_id);
-                        }
-                        "__invert__" => {
-                            invert_func = Some(*method_id);
-                        }
-                        "__bool__" => {
-                            bool_func = Some(*method_id);
-                        }
-                        "__int__" => {
-                            int_func = Some(*method_id);
-                        }
-                        "__float__" => {
-                            float_func = Some(*method_id);
-                        }
-                        "__getitem__" => {
-                            getitem_func = Some(*method_id);
-                        }
-                        "__setitem__" => {
-                            setitem_func = Some(*method_id);
-                        }
-                        "__delitem__" => {
-                            delitem_func = Some(*method_id);
-                        }
-                        "__contains__" => {
-                            contains_func = Some(*method_id);
-                        }
-                        "__iter__" => {
-                            iter_func = Some(*method_id);
-                        }
-                        "__next__" => {
-                            next_func = Some(*method_id);
-                        }
-                        "__call__" => {
-                            call_func = Some(*method_id);
-                        }
-                        _ => {
-                            // For non-dunder methods, we need to intern the name and add to maps
-                            // Look up without mutation - if not found, method was never called
-                            // as a method call (e.g., __init__ called via instantiation)
-                            if let Some(method_name) = self.lookup_interned(method_name_str) {
-                                // Route method to appropriate map based on method_kind
-                                match func.method_kind {
-                                    hir::MethodKind::Static => {
-                                        // Static methods: no self/cls, skip vtable
-                                        static_methods.insert(method_name, *method_id);
-                                    }
-                                    hir::MethodKind::ClassMethod => {
-                                        // Class methods: receives cls, skip vtable
-                                        class_methods.insert(method_name, *method_id);
-                                    }
-                                    hir::MethodKind::Instance => {
-                                        // Instance methods: regular virtual dispatch
-                                        method_funcs.insert(method_name, *method_id);
+                    // Detect dunder methods and track them via set_dunder_func.
+                    // Non-dunder names (and __init__, which is handled separately) fall through.
+                    if !info.set_dunder_func(method_name_str, *method_id) {
+                        // For non-dunder methods, we need to intern the name and add to maps.
+                        // Look up without mutation - if not found, method was never called
+                        // as a method call (e.g., __init__ called via instantiation).
+                        if let Some(method_name) = self.lookup_interned(method_name_str) {
+                            // Route method to appropriate map based on method_kind
+                            match func.method_kind {
+                                hir::MethodKind::Static => {
+                                    // Static methods: no self/cls, skip vtable
+                                    info.static_methods.insert(method_name, *method_id);
+                                }
+                                hir::MethodKind::ClassMethod => {
+                                    // Class methods: receives cls, skip vtable
+                                    info.class_methods.insert(method_name, *method_id);
+                                }
+                                hir::MethodKind::Instance => {
+                                    // Instance methods: regular virtual dispatch
+                                    info.method_funcs.insert(method_name, *method_id);
 
-                                        // Update vtable: reuse existing slot if overriding, else allocate new slot
-                                        if !vtable_slots.contains_key(&method_name) {
-                                            let slot = vtable_slots.len();
-                                            vtable_slots.insert(method_name, slot);
-                                        }
-                                        // If method already in vtable (inherited), we reuse the same slot
-                                        // but the method_funcs map now points to the overriding method
+                                    // Update vtable: reuse existing slot if overriding, else allocate new slot
+                                    if !info.vtable_slots.contains_key(&method_name) {
+                                        let slot = info.vtable_slots.len();
+                                        info.vtable_slots.insert(method_name, slot);
                                     }
+                                    // If method already in vtable (inherited), we reuse the same slot
+                                    // but the method_funcs map now points to the overriding method
                                 }
                             }
                         }
@@ -411,93 +223,32 @@ impl<'a> Lowering<'a> {
 
             // Build property info from HIR PropertyDef
             for prop in &class_def.properties {
-                properties.insert(prop.name, (prop.getter, prop.setter));
-                property_types.insert(prop.name, prop.ty.clone());
+                info.properties
+                    .insert(prop.name, (prop.getter, prop.setter));
+                info.property_types.insert(prop.name, prop.ty.clone());
             }
 
-            let total_field_count = own_field_offset + own_field_idx;
+            info.init_func = class_def.init_method;
+            info.base_class = class_def.base_class;
+            info.own_field_offset = own_field_offset;
+            info.total_field_count = own_field_offset + own_field_idx;
+            info.is_exception_class = class_def.is_exception_class;
 
-            // Build class attribute info (inherited from parent + own)
+            // Build class attribute info (inherited from parent + own).
             // For inherited attributes, we keep the parent's (class_id, offset) to ensure
-            // that accessing an inherited attribute uses the parent's storage
-            let (mut class_attr_offsets, mut class_attr_types, own_attr_offset) =
-                if let Some(base_id) = class_def.base_class {
-                    let parent_info = self
-                        .get_class_info(&base_id)
-                        .expect("Parent class must be processed first");
-                    // Clone inherited attributes - they keep their original (class_id, offset)
-                    (
-                        parent_info.class_attr_offsets.clone(),
-                        parent_info.class_attr_types.clone(),
-                        parent_info.class_attr_offsets.len(),
-                    )
-                } else {
-                    (IndexMap::new(), IndexMap::new(), 0)
-                };
-
-            // Add this class's own class attributes with the current class_id as owner
+            // that accessing an inherited attribute uses the parent's storage.
+            // The parent clone already populated class_attr_offsets/class_attr_types for
+            // the inherited case; for a root class they start empty — both paths are correct.
+            let own_attr_offset = info.class_attr_offsets.len();
             for (i, class_attr) in class_def.class_attrs.iter().enumerate() {
                 let offset = own_attr_offset + i;
                 // Store (owning_class_id, offset) so we know where the attribute is defined
-                class_attr_offsets.insert(class_attr.name, (class_id, offset));
-                class_attr_types.insert(class_attr.name, class_attr.ty.clone());
+                info.class_attr_offsets
+                    .insert(class_attr.name, (class_id, offset));
+                info.class_attr_types
+                    .insert(class_attr.name, class_attr.ty.clone());
             }
 
-            let info = LoweredClassInfo {
-                field_offsets,
-                field_types,
-                method_funcs,
-                init_func: class_def.init_method,
-                str_func,
-                repr_func,
-                eq_func,
-                ne_func,
-                lt_func,
-                le_func,
-                gt_func,
-                ge_func,
-                hash_func,
-                len_func,
-                add_func,
-                sub_func,
-                mul_func,
-                truediv_func,
-                floordiv_func,
-                mod_func,
-                pow_func,
-                radd_func,
-                rsub_func,
-                rmul_func,
-                rtruediv_func,
-                rfloordiv_func,
-                rmod_func,
-                rpow_func,
-                neg_func,
-                pos_func,
-                abs_func,
-                invert_func,
-                bool_func,
-                int_func,
-                float_func,
-                getitem_func,
-                setitem_func,
-                delitem_func,
-                contains_func,
-                iter_func,
-                next_func,
-                call_func,
-                base_class: class_def.base_class,
-                total_field_count,
-                own_field_offset,
-                vtable_slots,
-                class_attr_offsets,
-                class_attr_types,
-                static_methods,
-                class_methods,
-                properties,
-                property_types,
-                is_exception_class: class_def.is_exception_class,
-            };
             self.insert_class_info(class_id, info);
         }
     }
@@ -593,9 +344,18 @@ impl<'a> Lowering<'a> {
             // absolute order) to ensure inherited heap fields are also tracked by the GC.
             let mut heap_field_mask: i64 = 0;
             if let Some(class_info) = self.get_class_info(class_id) {
+                if class_info.field_types.len() > 64 {
+                    let class_name = self.resolve(class_def.name);
+                    eprintln!(
+                        "warning: class '{}' has {} fields (max 64 for GC heap field tracking); \
+                         fields beyond index 63 will not have precise GC tracing",
+                        class_name,
+                        class_info.field_types.len()
+                    );
+                }
                 for (i, (_name, ty)) in class_info.field_types.iter().enumerate() {
                     if i >= 64 {
-                        break; // Only support up to 64 fields
+                        break;
                     }
                     let is_heap = !matches!(
                         ty,

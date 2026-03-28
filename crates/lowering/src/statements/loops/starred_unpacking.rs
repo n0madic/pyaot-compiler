@@ -55,14 +55,34 @@ impl<'a> Lowering<'a> {
             );
         }
 
-        // Determine the types of unpacked elements from the tuple/list element type
+        // Determine the types of unpacked elements from the tuple/list element type.
+        //
+        // Layout: [before_star... | starred (List<inner>) | after_star...]
+        //
+        // `lower_starred_unpack_from_value` indexes into target_types as:
+        //   - before_star[i]  → target_types[i]
+        //   - after_star[i]   → target_types[before_star.len() + starred.is_some() as usize + i]
+        //
+        // So when `starred.is_some()`, position `before_star.len()` must hold the starred
+        // variable's type so that after_star indices are computed correctly.
         let target_types: Vec<Type> = match &elem_type {
             Type::Tuple(types) => types.clone(),
             Type::List(inner) => {
-                // For list elements, all have the same type
-                vec![(**inner).clone(); before_star.len() + after_star.len()]
+                // For list elements, all extracted elements share the same inner type.
+                // The starred variable itself collects a sub-list, so its slot holds List(inner).
+                let mut types = vec![(**inner).clone(); before_star.len() + after_star.len()];
+                if starred.is_some() {
+                    types.insert(before_star.len(), Type::List(inner.clone()));
+                }
+                types
             }
-            _ => vec![Type::Any; before_star.len() + after_star.len()],
+            _ => {
+                let mut types = vec![Type::Any; before_star.len() + after_star.len()];
+                if starred.is_some() {
+                    types.insert(before_star.len(), Type::List(Box::new(Type::Any)));
+                }
+                types
+            }
         };
 
         let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
@@ -236,13 +256,27 @@ impl<'a> Lowering<'a> {
             src: iter_operand,
         });
 
-        // Determine element types
+        // Determine element types.
+        //
+        // Layout mirrors lower_for_unpack_starred: [before_star... | starred (List<inner>) | after_star...]
+        // The starred slot must be present when `starred.is_some()` so that after_star index
+        // arithmetic in lower_starred_unpack_from_value resolves correctly.
         let target_types: Vec<Type> = match &elem_type {
             Type::Tuple(types) => types.clone(),
             Type::List(inner) => {
-                vec![(**inner).clone(); before_star.len() + after_star.len()]
+                let mut types = vec![(**inner).clone(); before_star.len() + after_star.len()];
+                if starred.is_some() {
+                    types.insert(before_star.len(), Type::List(inner.clone()));
+                }
+                types
             }
-            _ => vec![Type::Any; before_star.len() + after_star.len()],
+            _ => {
+                let mut types = vec![Type::Any; before_star.len() + after_star.len()];
+                if starred.is_some() {
+                    types.insert(before_star.len(), Type::List(Box::new(Type::Any)));
+                }
+                types
+            }
         };
 
         // Create blocks

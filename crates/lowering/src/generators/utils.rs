@@ -104,7 +104,8 @@ impl<'a> Lowering<'a> {
                                 // The resume protocol always passes boxed values through the
                                 // iterator's *mut Obj return slot.
                                 if matches!(field_ty, Type::Float) {
-                                    let boxed_local = self.alloc_and_add_local(Type::Str, mir_func); // Str = i64 ptr
+                                    let boxed_local =
+                                        self.alloc_and_add_local(Type::HeapAny, mir_func); // boxed heap pointer
                                     block.instructions.push(mir::Instruction {
                                         kind: mir::InstructionKind::RuntimeCall {
                                             dest: boxed_local,
@@ -269,9 +270,10 @@ impl<'a> Lowering<'a> {
 
                 Ok(mir::Operand::Local(result_local))
             }
-            _ => Err(pyaot_diagnostics::CompilerError::codegen_error(
-                "unsupported expression in generator yield",
-            )),
+            other => Err(pyaot_diagnostics::CompilerError::codegen_error(format!(
+                "unsupported expression in generator yield: {:?}",
+                other
+            ))),
         }
     }
 
@@ -461,9 +463,10 @@ impl<'a> Lowering<'a> {
                     _ => Ok(operand_val),
                 }
             }
-            _ => Err(pyaot_diagnostics::CompilerError::codegen_error(
-                "unsupported expression in generator filter condition",
-            )),
+            other => Err(pyaot_diagnostics::CompilerError::codegen_error(format!(
+                "unsupported expression in generator filter condition: {:?}",
+                other
+            ))),
         }
     }
 
@@ -484,9 +487,10 @@ impl<'a> Lowering<'a> {
                     ))
                 }
             }
-            _ => Err(pyaot_diagnostics::CompilerError::codegen_error(
-                "unsupported expression in generator operand",
-            )),
+            other => Err(pyaot_diagnostics::CompilerError::codegen_error(format!(
+                "unsupported expression in generator operand: {:?}",
+                other
+            ))),
         }
     }
 

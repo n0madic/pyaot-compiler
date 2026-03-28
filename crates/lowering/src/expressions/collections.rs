@@ -69,7 +69,7 @@ impl<'a> Lowering<'a> {
             // - Union element types need boxing for primitive values
             // - Bool elements: box for heap lists, extend to i64 for raw bool lists
             let push_operand = if elem_type == Type::Float {
-                let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: boxed_local,
                     func: mir::RuntimeFunc::BoxFloat,
@@ -78,7 +78,7 @@ impl<'a> Lowering<'a> {
                 mir::Operand::Local(boxed_local)
             } else if elem_type == Type::Bool {
                 // ELEM_HEAP_OBJ: box bools
-                let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: boxed_local,
                     func: mir::RuntimeFunc::BoxBool,
@@ -154,7 +154,7 @@ impl<'a> Lowering<'a> {
                 let elem_type = self.get_expr_type(elem_expr, hir_module);
                 match elem_type {
                     Type::Int => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::BoxInt,
@@ -163,7 +163,7 @@ impl<'a> Lowering<'a> {
                         mir::Operand::Local(boxed_local)
                     }
                     Type::Bool => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::BoxBool,
@@ -172,7 +172,7 @@ impl<'a> Lowering<'a> {
                         mir::Operand::Local(boxed_local)
                     }
                     Type::Float => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::BoxFloat,

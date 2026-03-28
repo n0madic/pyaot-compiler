@@ -59,7 +59,7 @@ impl<'a> Lowering<'a> {
     /// Heap types (Str, List, Dict, Tuple, Set, class instances, etc.) are already pointers
     /// and pass through unchanged.
     ///
-    /// Uses `Type::Str` as a proxy for the pointer type since it maps to I64 in Cranelift.
+    /// Uses `Type::HeapAny` for the boxed result type since boxing produces a generic heap pointer.
     fn box_primitive_if_needed(
         &mut self,
         operand: mir::Operand,
@@ -68,19 +68,55 @@ impl<'a> Lowering<'a> {
     ) -> mir::Operand {
         match ty {
             Type::Int => {
-                self.emit_box_primitive(operand, Type::Str, mir::RuntimeFunc::BoxInt, mir_func)
+                self.emit_box_primitive(operand, Type::HeapAny, mir::RuntimeFunc::BoxInt, mir_func)
             }
             Type::Bool => {
-                self.emit_box_primitive(operand, Type::Str, mir::RuntimeFunc::BoxBool, mir_func)
+                self.emit_box_primitive(operand, Type::HeapAny, mir::RuntimeFunc::BoxBool, mir_func)
             }
-            Type::Float => {
-                self.emit_box_primitive(operand, Type::Str, mir::RuntimeFunc::BoxFloat, mir_func)
-            }
+            Type::Float => self.emit_box_primitive(
+                operand,
+                Type::HeapAny,
+                mir::RuntimeFunc::BoxFloat,
+                mir_func,
+            ),
             Type::None => {
-                self.emit_box_primitive(operand, Type::Str, mir::RuntimeFunc::BoxNone, mir_func)
+                self.emit_box_primitive(operand, Type::HeapAny, mir::RuntimeFunc::BoxNone, mir_func)
             }
             // All heap types are already object pointers — no boxing needed
             _ => operand,
+        }
+    }
+
+    /// Get the unbox runtime function for a primitive type stored in a heap container.
+    /// Returns `None` for heap types that don't need unboxing.
+    fn unbox_func_for_type(ty: &Type) -> Option<mir::RuntimeFunc> {
+        match ty {
+            Type::Int => Some(mir::RuntimeFunc::UnboxInt),
+            Type::Float => Some(mir::RuntimeFunc::UnboxFloat),
+            Type::Bool => Some(mir::RuntimeFunc::UnboxBool),
+            _ => None,
+        }
+    }
+
+    /// Unbox a heap-stored value to a primitive type if needed.
+    /// For primitive types (Int, Float, Bool), fetches from the boxed pointer.
+    /// For heap types, returns the operand unchanged.
+    fn unbox_if_needed(
+        &mut self,
+        operand: mir::Operand,
+        target_type: &Type,
+        mir_func: &mut mir::Function,
+    ) -> mir::Operand {
+        if let Some(unbox_func) = Self::unbox_func_for_type(target_type) {
+            let unboxed_local = self.alloc_and_add_local(target_type.clone(), mir_func);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: unboxed_local,
+                func: unbox_func,
+                args: vec![operand],
+            });
+            mir::Operand::Local(unboxed_local)
+        } else {
+            operand
         }
     }
 
@@ -468,38 +504,7 @@ impl<'a> Lowering<'a> {
     ) -> mir::Operand {
         // Dict values are stored as boxed pointers for GC safety.
         // Primitive types need to be unboxed when retrieved.
-        match param_type {
-            Type::Int => {
-                let unboxed_local = self.alloc_and_add_local(Type::Int, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: unboxed_local,
-                    func: mir::RuntimeFunc::UnboxInt,
-                    args: vec![dict_value_operand],
-                });
-                mir::Operand::Local(unboxed_local)
-            }
-            Type::Float => {
-                let unboxed_local = self.alloc_and_add_local(Type::Float, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: unboxed_local,
-                    func: mir::RuntimeFunc::UnboxFloat,
-                    args: vec![dict_value_operand],
-                });
-                mir::Operand::Local(unboxed_local)
-            }
-            Type::Bool => {
-                let unboxed_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: unboxed_local,
-                    func: mir::RuntimeFunc::UnboxBool,
-                    args: vec![dict_value_operand],
-                });
-                mir::Operand::Local(unboxed_local)
-            }
-            _ => {
-                // Heap types (str, list, etc.) are stored as pointers and can be used directly
-                dict_value_operand
-            }
-        }
+        // Heap types (str, list, etc.) are stored as pointers and can be used directly.
+        self.unbox_if_needed(dict_value_operand, param_type, mir_func)
     }
 }

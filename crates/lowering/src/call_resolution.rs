@@ -338,7 +338,7 @@ impl<'a> Lowering<'a> {
         };
 
         if needs_unbox {
-            let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+            let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: boxed_local,
                 func: get_func,
@@ -830,7 +830,7 @@ impl<'a> Lowering<'a> {
 
             // Remove consumed keys
             for key_local in &consumed_keys {
-                let dummy = self.alloc_and_add_local(Type::Str, mir_func);
+                let dummy = self.alloc_and_add_local(Type::HeapAny, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy,
                     func: mir::RuntimeFunc::DictPop,
@@ -926,11 +926,11 @@ impl<'a> Lowering<'a> {
         // Has-key block
         self.push_block(has_key_bb);
 
-        // DictGet returns a boxed pointer for primitive values, so use Str type as placeholder.
-        // For heap types, it returns the pointer directly.
+        // DictGet returns a boxed pointer for primitive values; use HeapAny to represent
+        // the intermediate boxed pointer. For heap types, it returns the pointer directly.
         let dict_value_type = match &param_type {
-            Type::Int | Type::Float | Type::Bool => Type::Str, // boxed pointer
-            _ => param_type.clone(),                           // direct pointer
+            Type::Int | Type::Float | Type::Bool => Type::HeapAny, // boxed pointer
+            _ => param_type.clone(),                               // direct pointer
         };
         let dict_value = self.alloc_and_add_local(dict_value_type, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {

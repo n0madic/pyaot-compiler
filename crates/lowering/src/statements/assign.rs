@@ -505,7 +505,7 @@ impl<'a> Lowering<'a> {
 
         // 4. Copy from temps to actual target variables
         // Verify that we have the expected number of temp locals before iterating
-        debug_assert_eq!(
+        assert_eq!(
             temp_locals.len(),
             before_star.len() + starred.is_some() as usize + after_star.len(),
             "temp_locals count mismatch in unpacking assignment"
@@ -630,7 +630,7 @@ impl<'a> Lowering<'a> {
                 // list[index] = value
                 // Box float/bool values before storing (lists use ELEM_HEAP_OBJ for these types)
                 let store_operand = if **elem_ty == Type::Float {
-                    let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                    let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: boxed_local,
                         func: mir::RuntimeFunc::BoxFloat,
@@ -638,7 +638,7 @@ impl<'a> Lowering<'a> {
                     });
                     mir::Operand::Local(boxed_local)
                 } else if **elem_ty == Type::Bool {
-                    let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                    let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: boxed_local,
                         func: mir::RuntimeFunc::BoxBool,

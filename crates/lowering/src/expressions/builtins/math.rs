@@ -892,7 +892,7 @@ impl<'a> Lowering<'a> {
         // Get item at index
         // For floats, ListGet returns a boxed pointer (i64), not the float value
         let item_type = if element_type == Type::Float {
-            Type::Str // Use Str as proxy for pointer type (maps to I64)
+            Type::HeapAny // Guaranteed heap pointer (*mut Obj) returned by ListGet for floats
         } else {
             element_type.clone()
         };
@@ -1027,7 +1027,7 @@ impl<'a> Lowering<'a> {
 
         // Box float results before storing in tuple
         let quot_operand = if is_float {
-            let boxed = self.alloc_and_add_local(Type::Str, mir_func);
+            let boxed = self.alloc_and_add_local(Type::HeapAny, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: boxed,
                 func: mir::RuntimeFunc::BoxFloat,
@@ -1039,7 +1039,7 @@ impl<'a> Lowering<'a> {
         };
 
         let rem_operand = if is_float {
-            let boxed = self.alloc_and_add_local(Type::Str, mir_func);
+            let boxed = self.alloc_and_add_local(Type::HeapAny, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: boxed,
                 func: mir::RuntimeFunc::BoxFloat,

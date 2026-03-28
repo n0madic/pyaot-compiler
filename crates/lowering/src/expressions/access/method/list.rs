@@ -50,7 +50,7 @@ impl<'a> Lowering<'a> {
                 // Bool and Float elements are stored as boxed objects (ELEM_HEAP_OBJ)
                 let push_operand = match &*elem_ty {
                     Type::Bool => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::BoxBool,
@@ -59,7 +59,7 @@ impl<'a> Lowering<'a> {
                         mir::Operand::Local(boxed_local)
                     }
                     Type::Float => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::BoxFloat,
@@ -93,7 +93,7 @@ impl<'a> Lowering<'a> {
                 // ListPop returns *mut Obj for Bool/Float (boxed), need to unbox
                 match &*elem_ty {
                     Type::Bool => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::ListPop,
@@ -108,7 +108,7 @@ impl<'a> Lowering<'a> {
                         Ok(mir::Operand::Local(result_local))
                     }
                     Type::Float => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::ListPop,
@@ -149,7 +149,7 @@ impl<'a> Lowering<'a> {
 
                 let boxed_value = match &*elem_ty {
                     Type::Bool => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::BoxBool,
@@ -158,7 +158,7 @@ impl<'a> Lowering<'a> {
                         mir::Operand::Local(boxed_local)
                     }
                     Type::Float => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::BoxFloat,
@@ -186,7 +186,7 @@ impl<'a> Lowering<'a> {
 
                 let boxed_value = match &*elem_ty {
                     Type::Bool => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::BoxBool,
@@ -195,7 +195,7 @@ impl<'a> Lowering<'a> {
                         mir::Operand::Local(boxed_local)
                     }
                     Type::Float => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::BoxFloat,

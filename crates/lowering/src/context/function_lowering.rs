@@ -150,19 +150,23 @@ impl<'a> Lowering<'a> {
                 self.varargs_params.insert(hir_param.var);
             }
 
-            // For nonlocal parameters, the type is a cell pointer (use Str as placeholder)
-            let param_ty = if is_cell_param { Type::Str } else { base_ty };
+            // For nonlocal parameters, the type is a cell pointer (heap object pointer)
+            let param_ty = if is_cell_param {
+                Type::HeapAny
+            } else {
+                base_ty
+            };
 
             // Register parameter variable
             self.insert_var_local(hir_param.var, local_id);
             // Track parameter type for type inference (use the underlying value type, not cell type)
             // This is needed so that reading from the cell returns the correct type
             if is_cell_param {
-                // Get the underlying value type from inferred types or default to Int
+                // Get the underlying value type from inferred types or default to Any
                 let value_ty = if i < inferred_param_types.len() {
                     inferred_param_types[i].clone()
                 } else {
-                    Type::Int
+                    Type::Any
                 };
                 self.insert_var_type(hir_param.var, value_ty);
             } else {
@@ -237,8 +241,8 @@ impl<'a> Lowering<'a> {
             mir_func.add_local(mir::Local {
                 id: cell_local,
                 name: None,
-                ty: Type::Str,    // Placeholder type for cell pointer
-                is_gc_root: true, // Cells are heap objects
+                ty: Type::HeapAny, // Cell pointer (heap object)
+                is_gc_root: true,  // Cells are heap objects
             });
 
             // Create the cell with the initial value (or default if not yet initialized)
@@ -335,7 +339,7 @@ impl<'a> Lowering<'a> {
                             // Allocate a global slot for this mutable default
                             let slot = self.next_default_slot;
                             self.next_default_slot += 1;
-                            debug_assert!(
+                            assert!(
                                 self.next_default_slot > slot,
                                 "next_default_slot overflow: mutable default slot counter wrapped"
                             );
@@ -366,6 +370,10 @@ impl<'a> Lowering<'a> {
         for ((func_id, param_idx), slot) in slots_to_init {
             // Get the function and parameter
             let Some(func) = hir_module.func_defs.get(&func_id) else {
+                eprintln!(
+                    "warning: function {:?} not found for mutable default initialization",
+                    func_id
+                );
                 continue;
             };
             let param = &func.params[param_idx];
@@ -579,6 +587,19 @@ impl<'a> Lowering<'a> {
     /// This ensures that when wrapper functions call their captured func parameter,
     /// we recognize it as an indirect call.
     fn register_all_wrappers_in_chain(&mut self, expr: &hir::Expr, hir_module: &hir::Module) {
+        self.register_all_wrappers_in_chain_inner(expr, hir_module, 0);
+    }
+
+    fn register_all_wrappers_in_chain_inner(
+        &mut self,
+        expr: &hir::Expr,
+        hir_module: &hir::Module,
+        depth: usize,
+    ) {
+        if depth > 64 {
+            return;
+        }
+
         if let hir::ExprKind::Call { func, args, .. } = &expr.kind {
             let func_expr = &hir_module.exprs[*func];
 
@@ -612,7 +633,7 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 // Also recursively process in case of deeper nesting
-                self.register_all_wrappers_in_chain(func_expr, hir_module);
+                self.register_all_wrappers_in_chain_inner(func_expr, hir_module, depth + 1);
             }
 
             // Check if the function being called is a decorator (direct decorator, not factory)
@@ -632,7 +653,7 @@ impl<'a> Lowering<'a> {
             for arg in args {
                 if let hir::CallArg::Regular(arg_expr_id) = arg {
                     let arg_expr = &hir_module.exprs[*arg_expr_id];
-                    self.register_all_wrappers_in_chain(arg_expr, hir_module);
+                    self.register_all_wrappers_in_chain_inner(arg_expr, hir_module, depth + 1);
                 }
             }
         }

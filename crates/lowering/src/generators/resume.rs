@@ -35,7 +35,7 @@ impl<'a> Lowering<'a> {
         let params = vec![mir::Local {
             id: gen_param_local,
             name: None,
-            ty: Type::Str, // Use Str as pointer placeholder (maps to I64)
+            ty: Type::HeapAny, // Generator object is a heap pointer
             is_gc_root: false,
         }];
 

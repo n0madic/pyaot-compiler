@@ -190,6 +190,169 @@ impl LoweredClassInfo {
             _ => None,
         }
     }
+
+    /// Set a dunder method by name. Returns `true` if the name was recognized as a
+    /// tracked dunder, `false` if the caller should treat it as a regular method.
+    ///
+    /// Note: `__init__` is intentionally excluded — it is handled separately via
+    /// `class_def.init_method` and stored in `init_func` by the caller.
+    pub fn set_dunder_func(&mut self, name: &str, func_id: FuncId) -> bool {
+        match name {
+            "__str__" => {
+                self.str_func = Some(func_id);
+                true
+            }
+            "__repr__" => {
+                self.repr_func = Some(func_id);
+                true
+            }
+            "__eq__" => {
+                self.eq_func = Some(func_id);
+                true
+            }
+            "__ne__" => {
+                self.ne_func = Some(func_id);
+                true
+            }
+            "__lt__" => {
+                self.lt_func = Some(func_id);
+                true
+            }
+            "__le__" => {
+                self.le_func = Some(func_id);
+                true
+            }
+            "__gt__" => {
+                self.gt_func = Some(func_id);
+                true
+            }
+            "__ge__" => {
+                self.ge_func = Some(func_id);
+                true
+            }
+            "__hash__" => {
+                self.hash_func = Some(func_id);
+                true
+            }
+            "__len__" => {
+                self.len_func = Some(func_id);
+                true
+            }
+            "__add__" => {
+                self.add_func = Some(func_id);
+                true
+            }
+            "__sub__" => {
+                self.sub_func = Some(func_id);
+                true
+            }
+            "__mul__" => {
+                self.mul_func = Some(func_id);
+                true
+            }
+            "__truediv__" => {
+                self.truediv_func = Some(func_id);
+                true
+            }
+            "__floordiv__" => {
+                self.floordiv_func = Some(func_id);
+                true
+            }
+            "__mod__" => {
+                self.mod_func = Some(func_id);
+                true
+            }
+            "__pow__" => {
+                self.pow_func = Some(func_id);
+                true
+            }
+            "__radd__" => {
+                self.radd_func = Some(func_id);
+                true
+            }
+            "__rsub__" => {
+                self.rsub_func = Some(func_id);
+                true
+            }
+            "__rmul__" => {
+                self.rmul_func = Some(func_id);
+                true
+            }
+            "__rtruediv__" => {
+                self.rtruediv_func = Some(func_id);
+                true
+            }
+            "__rfloordiv__" => {
+                self.rfloordiv_func = Some(func_id);
+                true
+            }
+            "__rmod__" => {
+                self.rmod_func = Some(func_id);
+                true
+            }
+            "__rpow__" => {
+                self.rpow_func = Some(func_id);
+                true
+            }
+            "__neg__" => {
+                self.neg_func = Some(func_id);
+                true
+            }
+            "__pos__" => {
+                self.pos_func = Some(func_id);
+                true
+            }
+            "__abs__" => {
+                self.abs_func = Some(func_id);
+                true
+            }
+            "__invert__" => {
+                self.invert_func = Some(func_id);
+                true
+            }
+            "__bool__" => {
+                self.bool_func = Some(func_id);
+                true
+            }
+            "__int__" => {
+                self.int_func = Some(func_id);
+                true
+            }
+            "__float__" => {
+                self.float_func = Some(func_id);
+                true
+            }
+            "__getitem__" => {
+                self.getitem_func = Some(func_id);
+                true
+            }
+            "__setitem__" => {
+                self.setitem_func = Some(func_id);
+                true
+            }
+            "__delitem__" => {
+                self.delitem_func = Some(func_id);
+                true
+            }
+            "__contains__" => {
+                self.contains_func = Some(func_id);
+                true
+            }
+            "__iter__" => {
+                self.iter_func = Some(func_id);
+                true
+            }
+            "__next__" => {
+                self.next_func = Some(func_id);
+                true
+            }
+            "__call__" => {
+                self.call_func = Some(func_id);
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Main lowering context that transforms HIR to MIR

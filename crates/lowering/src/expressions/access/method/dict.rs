@@ -19,7 +19,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) {
         if let Some(unbox_func) = unbox_func {
-            let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+            let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: boxed_local,
                 func: call_func,
@@ -50,12 +50,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         // Determine if value type needs unboxing
-        let unbox_func = match value_ty.as_ref() {
-            Type::Int => Some(mir::RuntimeFunc::UnboxInt),
-            Type::Float => Some(mir::RuntimeFunc::UnboxFloat),
-            Type::Bool => Some(mir::RuntimeFunc::UnboxBool),
-            _ => None,
-        };
+        let unbox_func = Self::unbox_func_for_type(value_ty.as_ref());
 
         match method_name {
             "get" => {

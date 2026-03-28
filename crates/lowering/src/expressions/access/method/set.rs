@@ -199,7 +199,7 @@ impl<'a> Lowering<'a> {
                 // SetPop returns a boxed *mut Obj; unbox based on element type
                 match elem_ty {
                     Type::Bool => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::SetPop,
@@ -214,7 +214,7 @@ impl<'a> Lowering<'a> {
                         Ok(mir::Operand::Local(result_local))
                     }
                     Type::Float => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::SetPop,
@@ -229,7 +229,7 @@ impl<'a> Lowering<'a> {
                         Ok(mir::Operand::Local(result_local))
                     }
                     Type::Int => {
-                        let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
                             func: mir::RuntimeFunc::SetPop,

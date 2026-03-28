@@ -209,16 +209,11 @@ impl<'a> Lowering<'a> {
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
 
                 // Check if value type needs unboxing
-                let unbox_func = match value_ty.as_ref() {
-                    Type::Int => Some(mir::RuntimeFunc::UnboxInt),
-                    Type::Float => Some(mir::RuntimeFunc::UnboxFloat),
-                    Type::Bool => Some(mir::RuntimeFunc::UnboxBool),
-                    _ => None,
-                };
+                let unbox_func = Self::unbox_func_for_type(value_ty.as_ref());
 
                 if let Some(unbox_func) = unbox_func {
                     // Get returns a boxed pointer, need to unbox
-                    let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                    let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: boxed_local,
                         func: mir::RuntimeFunc::DictGet,
@@ -250,15 +245,10 @@ impl<'a> Lowering<'a> {
                 let index_type = self.get_expr_type(index_expr, hir_module);
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
 
-                let unbox_func = match value_ty.as_ref() {
-                    Type::Int => Some(mir::RuntimeFunc::UnboxInt),
-                    Type::Float => Some(mir::RuntimeFunc::UnboxFloat),
-                    Type::Bool => Some(mir::RuntimeFunc::UnboxBool),
-                    _ => None,
-                };
+                let unbox_func = Self::unbox_func_for_type(value_ty.as_ref());
 
                 if let Some(unbox_func) = unbox_func {
-                    let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                    let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: boxed_local,
                         func: mir::RuntimeFunc::DefaultDictGet,

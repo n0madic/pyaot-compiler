@@ -399,6 +399,12 @@ impl<'a> Lowering<'a> {
                         mir_func,
                     )?;
 
+                    debug_assert_eq!(
+                        alt_bindings.len(),
+                        binding_locals.len(),
+                        "MatchOr alternatives must produce the same number of bindings"
+                    );
+
                     let alt_write_bb = self.new_block();
                     let alt_next_bb = self.new_block();
                     let alt_write_bb_id = alt_write_bb.id;
@@ -851,16 +857,11 @@ impl<'a> Lowering<'a> {
 
             // DictGet returns a boxed *mut Obj for all values.
             // Primitive types (Int, Float, Bool) need unboxing.
-            let unbox_func = match &value_type {
-                Type::Int => Some(mir::RuntimeFunc::UnboxInt),
-                Type::Float => Some(mir::RuntimeFunc::UnboxFloat),
-                Type::Bool => Some(mir::RuntimeFunc::UnboxBool),
-                _ => None,
-            };
+            let unbox_func = Self::unbox_func_for_type(&value_type);
 
             let value_local = self.alloc_and_add_local(value_type.clone(), mir_func);
             if let Some(unbox_func) = unbox_func {
-                let boxed_local = self.alloc_and_add_local(Type::Str, mir_func);
+                let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: boxed_local,
                     func: mir::RuntimeFunc::DictGet,
@@ -929,7 +930,7 @@ impl<'a> Lowering<'a> {
             for key_expr_id in keys {
                 let key_expr = &ctx.hir_module.exprs[*key_expr_id];
                 let key_operand = self.lower_expr(key_expr, ctx.hir_module, mir_func)?;
-                let dummy = self.alloc_and_add_local(Type::Str, mir_func);
+                let dummy = self.alloc_and_add_local(Type::HeapAny, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy,
                     func: mir::RuntimeFunc::DictPop,

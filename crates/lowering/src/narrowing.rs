@@ -392,8 +392,6 @@ impl<'a> Lowering<'a> {
         let else_type = original_type.narrow_excluding(&checked_type);
 
         // Detect dead branches based on narrowing results
-        // For non-Union types, narrow_to returns self if matching, narrow_excluding returns self
-        // So we need to check if the isinstance check is always true or always false
         let dead_branch = if matches!(original_type, Type::Union(_)) {
             // For Union types, check if narrowing produces Type::Never
             if matches!(then_type, Type::Never) {
@@ -403,20 +401,25 @@ impl<'a> Lowering<'a> {
             } else {
                 None
             }
+        } else if matches!(original_type, Type::Any | Type::HeapAny) {
+            // Any/HeapAny can hold any runtime type — both branches are live
+            None
         } else {
-            // For non-Union types, check direct type compatibility
+            // For concrete non-Union types, check direct type compatibility
             // isinstance(x: int, str) is always False (then-branch dead)
             // isinstance(x: str, str) is always True (else-branch dead)
-            if Self::types_compatible_for_isinstance(&original_type, &checked_type) {
+            if self.types_compatible_for_isinstance_full(&original_type, &checked_type) {
                 Some(DeadBranch::ElseBranch)
             } else {
                 Some(DeadBranch::ThenBranch)
             }
         };
 
-        // For narrowing purposes, only return info for Union types
-        // Non-Union types don't benefit from narrowing but we still detect dead code
-        if !matches!(original_type, Type::Union(_)) && dead_branch.is_none() {
+        // For narrowing purposes, only return info for Union/Any types
+        // Concrete non-Union types don't benefit from narrowing but we still detect dead code
+        if !matches!(original_type, Type::Union(_) | Type::Any | Type::HeapAny)
+            && dead_branch.is_none()
+        {
             return None;
         }
 
@@ -439,8 +442,10 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Check if two types are compatible for isinstance purposes.
+    /// Check if two types are compatible for isinstance purposes (primitive/container types).
     /// Returns true if isinstance(value_of_type_a, type_b) would always return True.
+    /// This static method handles all non-class types; for class inheritance, use the
+    /// instance method `types_compatible_for_isinstance_full`.
     fn types_compatible_for_isinstance(actual: &Type, target: &Type) -> bool {
         match (actual, target) {
             // Exact matches
@@ -456,11 +461,36 @@ impl<'a> Lowering<'a> {
             (Type::Dict(_, _), Type::Dict(_, _)) => true,
             (Type::Set(_), Type::Set(_)) => true,
             (Type::Tuple(_), Type::Tuple(_)) => true,
-            // Class types match by class_id
+            // Class types: exact match only (inheritance checked separately)
             (Type::Class { class_id: id1, .. }, Type::Class { class_id: id2, .. }) => id1 == id2,
             // Everything else is incompatible
             _ => false,
         }
+    }
+
+    /// Full isinstance compatibility check including class inheritance.
+    /// Walks the class hierarchy to determine if `actual` is a subclass of `target`.
+    fn types_compatible_for_isinstance_full(&self, actual: &Type, target: &Type) -> bool {
+        if Self::types_compatible_for_isinstance(actual, target) {
+            return true;
+        }
+        // Check class inheritance chain
+        if let (Type::Class { class_id: id1, .. }, Type::Class { class_id: id2, .. }) =
+            (actual, target)
+        {
+            let mut current_id = *id1;
+            while let Some(class_info) = self.get_class_info(&current_id) {
+                if let Some(base_id) = class_info.base_class {
+                    if base_id == *id2 {
+                        return true;
+                    }
+                    current_id = base_id;
+                } else {
+                    break;
+                }
+            }
+        }
+        false
     }
 
     /// Apply narrowings to var_types and return saved original types for restoration.
