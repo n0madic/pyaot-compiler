@@ -98,6 +98,14 @@ pub unsafe extern "C" fn rt_stringio_new(initial: *mut Obj) -> *mut Obj {
 
     // If initial string provided, copy its content
     if !initial.is_null() {
+        if (*initial).header.type_tag != TypeTagKind::Str {
+            let msg = b"TypeError: initial_value must be str";
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
         let str_obj = initial as *const StrObj;
         let initial_len = (*str_obj).len;
         if initial_len > 0 {
@@ -296,6 +304,14 @@ pub unsafe extern "C" fn rt_bytesio_new(initial: *mut Obj) -> *mut Obj {
 
     // If initial bytes provided, copy its content
     if !initial.is_null() {
+        if (*initial).header.type_tag != TypeTagKind::Bytes {
+            let msg = b"TypeError: initial_bytes must be bytes";
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            );
+        }
         let bytes_obj = initial as *const BytesObj;
         let initial_len = (*bytes_obj).len;
         if initial_len > 0 {

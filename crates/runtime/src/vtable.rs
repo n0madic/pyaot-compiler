@@ -239,13 +239,18 @@ pub extern "C" fn rt_register_method_name(class_id: i64, name_hash: i64, slot: i
     unsafe {
         let registry = &mut *METHOD_NAME_REGISTRY.0.get();
         let table = &mut registry[class_id as usize];
-        if table.count < MAX_METHODS_PER_CLASS {
-            table.entries[table.count] = MethodNameEntry {
-                name_hash: name_hash as u64,
-                slot: slot as usize,
-            };
-            table.count += 1;
+        if table.count >= MAX_METHODS_PER_CLASS {
+            eprintln!(
+                "WARNING: class {} exceeds maximum methods per class ({}), method with hash {} dropped",
+                class_id, MAX_METHODS_PER_CLASS, name_hash
+            );
+            return;
         }
+        table.entries[table.count] = MethodNameEntry {
+            name_hash: name_hash as u64,
+            slot: slot as usize,
+        };
+        table.count += 1;
     }
 }
 
@@ -259,6 +264,15 @@ pub extern "C" fn rt_vtable_lookup_by_name(obj_ptr: *mut u8, name_hash: i64) -> 
         return std::ptr::null();
     }
     unsafe {
+        // Validate that this is actually an InstanceObj by checking the type tag.
+        // The type_tag field is the first byte of ObjHeader, which is at offset 0.
+        let type_tag_byte = *obj_ptr;
+        if pyaot_core_defs::TypeTagKind::from_tag(type_tag_byte)
+            != Some(pyaot_core_defs::TypeTagKind::Instance)
+        {
+            return std::ptr::null();
+        }
+
         // Get class_id from the InstanceObj (offset 25 from obj start)
         // InstanceObj layout: ObjHeader(16) + vtable_ptr(8) + class_id(1)
         let class_id = *obj_ptr.add(24) as usize;

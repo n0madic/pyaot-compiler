@@ -28,7 +28,8 @@ impl<'a> Lowering<'a> {
 
         match &obj_type {
             Type::Str => {
-                // String indexing returns a single character string
+                // String indexing: index is a Python codepoint index (may be negative).
+                // Use StrSubscript which converts codepoint index → byte offset.
                 mir_func.add_local(mir::Local {
                     id: result_local,
                     name: None,
@@ -37,7 +38,7 @@ impl<'a> Lowering<'a> {
                 });
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::StrGetChar,
+                    func: mir::RuntimeFunc::StrSubscript,
                     args: vec![obj_operand, index_operand],
                 });
             }

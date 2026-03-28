@@ -176,8 +176,10 @@ pub enum RuntimeFunc {
     StrSlice,
     /// String slicing with step (str[start:end:step])
     StrSliceStep,
-    /// Get character at index (str[i])
+    /// Get character at byte index (internal, used by loop iteration)
     StrGetChar,
+    /// Python subscript s[char_index]: char_index is a codepoint index (may be negative)
+    StrSubscript,
     /// String multiplication (str * int)
     StrMul,
     /// String upper()

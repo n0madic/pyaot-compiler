@@ -1,16 +1,22 @@
 //! defaultdict runtime support
 //!
 //! defaultdict uses the same `DictObj` struct as regular dicts (identical memory
-//! layout and size). The factory tag is stored in a separate static registry
-//! keyed by object pointer. This ensures defaultdict objects go through the same
-//! slab allocation path as regular dicts, so all dict operations (keys, values,
-//! items, resize, finalize) work correctly.
+//! layout and size). The factory tag is packed into the high byte of
+//! `entries_capacity` so that no external registry is needed and the tag
+//! survives slab-allocator address reuse.
+//!
+//! Layout:
+//!   entries_capacity = (factory_tag as usize) << 56 | real_capacity
+//!
+//! Because real capacities are always power-of-two values ≤ 2^56 this is safe
+//! on any 64-bit platform.  The constants and low-level helpers live in
+//! `dict.rs` so that `dict_resize` and `dict_finalize` can also use them.
 
 use crate::boxing::{rt_box_float, rt_box_int};
-use crate::dict::{rt_dict_get, rt_dict_set};
+use crate::dict::{
+    real_entries_capacity, rt_dict_get, rt_dict_set, CAPACITY_MASK, FACTORY_TAG_SHIFT,
+};
 use crate::object::{DictObj, Obj, TypeTagKind};
-use std::cell::UnsafeCell;
-use std::collections::HashMap;
 
 /// Factory tags for default value creation
 const FACTORY_INT: u8 = 0;
@@ -22,41 +28,15 @@ const FACTORY_DICT: u8 = 5;
 const FACTORY_SET: u8 = 6;
 const FACTORY_NONE: u8 = 255; // No factory (acts like regular dict)
 
-/// Lock-free registry mapping defaultdict pointers to their factory tags.
-struct FactoryRegistry(UnsafeCell<Option<HashMap<usize, u8>>>);
-
-// Safety: The runtime is single-threaded (AOT-compiled Python has no threading)
-unsafe impl Sync for FactoryRegistry {}
-
-static FACTORY_REGISTRY: FactoryRegistry = FactoryRegistry(UnsafeCell::new(None));
-
-fn get_registry() -> &'static mut HashMap<usize, u8> {
-    unsafe {
-        let reg = &mut *FACTORY_REGISTRY.0.get();
-        reg.get_or_insert_with(HashMap::new)
-    }
-}
-
-/// Store factory_tag for a defaultdict object
-fn set_factory_tag(obj: *mut Obj, tag: u8) {
-    get_registry().insert(obj as usize, tag);
-}
-
-/// Get factory_tag for a defaultdict object (returns FACTORY_NONE if not found)
-fn get_factory_tag(obj: *mut Obj) -> u8 {
-    get_registry()
-        .get(&(obj as usize))
-        .copied()
-        .unwrap_or(FACTORY_NONE)
-}
-
-/// Remove factory_tag entry when object is finalized
-pub fn remove_factory_tag(obj: *mut Obj) {
-    get_registry().remove(&(obj as usize));
+/// Extract the factory_tag from the high byte of a DictObj's entries_capacity.
+#[inline]
+fn get_factory_tag(dict: *mut DictObj) -> u8 {
+    unsafe { ((*dict).entries_capacity >> FACTORY_TAG_SHIFT) as u8 }
 }
 
 /// Create a new defaultdict with the given capacity and factory tag.
-/// Uses DictObj layout — identical to rt_make_dict but with DefaultDict type tag.
+/// Uses DictObj layout — identical to rt_make_dict but with DefaultDict type tag
+/// and the factory_tag packed into the high byte of entries_capacity.
 #[no_mangle]
 pub extern "C" fn rt_make_defaultdict(capacity: i64, factory_tag: i64) -> *mut Obj {
     let obj = crate::dict::rt_make_dict(capacity);
@@ -64,15 +44,19 @@ pub extern "C" fn rt_make_defaultdict(capacity: i64, factory_tag: i64) -> *mut O
     unsafe {
         // Change type tag from Dict to DefaultDict
         (*obj).header.type_tag = TypeTagKind::DefaultDict;
-    }
 
-    // Store factory tag in registry
-    let tag = if factory_tag < 0 {
-        FACTORY_NONE
-    } else {
-        factory_tag as u8
-    };
-    set_factory_tag(obj, tag);
+        // Pack factory_tag into the high byte of entries_capacity.
+        // rt_make_dict already set entries_capacity to the real capacity value.
+        let dict = obj as *mut DictObj;
+        let real_cap = real_entries_capacity(dict); // identical to raw value before packing
+        let tag = if factory_tag < 0 {
+            FACTORY_NONE
+        } else {
+            factory_tag as u8
+        };
+        (*dict).entries_capacity =
+            (real_cap & CAPACITY_MASK) | ((tag as usize) << FACTORY_TAG_SHIFT);
+    }
 
     obj
 }
@@ -93,7 +77,7 @@ pub extern "C" fn rt_defaultdict_get(dd: *mut Obj, key: *mut Obj) -> *mut Obj {
         }
 
         // Key not found — create default value using factory
-        let factory_tag = get_factory_tag(dd);
+        let factory_tag = get_factory_tag(dd as *mut DictObj);
 
         if factory_tag == FACTORY_NONE {
             // No factory — raise KeyError (same as regular dict)

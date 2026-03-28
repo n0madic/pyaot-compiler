@@ -393,6 +393,8 @@ unsafe fn compare_objects(a: *mut Obj, b: *mut Obj, elem_tag: u8) -> i32 {
             match a_val.partial_cmp(&b_val) {
                 Some(std::cmp::Ordering::Less) => -1,
                 Some(std::cmp::Ordering::Greater) => 1,
+                // NaN sorts to the end (Greater) to provide stable ordering
+                None => 1,
                 _ => 0,
             }
         } else if a_type == TypeTagKind::Bool {
@@ -587,12 +589,24 @@ pub extern "C" fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, va
         let (start, stop) = normalize_slice_indices(start, stop, len, 1);
         let slice_len = (stop - start).max(0) as usize;
 
-        // Get values to insert
-        let (values_data, values_len) = if values.is_null() {
-            (std::ptr::null_mut(), 0)
+        // Detect self-aliasing: if values and list are the same object,
+        // snapshot the values data first to avoid use-after-free during realloc
+        let (values_data, values_len, values_is_alias) = if values.is_null() {
+            (std::ptr::null_mut(), 0, false)
+        } else if list == values {
+            // Make a copy of the data before any potential realloc of list
+            let vlist = values as *mut ListObj;
+            let vlen = (*vlist).len;
+            let copy = std::alloc::alloc(
+                std::alloc::Layout::array::<*mut Obj>(vlen.max(1)).expect("alloc layout overflow"),
+            ) as *mut *mut Obj;
+            if vlen > 0 {
+                std::ptr::copy_nonoverlapping((*vlist).data, copy, vlen);
+            }
+            (copy, vlen, true)
         } else {
             let values_obj = values as *mut ListObj;
-            ((*values_obj).data, (*values_obj).len)
+            ((*values_obj).data, (*values_obj).len, false)
         };
 
         let old_len = (*list_obj).len;
@@ -648,5 +662,14 @@ pub extern "C" fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, va
         }
 
         (*list_obj).len = new_len;
+
+        // Free the temporary snapshot buffer created for the self-aliasing case
+        if values_is_alias && !values_data.is_null() {
+            std::alloc::dealloc(
+                values_data as *mut u8,
+                std::alloc::Layout::array::<*mut Obj>(values_len.max(1))
+                    .expect("alloc layout overflow"),
+            );
+        }
     }
 }

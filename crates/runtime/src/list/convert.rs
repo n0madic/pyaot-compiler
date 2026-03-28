@@ -113,7 +113,11 @@ pub extern "C" fn rt_list_from_range(start: i64, stop: i64, step: i64) -> *mut O
         let mut current = start;
         for i in 0..len {
             *(*list_obj).data.add(i) = current as *mut Obj;
-            current += step;
+            current = match current.checked_add(step) {
+                Some(v) => v,
+                // Overflow means we've exceeded i64 range; stop iteration
+                None => break,
+            };
         }
         (*list_obj).len = len;
     }

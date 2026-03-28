@@ -120,7 +120,7 @@ pub extern "C" fn rt_str_to_int(str_obj: *mut Obj) -> i64 {
         let bytes = std::slice::from_raw_parts(data, len);
 
         if let Ok(s) = std::str::from_utf8(bytes) {
-            let trimmed = s.trim_matches(|c: char| c.is_ascii_whitespace());
+            let trimmed = s.trim_matches(|c: char| c.is_whitespace());
             match trimmed.parse::<i64>() {
                 Ok(val) => val,
                 Err(_) => {
@@ -156,7 +156,7 @@ pub extern "C" fn rt_str_to_float(str_obj: *mut Obj) -> f64 {
         let bytes = std::slice::from_raw_parts(data, len);
 
         if let Ok(s) = std::str::from_utf8(bytes) {
-            let trimmed = s.trim_matches(|c: char| c.is_ascii_whitespace());
+            let trimmed = s.trim_matches(|c: char| c.is_whitespace());
             match trimmed.parse::<f64>() {
                 Ok(val) => val,
                 Err(_) => {

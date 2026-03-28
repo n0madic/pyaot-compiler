@@ -125,6 +125,14 @@ pub extern "C" fn rt_input(prompt: *mut Obj) -> *mut Obj {
     // Print prompt if provided
     if !prompt.is_null() {
         unsafe {
+            if (*prompt).header.type_tag != TypeTagKind::Str {
+                let msg = b"TypeError: prompt must be a string";
+                crate::exceptions::rt_exc_raise(
+                    crate::exceptions::ExceptionType::TypeError as u8,
+                    msg.as_ptr(),
+                    msg.len(),
+                );
+            }
             let str_obj = prompt as *mut StrObj;
             let len = (*str_obj).len;
             let data = (*str_obj).data.as_ptr();

@@ -49,6 +49,26 @@ pub extern "C" fn rt_pow_int(base: i64, exp: i64) -> i64 {
 /// Returns: rounded value as integer
 #[no_mangle]
 pub extern "C" fn rt_round_to_int(x: f64) -> i64 {
+    if x.is_nan() {
+        let msg = b"ValueError: cannot convert float NaN to integer";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ValueError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
+    if x.is_infinite() || x > i64::MAX as f64 || x < i64::MIN as f64 {
+        let msg = b"OverflowError: cannot convert float infinity to integer";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::OverflowError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
     // Banker's rounding: round half to even
     let floor = x.floor();
     let ceil = x.ceil();
@@ -111,6 +131,16 @@ pub extern "C" fn rt_round_to_digits(x: f64, ndigits: i64) -> f64 {
 /// Square root: math.sqrt(x) -> f64
 #[no_mangle]
 pub extern "C" fn rt_math_sqrt(x: f64) -> f64 {
+    if x < 0.0 {
+        let msg = b"ValueError: math domain error";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ValueError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
     x.sqrt()
 }
 
@@ -135,13 +165,55 @@ pub extern "C" fn rt_math_tan(x: f64) -> f64 {
 /// Ceiling: math.ceil(x) -> i64
 #[no_mangle]
 pub extern "C" fn rt_math_ceil(x: f64) -> i64 {
-    x.ceil() as i64
+    let v = x.ceil();
+    if v.is_nan() {
+        let msg = b"ValueError: cannot convert float NaN to integer";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ValueError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
+    if v.is_infinite() || v > i64::MAX as f64 || v < i64::MIN as f64 {
+        let msg = b"OverflowError: cannot convert float infinity to integer";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::OverflowError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
+    v as i64
 }
 
 /// Floor: math.floor(x) -> i64
 #[no_mangle]
 pub extern "C" fn rt_math_floor(x: f64) -> i64 {
-    x.floor() as i64
+    let v = x.floor();
+    if v.is_nan() {
+        let msg = b"ValueError: cannot convert float NaN to integer";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ValueError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
+    if v.is_infinite() || v > i64::MAX as f64 || v < i64::MIN as f64 {
+        let msg = b"OverflowError: cannot convert float infinity to integer";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::OverflowError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
+    v as i64
 }
 
 /// Factorial: math.factorial(n) -> i64
@@ -162,10 +234,10 @@ pub extern "C" fn rt_math_factorial(n: i64) -> i64 {
         result = match result.checked_mul(i) {
             Some(v) => v,
             None => {
-                let msg = "int too large to convert to C long";
+                let msg = b"OverflowError: int too large to convert to C long";
                 unsafe {
                     crate::exceptions::rt_exc_raise(
-                        pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
+                        crate::exceptions::ExceptionType::OverflowError as u8,
                         msg.as_ptr(),
                         msg.len(),
                     );
@@ -181,6 +253,16 @@ pub extern "C" fn rt_math_factorial(n: i64) -> i64 {
 /// Otherwise computes log(x) / log(base) like CPython.
 #[no_mangle]
 pub extern "C" fn rt_math_log(x: f64, base: f64) -> f64 {
+    if x <= 0.0 {
+        let msg = b"ValueError: math domain error";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ValueError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
     if base.is_nan() {
         x.ln()
     } else {
@@ -191,12 +273,32 @@ pub extern "C" fn rt_math_log(x: f64, base: f64) -> f64 {
 /// Logarithm base 2: math.log2(x) -> f64
 #[no_mangle]
 pub extern "C" fn rt_math_log2(x: f64) -> f64 {
+    if x <= 0.0 {
+        let msg = b"ValueError: math domain error";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ValueError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
     x.log2()
 }
 
 /// Logarithm base 10: math.log10(x) -> f64
 #[no_mangle]
 pub extern "C" fn rt_math_log10(x: f64) -> f64 {
+    if x <= 0.0 {
+        let msg = b"ValueError: math domain error";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ValueError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
     x.log10()
 }
 
@@ -209,12 +311,32 @@ pub extern "C" fn rt_math_exp(x: f64) -> f64 {
 /// Arc sine: math.asin(x) -> f64 (result in radians)
 #[no_mangle]
 pub extern "C" fn rt_math_asin(x: f64) -> f64 {
+    if x < -1.0 || x > 1.0 {
+        let msg = b"ValueError: math domain error";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ValueError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
     x.asin()
 }
 
 /// Arc cosine: math.acos(x) -> f64 (result in radians)
 #[no_mangle]
 pub extern "C" fn rt_math_acos(x: f64) -> f64 {
+    if x < -1.0 || x > 1.0 {
+        let msg = b"ValueError: math domain error";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ValueError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
     x.acos()
 }
 
@@ -263,7 +385,28 @@ pub extern "C" fn rt_math_radians(x: f64) -> f64 {
 /// Truncate to integer: math.trunc(x) -> i64
 #[no_mangle]
 pub extern "C" fn rt_math_trunc(x: f64) -> i64 {
-    x.trunc() as i64
+    let v = x.trunc();
+    if v.is_nan() {
+        let msg = b"ValueError: cannot convert float NaN to integer";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ValueError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
+    if v.is_infinite() || v > i64::MAX as f64 || v < i64::MIN as f64 {
+        let msg = b"OverflowError: cannot convert float infinity to integer";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::OverflowError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
+    v as i64
 }
 
 /// Test if NaN: math.isnan(x) -> i8
@@ -317,15 +460,26 @@ pub extern "C" fn rt_math_pow(x: f64, y: f64) -> f64 {
 /// Greatest common divisor: math.gcd(a, b) -> i64
 #[no_mangle]
 pub extern "C" fn rt_math_gcd(a: i64, b: i64) -> i64 {
-    let mut a = a.abs();
-    let mut b = b.abs();
+    let mut a = (a as i128).unsigned_abs() as u64;
+    let mut b = (b as i128).unsigned_abs() as u64;
 
     while b != 0 {
         let temp = b;
         b = a % b;
         a = temp;
     }
-    a
+    // gcd(i64::MIN, 0) == 2^63 which exceeds i64::MAX
+    if a > i64::MAX as u64 {
+        let msg = b"OverflowError: math.gcd result too large to convert to int";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::OverflowError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
+    a as i64
 }
 
 /// Least common multiple: math.lcm(a, b) -> i64
@@ -334,21 +488,21 @@ pub extern "C" fn rt_math_lcm(a: i64, b: i64) -> i64 {
     if a == 0 || b == 0 {
         return 0;
     }
-    let gcd = rt_math_gcd(a, b);
-    // Avoid overflow by dividing first
-    match (a / gcd).checked_mul(b.abs()) {
-        Some(v) => v,
-        None => {
-            let msg = "int too large to convert to C long";
-            unsafe {
-                crate::exceptions::rt_exc_raise(
-                    pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
-                    msg.as_ptr(),
-                    msg.len(),
-                );
-            }
+    let g = rt_math_gcd(a, b);
+    let aa = (a as i128).abs();
+    let bb = (b as i128).abs();
+    let result = (aa / g as i128) * bb;
+    if result > i64::MAX as i128 {
+        let msg = b"OverflowError: int too large to convert to C long";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::OverflowError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            );
         }
     }
+    result as i64
 }
 
 /// Binomial coefficient: math.comb(n, k) -> i64
@@ -373,24 +527,21 @@ pub extern "C" fn rt_math_comb(n: i64, k: i64) -> i64 {
         return 1;
     }
 
-    let mut result: i64 = 1;
+    let mut result: i128 = 1;
     for i in 0..k {
-        result = match result.checked_mul(n - i) {
-            Some(v) => v,
-            None => {
-                let msg = "int too large to convert to C long";
-                unsafe {
-                    crate::exceptions::rt_exc_raise(
-                        pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
-                        msg.as_ptr(),
-                        msg.len(),
-                    );
-                }
+        result = result * (n - i) as i128 / (i + 1) as i128;
+        if result > i64::MAX as i128 {
+            let msg = b"OverflowError: int too large to convert to C long";
+            unsafe {
+                crate::exceptions::rt_exc_raise(
+                    crate::exceptions::ExceptionType::OverflowError as u8,
+                    msg.as_ptr(),
+                    msg.len(),
+                );
             }
-        };
-        result /= i + 1;
+        }
     }
-    result
+    result as i64
 }
 
 /// Permutation count: math.perm(n, k) -> i64
@@ -408,21 +559,19 @@ pub extern "C" fn rt_math_perm(n: i64, k: i64) -> i64 {
         return 0;
     }
 
-    let mut result: i64 = 1;
+    let mut result: i128 = 1;
     for i in 0..k {
-        result = match result.checked_mul(n - i) {
-            Some(v) => v,
-            None => {
-                let msg = "int too large to convert to C long";
-                unsafe {
-                    crate::exceptions::rt_exc_raise(
-                        pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
-                        msg.as_ptr(),
-                        msg.len(),
-                    );
-                }
+        result *= (n - i) as i128;
+        if result > i64::MAX as i128 {
+            let msg = b"OverflowError: int too large to convert to C long";
+            unsafe {
+                crate::exceptions::rt_exc_raise(
+                    crate::exceptions::ExceptionType::OverflowError as u8,
+                    msg.as_ptr(),
+                    msg.len(),
+                );
             }
-        };
+        }
     }
-    result
+    result as i64
 }

@@ -108,22 +108,79 @@ pub extern "C" fn rt_str_slice_step(
     }
 }
 
-/// Check if character at index (for single character access s[i])
-/// Returns: pointer to new allocated single-char StrObj
+/// Get the UTF-8 byte width of a codepoint starting at `first_byte`.
+/// Returns 1, 2, 3, or 4.
+#[inline]
+pub(crate) fn utf8_char_width(first_byte: u8) -> usize {
+    if first_byte < 0x80 {
+        1
+    } else if first_byte < 0xE0 {
+        2
+    } else if first_byte < 0xF0 {
+        3
+    } else {
+        4
+    }
+}
+
+/// Walk the UTF-8 bytes and return the byte offset of the n-th codepoint.
+/// Negative `char_index` is interpreted as counting from the end.
+/// Returns `None` if the index is out of range.
+pub(crate) unsafe fn char_index_to_byte_offset(
+    data: *const u8,
+    byte_len: usize,
+    char_index: i64,
+) -> Option<usize> {
+    // Count total codepoints so we can handle negative indices.
+    let total_chars: i64 = {
+        let mut n: i64 = 0;
+        let mut i = 0usize;
+        while i < byte_len {
+            let w = utf8_char_width(*data.add(i));
+            n += 1;
+            i += w;
+        }
+        n
+    };
+
+    let normalized = if char_index < 0 {
+        total_chars + char_index
+    } else {
+        char_index
+    };
+
+    if normalized < 0 || normalized >= total_chars {
+        return None;
+    }
+
+    // Walk again to find the byte offset of the normalized codepoint.
+    let mut byte_off = 0usize;
+    let mut cp = 0i64;
+    while byte_off < byte_len {
+        if cp == normalized {
+            return Some(byte_off);
+        }
+        let w = utf8_char_width(*data.add(byte_off));
+        byte_off += w;
+        cp += 1;
+    }
+    None
+}
+
+/// Get single character at a byte index (for string iteration).
+/// The `byte_index` must point to the start of a UTF-8 codepoint.
+/// Returns: pointer to new allocated StrObj containing one full codepoint.
 #[no_mangle]
-pub extern "C" fn rt_str_getchar(str_obj: *mut Obj, index: i64) -> *mut Obj {
+pub extern "C" fn rt_str_getchar(str_obj: *mut Obj, byte_index: i64) -> *mut Obj {
     if str_obj.is_null() {
         return std::ptr::null_mut();
     }
 
     unsafe {
         let src = str_obj as *mut StrObj;
-        let len = (*src).len as i64;
+        let byte_len = (*src).len as i64;
 
-        // Handle negative index
-        let idx = if index < 0 { len + index } else { index };
-
-        if idx < 0 || idx >= len {
+        if byte_index < 0 || byte_index >= byte_len {
             // Index out of bounds - raise IndexError
             let msg = b"string index out of range";
             exceptions::rt_exc_raise(
@@ -133,14 +190,55 @@ pub extern "C" fn rt_str_getchar(str_obj: *mut Obj, index: i64) -> *mut Obj {
             );
         }
 
-        // Allocate single-char string
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + 1;
+        let data = (*src).data.as_ptr();
+        let first_byte = *data.add(byte_index as usize);
+        let char_width = utf8_char_width(first_byte);
+
+        // Clamp to available bytes (guard against malformed UTF-8)
+        let remaining = (byte_len - byte_index) as usize;
+        let copy_len = char_width.min(remaining);
+
+        // Allocate string for one full codepoint
+        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + copy_len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         let new_str = obj as *mut StrObj;
-        (*new_str).len = 1;
-        *(*new_str).data.as_mut_ptr() = *(*src).data.as_ptr().add(idx as usize);
+        (*new_str).len = copy_len;
+        std::ptr::copy_nonoverlapping(
+            data.add(byte_index as usize),
+            (*new_str).data.as_mut_ptr(),
+            copy_len,
+        );
 
         obj
+    }
+}
+
+/// Python-level string subscript `s[char_index]`.
+/// `char_index` is a Unicode codepoint index (may be negative).
+/// Raises IndexError if out of range.
+/// Returns: pointer to new allocated StrObj containing one full codepoint.
+#[no_mangle]
+pub extern "C" fn rt_str_subscript(str_obj: *mut Obj, char_index: i64) -> *mut Obj {
+    if str_obj.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    unsafe {
+        let src = str_obj as *mut StrObj;
+        let byte_len = (*src).len;
+        let data = (*src).data.as_ptr();
+
+        match char_index_to_byte_offset(data, byte_len, char_index) {
+            Some(byte_off) => rt_str_getchar(str_obj, byte_off as i64),
+            None => {
+                let msg = b"string index out of range";
+                exceptions::rt_exc_raise(
+                    exceptions::ExceptionType::IndexError as u8,
+                    msg.as_ptr(),
+                    msg.len(),
+                );
+            }
+        }
     }
 }

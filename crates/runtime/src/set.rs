@@ -240,9 +240,7 @@ pub extern "C" fn rt_set_contains(set: *mut Obj, elem: *mut Obj) -> i8 {
 pub extern "C" fn rt_set_remove(set: *mut Obj, elem: *mut Obj) {
     if set.is_null() || elem.is_null() {
         let msg = b"set.remove() called with null";
-        unsafe {
-            crate::exceptions::rt_exc_raise_key_error(msg.as_ptr(), msg.len());
-        }
+        unsafe { crate::exceptions::rt_exc_raise_key_error(msg.as_ptr(), msg.len()) }
     }
 
     unsafe {
@@ -558,7 +556,7 @@ pub extern "C" fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                 pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
                 msg.as_ptr(),
                 msg.len(),
-            );
+            )
         }
     }
 
@@ -596,7 +594,7 @@ pub extern "C" fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                 pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
                 msg.as_ptr(),
                 msg.len(),
-            );
+            )
         }
     }
 
@@ -639,7 +637,7 @@ pub extern "C" fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                 pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
                 msg.as_ptr(),
                 msg.len(),
-            );
+            )
         }
     }
 
@@ -682,7 +680,7 @@ pub extern "C" fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut 
                 pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
                 msg.as_ptr(),
                 msg.len(),
-            );
+            )
         }
     }
 

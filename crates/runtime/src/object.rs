@@ -522,21 +522,34 @@ pub struct HttpResponseObj {
     pub body: *mut Obj,    // BytesObj - Response body
 }
 
+use std::cell::UnsafeCell;
 use std::sync::OnceLock;
 
+/// Wrapper that allows `OnceLock` to hold an `UnsafeCell<Obj>`.
+///
+/// # Safety
+/// The None singleton is only accessed from the single-threaded AOT runtime.
+/// The `UnsafeCell` is never aliased mutably: the only "mutation" that ever
+/// happens is through the `*mut Obj` pointer returned by `none_obj()`, and
+/// in practice the None object is never mutated after initialization (its
+/// `marked` bit is set to `true` permanently so the GC never touches it).
+struct NoneHolder(UnsafeCell<Obj>);
+
+// Safety: The runtime is single-threaded; no concurrent access is possible.
+unsafe impl Sync for NoneHolder {}
+
 /// None singleton
-static NONE_SINGLETON: OnceLock<Obj> = OnceLock::new();
+static NONE_SINGLETON: OnceLock<NoneHolder> = OnceLock::new();
 
 pub fn none_obj() -> *mut Obj {
-    let obj = NONE_SINGLETON.get_or_init(|| Obj {
-        header: ObjHeader {
-            type_tag: TypeTagKind::None,
-            marked: true, // Never collect None
-            size: std::mem::size_of::<Obj>(),
-        },
+    let holder = NONE_SINGLETON.get_or_init(|| {
+        NoneHolder(UnsafeCell::new(Obj {
+            header: ObjHeader {
+                type_tag: TypeTagKind::None,
+                marked: true, // Never collect None
+                size: std::mem::size_of::<Obj>(),
+            },
+        }))
     });
-    // Safety: The OnceLock guarantees the Obj is initialized exactly once.
-    // We need a mutable pointer for API compatibility, but the None singleton
-    // is never actually mutated (except the mark bit, which is already true).
-    obj as *const Obj as *mut Obj
+    holder.0.get()
 }

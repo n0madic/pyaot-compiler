@@ -120,7 +120,7 @@ static GC_STATE_PTR: AtomicPtr<GcState> = AtomicPtr::new(ptr::null_mut());
 /// Must only be called after `init()` and from a single thread.
 #[inline(always)]
 unsafe fn gc_state() -> &'static mut GcState {
-    let ptr = GC_STATE_PTR.load(Ordering::Relaxed);
+    let ptr = GC_STATE_PTR.load(Ordering::Acquire);
     debug_assert!(!ptr.is_null(), "gc_state() called before init()");
     if ptr.is_null() {
         eprintln!("FATAL: GC accessed before initialization. Call rt_init() first.");
@@ -152,7 +152,7 @@ pub fn init() {
 
 /// Shutdown the GC (free all objects)
 pub fn shutdown() {
-    let state_ptr = GC_STATE_PTR.load(Ordering::Relaxed);
+    let state_ptr = GC_STATE_PTR.load(Ordering::Acquire);
     if state_ptr.is_null() {
         return;
     }

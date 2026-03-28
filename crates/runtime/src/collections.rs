@@ -2,7 +2,7 @@
 //!
 //! Provides runtime functions for OrderedDict.
 
-use crate::dict::rt_dict_set;
+use crate::dict::{real_entries_capacity, rt_dict_set, set_real_entries_capacity};
 use crate::exceptions::{rt_exc_raise, ExceptionType};
 use crate::hash_table_utils::{eq_hashable_obj, hash_hashable_obj};
 use crate::object::{DictEntry, DictObj, Obj, ELEM_HEAP_OBJ};
@@ -165,7 +165,8 @@ unsafe fn rebuild_with_entry_first(dict: *mut DictObj, key: *mut Obj, value: *mu
 
     let old_entries = (*dict).entries;
     let old_entries_len = (*dict).entries_len;
-    let old_entries_capacity = (*dict).entries_capacity;
+    // Use real_entries_capacity to strip any packed factory_tag (DefaultDict).
+    let old_entries_capacity = real_entries_capacity(dict);
     let active_count = (*dict).len; // Already decremented
 
     let new_capacity = old_entries_capacity;
@@ -221,7 +222,8 @@ unsafe fn rebuild_with_entry_first(dict: *mut DictObj, key: *mut Obj, value: *mu
 
     (*dict).entries = new_entries;
     (*dict).entries_len = new_len;
-    (*dict).entries_capacity = new_capacity;
+    // Use set_real_entries_capacity to preserve any packed factory_tag.
+    set_real_entries_capacity(dict, new_capacity);
     (*dict).len = active_count + 1; // Re-add the moved entry
 }
 

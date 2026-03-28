@@ -219,6 +219,11 @@ pub unsafe extern "C" fn rt_file_readline(file: *mut Obj) -> *mut Obj {
                     // Seek back to right after the newline
                     let rewind = (n - pos - 1) as i64;
                     if rewind > 0 {
+                        #[cfg(debug_assertions)]
+                        if let Err(e) = handle.seek(std::io::SeekFrom::Current(-rewind)) {
+                            eprintln!("Warning: readline seek failed: {}", e);
+                        }
+                        #[cfg(not(debug_assertions))]
                         let _ = handle.seek(std::io::SeekFrom::Current(-rewind));
                     }
                     break;

@@ -66,6 +66,7 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::StrSlice
         | mir::RuntimeFunc::StrSliceStep
         | mir::RuntimeFunc::StrGetChar
+        | mir::RuntimeFunc::StrSubscript
         | mir::RuntimeFunc::StrMul
         | mir::RuntimeFunc::StrUpper
         | mir::RuntimeFunc::StrLower

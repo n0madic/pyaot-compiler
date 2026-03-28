@@ -276,8 +276,14 @@ pub extern "C" fn rt_bytes_slice(bytes: *mut Obj, start: i64, end: i64) -> *mut 
         let (start, end) = normalize_slice_indices(start, end, len, 1);
         let slice_len = slice_length(start, end);
 
-        // Allocate new bytes
-        let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + slice_len;
+        // Allocate new bytes (checked arithmetic to prevent overflow)
+        let size = std::mem::size_of::<ObjHeader>()
+            .checked_add(std::mem::size_of::<usize>())
+            .and_then(|s| s.checked_add(slice_len))
+            .unwrap_or_else(|| {
+                let msg = b"OverflowError: bytes slice too large";
+                rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len())
+            });
         let obj = gc::gc_alloc(size, TypeTagKind::Bytes as u8);
 
         let new_bytes = obj as *mut BytesObj;

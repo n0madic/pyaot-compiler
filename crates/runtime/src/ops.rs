@@ -53,6 +53,14 @@ pub extern "C" fn rt_div_int(a: i64, b: i64) -> i64 {
             )
         }
     }
+    if a == i64::MIN && b == -1 {
+        unsafe {
+            crate::exceptions::rt_exc_raise_overflow_error(
+                b"integer overflow".as_ptr(),
+                b"integer overflow".len(),
+            )
+        }
+    }
     // Python floor division: rounds toward negative infinity
     let d = a / b;
     let r = a % b;
@@ -87,6 +95,14 @@ pub extern "C" fn rt_mod_int(a: i64, b: i64) -> i64 {
             crate::exceptions::rt_exc_raise_zero_division_error(
                 b"integer modulo by zero".as_ptr(),
                 b"integer modulo by zero".len(),
+            )
+        }
+    }
+    if a == i64::MIN && b == -1 {
+        unsafe {
+            crate::exceptions::rt_exc_raise_overflow_error(
+                b"integer overflow".as_ptr(),
+                b"integer overflow".len(),
             )
         }
     }
@@ -503,6 +519,23 @@ pub extern "C" fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
         let tag_a = (*a).type_tag();
         let tag_b = (*b).type_tag();
 
+        // Int/Bool cross-type equality (Python: 1 == True, 0 == False)
+        if (tag_a == TypeTagKind::Int && tag_b == TypeTagKind::Bool)
+            || (tag_a == TypeTagKind::Bool && tag_b == TypeTagKind::Int)
+        {
+            let va = if tag_a == TypeTagKind::Int {
+                (*(a as *mut IntObj)).value
+            } else {
+                (*(a as *mut BoolObj)).value as i64
+            };
+            let vb = if tag_b == TypeTagKind::Int {
+                (*(b as *mut IntObj)).value
+            } else {
+                (*(b as *mut BoolObj)).value as i64
+            };
+            return if va == vb { 1 } else { 0 };
+        }
+
         // Different types → not equal
         if tag_a != tag_b {
             return 0;
@@ -582,7 +615,8 @@ unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
             TypeTagKind::Float => {
                 let va = (*(a as *mut FloatObj)).value;
                 let vb = (*(b as *mut FloatObj)).value;
-                va.partial_cmp(&vb).unwrap_or(Ordering::Equal)
+                // NaN sorts to the end (Greater) to provide a stable ordering for sorted()
+                va.partial_cmp(&vb).unwrap_or(Ordering::Greater)
             }
             TypeTagKind::Bool => {
                 let va = (*(a as *mut BoolObj)).value;
@@ -623,7 +657,8 @@ unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
         } else {
             (*(b as *mut FloatObj)).value
         };
-        return va.partial_cmp(&vb).unwrap_or(Ordering::Equal);
+        // NaN sorts to the end (Greater) to provide a stable ordering for sorted()
+        return va.partial_cmp(&vb).unwrap_or(Ordering::Greater);
     }
 
     // Incompatible types
@@ -642,6 +677,32 @@ fn type_name(tag: TypeTagKind) -> &'static str {
     tag.type_name()
 }
 
+/// Check whether any float value involved in a comparison is NaN.
+/// Returns true if a or b is a Float NaN, or if the mixed int/float case
+/// produces a NaN operand (only possible when a Float is NaN).
+/// Python semantics: all ordering comparisons involving NaN return False.
+unsafe fn involves_nan(a: *mut Obj, b: *mut Obj) -> bool {
+    if a.is_null() || b.is_null() {
+        return false;
+    }
+    let tag_a = (*a).type_tag();
+    let tag_b = (*b).type_tag();
+
+    if tag_a == TypeTagKind::Float {
+        let va = (*(a as *mut FloatObj)).value;
+        if va.is_nan() {
+            return true;
+        }
+    }
+    if tag_b == TypeTagKind::Float {
+        let vb = (*(b as *mut FloatObj)).value;
+        if vb.is_nan() {
+            return true;
+        }
+    }
+    false
+}
+
 /// Compare two heap objects for less-than with runtime type dispatch
 /// Returns 1 if a < b, 0 otherwise
 /// Used for Union types where the actual type is determined at runtime
@@ -649,6 +710,10 @@ fn type_name(tag: TypeTagKind) -> &'static str {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_obj_lt(a: *mut Obj, b: *mut Obj) -> i8 {
     unsafe {
+        // NaN comparisons always return False in Python
+        if involves_nan(a, b) {
+            return 0;
+        }
         if obj_cmp_ordering(a, b) == std::cmp::Ordering::Less {
             1
         } else {
@@ -664,6 +729,10 @@ pub extern "C" fn rt_obj_lt(a: *mut Obj, b: *mut Obj) -> i8 {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_obj_lte(a: *mut Obj, b: *mut Obj) -> i8 {
     unsafe {
+        // NaN comparisons always return False in Python
+        if involves_nan(a, b) {
+            return 0;
+        }
         let ord = obj_cmp_ordering(a, b);
         if ord == std::cmp::Ordering::Less || ord == std::cmp::Ordering::Equal {
             1
@@ -680,6 +749,10 @@ pub extern "C" fn rt_obj_lte(a: *mut Obj, b: *mut Obj) -> i8 {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_obj_gt(a: *mut Obj, b: *mut Obj) -> i8 {
     unsafe {
+        // NaN comparisons always return False in Python
+        if involves_nan(a, b) {
+            return 0;
+        }
         if obj_cmp_ordering(a, b) == std::cmp::Ordering::Greater {
             1
         } else {
@@ -695,6 +768,10 @@ pub extern "C" fn rt_obj_gt(a: *mut Obj, b: *mut Obj) -> i8 {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_obj_gte(a: *mut Obj, b: *mut Obj) -> i8 {
     unsafe {
+        // NaN comparisons always return False in Python
+        if involves_nan(a, b) {
+            return 0;
+        }
         let ord = obj_cmp_ordering(a, b);
         if ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal {
             1
@@ -750,7 +827,13 @@ pub extern "C" fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         }
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
-            crate::boxing::rt_box_int(vai.wrapping_add(vbi))
+            match vai.checked_add(vbi) {
+                Some(v) => crate::boxing::rt_box_int(v),
+                None => {
+                    let msg = b"integer overflow";
+                    rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+                }
+            }
         } else if (tag_a == TypeTagKind::Int || tag_a == TypeTagKind::Float)
             && (tag_b == TypeTagKind::Int || tag_b == TypeTagKind::Float)
         {
@@ -772,7 +855,13 @@ pub extern "C" fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
-            crate::boxing::rt_box_int(vai.wrapping_sub(vbi))
+            match vai.checked_sub(vbi) {
+                Some(v) => crate::boxing::rt_box_int(v),
+                None => {
+                    let msg = b"integer overflow";
+                    rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+                }
+            }
         } else {
             crate::boxing::rt_box_float(va - vb)
         }
@@ -794,7 +883,13 @@ pub extern "C" fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         }
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
-            crate::boxing::rt_box_int(vai.wrapping_mul(vbi))
+            match vai.checked_mul(vbi) {
+                Some(v) => crate::boxing::rt_box_int(v),
+                None => {
+                    let msg = b"integer overflow";
+                    rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+                }
+            }
         } else {
             crate::boxing::rt_box_float(va * vb)
         }
@@ -832,7 +927,14 @@ pub extern "C" fn rt_obj_floordiv(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                     msg.len(),
                 );
             }
-            crate::boxing::rt_box_int(vai.div_euclid(vbi))
+            if vai == i64::MIN && vbi == -1 {
+                let msg = b"integer overflow";
+                rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+            }
+            let d = vai / vbi;
+            let r = vai % vbi;
+            let result = if r != 0 && (r ^ vbi) < 0 { d - 1 } else { d };
+            crate::boxing::rt_box_int(result)
         } else {
             if vb == 0.0 {
                 let msg = "integer division or modulo by zero";
@@ -861,7 +963,13 @@ pub extern "C" fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                     msg.len(),
                 );
             }
-            crate::boxing::rt_box_int(vai.rem_euclid(vbi))
+            if vai == i64::MIN && vbi == -1 {
+                let msg = b"integer overflow";
+                rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+            }
+            let r = vai % vbi;
+            let result = if r != 0 && (r ^ vbi) < 0 { r + vbi } else { r };
+            crate::boxing::rt_box_int(result)
         } else {
             if vb == 0.0 {
                 let msg = "integer division or modulo by zero";
@@ -882,7 +990,37 @@ pub extern "C" fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int && vbi >= 0 {
-            crate::boxing::rt_box_int(vai.wrapping_pow(vbi as u32))
+            let exp = vbi as u32;
+            let mut result: i64 = 1;
+            let mut base = vai;
+            let mut e = exp;
+            let mut overflow = false;
+            while e > 0 {
+                if e & 1 == 1 {
+                    match result.checked_mul(base) {
+                        Some(v) => result = v,
+                        None => {
+                            overflow = true;
+                            break;
+                        }
+                    }
+                }
+                e >>= 1;
+                if e > 0 {
+                    match base.checked_mul(base) {
+                        Some(v) => base = v,
+                        None => {
+                            overflow = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if overflow {
+                let msg = b"integer overflow";
+                rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+            }
+            crate::boxing::rt_box_int(result)
         } else {
             crate::boxing::rt_box_float(va.powf(vb))
         }
@@ -964,7 +1102,8 @@ pub extern "C" fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
     if container.is_null() {
-        panic!("TypeError: argument of type 'NoneType' is not iterable");
+        let msg = b"TypeError: argument of type 'NoneType' is not iterable";
+        unsafe { rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len()) }
     }
 
     unsafe {
@@ -984,10 +1123,11 @@ pub extern "C" fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
                 // Check if integer is in bytes
                 rt_bytes_contains_value(container, elem)
             }
-            _ => panic!(
-                "TypeError: argument of type '{}' is not iterable",
-                type_name((*container).type_tag())
-            ),
+            _ => {
+                let tag_str = type_name((*container).type_tag());
+                let msg = format!("argument of type '{}' is not iterable", tag_str);
+                rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+            }
         }
     }
 }
@@ -1180,14 +1320,13 @@ unsafe fn rt_bytes_contains_value(bytes: *mut Obj, value: *mut Obj) -> i8 {
 
     // value should be an integer
     if value.is_null() || (*value).type_tag() != TypeTagKind::Int {
-        panic!(
-            "TypeError: a bytes-like object is required, not '{}'",
-            if value.is_null() {
-                "NoneType"
-            } else {
-                type_name((*value).type_tag())
-            }
-        );
+        let type_str = if value.is_null() {
+            "NoneType"
+        } else {
+            type_name((*value).type_tag())
+        };
+        let msg = format!("a bytes-like object is required, not '{}'", type_str);
+        rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
     }
 
     let int_val = (*(value as *mut IntObj)).value;

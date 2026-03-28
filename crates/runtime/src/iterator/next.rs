@@ -4,7 +4,7 @@
 
 use super::{box_if_raw_int_iterator, EXHAUSTED_SENTINEL};
 use crate::exceptions;
-use crate::object::{Obj, TypeTagKind, ELEM_HEAP_OBJ};
+use crate::object::{GeneratorObj, Obj, TypeTagKind, ELEM_HEAP_OBJ};
 
 use super::composite::{call_filter_with_captures, call_map_with_captures};
 
@@ -542,8 +542,16 @@ unsafe fn iter_next_map(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
     // We call rt_iter_next_internal then check the inner iterator's exhausted flag
     // because EXHAUSTED_SENTINEL could collide with -1 as a raw int value
     let elem = rt_iter_next_internal((*map_iter).inner_iter, false);
-    let inner_iter = (*map_iter).inner_iter as *mut IteratorObj;
-    if (*inner_iter).exhausted {
+    let inner_iter = (*map_iter).inner_iter;
+    // Check if inner iterator is exhausted — must dispatch on type_tag because
+    // GeneratorObj and IteratorObj have different layouts and the `exhausted`
+    // field lives at a different offset in each struct.
+    let inner_exhausted = if (*inner_iter).header.type_tag == TypeTagKind::Generator {
+        (*(inner_iter as *mut GeneratorObj)).exhausted
+    } else {
+        (*(inner_iter as *mut IteratorObj)).exhausted
+    };
+    if inner_exhausted {
         (*map_iter).exhausted = true;
         if raise_on_exhausted {
             exceptions::rt_exc_raise(
@@ -600,8 +608,16 @@ unsafe fn iter_next_filter(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut
         // We call rt_iter_next_internal then check the inner iterator's exhausted flag
         // because EXHAUSTED_SENTINEL could collide with -1 as a raw int value
         let elem = rt_iter_next_internal((*filter_iter).inner_iter, false);
-        let inner_iter = (*filter_iter).inner_iter as *mut IteratorObj;
-        if (*inner_iter).exhausted {
+        let inner_iter = (*filter_iter).inner_iter;
+        // Check if inner iterator is exhausted — must dispatch on type_tag because
+        // GeneratorObj and IteratorObj have different layouts and the `exhausted`
+        // field lives at a different offset in each struct.
+        let inner_exhausted = if (*inner_iter).header.type_tag == TypeTagKind::Generator {
+            (*(inner_iter as *mut GeneratorObj)).exhausted
+        } else {
+            (*(inner_iter as *mut IteratorObj)).exhausted
+        };
+        if inner_exhausted {
             (*filter_iter).exhausted = true;
             if raise_on_exhausted {
                 exceptions::rt_exc_raise(

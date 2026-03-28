@@ -192,14 +192,27 @@ pub extern "C" fn rt_iter_reversed_str(str_obj: *mut Obj) -> *mut Obj {
     unsafe {
         debug_assert_type_tag!(str_obj, TypeTagKind::Str, "rt_iter_reversed_str");
         let s = str_obj as *mut StrObj;
-        let len = (*s).len as i64;
+        let byte_len = (*s).len as i64;
+
+        // Walk backwards from the last byte to find the start of the last codepoint.
+        // UTF-8 continuation bytes have the pattern 10xxxxxx (0x80..=0xBF).
+        let start_idx = if byte_len == 0 {
+            -1 // Empty string — mark exhausted below
+        } else {
+            let data = (*s).data.as_ptr();
+            let mut idx = byte_len - 1;
+            while idx > 0 && (*data.add(idx as usize) & 0xC0) == 0x80 {
+                idx -= 1;
+            }
+            idx
+        };
 
         let iter = obj as *mut IteratorObj;
         (*iter).kind = IteratorKind::String as u8;
-        (*iter).exhausted = false;
+        (*iter).exhausted = byte_len == 0;
         (*iter).reversed = true;
         (*iter).source = str_obj;
-        (*iter).index = len - 1; // Start at last character
+        (*iter).index = start_idx; // Byte offset of the last codepoint's first byte
         (*iter).range_stop = 0;
         (*iter).range_step = 0;
     }

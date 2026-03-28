@@ -247,6 +247,30 @@ pub extern "C" fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
     }
 
     unsafe {
+        // Get format string early so we can check for empty / embedded null.
+        let format_str = str_obj_to_rust_string(format);
+
+        // M15: empty format string — return empty string immediately to avoid
+        // the ambiguity in the doubling-buffer loop (strftime returns 0 for
+        // both truncation and genuinely empty output).
+        if format_str.is_empty() {
+            return crate::string::rt_make_str(std::ptr::null(), 0);
+        }
+
+        // H13: reject format strings with embedded null bytes — CString::new
+        // would silently truncate at the first null, producing wrong output.
+        let fmt_c = match std::ffi::CString::new(format_str) {
+            Ok(s) => s,
+            Err(_) => {
+                let msg = b"ValueError: embedded null character";
+                crate::exceptions::rt_exc_raise(
+                    crate::exceptions::ExceptionType::ValueError as u8,
+                    msg.as_ptr(),
+                    msg.len(),
+                );
+            }
+        };
+
         // When t is null (omitted), use current local time like CPython
         let tm = if t.is_null() {
             let now = std::time::SystemTime::now()
@@ -286,12 +310,6 @@ pub extern "C" fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
                 tm_zone: std::ptr::null_mut(),
             }
         };
-
-        // Get format string
-        let format_str = str_obj_to_rust_string(format);
-
-        let fmt_c = std::ffi::CString::new(format_str)
-            .unwrap_or_else(|_| std::ffi::CString::new("").unwrap());
 
         // Use a retry loop to handle format strings that produce long output.
         // Double the buffer on each failed attempt, up to a 1 MB hard limit.

@@ -141,6 +141,9 @@ pub extern "C" fn rt_cell_get_ptr(cell: *mut Obj) -> *mut Obj {
 /// Set integer value in cell
 #[no_mangle]
 pub extern "C" fn rt_cell_set_int(cell: *mut Obj, value: i64) {
+    if cell.is_null() {
+        return;
+    }
     unsafe {
         let cell = cell as *mut CellObj;
         (*cell).value_tag = CellValueTag::Int as u8;
@@ -151,6 +154,9 @@ pub extern "C" fn rt_cell_set_int(cell: *mut Obj, value: i64) {
 /// Set float value in cell
 #[no_mangle]
 pub extern "C" fn rt_cell_set_float(cell: *mut Obj, value: f64) {
+    if cell.is_null() {
+        return;
+    }
     unsafe {
         let cell = cell as *mut CellObj;
         (*cell).value_tag = CellValueTag::Float as u8;
@@ -161,6 +167,9 @@ pub extern "C" fn rt_cell_set_float(cell: *mut Obj, value: f64) {
 /// Set boolean value in cell
 #[no_mangle]
 pub extern "C" fn rt_cell_set_bool(cell: *mut Obj, value: i8) {
+    if cell.is_null() {
+        return;
+    }
     unsafe {
         let cell = cell as *mut CellObj;
         (*cell).value_tag = CellValueTag::Bool as u8;
@@ -171,6 +180,9 @@ pub extern "C" fn rt_cell_set_bool(cell: *mut Obj, value: i8) {
 /// Set pointer value in cell
 #[no_mangle]
 pub extern "C" fn rt_cell_set_ptr(cell: *mut Obj, value: *mut Obj) {
+    if cell.is_null() {
+        return;
+    }
     unsafe {
         let cell = cell as *mut CellObj;
         (*cell).value_tag = CellValueTag::Ptr as u8;

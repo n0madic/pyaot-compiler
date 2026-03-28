@@ -81,7 +81,7 @@ pub unsafe extern "C" fn rt_make_generator(func_id: u32, num_locals: u32) -> *mu
 
     let obj = gc_alloc(total_size, TypeTagKind::Generator as u8);
     if obj.is_null() {
-        panic!("Out of memory allocating generator");
+        std::process::abort();
     }
 
     let gen = obj as *mut GeneratorObj;
@@ -100,7 +100,7 @@ pub unsafe extern "C" fn rt_make_generator(func_id: u32, num_locals: u32) -> *mu
             Layout::array::<u8>(num_locals as usize).expect("Invalid layout for type_tags");
         let type_tags = alloc(layout);
         if type_tags.is_null() {
-            panic!("Out of memory allocating generator type tags");
+            std::process::abort();
         }
 
         // Guard takes ownership - will dealloc on panic
@@ -162,11 +162,12 @@ pub unsafe extern "C" fn rt_generator_set_state(gen: *mut Obj, state: u32) {
 pub unsafe extern "C" fn rt_generator_get_local(gen: *mut Obj, index: u32) -> i64 {
     let gen = gen as *mut GeneratorObj;
     if index >= (*gen).num_locals {
-        panic!(
-            "Generator local index {} out of bounds (num_locals={})",
+        eprintln!(
+            "FATAL: Generator local index {} out of bounds (num_locals={})",
             index,
             (*gen).num_locals
         );
+        std::process::abort();
     }
     let locals_ptr = (*gen).locals.as_ptr();
     *locals_ptr.add(index as usize)
@@ -181,11 +182,12 @@ pub unsafe extern "C" fn rt_generator_get_local(gen: *mut Obj, index: u32) -> i6
 pub unsafe extern "C" fn rt_generator_set_local(gen: *mut Obj, index: u32, value: i64) {
     let gen = gen as *mut GeneratorObj;
     if index >= (*gen).num_locals {
-        panic!(
-            "Generator local index {} out of bounds (num_locals={})",
+        eprintln!(
+            "FATAL: Generator local index {} out of bounds (num_locals={})",
             index,
             (*gen).num_locals
         );
+        std::process::abort();
     }
     let locals_ptr = (*gen).locals.as_mut_ptr();
     *locals_ptr.add(index as usize) = value;
@@ -200,11 +202,12 @@ pub unsafe extern "C" fn rt_generator_set_local(gen: *mut Obj, index: u32, value
 pub unsafe extern "C" fn rt_generator_get_local_ptr(gen: *mut Obj, index: u32) -> *mut Obj {
     let gen = gen as *mut GeneratorObj;
     if index >= (*gen).num_locals {
-        panic!(
-            "Generator local index {} out of bounds (num_locals={})",
+        eprintln!(
+            "FATAL: Generator local index {} out of bounds (num_locals={})",
             index,
             (*gen).num_locals
         );
+        std::process::abort();
     }
     let locals_ptr = (*gen).locals.as_ptr();
     *locals_ptr.add(index as usize) as *mut Obj
@@ -219,11 +222,12 @@ pub unsafe extern "C" fn rt_generator_get_local_ptr(gen: *mut Obj, index: u32) -
 pub unsafe extern "C" fn rt_generator_set_local_ptr(gen: *mut Obj, index: u32, value: *mut Obj) {
     let gen = gen as *mut GeneratorObj;
     if index >= (*gen).num_locals {
-        panic!(
-            "Generator local index {} out of bounds (num_locals={})",
+        eprintln!(
+            "FATAL: Generator local index {} out of bounds (num_locals={})",
             index,
             (*gen).num_locals
         );
+        std::process::abort();
     }
     let locals_ptr = (*gen).locals.as_mut_ptr();
     *locals_ptr.add(index as usize) = value as i64;
@@ -375,13 +379,14 @@ pub unsafe extern "C" fn rt_generator_close(gen: *mut Obj) {
     // Mark as closing - the resume function will check this and raise GeneratorExit
     (*gen_obj).closing = true;
 
-    // Try to resume - if it yields, that's an error
-    let result = __pyaot_generator_resume(gen);
+    // Try to resume - if it yields instead of exiting, that's an error
+    __pyaot_generator_resume(gen);
 
-    // If we get here and the generator yielded a value (non-null), that's an error
-    // In Python, this would raise RuntimeError
-    // For now, we just mark it as exhausted
-    if !result.is_null() && result as i64 != 0 {
+    // If the generator is not exhausted after resuming, it yielded instead of
+    // returning/raising GeneratorExit — that is an error per the Python spec.
+    // Checking `exhausted` is correct because None yields (null/0 result) would
+    // otherwise be conflated with "did not yield" when testing the result pointer.
+    if !(*gen_obj).exhausted {
         // Generator yielded instead of returning/raising - this is an error
         let msg = b"generator ignored GeneratorExit";
         rt_exc_raise(ExceptionType::RuntimeError as u8, msg.as_ptr(), msg.len());

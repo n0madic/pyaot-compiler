@@ -39,11 +39,13 @@ unsafe fn extract_data_slice<'a>(data: *mut Obj) -> &'a [u8] {
 
 /// Allocate a HashObj and write a digest into it
 unsafe fn create_hash_obj(digest_bytes: &[u8]) -> *mut Obj {
-    assert!(
-        digest_bytes.len() <= 64,
-        "Digest size {} exceeds buffer capacity",
-        digest_bytes.len()
-    );
+    if digest_bytes.len() > 64 {
+        eprintln!(
+            "FATAL: hash digest size {} exceeds 64-byte buffer capacity",
+            digest_bytes.len()
+        );
+        std::process::abort();
+    }
     let size = std::mem::size_of::<HashObj>();
     let hash_obj = gc_alloc(size, TypeTagKind::Hash.tag()) as *mut HashObj;
     (*hash_obj).digest_len = digest_bytes.len();

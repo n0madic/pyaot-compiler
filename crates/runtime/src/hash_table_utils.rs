@@ -3,7 +3,9 @@
 //! This module provides common hashing and equality functions
 //! used by both dictionaries and sets.
 
-use crate::object::{BoolObj, FloatObj, IntObj, Obj, StrObj, TupleObj, TypeTagKind, ELEM_HEAP_OBJ};
+use crate::object::{
+    BoolObj, FloatObj, IntObj, Obj, StrObj, TupleObj, TypeTagKind, ELEM_HEAP_OBJ, ELEM_RAW_INT,
+};
 
 // FNV-1a hash constants
 pub const FNV_OFFSET_BASIS: u64 = 14695981039346656037;
@@ -192,13 +194,23 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
                             return false;
                         }
                     } else {
-                        // Mixed: one raw, one heap — cannot be equal in general
-                        // (raw int 1 vs boxed IntObj(1) stored differently)
-                        // For CPython compat, compare via unboxing:
-                        // Since raw values are stored as pointer-sized integers,
-                        // and heap objects are boxed, these cannot match without
-                        // unboxing. Fall back to not-equal for safety.
-                        return false;
+                        // Mixed storage: one side ELEM_RAW_INT, the other ELEM_HEAP_OBJ.
+                        // Handle the common case: raw i64 vs boxed IntObj.
+                        // If the heap side is not an IntObj the types are incompatible.
+                        let (raw_val, heap_ptr) = if tag_a == ELEM_RAW_INT {
+                            (ea as i64, eb)
+                        } else {
+                            (eb as i64, ea)
+                        };
+                        if heap_ptr.is_null() {
+                            return false;
+                        }
+                        if (*heap_ptr).type_tag() != TypeTagKind::Int {
+                            return false;
+                        }
+                        if (*(heap_ptr as *mut IntObj)).value != raw_val {
+                            return false;
+                        }
                     }
                 } else {
                     // Both raw values (ELEM_RAW_INT, ELEM_RAW_BOOL): compare as raw bits

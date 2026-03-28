@@ -249,6 +249,7 @@ pub extern "C" fn rt_sorted_set(set: *mut Obj, reverse: i64, elem_tag: u8) -> *m
 #[no_mangle]
 pub extern "C" fn rt_sorted_str(str_obj: *mut Obj, reverse: i64) -> *mut Obj {
     use crate::object::{ListObj, StrObj};
+    use crate::string::utf8_char_width;
 
     if str_obj.is_null() {
         return rt_make_list(0, ELEM_HEAP_OBJ);
@@ -256,27 +257,35 @@ pub extern "C" fn rt_sorted_str(str_obj: *mut Obj, reverse: i64) -> *mut Obj {
 
     unsafe {
         let src = str_obj as *mut StrObj;
-        let len = (*src).len;
+        let byte_len = (*src).len;
 
-        // Create list to hold character strings
-        let new_list = rt_make_list(len as i64, ELEM_HEAP_OBJ);
-        let new_list_obj = new_list as *mut ListObj;
-
-        if len > 0 {
-            let dst_data = (*new_list_obj).data;
-
-            // Create single-char strings for each byte
-            for i in 0..len {
-                let char_str = rt_str_getchar(str_obj, i as i64);
-                *dst_data.add(i) = char_str;
-            }
-            (*new_list_obj).len = len;
-
-            // Sort using stable sort (required for CPython compatibility)
-            // Char strings are always heap objects
-            let data = (*new_list_obj).data;
-            stable_sort(data, len, reverse != 0, ELEM_HEAP_OBJ);
+        if byte_len == 0 {
+            return rt_make_list(0, ELEM_HEAP_OBJ);
         }
+
+        // Collect one string per Unicode codepoint, walking byte-by-byte.
+        // Pre-allocate with byte_len as an upper bound (ASCII strings need exactly
+        // byte_len slots; multi-byte strings need fewer).
+        let new_list = rt_make_list(byte_len as i64, ELEM_HEAP_OBJ);
+        let new_list_obj = new_list as *mut ListObj;
+        let dst_data = (*new_list_obj).data;
+
+        let data = (*src).data.as_ptr();
+        let mut byte_idx: usize = 0;
+        let mut char_count: usize = 0;
+        while byte_idx < byte_len {
+            let first_byte = *data.add(byte_idx);
+            let char_width = utf8_char_width(first_byte);
+            let char_str = rt_str_getchar(str_obj, byte_idx as i64);
+            *dst_data.add(char_count) = char_str;
+            char_count += 1;
+            byte_idx += char_width.min(byte_len - byte_idx);
+        }
+        (*new_list_obj).len = char_count;
+
+        // Sort using stable sort (required for CPython compatibility)
+        let data_ptr = (*new_list_obj).data;
+        stable_sort(data_ptr, char_count, reverse != 0, ELEM_HEAP_OBJ);
 
         new_list
     }
@@ -578,6 +587,7 @@ pub extern "C" fn rt_sorted_str_with_key(
     key_fn: KeyFn,
 ) -> *mut Obj {
     use crate::object::{ListObj, StrObj};
+    use crate::string::utf8_char_width;
 
     if str_obj.is_null() {
         return rt_make_list(0, ELEM_HEAP_OBJ);
@@ -585,32 +595,39 @@ pub extern "C" fn rt_sorted_str_with_key(
 
     unsafe {
         let src = str_obj as *mut StrObj;
-        let len = (*src).len;
+        let byte_len = (*src).len;
 
-        if len == 0 {
+        if byte_len == 0 {
             return rt_make_list(0, ELEM_HEAP_OBJ);
         }
 
-        // First create single-char strings and compute keys
-        let mut key_index_pairs: Vec<(*mut Obj, *mut Obj)> = Vec::with_capacity(len);
-        for i in 0..len {
-            let char_str = rt_str_getchar(str_obj, i as i64);
+        // Walk byte-by-byte, collecting one string per Unicode codepoint.
+        let data = (*src).data.as_ptr();
+        let mut key_index_pairs: Vec<(*mut Obj, *mut Obj)> = Vec::with_capacity(byte_len);
+        let mut byte_idx: usize = 0;
+        while byte_idx < byte_len {
+            let first_byte = *data.add(byte_idx);
+            let char_width = utf8_char_width(first_byte);
+            let char_str = rt_str_getchar(str_obj, byte_idx as i64);
             let key_value = key_fn(char_str);
             key_index_pairs.push((key_value, char_str));
+            byte_idx += char_width.min(byte_len - byte_idx);
         }
+
+        let char_count = key_index_pairs.len();
 
         // Sort by key values using stable sort (required for CPython compatibility)
         stable_sort_key_obj_pairs(&mut key_index_pairs, reverse != 0);
 
         // Build result list from sorted pairs
-        let new_list = rt_make_list(len as i64, ELEM_HEAP_OBJ);
+        let new_list = rt_make_list(char_count as i64, ELEM_HEAP_OBJ);
         let new_list_obj = new_list as *mut ListObj;
         let dst_data = (*new_list_obj).data;
 
         for (i, (_, char_str)) in key_index_pairs.iter().enumerate() {
             *dst_data.add(i) = *char_str;
         }
-        (*new_list_obj).len = len;
+        (*new_list_obj).len = char_count;
 
         new_list
     }

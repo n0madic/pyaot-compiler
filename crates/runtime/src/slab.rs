@@ -250,7 +250,7 @@ unsafe fn finalize_object(obj_ptr: *mut Obj) {
             crate::dict::dict_finalize(obj_ptr);
         }
         TypeTagKind::DefaultDict => {
-            crate::defaultdict::remove_factory_tag(obj_ptr);
+            // Factory tag is packed into entries_capacity — no external registry to clean up.
             crate::dict::dict_finalize(obj_ptr);
         }
         TypeTagKind::Deque => {

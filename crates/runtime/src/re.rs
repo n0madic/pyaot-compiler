@@ -203,7 +203,8 @@ pub extern "C" fn rt_re_sub(pattern: *mut Obj, repl: *mut Obj, string: *mut Obj)
             }
         };
 
-        // Translate Python replacement syntax (\1, \2, \g<name>) to regex syntax ($1, $2)
+        // Translate Python replacement backreferences (\1..\9) to regex-crate syntax ($1..$9).
+        // Python's \0 is the null byte, NOT a backreference — do not translate it.
         let translated_repl = repl_str
             .replace("\\1", "$1")
             .replace("\\2", "$2")
@@ -213,8 +214,7 @@ pub extern "C" fn rt_re_sub(pattern: *mut Obj, repl: *mut Obj, string: *mut Obj)
             .replace("\\6", "$6")
             .replace("\\7", "$7")
             .replace("\\8", "$8")
-            .replace("\\9", "$9")
-            .replace("\\0", "$0");
+            .replace("\\9", "$9");
         // Replace all occurrences
         let result = re.replace_all(&string_str, translated_repl.as_str());
 

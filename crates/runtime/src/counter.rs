@@ -5,7 +5,7 @@
 //! Uses the same DictObj layout with TypeTagKind::Counter.
 
 use crate::dict::rt_dict_set;
-use crate::gc;
+use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
 use crate::hash_table_utils::{eq_hashable_obj, hash_hashable_obj};
 use crate::object::{DictEntry, DictObj, IntObj, Obj, TypeTagKind};
 
@@ -65,6 +65,17 @@ pub extern "C" fn rt_make_counter_from_iter(iter: *mut Obj) -> *mut Obj {
                 raw_elem
             };
 
+            // Root obj (counter) and elem during allocating operations.
+            // rt_box_int and rt_dict_set may trigger GC; without rooting,
+            // the counter and the current element could be collected.
+            let mut roots: [*mut Obj; 2] = [obj, elem];
+            let mut frame = ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 2,
+                roots: roots.as_mut_ptr(),
+            };
+            gc_push(&mut frame);
+
             // Get current count (or 0 if not found)
             let dict = obj as *mut DictObj;
             let current = get_count_or_zero(dict, elem);
@@ -73,6 +84,8 @@ pub extern "C" fn rt_make_counter_from_iter(iter: *mut Obj) -> *mut Obj {
             // Store new count as boxed int
             let boxed_count = crate::boxing::rt_box_int(new_count);
             rt_dict_set(obj, elem, boxed_count);
+
+            gc_pop();
         }
     }
 
@@ -165,11 +178,24 @@ pub extern "C" fn rt_counter_update(counter: *mut Obj, other: *mut Obj) {
                 break;
             }
 
+            // Root counter and elem during allocating operations.
+            // rt_box_int and rt_dict_set may trigger GC; without rooting,
+            // the counter and the current element could be collected.
+            let mut roots: [*mut Obj; 2] = [counter, elem];
+            let mut frame = ShadowFrame {
+                prev: std::ptr::null_mut(),
+                nroots: 2,
+                roots: roots.as_mut_ptr(),
+            };
+            gc_push(&mut frame);
+
             let dict = counter as *mut DictObj;
             let current = get_count_or_zero(dict, elem);
             let new_count = current + 1;
             let boxed = crate::boxing::rt_box_int(new_count);
             rt_dict_set(counter, elem, boxed);
+
+            gc_pop();
         }
     }
 }

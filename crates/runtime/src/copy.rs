@@ -352,10 +352,23 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
             new_inst as *mut Obj
         }
 
-        // Other types (Iterator, Cell, Generator, Match, File, StringBuilder,
-        // StructTime, CompletedProcess, Hash, StringIO, BytesIO) - return as-is
-        // These types either have internal state that shouldn't be copied or
-        // are immutable/stateful objects
+        // Stateful I/O and opaque types that cannot be meaningfully deep-copied.
+        // CPython raises TypeError for these as well.
+        TypeTagKind::StringIO
+        | TypeTagKind::BytesIO
+        | TypeTagKind::File
+        | TypeTagKind::Generator
+        | TypeTagKind::Hash => {
+            let msg = b"TypeError: cannot deepcopy this object";
+            crate::exceptions::rt_exc_raise(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+
+        // Genuinely immutable / value-like types (Match, StructTime, CompletedProcess,
+        // Iterator, Cell, StringBuilder) - returning the same pointer is acceptable.
         _ => obj,
     }
 }

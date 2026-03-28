@@ -176,6 +176,20 @@ pub fn compile_string_call(
                 true,
             )?;
         }
+        mir::RuntimeFunc::StrSubscript => {
+            compile_binary_runtime_call(
+                builder,
+                "rt_str_subscript",
+                cltypes::I64,
+                cltypes::I64,
+                cltypes::I64,
+                &args[0],
+                &args[1],
+                dest,
+                ctx,
+                true,
+            )?;
+        }
         mir::RuntimeFunc::StrMul => {
             compile_binary_runtime_call(
                 builder,

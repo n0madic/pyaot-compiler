@@ -23,6 +23,30 @@ const DUMMY_INDEX: i64 = -2;
 /// Maximum string length to intern for dict keys
 const MAX_DICT_KEY_INTERN_LENGTH: usize = 256;
 
+/// Bit position of the factory_tag byte packed into the high byte of
+/// `DictObj::entries_capacity` for DefaultDict objects.
+pub(crate) const FACTORY_TAG_SHIFT: usize = 56;
+/// Mask for the real entries_capacity stored in the lower 56 bits.
+pub(crate) const CAPACITY_MASK: usize = (1usize << FACTORY_TAG_SHIFT) - 1;
+
+/// Return the real entries_capacity for any DictObj.
+///
+/// DefaultDict objects pack a factory_tag into the high byte of
+/// `entries_capacity`. This helper strips that byte so all dict
+/// operations use the correct physical capacity.
+#[inline]
+pub(crate) fn real_entries_capacity(dict: *mut DictObj) -> usize {
+    unsafe { (*dict).entries_capacity & CAPACITY_MASK }
+}
+
+/// Write a new real entries_capacity while preserving any packed factory_tag
+/// in the high byte.
+#[inline]
+pub(crate) unsafe fn set_real_entries_capacity(dict: *mut DictObj, capacity: usize) {
+    let tag_byte = (*dict).entries_capacity & !CAPACITY_MASK; // high byte(s) only
+    (*dict).entries_capacity = tag_byte | (capacity & CAPACITY_MASK);
+}
+
 /// Round up to the next power of 2 (required for mask-based probing).
 #[inline]
 fn next_power_of_2(n: usize) -> usize {
@@ -114,7 +138,8 @@ unsafe fn dict_resize(dict: *mut DictObj) {
 
     let old_entries = (*dict).entries;
     let old_entries_len = (*dict).entries_len;
-    let old_entries_capacity = (*dict).entries_capacity;
+    // Use real capacity: DefaultDict packs factory_tag into the high byte.
+    let old_entries_capacity = real_entries_capacity(dict);
     let old_indices = (*dict).indices;
     let old_indices_capacity = (*dict).indices_capacity;
     let active_count = (*dict).len;
@@ -177,12 +202,13 @@ unsafe fn dict_resize(dict: *mut DictObj) {
         new_len += 1;
     }
 
-    // Update dict
+    // Update dict. Use set_real_entries_capacity to preserve any packed
+    // factory_tag in the high byte (DefaultDict objects).
     (*dict).indices = new_indices;
     (*dict).indices_capacity = new_indices_capacity;
     (*dict).entries = new_entries;
     (*dict).entries_len = new_len;
-    (*dict).entries_capacity = new_entries_capacity;
+    set_real_entries_capacity(dict, new_entries_capacity);
     // len stays the same (active_count)
 
     // Free old arrays
@@ -289,13 +315,27 @@ pub extern "C" fn rt_dict_set(dict: *mut Obj, mut key: *mut Obj, value: *mut Obj
             // New key — append to entries array
             let new_idx = (*dict_obj).entries_len;
 
-            // Grow entries array if needed
-            if new_idx >= (*dict_obj).entries_capacity {
+            // Grow entries array if needed. Use real_entries_capacity to
+            // correctly handle DefaultDict objects with packed factory_tag.
+            if new_idx >= real_entries_capacity(dict_obj) {
                 // This shouldn't normally happen since resize handles it,
-                // but handle it defensively
+                // but handle it defensively. Avoid recursion to prevent stack overflow.
                 dict_resize(dict_obj);
-                // After resize, insert again (indices changed)
-                rt_dict_set(dict, key, value);
+                // After resize, recompute slot and insert directly (no recursion)
+                let (slot2, entry_idx2) = find_insert_slot(dict_obj, key, hash);
+                if entry_idx2 >= 0 {
+                    let entry = (*dict_obj).entries.add(entry_idx2 as usize);
+                    (*entry).value = value;
+                } else {
+                    let new_idx2 = (*dict_obj).entries_len;
+                    let entry = (*dict_obj).entries.add(new_idx2);
+                    (*entry).hash = hash;
+                    (*entry).key = key;
+                    (*entry).value = value;
+                    *(*dict_obj).indices.add(slot2) = new_idx2 as i64;
+                    (*dict_obj).entries_len += 1;
+                    (*dict_obj).len += 1;
+                }
                 return;
             }
 
@@ -681,9 +721,10 @@ pub unsafe fn dict_finalize(dict: *mut Obj) {
         dealloc(indices as *mut u8, layout);
     }
 
-    // Free entries array
+    // Free entries array. Use real_entries_capacity to strip any packed
+    // factory_tag (DefaultDict objects pack it into the high byte).
     let entries = (*dict_obj).entries;
-    let entries_capacity = (*dict_obj).entries_capacity;
+    let entries_capacity = real_entries_capacity(dict_obj);
     if !entries.is_null() && entries_capacity > 0 {
         let layout = Layout::array::<DictEntry>(entries_capacity)
             .expect("Allocation size overflow - capacity too large");
@@ -805,16 +846,29 @@ pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
             last_idx -= 1;
             let entry = (*dict_obj).entries.add(last_idx);
             if !(*entry).key.is_null() {
+                // Save entry data BEFORE allocating tuple (which may trigger GC)
                 let key = (*entry).key;
                 let value = (*entry).value;
+                let hash = (*entry).hash;
 
-                // Create result tuple
+                // Root dict and key/value on shadow stack during tuple allocation
+                let mut roots: [*mut Obj; 3] = [dict, key, value];
+                let mut frame = crate::gc::ShadowFrame {
+                    prev: std::ptr::null_mut(),
+                    nroots: 3,
+                    roots: roots.as_mut_ptr(),
+                };
+                crate::gc::gc_push(&mut frame);
+
+                // Create result tuple (may trigger GC)
                 let tuple = rt_make_tuple(2, ELEM_HEAP_OBJ);
-                rt_tuple_set(tuple, 0, key);
-                rt_tuple_set(tuple, 1, value);
+                rt_tuple_set(tuple, 0, roots[1]); // Use rooted key
+                rt_tuple_set(tuple, 1, roots[2]); // Use rooted value
+
+                crate::gc::gc_pop();
 
                 // Delete the entry: null out key/value in entries, mark index as dummy
-                let hash = (*entry).hash;
+                let entry = (*dict_obj).entries.add(last_idx);
                 (*entry).key = std::ptr::null_mut();
                 (*entry).value = std::ptr::null_mut();
 

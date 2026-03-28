@@ -19,6 +19,34 @@ type MapFn2 = extern "C" fn(*mut Obj, *mut Obj, *mut Obj) -> *mut Obj;
 type MapFn3 = extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj) -> *mut Obj;
 /// Map function with 4 captures
 type MapFn4 = extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj) -> *mut Obj;
+/// Map function with 5 captures
+type MapFn5 = extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj) -> *mut Obj;
+/// Map function with 6 captures
+type MapFn6 =
+    extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj) -> *mut Obj;
+/// Map function with 7 captures
+type MapFn7 = extern "C" fn(
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+) -> *mut Obj;
+/// Map function with 8 captures
+type MapFn8 = extern "C" fn(
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+) -> *mut Obj;
 
 /// Function type for filter: takes element, returns bool (as i8)
 type FilterFn = extern "C" fn(*mut Obj) -> i8;
@@ -30,6 +58,34 @@ type FilterFn2 = extern "C" fn(*mut Obj, *mut Obj, *mut Obj) -> i8;
 type FilterFn3 = extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj) -> i8;
 /// Filter function with 4 captures
 type FilterFn4 = extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj) -> i8;
+/// Filter function with 5 captures
+type FilterFn5 = extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj) -> i8;
+/// Filter function with 6 captures
+type FilterFn6 =
+    extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj) -> i8;
+/// Filter function with 7 captures
+type FilterFn7 = extern "C" fn(
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+) -> i8;
+/// Filter function with 8 captures
+type FilterFn8 = extern "C" fn(
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+) -> i8;
 
 // ==================== Helper Functions ====================
 
@@ -74,10 +130,55 @@ pub(crate) unsafe fn call_map_with_captures(
             let func: MapFn4 = std::mem::transmute(func_ptr);
             func(c0, c1, c2, c3, elem)
         }
-        _ => panic!(
-            "map: too many captures (max 4 supported, got {})",
-            capture_count
-        ),
+        5 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let func: MapFn5 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, c3, c4, elem)
+        }
+        6 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let c5 = rt_tuple_get(captures, 5);
+            let func: MapFn6 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, c3, c4, c5, elem)
+        }
+        7 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let c5 = rt_tuple_get(captures, 5);
+            let c6 = rt_tuple_get(captures, 6);
+            let func: MapFn7 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, c3, c4, c5, c6, elem)
+        }
+        8 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let c5 = rt_tuple_get(captures, 5);
+            let c6 = rt_tuple_get(captures, 6);
+            let c7 = rt_tuple_get(captures, 7);
+            let func: MapFn8 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, c3, c4, c5, c6, c7, elem)
+        }
+        _ => {
+            eprintln!(
+                "FATAL: map: too many captures (max 8 supported, got {})",
+                capture_count
+            );
+            std::process::abort();
+        }
     }
 }
 
@@ -123,10 +224,55 @@ pub(crate) unsafe fn call_filter_with_captures(
             let func: FilterFn4 = std::mem::transmute(func_ptr);
             func(c0, c1, c2, c3, elem)
         }
-        _ => panic!(
-            "filter: too many captures (max 4 supported, got {})",
-            capture_count
-        ),
+        5 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let func: FilterFn5 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, c3, c4, elem)
+        }
+        6 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let c5 = rt_tuple_get(captures, 5);
+            let func: FilterFn6 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, c3, c4, c5, elem)
+        }
+        7 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let c5 = rt_tuple_get(captures, 5);
+            let c6 = rt_tuple_get(captures, 6);
+            let func: FilterFn7 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, c3, c4, c5, c6, elem)
+        }
+        8 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let c5 = rt_tuple_get(captures, 5);
+            let c6 = rt_tuple_get(captures, 6);
+            let c7 = rt_tuple_get(captures, 7);
+            let func: FilterFn8 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, c3, c4, c5, c6, c7, elem)
+        }
+        _ => {
+            eprintln!(
+                "FATAL: filter: too many captures (max 8 supported, got {})",
+                capture_count
+            );
+            std::process::abort();
+        }
     };
     result != 0
 }

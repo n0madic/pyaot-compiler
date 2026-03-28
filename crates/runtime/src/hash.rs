@@ -39,7 +39,12 @@ pub extern "C" fn rt_hash_str(str_obj: *mut Obj) -> i64 {
             hash ^= *data.add(i) as u64;
             hash = hash.wrapping_mul(FNV_PRIME);
         }
-        hash as i64
+        let mut result = hash as i64;
+        // CPython reserves -1 as an error sentinel; map it to -2
+        if result == -1 {
+            result = -2;
+        }
+        result
     }
 }
 
@@ -93,7 +98,12 @@ pub extern "C" fn rt_hash_tuple(tuple_obj: *mut Obj) -> i64 {
         // Mix in the length
         hash ^= len as u64;
 
-        hash as i64
+        let mut result = hash as i64;
+        // CPython reserves -1 as an error sentinel; map it to -2
+        if result == -1 {
+            result = -2;
+        }
+        result
     }
 }
 
