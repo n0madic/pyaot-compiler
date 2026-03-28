@@ -261,6 +261,9 @@ impl InlineRemapper {
                 instance: instance.as_ref().map(|o| self.remap_operand(o)),
             },
             Terminator::Reraise => Terminator::Reraise,
+            Terminator::RaiseInstance { instance } => Terminator::RaiseInstance {
+                instance: self.remap_operand(instance),
+            },
         }
     }
 

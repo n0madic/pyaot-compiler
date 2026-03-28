@@ -234,6 +234,7 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::ToStringRepr(_, _)
         | mir::RuntimeFunc::TypeName
         | mir::RuntimeFunc::TypeNameExtract
+        | mir::RuntimeFunc::ExcClassName
         | mir::RuntimeFunc::FormatValue
         | mir::RuntimeFunc::StrToIntWithBase => {
             conversions::compile_conversion_call(builder, dest, func, args, ctx)?;

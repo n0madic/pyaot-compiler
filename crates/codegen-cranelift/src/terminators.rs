@@ -13,7 +13,10 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 
 use crate::context::CodegenContext;
-use crate::exceptions::{compile_raise, compile_raise_custom, compile_reraise, compile_try_setjmp};
+use crate::exceptions::{
+    compile_raise, compile_raise_custom, compile_raise_instance, compile_reraise,
+    compile_try_setjmp,
+};
 use crate::utils::{declare_runtime_function, get_call_result, load_operand, type_to_cranelift};
 
 /// Compile a MIR terminator to Cranelift IR
@@ -155,6 +158,10 @@ pub fn compile_terminator(
             instance,
         } => {
             compile_raise_custom(builder, *class_id, message, instance, ctx)?;
+        }
+
+        mir::Terminator::RaiseInstance { instance } => {
+            compile_raise_instance(builder, instance, ctx)?;
         }
     }
     Ok(())

@@ -703,6 +703,9 @@ pub enum RuntimeFunc {
     /// Extract type name from type string: rt_type_name_extract(type_str: *mut Obj) -> *mut Obj (str)
     /// Extracts "int" from "<class 'int'>" for __name__ attribute access
     TypeNameExtract,
+    /// Get exception class name: rt_exc_class_name(instance: *mut Obj) -> *mut Obj (str)
+    /// Returns "<class 'ValueError'>" etc. for __class__ attribute on exceptions
+    ExcClassName,
 
     // ==================== Map/Filter iterators ====================
     /// Create map iterator: rt_map_new(func_ptr: i64, iter: *mut Obj) -> *mut Obj

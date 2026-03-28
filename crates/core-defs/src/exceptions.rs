@@ -169,6 +169,7 @@ define_exceptions! {
     ConnectionError = 25 => "ConnectionError",
     TimeoutError = 26 => "TimeoutError",
     SyntaxError = 27 => "SyntaxError",
+    BaseException = 28 => "BaseException",
 }
 
 #[cfg(test)]
@@ -245,7 +246,8 @@ mod tests {
         assert_eq!(exception_tag_to_name(13), Some("MemoryError"));
         assert_eq!(exception_tag_to_name(26), Some("TimeoutError"));
         assert_eq!(exception_tag_to_name(27), Some("SyntaxError"));
-        assert_eq!(exception_tag_to_name(28), None);
+        assert_eq!(exception_tag_to_name(28), Some("BaseException"));
+        assert_eq!(exception_tag_to_name(29), None);
         assert_eq!(exception_tag_to_name(255), None);
     }
 

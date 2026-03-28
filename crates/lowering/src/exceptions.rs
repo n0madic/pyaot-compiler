@@ -142,15 +142,27 @@ fn get_exc_type_tag_from_type(ty: &Type) -> Option<(u8, bool)> {
 /// Exception info result from extract_exc_info
 /// Built-in exceptions: (type_tag, message, None, None)
 /// Custom exception classes: (class_id, message, Some(class_id), Some(instance))
+/// Instance re-raise: (0, None, None, Some(instance), is_instance_raise=true)
 #[derive(Debug)]
 pub struct ExcInfo {
     pub type_tag: u8,
     pub message: Option<mir::Operand>,
     pub custom_class_id: Option<u8>, // Some(id) for custom exception classes
     pub instance: Option<mir::Operand>, // Pre-created instance for custom exceptions
+    pub is_instance_raise: bool,     // True when raising an existing exception variable
 }
 
 impl<'a> Lowering<'a> {
+    /// Check if a type refers to an exception class (custom class with is_exception_class).
+    fn is_exception_class_type(&self, ty: &Type) -> bool {
+        if let Type::Class { class_id, .. } = ty {
+            if let Some(info) = self.get_class_info(class_id) {
+                return info.is_exception_class;
+            }
+        }
+        false
+    }
+
     /// Collect variables assigned in try block that need cell wrapping.
     ///
     /// Due to setjmp/longjmp semantics, variables modified after setjmp may lose their
@@ -266,6 +278,7 @@ impl<'a> Lowering<'a> {
                                 message: msg,
                                 custom_class_id: Some(id),
                                 instance: Some(instance),
+                                is_instance_raise: false,
                             });
                         }
                     }
@@ -286,6 +299,7 @@ impl<'a> Lowering<'a> {
                     message: msg,
                     custom_class_id: None,
                     instance: None,
+                    is_instance_raise: false,
                 })
             }
             hir::ExprKind::BuiltinCall { builtin, args, .. } => {
@@ -301,6 +315,7 @@ impl<'a> Lowering<'a> {
                     message: msg,
                     custom_class_id: None,
                     instance: None,
+                    is_instance_raise: false,
                 })
             }
             hir::ExprKind::Str(s) => {
@@ -315,13 +330,41 @@ impl<'a> Lowering<'a> {
                     message: Some(mir::Operand::Local(result_local)),
                     custom_class_id: None,
                     instance: None,
+                    is_instance_raise: false,
                 })
+            }
+            hir::ExprKind::Var(var_id) => {
+                // Check if this variable holds an exception instance (for `raise e`)
+                let var_type = self.get_var_type(var_id).cloned().unwrap_or(Type::Any);
+                let is_exception = matches!(&var_type, Type::BuiltinException(_))
+                    || self.is_exception_class_type(&var_type);
+                if is_exception {
+                    let var_local = self
+                        .get_var_local(var_id)
+                        .expect("exception var should have a local");
+                    Ok(ExcInfo {
+                        type_tag: 0,
+                        message: None,
+                        custom_class_id: None,
+                        instance: Some(mir::Operand::Local(var_local)),
+                        is_instance_raise: true,
+                    })
+                } else {
+                    Ok(ExcInfo {
+                        type_tag: 0,
+                        message: None,
+                        custom_class_id: None,
+                        instance: None,
+                        is_instance_raise: false,
+                    })
+                }
             }
             _ => Ok(ExcInfo {
                 type_tag: 0,
                 message: None,
                 custom_class_id: None,
                 instance: None,
+                is_instance_raise: false,
             }),
         }
     }
@@ -338,8 +381,21 @@ impl<'a> Lowering<'a> {
             let exc_expr = &hir_module.exprs[*exc_expr_id];
             let exc_info = self.extract_exc_info(exc_expr, hir_module, mir_func)?;
 
-            // Check if this is a custom exception class
-            if let Some(class_id) = exc_info.custom_class_id {
+            // Check if this is raising an existing exception instance (e.g., `raise e`)
+            if exc_info.is_instance_raise {
+                if let Some(instance) = exc_info.instance {
+                    self.current_block_mut().terminator =
+                        mir::Terminator::RaiseInstance { instance };
+                } else {
+                    // Shouldn't happen, but fall back to generic Exception
+                    self.current_block_mut().terminator = mir::Terminator::Raise {
+                        exc_type: 0,
+                        message: None,
+                        cause: None,
+                        suppress_context: false,
+                    };
+                }
+            } else if let Some(class_id) = exc_info.custom_class_id {
                 // Custom exception - use RaiseCustom terminator
                 // Note: cause is not supported for custom exceptions currently
                 if cause.is_some() {
@@ -834,8 +890,11 @@ impl<'a> Lowering<'a> {
                 // Bare except - catches all, go directly to handler
                 self.current_block_mut().terminator = mir::Terminator::Goto(handler_id);
             }
-            Some(0) if !*is_custom_class => {
-                // Exception base type (built-in) - catches all, go directly to handler
+            Some(tag)
+                if !*is_custom_class
+                    && *tag == pyaot_core_defs::BuiltinExceptionKind::BaseException.tag() =>
+            {
+                // BaseException - catches all, go directly to handler
                 self.current_block_mut().terminator = mir::Terminator::Goto(handler_id);
             }
             Some(tag) => {

@@ -90,7 +90,7 @@ impl<'a> Lowering<'a> {
             return Ok(mir::Operand::Local(result_local));
         }
 
-        // Handle built-in exception attributes (.args)
+        // Handle built-in exception attributes (.args, __class__)
         if matches!(&obj_type, Type::BuiltinException(_)) {
             if attr_name == "args" {
                 let result_local = self.alloc_and_add_local(Type::Tuple(vec![Type::Str]), mir_func);
@@ -102,6 +102,17 @@ impl<'a> Lowering<'a> {
                 });
                 return Ok(mir::Operand::Local(result_local));
             }
+            if attr_name == "__class__" {
+                // Return a type proxy string like "<class 'ValueError'>"
+                // This allows chaining: e.__class__.__name__ -> "ValueError"
+                let result_local = self.alloc_and_add_local(Type::Str, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::ExcClassName,
+                    args: vec![obj_operand],
+                });
+                return Ok(mir::Operand::Local(result_local));
+            }
             // Other built-in exception attributes not supported yet
             return Ok(mir::Operand::Constant(mir::Constant::None));
         }
@@ -110,6 +121,17 @@ impl<'a> Lowering<'a> {
         if let Type::Class { class_id, .. } = &obj_type {
             // Try local class_info first
             if let Some(class_info) = self.get_class_info(class_id).cloned() {
+                // 0. Handle __class__ on exception class instances
+                if attr_name == "__class__" && class_info.is_exception_class {
+                    let result_local = self.alloc_and_add_local(Type::Str, mir_func);
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: result_local,
+                        func: mir::RuntimeFunc::ExcClassName,
+                        args: vec![obj_operand],
+                    });
+                    return Ok(mir::Operand::Local(result_local));
+                }
+
                 // 1. Check for @property first - call getter method
                 if let Some((getter_id, _setter)) = class_info.properties.get(&attr) {
                     let getter_id = *getter_id;

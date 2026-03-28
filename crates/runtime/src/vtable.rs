@@ -170,19 +170,47 @@ static INIT_BUILTIN_EXCEPTIONS: Once = Once::new();
 pub extern "C" fn rt_init_builtin_exception_classes() {
     INIT_BUILTIN_EXCEPTIONS.call_once(|| unsafe {
         let registry = &mut *CLASS_REGISTRY.0.get();
-        // Exception (0) - base class, no parent
-        registry[0] = ClassInfo {
+
+        // BaseException (28) - ultimate root, no parent
+        registry[pyaot_core_defs::BuiltinExceptionKind::BaseException.tag() as usize] = ClassInfo {
             parent_class_id: NO_PARENT,
             heap_field_mask: u64::MAX,
         };
-        // All other built-in exceptions (tags 1-27) inherit from Exception (0)
-        for entry in registry
-            .iter_mut()
-            .take(pyaot_core_defs::BUILTIN_EXCEPTION_COUNT as usize)
-            .skip(1)
-        {
-            *entry = ClassInfo {
-                parent_class_id: 0,
+
+        // Exception (0) inherits from BaseException (28)
+        registry[pyaot_core_defs::BuiltinExceptionKind::Exception.tag() as usize] = ClassInfo {
+            parent_class_id: pyaot_core_defs::BuiltinExceptionKind::BaseException.tag(),
+            heap_field_mask: u64::MAX,
+        };
+
+        // SystemExit, KeyboardInterrupt, GeneratorExit inherit from BaseException (NOT Exception)
+        let base_exc_tag = pyaot_core_defs::BuiltinExceptionKind::BaseException.tag();
+        for &tag in &[
+            pyaot_core_defs::BuiltinExceptionKind::SystemExit.tag(),
+            pyaot_core_defs::BuiltinExceptionKind::KeyboardInterrupt.tag(),
+            pyaot_core_defs::BuiltinExceptionKind::GeneratorExit.tag(),
+        ] {
+            registry[tag as usize] = ClassInfo {
+                parent_class_id: base_exc_tag,
+                heap_field_mask: u64::MAX,
+            };
+        }
+
+        // All other built-in exceptions (tags 1-27 except 7, 20, 21) inherit from Exception (0)
+        let exception_tag = pyaot_core_defs::BuiltinExceptionKind::Exception.tag();
+        for kind in pyaot_core_defs::BuiltinExceptionKind::ALL {
+            let tag = kind.tag();
+            // Skip Exception (0), BaseException (28), and BaseException-only types
+            if tag == exception_tag
+                || tag == base_exc_tag
+                || tag == pyaot_core_defs::BuiltinExceptionKind::SystemExit.tag()
+                || tag == pyaot_core_defs::BuiltinExceptionKind::KeyboardInterrupt.tag()
+                || tag == pyaot_core_defs::BuiltinExceptionKind::GeneratorExit.tag()
+            {
+                continue;
+            }
+            registry[tag as usize] = ClassInfo {
+                parent_class_id: exception_tag,
                 heap_field_mask: u64::MAX,
             };
         }
@@ -190,7 +218,7 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
 }
 
 /// Get the first available class ID for user classes.
-/// Built-in exception classes use IDs 0-27, so user classes start at 28.
+/// Built-in exception classes use IDs 0-28, so user classes start at 29.
 pub const FIRST_USER_CLASS_ID: u8 = pyaot_core_defs::BUILTIN_EXCEPTION_COUNT;
 
 // ==================== Method Name Registry (for Protocol dispatch) ====================

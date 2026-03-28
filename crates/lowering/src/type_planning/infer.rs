@@ -300,8 +300,22 @@ impl<'a> Lowering<'a> {
                 _ => Type::Any,
             });
         }
+        // Handle built-in exception attributes (.args, __class__)
+        if matches!(obj_ty, Type::BuiltinException(_)) {
+            let attr_name = self.resolve(attr);
+            return Some(match attr_name {
+                "args" => Type::Tuple(vec![Type::Str]),
+                "__class__" => Type::Str,
+                _ => Type::Any,
+            });
+        }
         if let Type::Class { class_id, .. } = obj_ty {
             if let Some(class_info) = self.get_class_info(class_id) {
+                // Handle __class__ on exception class instances
+                let attr_name = self.resolve(attr);
+                if attr_name == "__class__" && class_info.is_exception_class {
+                    return Some(Type::Str);
+                }
                 if let Some(field_ty) = class_info.field_types.get(&attr) {
                     return Some(field_ty.clone());
                 }

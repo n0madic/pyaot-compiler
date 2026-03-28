@@ -343,6 +343,30 @@ pub fn compile_reraise(builder: &mut FunctionBuilder, ctx: &mut CodegenContext) 
     Ok(())
 }
 
+/// Compile RaiseInstance terminator
+/// Raises an exception from an existing instance pointer (for `raise e`)
+pub fn compile_raise_instance(
+    builder: &mut FunctionBuilder,
+    instance: &Operand,
+    ctx: &mut CodegenContext,
+) -> Result<()> {
+    let instance_val = load_operand(builder, instance, ctx.var_map);
+
+    let mut sig = ctx.module.make_signature();
+    sig.call_conv = CallConv::SystemV;
+    sig.params.push(AbiParam::new(cltypes::I64)); // instance ptr
+
+    let func_id = declare_runtime_function(ctx.module, "rt_exc_raise_instance", &sig)?;
+    let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+    builder.ins().call(func_ref, &[instance_val]);
+
+    // rt_exc_raise_instance never returns
+    builder
+        .ins()
+        .trap(cranelift_codegen::ir::TrapCode::unwrap_user(5));
+    Ok(())
+}
+
 /// Compile ExcGetCurrent instruction
 /// Gets the current exception as a string object (for `except E as e:`)
 pub fn compile_exc_get_current(

@@ -201,6 +201,9 @@ pub(crate) fn terminator_used_locals(term: &Terminator) -> Vec<LocalId> {
             }
         }
         Terminator::Reraise => {}
+        Terminator::RaiseInstance { instance } => {
+            collect_operand_locals(instance, &mut locals);
+        }
     }
     locals
 }
@@ -223,6 +226,7 @@ pub(crate) fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
         | Terminator::Unreachable
         | Terminator::Raise { .. }
         | Terminator::RaiseCustom { .. }
+        | Terminator::RaiseInstance { .. }
         | Terminator::Reraise => vec![],
     }
 }

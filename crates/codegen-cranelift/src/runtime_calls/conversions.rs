@@ -184,6 +184,18 @@ pub fn compile_conversion_call(
                 true,
             )?;
         }
+        mir::RuntimeFunc::ExcClassName => {
+            compile_unary_runtime_call(
+                builder,
+                "rt_exc_class_name",
+                cltypes::I64,
+                cltypes::I64,
+                &args[0],
+                dest,
+                ctx,
+                true,
+            )?;
+        }
         mir::RuntimeFunc::FormatValue => {
             // rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mut Obj
             compile_binary_runtime_call(

@@ -58,6 +58,10 @@ pub enum Terminator {
     /// Re-raise current exception (diverging)
     /// Used for bare `raise` statement in except block
     Reraise,
+
+    /// Raise from an existing exception instance (diverging)
+    /// Used for `raise e` where e is a caught exception variable
+    RaiseInstance { instance: Operand },
 }
 
 /// Cause exception for `raise X from Y`

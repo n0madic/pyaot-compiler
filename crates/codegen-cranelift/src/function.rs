@@ -436,6 +436,7 @@ fn find_cold_blocks(func: &mir::Function) -> HashSet<BlockId> {
             // Raise/error paths are cold
             mir::Terminator::Raise { .. }
             | mir::Terminator::RaiseCustom { .. }
+            | mir::Terminator::RaiseInstance { .. }
             | mir::Terminator::Reraise
             | mir::Terminator::Unreachable => {
                 cold.insert(*block_id);
@@ -499,6 +500,7 @@ fn terminator_successors(term: &mir::Terminator) -> Vec<BlockId> {
         | mir::Terminator::Unreachable
         | mir::Terminator::Raise { .. }
         | mir::Terminator::RaiseCustom { .. }
+        | mir::Terminator::RaiseInstance { .. }
         | mir::Terminator::Reraise => vec![],
     }
 }

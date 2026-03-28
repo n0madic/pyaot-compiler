@@ -182,6 +182,9 @@ fn substitute_terminator(term: &mut Terminator, constants: &HashMap<LocalId, Con
                 changed |= substitute_operand(op, constants);
             }
         }
+        Terminator::RaiseInstance { instance } => {
+            changed |= substitute_operand(instance, constants);
+        }
         Terminator::Return(None)
         | Terminator::Goto(_)
         | Terminator::Unreachable

@@ -86,7 +86,7 @@ Native Executable
 | for | ✅ | range, iterables (list/tuple/dict/str/set/bytes/file), unpacking with starred expressions |
 | for...else / while...else | ✅ | else block runs when loop completes without break |
 | break/continue | ✅ | |
-| try/except/else/finally | ✅ | Full exception objects with `.args`, custom fields, `str(e)` |
+| try/except/else/finally | ✅ | Full exception objects: `.args`, `__class__.__name__`, `str(e)`, `raise e`, BaseException hierarchy |
 | Multiple except types | ✅ | `except (ValueError, TypeError) as e:` |
 | del statement | ✅ | `del dict[key]`, `del list[index]` |
 | Walrus operator `:=` | ✅ | `if (n := len(items)) > 10:` |
@@ -288,7 +288,11 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 | SystemExit, KeyboardInterrupt | ✅ |
 | ImportError, ConnectionError, TimeoutError | ✅ |
 | SyntaxError | ✅ |
+| BaseException | ✅ |
 | Custom exception classes | ✅ |
+| `raise e` (re-raise variable) | ✅ |
+| `e.__class__.__name__` | ✅ |
+| BaseException/Exception hierarchy | ✅ | `except Exception` excludes SystemExit/KeyboardInterrupt/GeneratorExit |
 
 ### Optimizations
 

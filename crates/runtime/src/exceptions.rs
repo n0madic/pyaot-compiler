@@ -109,6 +109,7 @@ pub enum ExceptionType {
     ConnectionError = 25,
     TimeoutError = 26,
     SyntaxError = 27,
+    BaseException = 28,
 }
 
 impl ExceptionType {
@@ -155,6 +156,7 @@ impl ExceptionType {
             BuiltinExceptionKind::ConnectionError => Self::ConnectionError,
             BuiltinExceptionKind::TimeoutError => Self::TimeoutError,
             BuiltinExceptionKind::SyntaxError => Self::SyntaxError,
+            BuiltinExceptionKind::BaseException => Self::BaseException,
         }
     }
 
@@ -190,6 +192,7 @@ impl ExceptionType {
             Self::ConnectionError => "ConnectionError",
             Self::TimeoutError => "TimeoutError",
             Self::SyntaxError => "SyntaxError",
+            Self::BaseException => "BaseException",
         }
     }
 }
@@ -236,8 +239,8 @@ pub struct ExceptionObject {
     pub exc_type: ExceptionType,
     /// Custom class ID for user-defined exception classes.
     /// NOT_CUSTOM_CLASS (255) means this is a built-in exception.
-    /// Values 0-26 are reserved for built-in exceptions mapped to class IDs.
-    /// Values 27+ are user-defined exception classes.
+    /// Values 0-28 are reserved for built-in exceptions mapped to class IDs.
+    /// Values 29+ are user-defined exception classes.
     pub custom_class_id: u8,
     /// Exception message (heap-allocated string, or null)
     pub message: *const u8,
@@ -1107,6 +1110,50 @@ pub extern "C" fn rt_exc_get_current() -> *mut crate::object::Obj {
     instance
 }
 
+/// Get the class name of an exception instance as a `"<class 'ExcName'>"` string.
+/// For built-in exceptions, returns `"<class 'ValueError'>"` etc.
+/// For custom exceptions, looks up the registered name.
+/// Returns a heap-allocated StrObj.
+///
+/// # Safety
+/// `instance` must be a valid pointer to an InstanceObj.
+#[no_mangle]
+pub unsafe extern "C" fn rt_exc_class_name(
+    instance: *mut crate::object::Obj,
+) -> *mut crate::object::Obj {
+    if instance.is_null() {
+        let s = "<class 'Exception'>";
+        return crate::string::rt_make_str(s.as_ptr(), s.len());
+    }
+
+    // Get the exception name from thread-local state to correctly distinguish
+    // built-in vs custom exceptions (their class_ids overlap in the vtable).
+    let name = with_exception_state(|state| {
+        let exc = state
+            .current_exception
+            .as_ref()
+            .or(state.handling_exception.as_ref());
+        if let Some(exc) = exc {
+            if exc.custom_class_id == NOT_CUSTOM_CLASS {
+                return exc.exc_type.name().to_string();
+            } else {
+                return get_custom_exception_name(exc.custom_class_id);
+            }
+        }
+        // Fallback: read class_id from instance header
+        let inst = instance as *const crate::object::InstanceObj;
+        let class_id = (*inst).class_id;
+        if let Some(kind) = BuiltinExceptionKind::from_tag(class_id) {
+            kind.name().to_string()
+        } else {
+            get_custom_exception_name(class_id)
+        }
+    });
+
+    let class_str = format!("<class '{}'>", name);
+    crate::string::rt_make_str(class_str.as_ptr(), class_str.len())
+}
+
 /// Get the current exception message as a string object.
 /// This is the backward-compatible version for internal use (traceback printing, etc.).
 /// Returns a heap-allocated StrObj with the exception message, or an empty string.
@@ -1221,8 +1268,19 @@ pub extern "C" fn rt_exc_instance_str(
 pub extern "C" fn rt_exc_isinstance(type_tag: u8) -> i8 {
     with_exception_state(|state| {
         if let Some(ref exc) = state.current_exception {
-            // Exception type 0 (base Exception) matches all exceptions
-            if type_tag == 0 {
+            // BaseException (tag 28) catches ALL exceptions
+            if type_tag == BuiltinExceptionKind::BaseException.tag() {
+                return 1;
+            }
+            // Exception (tag 0) catches all EXCEPT SystemExit, KeyboardInterrupt, GeneratorExit
+            if type_tag == BuiltinExceptionKind::Exception.tag() {
+                let exc_tag = exc.exc_type as u8;
+                if exc_tag == BuiltinExceptionKind::SystemExit.tag()
+                    || exc_tag == BuiltinExceptionKind::KeyboardInterrupt.tag()
+                    || exc_tag == BuiltinExceptionKind::GeneratorExit.tag()
+                {
+                    return 0;
+                }
                 return 1;
             }
             // Otherwise, check for exact type match
@@ -1311,6 +1369,76 @@ pub unsafe extern "C" fn rt_exc_raise_custom_with_instance(
     dispatch_to_handler(exc_obj)
 }
 
+/// Raise an exception from an existing exception instance pointer.
+/// Used for `raise e` where `e` is a caught exception variable.
+/// Reads the class_id from the InstanceObj header and extracts the message
+/// from `.args[0]` (field 0 is an args tuple, element 0 is the message string).
+///
+/// # Safety
+/// `instance` must be a valid pointer to a heap-allocated InstanceObj.
+#[no_mangle]
+pub unsafe extern "C" fn rt_exc_raise_instance(instance: *mut crate::object::Obj) -> ! {
+    let inst = instance as *const crate::object::InstanceObj;
+    let class_id = (*inst).class_id;
+
+    // Try to recover the original message from the thread-local exception state.
+    // The exception may still be in handling_exception if we're inside an except block.
+    // For built-in exceptions, field 0 is .args tuple containing the message.
+    // For custom exceptions, fields are user-defined (not .args), so we don't read them.
+    let (msg_ptr, msg_len, msg_capacity) = {
+        // First try: get message from thread-local state (if exception is still there)
+        let from_state = with_exception_state(|state| {
+            let exc = state
+                .current_exception
+                .as_ref()
+                .or(state.handling_exception.as_ref());
+            if let Some(exc) = exc {
+                if exc.message_len > 0 && !exc.message.is_null() {
+                    let slice = std::slice::from_raw_parts(exc.message, exc.message_len);
+                    let v = slice.to_vec();
+                    return Some(v);
+                }
+            }
+            None
+        });
+        if let Some(mut v) = from_state {
+            let ptr = v.as_mut_ptr();
+            let len = v.len();
+            let cap = v.capacity();
+            std::mem::forget(v);
+            (ptr as *const u8, len, cap)
+        } else {
+            (std::ptr::null(), 0, 0)
+        }
+    };
+
+    let context = with_exception_state(|state| state.handling_exception.take());
+    let traceback = Some(crate::traceback::capture_traceback());
+
+    // Determine exc_type from class_id
+    let exc_type = ExceptionType::from_tag(class_id);
+    let custom_class_id = if BuiltinExceptionKind::from_tag(class_id).is_some() {
+        NOT_CUSTOM_CLASS
+    } else {
+        class_id
+    };
+
+    let exc_obj = Box::new(ExceptionObject {
+        exc_type,
+        custom_class_id,
+        message: msg_ptr,
+        message_len: msg_len,
+        message_capacity: msg_capacity,
+        cause: None,
+        context,
+        suppress_context: false,
+        traceback,
+        instance, // Preserve the original instance
+    });
+
+    dispatch_to_handler(exc_obj)
+}
+
 /// Check if current exception is an instance of the given class (with inheritance).
 /// Uses rt_class_inherits_from to walk the class hierarchy.
 /// Returns 1 if the current exception's class inherits from target_class_id, 0 otherwise.
@@ -1324,14 +1452,30 @@ pub unsafe extern "C" fn rt_exc_raise_custom_with_instance(
 pub extern "C" fn rt_exc_isinstance_class(target_class_id: u8) -> i8 {
     with_exception_state(|state| {
         if let Some(ref exc) = state.current_exception {
-            // Target class ID 0 (Exception) catches all exceptions
-            if target_class_id == 0 {
+            // BaseException (tag 28) catches ALL exceptions
+            if target_class_id == BuiltinExceptionKind::BaseException.tag() {
+                return 1;
+            }
+
+            // Exception (tag 0) catches all EXCEPT SystemExit, KeyboardInterrupt, GeneratorExit
+            if target_class_id == BuiltinExceptionKind::Exception.tag() {
+                if exc.custom_class_id == NOT_CUSTOM_CLASS {
+                    // Built-in exception: check exclusion list
+                    let tag = exc.exc_type as u8;
+                    if tag == BuiltinExceptionKind::SystemExit.tag()
+                        || tag == BuiltinExceptionKind::KeyboardInterrupt.tag()
+                        || tag == BuiltinExceptionKind::GeneratorExit.tag()
+                    {
+                        return 0;
+                    }
+                }
+                // All other exceptions (including custom) are caught by except Exception
                 return 1;
             }
 
             // Get the class ID of the current exception
             let exc_class_id = if exc.custom_class_id == NOT_CUSTOM_CLASS {
-                // Built-in exception: use the type tag as class ID (0-12)
+                // Built-in exception: use the type tag as class ID
                 exc.exc_type as u8
             } else {
                 // Custom exception: use the custom class ID

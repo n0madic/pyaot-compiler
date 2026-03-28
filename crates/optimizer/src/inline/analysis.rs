@@ -143,6 +143,7 @@ impl FunctionCost {
                 block.terminator,
                 Terminator::Raise { .. }
                     | Terminator::RaiseCustom { .. }
+                    | Terminator::RaiseInstance { .. }
                     | Terminator::Reraise
                     | Terminator::TrySetjmp { .. }
             ) {

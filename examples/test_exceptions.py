@@ -1164,16 +1164,18 @@ def test_generator_exit_explicit():
 def test_generator_exit_as_exception():
     """Test GeneratorExit with except Exception handler.
     In CPython, GeneratorExit inherits from BaseException (not Exception),
-    so except Exception does NOT catch it. The compiler may catch it."""
-    caught: bool = False
+    so except Exception does NOT catch it."""
+    caught_by_exception: bool = False
+    caught_by_base: bool = False
     try:
         try:
             raise GeneratorExit()
         except Exception:
-            caught = True
+            caught_by_exception = True
     except GeneratorExit:
-        pass  # CPython: GeneratorExit escapes except Exception, caught here
-    # Both outcomes are acceptable: compiler may or may not catch it via Exception
+        caught_by_base = True
+    assert not caught_by_exception, "GeneratorExit should NOT be caught by except Exception"
+    assert caught_by_base, "GeneratorExit should be caught by except GeneratorExit"
 
 def test_memory_error_explicit():
     """Test explicitly raising MemoryError."""
@@ -1491,5 +1493,134 @@ print("test_exit_exc_val_on_exception passed")
 
 test_exit_exc_val_on_normal()
 print("test_exit_exc_val_on_normal passed")
+
+# ===== SECTION: raise e (re-raise caught exception variable) =====
+
+def test_raise_variable_builtin():
+    """raise e where e is a caught built-in exception."""
+    caught_outer: bool = False
+    try:
+        try:
+            raise ValueError("from var")
+        except ValueError as e:
+            raise e
+    except ValueError as e2:
+        caught_outer = True
+        assert str(e2) == "from var", "message should be preserved"
+    assert caught_outer, "outer handler should catch re-raised exception"
+
+def test_raise_variable_custom():
+    """raise e where e is a caught custom exception."""
+    caught_outer: bool = False
+    try:
+        try:
+            raise HttpError(500, "server error")
+        except HttpError as e:
+            raise e
+    except HttpError as e2:
+        caught_outer = True
+        assert e2.status == 500, "status field should be preserved"
+    assert caught_outer, "outer handler should catch re-raised custom exception"
+
+test_raise_variable_builtin()
+print("test_raise_variable_builtin passed")
+
+test_raise_variable_custom()
+print("test_raise_variable_custom passed")
+
+# ===== SECTION: e.__class__.__name__ =====
+
+def test_exception_class_name():
+    """Test e.__class__.__name__ for built-in exceptions."""
+    try:
+        raise ValueError("test")
+    except ValueError as e:
+        name: str = e.__class__.__name__
+        assert name == "ValueError", "expected ValueError"
+
+def test_exception_class_name_base():
+    """Test e.__class__.__name__ for base Exception."""
+    try:
+        raise Exception("test")
+    except Exception as e:
+        name: str = e.__class__.__name__
+        assert name == "Exception", "expected Exception"
+
+def test_exception_class_name_custom():
+    """Test e.__class__.__name__ for custom exceptions."""
+    try:
+        raise HttpError(404, "Not Found")
+    except HttpError as e:
+        name: str = e.__class__.__name__
+        assert name == "HttpError", "expected HttpError"
+
+test_exception_class_name()
+print("test_exception_class_name passed")
+
+test_exception_class_name_base()
+print("test_exception_class_name_base passed")
+
+test_exception_class_name_custom()
+print("test_exception_class_name_custom passed")
+
+# ===== SECTION: BaseException / Exception hierarchy =====
+
+def test_base_exception_catches_system_exit():
+    """except BaseException should catch SystemExit."""
+    caught: bool = False
+    try:
+        raise SystemExit(0)
+    except BaseException:
+        caught = True
+    assert caught, "BaseException should catch SystemExit"
+
+def test_exception_does_not_catch_system_exit():
+    """except Exception should NOT catch SystemExit."""
+    caught_base: bool = False
+    caught_exc: bool = False
+    try:
+        try:
+            raise SystemExit(0)
+        except Exception:
+            caught_exc = True
+    except BaseException:
+        caught_base = True
+    assert not caught_exc, "Exception should not catch SystemExit"
+    assert caught_base, "BaseException should catch SystemExit"
+
+def test_exception_does_not_catch_keyboard_interrupt():
+    """except Exception should NOT catch KeyboardInterrupt."""
+    caught_base: bool = False
+    caught_exc: bool = False
+    try:
+        try:
+            raise KeyboardInterrupt()
+        except Exception:
+            caught_exc = True
+    except BaseException:
+        caught_base = True
+    assert not caught_exc, "Exception should not catch KeyboardInterrupt"
+    assert caught_base, "BaseException should catch KeyboardInterrupt"
+
+def test_bare_except_catches_all():
+    """Bare except: catches everything including SystemExit."""
+    caught: bool = False
+    try:
+        raise SystemExit(0)
+    except:
+        caught = True
+    assert caught, "bare except should catch SystemExit"
+
+test_base_exception_catches_system_exit()
+print("test_base_exception_catches_system_exit passed")
+
+test_exception_does_not_catch_system_exit()
+print("test_exception_does_not_catch_system_exit passed")
+
+test_exception_does_not_catch_keyboard_interrupt()
+print("test_exception_does_not_catch_keyboard_interrupt passed")
+
+test_bare_except_catches_all()
+print("test_bare_except_catches_all passed")
 
 print("All exception tests passed!")
