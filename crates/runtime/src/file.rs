@@ -235,6 +235,12 @@ pub unsafe extern "C" fn rt_file_read(file: *mut Obj) -> *mut Obj {
     check_file_valid(file);
     let file_obj = file as *mut FileObj;
 
+    eprintln!(
+        "DEBUG rt_file_read: binary={}, mode={}",
+        (*file_obj).binary,
+        (*file_obj).mode
+    );
+
     if !is_readable(file_obj) {
         crate::utils::raise_io_error("not readable");
     }
@@ -397,7 +403,7 @@ pub unsafe extern "C" fn rt_file_readline(file: *mut Obj) -> *mut Obj {
     }
 }
 
-/// Read all lines from the file as a list of strings
+/// Read all lines from the file as a list of strings (text mode) or list of bytes (binary mode)
 ///
 /// # Safety
 /// `file` must be a valid pointer to a FileObj.
@@ -427,36 +433,57 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
             msg.len(),
         );
     }
-    let enc = get_encoding(file_obj);
-    let content = match decode_bytes(&raw, enc) {
-        Ok(s) => s,
-        Err(e) => {
-            crate::utils::raise_io_error_owned(format!("read error: {}", e));
-        }
-    };
 
-    // Create a list to hold the lines
     let list = crate::list::rt_make_list(0, crate::object::ELEM_HEAP_OBJ);
 
-    // Split on '\n' to preserve whether the file ended with a newline.
-    // Splitting "a\nb\n" yields ["a", "b", ""] — the trailing empty
-    // element signals that the content ended with '\n' and should not
-    // become an extra empty line in the output.
-    let lines: Vec<&str> = content.split('\n').collect();
-    for (idx, line) in lines.iter().enumerate() {
-        let is_last = idx == lines.len() - 1;
-        if is_last && line.is_empty() {
-            // Trailing '\n' produced an empty last element — skip it.
-            break;
+    if (*file_obj).binary {
+        // Binary mode: split on b'\n', return list[bytes]
+        // Each line includes the trailing b'\n' (except possibly the last)
+        let mut start = 0;
+        for i in 0..raw.len() {
+            if raw[i] == b'\n' {
+                let line = &raw[start..=i]; // include the newline
+                let line_obj = crate::bytes::rt_make_bytes(line.as_ptr(), line.len());
+                crate::list::rt_list_push(list, line_obj);
+                start = i + 1;
+            }
         }
-        let line_str = if is_last && !content.ends_with('\n') {
-            // Last line has no trailing newline — don't add one.
-            line.to_string()
-        } else {
-            format!("{}\n", line)
+        // Remaining bytes after last newline (if any)
+        if start < raw.len() {
+            let line = &raw[start..];
+            let line_obj = crate::bytes::rt_make_bytes(line.as_ptr(), line.len());
+            crate::list::rt_list_push(list, line_obj);
+        }
+    } else {
+        // Text mode: decode according to file encoding, then split on '\n'
+        let enc = get_encoding(file_obj);
+        let content = match decode_bytes(&raw, enc) {
+            Ok(s) => s,
+            Err(e) => {
+                crate::utils::raise_io_error_owned(format!("read error: {}", e));
+            }
         };
-        let line_obj = crate::string::rt_make_str(line_str.as_ptr(), line_str.len());
-        crate::list::rt_list_push(list, line_obj);
+
+        // Split on '\n' to preserve whether the file ended with a newline.
+        // Splitting "a\nb\n" yields ["a", "b", ""] — the trailing empty
+        // element signals that the content ended with '\n' and should not
+        // become an extra empty line in the output.
+        let lines: Vec<&str> = content.split('\n').collect();
+        for (idx, line) in lines.iter().enumerate() {
+            let is_last = idx == lines.len() - 1;
+            if is_last && line.is_empty() {
+                // Trailing '\n' produced an empty last element — skip it.
+                break;
+            }
+            let line_str = if is_last && !content.ends_with('\n') {
+                // Last line has no trailing newline — don't add one.
+                line.to_string()
+            } else {
+                format!("{}\n", line)
+            };
+            let line_obj = crate::string::rt_make_str(line_str.as_ptr(), line_str.len());
+            crate::list::rt_list_push(list, line_obj);
+        }
     }
 
     list
