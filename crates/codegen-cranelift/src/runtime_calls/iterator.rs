@@ -131,11 +131,13 @@ pub fn compile_iterator_call(
                     true,
                 )?;
             } else if *has_key {
-                // With key: rt_sorted_{source}_with_key(container, reverse, key_fn, elem_tag) -> *Obj
+                // With key: rt_sorted_{source}_with_key(container, reverse, key_fn, elem_tag, captures, capture_count) -> *Obj
                 let func_name = format!("rt_sorted_{}_with_key", source.name());
-                compile_quaternary_runtime_call(
+                compile_senary_runtime_call(
                     builder,
                     &func_name,
+                    cltypes::I64,
+                    cltypes::I64,
                     cltypes::I64,
                     cltypes::I64,
                     cltypes::I64,
@@ -145,6 +147,8 @@ pub fn compile_iterator_call(
                     &args[1],
                     &args[2],
                     &args[3],
+                    &args[4],
+                    &args[5],
                     dest,
                     ctx,
                     true,

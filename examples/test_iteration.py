@@ -987,4 +987,48 @@ assert items == ["a", "cc", "bbb"], f"list.sort named key: {items}"
 
 print("sorted/min/max key function regression tests passed!")
 
+# ===== sorted/min/max with key= lambda capturing variables =====
+
+# sorted with capturing lambda (addition to shift sort order)
+_cap_offset: int = 100
+_cap_nums: list[int] = [5, 3, 8, 1]
+_cap_sorted: list[int] = sorted(_cap_nums, key=lambda x: _cap_offset - x)
+assert _cap_sorted == [8, 5, 3, 1], f"sorted capturing lambda: {_cap_sorted}"
+
+# sorted with capturing lambda and reverse
+_cap_sorted_rev: list[int] = sorted(_cap_nums, key=lambda x: _cap_offset - x, reverse=True)
+assert _cap_sorted_rev == [1, 3, 5, 8], f"sorted capturing lambda reverse: {_cap_sorted_rev}"
+
+# min with capturing lambda
+_cap_min: int = min(_cap_nums, key=lambda x: _cap_offset - x)
+assert _cap_min == 8, f"min capturing lambda: {_cap_min}"
+
+# max with capturing lambda
+_cap_max: int = max(_cap_nums, key=lambda x: _cap_offset - x)
+assert _cap_max == 1, f"max capturing lambda: {_cap_max}"
+
+# list.sort with capturing lambda (int list)
+_cap_sort_nums: list[int] = [5, 3, 8, 1]
+_cap_sort_offset: int = 100
+_cap_sort_nums.sort(key=lambda x: _cap_sort_offset - x)
+assert _cap_sort_nums == [8, 5, 3, 1], f"list.sort capturing lambda: {_cap_sort_nums}"
+
+# sorted with multiple captures
+_cap_a: int = 2
+_cap_b: int = 3
+_cap_multi: list[int] = [10, 7, 4, 1]
+_cap_multi_sorted: list[int] = sorted(_cap_multi, key=lambda x: x + _cap_a * _cap_b)
+assert _cap_multi_sorted == [1, 4, 7, 10], f"sorted multi-capture lambda: {_cap_multi_sorted}"
+
+# min/max with str captures
+def _cap_make_key(prefix: str) -> str:
+    return prefix
+
+_cap_prefix_val: str = "z"
+_cap_str_list: list[str] = ["banana", "apple", "cherry"]
+_cap_str_sorted: list[str] = sorted(_cap_str_list, key=lambda s: s + _cap_prefix_val)
+assert _cap_str_sorted == ["apple", "banana", "cherry"], f"sorted str capture: {_cap_str_sorted}"
+
+print("sorted/min/max capturing lambda tests passed!")
+
 print("All iteration and comprehension tests passed!")

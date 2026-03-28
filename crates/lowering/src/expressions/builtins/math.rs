@@ -253,21 +253,18 @@ impl<'a> Lowering<'a> {
 
                 // If key function provided, use with_key variant
                 if let Some(ref func_or_builtin) = key_func {
-                    let key_fn_local = self.alloc_and_add_local(Type::Int, mir_func);
-                    match func_or_builtin {
-                        FuncOrBuiltin::UserFunc(func_id, _) => {
-                            self.emit_instruction(mir::InstructionKind::FuncAddr {
-                                dest: key_fn_local,
-                                func: *func_id,
-                            });
+                    use crate::context::KeyFuncSource;
+                    let key_source = match func_or_builtin {
+                        FuncOrBuiltin::UserFunc(func_id, captures) => {
+                            KeyFuncSource::UserFunc(*func_id, captures.clone())
                         }
                         FuncOrBuiltin::Builtin(builtin_kind) => {
-                            self.emit_instruction(mir::InstructionKind::BuiltinAddr {
-                                dest: key_fn_local,
-                                builtin: *builtin_kind,
-                            });
+                            KeyFuncSource::Builtin(*builtin_kind)
                         }
-                    }
+                    };
+                    let resolved = self
+                        .emit_key_func_with_captures(Some(&key_source), hir_module, mir_func)?
+                        .expect("key_source is Some");
 
                     // Determine elem_tag for boxing raw elements before calling key function.
                     // Only builtin wrappers need boxing - user functions work with raw values.
@@ -288,8 +285,10 @@ impl<'a> Lowering<'a> {
                         },
                         args: vec![
                             list_operand,
-                            mir::Operand::Local(key_fn_local),
+                            resolved.func_addr,
                             elem_tag_operand,
+                            resolved.captures,
+                            resolved.capture_count,
                         ],
                     });
 
@@ -326,25 +325,20 @@ impl<'a> Lowering<'a> {
 
                 // If key function provided, use with_key variant
                 if let Some(ref func_or_builtin) = key_func {
-                    let key_fn_local = self.alloc_and_add_local(Type::Int, mir_func);
-                    match func_or_builtin {
-                        FuncOrBuiltin::UserFunc(func_id, _) => {
-                            self.emit_instruction(mir::InstructionKind::FuncAddr {
-                                dest: key_fn_local,
-                                func: *func_id,
-                            });
+                    use crate::context::KeyFuncSource;
+                    let key_source = match func_or_builtin {
+                        FuncOrBuiltin::UserFunc(func_id, captures) => {
+                            KeyFuncSource::UserFunc(*func_id, captures.clone())
                         }
                         FuncOrBuiltin::Builtin(builtin_kind) => {
-                            self.emit_instruction(mir::InstructionKind::BuiltinAddr {
-                                dest: key_fn_local,
-                                builtin: *builtin_kind,
-                            });
+                            KeyFuncSource::Builtin(*builtin_kind)
                         }
-                    }
+                    };
+                    let resolved = self
+                        .emit_key_func_with_captures(Some(&key_source), hir_module, mir_func)?
+                        .expect("key_source is Some");
 
                     // Determine elem_tag for boxing raw elements before calling key function.
-                    // Only builtin wrappers need boxing - user functions work with raw values.
-                    // Use first element type for tuples.
                     let first_elem_type = elem_types.first().cloned().unwrap_or(Type::Int);
                     let elem_tag =
                         Self::elem_tag_for_func_or_builtin(func_or_builtin, &first_elem_type);
@@ -362,8 +356,10 @@ impl<'a> Lowering<'a> {
                         },
                         args: vec![
                             tuple_operand,
-                            mir::Operand::Local(key_fn_local),
+                            resolved.func_addr,
                             elem_tag_operand,
+                            resolved.captures,
+                            resolved.capture_count,
                         ],
                     });
 
@@ -400,35 +396,31 @@ impl<'a> Lowering<'a> {
 
                 // If key function provided, use with_key variant
                 if let Some(ref func_or_builtin) = key_func {
-                    let key_fn_local = self.alloc_and_add_local(Type::Int, mir_func);
-                    match func_or_builtin {
-                        FuncOrBuiltin::UserFunc(func_id, _) => {
-                            self.emit_instruction(mir::InstructionKind::FuncAddr {
-                                dest: key_fn_local,
-                                func: *func_id,
-                            });
+                    use crate::context::KeyFuncSource;
+                    let key_source = match func_or_builtin {
+                        FuncOrBuiltin::UserFunc(func_id, captures) => {
+                            KeyFuncSource::UserFunc(*func_id, captures.clone())
                         }
                         FuncOrBuiltin::Builtin(builtin_kind) => {
-                            self.emit_instruction(mir::InstructionKind::BuiltinAddr {
-                                dest: key_fn_local,
-                                builtin: *builtin_kind,
-                            });
+                            KeyFuncSource::Builtin(*builtin_kind)
                         }
-                    }
+                    };
+                    let resolved = self
+                        .emit_key_func_with_captures(Some(&key_source), hir_module, mir_func)?
+                        .expect("key_source is Some");
 
                     // For sets, the semantics of the third parameter is different:
                     // - needs_unbox=0: builtin key functions expect boxed objects (no unboxing)
                     // - needs_unbox=1: user functions expect raw values (unbox integers)
-                    // This is the OPPOSITE of lists where we pass elem_tag for boxing.
                     let needs_unbox = match (func_or_builtin, elem_type.as_ref()) {
-                        (FuncOrBuiltin::UserFunc(_, _), Type::Int) => 1, // Unbox ints for user funcs
-                        _ => 0, // Builtins or non-int types: no unboxing
+                        (FuncOrBuiltin::UserFunc(_, _), Type::Int) => 1,
+                        _ => 0,
                     };
                     let needs_unbox_operand =
                         mir::Operand::Constant(mir::Constant::Int(needs_unbox));
 
                     // Runtime returns *mut Obj, need to unbox for primitives
-                    let heap_result_local = self.alloc_and_add_local(Type::Int, mir_func); // Temporary for pointer
+                    let heap_result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: heap_result_local,
@@ -439,8 +431,10 @@ impl<'a> Lowering<'a> {
                         },
                         args: vec![
                             set_operand,
-                            mir::Operand::Local(key_fn_local),
+                            resolved.func_addr,
                             needs_unbox_operand,
+                            resolved.captures,
+                            resolved.capture_count,
                         ],
                     });
 

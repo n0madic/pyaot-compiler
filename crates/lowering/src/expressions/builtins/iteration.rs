@@ -477,7 +477,8 @@ impl<'a> Lowering<'a> {
         };
 
         // If key function is provided, use the with_key variant
-        if let Some(key_operand) = self.emit_key_func_addr(sort_kwargs.key_func.as_ref(), mir_func)
+        if let Some(resolved) =
+            self.emit_key_func_with_captures(sort_kwargs.key_func.as_ref(), hir_module, mir_func)?
         {
             let elem_tag_operand = mir::Operand::Constant(mir::Constant::Int(elem_tag));
 
@@ -490,8 +491,10 @@ impl<'a> Lowering<'a> {
                 args: vec![
                     arg_operand,
                     sort_kwargs.reverse,
-                    key_operand,
+                    resolved.func_addr,
                     elem_tag_operand,
+                    resolved.captures,
+                    resolved.capture_count,
                 ],
             });
         } else {
@@ -1010,7 +1013,7 @@ impl<'a> Lowering<'a> {
     /// Captures are stored as raw values (i64 for int/float/bool cast as pointer)
     /// because the lambda function expects them in the same format as direct closure calls.
     /// The runtime extracts them with rt_tuple_get() which preserves the raw i64 value.
-    fn lower_captures_to_tuple(
+    pub(crate) fn lower_captures_to_tuple(
         &mut self,
         captures: &[hir::ExprId],
         hir_module: &hir::Module,

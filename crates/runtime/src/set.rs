@@ -861,36 +861,58 @@ pub extern "C" fn rt_set_isdisjoint(a: *mut Obj, b: *mut Obj) -> i8 {
     }
 }
 
-// Type alias for key function pointer
-type KeyFn = extern "C" fn(*mut Obj) -> *mut Obj;
-
 /// Find minimum element in a set with key function
-/// needs_unbox: 0 = pass boxed objects directly (for builtin key functions)
-///              1 = unbox integers before passing (for user-defined key functions expecting int)
 #[no_mangle]
-pub extern "C" fn rt_set_min_with_key(set: *mut Obj, key_fn: KeyFn, needs_unbox: i64) -> *mut Obj {
-    unsafe { find_set_extremum_with_key(set, key_fn, needs_unbox, true) }
+pub extern "C" fn rt_set_min_with_key(
+    set: *mut Obj,
+    key_fn: i64,
+    needs_unbox: i64,
+    captures: *mut Obj,
+    capture_count: i64,
+) -> *mut Obj {
+    unsafe {
+        find_set_extremum_with_key(
+            set,
+            key_fn,
+            needs_unbox,
+            captures,
+            capture_count as u8,
+            true,
+        )
+    }
 }
 
 /// Find maximum element in a set with key function
-/// needs_unbox: 0 = pass boxed objects directly (for builtin key functions)
-///              1 = unbox integers before passing (for user-defined key functions expecting int)
 #[no_mangle]
-pub extern "C" fn rt_set_max_with_key(set: *mut Obj, key_fn: KeyFn, needs_unbox: i64) -> *mut Obj {
-    unsafe { find_set_extremum_with_key(set, key_fn, needs_unbox, false) }
+pub extern "C" fn rt_set_max_with_key(
+    set: *mut Obj,
+    key_fn: i64,
+    needs_unbox: i64,
+    captures: *mut Obj,
+    capture_count: i64,
+) -> *mut Obj {
+    unsafe {
+        find_set_extremum_with_key(
+            set,
+            key_fn,
+            needs_unbox,
+            captures,
+            capture_count as u8,
+            false,
+        )
+    }
 }
 
 /// Find extremum (min or max) element in a set using a key function
-///
-/// Note: Sets store all elements as heap objects (*mut Obj).
-/// - For builtin key functions: pass boxed objects directly (needs_unbox=0)
-/// - For user-defined key functions: unbox integers before passing (needs_unbox=1)
 unsafe fn find_set_extremum_with_key(
     set: *mut Obj,
-    key_fn: KeyFn,
+    key_fn: i64,
     needs_unbox: i64,
+    captures: *mut Obj,
+    capture_count: u8,
     is_min: bool,
 ) -> *mut Obj {
+    use crate::iterator::call_map_with_captures;
     use crate::object::{IntObj, TypeTagKind};
     use crate::sorted::compare_key_values;
 
@@ -921,14 +943,11 @@ unsafe fn find_set_extremum_with_key(
         if needs_unbox != 0 && !elem.is_null() {
             let header = &(*elem).header;
             if header.type_tag == TypeTagKind::Int {
-                // Unbox integer: extract raw i64 and cast as pointer
-                // (user-defined functions expect raw values like list[int] elements)
                 let int_obj = elem as *mut IntObj;
                 let raw_value = (*int_obj).value;
                 return raw_value as *mut Obj;
             }
         }
-        // For builtins or non-int types, pass boxed object directly
         elem
     };
 
@@ -940,11 +959,11 @@ unsafe fn find_set_extremum_with_key(
             if !found_first {
                 extremum_elem = elem;
                 let key_input = prepare_elem_for_key(elem);
-                extremum_key = key_fn(key_input);
+                extremum_key = call_map_with_captures(key_fn, captures, capture_count, key_input);
                 found_first = true;
             } else {
                 let key_input = prepare_elem_for_key(elem);
-                let key = key_fn(key_input);
+                let key = call_map_with_captures(key_fn, captures, capture_count, key_input);
 
                 let cmp = compare_key_values(key, extremum_key);
                 let is_better = if is_min {
@@ -965,7 +984,7 @@ unsafe fn find_set_extremum_with_key(
         return std::ptr::null_mut();
     }
 
-    extremum_elem // Return boxed element (set storage model)
+    extremum_elem
 }
 
 /// Convert set to list (for iteration support)

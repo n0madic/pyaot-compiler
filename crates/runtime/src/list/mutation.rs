@@ -487,9 +487,6 @@ pub extern "C" fn rt_list_sort(list: *mut Obj, reverse: i8) {
     }
 }
 
-/// Type alias for key function pointer
-type KeyFn = extern "C" fn(*mut Obj) -> *mut Obj;
-
 /// Compare two key objects for sorting
 /// Returns -1 if a < b, 0 if a == b, 1 if a > b
 /// Key values can be any type (heap objects or raw integers), so we detect
@@ -506,12 +503,20 @@ unsafe fn compare_key_objects(a: *mut Obj, b: *mut Obj) -> i32 {
 }
 
 /// Sort list in place with a key function
-/// key_fn: function that takes an element and returns a key value for comparison
+/// key_fn: function pointer for key extraction
 /// reverse: 0 = ascending, non-zero = descending
 /// elem_tag: element storage type (0=ELEM_HEAP_OBJ, 1=ELEM_RAW_INT, 2=ELEM_RAW_BOOL)
-///           Used to box raw elements before passing to key function
+/// captures: tuple of captured variables (null if no captures)
+/// capture_count: number of captured variables
 #[no_mangle]
-pub extern "C" fn rt_list_sort_with_key(list: *mut Obj, reverse: i8, key_fn: KeyFn, elem_tag: i64) {
+pub extern "C" fn rt_list_sort_with_key(
+    list: *mut Obj,
+    reverse: i8,
+    key_fn: i64,
+    elem_tag: i64,
+    captures: *mut Obj,
+    capture_count: i64,
+) {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if list.is_null() {
@@ -546,6 +551,7 @@ pub extern "C" fn rt_list_sort_with_key(list: *mut Obj, reverse: i8, key_fn: Key
         gc_push(&mut frame);
 
         // Apply key function to each element and store (key_value, original_value) pairs
+        let cc = capture_count as u8;
         let mut key_value_pairs: Vec<(*mut Obj, *mut Obj)> = Vec::with_capacity(len);
         for i in 0..len {
             // Re-derive data pointer after each gc_alloc (list is non-moving,
@@ -558,7 +564,8 @@ pub extern "C" fn rt_list_sort_with_key(list: *mut Obj, reverse: i8, key_fn: Key
             } else {
                 elem
             };
-            let key_value = key_fn(boxed_elem);
+            let key_value =
+                crate::iterator::call_map_with_captures(key_fn, captures, cc, boxed_elem);
             key_value_pairs.push((key_value, elem));
         }
 

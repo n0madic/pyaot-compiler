@@ -33,6 +33,16 @@ pub enum KeyFuncSource {
     Builtin(mir::BuiltinFunctionKind),
 }
 
+/// Resolved key function info: function pointer + captures for runtime calls
+pub struct ResolvedKeyFunc {
+    /// The key function address operand
+    pub func_addr: mir::Operand,
+    /// Captures tuple operand (0 / null if no captures)
+    pub captures: mir::Operand,
+    /// Capture count operand
+    pub capture_count: mir::Operand,
+}
+
 /// Parsed sort kwargs (key= and reverse=) for list.sort() and sorted()
 pub struct SortKwargs {
     /// The reverse operand (lowered from reverse= kwarg or default false)

@@ -218,11 +218,18 @@ pub fn compile_list_call(
             builder.def_var(var, none_val);
         }
         mir::RuntimeFunc::ListSortWithKey => {
-            // Sort with key: rt_list_sort_with_key(list, reverse, key_fn, elem_tag)
+            // Sort with key: rt_list_sort_with_key(list, reverse, key_fn, elem_tag, captures, capture_count)
             compile_void_runtime_call(
                 builder,
                 "rt_list_sort_with_key",
-                &[cltypes::I64, cltypes::I8, cltypes::I64, cltypes::I64],
+                &[
+                    cltypes::I64,
+                    cltypes::I8,
+                    cltypes::I64,
+                    cltypes::I64,
+                    cltypes::I64,
+                    cltypes::I64,
+                ],
                 args,
                 ctx,
             )?;

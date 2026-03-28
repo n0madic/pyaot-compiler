@@ -325,9 +325,11 @@ impl<'a> Lowering<'a> {
                 let sort_kwargs = self.extract_sort_kwargs(kwargs, hir_module, mir_func)?;
 
                 // If key function is provided, use ListSortWithKey
-                if let Some(key_operand) =
-                    self.emit_key_func_addr(sort_kwargs.key_func.as_ref(), mir_func)
-                {
+                if let Some(resolved) = self.emit_key_func_with_captures(
+                    sort_kwargs.key_func.as_ref(),
+                    hir_module,
+                    mir_func,
+                )? {
                     // Determine elem_tag for boxing raw elements before calling key function.
                     // Only builtin wrappers need boxing - user functions work with raw values.
                     let elem_tag = sort_kwargs
@@ -343,8 +345,10 @@ impl<'a> Lowering<'a> {
                         args: vec![
                             obj_operand,
                             sort_kwargs.reverse,
-                            key_operand,
+                            resolved.func_addr,
                             elem_tag_operand,
+                            resolved.captures,
+                            resolved.capture_count,
                         ],
                     });
                 } else {

@@ -33,10 +33,12 @@ pub fn compile_container_minmax(
     // All container min/max functions take container pointer as first arg
     sig.params.push(AbiParam::new(cltypes::I64)); // container
 
-    // WithKey variant takes key function pointer and elem_tag as args
+    // WithKey variant takes key_fn, elem_tag, captures, capture_count
     if matches!(elem, ElementKind::WithKey) {
         sig.params.push(AbiParam::new(cltypes::I64)); // key_fn
         sig.params.push(AbiParam::new(cltypes::I64)); // elem_tag
+        sig.params.push(AbiParam::new(cltypes::I64)); // captures
+        sig.params.push(AbiParam::new(cltypes::I64)); // capture_count
     }
 
     // Return type depends on element kind
@@ -56,9 +58,18 @@ pub fn compile_container_minmax(
     let call_inst = if matches!(elem, ElementKind::WithKey) {
         let key_fn_val = load_operand(builder, &args[1], ctx.var_map);
         let elem_tag_val = load_operand(builder, &args[2], ctx.var_map);
-        builder
-            .ins()
-            .call(func_ref, &[container_val, key_fn_val, elem_tag_val])
+        let captures_val = load_operand(builder, &args[3], ctx.var_map);
+        let capture_count_val = load_operand(builder, &args[4], ctx.var_map);
+        builder.ins().call(
+            func_ref,
+            &[
+                container_val,
+                key_fn_val,
+                elem_tag_val,
+                captures_val,
+                capture_count_val,
+            ],
+        )
     } else {
         builder.ins().call(func_ref, &[container_val])
     };

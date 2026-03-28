@@ -464,9 +464,15 @@ pub(crate) unsafe fn compare_key_values(a: *mut Obj, b: *mut Obj) -> std::cmp::O
     compare_list_elements(a, b, elem_tag)
 }
 
-/// Type alias for key function pointer
-/// The key function takes an element and returns a key value for comparison
-type KeyFn = extern "C" fn(*mut Obj) -> *mut Obj;
+/// Call key function with captures support (delegates to map's capture dispatcher)
+unsafe fn call_key_fn(
+    key_fn: i64,
+    captures: *mut Obj,
+    capture_count: u8,
+    elem: *mut Obj,
+) -> *mut Obj {
+    crate::iterator::call_map_with_captures(key_fn, captures, capture_count, elem)
+}
 
 /// Stable sort for (key, index) pairs.
 /// Stability ensures equal keys preserve original order (CPython guarantee).
@@ -495,17 +501,20 @@ unsafe fn stable_sort_key_obj_pairs(pairs: &mut [(*mut Obj, *mut Obj)], reverse:
 }
 
 /// Create a sorted list from a list with a key function
-/// key_fn: function pointer that takes an element and returns a key value
+/// key_fn: function pointer for key extraction
 /// reverse: 0 for ascending, 1 for descending
 /// elem_tag: element storage type (0=ELEM_HEAP_OBJ, 1=ELEM_RAW_INT, 2=ELEM_RAW_BOOL)
-///           Used to box raw elements before passing to key function
+/// captures: tuple of captured variables (null if no captures)
+/// capture_count: number of captured variables
 /// Returns: pointer to new ListObj
 #[no_mangle]
 pub extern "C" fn rt_sorted_list_with_key(
     list: *mut Obj,
     reverse: i64,
-    key_fn: KeyFn,
+    key_fn: i64,
     elem_tag: i64,
+    captures: *mut Obj,
+    capture_count: i64,
 ) -> *mut Obj {
     use crate::object::ListObj;
 
@@ -535,6 +544,7 @@ pub extern "C" fn rt_sorted_list_with_key(
         gc_push(&mut frame);
 
         // Apply key function to each element; store keys in the GC-visible list
+        let cc = capture_count as u8;
         for i in 0..len {
             let src_live = roots[0] as *mut ListObj;
             let elem = *(*src_live).data.add(i);
@@ -543,7 +553,7 @@ pub extern "C" fn rt_sorted_list_with_key(
             } else {
                 elem
             };
-            let key_value = key_fn(boxed_elem);
+            let key_value = call_key_fn(key_fn, captures, cc, boxed_elem);
             let keys_list_live = roots[1] as *mut ListObj;
             *(*keys_list_live).data.add(i) = key_value;
             (*keys_list_live).len = i + 1;
@@ -579,14 +589,14 @@ pub extern "C" fn rt_sorted_list_with_key(
 }
 
 /// Create a sorted list from a tuple with a key function
-/// elem_tag: element storage type (0=ELEM_HEAP_OBJ, 1=ELEM_RAW_INT, 2=ELEM_RAW_BOOL)
-///           Used to box raw elements before passing to key function
 #[no_mangle]
 pub extern "C" fn rt_sorted_tuple_with_key(
     tuple: *mut Obj,
     reverse: i64,
-    key_fn: KeyFn,
+    key_fn: i64,
     elem_tag: i64,
+    captures: *mut Obj,
+    capture_count: i64,
 ) -> *mut Obj {
     use crate::object::{ListObj, TupleObj};
 
@@ -615,6 +625,7 @@ pub extern "C" fn rt_sorted_tuple_with_key(
         };
         gc_push(&mut frame);
 
+        let cc = capture_count as u8;
         for i in 0..len {
             let src_live = roots[0] as *mut TupleObj;
             let elem = *(*src_live).data.as_ptr().add(i);
@@ -623,7 +634,7 @@ pub extern "C" fn rt_sorted_tuple_with_key(
             } else {
                 elem
             };
-            let key_value = key_fn(boxed_elem);
+            let key_value = call_key_fn(key_fn, captures, cc, boxed_elem);
             let keys_list_live = roots[1] as *mut ListObj;
             *(*keys_list_live).data.add(i) = key_value;
             (*keys_list_live).len = i + 1;
@@ -659,13 +670,18 @@ pub extern "C" fn rt_sorted_tuple_with_key(
 
 /// Create a sorted list of keys from a dict with a key function
 #[no_mangle]
-pub extern "C" fn rt_sorted_dict_with_key(dict: *mut Obj, reverse: i64, key_fn: KeyFn) -> *mut Obj {
+pub extern "C" fn rt_sorted_dict_with_key(
+    dict: *mut Obj,
+    reverse: i64,
+    key_fn: i64,
+    captures: *mut Obj,
+    capture_count: i64,
+) -> *mut Obj {
     if dict.is_null() {
         return rt_make_list(0, ELEM_HEAP_OBJ);
     }
 
     // Get keys list first, then sort it with key
-    // Dict keys are always boxed (ELEM_HEAP_OBJ = 0)
     let keys_list = rt_dict_keys(dict, ELEM_HEAP_OBJ);
 
     // Root keys_list before rt_sorted_list_with_key which allocates
@@ -676,7 +692,14 @@ pub extern "C" fn rt_sorted_dict_with_key(dict: *mut Obj, reverse: i64, key_fn: 
         roots: roots.as_mut_ptr(),
     };
     unsafe { gc_push(&mut frame) };
-    let result = rt_sorted_list_with_key(roots[0], reverse, key_fn, ELEM_HEAP_OBJ as i64);
+    let result = rt_sorted_list_with_key(
+        roots[0],
+        reverse,
+        key_fn,
+        ELEM_HEAP_OBJ as i64,
+        captures,
+        capture_count,
+    );
     gc_pop();
     result
 }
@@ -686,8 +709,10 @@ pub extern "C" fn rt_sorted_dict_with_key(dict: *mut Obj, reverse: i64, key_fn: 
 pub extern "C" fn rt_sorted_set_with_key(
     set: *mut Obj,
     reverse: i64,
-    key_fn: KeyFn,
+    key_fn: i64,
     elem_tag: i64,
+    captures: *mut Obj,
+    capture_count: i64,
 ) -> *mut Obj {
     if set.is_null() {
         return rt_make_list(0, ELEM_HEAP_OBJ);
@@ -704,7 +729,8 @@ pub extern "C" fn rt_sorted_set_with_key(
         roots: roots.as_mut_ptr(),
     };
     unsafe { gc_push(&mut frame) };
-    let result = rt_sorted_list_with_key(roots[0], reverse, key_fn, elem_tag);
+    let result =
+        rt_sorted_list_with_key(roots[0], reverse, key_fn, elem_tag, captures, capture_count);
     gc_pop();
     result
 }
@@ -714,7 +740,9 @@ pub extern "C" fn rt_sorted_set_with_key(
 pub extern "C" fn rt_sorted_str_with_key(
     str_obj: *mut Obj,
     reverse: i64,
-    key_fn: KeyFn,
+    key_fn: i64,
+    captures: *mut Obj,
+    capture_count: i64,
 ) -> *mut Obj {
     use crate::object::{ListObj, StrObj};
     use crate::string::utf8_char_width;
@@ -749,6 +777,7 @@ pub extern "C" fn rt_sorted_str_with_key(
         let data = (*(str_obj as *mut StrObj)).data.as_ptr();
         let mut byte_idx: usize = 0;
         let mut char_count: usize = 0;
+        let cc = capture_count as u8;
         while byte_idx < byte_len {
             let first_byte = *data.add(byte_idx);
             let char_width = utf8_char_width(first_byte);
@@ -757,7 +786,7 @@ pub extern "C" fn rt_sorted_str_with_key(
             *(*chars_live).data.add(char_count) = char_str;
             (*chars_live).len = char_count + 1;
 
-            let key_value = key_fn(char_str);
+            let key_value = call_key_fn(key_fn, captures, cc, char_str);
             let keys_live = roots[1] as *mut ListObj;
             *(*keys_live).data.add(char_count) = key_value;
             (*keys_live).len = char_count + 1;

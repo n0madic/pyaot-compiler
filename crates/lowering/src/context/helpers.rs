@@ -533,12 +533,6 @@ impl<'a> Lowering<'a> {
                         {
                             key_func = Some(match func_or_builtin {
                                 FuncOrBuiltin::UserFunc(func_id, captures) => {
-                                    if !captures.is_empty() {
-                                        return Err(CompilerError::semantic_error(
-                                            "key= function with captured variables is not yet supported",
-                                            kw.span,
-                                        ));
-                                    }
                                     KeyFuncSource::UserFunc(func_id, captures)
                                 }
                                 FuncOrBuiltin::Builtin(builtin_kind) => {
@@ -570,34 +564,66 @@ impl<'a> Lowering<'a> {
     }
 
     /// Emit FuncAddr or BuiltinAddr instruction for key function if present.
-    /// Returns the operand to pass to runtime (key_fn_local) or None if no key function.
+    /// Returns ResolvedKeyFunc with function address + captures info, or None if no key function.
     /// Supports both user-defined functions and first-class builtins.
-    pub(crate) fn emit_key_func_addr(
+    pub(crate) fn emit_key_func_with_captures(
         &mut self,
         key_func: Option<&super::KeyFuncSource>,
+        hir_module: &hir::Module,
         mir_func: &mut mir::Function,
-    ) -> Option<mir::Operand> {
+    ) -> Result<Option<super::ResolvedKeyFunc>> {
         use super::KeyFuncSource;
-        key_func.map(|source| {
-            let key_fn_local = self.alloc_and_add_local(Type::Int, mir_func);
-            match source {
-                KeyFuncSource::UserFunc(func_id, _captures) => {
-                    // Captures are validated as empty in extract_sort_kwargs.
-                    // Non-empty captures require runtime trampoline support (not yet implemented).
-                    self.emit_instruction(mir::InstructionKind::FuncAddr {
-                        dest: key_fn_local,
-                        func: *func_id,
-                    });
-                }
-                KeyFuncSource::Builtin(builtin_kind) => {
-                    self.emit_instruction(mir::InstructionKind::BuiltinAddr {
-                        dest: key_fn_local,
-                        builtin: *builtin_kind,
-                    });
+        let Some(source) = key_func else {
+            return Ok(None);
+        };
+        let key_fn_local = self.alloc_and_add_local(Type::Int, mir_func);
+        let (captures_op, count_op) = match source {
+            KeyFuncSource::UserFunc(func_id, captures) => {
+                self.emit_instruction(mir::InstructionKind::FuncAddr {
+                    dest: key_fn_local,
+                    func: *func_id,
+                });
+                if captures.is_empty() {
+                    (
+                        mir::Operand::Constant(mir::Constant::Int(0)),
+                        mir::Operand::Constant(mir::Constant::Int(0)),
+                    )
+                } else {
+                    // Record capture types for the closure
+                    if !self.has_closure_capture_types(func_id) {
+                        let mut capture_types = Vec::new();
+                        for capture_id in captures {
+                            let capture_expr = &hir_module.exprs[*capture_id];
+                            let capture_type = self.get_expr_type(capture_expr, hir_module);
+                            capture_types.push(capture_type);
+                        }
+                        self.insert_closure_capture_types(*func_id, capture_types);
+                    }
+                    let captures_tuple =
+                        self.lower_captures_to_tuple(captures, hir_module, mir_func)?;
+                    let count = captures.len() as i64;
+                    (
+                        captures_tuple,
+                        mir::Operand::Constant(mir::Constant::Int(count)),
+                    )
                 }
             }
-            mir::Operand::Local(key_fn_local)
-        })
+            KeyFuncSource::Builtin(builtin_kind) => {
+                self.emit_instruction(mir::InstructionKind::BuiltinAddr {
+                    dest: key_fn_local,
+                    builtin: *builtin_kind,
+                });
+                (
+                    mir::Operand::Constant(mir::Constant::Int(0)),
+                    mir::Operand::Constant(mir::Constant::Int(0)),
+                )
+            }
+        };
+        Ok(Some(super::ResolvedKeyFunc {
+            func_addr: mir::Operand::Local(key_fn_local),
+            captures: captures_op,
+            capture_count: count_op,
+        }))
     }
 
     /// Determine the elem_tag for a given element type.
