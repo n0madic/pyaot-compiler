@@ -736,6 +736,29 @@ impl<'a> Lowering<'a> {
         Ok(mir::Operand::Local(result_local))
     }
 
+    /// Lower object.__new__(cls) -> allocate instance by class_id
+    pub(super) fn lower_object_new(
+        &mut self,
+        args: &[hir::ExprId],
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
+        self.require_exact_args(args, 1, "object.__new__", self.call_span())?;
+
+        let cls_expr = &hir_module.exprs[args[0]];
+        let cls_operand = self.lower_expr(cls_expr, hir_module, mir_func)?;
+
+        // Result type is Any (instance pointer) since we don't know the class statically here
+        let result_local = self.alloc_and_add_local(Type::Any, mir_func);
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: result_local,
+            func: mir::RuntimeFunc::ObjectNew,
+            args: vec![cls_operand],
+        });
+
+        Ok(mir::Operand::Local(result_local))
+    }
+
     /// Lower setattr(obj, name, value) -> None
     pub(super) fn lower_setattr(
         &mut self,

@@ -113,14 +113,22 @@ pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
             }
         }
 
-        // Instance - shallow copy fields
+        // Instance - check for __copy__ dunder, then fall back to shallow copy
         TypeTagKind::Instance => {
             let orig = obj as *mut InstanceObj;
-            let field_count = (*orig).field_count;
             let class_id = (*orig).class_id;
+
+            // Check for user-defined __copy__
+            let copy_fn = crate::vtable::get_copy_func(class_id);
+            if !copy_fn.is_null() {
+                let copy_fn: extern "C" fn(i64) -> *mut Obj = std::mem::transmute(copy_fn);
+                return copy_fn(obj as i64);
+            }
+
+            // Default: shallow copy fields
+            let field_count = (*orig).field_count;
             let vtable = (*orig).vtable;
 
-            // Allocate new instance
             let size =
                 std::mem::size_of::<InstanceObj>() + field_count * std::mem::size_of::<*mut Obj>();
             let new_inst = gc_alloc(size, TypeTagKind::Instance.tag()) as *mut InstanceObj;
@@ -129,7 +137,6 @@ pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
             (*new_inst).field_count = field_count;
             (*new_inst).vtable = vtable;
 
-            // Copy field pointers
             if field_count > 0 {
                 let orig_fields = (*orig).fields.as_ptr();
                 let new_fields = (*new_inst).fields.as_mut_ptr();
@@ -395,8 +402,18 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
             }
 
             let orig = obj as *mut InstanceObj;
-            let field_count = (*orig).field_count;
             let class_id = (*orig).class_id;
+
+            // Check for user-defined __deepcopy__ (simplified: no memo arg)
+            let deepcopy_fn = crate::vtable::get_deepcopy_func(class_id);
+            if !deepcopy_fn.is_null() {
+                let deepcopy_fn: extern "C" fn(i64) -> *mut Obj = std::mem::transmute(deepcopy_fn);
+                let result = deepcopy_fn(obj as i64);
+                memo.insert(obj_addr, result);
+                return result;
+            }
+
+            let field_count = (*orig).field_count;
             let vtable = (*orig).vtable;
 
             // Allocate new instance

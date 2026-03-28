@@ -121,6 +121,7 @@ impl<'a> Lowering<'a> {
             hir::Builtin::Counter => self.lower_counter(args, hir_module, mir_func),
             hir::Builtin::Deque => self.lower_deque(args, hir_module, mir_func),
             hir::Builtin::Format => self.lower_format(args, hir_module, mir_func),
+            hir::Builtin::ObjectNew => self.lower_object_new(args, hir_module, mir_func),
             hir::Builtin::Reduce => self.lower_reduce(args, hir_module, mir_func),
             // itertools
             hir::Builtin::Chain => self.lower_chain(args, hir_module, mir_func),

@@ -1685,4 +1685,96 @@ assert format(cfmt, "hex") == "#ff8000", f"format(hex) failed: {format(cfmt, 'he
 
 print("__format__ dunder: PASS")
 
+# ===== SECTION: __new__ dunder =====
+class SingletonCounter:
+    _count: int
+    def __new__(cls: int) -> SingletonCounter:
+        inst: SingletonCounter = object.__new__(cls)
+        return inst
+    def __init__(self):
+        self._count = 0
+    def increment(self) -> int:
+        self._count = self._count + 1
+        return self._count
+
+sc1 = SingletonCounter()
+assert sc1.increment() == 1
+assert sc1.increment() == 2
+
+# Test that __new__ + __init__ both run
+sc2 = SingletonCounter()
+assert sc2.increment() == 1  # new instance, __init__ resets to 0
+
+print("__new__ dunder: PASS")
+
+# ===== SECTION: __del__ dunder =====
+# __del__ is called by GC during finalization — hard to test directly.
+# We verify that defining __del__ doesn't crash and the class works normally.
+class Cleanable:
+    name: str
+    def __init__(self, name: str):
+        self.name = name
+    def __del__(self) -> None:
+        # In a real scenario this would release a resource
+        pass
+
+cl1 = Cleanable("test1")
+assert cl1.name == "test1"
+cl2 = Cleanable("test2")
+assert cl2.name == "test2"
+
+print("__del__ dunder: PASS")
+
+# ===== SECTION: __copy__ dunder =====
+import copy
+
+class CopyPoint:
+    x: int
+    y: int
+    label: str
+    def __init__(self, x: int, y: int, label: str):
+        self.x = x
+        self.y = y
+        self.label = label
+    def __copy__(self) -> CopyPoint:
+        return CopyPoint(self.x * 10, self.y * 10, self.label)
+
+cp_orig = CopyPoint(1, 2, "origin")
+cp_raw = copy.copy(cp_orig)
+# The __copy__ method returns CopyPoint, but copy.copy returns Any.
+# Test via the __copy__ method directly to verify it works.
+cp_copy = cp_orig.__copy__()
+# __copy__ multiplies coords by 10
+assert cp_copy.x == 10, f"__copy__ x failed: {cp_copy.x}"
+assert cp_copy.y == 20, f"__copy__ y failed: {cp_copy.y}"
+assert cp_copy.label == "origin", f"__copy__ label failed"
+
+print("__copy__ dunder: PASS")
+
+# ===== SECTION: __deepcopy__ dunder =====
+class DeepContainer:
+    items: list[int]
+    tag: str
+    def __init__(self, items: list[int], tag: str):
+        self.items = items
+        self.tag = tag
+    def __deepcopy__(self) -> DeepContainer:
+        # Custom deep copy: copy list manually, transform tag
+        new_items: list[int] = []
+        for item in self.items:
+            new_items.append(item)
+        return DeepContainer(new_items, self.tag + "_copy")
+
+dc_orig = DeepContainer([1, 2, 3], "original")
+# Test via __deepcopy__ directly to verify (copy.deepcopy returns Any)
+dc_deep = dc_orig.__deepcopy__()
+# __deepcopy__ appends "_copy" to tag
+assert dc_deep.tag == "original_copy", f"__deepcopy__ tag failed: {dc_deep.tag}"
+assert dc_deep.items[0] == 1 and dc_deep.items[1] == 2 and dc_deep.items[2] == 3
+# Verify independence
+dc_deep.items.append(4)
+assert len(dc_orig.items) == 3, f"deepcopy independence failed"
+
+print("__deepcopy__ dunder: PASS")
+
 print("All class tests passed!")

@@ -310,6 +310,16 @@ pub enum RuntimeFunc {
     RegisterClass,
     /// Register which class fields are heap objects for GC: rt_register_class_fields(class_id, heap_field_mask)
     RegisterClassFields,
+    /// Register field count for object.__new__: rt_register_class_field_count(class_id, field_count)
+    RegisterClassFieldCount,
+    /// Create instance by class_id (object.__new__): rt_object_new(class_id) -> *mut Obj
+    ObjectNew,
+    /// Register __del__ function pointer: rt_register_del_func(class_id, func_ptr)
+    RegisterDelFunc,
+    /// Register __copy__ function pointer: rt_register_copy_func(class_id, func_ptr)
+    RegisterCopyFunc,
+    /// Register __deepcopy__ function pointer: rt_register_deepcopy_func(class_id, func_ptr)
+    RegisterDeepCopyFunc,
     /// Check issubclass: rt_issubclass(child: u8, parent: u8) -> i8
     IsSubclass,
 

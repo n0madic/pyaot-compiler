@@ -1117,20 +1117,50 @@ impl<'a> Lowering<'a> {
             };
 
             // Allocate result local for the instance
-            let result_local = self.alloc_and_add_local(class_type, mir_func);
+            let result_local = self.alloc_and_add_local(class_type.clone(), mir_func);
 
-            // Create instance: rt_make_instance(class_id, total_field_count)
-            // Use total_field_count to include inherited fields
             // Use offset-adjusted class_id for local classes
             let effective_class_id = self.get_effective_class_id(class_id);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: result_local,
-                func: mir::RuntimeFunc::MakeInstance,
-                args: vec![
-                    mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
-                    mir::Operand::Constant(mir::Constant::Int(info.total_field_count as i64)),
-                ],
-            });
+
+            if let Some(new_func_id) = info.new_func {
+                // __new__ path: call __new__(cls, *args) which returns an instance,
+                // then call __init__ on the result.
+                // __new__ receives cls (class_id as int) as first arg.
+                if let Some(new_func) = hir_module.func_defs.get(&new_func_id) {
+                    let new_params: Vec<_> = new_func.params.iter().skip(1).cloned().collect();
+                    let user_args = self.resolve_call_args(
+                        args,
+                        kwargs,
+                        &new_params,
+                        Some(new_func_id),
+                        1,
+                        self.call_span(),
+                        hir_module,
+                        mir_func,
+                    )?;
+
+                    let mut new_args = vec![mir::Operand::Constant(mir::Constant::Int(
+                        effective_class_id,
+                    ))];
+                    new_args.extend(user_args);
+
+                    self.emit_instruction(mir::InstructionKind::CallDirect {
+                        dest: result_local,
+                        func: new_func_id,
+                        args: new_args,
+                    });
+                }
+            } else {
+                // Default path: rt_make_instance(class_id, total_field_count)
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::MakeInstance,
+                    args: vec![
+                        mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                        mir::Operand::Constant(mir::Constant::Int(info.total_field_count as i64)),
+                    ],
+                });
+            }
 
             // Call __init__ if present
             if let Some(init_func_id) = info.init_func {

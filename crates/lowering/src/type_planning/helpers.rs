@@ -551,6 +551,7 @@ pub(crate) fn resolve_builtin_call_type(
         }
         Builtin::Counter => Some(Type::RuntimeObject(TypeTagKind::Counter)),
         Builtin::Deque => Some(Type::RuntimeObject(TypeTagKind::Deque)),
+        Builtin::ObjectNew => Some(Type::Any),
     }
 }
 

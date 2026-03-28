@@ -146,6 +146,11 @@ pub struct LoweredClassInfo {
     pub index_func: Option<FuncId>, // __index__ method
     /// Format dunder
     pub format_func: Option<FuncId>, // __format__ method
+    /// Lifecycle dunders
+    pub del_func: Option<FuncId>, // __del__ method
+    pub new_func: Option<FuncId>,  // __new__ method
+    pub copy_func: Option<FuncId>, // __copy__ method
+    pub deepcopy_func: Option<FuncId>, // __deepcopy__ method
     /// Base class ID for single inheritance (None if no parent)
     pub base_class: Option<ClassId>,
     /// Total field count including inherited fields
@@ -230,6 +235,10 @@ impl LoweredClassInfo {
             "__call__" => self.call_func,
             "__index__" => self.index_func,
             "__format__" => self.format_func,
+            "__del__" => self.del_func,
+            "__new__" => self.new_func,
+            "__copy__" => self.copy_func,
+            "__deepcopy__" => self.deepcopy_func,
             _ => None,
         }
     }
@@ -447,6 +456,22 @@ impl LoweredClassInfo {
             }
             "__format__" => {
                 self.format_func = Some(func_id);
+                true
+            }
+            "__del__" => {
+                self.del_func = Some(func_id);
+                true
+            }
+            "__new__" => {
+                self.new_func = Some(func_id);
+                true
+            }
+            "__copy__" => {
+                self.copy_func = Some(func_id);
+                true
+            }
+            "__deepcopy__" => {
+                self.deepcopy_func = Some(func_id);
                 true
             }
             _ => false,

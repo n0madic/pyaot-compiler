@@ -700,6 +700,7 @@ pub enum Builtin {
     DefaultDict, // collections.defaultdict(factory) -> defaultdict constructor
     Counter, // collections.Counter(iterable?) -> Counter constructor
     Deque,  // collections.deque(iterable?, maxlen?) -> deque constructor
+    ObjectNew, // object.__new__(cls) -> allocate instance by class_id
     /// Built-in exception constructors (Exception, ValueError, TypeError, etc.)
     /// Uses BuiltinExceptionKind from types crate
     BuiltinException(BuiltinExceptionKind),

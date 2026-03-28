@@ -23,6 +23,8 @@ pub struct ClassInfo {
     /// Bit i is clear if field i is a raw value (int, float, bool, None).
     /// Supports up to 64 fields per class.
     pub heap_field_mask: u64,
+    /// Total field count including inherited fields (for object.__new__ support)
+    pub field_count: u16,
 }
 
 /// Lock-free registry storage for single-threaded access
@@ -37,6 +39,7 @@ static CLASS_REGISTRY: RegistryStorage<ClassInfo, MAX_CLASSES> = RegistryStorage
     [ClassInfo {
         parent_class_id: NO_PARENT,
         heap_field_mask: 0, // Default: treat no fields as heap (fail-safe; classes must register)
+        field_count: 0,
     }; MAX_CLASSES],
 ));
 
@@ -57,6 +60,18 @@ impl VtablePtr {
 /// Global vtable registry: maps class_id to vtable pointer
 /// Each vtable is an array of function pointers for virtual methods
 static VTABLE_REGISTRY: RegistryStorage<VtablePtr, MAX_CLASSES> =
+    RegistryStorage(UnsafeCell::new([VtablePtr::null(); MAX_CLASSES]));
+
+/// Registry for __del__ function pointers (called during GC finalization)
+static DEL_FUNC_REGISTRY: RegistryStorage<VtablePtr, MAX_CLASSES> =
+    RegistryStorage(UnsafeCell::new([VtablePtr::null(); MAX_CLASSES]));
+
+/// Registry for __copy__ function pointers (called by copy.copy())
+static COPY_FUNC_REGISTRY: RegistryStorage<VtablePtr, MAX_CLASSES> =
+    RegistryStorage(UnsafeCell::new([VtablePtr::null(); MAX_CLASSES]));
+
+/// Registry for __deepcopy__ function pointers (called by copy.deepcopy())
+static DEEPCOPY_FUNC_REGISTRY: RegistryStorage<VtablePtr, MAX_CLASSES> =
     RegistryStorage(UnsafeCell::new([VtablePtr::null(); MAX_CLASSES]));
 
 /// Register a class with its parent
@@ -80,6 +95,64 @@ pub extern "C" fn rt_register_class_fields(class_id: u8, heap_field_mask: i64) {
 #[inline]
 pub fn get_class_heap_field_mask(class_id: u8) -> u64 {
     unsafe { (*CLASS_REGISTRY.0.get())[class_id as usize].heap_field_mask }
+}
+
+/// Register the field count for a class (for object.__new__ support)
+#[no_mangle]
+pub extern "C" fn rt_register_class_field_count(class_id: u8, field_count: i64) {
+    unsafe {
+        (*CLASS_REGISTRY.0.get())[class_id as usize].field_count = field_count as u16;
+    }
+}
+
+/// Create a new instance using only class_id (looks up field_count from registry).
+/// This implements `object.__new__(cls)` — allocates an instance without calling __init__.
+#[no_mangle]
+pub extern "C" fn rt_object_new(class_id: u8) -> *mut crate::object::Obj {
+    let field_count = unsafe { (*CLASS_REGISTRY.0.get())[class_id as usize].field_count as i64 };
+    crate::instance::rt_make_instance(class_id, field_count)
+}
+
+/// Register __del__ function pointer for a class
+#[no_mangle]
+pub extern "C" fn rt_register_del_func(class_id: u8, func_ptr: *const u8) {
+    unsafe {
+        (*DEL_FUNC_REGISTRY.0.get())[class_id as usize] = VtablePtr(func_ptr);
+    }
+}
+
+/// Get __del__ function pointer for a class (used by GC finalizer)
+#[inline]
+pub fn get_del_func(class_id: u8) -> *const u8 {
+    unsafe { (*DEL_FUNC_REGISTRY.0.get())[class_id as usize].0 }
+}
+
+/// Register __copy__ function pointer for a class
+#[no_mangle]
+pub extern "C" fn rt_register_copy_func(class_id: u8, func_ptr: *const u8) {
+    unsafe {
+        (*COPY_FUNC_REGISTRY.0.get())[class_id as usize] = VtablePtr(func_ptr);
+    }
+}
+
+/// Get __copy__ function pointer for a class
+#[inline]
+pub fn get_copy_func(class_id: u8) -> *const u8 {
+    unsafe { (*COPY_FUNC_REGISTRY.0.get())[class_id as usize].0 }
+}
+
+/// Register __deepcopy__ function pointer for a class
+#[no_mangle]
+pub extern "C" fn rt_register_deepcopy_func(class_id: u8, func_ptr: *const u8) {
+    unsafe {
+        (*DEEPCOPY_FUNC_REGISTRY.0.get())[class_id as usize] = VtablePtr(func_ptr);
+    }
+}
+
+/// Get __deepcopy__ function pointer for a class
+#[inline]
+pub fn get_deepcopy_func(class_id: u8) -> *const u8 {
+    unsafe { (*DEEPCOPY_FUNC_REGISTRY.0.get())[class_id as usize].0 }
 }
 
 /// Register a vtable for a class
@@ -175,12 +248,14 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
         registry[pyaot_core_defs::BuiltinExceptionKind::BaseException.tag() as usize] = ClassInfo {
             parent_class_id: NO_PARENT,
             heap_field_mask: u64::MAX,
+            field_count: 0,
         };
 
         // Exception (0) inherits from BaseException (28)
         registry[pyaot_core_defs::BuiltinExceptionKind::Exception.tag() as usize] = ClassInfo {
             parent_class_id: pyaot_core_defs::BuiltinExceptionKind::BaseException.tag(),
             heap_field_mask: u64::MAX,
+            field_count: 0,
         };
 
         // SystemExit, KeyboardInterrupt, GeneratorExit inherit from BaseException (NOT Exception)
@@ -193,6 +268,7 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
             registry[tag as usize] = ClassInfo {
                 parent_class_id: base_exc_tag,
                 heap_field_mask: u64::MAX,
+                field_count: 0,
             };
         }
 
@@ -212,6 +288,7 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
             registry[tag as usize] = ClassInfo {
                 parent_class_id: exception_tag,
                 heap_field_mask: u64::MAX,
+                field_count: 0,
             };
         }
     });

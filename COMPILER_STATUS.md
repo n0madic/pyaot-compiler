@@ -126,6 +126,9 @@ Native Executable
 | `__matmul__` (`@`) | ✅ | Matrix multiply operator on custom objects, with `__rmatmul__` |
 | `__index__` | ✅ | Custom objects as list/str/tuple indices |
 | `__format__` | ✅ | `format(obj, spec)` on custom classes |
+| `__new__` | ✅ | Custom constructor; `object.__new__(cls)` for allocation |
+| `__del__` | ✅ | Finalizer called during GC sweep; must not allocate |
+| `__copy__`, `__deepcopy__` | ✅ | Custom `copy.copy()`/`copy.deepcopy()` behavior (simplified `__deepcopy__` without memo) |
 | `__int__`, `__float__`, `__bool__` | ✅ | `int(obj)`, `float(obj)`, `bool(obj)` conversion dunders |
 | `__getitem__`, `__setitem__`, `__delitem__`, `__contains__` | ✅ | Container protocol for custom classes |
 | `__iter__`, `__next__` | ✅ | Iterator protocol for custom classes (for loops, iter(), next()) |
@@ -446,6 +449,8 @@ These features are intentionally not supported because they conflict with AOT co
 | Stack traces | Would require debug info overhead in optimized code |
 | `inspect` module | Runtime introspection incompatible with AOT |
 | Dynamic class creation | `type(name, bases, dict)` requires runtime class generation |
+| `__class_getitem__` | Types erased at runtime; `MyClass[int]` handled by type system at compile time |
+| Descriptors (`__get__`, `__set__`, `__delete__`) | Requires dynamic attribute protocol at every field access; `@property` covers static use cases |
 | `collections.namedtuple` | `namedtuple("Point", ["x", "y"])` creates classes dynamically from string arguments at runtime — fundamentally incompatible with AOT compilation where all types must be known at compile time. The `typing.NamedTuple` class-based syntax could be supported in the future by auto-generating dunder methods during class compilation, but the dynamic form cannot |
 
 ---

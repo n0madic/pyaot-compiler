@@ -141,6 +141,10 @@ impl<'a> Lowering<'a> {
                         call_func: None,
                         index_func: None,
                         format_func: None,
+                        del_func: None,
+                        new_func: None,
+                        copy_func: None,
+                        deepcopy_func: None,
                         base_class: None,
                         total_field_count: 0,
                         own_field_offset: 0,
@@ -391,6 +395,55 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Constant(mir::Constant::Int(heap_field_mask)),
                 ],
             });
+
+            // Register field count for object.__new__ support
+            let total_field_count = self
+                .get_class_info(class_id)
+                .map(|ci| ci.total_field_count as i64)
+                .unwrap_or(0);
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: dummy_local,
+                func: mir::RuntimeFunc::RegisterClassFieldCount,
+                args: vec![
+                    mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                    mir::Operand::Constant(mir::Constant::Int(total_field_count)),
+                ],
+            });
+
+            // Register dunder function pointers (__del__, __copy__, __deepcopy__)
+            // These are called from the runtime via function pointer registries.
+            let dunder_registrations: Vec<(FuncId, mir::RuntimeFunc)> = self
+                .get_class_info(class_id)
+                .map(|ci| {
+                    let mut regs = Vec::new();
+                    if let Some(f) = ci.del_func {
+                        regs.push((f, mir::RuntimeFunc::RegisterDelFunc));
+                    }
+                    if let Some(f) = ci.copy_func {
+                        regs.push((f, mir::RuntimeFunc::RegisterCopyFunc));
+                    }
+                    if let Some(f) = ci.deepcopy_func {
+                        regs.push((f, mir::RuntimeFunc::RegisterDeepCopyFunc));
+                    }
+                    regs
+                })
+                .unwrap_or_default();
+            for (func_id, reg_func) in dunder_registrations {
+                // Get compiled function address
+                let func_addr_local = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::FuncAddr {
+                    dest: func_addr_local,
+                    func: func_id,
+                });
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: dummy_local,
+                    func: reg_func,
+                    args: vec![
+                        mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                        mir::Operand::Local(func_addr_local),
+                    ],
+                });
+            }
 
             // Register method name→slot mappings for Protocol dispatch.
             // Collect data first to avoid borrow conflict with emit_instruction.

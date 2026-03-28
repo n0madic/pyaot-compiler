@@ -283,6 +283,81 @@ pub fn compile_instance_call(
                 .expect("internal error: local not in var_map - codegen bug");
             builder.def_var(dest_var, result_val);
         }
+        mir::RuntimeFunc::RegisterClassFieldCount => {
+            // rt_register_class_field_count(class_id: u8, field_count: i64)
+            let mut sig = ctx.module.make_signature();
+            sig.call_conv = CallConv::SystemV;
+            sig.params.push(AbiParam::new(cltypes::I8)); // class_id
+            sig.params.push(AbiParam::new(cltypes::I64)); // field_count
+
+            let func_id =
+                declare_runtime_function(ctx.module, "rt_register_class_field_count", &sig)?;
+            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+
+            let class_id_raw = load_operand(builder, &args[0], ctx.var_map);
+            let class_id = builder.ins().ireduce(cltypes::I8, class_id_raw);
+            let field_count = load_operand(builder, &args[1], ctx.var_map);
+            builder.ins().call(func_ref, &[class_id, field_count]);
+
+            let zero = builder.ins().iconst(cltypes::I64, 0);
+            let dest_var = *ctx
+                .var_map
+                .get(&dest)
+                .expect("internal error: local not in var_map - codegen bug");
+            builder.def_var(dest_var, zero);
+        }
+        mir::RuntimeFunc::ObjectNew => {
+            // rt_object_new(class_id: u8) -> *mut Obj
+            let mut sig = ctx.module.make_signature();
+            sig.call_conv = CallConv::SystemV;
+            sig.params.push(AbiParam::new(cltypes::I8)); // class_id
+            sig.returns.push(AbiParam::new(cltypes::I64)); // instance ptr
+
+            let func_id = declare_runtime_function(ctx.module, "rt_object_new", &sig)?;
+            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+
+            let class_id_raw = load_operand(builder, &args[0], ctx.var_map);
+            let class_id = builder.ins().ireduce(cltypes::I8, class_id_raw);
+            let call_inst = builder.ins().call(func_ref, &[class_id]);
+
+            let result_val = get_call_result(builder, call_inst);
+            let dest_var = *ctx
+                .var_map
+                .get(&dest)
+                .expect("internal error: local not in var_map - codegen bug");
+            builder.def_var(dest_var, result_val);
+        }
+        mir::RuntimeFunc::RegisterDelFunc
+        | mir::RuntimeFunc::RegisterCopyFunc
+        | mir::RuntimeFunc::RegisterDeepCopyFunc => {
+            // rt_register_{del,copy,deepcopy}_func(class_id: u8, func_ptr: *const u8)
+            let mut sig = ctx.module.make_signature();
+            sig.call_conv = CallConv::SystemV;
+            sig.params.push(AbiParam::new(cltypes::I8)); // class_id
+            sig.params.push(AbiParam::new(cltypes::I64)); // func_ptr
+
+            let rt_name = match func {
+                mir::RuntimeFunc::RegisterDelFunc => "rt_register_del_func",
+                mir::RuntimeFunc::RegisterCopyFunc => "rt_register_copy_func",
+                mir::RuntimeFunc::RegisterDeepCopyFunc => "rt_register_deepcopy_func",
+                _ => unreachable!(),
+            };
+
+            let func_id = declare_runtime_function(ctx.module, rt_name, &sig)?;
+            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+
+            let class_id_raw = load_operand(builder, &args[0], ctx.var_map);
+            let class_id = builder.ins().ireduce(cltypes::I8, class_id_raw);
+            let func_ptr = load_operand(builder, &args[1], ctx.var_map);
+            builder.ins().call(func_ref, &[class_id, func_ptr]);
+
+            let zero = builder.ins().iconst(cltypes::I64, 0);
+            let dest_var = *ctx
+                .var_map
+                .get(&dest)
+                .expect("internal error: local not in var_map - codegen bug");
+            builder.def_var(dest_var, zero);
+        }
         _ => unreachable!("Non-instance function passed to compile_instance_call"),
     }
 

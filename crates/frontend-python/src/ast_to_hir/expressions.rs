@@ -678,6 +678,27 @@ impl AstToHir {
                         }
                     }
 
+                    // Special handling for object.__new__(cls) -> allocate instance
+                    if attr.attr.as_str() == "__new__" {
+                        if let py::Expr::Name(name) = &*attr.value {
+                            if name.id.as_str() == "object" {
+                                let mut hir_args = Vec::new();
+                                for arg in call.args {
+                                    hir_args.push(self.convert_expr(arg)?);
+                                }
+                                return Ok(self.module.exprs.alloc(Expr {
+                                    kind: ExprKind::BuiltinCall {
+                                        builtin: Builtin::ObjectNew,
+                                        args: hir_args,
+                                        kwargs: vec![],
+                                    },
+                                    ty: None,
+                                    span: expr_span,
+                                }));
+                            }
+                        }
+                    }
+
                     // Special handling for str.format() on string literals
                     if attr.attr.as_str() == "format" {
                         if let py::Expr::Constant(c) = &*attr.value {

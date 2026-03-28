@@ -299,6 +299,16 @@ unsafe fn finalize_object(obj_ptr: *mut Obj) {
         TypeTagKind::BytesIO => {
             crate::stringio::bytesio_finalize(obj_ptr);
         }
+        TypeTagKind::Instance => {
+            // Call __del__ if registered for this class
+            let instance = obj_ptr as *mut crate::object::InstanceObj;
+            let class_id = (*instance).class_id;
+            let del_fn = crate::vtable::get_del_func(class_id);
+            if !del_fn.is_null() {
+                let del_fn: extern "C" fn(i64) -> i64 = std::mem::transmute(del_fn);
+                del_fn(obj_ptr as i64);
+            }
+        }
         _ => {}
     }
 }
