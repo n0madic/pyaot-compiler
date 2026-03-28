@@ -271,8 +271,16 @@ impl<'a> Lowering<'a> {
             mir_args.push(operand);
         }
 
-        // Allocate result local with correct type
-        let result_type = typespec_to_type(&method_def.return_type);
+        // Allocate result local with correct type.
+        // ObjectMethodCall always returns *mut Obj, so Any → HeapAny.
+        let result_type = {
+            let t = typespec_to_type(&method_def.return_type);
+            if matches!(t, Type::Any) {
+                Type::HeapAny
+            } else {
+                t
+            }
+        };
         let result_local = self.alloc_and_add_local(result_type, mir_func);
 
         // Emit the generic ObjectMethodCall

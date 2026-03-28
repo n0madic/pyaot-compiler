@@ -34,6 +34,7 @@ impl<'a> Lowering<'a> {
             | Type::RuntimeObject(_)
             | Type::File
             | Type::Any
+            | Type::HeapAny
             | Type::BuiltinException(_) => ValueKind::Ptr,
             // Compile-time-only types that should not appear in storage operations.
             // Explicit matches ensure new Type variants trigger exhaustiveness errors.

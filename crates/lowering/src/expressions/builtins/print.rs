@@ -164,9 +164,9 @@ impl<'a> Lowering<'a> {
                         | Type::Union(_)
                         | Type::RuntimeObject(_)
                         | Type::File => PrintKind::Obj,
-                        // For Any: use Int (raw value) as default.
-                        // TODO: proper Any printing requires tracking whether
-                        // the value is a heap pointer vs raw primitive.
+                        // HeapAny: guaranteed *mut Obj — use runtime dispatch
+                        Type::HeapAny => PrintKind::Obj,
+                        // Any: ambiguous (could be raw i64) — print as Int
                         Type::Any => PrintKind::Int,
                         // Compile-time-only types — should not appear at runtime
                         _ => PrintKind::Int,

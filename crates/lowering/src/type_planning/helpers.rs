@@ -214,7 +214,15 @@ pub(crate) fn resolve_index_type(obj_ty: &Type, index_expr: &hir::Expr) -> Type 
     match obj_ty {
         Type::Str => Type::Str,
         Type::Bytes => Type::Int,
-        Type::List(elem) => (**elem).clone(),
+        Type::List(elem) => {
+            // List elements with Any type are heap pointers from ListGet
+            let t = (**elem).clone();
+            if matches!(t, Type::Any) {
+                Type::HeapAny
+            } else {
+                t
+            }
+        }
         Type::Dict(_, val) | Type::DefaultDict(_, val) => (**val).clone(),
         Type::Tuple(elems) if !elems.is_empty() => {
             // Try compile-time index resolution for Int literals
@@ -222,14 +230,26 @@ pub(crate) fn resolve_index_type(obj_ty: &Type, index_expr: &hir::Expr) -> Type 
                 let len = elems.len() as i64;
                 let actual_idx = if *idx < 0 { len + idx } else { *idx };
                 if actual_idx >= 0 && (actual_idx as usize) < elems.len() {
-                    return elems[actual_idx as usize].clone();
+                    let t = elems[actual_idx as usize].clone();
+                    // Tuple with ELEM_HEAP_OBJ stores elements as *mut Obj.
+                    // When element type is Any, promote to HeapAny.
+                    return if matches!(t, Type::Any) {
+                        Type::HeapAny
+                    } else {
+                        t
+                    };
                 }
             }
             // Fallback: homogeneous → single type, heterogeneous → union
-            if elems.iter().all(|t| t == &elems[0]) {
+            let t = if elems.iter().all(|t| t == &elems[0]) {
                 elems[0].clone()
             } else {
                 Type::normalize_union(elems.clone())
+            };
+            if matches!(t, Type::Any) {
+                Type::HeapAny
+            } else {
+                t
             }
         }
         _ => Type::Any,

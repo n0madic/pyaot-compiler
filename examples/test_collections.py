@@ -98,14 +98,12 @@ assert ctr_str.total() == 11, "Counter.total() for 'abracadabra'"
 mc3 = ctr_str.most_common(3)
 assert len(mc3) == 3, "Counter.most_common(3) returns 3 items"
 
-# ===== SECTION: Counter double indexing =====
-# mc3[0] returns a tuple, mc3[0][0] returns the element, mc3[0][1] returns the count
+# ===== SECTION: Counter double indexing (print + compare via HeapAny) =====
 first_pair = mc3[0]
-first_elem = first_pair[0]  # Should be 'a' (Any type at compile time)
-first_count = first_pair[1]  # Should be 5 (Any type at compile time)
-# Double indexing also works directly
-second_elem = mc3[1][0]
-second_count = mc3[1][1]
+assert first_pair[0] == "a", "Counter most_common first element is 'a'"
+assert first_pair[1] == 5, "Counter most_common first count is 5"
+assert mc3[1][1] == 2, "Counter most_common second count is 2"
+assert mc3[0][1] != 3, "Counter most_common first count is not 3"
 
 # ===== SECTION: Counter from list =====
 ctr_list = Counter([1, 2, 1, 3, 2, 1])

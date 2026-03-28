@@ -117,12 +117,18 @@ impl<'a> Lowering<'a> {
                         });
                     }
                     _ => {
-                        // For heap types (Str, List, etc.), ListGet returns *mut Obj
+                        // For heap types (Str, List, etc.), ListGet returns *mut Obj.
+                        // Any element type → HeapAny (always a valid pointer from ListGet).
+                        let result_ty = if matches!(elem_ty.as_ref(), Type::Any) {
+                            Type::HeapAny
+                        } else {
+                            (**elem_ty).clone()
+                        };
                         mir_func.add_local(mir::Local {
                             id: result_local,
                             name: None,
-                            ty: (**elem_ty).clone(),
-                            is_gc_root: elem_ty.is_heap(),
+                            ty: result_ty.clone(),
+                            is_gc_root: result_ty.is_heap(),
                         });
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: result_local,
@@ -160,11 +166,18 @@ impl<'a> Lowering<'a> {
                 let uses_heap_obj =
                     elem_types.is_empty() || !elem_types.iter().all(|t| *t == Type::Int);
 
+                // When element type is Any and storage is ELEM_HEAP_OBJ,
+                // the result is a heap pointer → use HeapAny for print/compare dispatch.
+                let result_ty = if matches!(elem_ty, Type::Any) && uses_heap_obj {
+                    Type::HeapAny
+                } else {
+                    elem_ty.clone()
+                };
                 mir_func.add_local(mir::Local {
                     id: result_local,
                     name: None,
-                    ty: elem_ty.clone(),
-                    is_gc_root: elem_ty.is_heap(),
+                    ty: result_ty.clone(),
+                    is_gc_root: result_ty.is_heap(),
                 });
 
                 // Choose the appropriate getter based on element type and storage
@@ -312,11 +325,12 @@ impl<'a> Lowering<'a> {
             _ => {
                 // Runtime-dispatched subscript for Any/unknown types.
                 // Calls rt_any_getitem which dispatches on the object's type tag.
+                // Result is always a *mut Obj (HeapAny), never a raw primitive.
                 mir_func.add_local(mir::Local {
                     id: result_local,
                     name: None,
-                    ty: Type::Any,
-                    is_gc_root: true, // Result is a heap pointer
+                    ty: Type::HeapAny,
+                    is_gc_root: true,
                 });
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,

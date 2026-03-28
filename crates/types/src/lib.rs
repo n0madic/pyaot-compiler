@@ -56,8 +56,14 @@ pub enum Type {
     /// Type variable (for generics)
     Var(InternedString),
 
-    /// Unknown/Any type (for gradual typing)
+    /// Unknown/Any type (for gradual typing) — may be raw i64 or heap pointer
     Any,
+
+    /// Heap-allocated Any — guaranteed to be a valid *mut Obj pointer.
+    /// Used for runtime-dispatched subscript results (rt_any_getitem),
+    /// ObjectMethodCall returns, and similar cases where the value is
+    /// always a boxed heap object. Print and compare use runtime dispatch.
+    HeapAny,
 
     /// User-defined class type
     Class {
@@ -312,9 +318,9 @@ impl Type {
             // Nothing is subtype of Never (except Never itself, handled by reflexivity)
             (_, Type::Never) => false,
 
-            // Any is supertype of everything
-            (_, Type::Any) => true,
-            (Type::Any, _) => false,
+            // Any and HeapAny are supertypes of everything
+            (_, Type::Any) | (_, Type::HeapAny) => true,
+            (Type::Any, _) | (Type::HeapAny, _) => false,
 
             // Bool is subtype of Int (Python semantics: isinstance(True, int) == True)
             (Type::Bool, Type::Int) => true,
@@ -456,7 +462,7 @@ impl std::fmt::Display for Type {
                 write!(f, ") -> {}", ret)
             }
             Type::Var(name) => write!(f, "'{:?}", name),
-            Type::Any => write!(f, "Any"),
+            Type::Any | Type::HeapAny => write!(f, "Any"),
             Type::Class { name, .. } => write!(f, "{:?}", name),
             Type::Iterator(t) => write!(f, "Iterator[{}]", t),
             Type::BuiltinException(kind) => write!(f, "{}", kind),

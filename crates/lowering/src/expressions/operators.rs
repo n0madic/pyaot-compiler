@@ -937,8 +937,46 @@ impl<'a> Lowering<'a> {
                 left: left_op,
                 right: right_op,
             });
+        } else if matches!(left_type, Type::HeapAny) || matches!(right_type, Type::HeapAny) {
+            // HeapAny comparison: runtime dispatch via rt_obj_eq/lt/etc.
+            // Box the other operand if primitive.
+            let boxed_left = self.box_primitive_if_needed(left_op, &left_type, mir_func);
+            let boxed_right = self.box_primitive_if_needed(right_op, &right_type, mir_func);
+            if matches!(op, hir::CmpOp::NotEq) {
+                let eq_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: eq_local,
+                    func: mir::RuntimeFunc::Compare {
+                        kind: mir::CompareKind::Obj,
+                        op: mir::ComparisonOp::Eq,
+                    },
+                    args: vec![boxed_left, boxed_right],
+                });
+                self.emit_instruction(mir::InstructionKind::UnOp {
+                    dest: result_local,
+                    op: mir::UnOp::Not,
+                    operand: mir::Operand::Local(eq_local),
+                });
+            } else {
+                let compare_op = match op {
+                    hir::CmpOp::Eq => mir::ComparisonOp::Eq,
+                    hir::CmpOp::Lt => mir::ComparisonOp::Lt,
+                    hir::CmpOp::LtE => mir::ComparisonOp::Lte,
+                    hir::CmpOp::Gt => mir::ComparisonOp::Gt,
+                    hir::CmpOp::GtE => mir::ComparisonOp::Gte,
+                    _ => unreachable!(),
+                };
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::Compare {
+                        kind: mir::CompareKind::Obj,
+                        op: compare_op,
+                    },
+                    args: vec![boxed_left, boxed_right],
+                });
+            }
         } else {
-            // Non-string, non-class, non-Any comparison (primitives)
+            // Primitives and raw Any comparison
             let mir_op = match op {
                 hir::CmpOp::Eq => mir::BinOp::Eq,
                 hir::CmpOp::NotEq => mir::BinOp::NotEq,
