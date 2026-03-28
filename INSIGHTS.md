@@ -476,6 +476,19 @@ Unlike CPython where `defaultdict` stores an arbitrary callable as the factory, 
 
 The factory resolution happens in the frontend (`ast_to_hir/expressions.rs:resolve_defaultdict_factory`), which maps the Python name to an integer tag (0-6). The runtime (`defaultdict.rs:create_default_value`) uses this tag to construct the default value.
 
-## DefaultDict/Counter Use DictObj-Compatible Memory Layout
+## DefaultDict/Counter Use DictObj Directly — No Separate Struct
 
-`DefaultDictObj` has the same initial fields as `DictObj` with `factory_tag: u8` appended. This means `DefaultDictObj*` can be safely cast to `DictObj*` for all standard dict operations (`rt_dict_set`, `rt_dict_get`, `rt_dict_contains`, etc.). Counter uses `DictObj` directly with `TypeTagKind::Counter` — only the type tag differs. Both types use the same dict finalization and GC marking paths.
+DefaultDict and Counter use the **same `DictObj` struct** as regular dicts (identical memory layout and size). They differ only by `TypeTagKind` in the object header. This ensures all dict operations (`rt_dict_set`, `rt_dict_get`, `rt_dict_keys`, `rt_dict_contains`, etc.) work correctly via simple pointer casting.
+
+For defaultdict, the factory tag is stored in a separate **static registry** (`defaultdict.rs:FactoryRegistry`) keyed by object pointer, not in the struct itself. This avoids the struct size mismatch that previously caused `.keys()` and `.values()` to return empty lists (DictObj fits in the 64-byte slab allocator class; a larger struct would go through system malloc with different GC behavior). The registry entry is cleaned up during finalization (`slab.rs`).
+
+## Type::HeapAny — Distinguishing Heap Pointers From Raw Values
+
+`Type::Any` is ambiguous — a value typed as `Any` could be a raw i64 (e.g., from dict unboxing) or a `*mut Obj` heap pointer (e.g., from `list[i]` where element type is unknown). This distinction matters for print and compare dispatchers that need to know whether to dereference the value.
+
+`Type::HeapAny` was introduced as a guaranteed `*mut Obj` variant. Print uses `PrintKind::Obj` (runtime type-tag dispatch via `rt_print_obj`) and comparison uses `CompareKind::Obj` (runtime dispatch via `rt_obj_eq`) for `HeapAny`, while `Any` keeps the legacy `PrintKind::Int` / `BinOp` behavior.
+
+**HeapAny producers** (places that set result type to `HeapAny`):
+- `AnyGetItem` result in `indexing.rs` (runtime-dispatched subscript)
+- `List(Any)` and `Tuple([Any])` element access in `resolve_index_type` and subscript lowering
+- `ObjectMethodCall` returns with `TypeSpec::Any` in `stdlib.rs`

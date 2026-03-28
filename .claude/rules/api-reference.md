@@ -3,10 +3,12 @@
 ## Type System
 
 - **Primitives**: `int` (i64), `float` (f64), `bool` (i8), `str`, `None`
-- **Containers**: `list[T]`, `dict[K,V]`, `tuple[T1,...,Tn]`, `set[T]`, `bytes`
-- **Special**: `Union[T, U]`, `Optional[T]`, `Iterator[T]`
+- **Containers**: `list[T]`, `dict[K,V]`, `defaultdict[K,V]`, `tuple[T1,...,Tn]`, `set[T]`, `bytes`
+- **Special**: `Union[T, U]`, `Optional[T]`, `Iterator[T]`, `Any`, `HeapAny`
+- **Collections**: `Type::DefaultDict(K, V)`, `Type::RuntimeObject(TypeTagKind::Counter)`, `Type::RuntimeObject(TypeTagKind::Deque)`
 - **Classes**: `Type::Class { class_id, name }`
 - **Exceptions**: `Type::BuiltinException(BuiltinExceptionKind)`
+- **Any vs HeapAny**: `Any` = ambiguous (raw i64 or pointer), `HeapAny` = guaranteed `*mut Obj` (safe for runtime dispatch in print/compare)
 
 ## Shared Definitions (`core-defs`)
 

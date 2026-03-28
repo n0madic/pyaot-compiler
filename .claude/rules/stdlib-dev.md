@@ -56,6 +56,16 @@ lookup_object_method(TypeTagKind::Match, "group") -> Option<&StdlibMethodDef>
 
 **Note:** File methods use separate dispatch due to I/O complexity and state management.
 
+## Modules That Take Callables or Iterables
+
+Stdlib functions that take **callable arguments** (e.g., `defaultdict(int)`, `reduce(func, iterable)`) or need **iterable-to-iterator conversion** (e.g., `deque.extend(list)`) require special handling:
+
+1. The frontend intercepts the call and converts it to `BuiltinCall` (e.g., `Builtin::DefaultDict`)
+2. Lowering handles the builtin with custom logic (e.g., factory resolution, iterator creation)
+3. Runtime functions may need `iterable_to_iterator()` helper for methods that receive iterables via `ObjectMethodCall`
+
+See `collections` module (`Builtin::DefaultDict/Counter/Deque`) and `functools.reduce` (`Builtin::Reduce`) for examples.
+
 ## Implementation Guidelines
 
 - Prefer Rust's standard library (`std::*`) over custom implementations
