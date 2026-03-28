@@ -122,6 +122,10 @@ Native Executable
 | `__neg__`, `__pos__` | ✅ | Unary minus/plus on custom objects |
 | `__abs__` | ✅ | `abs(obj)` on custom classes |
 | `__invert__` | ✅ | `~obj` on custom classes |
+| `__and__`, `__or__`, `__xor__`, `__lshift__`, `__rshift__` | ✅ | Bitwise operators on custom objects, with reverse variants |
+| `__matmul__` (`@`) | ✅ | Matrix multiply operator on custom objects, with `__rmatmul__` |
+| `__index__` | ✅ | Custom objects as list/str/tuple indices |
+| `__format__` | ✅ | `format(obj, spec)` on custom classes |
 | `__int__`, `__float__`, `__bool__` | ✅ | `int(obj)`, `float(obj)`, `bool(obj)` conversion dunders |
 | `__getitem__`, `__setitem__`, `__delitem__`, `__contains__` | ✅ | Container protocol for custom classes |
 | `__iter__`, `__next__` | ✅ | Iterator protocol for custom classes (for loops, iter(), next()) |

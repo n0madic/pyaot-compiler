@@ -434,6 +434,13 @@ impl<'a> Lowering<'a> {
                             hir::BinOp::BitXor => mir::BinOp::BitXor,
                             hir::BinOp::LShift => mir::BinOp::LShift,
                             hir::BinOp::RShift => mir::BinOp::RShift,
+                            hir::BinOp::MatMul => {
+                                return Err(pyaot_diagnostics::CompilerError::type_error(
+                                    "@ operator is only supported on classes with __matmul__"
+                                        .to_string(),
+                                    yield_expr.span,
+                                ));
+                            }
                         };
                         yield_block.instructions.push(mir::Instruction {
                             kind: mir::InstructionKind::BinOp {

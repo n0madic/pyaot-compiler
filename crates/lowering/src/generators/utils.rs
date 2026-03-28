@@ -255,6 +255,12 @@ impl<'a> Lowering<'a> {
                     hir::BinOp::BitXor => mir::BinOp::BitXor,
                     hir::BinOp::LShift => mir::BinOp::LShift,
                     hir::BinOp::RShift => mir::BinOp::RShift,
+                    hir::BinOp::MatMul => {
+                        return Err(pyaot_diagnostics::CompilerError::type_error(
+                            "@ operator is only supported on classes with __matmul__".to_string(),
+                            expr.span,
+                        ));
+                    }
                 };
 
                 // Emit the binary operation
@@ -343,6 +349,12 @@ impl<'a> Lowering<'a> {
                     hir::BinOp::BitXor => mir::BinOp::BitXor,
                     hir::BinOp::LShift => mir::BinOp::LShift,
                     hir::BinOp::RShift => mir::BinOp::RShift,
+                    hir::BinOp::MatMul => {
+                        return Err(pyaot_diagnostics::CompilerError::type_error(
+                            "@ operator is only supported on classes with __matmul__".to_string(),
+                            expr.span,
+                        ));
+                    }
                 };
 
                 block.instructions.push(mir::Instruction {
@@ -688,6 +700,13 @@ impl<'a> Lowering<'a> {
                                 hir::BinOp::BitXor => mir::BinOp::BitXor,
                                 hir::BinOp::LShift => mir::BinOp::LShift,
                                 hir::BinOp::RShift => mir::BinOp::RShift,
+                                hir::BinOp::MatMul => {
+                                    return Err(pyaot_diagnostics::CompilerError::type_error(
+                                        "@ operator is only supported on classes with __matmul__"
+                                            .to_string(),
+                                        value_expr.span,
+                                    ));
+                                }
                             };
                             block.instructions.push(mir::Instruction {
                                 kind: mir::InstructionKind::BinOp {

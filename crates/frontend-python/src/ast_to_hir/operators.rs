@@ -41,7 +41,7 @@ impl AstToHir {
         })
     }
 
-    pub(crate) fn convert_binop(&self, op: &py::Operator, span: Span) -> Result<BinOp> {
+    pub(crate) fn convert_binop(&self, op: &py::Operator, _span: Span) -> Result<BinOp> {
         Ok(match op {
             py::Operator::Add => BinOp::Add,
             py::Operator::Sub => BinOp::Sub,
@@ -56,12 +56,7 @@ impl AstToHir {
             py::Operator::BitXor => BinOp::BitXor,
             py::Operator::LShift => BinOp::LShift,
             py::Operator::RShift => BinOp::RShift,
-            _ => {
-                return Err(CompilerError::parse_error(
-                    format!("Unsupported operator: {:?}", op),
-                    span,
-                ))
-            }
+            py::Operator::MatMult => BinOp::MatMul,
         })
     }
 

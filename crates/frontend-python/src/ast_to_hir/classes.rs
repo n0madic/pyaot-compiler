@@ -442,9 +442,15 @@ impl AstToHir {
                 | "__rfloordiv__"
                 | "__rmod__"
                 | "__rpow__"
+                | "__lshift__"
+                | "__rshift__"
+                | "__matmul__"
                 | "__rand__"
                 | "__ror__"
                 | "__rxor__"
+                | "__rlshift__"
+                | "__rrshift__"
+                | "__rmatmul__"
         )
     }
 

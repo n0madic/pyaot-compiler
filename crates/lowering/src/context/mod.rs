@@ -108,6 +108,21 @@ pub struct LoweredClassInfo {
     pub rfloordiv_func: Option<FuncId>, // __rfloordiv__ method
     pub rmod_func: Option<FuncId>, // __rmod__ method
     pub rpow_func: Option<FuncId>, // __rpow__ method
+    /// Bitwise dunders
+    pub and_func: Option<FuncId>, // __and__ method
+    pub or_func: Option<FuncId>,   // __or__ method
+    pub xor_func: Option<FuncId>,  // __xor__ method
+    pub lshift_func: Option<FuncId>, // __lshift__ method
+    pub rshift_func: Option<FuncId>, // __rshift__ method
+    /// Reverse bitwise dunders
+    pub rand_func: Option<FuncId>, // __rand__ method
+    pub ror_func: Option<FuncId>,  // __ror__ method
+    pub rxor_func: Option<FuncId>, // __rxor__ method
+    pub rlshift_func: Option<FuncId>, // __rlshift__ method
+    pub rrshift_func: Option<FuncId>, // __rrshift__ method
+    /// Matmul dunders
+    pub matmul_func: Option<FuncId>, // __matmul__ method
+    pub rmatmul_func: Option<FuncId>, // __rmatmul__ method
     /// Unary dunders
     pub neg_func: Option<FuncId>, // __neg__ method
     pub pos_func: Option<FuncId>,  // __pos__ method
@@ -127,6 +142,10 @@ pub struct LoweredClassInfo {
     pub next_func: Option<FuncId>, // __next__ method
     /// Callable dunder
     pub call_func: Option<FuncId>, // __call__ method
+    /// Index dunder
+    pub index_func: Option<FuncId>, // __index__ method
+    /// Format dunder
+    pub format_func: Option<FuncId>, // __format__ method
     /// Base class ID for single inheritance (None if no parent)
     pub base_class: Option<ClassId>,
     /// Total field count including inherited fields
@@ -183,6 +202,18 @@ impl LoweredClassInfo {
             "__rfloordiv__" => self.rfloordiv_func,
             "__rmod__" => self.rmod_func,
             "__rpow__" => self.rpow_func,
+            "__and__" => self.and_func,
+            "__or__" => self.or_func,
+            "__xor__" => self.xor_func,
+            "__lshift__" => self.lshift_func,
+            "__rshift__" => self.rshift_func,
+            "__rand__" => self.rand_func,
+            "__ror__" => self.ror_func,
+            "__rxor__" => self.rxor_func,
+            "__rlshift__" => self.rlshift_func,
+            "__rrshift__" => self.rrshift_func,
+            "__matmul__" => self.matmul_func,
+            "__rmatmul__" => self.rmatmul_func,
             "__neg__" => self.neg_func,
             "__pos__" => self.pos_func,
             "__abs__" => self.abs_func,
@@ -197,6 +228,8 @@ impl LoweredClassInfo {
             "__iter__" => self.iter_func,
             "__next__" => self.next_func,
             "__call__" => self.call_func,
+            "__index__" => self.index_func,
+            "__format__" => self.format_func,
             _ => None,
         }
     }
@@ -304,6 +337,54 @@ impl LoweredClassInfo {
                 self.rpow_func = Some(func_id);
                 true
             }
+            "__and__" => {
+                self.and_func = Some(func_id);
+                true
+            }
+            "__or__" => {
+                self.or_func = Some(func_id);
+                true
+            }
+            "__xor__" => {
+                self.xor_func = Some(func_id);
+                true
+            }
+            "__lshift__" => {
+                self.lshift_func = Some(func_id);
+                true
+            }
+            "__rshift__" => {
+                self.rshift_func = Some(func_id);
+                true
+            }
+            "__rand__" => {
+                self.rand_func = Some(func_id);
+                true
+            }
+            "__ror__" => {
+                self.ror_func = Some(func_id);
+                true
+            }
+            "__rxor__" => {
+                self.rxor_func = Some(func_id);
+                true
+            }
+            "__rlshift__" => {
+                self.rlshift_func = Some(func_id);
+                true
+            }
+            "__rrshift__" => {
+                self.rrshift_func = Some(func_id);
+                true
+            }
+            "__matmul__" => {
+                self.matmul_func = Some(func_id);
+                true
+            }
+            "__rmatmul__" => {
+                self.rmatmul_func = Some(func_id);
+                true
+            }
             "__neg__" => {
                 self.neg_func = Some(func_id);
                 true
@@ -358,6 +439,14 @@ impl LoweredClassInfo {
             }
             "__call__" => {
                 self.call_func = Some(func_id);
+                true
+            }
+            "__index__" => {
+                self.index_func = Some(func_id);
+                true
+            }
+            "__format__" => {
+                self.format_func = Some(func_id);
                 true
             }
             _ => false,

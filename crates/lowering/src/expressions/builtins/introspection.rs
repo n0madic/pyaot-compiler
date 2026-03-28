@@ -689,6 +689,30 @@ impl<'a> Lowering<'a> {
         let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
         let value_type = self.get_expr_type(value_expr, hir_module);
 
+        // Check for class with __format__ dunder — call it directly instead of runtime dispatch
+        if let Type::Class { class_id, .. } = &value_type {
+            if let Some(format_func_id) = self
+                .get_class_info(class_id)
+                .and_then(|info| info.format_func)
+            {
+                let spec_operand = if args.len() > 1 {
+                    let spec_expr = &hir_module.exprs[args[1]];
+                    self.lower_expr(spec_expr, hir_module, mir_func)?
+                } else {
+                    let empty = self.intern("");
+                    mir::Operand::Constant(mir::Constant::Str(empty))
+                };
+
+                let result_local = self.alloc_and_add_local(Type::Str, mir_func);
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest: result_local,
+                    func: format_func_id,
+                    args: vec![value_operand, spec_operand],
+                });
+                return Ok(mir::Operand::Local(result_local));
+            }
+        }
+
         // Box the value so it becomes *mut Obj
         let boxed_value = self.box_primitive_if_needed(value_operand, &value_type, mir_func);
 

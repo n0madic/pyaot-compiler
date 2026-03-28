@@ -215,7 +215,12 @@ impl<'a> Lowering<'a> {
                     hir::BinOp::FloorDiv => class_info.floordiv_func,
                     hir::BinOp::Mod => class_info.mod_func,
                     hir::BinOp::Pow => class_info.pow_func,
-                    _ => None,
+                    hir::BinOp::BitAnd => class_info.and_func,
+                    hir::BinOp::BitOr => class_info.or_func,
+                    hir::BinOp::BitXor => class_info.xor_func,
+                    hir::BinOp::LShift => class_info.lshift_func,
+                    hir::BinOp::RShift => class_info.rshift_func,
+                    hir::BinOp::MatMul => class_info.matmul_func,
                 }
             } else {
                 None
@@ -243,7 +248,12 @@ impl<'a> Lowering<'a> {
                     hir::BinOp::FloorDiv => class_info.rfloordiv_func,
                     hir::BinOp::Mod => class_info.rmod_func,
                     hir::BinOp::Pow => class_info.rpow_func,
-                    _ => None,
+                    hir::BinOp::BitAnd => class_info.rand_func,
+                    hir::BinOp::BitOr => class_info.ror_func,
+                    hir::BinOp::BitXor => class_info.rxor_func,
+                    hir::BinOp::LShift => class_info.rlshift_func,
+                    hir::BinOp::RShift => class_info.rrshift_func,
+                    hir::BinOp::MatMul => class_info.rmatmul_func,
                 }
             } else {
                 None
@@ -303,6 +313,14 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        // MatMul (@) is only supported via class dunders — no primitive meaning
+        if matches!(op, hir::BinOp::MatMul) {
+            return Err(pyaot_diagnostics::CompilerError::type_error(
+                "unsupported operand type(s) for @: only classes with __matmul__ support this operator".to_string(),
+                expr.span,
+            ));
+        }
+
         let mir_op = match op {
             hir::BinOp::Add => mir::BinOp::Add,
             hir::BinOp::Sub => mir::BinOp::Sub,
@@ -317,6 +335,7 @@ impl<'a> Lowering<'a> {
             hir::BinOp::BitXor => mir::BinOp::BitXor,
             hir::BinOp::LShift => mir::BinOp::LShift,
             hir::BinOp::RShift => mir::BinOp::RShift,
+            hir::BinOp::MatMul => unreachable!("MatMul handled above"),
         };
 
         self.emit_instruction(mir::InstructionKind::BinOp {

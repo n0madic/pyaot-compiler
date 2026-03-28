@@ -22,7 +22,24 @@ impl<'a> Lowering<'a> {
         let obj_type = self.get_expr_type(obj_expr, hir_module);
 
         let index_expr = &hir_module.exprs[index];
-        let index_operand = self.lower_expr(index_expr, hir_module, mir_func)?;
+        let mut index_operand = self.lower_expr(index_expr, hir_module, mir_func)?;
+
+        // If index is a class with __index__, call it to convert to int
+        let index_type = self.get_expr_type(index_expr, hir_module);
+        if let Type::Class { class_id, .. } = &index_type {
+            if let Some(func_id) = self
+                .get_class_info(class_id)
+                .and_then(|info| info.index_func)
+            {
+                let int_local = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest: int_local,
+                    func: func_id,
+                    args: vec![index_operand],
+                });
+                index_operand = mir::Operand::Local(int_local);
+            }
+        }
 
         let result_local = self.alloc_local_id();
 

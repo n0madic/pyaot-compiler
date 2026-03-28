@@ -603,6 +603,7 @@ pub enum BinOp {
     BitXor,
     LShift,
     RShift,
+    MatMul,
 }
 
 /// Unary operators

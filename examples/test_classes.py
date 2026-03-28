@@ -1593,4 +1593,96 @@ assert bool(ConvNum(0)) == False, "__bool__: bool(ConvNum(0))"
 
 print("Conversion dunders (__int__, __float__, __bool__): PASS")
 
+# ===== SECTION: Bitwise dunders =====
+class Flags:
+    value: int
+    def __init__(self, value: int):
+        self.value = value
+    def __and__(self, other: Flags) -> Flags:
+        return Flags(self.value & other.value)
+    def __or__(self, other: Flags) -> Flags:
+        return Flags(self.value | other.value)
+    def __xor__(self, other: Flags) -> Flags:
+        return Flags(self.value ^ other.value)
+    def __lshift__(self, other: Flags) -> Flags:
+        return Flags(self.value << other.value)
+    def __rshift__(self, other: Flags) -> Flags:
+        return Flags(self.value >> other.value)
+
+fl1 = Flags(12)   # 0b1100
+fl2 = Flags(10)   # 0b1010
+
+br = fl1 & fl2
+assert br.value == 8, f"& failed: {br.value}"  # 0b1000
+
+br = fl1 | fl2
+assert br.value == 14, f"| failed: {br.value}"  # 0b1110
+
+br = fl1 ^ fl2
+assert br.value == 6, f"^ failed: {br.value}"  # 0b0110
+
+br = fl1 << Flags(2)
+assert br.value == 48, f"<< failed: {br.value}"  # 0b110000
+
+br = fl1 >> Flags(2)
+assert br.value == 3, f">> failed: {br.value}"  # 0b11
+
+print("Bitwise dunders (__and__, __or__, __xor__, __lshift__, __rshift__): PASS")
+
+# ===== SECTION: MatMul dunder =====
+class MatMulObj:
+    val: int
+    def __init__(self, val: int):
+        self.val = val
+    def __matmul__(self, other: MatMulObj) -> MatMulObj:
+        return MatMulObj(self.val * other.val)
+
+mm1 = MatMulObj(3)
+mm2 = MatMulObj(4)
+mm_result = mm1 @ mm2
+assert mm_result.val == 12, f"@ failed: {mm_result.val}"
+
+print("MatMul dunder (__matmul__): PASS")
+
+# ===== SECTION: __index__ dunder =====
+class IndexObj:
+    idx: int
+    def __init__(self, idx: int):
+        self.idx = idx
+    def __index__(self) -> int:
+        return self.idx
+
+idx_items = [10, 20, 30, 40, 50]
+idx1 = IndexObj(2)
+assert idx_items[idx1] == 30, f"__index__ failed: {idx_items[idx1]}"
+
+idx2 = IndexObj(-1)
+assert idx_items[idx2] == 50, f"__index__ negative failed: {idx_items[idx2]}"
+
+idx_s = "hello"
+idx3 = IndexObj(1)
+assert idx_s[idx3] == "e", f"__index__ str failed: {idx_s[idx3]}"
+
+print("__index__ dunder: PASS")
+
+# ===== SECTION: __format__ dunder =====
+class ColorFmt:
+    r: int
+    g: int
+    b: int
+    def __init__(self, r: int, g: int, b: int):
+        self.r = r
+        self.g = g
+        self.b = b
+    def __format__(self, spec: str) -> str:
+        if spec == "hex":
+            return f"#{self.r:02x}{self.g:02x}{self.b:02x}"
+        return f"({self.r}, {self.g}, {self.b})"
+
+cfmt = ColorFmt(255, 128, 0)
+assert format(cfmt) == "(255, 128, 0)", f"format() failed: {format(cfmt)}"
+assert format(cfmt, "hex") == "#ff8000", f"format(hex) failed: {format(cfmt, 'hex')}"
+
+print("__format__ dunder: PASS")
+
 print("All class tests passed!")
