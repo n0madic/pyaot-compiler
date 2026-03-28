@@ -27,7 +27,8 @@ BuiltinExceptionKind::from_name("ValueError") -> Option<Self>
 
 // TypeTagKind: Int, Float, Bool, Str, None, List, Tuple, Dict, Instance,
 // Iterator, Set, Bytes, Cell, Generator, Match, File, StringBuilder, StructTime,
-// CompletedProcess, ParseResult, HttpResponse, Hash, StringIO, BytesIO
+// CompletedProcess, ParseResult, HttpResponse, Hash, StringIO, BytesIO,
+// DefaultDict, Counter, Deque
 //
 // Each type tag has three string representations:
 tag.tag() -> u8                    // Numeric tag
