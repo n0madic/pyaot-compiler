@@ -164,7 +164,7 @@ Native Executable
 | bin(), hex(), oct() | ✅ | |
 | repr(), type() | ✅ | |
 | divmod() | ✅ | |
-| open() | ✅ | r/w/a/rb/wb/ab, r+/w+/a+, r+b/w+b/a+b modes |
+| open() | ✅ | r/w/a/rb/wb/ab, r+/w+/a+, r+b/w+b/a+b modes; encoding= kwarg (utf-8, ascii, latin-1) |
 | input() | ✅ | |
 | getattr(obj, name[, default]) | ✅ | Static attribute names only |
 | setattr(obj, name, value) | ✅ | Static attribute names only |

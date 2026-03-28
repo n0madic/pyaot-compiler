@@ -148,7 +148,40 @@ except ValueError:
 assert got_value_error, "invalid mode should raise ValueError"
 print("ValueError for invalid mode test passed!")
 
-# Test 15: Clean up temporary files with os.remove
+# Test 15: encoding="utf-8" (explicit, same as default)
+enc_utf8_file = "/tmp/test_aot_enc_utf8.txt"
+f = open(enc_utf8_file, "w", encoding="utf-8")
+f.write("café")
+f.close()
+f = open(enc_utf8_file, "r", encoding="utf-8")
+enc_content = f.read()
+f.close()
+assert enc_content == "café", f"utf-8 encoding failed: {enc_content}"
+print("encoding=utf-8 test passed!")
+
+# Test 16: encoding="ascii"
+enc_ascii_file = "/tmp/test_aot_enc_ascii.txt"
+f = open(enc_ascii_file, "w", encoding="ascii")
+f.write("hello")
+f.close()
+f = open(enc_ascii_file, "r", encoding="ascii")
+enc_content = f.read()
+f.close()
+assert enc_content == "hello", f"ascii encoding failed: {enc_content}"
+print("encoding=ascii test passed!")
+
+# Test 17: encoding="latin-1"
+enc_latin1_file = "/tmp/test_aot_enc_latin1.txt"
+f = open(enc_latin1_file, "w", encoding="latin-1")
+f.write("café")
+f.close()
+f = open(enc_latin1_file, "r", encoding="latin-1")
+enc_content = f.read()
+f.close()
+assert enc_content == "café", f"latin-1 encoding failed: {enc_content}"
+print("encoding=latin-1 test passed!")
+
+# Test 18: Clean up temporary files with os.remove
 import os
 
 os.remove("/tmp/test_aot_file.txt")
@@ -158,5 +191,8 @@ os.remove("/tmp/test_aot_iter_file.txt")
 os.remove(rw_file)
 os.remove(wp_file)
 os.remove(ap_file)
+os.remove(enc_utf8_file)
+os.remove(enc_ascii_file)
+os.remove(enc_latin1_file)
 
 print("All file I/O tests passed!")

@@ -370,6 +370,15 @@ impl TryFrom<u8> for FileMode {
     }
 }
 
+/// Encoding for text-mode file I/O
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileEncoding {
+    Utf8 = 0,   // "utf-8" (default)
+    Ascii = 1,  // "ascii"
+    Latin1 = 2, // "latin-1" / "iso-8859-1"
+}
+
 /// File object for file I/O operations
 #[repr(C)]
 pub struct FileObj {
@@ -378,6 +387,7 @@ pub struct FileObj {
     pub mode: u8,                   // FileMode enum value
     pub closed: bool,               // True when file is closed
     pub binary: bool,               // True for binary mode (rb/wb/ab)
+    pub encoding: u8,               // FileEncoding enum value (for text mode)
     pub name: *mut Obj,             // StrObj with filename
 }
 

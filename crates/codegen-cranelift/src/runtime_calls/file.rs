@@ -23,11 +23,12 @@ pub fn compile_file_call(
 ) -> Result<()> {
     match func {
         mir::RuntimeFunc::FileOpen => {
-            // rt_file_open(filename: *mut Obj, mode: *mut Obj) -> *mut Obj
+            // rt_file_open(filename: *mut Obj, mode: *mut Obj, encoding: *mut Obj) -> *mut Obj
             let mut sig = ctx.module.make_signature();
             sig.call_conv = CallConv::SystemV;
             sig.params.push(AbiParam::new(cltypes::I64)); // filename
             sig.params.push(AbiParam::new(cltypes::I64)); // mode
+            sig.params.push(AbiParam::new(cltypes::I64)); // encoding
             sig.returns.push(AbiParam::new(cltypes::I64)); // *mut Obj
 
             let func_id = declare_runtime_function(ctx.module, "rt_file_open", &sig)?;
@@ -35,8 +36,9 @@ pub fn compile_file_call(
 
             let filename = load_operand(builder, &args[0], ctx.var_map);
             let mode = load_operand(builder, &args[1], ctx.var_map);
+            let encoding = load_operand(builder, &args[2], ctx.var_map);
 
-            let inst = builder.ins().call(func_ref, &[filename, mode]);
+            let inst = builder.ins().call(func_ref, &[filename, mode, encoding]);
             let result = get_call_result(builder, inst);
             let dest_var = *ctx
                 .var_map

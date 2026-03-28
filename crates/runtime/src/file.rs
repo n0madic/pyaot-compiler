@@ -4,21 +4,119 @@
 //! and context manager protocol (__enter__/__exit__).
 
 use crate::gc::gc_alloc;
-use crate::object::{FileMode, FileObj, Obj, StrObj, TypeTagKind};
+use crate::object::{FileEncoding, FileMode, FileObj, Obj, StrObj, TypeTagKind};
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, Write};
 use std::ptr;
 
-/// Open a file with the given mode
+/// Parse an encoding string to FileEncoding enum.
+/// Returns Utf8 for null/empty. Raises LookupError for unsupported encodings.
+unsafe fn parse_encoding(encoding: *mut Obj) -> FileEncoding {
+    if encoding.is_null() {
+        return FileEncoding::Utf8;
+    }
+    if (*encoding).header.type_tag != TypeTagKind::Str {
+        return FileEncoding::Utf8;
+    }
+    let enc_str = crate::utils::extract_str_unchecked(encoding);
+    // Normalize: lowercase, strip hyphens/underscores (CPython does this)
+    let normalized: String = enc_str
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| *c != '-' && *c != '_')
+        .collect();
+    match normalized.as_str() {
+        "utf8" | "utf" => FileEncoding::Utf8,
+        "ascii" | "usascii" => FileEncoding::Ascii,
+        "latin1" | "latin" | "iso88591" | "iso885915" | "8859" => FileEncoding::Latin1,
+        _ => {
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "unknown encoding: '{}'",
+                enc_str
+            );
+        }
+    }
+}
+
+/// Decode raw bytes to UTF-8 string according to encoding.
+/// For UTF-8: validates (returns error on invalid).
+/// For ASCII: validates 0-127 range.
+/// For Latin-1: maps bytes 0-255 to Unicode codepoints (always succeeds).
+fn decode_bytes(data: &[u8], encoding: FileEncoding) -> std::result::Result<String, String> {
+    match encoding {
+        FileEncoding::Utf8 => {
+            String::from_utf8(data.to_vec()).map_err(|e| format!("invalid UTF-8: {}", e))
+        }
+        FileEncoding::Ascii => {
+            if let Some(pos) = data.iter().position(|&b| b > 127) {
+                Err(format!(
+                    "'ascii' codec can't decode byte 0x{:02x} in position {}",
+                    data[pos], pos
+                ))
+            } else {
+                // ASCII is valid UTF-8
+                Ok(String::from_utf8(data.to_vec()).unwrap())
+            }
+        }
+        FileEncoding::Latin1 => {
+            // Latin-1: each byte maps directly to a Unicode codepoint
+            Ok(data.iter().map(|&b| b as char).collect())
+        }
+    }
+}
+
+/// Encode a UTF-8 string to bytes according to encoding.
+/// For UTF-8: identity (internal representation is already UTF-8).
+/// For ASCII: validates 0-127 range.
+/// For Latin-1: maps Unicode codepoints 0-255 (fails for > 255).
+fn encode_str(s: &str, encoding: FileEncoding) -> std::result::Result<Vec<u8>, String> {
+    match encoding {
+        FileEncoding::Utf8 => Ok(s.as_bytes().to_vec()),
+        FileEncoding::Ascii => {
+            if let Some(pos) = s.bytes().position(|b| b > 127) {
+                Err(format!(
+                    "'ascii' codec can't encode character '{}' in position {}",
+                    s[pos..].chars().next().unwrap_or('?'),
+                    pos
+                ))
+            } else {
+                Ok(s.as_bytes().to_vec())
+            }
+        }
+        FileEncoding::Latin1 => {
+            let mut result = Vec::with_capacity(s.len());
+            for (pos, ch) in s.chars().enumerate() {
+                let cp = ch as u32;
+                if cp > 255 {
+                    return Err(format!(
+                        "'latin-1' codec can't encode character '\\u{:04x}' in position {}",
+                        cp, pos
+                    ));
+                }
+                result.push(cp as u8);
+            }
+            Ok(result)
+        }
+    }
+}
+
+/// Open a file with the given mode and optional encoding
 /// Returns a FileObj pointer, or raises IOError on failure
 ///
 /// Supported modes: r, w, a, rb, wb, ab, r+, w+, a+, r+b/rb+, w+b/wb+, a+b/ab+
+/// Supported encodings: utf-8 (default), ascii, latin-1/iso-8859-1
 ///
 /// # Safety
 /// `filename` must be a valid pointer to a StrObj.
 /// `mode` must be a valid pointer to a StrObj containing a supported mode string.
+/// `encoding` must be a valid pointer to a StrObj or null (defaults to utf-8).
 #[no_mangle]
-pub unsafe extern "C" fn rt_file_open(filename: *mut Obj, mode: *mut Obj) -> *mut Obj {
+pub unsafe extern "C" fn rt_file_open(
+    filename: *mut Obj,
+    mode: *mut Obj,
+    encoding: *mut Obj,
+) -> *mut Obj {
     if filename.is_null() {
         crate::utils::raise_io_error("filename cannot be None");
     }
@@ -32,6 +130,9 @@ pub unsafe extern "C" fn rt_file_open(filename: *mut Obj, mode: *mut Obj) -> *mu
     } else {
         crate::utils::extract_str_unchecked(mode)
     };
+
+    // Parse encoding (default to utf-8; ignored for binary modes)
+    let file_encoding = parse_encoding(encoding);
 
     // Parse mode — CPython accepts both "r+b" and "rb+" orderings
     let (file_mode, binary) = match mode_str.as_str() {
@@ -105,6 +206,7 @@ pub unsafe extern "C" fn rt_file_open(filename: *mut Obj, mode: *mut Obj) -> *mu
             (*obj).mode = file_mode as u8;
             (*obj).closed = false;
             (*obj).binary = binary;
+            (*obj).encoding = file_encoding as u8;
             (*obj).name = filename;
 
             obj as *mut Obj
@@ -161,8 +263,14 @@ pub unsafe extern "C" fn rt_file_read(file: *mut Obj) -> *mut Obj {
                 // Return bytes object
                 crate::bytes::rt_make_bytes(buffer.as_ptr(), buffer.len())
             } else {
-                // Return string object
-                crate::string::rt_make_str(buffer.as_ptr(), buffer.len())
+                // Text mode: decode bytes according to file encoding
+                let enc = get_encoding(file_obj);
+                match decode_bytes(&buffer, enc) {
+                    Ok(s) => crate::string::rt_make_str(s.as_ptr(), s.len()),
+                    Err(e) => {
+                        crate::utils::raise_io_error_owned(format!("read error: {}", e));
+                    }
+                }
             }
         }
         Err(e) => {
@@ -210,7 +318,13 @@ pub unsafe extern "C" fn rt_file_read_n(file: *mut Obj, n: i64) -> *mut Obj {
             if (*file_obj).binary {
                 crate::bytes::rt_make_bytes(buffer.as_ptr(), buffer.len())
             } else {
-                crate::string::rt_make_str(buffer.as_ptr(), buffer.len())
+                let enc = get_encoding(file_obj);
+                match decode_bytes(&buffer, enc) {
+                    Ok(s) => crate::string::rt_make_str(s.as_ptr(), s.len()),
+                    Err(e) => {
+                        crate::utils::raise_io_error_owned(format!("read error: {}", e));
+                    }
+                }
             }
         }
         Err(e) => {
@@ -272,8 +386,14 @@ pub unsafe extern "C" fn rt_file_readline(file: *mut Obj) -> *mut Obj {
         // Return bytes object for binary mode
         crate::bytes::rt_make_bytes(line.as_ptr(), line.len())
     } else {
-        // Return string for text mode
-        crate::string::rt_make_str(line.as_ptr(), line.len())
+        // Text mode: decode according to file encoding
+        let enc = get_encoding(file_obj);
+        match decode_bytes(&line, enc) {
+            Ok(s) => crate::string::rt_make_str(s.as_ptr(), s.len()),
+            Err(e) => {
+                crate::utils::raise_io_error_owned(format!("read error: {}", e));
+            }
+        }
     }
 }
 
@@ -307,10 +427,11 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
             msg.len(),
         );
     }
-    let content = match String::from_utf8(raw) {
+    let enc = get_encoding(file_obj);
+    let content = match decode_bytes(&raw, enc) {
         Ok(s) => s,
         Err(e) => {
-            crate::utils::raise_io_error_owned(format!("read error: invalid UTF-8: {}", e));
+            crate::utils::raise_io_error_owned(format!("read error: {}", e));
         }
     };
 
@@ -362,22 +483,40 @@ pub unsafe extern "C" fn rt_file_write(file: *mut Obj, data: *mut Obj) -> i64 {
 
     let handle = &mut *(*file_obj).handle;
 
-    // Get data bytes
-    let (data_ptr, data_len) = match (*data).header.type_tag {
+    // Get data bytes, encoding strings according to file encoding
+    let encoded_buf: Vec<u8>;
+    let bytes = match (*data).header.type_tag {
         TypeTagKind::Str => {
             let str_obj = data as *const StrObj;
-            ((*str_obj).data.as_ptr(), (*str_obj).len)
+            let data_ptr = (*str_obj).data.as_ptr();
+            let data_len = (*str_obj).len;
+            let raw = std::slice::from_raw_parts(data_ptr, data_len);
+            let enc = get_encoding(file_obj);
+            if matches!(enc, FileEncoding::Utf8) {
+                // UTF-8 is our internal representation — write directly
+                raw
+            } else {
+                // Encode the UTF-8 string to the target encoding
+                let s = std::str::from_utf8(raw).unwrap_or("");
+                encoded_buf = match encode_str(s, enc) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        crate::utils::raise_io_error_owned(format!("write error: {}", e));
+                    }
+                };
+                &encoded_buf
+            }
         }
         TypeTagKind::Bytes => {
             let bytes_obj = data as *const crate::object::BytesObj;
-            ((*bytes_obj).data.as_ptr(), (*bytes_obj).len)
+            let data_ptr = (*bytes_obj).data.as_ptr();
+            let data_len = (*bytes_obj).len;
+            std::slice::from_raw_parts(data_ptr, data_len)
         }
         _ => {
             crate::utils::raise_value_error("write argument must be str or bytes");
         }
     };
-
-    let bytes = std::slice::from_raw_parts(data_ptr, data_len);
 
     match handle.write(bytes) {
         Ok(written) => written as i64,
@@ -529,6 +668,16 @@ unsafe fn is_writable(file_obj: *mut FileObj) -> bool {
                 | FileMode::AppendReadBinary
         ),
         Err(_) => false,
+    }
+}
+
+/// Get the file's encoding as a FileEncoding enum
+unsafe fn get_encoding(file_obj: *mut FileObj) -> FileEncoding {
+    match (*file_obj).encoding {
+        0 => FileEncoding::Utf8,
+        1 => FileEncoding::Ascii,
+        2 => FileEncoding::Latin1,
+        _ => FileEncoding::Utf8, // fallback
     }
 }
 

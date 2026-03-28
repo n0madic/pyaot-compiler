@@ -550,7 +550,7 @@ pub enum RuntimeFunc {
     GeneratorIsClosing,
 
     // ==================== File I/O runtime functions ====================
-    /// Open a file: rt_file_open(filename: *mut Obj, mode: *mut Obj) -> *mut Obj (FileObj)
+    /// Open a file: rt_file_open(filename: *mut Obj, mode: *mut Obj, encoding: *mut Obj) -> *mut Obj (FileObj)
     FileOpen,
     /// Read entire file: rt_file_read(file: *mut Obj) -> *mut Obj (str or bytes)
     FileRead,
