@@ -76,8 +76,10 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
-                let msg = format!("subprocess.run: failed to execute command: {}", e);
-                crate::utils::raise_runtime_error(&msg);
+                crate::utils::raise_runtime_error_owned(format!(
+                    "subprocess.run: failed to execute command: {}",
+                    e
+                ));
             }
         };
 
@@ -90,8 +92,10 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
                     match child.wait_with_output() {
                         Ok(out) => break out,
                         Err(e) => {
-                            let msg = format!("subprocess.run: failed to collect output: {}", e);
-                            crate::utils::raise_runtime_error(&msg);
+                            crate::utils::raise_runtime_error_owned(format!(
+                                "subprocess.run: failed to collect output: {}",
+                                e
+                            ));
                         }
                     }
                 }
@@ -102,22 +106,20 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
                         child.kill().ok();
                         // Reap the child to release OS resources.
                         child.wait().ok();
-                        let msg = format!(
+                        crate::raise_exc!(
+                            crate::exceptions::ExceptionType::TimeoutError,
                             "subprocess.run: command '{}' timed out after {} seconds",
                             cmd_args.join(" "),
                             DEFAULT_TIMEOUT.as_secs()
-                        );
-                        crate::exceptions::rt_exc_raise(
-                            crate::exceptions::ExceptionType::TimeoutError as u8,
-                            msg.as_ptr(),
-                            msg.len(),
                         );
                     }
                     std::thread::sleep(POLL_INTERVAL);
                 }
                 Err(e) => {
-                    let msg = format!("subprocess.run: wait failed: {}", e);
-                    crate::utils::raise_runtime_error(&msg);
+                    crate::utils::raise_runtime_error_owned(format!(
+                        "subprocess.run: wait failed: {}",
+                        e
+                    ));
                 }
             }
         };
@@ -127,12 +129,11 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
 
         // Check if we should raise on non-zero exit
         if check != 0 && returncode != 0 {
-            let msg = format!(
+            crate::utils::raise_runtime_error_owned(format!(
                 "Command '{}' returned non-zero exit status {}",
                 cmd_args.join(" "),
                 returncode
-            );
-            crate::utils::raise_runtime_error(&msg);
+            ));
         }
 
         // Create stdout string if captured
@@ -140,11 +141,10 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
             match String::from_utf8(output.stdout) {
                 Ok(s) => make_str_from_rust(&s),
                 Err(e) => {
-                    let msg = format!("subprocess stdout is not valid UTF-8: {}", e.utf8_error());
-                    crate::exceptions::rt_exc_raise(
-                        crate::exceptions::ExceptionType::ValueError as u8,
-                        msg.as_ptr(),
-                        msg.len(),
+                    crate::raise_exc!(
+                        crate::exceptions::ExceptionType::ValueError,
+                        "subprocess stdout is not valid UTF-8: {}",
+                        e.utf8_error()
                     );
                 }
             }
@@ -157,11 +157,10 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
             match String::from_utf8(output.stderr) {
                 Ok(s) => make_str_from_rust(&s),
                 Err(e) => {
-                    let msg = format!("subprocess stderr is not valid UTF-8: {}", e.utf8_error());
-                    crate::exceptions::rt_exc_raise(
-                        crate::exceptions::ExceptionType::ValueError as u8,
-                        msg.as_ptr(),
-                        msg.len(),
+                    crate::raise_exc!(
+                        crate::exceptions::ExceptionType::ValueError,
+                        "subprocess stderr is not valid UTF-8: {}",
+                        e.utf8_error()
                     );
                 }
             }

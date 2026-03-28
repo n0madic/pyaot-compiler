@@ -633,12 +633,12 @@ unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
                 data_a.cmp(data_b)
             }
             _ => {
-                let msg = format!(
+                crate::raise_exc!(
+                    ExceptionType::TypeError,
                     "'<' not supported between instances of '{}' and '{}'",
                     type_name(tag_a),
                     type_name(tag_b)
                 );
-                rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
             }
         };
     }
@@ -662,12 +662,12 @@ unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
     }
 
     // Incompatible types
-    let msg = format!(
+    crate::raise_exc!(
+        ExceptionType::TypeError,
         "'<' not supported between instances of '{}' and '{}'",
         type_name(tag_a),
         type_name(tag_b)
     );
-    rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
 }
 
 /// Helper to get type name for error messages.
@@ -839,12 +839,12 @@ pub extern "C" fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         {
             crate::boxing::rt_box_float(va + vb)
         } else {
-            let msg = format!(
+            crate::raise_exc!(
+                ExceptionType::TypeError,
                 "unsupported operand type(s) for +: '{}' and '{}'",
                 type_name(tag_a),
                 type_name(tag_b)
             );
-            rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
         }
     }
 }
@@ -1125,8 +1125,11 @@ pub extern "C" fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
             }
             _ => {
                 let tag_str = type_name((*container).type_tag());
-                let msg = format!("argument of type '{}' is not iterable", tag_str);
-                rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+                crate::raise_exc!(
+                    ExceptionType::TypeError,
+                    "argument of type '{}' is not iterable",
+                    tag_str
+                );
             }
         }
     }
@@ -1325,8 +1328,11 @@ unsafe fn rt_bytes_contains_value(bytes: *mut Obj, value: *mut Obj) -> i8 {
         } else {
             type_name((*value).type_tag())
         };
-        let msg = format!("a bytes-like object is required, not '{}'", type_str);
-        rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+        crate::raise_exc!(
+            ExceptionType::TypeError,
+            "a bytes-like object is required, not '{}'",
+            type_str
+        );
     }
 
     let int_val = (*(value as *mut IntObj)).value;

@@ -47,11 +47,10 @@ pub extern "C" fn rt_urlopen(url: *mut Obj, data: *mut Obj, timeout: f64) -> *mu
 
         // Validate URL scheme
         if !url_str.starts_with("http://") && !url_str.starts_with("https://") {
-            let msg = format!("ValueError: unsupported URL scheme in '{}'", url_str);
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            crate::raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "unsupported URL scheme in '{}'",
+                url_str
             );
         }
 
@@ -114,29 +113,27 @@ pub extern "C" fn rt_urlopen(url: *mut Obj, data: *mut Obj, timeout: f64) -> *mu
                     Err(e) => {
                         // Distinguish limit-exceeded from other I/O errors so we
                         // raise a descriptive RuntimeError rather than a generic IOError.
-                        let msg = if e.to_string().contains("BodyExceedsLimit")
-                            || e.to_string().contains("body")
-                        {
-                            format!(
+                        let e_str = e.to_string();
+                        if e_str.contains("BodyExceedsLimit") || e_str.contains("body") {
+                            crate::raise_exc!(
+                                crate::exceptions::ExceptionType::RuntimeError,
                                 "urlopen: response body exceeds maximum allowed size ({} bytes)",
                                 MAX_BODY_SIZE
-                            )
+                            );
                         } else {
-                            format!("urlopen: failed to read response body: {}", e)
-                        };
-                        crate::exceptions::rt_exc_raise(
-                            pyaot_core_defs::BuiltinExceptionKind::RuntimeError.tag(),
-                            msg.as_ptr(),
-                            msg.len(),
-                        );
+                            crate::raise_exc!(
+                                crate::exceptions::ExceptionType::RuntimeError,
+                                "urlopen: failed to read response body: {}",
+                                e
+                            );
+                        }
                     }
                 };
 
                 create_http_response(status, &final_url, headers_dict, &body_bytes)
             }
             Err(e) => {
-                let msg = format!("urlopen: {}", e);
-                raise_io_error(&msg);
+                crate::utils::raise_io_error_owned(format!("urlopen: {}", e));
             }
         }
     }

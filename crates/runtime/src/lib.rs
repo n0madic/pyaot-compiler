@@ -36,6 +36,32 @@ macro_rules! debug_assert_type_tag {
     };
 }
 
+/// Raise a runtime exception with a formatted message without leaking memory.
+///
+/// Creates a formatted String, transfers ownership of its buffer to the exception
+/// system via `rt_exc_raise_owned`, and raises the exception via longjmp. The buffer
+/// is freed when the ExceptionObject is dropped — no leak occurs because the String
+/// is `forget`-ted before longjmp, and ownership is transferred to the exception.
+///
+/// # Safety
+/// Must be called within an `unsafe` block (calls `rt_exc_raise_owned` which uses longjmp).
+///
+/// # Usage
+/// ```text
+/// unsafe { raise_exc!(ExceptionType::ValueError, "invalid value: '{}'", user_input); }
+/// ```
+#[macro_export]
+macro_rules! raise_exc {
+    ($exc_type:expr, $($arg:tt)*) => {{
+        let mut msg = format!($($arg)*);
+        let ptr = msg.as_mut_ptr();
+        let len = msg.len();
+        let cap = msg.capacity();
+        std::mem::forget(msg);
+        $crate::exceptions::rt_exc_raise_owned($exc_type as u8, ptr, len, cap)
+    }};
+}
+
 // Core modules
 pub mod exceptions;
 pub mod gc;

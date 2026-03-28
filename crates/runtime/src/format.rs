@@ -647,7 +647,11 @@ pub unsafe extern "C" fn rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mu
     // Parse the format specification
     let format_spec = match parse_format_spec(spec_str) {
         Ok(spec) => spec,
-        Err(e) => raise_value_error(&format!("Invalid format specifier: {}", e)),
+        Err(e) => crate::raise_exc!(
+            crate::exceptions::ExceptionType::ValueError,
+            "Invalid format specifier: {}",
+            e
+        ),
     };
 
     // Get the value's type
@@ -660,14 +664,14 @@ pub unsafe extern "C" fn rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mu
             let int_obj = &*(value as *const IntObj);
             match format_int(int_obj.value, &format_spec) {
                 Ok(s) => s,
-                Err(e) => raise_value_error(&e),
+                Err(e) => crate::utils::raise_value_error_owned(e),
             }
         }
         TypeTagKind::Float => {
             let float_obj = &*(value as *const FloatObj);
             match format_float(float_obj.value, &format_spec) {
                 Ok(s) => s,
-                Err(e) => raise_value_error(&e),
+                Err(e) => crate::utils::raise_value_error_owned(e),
             }
         }
         TypeTagKind::Bool => {
@@ -675,7 +679,7 @@ pub unsafe extern "C" fn rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mu
             let bool_val = bool_obj.value;
             match format_bool(bool_val, &format_spec) {
                 Ok(s) => s,
-                Err(e) => raise_value_error(&e),
+                Err(e) => crate::utils::raise_value_error_owned(e),
             }
         }
         TypeTagKind::Str => {
@@ -685,15 +689,16 @@ pub unsafe extern "C" fn rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mu
                 .unwrap_or_else(|_| raise_value_error("Invalid UTF-8 in string"));
             match format_str(s, &format_spec) {
                 Ok(s) => s,
-                Err(e) => raise_value_error(&e),
+                Err(e) => crate::utils::raise_value_error_owned(e),
             }
         }
         _ => {
             let type_name = type_tag.type_name();
-            raise_value_error(&format!(
+            crate::raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
                 "unsupported format string passed to {}.__format__",
                 type_name
-            ));
+            );
         }
     };
 

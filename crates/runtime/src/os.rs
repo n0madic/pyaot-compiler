@@ -197,11 +197,10 @@ pub extern "C" fn rt_os_getcwd() -> *mut Obj {
                 make_str_from_rust(path_str)
             }
             Err(e) => {
-                let msg = format!("Error getting current directory: {}\0", e);
-                crate::exceptions::rt_exc_raise(
-                    BuiltinExceptionKind::IOError.tag(),
-                    msg.as_ptr(),
-                    msg.len() - 1,
+                crate::raise_exc!(
+                    crate::exceptions::ExceptionType::IOError,
+                    "Error getting current directory: {}",
+                    e
                 );
             }
         }
@@ -346,11 +345,10 @@ pub extern "C" fn rt_os_path_abspath(path: *mut Obj) -> *mut Obj {
                 match env::current_dir() {
                     Ok(cwd) => cwd.join(path_obj),
                     Err(e) => {
-                        let msg = format!("Error getting current directory: {}\0", e);
-                        crate::exceptions::rt_exc_raise(
-                            BuiltinExceptionKind::IOError.tag(),
-                            msg.as_ptr(),
-                            msg.len() - 1,
+                        crate::raise_exc!(
+                            crate::exceptions::ExceptionType::IOError,
+                            "Error getting current directory: {}",
+                            e
                         );
                     }
                 }

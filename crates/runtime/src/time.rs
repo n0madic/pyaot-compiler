@@ -374,15 +374,11 @@ pub extern "C" fn rt_time_strptime(string: *mut Obj, format: *mut Obj) -> *mut O
 
         if result.is_null() {
             // Parse failed — raise ValueError matching CPython's behaviour
-            let msg = format!(
+            crate::raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
                 "time data '{}' does not match format '{}'",
                 crate::utils::str_obj_to_rust_string(string),
                 crate::utils::str_obj_to_rust_string(format)
-            );
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-                msg.as_ptr(),
-                msg.len(),
             );
         }
 

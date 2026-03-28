@@ -184,8 +184,7 @@ pub unsafe extern "C" fn rt_json_dumps(obj: *mut Obj) -> *mut Obj {
             make_str_from_rust(&formatted)
         }
         Err(e) => {
-            let msg = format!("ValueError: {}", e);
-            crate::utils::raise_value_error(&msg);
+            crate::utils::raise_value_error_owned(format!("ValueError: {}", e));
         }
     }
 }
@@ -240,8 +239,7 @@ pub unsafe extern "C" fn rt_json_loads(s: *mut Obj) -> *mut Obj {
     match serde_json::from_str::<Value>(&json_str) {
         Ok(value) => json_value_to_obj(&value, 0),
         Err(e) => {
-            let msg = format!("json.decoder.JSONDecodeError: {}", e);
-            crate::utils::raise_value_error(&msg);
+            crate::utils::raise_value_error_owned(format!("json.decoder.JSONDecodeError: {}", e));
         }
     }
 }
@@ -275,13 +273,11 @@ pub unsafe extern "C" fn rt_json_dump(obj: *mut Obj, fp: *mut Obj) {
             let formatted = add_json_spaces(&s);
             let handle = &mut *(*file_obj).handle;
             if let Err(e) = handle.write_all(formatted.as_bytes()) {
-                let msg = format!("IOError: {}", e);
-                crate::utils::raise_value_error(&msg);
+                crate::utils::raise_value_error_owned(format!("IOError: {}", e));
             }
         }
         Err(e) => {
-            let msg = format!("ValueError: {}", e);
-            crate::utils::raise_value_error(&msg);
+            crate::utils::raise_value_error_owned(format!("ValueError: {}", e));
         }
     }
 }
@@ -311,15 +307,13 @@ pub unsafe extern "C" fn rt_json_load(fp: *mut Obj) -> *mut Obj {
     let handle = &mut *(*file_obj).handle;
     let mut content = String::new();
     if let Err(e) = handle.read_to_string(&mut content) {
-        let msg = format!("IOError: {}", e);
-        crate::utils::raise_value_error(&msg);
+        crate::utils::raise_value_error_owned(format!("IOError: {}", e));
     }
 
     match serde_json::from_str::<Value>(&content) {
         Ok(value) => json_value_to_obj(&value, 0),
         Err(e) => {
-            let msg = format!("json.decoder.JSONDecodeError: {}", e);
-            crate::utils::raise_value_error(&msg);
+            crate::utils::raise_value_error_owned(format!("json.decoder.JSONDecodeError: {}", e));
         }
     }
 }

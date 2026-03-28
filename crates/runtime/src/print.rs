@@ -187,12 +187,11 @@ pub extern "C" fn rt_input(prompt: *mut Obj) -> *mut Obj {
         }
         Err(e) => {
             // I/O error — raise IOError (CPython raises OSError for I/O errors, not EOFError)
-            let msg = format!("error reading from stdin: {}", e);
             unsafe {
-                crate::exceptions::rt_exc_raise(
-                    crate::exceptions::ExceptionType::IOError as u8,
-                    msg.as_ptr(),
-                    msg.len(),
+                crate::raise_exc!(
+                    crate::exceptions::ExceptionType::IOError,
+                    "error reading from stdin: {}",
+                    e
                 );
             }
         }

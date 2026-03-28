@@ -394,52 +394,14 @@ pub extern "C" fn rt_exc_pop_frame() {
 // in debug builds. The codegen computes jmp_buf address as frame_ptr + 8 and calls
 // setjmp directly.
 
-/// Raise an exception with the given type and message
-/// This function does not return - it longjmps to the nearest handler
+/// Core exception raise logic: stores exception object and longjmps to nearest handler.
+///
+/// Called by `rt_exc_raise` (after copying message), `rt_exc_raise_owned` (zero-copy),
+/// and other raise variants after they build their ExceptionObject.
 ///
 /// # Safety
-/// If `len > 0`, `message` must be a valid pointer to `len` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn rt_exc_raise(exc_type_tag: u8, message: *const u8, len: usize) -> ! {
-    // Convert type tag to ExceptionType using macro-generated from_tag
-    let exc_type = ExceptionType::from_tag(exc_type_tag);
-
-    // Copy message to owned buffer if present.
-    // The Vec is forgotten, and ownership is transferred to ExceptionObject.
-    // The Drop impl for ExceptionObject will reconstruct the Vec with matching
-    // (ptr, len, capacity) values to properly deallocate the buffer.
-    let (msg_ptr, msg_len, msg_capacity) = if !message.is_null() && len > 0 {
-        let mut msg_buf = vec![0u8; len];
-        ptr::copy_nonoverlapping(message, msg_buf.as_mut_ptr(), len);
-        let ptr = msg_buf.as_ptr();
-        let capacity = msg_buf.capacity();
-        std::mem::forget(msg_buf);
-        (ptr, len, capacity)
-    } else {
-        (ptr::null(), 0, 0)
-    };
-
-    // Capture implicit context from any exception being handled
-    // This implements Python's __context__ (PEP 3134)
-    let context = with_exception_state(|state| state.handling_exception.take());
-
-    // Capture traceback at the point of raise
-    let traceback = Some(crate::traceback::capture_traceback());
-
-    // Store exception object
-    let exc_obj = Box::new(ExceptionObject {
-        exc_type,
-        custom_class_id: NOT_CUSTOM_CLASS,
-        message: msg_ptr,
-        message_len: msg_len,
-        message_capacity: msg_capacity,
-        cause: None,
-        context,
-        suppress_context: false, // Plain raise doesn't suppress context
-        traceback,
-        instance: std::ptr::null_mut(),
-    });
-
+/// `exc_obj` must be a valid, fully initialized ExceptionObject.
+unsafe fn dispatch_to_handler(exc_obj: Box<ExceptionObject>) -> ! {
     let handler_frame = with_exception_state(|state| {
         state.current_exception = Some(exc_obj);
         state.handler_stack
@@ -471,6 +433,78 @@ pub unsafe extern "C" fn rt_exc_raise(exc_type_tag: u8, message: *const u8, len:
 
     // Jump to handler
     longjmp((*handler_frame).jmp_buf.as_mut_ptr(), 1);
+}
+
+/// Build an ExceptionObject from message parts and raise it.
+///
+/// # Safety
+/// msg_ptr/msg_len/msg_capacity must form a valid owned buffer (from Vec::forget)
+/// or be (null, 0, 0). Ownership of the buffer is transferred to ExceptionObject.
+unsafe fn raise_with_owned_message(
+    exc_type: ExceptionType,
+    msg_ptr: *const u8,
+    msg_len: usize,
+    msg_capacity: usize,
+) -> ! {
+    // Capture implicit context from any exception being handled
+    // This implements Python's __context__ (PEP 3134)
+    let context = with_exception_state(|state| state.handling_exception.take());
+
+    // Capture traceback at the point of raise
+    let traceback = Some(crate::traceback::capture_traceback());
+
+    let exc_obj = Box::new(ExceptionObject {
+        exc_type,
+        custom_class_id: NOT_CUSTOM_CLASS,
+        message: msg_ptr,
+        message_len: msg_len,
+        message_capacity: msg_capacity,
+        cause: None,
+        context,
+        suppress_context: false,
+        traceback,
+        instance: std::ptr::null_mut(),
+    });
+
+    dispatch_to_handler(exc_obj)
+}
+
+/// Raise an exception with the given type and message
+/// This function does not return - it longjmps to the nearest handler
+///
+/// # Safety
+/// If `len > 0`, `message` must be a valid pointer to `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn rt_exc_raise(exc_type_tag: u8, message: *const u8, len: usize) -> ! {
+    let exc_type = ExceptionType::from_tag(exc_type_tag);
+    let (msg_ptr, msg_len, msg_capacity) = copy_message_to_owned(message, len);
+    raise_with_owned_message(exc_type, msg_ptr, msg_len, msg_capacity)
+}
+
+/// Raise an exception, taking ownership of a heap-allocated message buffer.
+///
+/// Unlike `rt_exc_raise` which copies the message, this function takes direct
+/// ownership of the caller's buffer, avoiding the leak that occurs when longjmp
+/// skips Rust destructors. This eliminates both the leak AND an unnecessary copy.
+///
+/// # Safety
+/// - `msg_ptr` must have been obtained from `String::as_mut_ptr()` on a valid String
+/// - `msg_len` and `msg_capacity` must be the String's len() and capacity()
+/// - The caller must have called `std::mem::forget()` on the String before this call
+/// - If msg_ptr is null, msg_len and msg_capacity must both be 0
+pub unsafe fn rt_exc_raise_owned(
+    exc_type_tag: u8,
+    msg_ptr: *mut u8,
+    msg_len: usize,
+    msg_capacity: usize,
+) -> ! {
+    let exc_type = ExceptionType::from_tag(exc_type_tag);
+    let (ptr, len, cap) = if !msg_ptr.is_null() && msg_len > 0 {
+        (msg_ptr as *const u8, msg_len, msg_capacity)
+    } else {
+        (ptr::null(), 0, 0)
+    };
+    raise_with_owned_message(exc_type, ptr, len, cap)
 }
 
 /// Copy a message to an owned buffer, returning (ptr, len, capacity)
@@ -550,37 +584,7 @@ pub unsafe extern "C" fn rt_exc_raise_from(
         instance: std::ptr::null_mut(),
     });
 
-    let handler_frame = with_exception_state(|state| {
-        state.current_exception = Some(exc_obj);
-        state.handler_stack
-    });
-
-    // If no handler, print chained error and abort
-    if handler_frame.is_null() {
-        with_exception_state(|state| {
-            if let Some(ref exc) = state.current_exception {
-                print_unhandled_exception_full(exc);
-            }
-        });
-        std::process::exit(1);
-    }
-
-    // Unwind GC stack to saved position
-    let gc_stack_top = (*handler_frame).gc_stack_top;
-    if !gc_stack_top.is_null() {
-        crate::gc::unwind_to(gc_stack_top as *mut crate::gc::ShadowFrame);
-    }
-
-    // Unwind traceback stack to saved position
-    crate::traceback::unwind_to((*handler_frame).traceback_depth);
-
-    // Pop the handler frame
-    with_exception_state(|state| {
-        state.handler_stack = (*handler_frame).prev;
-    });
-
-    // Jump to handler
-    longjmp((*handler_frame).jmp_buf.as_mut_ptr(), 1);
+    dispatch_to_handler(exc_obj)
 }
 
 /// Raise an exception with context suppressed (`raise X from None`)
@@ -617,33 +621,7 @@ pub unsafe extern "C" fn rt_exc_raise_from_none(
         instance: std::ptr::null_mut(),
     });
 
-    let handler_frame = with_exception_state(|state| {
-        state.current_exception = Some(exc_obj);
-        state.handler_stack
-    });
-
-    if handler_frame.is_null() {
-        with_exception_state(|state| {
-            if let Some(ref exc) = state.current_exception {
-                print_unhandled_exception_full(exc);
-            }
-        });
-        std::process::exit(1);
-    }
-
-    let gc_stack_top = (*handler_frame).gc_stack_top;
-    if !gc_stack_top.is_null() {
-        crate::gc::unwind_to(gc_stack_top as *mut crate::gc::ShadowFrame);
-    }
-
-    // Unwind traceback stack to saved position
-    crate::traceback::unwind_to((*handler_frame).traceback_depth);
-
-    with_exception_state(|state| {
-        state.handler_stack = (*handler_frame).prev;
-    });
-
-    longjmp((*handler_frame).jmp_buf.as_mut_ptr(), 1);
+    dispatch_to_handler(exc_obj)
 }
 
 /// Called when entering an except handler block.
@@ -762,9 +740,15 @@ pub unsafe extern "C" fn rt_exc_reraise() -> ! {
         crate::utils::raise_runtime_error("No active exception to re-raise");
     }
 
+    // Re-dispatch the existing exception (already stored in current_exception)
+    dispatch_existing_exception()
+}
+
+/// Dispatch an already-stored exception to the nearest handler.
+/// Used by rt_exc_reraise where the exception is already in current_exception.
+unsafe fn dispatch_existing_exception() -> ! {
     let handler_frame = with_exception_state(|state| state.handler_stack);
 
-    // If no handler, print current exception and abort
     if handler_frame.is_null() {
         with_exception_state(|state| {
             if let Some(ref exc) = state.current_exception {
@@ -774,21 +758,17 @@ pub unsafe extern "C" fn rt_exc_reraise() -> ! {
         std::process::exit(1);
     }
 
-    // Unwind GC stack to saved position
     let gc_stack_top = (*handler_frame).gc_stack_top;
     if !gc_stack_top.is_null() {
         crate::gc::unwind_to(gc_stack_top as *mut crate::gc::ShadowFrame);
     }
 
-    // Unwind traceback stack to saved position
     crate::traceback::unwind_to((*handler_frame).traceback_depth);
 
-    // Pop the handler frame
     with_exception_state(|state| {
         state.handler_stack = (*handler_frame).prev;
     });
 
-    // Jump to handler
     longjmp((*handler_frame).jmp_buf.as_mut_ptr(), 1);
 }
 
@@ -1205,37 +1185,7 @@ pub unsafe extern "C" fn rt_exc_raise_custom(class_id: u8, message: *const u8, l
         instance: std::ptr::null_mut(),
     });
 
-    let handler_frame = with_exception_state(|state| {
-        state.current_exception = Some(exc_obj);
-        state.handler_stack
-    });
-
-    // If no handler, print error and abort
-    if handler_frame.is_null() {
-        with_exception_state(|state| {
-            if let Some(ref exc) = state.current_exception {
-                print_unhandled_exception_full(exc);
-            }
-        });
-        std::process::exit(1);
-    }
-
-    // Unwind GC stack to saved position
-    let gc_stack_top = (*handler_frame).gc_stack_top;
-    if !gc_stack_top.is_null() {
-        crate::gc::unwind_to(gc_stack_top as *mut crate::gc::ShadowFrame);
-    }
-
-    // Unwind traceback stack to saved position
-    crate::traceback::unwind_to((*handler_frame).traceback_depth);
-
-    // Pop the handler frame (we're jumping to it)
-    with_exception_state(|state| {
-        state.handler_stack = (*handler_frame).prev;
-    });
-
-    // Jump to handler
-    longjmp((*handler_frame).jmp_buf.as_mut_ptr(), 1);
+    dispatch_to_handler(exc_obj)
 }
 
 /// Raise a custom exception with a pre-created instance.
@@ -1270,29 +1220,7 @@ pub unsafe extern "C" fn rt_exc_raise_custom_with_instance(
         instance, // Store pre-created instance
     });
 
-    let handler_frame = with_exception_state(|state| {
-        state.current_exception = Some(exc_obj);
-        state.handler_stack
-    });
-
-    if handler_frame.is_null() {
-        with_exception_state(|state| {
-            if let Some(ref exc) = state.current_exception {
-                print_unhandled_exception_full(exc);
-            }
-        });
-        std::process::exit(1);
-    }
-
-    let gc_stack_top = (*handler_frame).gc_stack_top;
-    if !gc_stack_top.is_null() {
-        crate::gc::unwind_to(gc_stack_top as *mut crate::gc::ShadowFrame);
-    }
-    crate::traceback::unwind_to((*handler_frame).traceback_depth);
-    with_exception_state(|state| {
-        state.handler_stack = (*handler_frame).prev;
-    });
-    longjmp((*handler_frame).jmp_buf.as_mut_ptr(), 1);
+    dispatch_to_handler(exc_obj)
 }
 
 /// Check if current exception is an instance of the given class (with inheritance).

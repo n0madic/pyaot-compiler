@@ -545,6 +545,26 @@ let result = match self.lower_expr(expr) {
 };
 ```
 
+### Runtime Exception Raising (longjmp-safe)
+
+Runtime functions must use leak-free patterns for dynamic error messages. `longjmp` skips Rust destructors, so `format!()` Strings leak if not handled:
+
+```rust
+// WRONG: String from format!() leaks on longjmp
+let msg = format!("invalid: {}", val);
+rt_exc_raise(ValueError, msg.as_ptr(), msg.len());
+
+// CORRECT: raise_exc! macro transfers ownership before longjmp
+raise_exc!(ExceptionType::ValueError, "invalid: {}", val);
+
+// CORRECT: Owned helpers for raise_*_error pattern
+crate::utils::raise_io_error_owned(format!("read error: {}", e));
+
+// CORRECT: Static messages — no Drop, no leak
+let msg = b"argument is None";
+rt_exc_raise(TypeError, msg.as_ptr(), msg.len());
+```
+
 ---
 
 ## Documentation

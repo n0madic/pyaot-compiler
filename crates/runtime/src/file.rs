@@ -40,8 +40,7 @@ pub unsafe extern "C" fn rt_file_open(filename: *mut Obj, mode: *mut Obj) -> *mu
         "wb" => (FileMode::WriteBinary, true),
         "ab" => (FileMode::AppendBinary, true),
         _ => {
-            let msg = format!("invalid mode: '{}'", mode_str);
-            crate::utils::raise_io_error(&msg);
+            crate::utils::raise_io_error_owned(format!("invalid mode: '{}'", mode_str));
         }
     };
 
@@ -87,7 +86,7 @@ pub unsafe extern "C" fn rt_file_open(filename: *mut Obj, mode: *mut Obj) -> *mu
                 }
                 _ => format!("{}: '{}'", e, filename_str),
             };
-            crate::utils::raise_io_error(&msg);
+            crate::utils::raise_io_error_owned(msg);
         }
     }
 }
@@ -134,8 +133,7 @@ pub unsafe extern "C" fn rt_file_read(file: *mut Obj) -> *mut Obj {
             }
         }
         Err(e) => {
-            let msg = format!("read error: {}", e);
-            crate::utils::raise_io_error(&msg);
+            crate::utils::raise_io_error_owned(format!("read error: {}", e));
         }
     }
 }
@@ -183,8 +181,7 @@ pub unsafe extern "C" fn rt_file_read_n(file: *mut Obj, n: i64) -> *mut Obj {
             }
         }
         Err(e) => {
-            let msg = format!("read error: {}", e);
-            crate::utils::raise_io_error(&msg);
+            crate::utils::raise_io_error_owned(format!("read error: {}", e));
         }
     }
 }
@@ -233,8 +230,7 @@ pub unsafe extern "C" fn rt_file_readline(file: *mut Obj) -> *mut Obj {
                 }
             }
             Err(e) => {
-                let msg = format!("read error: {}", e);
-                crate::utils::raise_io_error(&msg);
+                crate::utils::raise_io_error_owned(format!("read error: {}", e));
             }
         }
     }
@@ -268,8 +264,7 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
     let mut limited = Read::take(handle, MAX_READ_ALL_SIZE + 1);
     let mut raw = Vec::new();
     if let Err(e) = limited.read_to_end(&mut raw) {
-        let msg = format!("read error: {}", e);
-        crate::utils::raise_io_error(&msg);
+        crate::utils::raise_io_error_owned(format!("read error: {}", e));
     }
     if raw.len() as u64 > MAX_READ_ALL_SIZE {
         let msg = b"readlines(): file too large; use read(n) for files over 1 GB";
@@ -282,8 +277,7 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
     let content = match String::from_utf8(raw) {
         Ok(s) => s,
         Err(e) => {
-            let msg = format!("read error: invalid UTF-8: {}", e);
-            crate::utils::raise_io_error(&msg);
+            crate::utils::raise_io_error_owned(format!("read error: invalid UTF-8: {}", e));
         }
     };
 
@@ -355,8 +349,7 @@ pub unsafe extern "C" fn rt_file_write(file: *mut Obj, data: *mut Obj) -> i64 {
     match handle.write(bytes) {
         Ok(written) => written as i64,
         Err(e) => {
-            let msg = format!("write error: {}", e);
-            crate::utils::raise_io_error(&msg);
+            crate::utils::raise_io_error_owned(format!("write error: {}", e));
         }
     }
 }
@@ -398,8 +391,7 @@ pub unsafe extern "C" fn rt_file_flush(file: *mut Obj) {
     let handle = &mut *(*file_obj).handle;
 
     if let Err(e) = handle.flush() {
-        let msg = format!("flush error: {}", e);
-        crate::utils::raise_io_error(&msg);
+        crate::utils::raise_io_error_owned(format!("flush error: {}", e));
     }
 }
 

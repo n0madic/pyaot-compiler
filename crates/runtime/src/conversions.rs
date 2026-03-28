@@ -124,8 +124,11 @@ pub extern "C" fn rt_str_to_int(str_obj: *mut Obj) -> i64 {
             match trimmed.parse::<i64>() {
                 Ok(val) => val,
                 Err(_) => {
-                    let msg = format!("invalid literal for int() with base 10: '{}'", s.trim());
-                    exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+                    crate::raise_exc!(
+                        crate::exceptions::ExceptionType::ValueError,
+                        "invalid literal for int() with base 10: '{}'",
+                        s.trim()
+                    );
                 }
             }
         } else {
@@ -160,8 +163,11 @@ pub extern "C" fn rt_str_to_float(str_obj: *mut Obj) -> f64 {
             match trimmed.parse::<f64>() {
                 Ok(val) => val,
                 Err(_) => {
-                    let msg = format!("could not convert string to float: '{}'", s.trim());
-                    exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+                    crate::raise_exc!(
+                        crate::exceptions::ExceptionType::ValueError,
+                        "could not convert string to float: '{}'",
+                        s.trim()
+                    );
                 }
             }
         } else {
@@ -242,11 +248,11 @@ pub extern "C" fn rt_chr_to_int(str_obj: *mut Obj) -> i64 {
             };
 
             if chars.next().is_some() {
-                let msg = format!(
+                crate::raise_exc!(
+                    crate::exceptions::ExceptionType::ValueError,
                     "ord() expected a character, but string of length {} found",
                     s.chars().count()
                 );
-                exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
             }
 
             ch as i64

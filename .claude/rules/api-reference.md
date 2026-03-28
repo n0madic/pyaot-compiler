@@ -118,6 +118,34 @@ core-defs (SSOT)
 
 **Key principle:** No hardcoded type strings in runtime — all strings come from `TypeTagKind` methods.
 
+## Exception Raising API
+
+Exception raising is split into external (called from codegen) and internal (called from Rust runtime code) paths:
+
+**External (extern "C", called from compiled code):**
+```rust
+rt_exc_raise(exc_type_tag: u8, message: *const u8, len: usize) -> !  // copies message
+rt_exc_raise_from(exc_type_tag, msg, len, cause_type, cause_msg, cause_len) -> !
+rt_exc_raise_from_none(exc_type_tag, message, len) -> !
+rt_exc_raise_custom(class_id, message, len) -> !
+rt_exc_raise_custom_with_instance(class_id, message, len, instance) -> !
+rt_exc_reraise() -> !
+```
+
+**Internal (Rust-only, zero-copy for leak-free raising):**
+```rust
+rt_exc_raise_owned(exc_type_tag: u8, msg_ptr: *mut u8, msg_len: usize, msg_capacity: usize) -> !
+raise_exc!(ExceptionType::ValueError, "format: {}", arg)  // macro: format + forget + raise_owned
+raise_value_error_owned(msg: String) -> !   // utils.rs
+raise_io_error_owned(msg: String) -> !      // utils.rs
+raise_runtime_error_owned(msg: String) -> ! // utils.rs
+```
+
+**Shared internals (in exceptions.rs):**
+- `dispatch_to_handler(Box<ExceptionObject>) -> !` — stores exc, unwinds GC/traceback, longjmps
+- `raise_with_owned_message(exc_type, ptr, len, cap) -> !` — builds ExceptionObject, calls dispatch
+- `dispatch_existing_exception() -> !` — for reraise (exc already in current_exception)
+
 ## String Interning
 
 Runtime string pool for deduplication (strings < 256 bytes):

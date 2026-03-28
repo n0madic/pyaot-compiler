@@ -70,7 +70,9 @@ The initial empty `{}` has no type hint, so the variable starts with `Dict(Any, 
 
 ---
 
-## Map/Filter Type Inference
+## Map/Filter Type Inference and Captures
+
+Map and filter iterators support up to **8 closure captures** (capture_count 0–8). The `call_map_with_captures`/`call_filter_with_captures` functions in `iterator/composite.rs` dispatch to the appropriate function pointer type based on capture count. Exceeding 8 captures triggers `abort()`.
 
 `map(func, iterable)` returns `Iterator(elem_type)` where `elem_type` must be inferred from the function's return type, not defaulted to `Any`.
 
@@ -191,12 +193,34 @@ Interned strings enable pointer equality for dict key comparisons — `eq_hashab
 ## Exception Handling: setjmp/longjmp
 
 Exception handling uses C-style `setjmp`/`longjmp`:
-- `ExceptionFrame` layout: `prev` (8 bytes) + `jmp_buf` (200 bytes) + `gc_stack_top` (8 bytes) = 216 bytes
+- `ExceptionFrame` layout: `prev` (8 bytes) + `jmp_buf` (200 bytes) + `gc_stack_top` (8 bytes) + `traceback_depth` (8 bytes) = 224 bytes
 - `try` pushes a frame via `rt_exc_push_frame`, then Cranelift calls `setjmp(frame_ptr + 8)` **directly** (not through a Rust wrapper — see "setjmp Must Be Called Directly")
 - `raise` calls `longjmp` to jump to the most recent frame
-- The GC stack top is saved/restored to prevent shadow stack corruption on longjmp
+- The GC stack top and traceback depth are saved/restored to prevent shadow stack and traceback corruption on longjmp
 
 Exception objects store: type tag, custom class ID, message string, `__cause__` (for `raise X from Y`), `__context__` (implicit chaining), and `suppress_context` flag.
+
+### Leak-Free Exception Raising
+
+`longjmp` skips Rust destructors, so `format!()` Strings allocated before a raise are leaked. The runtime provides two leak-free patterns:
+
+1. **`raise_exc!` macro** (for Rust callers with dynamic messages): formats the string, `forget()`s it, then calls `rt_exc_raise_owned` which transfers the buffer directly to `ExceptionObject`. The buffer is freed when the exception is dropped.
+   ```rust
+   raise_exc!(ExceptionType::ValueError, "invalid value: '{}'", user_input);
+   ```
+
+2. **`raise_*_error_owned(String)`** helpers in `utils.rs`: same zero-copy ownership transfer for code using the `raise_value_error`/`raise_io_error`/`raise_runtime_error` pattern.
+   ```rust
+   crate::utils::raise_io_error_owned(format!("read error: {}", e));
+   ```
+
+For static messages (no runtime data), use `b"..."` byte string literals — they have no `Drop` and never leak:
+```rust
+let msg = b"len() argument is None";
+rt_exc_raise(TypeError, msg.as_ptr(), msg.len());
+```
+
+The internal dispatch is factored into `dispatch_to_handler(Box<ExceptionObject>)` and `raise_with_owned_message(exc_type, ptr, len, cap)`, shared by all raise variants (`rt_exc_raise`, `rt_exc_raise_owned`, `rt_exc_raise_from`, `rt_exc_raise_custom`, etc.).
 
 ---
 
@@ -419,7 +443,7 @@ Generator-created instructions (state machine, dispatch) use `span: None` since 
 
 ## ExceptionFrame Size Must Match Between Runtime and Codegen
 
-`ExceptionFrame` is `#[repr(C)]` and its size is hardcoded in codegen as `EXCEPTION_FRAME_SIZE` (`codegen-cranelift/src/exceptions.rs`). The runtime struct definition (`runtime/src/exceptions.rs`) and the codegen constant **must be updated in lockstep**. If they diverge, `jmp_buf` offsets will be wrong, causing SIGILL on longjmp. Current layout (224 bytes): `prev` (8) + `jmp_buf` (200) + `gc_stack_top` (8) + `traceback_depth` (8).
+`ExceptionFrame` is `#[repr(C)]` and its size is hardcoded in codegen as `EXCEPTION_FRAME_SIZE` (`codegen-cranelift/src/exceptions.rs`). The runtime struct definition (`runtime/src/exceptions.rs`) and the codegen constant **must be updated in lockstep**. If they diverge, `jmp_buf` offsets will be wrong, causing SIGILL on longjmp. Current layout (224 bytes): `prev` (8) + `jmp_buf` (200) + `gc_stack_top` (8) + `traceback_depth` (8). All raise variants now share `dispatch_to_handler()` for the longjmp logic, eliminating duplication.
 
 ## Traceback Stack Depth Unwinding on longjmp
 
@@ -480,7 +504,7 @@ The factory resolution happens in the frontend (`ast_to_hir/expressions.rs:resol
 
 DefaultDict and Counter use the **same `DictObj` struct** as regular dicts (identical memory layout and size). They differ only by `TypeTagKind` in the object header. This ensures all dict operations (`rt_dict_set`, `rt_dict_get`, `rt_dict_keys`, `rt_dict_contains`, etc.) work correctly via simple pointer casting.
 
-For defaultdict, the factory tag is stored in a separate **static registry** (`defaultdict.rs:FactoryRegistry`) keyed by object pointer, not in the struct itself. This avoids the struct size mismatch that previously caused `.keys()` and `.values()` to return empty lists (DictObj fits in the 64-byte slab allocator class; a larger struct would go through system malloc with different GC behavior). The registry entry is cleaned up during finalization (`slab.rs`).
+For defaultdict, the factory tag is packed into the **high byte (bits 56–63) of `DictObj::entries_capacity`**. This works because real capacities are power-of-two values well below 2^56 on 64-bit platforms. Helpers in `dict.rs` (`real_entries_capacity`, `set_real_entries_capacity`) mask the tag byte when reading/writing capacity. This avoids a separate registry keyed by pointer address (which would break when the slab allocator reuses addresses for new objects).
 
 ## Type::HeapAny — Distinguishing Heap Pointers From Raw Values
 
