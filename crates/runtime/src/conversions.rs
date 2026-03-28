@@ -454,6 +454,103 @@ unsafe fn elem_repr_string(s: &mut String, elem: *mut Obj, elem_tag: u8) {
     }
 }
 
+/// Escape a string for repr() output, matching CPython behavior.
+///
+/// - `\n`, `\r`, `\t`, `\\`, `\'`: named escapes
+/// - Control chars (U+0000-U+001F, U+007F-U+009F): `\xNN`
+/// - Non-printable U+0100..U+FFFF: `\uXXXX`
+/// - Non-printable U+10000+: `\UXXXXXXXX`
+/// - All other printable Unicode: literal
+pub(crate) fn repr_escape_into(s: &mut String, text: &str) {
+    use std::fmt::Write;
+    for ch in text.chars() {
+        match ch {
+            '\\' => s.push_str("\\\\"),
+            '\'' => s.push_str("\\'"),
+            '\n' => s.push_str("\\n"),
+            '\r' => s.push_str("\\r"),
+            '\t' => s.push_str("\\t"),
+            c => {
+                let cp = c as u32;
+                if cp < 0x20 || (0x7F..=0x9F).contains(&cp) {
+                    // ASCII/Latin-1 control characters: \xNN
+                    let _ = write!(s, "\\x{:02x}", cp);
+                } else if !c.is_control() && (cp < 0x80 || is_printable_unicode(c)) {
+                    // Printable character: literal
+                    s.push(c);
+                } else if cp <= 0xFF {
+                    let _ = write!(s, "\\x{:02x}", cp);
+                } else if cp <= 0xFFFF {
+                    let _ = write!(s, "\\u{:04x}", cp);
+                } else {
+                    let _ = write!(s, "\\U{:08x}", cp);
+                }
+            }
+        }
+    }
+}
+
+/// Check if a Unicode character is printable (matches CPython's Py_UNICODE_ISPRINTABLE).
+/// Characters in categories Cc, Cf, Cs, Co, Cn, Zl, Zp are non-printable.
+/// Space (U+0020) is printable; other Zs are non-printable.
+fn is_printable_unicode(c: char) -> bool {
+    // Fast path for common ASCII
+    let cp = c as u32;
+    if cp < 0x80 {
+        return (0x20..0x7F).contains(&cp);
+    }
+    // Non-printable ranges from Unicode (simplified — covers the common cases)
+    // Cf (format) characters
+    if cp == 0xAD {
+        return false;
+    } // soft hyphen
+    if (0x600..=0x605).contains(&cp) {
+        return false;
+    }
+    if cp == 0x61C || cp == 0x6DD || cp == 0x70F {
+        return false;
+    }
+    if (0x200B..=0x200F).contains(&cp) {
+        return false;
+    } // zero-width spaces, LRM, RLM
+    if (0x202A..=0x202E).contains(&cp) {
+        return false;
+    } // bidi embeddings
+    if (0x2060..=0x2064).contains(&cp) {
+        return false;
+    } // word joiner etc.
+    if (0x2066..=0x2069).contains(&cp) {
+        return false;
+    } // bidi isolates
+    if cp == 0xFEFF {
+        return false;
+    } // BOM
+    if (0xFFF9..=0xFFFB).contains(&cp) {
+        return false;
+    }
+    // Zl, Zp (line/paragraph separator)
+    if cp == 0x2028 || cp == 0x2029 {
+        return false;
+    }
+    // Cs (surrogates) — shouldn't appear in valid Rust chars
+    if (0xD800..=0xDFFF).contains(&cp) {
+        return false;
+    }
+    // Cn: unassigned (check some major unassigned blocks)
+    // Co: private use
+    if (0xE000..=0xF8FF).contains(&cp) {
+        return true;
+    } // PUA is "printable" in CPython
+    if (0xF0000..=0xFFFFD).contains(&cp) {
+        return true;
+    } // Supplementary PUA-A
+    if (0x100000..=0x10FFFD).contains(&cp) {
+        return true;
+    } // Supplementary PUA-B
+      // Default: assume printable for assigned characters
+    true
+}
+
 /// Write repr of a boxed heap object to a string (strings get quotes)
 unsafe fn obj_repr_string(s: &mut String, obj: *mut Obj) {
     use crate::object::*;
@@ -486,22 +583,7 @@ unsafe fn obj_repr_string(s: &mut String, obj: *mut Obj) {
             let bytes = std::slice::from_raw_parts(data, len);
             s.push('\'');
             if let Ok(text) = std::str::from_utf8(bytes) {
-                for ch in text.chars() {
-                    match ch {
-                        '\\' => s.push_str("\\\\"),
-                        '\'' => s.push_str("\\'"),
-                        '\n' => s.push_str("\\n"),
-                        '\r' => s.push_str("\\r"),
-                        '\t' => s.push_str("\\t"),
-                        c if c.is_control() => {
-                            // Use \xNN for other control characters
-                            for b in c.encode_utf8(&mut [0u8; 4]).bytes() {
-                                let _ = write!(s, "\\x{:02x}", b);
-                            }
-                        }
-                        c => s.push(c),
-                    }
-                }
+                repr_escape_into(s, text);
             }
             s.push('\'');
         }
@@ -701,7 +783,15 @@ pub extern "C" fn rt_repr_none() -> *mut Obj {
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
 }
 
-/// repr(str) -> string (with quotes)
+/// repr(str) -> string (with quotes and proper escaping)
+///
+/// Matches CPython repr() behavior:
+/// - ASCII printable (0x20-0x7E except \, '): literal
+/// - `\n`, `\r`, `\t`, `\\`, `\'`: named escapes
+/// - Control chars (0x00-0x1F, 0x7F-0x9F): `\xNN`
+/// - Non-printable U+0100..U+FFFF: `\uXXXX`
+/// - Non-printable U+10000+: `\UXXXXXXXX`
+/// - All other printable Unicode: literal
 #[no_mangle]
 pub extern "C" fn rt_repr_str(str_obj: *mut Obj) -> *mut Obj {
     if str_obj.is_null() {
@@ -719,17 +809,7 @@ pub extern "C" fn rt_repr_str(str_obj: *mut Obj) -> *mut Obj {
         let mut s = String::with_capacity(len + 2);
         s.push('\'');
         if let Ok(text) = std::str::from_utf8(bytes) {
-            // Escape special characters
-            for c in text.chars() {
-                match c {
-                    '\n' => s.push_str("\\n"),
-                    '\r' => s.push_str("\\r"),
-                    '\t' => s.push_str("\\t"),
-                    '\\' => s.push_str("\\\\"),
-                    '\'' => s.push_str("\\'"),
-                    _ => s.push(c),
-                }
-            }
+            repr_escape_into(&mut s, text);
         }
         s.push('\'');
 

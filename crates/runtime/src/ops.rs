@@ -270,13 +270,17 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
             print!("{}", if (*bool_obj).value { "True" } else { "False" });
         }
         TypeTagKind::Str => {
-            // In repr mode, strings get single quotes
+            // In repr mode, strings get single quotes with proper escaping
             let str_obj = obj as *mut StrObj;
             let len = (*str_obj).len;
             let data = (*str_obj).data.as_ptr();
             let bytes = std::slice::from_raw_parts(data, len);
-            if let Ok(s) = std::str::from_utf8(bytes) {
-                print!("'{}'", s);
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                let mut s = String::with_capacity(len + 2);
+                s.push('\'');
+                crate::conversions::repr_escape_into(&mut s, text);
+                s.push('\'');
+                print!("{}", s);
             }
         }
         TypeTagKind::None => print!("None"),
