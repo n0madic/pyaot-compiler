@@ -334,12 +334,18 @@ pub struct MatchObj {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileMode {
-    Read = 0,         // "r"
-    Write = 1,        // "w" (truncate)
-    Append = 2,       // "a"
-    ReadBinary = 3,   // "rb"
-    WriteBinary = 4,  // "wb"
-    AppendBinary = 5, // "ab"
+    Read = 0,              // "r"
+    Write = 1,             // "w" (truncate)
+    Append = 2,            // "a"
+    ReadBinary = 3,        // "rb"
+    WriteBinary = 4,       // "wb"
+    AppendBinary = 5,      // "ab"
+    ReadWrite = 6,         // "r+"
+    WriteRead = 7,         // "w+"
+    AppendRead = 8,        // "a+"
+    ReadWriteBinary = 9,   // "r+b" / "rb+"
+    WriteReadBinary = 10,  // "w+b" / "wb+"
+    AppendReadBinary = 11, // "a+b" / "ab+"
 }
 
 impl TryFrom<u8> for FileMode {
@@ -353,6 +359,12 @@ impl TryFrom<u8> for FileMode {
             3 => Ok(FileMode::ReadBinary),
             4 => Ok(FileMode::WriteBinary),
             5 => Ok(FileMode::AppendBinary),
+            6 => Ok(FileMode::ReadWrite),
+            7 => Ok(FileMode::WriteRead),
+            8 => Ok(FileMode::AppendRead),
+            9 => Ok(FileMode::ReadWriteBinary),
+            10 => Ok(FileMode::WriteReadBinary),
+            11 => Ok(FileMode::AppendReadBinary),
             _ => Err(value),
         }
     }

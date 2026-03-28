@@ -12,9 +12,11 @@ use std::ptr;
 /// Open a file with the given mode
 /// Returns a FileObj pointer, or raises IOError on failure
 ///
+/// Supported modes: r, w, a, rb, wb, ab, r+, w+, a+, r+b/rb+, w+b/wb+, a+b/ab+
+///
 /// # Safety
 /// `filename` must be a valid pointer to a StrObj.
-/// `mode` must be a valid pointer to a StrObj containing "r", "w", "a", "rb", "wb", or "ab".
+/// `mode` must be a valid pointer to a StrObj containing a supported mode string.
 #[no_mangle]
 pub unsafe extern "C" fn rt_file_open(filename: *mut Obj, mode: *mut Obj) -> *mut Obj {
     if filename.is_null() {
@@ -31,7 +33,7 @@ pub unsafe extern "C" fn rt_file_open(filename: *mut Obj, mode: *mut Obj) -> *mu
         crate::utils::extract_str_unchecked(mode)
     };
 
-    // Parse mode
+    // Parse mode — CPython accepts both "r+b" and "rb+" orderings
     let (file_mode, binary) = match mode_str.as_str() {
         "r" => (FileMode::Read, false),
         "w" => (FileMode::Write, false),
@@ -39,22 +41,53 @@ pub unsafe extern "C" fn rt_file_open(filename: *mut Obj, mode: *mut Obj) -> *mu
         "rb" => (FileMode::ReadBinary, true),
         "wb" => (FileMode::WriteBinary, true),
         "ab" => (FileMode::AppendBinary, true),
+        "r+" => (FileMode::ReadWrite, false),
+        "w+" => (FileMode::WriteRead, false),
+        "a+" => (FileMode::AppendRead, false),
+        "r+b" | "rb+" => (FileMode::ReadWriteBinary, true),
+        "w+b" | "wb+" => (FileMode::WriteReadBinary, true),
+        "a+b" | "ab+" => (FileMode::AppendReadBinary, true),
         _ => {
-            crate::utils::raise_io_error_owned(format!("invalid mode: '{}'", mode_str));
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "invalid mode: '{}'",
+                mode_str
+            );
         }
     };
 
-    // Open the file
+    // Open the file with appropriate options
     let file_result = match file_mode {
+        // Read-only
         FileMode::Read | FileMode::ReadBinary => OpenOptions::new().read(true).open(&filename_str),
+        // Write-only (truncate)
         FileMode::Write | FileMode::WriteBinary => OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(&filename_str),
+        // Append-only
         FileMode::Append | FileMode::AppendBinary => OpenOptions::new()
             .create(true)
             .append(true)
+            .open(&filename_str),
+        // Read+write (file must exist)
+        FileMode::ReadWrite | FileMode::ReadWriteBinary => OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&filename_str),
+        // Write+read (truncate, create)
+        FileMode::WriteRead | FileMode::WriteReadBinary => OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&filename_str),
+        // Append+read (create)
+        FileMode::AppendRead | FileMode::AppendReadBinary => OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
             .open(&filename_str),
     };
 
@@ -464,7 +497,17 @@ unsafe fn check_file_valid(file: *mut Obj) {
 /// Check if file is readable
 unsafe fn is_readable(file_obj: *mut FileObj) -> bool {
     match FileMode::try_from((*file_obj).mode) {
-        Ok(mode) => matches!(mode, FileMode::Read | FileMode::ReadBinary),
+        Ok(mode) => matches!(
+            mode,
+            FileMode::Read
+                | FileMode::ReadBinary
+                | FileMode::ReadWrite
+                | FileMode::WriteRead
+                | FileMode::AppendRead
+                | FileMode::ReadWriteBinary
+                | FileMode::WriteReadBinary
+                | FileMode::AppendReadBinary
+        ),
         Err(_) => false,
     }
 }
@@ -474,7 +517,16 @@ unsafe fn is_writable(file_obj: *mut FileObj) -> bool {
     match FileMode::try_from((*file_obj).mode) {
         Ok(mode) => matches!(
             mode,
-            FileMode::Write | FileMode::WriteBinary | FileMode::Append | FileMode::AppendBinary
+            FileMode::Write
+                | FileMode::WriteBinary
+                | FileMode::Append
+                | FileMode::AppendBinary
+                | FileMode::ReadWrite
+                | FileMode::WriteRead
+                | FileMode::AppendRead
+                | FileMode::ReadWriteBinary
+                | FileMode::WriteReadBinary
+                | FileMode::AppendReadBinary
         ),
         Err(_) => false,
     }

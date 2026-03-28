@@ -85,12 +85,78 @@ assert iter_file_lines[1] == "beta", f"file iter[1]: expected beta, got {iter_fi
 assert iter_file_lines[2] == "gamma", f"file iter[2]: expected gamma, got {iter_file_lines[2]}"
 print("File iteration tests passed!")
 
-# Test 11: Clean up temporary files with os.remove
+# Test 11: r+ mode (read-write, file must exist)
+rw_file = "/tmp/test_aot_rw.txt"
+f = open(rw_file, "w")
+f.write("original content")
+f.close()
+
+f = open(rw_file, "r+")
+rw_content = f.read()
+assert rw_content == "original content", f"r+ read failed: {rw_content}"
+# Write overwrites from current position (end of file after read)
+f.write(" appended")
+f.close()
+
+f = open(rw_file, "r")
+rw_result = f.read()
+f.close()
+assert rw_result == "original content appended", f"r+ write failed: {rw_result}"
+print("r+ mode test passed!")
+
+# Test 12: w+ mode (write-read, truncates)
+wp_file = "/tmp/test_aot_wp.txt"
+f = open(wp_file, "w")
+f.write("will be truncated")
+f.close()
+
+f = open(wp_file, "w+")
+# w+ truncates the file, so read should return empty
+wp_content = f.read()
+assert wp_content == "", f"w+ should truncate, got: {wp_content}"
+f.write("new content")
+f.close()
+
+f = open(wp_file, "r")
+wp_result = f.read()
+f.close()
+assert wp_result == "new content", f"w+ write failed: {wp_result}"
+print("w+ mode test passed!")
+
+# Test 13: a+ mode (append-read)
+ap_file = "/tmp/test_aot_ap.txt"
+f = open(ap_file, "w")
+f.write("base")
+f.close()
+
+f = open(ap_file, "a+")
+f.write(" extra")
+f.close()
+
+f = open(ap_file, "r")
+ap_result = f.read()
+f.close()
+assert ap_result == "base extra", f"a+ write failed: {ap_result}"
+print("a+ mode test passed!")
+
+# Test 14: Invalid mode raises ValueError (not IOError)
+got_value_error = False
+try:
+    f = open("/tmp/test_aot_bad_mode.txt", "z")
+except ValueError:
+    got_value_error = True
+assert got_value_error, "invalid mode should raise ValueError"
+print("ValueError for invalid mode test passed!")
+
+# Test 15: Clean up temporary files with os.remove
 import os
 
 os.remove("/tmp/test_aot_file.txt")
 os.remove("/tmp/test_aot_file2.txt")
 os.remove("/tmp/test_aot_file3.txt")
 os.remove("/tmp/test_aot_iter_file.txt")
+os.remove(rw_file)
+os.remove(wp_file)
+os.remove(ap_file)
 
 print("All file I/O tests passed!")
