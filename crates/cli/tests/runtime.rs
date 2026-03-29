@@ -7,22 +7,56 @@ mod common;
 
 /// Generate a standard runtime integration test.
 macro_rules! runtime_case {
+    // No expected output, no diffs
     ($test_name:ident, $source_file:literal) => {
         #[test]
         fn $test_name() {
             let py_path = crate::common::workspace_root()
                 .join("examples")
                 .join($source_file);
-            crate::common::run_pyaot(stringify!($test_name), &py_path, None);
+            crate::common::run_pyaot(stringify!($test_name), &py_path, None, &[]);
         }
     };
+    // With allowed_diffs only
+    ($test_name:ident, $source_file:literal, allowed_diffs: [$( ($pyaot:expr, $cpython:expr, $reason:expr) ),* $(,)?]) => {
+        #[test]
+        fn $test_name() {
+            let py_path = crate::common::workspace_root()
+                .join("examples")
+                .join($source_file);
+            crate::common::run_pyaot(stringify!($test_name), &py_path, None, &[
+                $(crate::common::AllowedDiff {
+                    pyaot_contains: $pyaot,
+                    cpython_contains: $cpython,
+                    reason: $reason,
+                }),*
+            ]);
+        }
+    };
+    // With expected output only
     ($test_name:ident, $source_file:literal, $expected:expr) => {
         #[test]
         fn $test_name() {
             let py_path = crate::common::workspace_root()
                 .join("examples")
                 .join($source_file);
-            crate::common::run_pyaot(stringify!($test_name), &py_path, Some($expected));
+            crate::common::run_pyaot(stringify!($test_name), &py_path, Some($expected), &[]);
+        }
+    };
+    // With expected output and allowed_diffs
+    ($test_name:ident, $source_file:literal, $expected:expr, allowed_diffs: [$( ($pyaot:expr, $cpython:expr, $reason:expr) ),* $(,)?]) => {
+        #[test]
+        fn $test_name() {
+            let py_path = crate::common::workspace_root()
+                .join("examples")
+                .join($source_file);
+            crate::common::run_pyaot(stringify!($test_name), &py_path, Some($expected), &[
+                $(crate::common::AllowedDiff {
+                    pyaot_contains: $pyaot,
+                    cpython_contains: $cpython,
+                    reason: $reason,
+                }),*
+            ]);
         }
     };
 }
@@ -30,10 +64,10 @@ macro_rules! runtime_case {
 /// Declare all runtime test cases in one place.
 macro_rules! runtime_cases {
     ($(
-        ($name:ident, $source:literal $(, $expected:expr)?)
+        ($name:ident, $source:literal $($rest:tt)*)
     ),* $(,)?) => {
         $(
-            runtime_case!($name, $source $(, $expected)?);
+            runtime_case!($name, $source $($rest)*);
         )*
     };
 }
@@ -64,7 +98,10 @@ runtime_cases!(
     ),
     (
         runtime_collections_dict_set_bytes,
-        "test_collections_dict_set_bytes.py"
+        "test_collections_dict_set_bytes.py",
+        allowed_diffs: [
+            ("{'", "{'", "set print order is non-deterministic"),
+        ]
     ),
     (runtime_collections, "test_collections.py"),
     // Builtins
@@ -122,11 +159,16 @@ runtime_cases!(
     // Standard library
     (runtime_stdlib_json, "test_stdlib_json.py"),
     (runtime_stdlib_math, "test_stdlib_math.py"),
-    (runtime_stdlib_os, "test_stdlib_os.py"),
+    (runtime_stdlib_os, "test_stdlib_os.py", allowed_diffs: [
+        ("environ keys count:", "environ keys count:", "environ count differs between runtimes"),
+        ("Current directory:", "Current directory:", "cwd may differ between runtimes"),
+    ]),
     (runtime_stdlib_random, "test_stdlib_random.py"),
     (runtime_stdlib_re, "test_stdlib_re.py"),
     (runtime_stdlib_subprocess, "test_stdlib_subprocess.py"),
-    (runtime_stdlib_sys, "test_stdlib_sys.py"),
+    (runtime_stdlib_sys, "test_stdlib_sys.py", allowed_diffs: [
+        ("pyaot_test_", ".py", "sys.argv[0] is executable path vs script path"),
+    ]),
     (runtime_stdlib_time, "test_stdlib_time.py"),
     (runtime_stdlib_urllib, "test_stdlib_urllib.py"),
     // File I/O
