@@ -725,6 +725,67 @@ assert ascii_test2 == "42", f"ascii() with int failed: got {ascii_test2}"
 
 print("f-string conversion flag (!r, !s, !a) tests passed")
 
+# ===== SECTION: f-string = (self-documenting / debug format, PEP 572) =====
+
+# Basic types
+dbg_int: int = 42
+assert f"{dbg_int=}" == "dbg_int=42", f"f-string = with int failed: got {f'{dbg_int=}'}"
+
+dbg_float: float = 3.14
+assert f"{dbg_float=}" == "dbg_float=3.14", f"f-string = with float failed: got {f'{dbg_float=}'}"
+
+dbg_str: str = "hello"
+assert f"{dbg_str=}" == "dbg_str='hello'", f"f-string = with str failed: got {f'{dbg_str=}'}"
+
+dbg_bool: bool = True
+assert f"{dbg_bool=}" == "dbg_bool=True", f"f-string = with bool failed: got {f'{dbg_bool=}'}"
+
+dbg_none_val: None = None
+assert f"{dbg_none_val=}" == "dbg_none_val=None", f"f-string = with None failed: got {f'{dbg_none_val=}'}"
+
+# With spaces around =
+dbg_sp1: int = 10
+assert f"{dbg_sp1 =}" == "dbg_sp1 =10", f"f-string = with leading space failed"
+assert f"{dbg_sp1 = }" == "dbg_sp1 = 10", f"f-string = with spaces failed"
+
+# With conversion flags
+dbg_cv: str = "world"
+assert f"{dbg_cv=!r}" == "dbg_cv='world'", f"f-string =!r failed: got {f'{dbg_cv=!r}'}"
+assert f"{dbg_cv=!s}" == "dbg_cv=world", f"f-string =!s failed: got {f'{dbg_cv=!s}'}"
+assert f"{dbg_cv=!a}" == "dbg_cv='world'", f"f-string =!a failed: got {f'{dbg_cv=!a}'}"
+
+# With format spec
+dbg_fval: float = 2.71828
+assert f"{dbg_fval=:.2f}" == "dbg_fval=2.72", f"f-string = with format spec failed: got {f'{dbg_fval=:.2f}'}"
+
+dbg_ival: int = 42
+assert f"{dbg_ival=:>10}" == "dbg_ival=        42", f"f-string = with width failed"
+assert f"{dbg_ival=:05d}" == "dbg_ival=00042", f"f-string = with zero-pad failed"
+
+# Expressions
+dbg_ex: int = 5
+assert f"{dbg_ex + 1=}" == "dbg_ex + 1=6", f"f-string = with expression failed"
+assert f"{dbg_ex * 2=}" == "dbg_ex * 2=10", f"f-string = with mul expression failed"
+
+# Function calls
+dbg_fname: str = "Alice"
+assert f"{len(dbg_fname)=}" == "len(dbg_fname)=5", f"f-string = with function call failed"
+assert f"{dbg_fname.upper()=}" == "dbg_fname.upper()='ALICE'", f"f-string = with method call failed"
+
+# Multiple in one f-string
+dbg_mx: int = 1
+dbg_my: int = 2
+assert f"{dbg_mx=}, {dbg_my=}" == "dbg_mx=1, dbg_my=2", f"f-string = multiple failed"
+
+# In larger string context
+assert f"Debug: {dbg_mx=}" == "Debug: dbg_mx=1", f"f-string = in context failed"
+
+# List repr
+dbg_lst: list[int] = [1, 2, 3]
+assert f"{dbg_lst=}" == "dbg_lst=[1, 2, 3]", f"f-string = with list failed: got {f'{dbg_lst=}'}"
+
+print("f-string = (debug format) tests passed")
+
 # ===== SECTION: String interning (compile-time constants) =====
 # These tests verify that string interning works correctly for memory efficiency.
 # Identical string literals should be deduplicated by the runtime.
