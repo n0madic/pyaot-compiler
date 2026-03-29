@@ -449,6 +449,22 @@ assert dm_aug["b"] == 3, "augmented dict b should be 3"
 assert dm_aug["c"] == 4, "augmented dict c should be 4"
 assert len(dm_aug) == 3, "augmented dict should have 3 entries"
 
+# In-place alias semantics: |= must modify the dict, not create a new one
+dm_alias_orig: dict[str, int] = {"x": 10}
+dm_alias_ref: dict[str, int] = dm_alias_orig
+dm_alias_orig |= {"y": 20}
+assert len(dm_alias_ref) == 2, "alias should see in-place update"
+assert dm_alias_ref["y"] == 20, "alias should have new key"
+
+# Empty cases
+dm_empty_rhs: dict[str, int] = {"a": 1}
+dm_empty_rhs |= {}
+assert len(dm_empty_rhs) == 1, "empty rhs should be no-op"
+
+dm_empty_lhs: dict[str, int] = {}
+dm_empty_lhs |= {"a": 1}
+assert len(dm_empty_lhs) == 1, "empty lhs should get new entries"
+
 print("dict |= operator tests passed")
 
 # ===== SECTION: bytes.decode() =====

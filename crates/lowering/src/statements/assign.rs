@@ -22,6 +22,36 @@ impl<'a> Lowering<'a> {
     ) -> Result<()> {
         let expr = &hir_module.exprs[value];
 
+        // Detect in-place dict update: d |= other → d = d | other (desugared)
+        // Instead of creating a new dict via DictMerge, call DictUpdate in-place
+        // to preserve alias semantics (matching CPython behavior).
+        if let hir::ExprKind::BinOp {
+            op: hir::BinOp::BitOr,
+            left,
+            right,
+        } = &expr.kind
+        {
+            let left_expr = &hir_module.exprs[*left];
+            if let hir::ExprKind::Var(var_id) = &left_expr.kind {
+                if *var_id == target {
+                    let left_ty = self.get_expr_type(left_expr, hir_module);
+                    if matches!(left_ty, Type::Dict(_, _)) {
+                        let dict_operand = self.lower_expr(left_expr, hir_module, mir_func)?;
+                        let right_expr = &hir_module.exprs[*right];
+                        let right_operand = self.lower_expr(right_expr, hir_module, mir_func)?;
+
+                        let dummy = self.alloc_and_add_local(Type::None, mir_func);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: dummy,
+                            func: mir::RuntimeFunc::DictUpdate,
+                            args: vec![dict_operand, right_operand],
+                        });
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         // Track if RHS is a function reference or closure for later call resolution
         // For these cases, we don't need to emit any code - we resolve calls through tracking maps
         match &expr.kind {
