@@ -1372,14 +1372,12 @@ mod tests {
     #[test]
     fn test_is_truthy_int() {
         init_runtime();
-        unsafe {
-            let zero = crate::boxing::rt_box_int(0);
-            assert_eq!(rt_is_truthy(zero), 0);
-            let one = crate::boxing::rt_box_int(1);
-            assert_eq!(rt_is_truthy(one), 1);
-            let neg = crate::boxing::rt_box_int(-1);
-            assert_eq!(rt_is_truthy(neg), 1);
-        }
+        let zero = crate::boxing::rt_box_int(0);
+        assert_eq!(rt_is_truthy(zero), 0);
+        let one = crate::boxing::rt_box_int(1);
+        assert_eq!(rt_is_truthy(one), 1);
+        let neg = crate::boxing::rt_box_int(-1);
+        assert_eq!(rt_is_truthy(neg), 1);
     }
 }
 
