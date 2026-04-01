@@ -15,9 +15,11 @@ const SMALL_INT_POOL_SIZE: usize = (SMALL_INT_MAX - SMALL_INT_MIN + 1) as usize;
 
 /// Lock-free pool storage for single-threaded access.
 /// Safety: The runtime is single-threaded (AOT-compiled Python has no threading).
+/// The initialized flag uses AtomicBool to provide a memory barrier ensuring all
+/// pool writes are visible before the flag is read as true.
 struct PoolStorage<const N: usize> {
     data: UnsafeCell<[*mut Obj; N]>,
-    initialized: UnsafeCell<bool>,
+    initialized: std::sync::atomic::AtomicBool,
 }
 
 unsafe impl<const N: usize> Sync for PoolStorage<N> {}
@@ -26,19 +28,18 @@ impl<const N: usize> PoolStorage<N> {
     const fn new() -> Self {
         Self {
             data: UnsafeCell::new([std::ptr::null_mut(); N]),
-            initialized: UnsafeCell::new(false),
+            initialized: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     #[inline(always)]
     fn is_initialized(&self) -> bool {
-        unsafe { *self.initialized.get() }
+        self.initialized.load(std::sync::atomic::Ordering::Acquire)
     }
 
     fn set_initialized(&self) {
-        unsafe {
-            *self.initialized.get() = true;
-        }
+        self.initialized
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     #[inline(always)]
@@ -90,9 +91,9 @@ pub fn init_small_int_pool() {
 /// Called from rt_shutdown()
 pub fn shutdown_small_int_pool() {
     // Objects are freed by GC shutdown, just mark as uninitialized
-    unsafe {
-        *SMALL_INT_POOL.initialized.get() = false;
-    }
+    SMALL_INT_POOL
+        .initialized
+        .store(false, std::sync::atomic::Ordering::Release);
 }
 
 /// Initialize the boolean singleton pool
@@ -120,9 +121,9 @@ pub fn init_bool_pool() {
 /// Shutdown the boolean singleton pool
 /// Called from rt_shutdown()
 pub fn shutdown_bool_pool() {
-    unsafe {
-        *BOOL_POOL.initialized.get() = false;
-    }
+    BOOL_POOL
+        .initialized
+        .store(false, std::sync::atomic::Ordering::Release);
 }
 
 /// Mark all pool objects (small integers and boolean singletons) as reachable.

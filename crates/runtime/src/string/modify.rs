@@ -111,7 +111,32 @@ pub extern "C" fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj
         }
 
         let count = positions.len();
-        let result_len = src_len - (count * old_len) + (count * new_len);
+        // Use checked arithmetic to prevent overflow in result length calculation
+        let removed = count * old_len; // Safe: count * old_len <= src_len by construction
+        let added = match count.checked_mul(new_len) {
+            Some(v) => v,
+            None => {
+                gc_pop();
+                let msg = b"OverflowError: replace result too large";
+                crate::exceptions::rt_exc_raise(
+                    pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
+                    msg.as_ptr(),
+                    msg.len(),
+                );
+            }
+        };
+        let result_len = match (src_len - removed).checked_add(added) {
+            Some(v) => v,
+            None => {
+                gc_pop();
+                let msg = b"OverflowError: replace result too large";
+                crate::exceptions::rt_exc_raise(
+                    pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
+                    msg.as_ptr(),
+                    msg.len(),
+                );
+            }
+        };
 
         // Allocate new string (gc_alloc may collect; inputs stay alive via shadow frame)
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;

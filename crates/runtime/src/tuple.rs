@@ -18,7 +18,32 @@ pub extern "C" fn rt_make_tuple(size: i64, elem_tag: u8) -> *mut Obj {
     // Calculate size: base struct size + inline data array
     // TupleObj has: ObjHeader(16) + len(8) + elem_tag(1) + padding(7) + data[0]
     // Use size_of::<TupleObj> for the base size (includes alignment padding)
-    let tuple_size = std::mem::size_of::<TupleObj>() + size * std::mem::size_of::<*mut Obj>();
+    let data_size = match size.checked_mul(std::mem::size_of::<*mut Obj>()) {
+        Some(s) => s,
+        None => {
+            let msg = b"MemoryError: tuple too large";
+            unsafe {
+                crate::exceptions::rt_exc_raise(
+                    crate::exceptions::ExceptionType::MemoryError as u8,
+                    msg.as_ptr(),
+                    msg.len(),
+                )
+            }
+        }
+    };
+    let tuple_size = match std::mem::size_of::<TupleObj>().checked_add(data_size) {
+        Some(s) => s,
+        None => {
+            let msg = b"MemoryError: tuple too large";
+            unsafe {
+                crate::exceptions::rt_exc_raise(
+                    crate::exceptions::ExceptionType::MemoryError as u8,
+                    msg.as_ptr(),
+                    msg.len(),
+                )
+            }
+        }
+    };
 
     // Allocate TupleObj using GC
     let obj = gc::gc_alloc(tuple_size, TypeTagKind::Tuple as u8);

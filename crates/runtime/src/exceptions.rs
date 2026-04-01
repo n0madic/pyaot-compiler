@@ -76,124 +76,20 @@ extern "C" {
     fn longjmp(env: *mut u8, val: i32) -> !;
 }
 
-/// Runtime exception type - wraps `BuiltinExceptionKind` with runtime-specific behavior.
-/// The main difference is that `from_tag` returns `Exception` for invalid tags instead of `None`.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExceptionType {
-    Exception = 0,
-    AssertionError = 1,
-    IndexError = 2,
-    ValueError = 3,
-    StopIteration = 4,
-    TypeError = 5,
-    RuntimeError = 6,
-    GeneratorExit = 7,
-    KeyError = 8,
-    AttributeError = 9,
-    IOError = 10,
-    ZeroDivisionError = 11,
-    OverflowError = 12,
-    MemoryError = 13,
-    NameError = 14,
-    NotImplementedError = 15,
-    FileNotFoundError = 16,
-    PermissionError = 17,
-    RecursionError = 18,
-    EOFError = 19,
-    SystemExit = 20,
-    KeyboardInterrupt = 21,
-    FileExistsError = 22,
-    ImportError = 23,
-    OSError = 24,
-    ConnectionError = 25,
-    TimeoutError = 26,
-    SyntaxError = 27,
-    BaseException = 28,
-}
+/// Type alias: the runtime uses `BuiltinExceptionKind` directly from `core-defs`
+/// as its exception type enum. Both share the same `#[repr(u8)]` discriminant
+/// values and variant names, so there is no need for a separate runtime mirror.
+pub type ExceptionType = BuiltinExceptionKind;
 
-impl ExceptionType {
-    /// Create from a numeric tag.
-    /// Returns `Exception` if the tag is invalid (runtime fallback behavior).
-    #[inline]
-    pub const fn from_tag(tag: u8) -> Self {
-        match BuiltinExceptionKind::from_tag(tag) {
-            Some(kind) => Self::from_kind(kind),
-            None => Self::Exception,
-        }
-    }
-
-    /// Create from a `BuiltinExceptionKind`.
-    #[inline]
-    pub const fn from_kind(kind: BuiltinExceptionKind) -> Self {
-        // Direct conversion using the shared tag values
-        match kind {
-            BuiltinExceptionKind::Exception => Self::Exception,
-            BuiltinExceptionKind::AssertionError => Self::AssertionError,
-            BuiltinExceptionKind::IndexError => Self::IndexError,
-            BuiltinExceptionKind::ValueError => Self::ValueError,
-            BuiltinExceptionKind::StopIteration => Self::StopIteration,
-            BuiltinExceptionKind::TypeError => Self::TypeError,
-            BuiltinExceptionKind::RuntimeError => Self::RuntimeError,
-            BuiltinExceptionKind::GeneratorExit => Self::GeneratorExit,
-            BuiltinExceptionKind::KeyError => Self::KeyError,
-            BuiltinExceptionKind::AttributeError => Self::AttributeError,
-            BuiltinExceptionKind::IOError => Self::IOError,
-            BuiltinExceptionKind::ZeroDivisionError => Self::ZeroDivisionError,
-            BuiltinExceptionKind::OverflowError => Self::OverflowError,
-            BuiltinExceptionKind::MemoryError => Self::MemoryError,
-            BuiltinExceptionKind::NameError => Self::NameError,
-            BuiltinExceptionKind::NotImplementedError => Self::NotImplementedError,
-            BuiltinExceptionKind::FileNotFoundError => Self::FileNotFoundError,
-            BuiltinExceptionKind::PermissionError => Self::PermissionError,
-            BuiltinExceptionKind::RecursionError => Self::RecursionError,
-            BuiltinExceptionKind::EOFError => Self::EOFError,
-            BuiltinExceptionKind::SystemExit => Self::SystemExit,
-            BuiltinExceptionKind::KeyboardInterrupt => Self::KeyboardInterrupt,
-            BuiltinExceptionKind::FileExistsError => Self::FileExistsError,
-            BuiltinExceptionKind::ImportError => Self::ImportError,
-            BuiltinExceptionKind::OSError => Self::OSError,
-            BuiltinExceptionKind::ConnectionError => Self::ConnectionError,
-            BuiltinExceptionKind::TimeoutError => Self::TimeoutError,
-            BuiltinExceptionKind::SyntaxError => Self::SyntaxError,
-            BuiltinExceptionKind::BaseException => Self::BaseException,
-        }
-    }
-
-    /// Get the Python name for this exception type.
-    #[inline]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Exception => "Exception",
-            Self::AssertionError => "AssertionError",
-            Self::IndexError => "IndexError",
-            Self::ValueError => "ValueError",
-            Self::StopIteration => "StopIteration",
-            Self::TypeError => "TypeError",
-            Self::RuntimeError => "RuntimeError",
-            Self::GeneratorExit => "GeneratorExit",
-            Self::KeyError => "KeyError",
-            Self::AttributeError => "AttributeError",
-            Self::IOError => "IOError",
-            Self::ZeroDivisionError => "ZeroDivisionError",
-            Self::OverflowError => "OverflowError",
-            Self::MemoryError => "MemoryError",
-            Self::NameError => "NameError",
-            Self::NotImplementedError => "NotImplementedError",
-            Self::FileNotFoundError => "FileNotFoundError",
-            Self::PermissionError => "PermissionError",
-            Self::RecursionError => "RecursionError",
-            Self::EOFError => "EOFError",
-            Self::SystemExit => "SystemExit",
-            Self::KeyboardInterrupt => "KeyboardInterrupt",
-            Self::FileExistsError => "FileExistsError",
-            Self::ImportError => "ImportError",
-            Self::OSError => "OSError",
-            Self::ConnectionError => "ConnectionError",
-            Self::TimeoutError => "TimeoutError",
-            Self::SyntaxError => "SyntaxError",
-            Self::BaseException => "BaseException",
-        }
+/// Convert a numeric tag to an exception kind, falling back to `Exception`
+/// for invalid tags. This is the runtime-specific fallback behavior: instead
+/// of returning `None` for unknown tags (as `BuiltinExceptionKind::from_tag`
+/// does), the runtime defaults to a generic `Exception`.
+#[inline]
+pub const fn exception_type_from_tag(tag: u8) -> BuiltinExceptionKind {
+    match BuiltinExceptionKind::from_tag(tag) {
+        Some(kind) => kind,
+        None => BuiltinExceptionKind::Exception,
     }
 }
 
@@ -277,8 +173,17 @@ impl Drop for ExceptionObject {
                 );
             }
         }
-        // Note: self.cause and self.context are Option<Box<ExceptionObject>> which will be
-        // automatically dropped, recursively freeing the cause and context chains
+        // Iteratively drop cause and context chains to prevent stack overflow
+        // on deeply nested exception chains (e.g., thousands of `raise ... from ...`).
+        let mut cause = self.cause.take();
+        while let Some(mut exc) = cause {
+            cause = exc.cause.take();
+            // `exc` drops here with cause=None, so no recursion
+        }
+        let mut context = self.context.take();
+        while let Some(mut exc) = context {
+            context = exc.context.take();
+        }
     }
 }
 
@@ -493,7 +398,7 @@ unsafe fn raise_with_owned_message(
 /// If `len > 0`, `message` must be a valid pointer to `len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn rt_exc_raise(exc_type_tag: u8, message: *const u8, len: usize) -> ! {
-    let exc_type = ExceptionType::from_tag(exc_type_tag);
+    let exc_type = exception_type_from_tag(exc_type_tag);
     let (msg_ptr, msg_len, msg_capacity) = copy_message_to_owned(message, len);
     raise_with_owned_message(exc_type, msg_ptr, msg_len, msg_capacity)
 }
@@ -515,7 +420,7 @@ pub unsafe fn rt_exc_raise_owned(
     msg_len: usize,
     msg_capacity: usize,
 ) -> ! {
-    let exc_type = ExceptionType::from_tag(exc_type_tag);
+    let exc_type = exception_type_from_tag(exc_type_tag);
     let (ptr, len, cap) = if !msg_ptr.is_null() && msg_len > 0 {
         (msg_ptr as *const u8, msg_len, msg_capacity)
     } else {
@@ -559,8 +464,8 @@ pub unsafe extern "C" fn rt_exc_raise_from(
     cause_len: usize,
 ) -> ! {
     // Convert type tags to ExceptionType using macro-generated from_tag
-    let exc_type = ExceptionType::from_tag(exc_type_tag);
-    let cause_type = ExceptionType::from_tag(cause_type_tag);
+    let exc_type = exception_type_from_tag(exc_type_tag);
+    let cause_type = exception_type_from_tag(cause_type_tag);
 
     let (msg_ptr, msg_len, msg_capacity) = copy_message_to_owned(message, len);
     let (cause_msg_ptr, cause_msg_len, cause_msg_capacity) =
@@ -615,7 +520,7 @@ pub unsafe extern "C" fn rt_exc_raise_from_none(
     message: *const u8,
     len: usize,
 ) -> ! {
-    let exc_type = ExceptionType::from_tag(exc_type_tag);
+    let exc_type = exception_type_from_tag(exc_type_tag);
     let (msg_ptr, msg_len, msg_capacity) = copy_message_to_owned(message, len);
 
     // Still capture context for debugging (it's stored but not displayed)
@@ -663,13 +568,6 @@ pub extern "C" fn rt_exc_end_handling() {
         // Clear the handled exception since we're done with the handler
         let _ = state.handling_exception.take();
     });
-}
-
-/// Get the display name for an exception type
-/// Uses the macro-generated name() method.
-#[inline]
-fn exception_type_name(exc_type: ExceptionType) -> &'static str {
-    exc_type.name()
 }
 
 /// Print an exception to stderr (type name and optional message)
@@ -724,7 +622,7 @@ unsafe fn print_unhandled_exception_full(exc: &ExceptionObject) {
 
     // Print this exception
     if exc.custom_class_id == NOT_CUSTOM_CLASS {
-        let type_name = exception_type_name(exc.exc_type);
+        let type_name = exc.exc_type.name();
         print_exception_line(type_name, exc.message, exc.message_len);
     } else {
         let type_name = get_custom_exception_name(exc.custom_class_id);
@@ -1416,7 +1314,7 @@ pub unsafe extern "C" fn rt_exc_raise_instance(instance: *mut crate::object::Obj
     let traceback = Some(crate::traceback::capture_traceback());
 
     // Determine exc_type from class_id
-    let exc_type = ExceptionType::from_tag(class_id);
+    let exc_type = exception_type_from_tag(class_id);
     let custom_class_id = if BuiltinExceptionKind::from_tag(class_id).is_some() {
         NOT_CUSTOM_CLASS
     } else {

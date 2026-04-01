@@ -47,6 +47,9 @@ pub fn type_to_cranelift(ty: &Type) -> cltypes::Type {
         }
         // Union values are stored as boxed pointers (*mut Obj)
         Type::Union(_) => cltypes::I64,
+        Type::Never => panic!("type_to_cranelift: Never type should not reach codegen"),
+        // All remaining types are pointer-sized: Set, Bytes, Optional, Any, HeapAny,
+        // Class, BuiltinException, RuntimeObject, Iterator, Function, Var, etc.
         _ => cltypes::I64,
     }
 }

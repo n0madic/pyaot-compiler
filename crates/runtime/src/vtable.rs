@@ -5,7 +5,9 @@
 
 use std::cell::UnsafeCell;
 
-/// Maximum number of classes supported
+/// Maximum number of classes supported.
+/// Limited by u8 class_id type. User-defined classes start at FIRST_USER_CLASS_ID (29),
+/// allowing ~227 user classes. Programs exceeding this limit need a wider class_id type.
 const MAX_CLASSES: usize = 256;
 
 /// Sentinel value for "no parent" (class is at the root of hierarchy)
@@ -341,6 +343,13 @@ static METHOD_NAME_REGISTRY: RegistryStorage<MethodNameTable, MAX_CLASSES> =
 /// Called during class initialization for every instance method.
 #[no_mangle]
 pub extern "C" fn rt_register_method_name(class_id: i64, name_hash: i64, slot: i64) {
+    if class_id < 0 || class_id >= MAX_CLASSES as i64 {
+        eprintln!(
+            "WARNING: rt_register_method_name: class_id {} out of range [0, {})",
+            class_id, MAX_CLASSES
+        );
+        return;
+    }
     unsafe {
         let registry = &mut *METHOD_NAME_REGISTRY.0.get();
         let table = &mut registry[class_id as usize];
@@ -378,9 +387,12 @@ pub extern "C" fn rt_vtable_lookup_by_name(obj_ptr: *mut u8, name_hash: i64) -> 
             return std::ptr::null();
         }
 
-        // Get class_id from the InstanceObj (offset 25 from obj start)
-        // InstanceObj layout: ObjHeader(16) + vtable_ptr(8) + class_id(1)
-        let class_id = *obj_ptr.add(24) as usize;
+        // Read InstanceObj fields using proper struct cast instead of hardcoded offsets.
+        let instance = obj_ptr as *const crate::object::InstanceObj;
+        let class_id = (*instance).class_id as usize;
+        if class_id >= MAX_CLASSES {
+            return std::ptr::null();
+        }
 
         // Look up slot by name hash in the method name table
         let registry = &*METHOD_NAME_REGISTRY.0.get();
@@ -389,8 +401,8 @@ pub extern "C" fn rt_vtable_lookup_by_name(obj_ptr: *mut u8, name_hash: i64) -> 
         for i in 0..table.count {
             if table.entries[i].name_hash == target_hash {
                 let slot = table.entries[i].slot;
-                // Now do the standard vtable lookup
-                let vtable_ptr = *(obj_ptr.add(16) as *const *const u8); // vtable at offset 16
+                // Now do the standard vtable lookup using proper struct field access
+                let vtable_ptr = (*instance).vtable;
                 return rt_vtable_lookup(vtable_ptr, slot);
             }
         }

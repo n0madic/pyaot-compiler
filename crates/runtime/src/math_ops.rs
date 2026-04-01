@@ -9,7 +9,7 @@ pub extern "C" fn rt_pow_float(base: f64, exp: f64) -> f64 {
 
 /// Integer power function: base ** exp -> i64
 /// For negative exponents, returns 0 (truncated toward zero like Python's int() does)
-/// For very large results, behavior is wrapping (overflow)
+/// Raises OverflowError on overflow (consistent with rt_mul_int)
 #[no_mangle]
 pub extern "C" fn rt_pow_int(base: i64, exp: i64) -> i64 {
     if exp < 0 {
@@ -29,16 +29,43 @@ pub extern "C" fn rt_pow_int(base: i64, exp: i64) -> i64 {
     } else if exp == 0 {
         1
     } else {
-        // Use exponentiation by squaring for efficiency
+        // Use exponentiation by squaring with overflow checking
         let mut result: i64 = 1;
         let mut base = base;
         let mut exp = exp as u64;
 
         while exp > 0 {
             if exp & 1 == 1 {
-                result = result.wrapping_mul(base);
+                result = match result.checked_mul(base) {
+                    Some(v) => v,
+                    None => {
+                        let msg = b"integer overflow";
+                        unsafe {
+                            crate::exceptions::rt_exc_raise(
+                                crate::exceptions::ExceptionType::OverflowError as u8,
+                                msg.as_ptr(),
+                                msg.len(),
+                            )
+                        }
+                    }
+                };
             }
-            base = base.wrapping_mul(base);
+            if exp > 1 {
+                base = match base.checked_mul(base) {
+                    Some(v) => v,
+                    None => {
+                        // Only overflow if we'll actually use this value
+                        let msg = b"integer overflow";
+                        unsafe {
+                            crate::exceptions::rt_exc_raise(
+                                crate::exceptions::ExceptionType::OverflowError as u8,
+                                msg.as_ptr(),
+                                msg.len(),
+                            )
+                        }
+                    }
+                };
+            }
             exp >>= 1;
         }
         result
@@ -98,6 +125,17 @@ pub extern "C" fn rt_round_to_digits(x: f64, ndigits: i64) -> f64 {
         // Use banker's rounding for ndigits=0 too
         return rt_round_to_int(x) as f64;
     }
+    // Validate ndigits fits in i32 range (CPython raises OverflowError for extreme values)
+    if ndigits > i32::MAX as i64 || ndigits < i32::MIN as i64 {
+        let msg = b"OverflowError: ndigits out of range for round()";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::OverflowError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
     let multiplier = 10_f64.powi(ndigits as i32);
     let scaled = x * multiplier;
 
@@ -122,6 +160,34 @@ pub extern "C" fn rt_round_to_digits(x: f64, ndigits: i64) -> f64 {
     };
 
     rounded / multiplier
+}
+
+/// Safe float-to-int conversion: int(x) where x is float.
+/// Raises ValueError for NaN, OverflowError for infinity or out-of-range values.
+/// Called from codegen instead of raw fcvt_to_sint which traps on NaN/Inf.
+#[no_mangle]
+pub extern "C" fn rt_float_to_int(x: f64) -> i64 {
+    if x.is_nan() {
+        let msg = b"ValueError: cannot convert float NaN to integer";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ValueError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
+    if x.is_infinite() || x > i64::MAX as f64 || x < i64::MIN as f64 {
+        let msg = b"OverflowError: cannot convert float infinity to integer";
+        unsafe {
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::OverflowError as u8,
+                msg.as_ptr(),
+                msg.len(),
+            )
+        }
+    }
+    x as i64
 }
 
 // ============================================================================

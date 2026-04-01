@@ -105,6 +105,8 @@ struct GcState {
     threshold: usize,
     /// Shadow stack depth (for leak detection)
     stack_depth: usize,
+    /// Guard against re-entrant collection (e.g., __del__ allocating during sweep)
+    collecting: bool,
 }
 
 // Safety: GcState is accessed from a single thread (AOT-compiled Python is single-threaded).
@@ -137,6 +139,7 @@ pub fn init() {
         total_allocated: 0,
         threshold: 1024 * 1024,
         stack_depth: 0,
+        collecting: false,
     }));
     // Use compare_exchange to prevent double-init race (TOCTOU)
     if GC_STATE_PTR
@@ -156,11 +159,16 @@ pub fn shutdown() {
     if state_ptr.is_null() {
         return;
     }
+
+    // Null out state pointer first to prevent post-shutdown access
+    GC_STATE_PTR.store(ptr::null_mut(), Ordering::Release);
+
     unsafe {
         let state = &mut *state_ptr;
 
-        // Free large objects tracked in Vec
+        // Finalize and free large objects tracked in Vec
         for obj_ptr in &state.objects {
+            crate::slab::finalize_object_pub(*obj_ptr);
             let obj = &**obj_ptr;
             let layout = Layout::from_size_align(obj.header.size, std::mem::align_of::<Obj>())
                 .expect("Invalid layout during GC shutdown");
@@ -170,10 +178,10 @@ pub fn shutdown() {
 
         // Free all slab pages (small objects freed in bulk)
         crate::slab::slab().shutdown();
-    }
 
-    // Null out state pointer to prevent post-shutdown use-after-free
-    GC_STATE_PTR.store(ptr::null_mut(), Ordering::Release);
+        // Reconstitute the Box to properly drop GcState (frees Vec buffer + struct)
+        drop(Box::from_raw(state_ptr));
+    }
 }
 
 /// Push a shadow frame onto the stack
@@ -240,7 +248,7 @@ pub extern "C" fn gc_alloc(size: usize, type_tag: u8) -> *mut Obj {
     let validated_type_tag = TypeTagKind::from_tag(type_tag)
         .unwrap_or_else(|| panic!("gc_alloc: invalid type tag {}", type_tag));
 
-    debug_assert!(
+    assert!(
         size >= std::mem::size_of::<ObjHeader>(),
         "gc_alloc: size {} is smaller than ObjHeader ({})",
         size,
@@ -250,18 +258,22 @@ pub extern "C" fn gc_alloc(size: usize, type_tag: u8) -> *mut Obj {
     unsafe {
         let state = gc_state();
 
-        // GC stress testing mode: collect on every allocation
-        // Enable with: RUSTFLAGS="--cfg gc_stress_test" cargo build
-        #[cfg(gc_stress_test)]
-        {
-            collect_impl(state);
-        }
-
-        // Check if we should collect (normal mode)
-        #[cfg(not(gc_stress_test))]
-        {
-            if state.total_allocated > state.threshold {
+        // Skip collection if we're already inside a collect cycle (prevents
+        // re-entrant collection from __del__ finalizers that allocate).
+        if !state.collecting {
+            // GC stress testing mode: collect on every allocation
+            // Enable with: RUSTFLAGS="--cfg gc_stress_test" cargo build
+            #[cfg(gc_stress_test)]
+            {
                 collect_impl(state);
+            }
+
+            // Check if we should collect (normal mode)
+            #[cfg(not(gc_stress_test))]
+            {
+                if state.total_allocated > state.threshold {
+                    collect_impl(state);
+                }
             }
         }
 
@@ -294,7 +306,7 @@ pub extern "C" fn gc_alloc(size: usize, type_tag: u8) -> *mut Obj {
             size - std::mem::size_of::<ObjHeader>(),
         );
 
-        state.total_allocated += size;
+        state.total_allocated = state.total_allocated.saturating_add(size);
 
         ptr
     }
@@ -347,6 +359,8 @@ pub fn unwind_to(target: *mut ShadowFrame) {
 
 /// Internal collection implementation
 fn collect_impl(state: &mut GcState) {
+    state.collecting = true;
+
     // Mark phase
     mark_roots(state);
 
@@ -358,6 +372,8 @@ fn collect_impl(state: &mut GcState) {
     if state.threshold < 1024 * 1024 {
         state.threshold = 1024 * 1024;
     }
+
+    state.collecting = false;
 }
 
 /// Mark all reachable objects
@@ -442,6 +458,10 @@ fn mark_object(obj: *mut Obj) {
         // containers due to elem_tag mismatches in *args tuples and closure captures.
         // Also validates alignment — Obj requires 8-byte alignment, so code pointers
         // (4-byte aligned) and small integers are safely skipped.
+        //
+        // NOTE: This is a heuristic filter. An i64 value that happens to be >0x1000 and
+        // 8-byte aligned would pass this check and be traced as a pointer. The proper fix
+        // is to ensure elem_tag is always correct so raw values never reach mark_object.
         if obj.is_null()
             || (obj as usize) < 0x1000
             || !(obj as usize).is_multiple_of(std::mem::align_of::<Obj>())

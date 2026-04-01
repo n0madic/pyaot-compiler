@@ -51,6 +51,29 @@ pub extern "C" fn rt_print_str_obj(str_obj: *mut Obj) {
     }
 }
 
+/// Format a bytes slice as a Python bytes literal (e.g. `b'hello\n'`).
+fn format_bytes_repr(data: *const u8, len: usize) -> String {
+    let mut s = String::with_capacity(len + 3); // b'' + escapes
+    s.push_str("b'");
+    for i in 0..len {
+        let byte = unsafe { *data.add(i) };
+        match byte {
+            b'\\' => s.push_str("\\\\"),
+            b'\'' => s.push_str("\\'"),
+            b'\n' => s.push_str("\\n"),
+            b'\r' => s.push_str("\\r"),
+            b'\t' => s.push_str("\\t"),
+            0x20..=0x7E => s.push(byte as char),
+            _ => {
+                use std::fmt::Write;
+                let _ = write!(s, "\\x{:02x}", byte);
+            }
+        }
+    }
+    s.push('\'');
+    s
+}
+
 /// Print a BytesObj (heap-allocated bytes)
 #[no_mangle]
 pub extern "C" fn rt_print_bytes_obj(bytes: *mut Obj) {
@@ -67,51 +90,11 @@ pub extern "C" fn rt_print_bytes_obj(bytes: *mut Obj) {
         let bytes_obj = bytes as *mut BytesObj;
         let len = (*bytes_obj).len;
         let data = (*bytes_obj).data.as_ptr();
-
+        let repr = format_bytes_repr(data, len);
         if is_stderr_target() {
-            eprint!("b'");
-            for i in 0..len {
-                let byte = *data.add(i);
-                // Print printable ASCII characters directly, escape others
-                if byte == b'\\' {
-                    eprint!("\\\\");
-                } else if byte == b'\'' {
-                    eprint!("\\'");
-                } else if byte == b'\n' {
-                    eprint!("\\n");
-                } else if byte == b'\r' {
-                    eprint!("\\r");
-                } else if byte == b'\t' {
-                    eprint!("\\t");
-                } else if (0x20..0x7F).contains(&byte) {
-                    eprint!("{}", byte as char);
-                } else {
-                    eprint!("\\x{:02x}", byte);
-                }
-            }
-            eprint!("'");
+            eprint!("{}", repr);
         } else {
-            print!("b'");
-            for i in 0..len {
-                let byte = *data.add(i);
-                // Print printable ASCII characters directly, escape others
-                if byte == b'\\' {
-                    print!("\\\\");
-                } else if byte == b'\'' {
-                    print!("\\'");
-                } else if byte == b'\n' {
-                    print!("\\n");
-                } else if byte == b'\r' {
-                    print!("\\r");
-                } else if byte == b'\t' {
-                    print!("\\t");
-                } else if (0x20..0x7F).contains(&byte) {
-                    print!("{}", byte as char);
-                } else {
-                    print!("\\x{:02x}", byte);
-                }
-            }
-            print!("'");
+            print!("{}", repr);
         }
     }
 }

@@ -25,6 +25,15 @@ pub extern "C" fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut 
         let (start, end) = normalize_slice_indices(start, end, len, 1);
         let slice_len = slice_length(start, end);
 
+        // Root str_obj across gc_alloc which may trigger a collection.
+        let mut roots: [*mut Obj; 1] = [str_obj];
+        let mut frame = gc::ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc::gc_push(&mut frame);
+
         // Allocate new string
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + slice_len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
@@ -32,8 +41,9 @@ pub extern "C" fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut 
         let new_str = obj as *mut StrObj;
         (*new_str).len = slice_len;
 
-        // Copy slice data
+        // Copy slice data (re-derive src pointer after gc_alloc for clarity)
         if slice_len > 0 {
+            let src = str_obj as *mut StrObj;
             ptr::copy_nonoverlapping(
                 (*src).data.as_ptr().add(start as usize),
                 (*new_str).data.as_mut_ptr(),
@@ -41,6 +51,7 @@ pub extern "C" fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut 
             );
         }
 
+        gc::gc_pop();
         obj
     }
 }
@@ -70,7 +81,7 @@ pub extern "C" fn rt_str_slice_step(
         // Normalize indices using shared utility
         let (start, end) = normalize_slice_indices(start, end, len, step);
 
-        // Collect characters at step indices
+        // Collect characters at step indices (pre-copy data before gc_alloc)
         let mut result_chars = Vec::new();
         let src_data = (*src).data.as_ptr();
 
@@ -90,12 +101,22 @@ pub extern "C" fn rt_str_slice_step(
 
         let result_len = result_chars.len();
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + result_len;
+
+        // Root str_obj across gc_alloc for consistency (data already copied to result_chars)
+        let mut roots: [*mut Obj; 1] = [str_obj];
+        let mut frame = gc::ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc::gc_push(&mut frame);
+
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         let new_str = obj as *mut StrObj;
         (*new_str).len = result_len;
 
-        // Copy result data
+        // Copy result data (from stack Vec, safe regardless of GC)
         if result_len > 0 {
             std::ptr::copy_nonoverlapping(
                 result_chars.as_ptr(),
@@ -104,6 +125,7 @@ pub extern "C" fn rt_str_slice_step(
             );
         }
 
+        gc::gc_pop();
         obj
     }
 }
@@ -198,18 +220,30 @@ pub extern "C" fn rt_str_getchar(str_obj: *mut Obj, byte_index: i64) -> *mut Obj
         let remaining = (byte_len - byte_index) as usize;
         let copy_len = char_width.min(remaining);
 
+        // Root str_obj across gc_alloc which may trigger a collection.
+        let mut roots: [*mut Obj; 1] = [str_obj];
+        let mut frame = gc::ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc::gc_push(&mut frame);
+
         // Allocate string for one full codepoint
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + copy_len;
         let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
 
         let new_str = obj as *mut StrObj;
         (*new_str).len = copy_len;
+        // Re-derive data pointer after gc_alloc (GC is non-moving, str_obj is rooted)
+        let data = (*(str_obj as *mut StrObj)).data.as_ptr();
         std::ptr::copy_nonoverlapping(
             data.add(byte_index as usize),
             (*new_str).data.as_mut_ptr(),
             copy_len,
         );
 
+        gc::gc_pop();
         obj
     }
 }

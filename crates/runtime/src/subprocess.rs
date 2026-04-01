@@ -1,6 +1,12 @@
 //! subprocess module runtime support
 //!
 //! Provides subprocess.run() for spawning and managing processes.
+//!
+//! # Security note
+//! Uses exec-style invocation (not shell), so shell injection is not possible.
+//! However, compiled programs can execute arbitrary system binaries with the same
+//! privileges as the process. This is by design — compiled Python programs have
+//! full OS access, matching CPython's behavior.
 
 use crate::gc::{self, ShadowFrame};
 use crate::object::{CompletedProcessObj, ListObj, Obj, ObjHeader, TypeTagKind};

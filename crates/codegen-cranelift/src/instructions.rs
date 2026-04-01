@@ -96,15 +96,32 @@ pub fn compile_instruction(
                 // Int/Any/Ptr (i64) to Bool/None (i8) - reduce
                 (cltypes::I64, cltypes::I8) => builder.ins().ireduce(cltypes::I8, src_val),
 
-                // Float to Int - convert float to signed int (truncates towards zero)
-                (cltypes::F64, cltypes::I64) => builder.ins().fcvt_to_sint(cltypes::I64, src_val),
+                // Float to Int - delegate to rt_float_to_int which checks for NaN/Infinity
+                // (fcvt_to_sint traps on NaN/Infinity)
+                (cltypes::F64, cltypes::I64) => {
+                    let mut sig = ctx.module.make_signature();
+                    sig.call_conv = CallConv::SystemV;
+                    sig.params.push(AbiParam::new(cltypes::F64));
+                    sig.returns.push(AbiParam::new(cltypes::I64));
+                    let func_id = declare_runtime_function(ctx.module, "rt_float_to_int", &sig)?;
+                    let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+                    let call = builder.ins().call(func_ref, &[src_val]);
+                    builder.inst_results(call)[0]
+                }
 
                 // Int to Float - convert signed int to float
                 (cltypes::I64, cltypes::F64) => builder.ins().fcvt_from_sint(cltypes::F64, src_val),
 
-                // Float to Bool/None (i8) - convert to int first, then reduce
+                // Float to Bool/None (i8) - convert to int first via rt_float_to_int, then reduce
                 (cltypes::F64, cltypes::I8) => {
-                    let as_int = builder.ins().fcvt_to_sint(cltypes::I64, src_val);
+                    let mut sig = ctx.module.make_signature();
+                    sig.call_conv = CallConv::SystemV;
+                    sig.params.push(AbiParam::new(cltypes::F64));
+                    sig.returns.push(AbiParam::new(cltypes::I64));
+                    let func_id = declare_runtime_function(ctx.module, "rt_float_to_int", &sig)?;
+                    let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+                    let call = builder.ins().call(func_ref, &[src_val]);
+                    let as_int = builder.inst_results(call)[0];
                     builder.ins().ireduce(cltypes::I8, as_int)
                 }
 
@@ -284,11 +301,9 @@ pub fn compile_instruction(
                     } else if arg_cl_type == cltypes::I8 && expected_ty == cltypes::I64 {
                         builder.ins().uextend(cltypes::I64, arg_val)
                     } else if arg_cl_type == cltypes::F64 && expected_ty == cltypes::I64 {
-                        builder.ins().bitcast(
-                            cltypes::I64,
-                            cranelift_codegen::ir::MemFlags::new(),
-                            arg_val,
-                        )
+                        // Box the float via rt_box_float (same as CallDirect)
+                        // to produce a proper heap object pointer for Any/Union params
+                        box_primitive(builder, ctx.module, "rt_box_float", cltypes::F64, arg_val)?
                     } else {
                         arg_val
                     }
@@ -371,13 +386,12 @@ pub fn compile_instruction(
             let obj_val = load_operand(builder, obj, ctx.var_map);
 
             // InstanceObj layout:
-            // - header: ObjHeader (type_tag: u8 + marked: bool + size: usize = 10 bytes, aligned to 16)
+            // - header: ObjHeader is 16 bytes: type_tag(1) + marked(1) + padding(6) + size(8).
+            //   Vtable pointer follows at offset 16.
             // - vtable: *const u8 (8 bytes) - at offset 16
             // - class_id: u8
             // - field_count: usize
             // - fields: [*mut Obj; 0]
-            //
-            // ObjHeader is 10 bytes but aligned, so vtable is at offset 16 (after padding)
             let vtable_offset = 16i32;
 
             // Load vtable pointer from instance
@@ -577,9 +591,20 @@ pub fn compile_instruction(
                     }
                 }
                 mir::UnOp::Not => {
-                    // For boolean not: result = 1 - operand (for i8 bool)
-                    let one = builder.ins().iconst(cltypes::I8, 1);
-                    builder.ins().isub(one, operand_val)
+                    let val_type = builder.func.dfg.value_type(operand_val);
+                    if val_type == cltypes::I8 {
+                        // For i8 bool: result = 1 - operand
+                        let one = builder.ins().iconst(cltypes::I8, 1);
+                        builder.ins().isub(one, operand_val)
+                    } else {
+                        // For i64 int: result = (operand == 0), producing i8 bool
+                        let zero = builder.ins().iconst(cltypes::I64, 0);
+                        builder.ins().icmp(
+                            cranelift_codegen::ir::condcodes::IntCC::Equal,
+                            operand_val,
+                            zero,
+                        )
+                    }
                 }
                 mir::UnOp::Invert => {
                     // Bitwise NOT: result = ~operand (flip all bits)
@@ -643,8 +668,16 @@ pub fn compile_instruction(
         // Type conversion instructions
         mir::InstructionKind::FloatToInt { dest, src } => {
             let src_val = load_operand(builder, src, ctx.var_map);
-            // fcvt_to_sint: convert float to signed integer, truncating towards zero
-            let result = builder.ins().fcvt_to_sint(cltypes::I64, src_val);
+            // Delegate to rt_float_to_int which checks for NaN/Infinity
+            // (fcvt_to_sint traps on NaN/Infinity)
+            let mut sig = ctx.module.make_signature();
+            sig.call_conv = CallConv::SystemV;
+            sig.params.push(AbiParam::new(cltypes::F64));
+            sig.returns.push(AbiParam::new(cltypes::I64));
+            let func_id = declare_runtime_function(ctx.module, "rt_float_to_int", &sig)?;
+            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+            let call = builder.ins().call(func_ref, &[src_val]);
+            let result = builder.inst_results(call)[0];
             let var = *ctx
                 .var_map
                 .get(dest)

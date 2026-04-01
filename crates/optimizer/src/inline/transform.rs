@@ -176,6 +176,11 @@ fn perform_inline(
 
     // Remap callee's parameter locals to new locals in caller
     // and create Copy instructions to pass arguments
+    assert_eq!(
+        callee.params.len(),
+        args.len(),
+        "inline: parameter/argument count mismatch for function"
+    );
     let mut param_copies: Vec<Instruction> = Vec::new();
     for (param, arg) in callee.params.iter().zip(args.iter()) {
         let new_param_id = remapper.remap_local(param.id);

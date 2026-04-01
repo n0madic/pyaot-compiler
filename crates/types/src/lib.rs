@@ -266,6 +266,9 @@ impl Type {
             (Type::Bytes, Type::Bytes) => true,
             (Type::None, Type::None) => true,
 
+            // Bool is a subtype of Int (Python: isinstance(True, int) == True)
+            (Type::Bool, Type::Int) => true,
+
             // Container types - match by container kind (ignore element types)
             (Type::List(_), Type::List(_)) => true,
             (Type::Dict(_, _), Type::Dict(_, _)) => true,

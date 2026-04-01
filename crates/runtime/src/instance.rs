@@ -16,6 +16,16 @@ pub extern "C" fn rt_make_instance(class_id: u8, field_count: i64) -> *mut Obj {
 
     let field_count = field_count.max(0) as usize;
 
+    // Warn if field count exceeds the GC's heap_field_mask capacity (64 bits).
+    // Fields beyond index 63 won't be traced by GC, risking use-after-free.
+    if field_count > 64 {
+        eprintln!(
+            "WARNING: class_id {} has {} fields, exceeding GC heap_field_mask capacity of 64. \
+             Fields beyond index 63 will NOT be traced by GC.",
+            class_id, field_count
+        );
+    }
+
     // Calculate size using size_of::<InstanceObj>() so that struct padding between
     // fields (e.g., the 7 padding bytes after class_id: u8 before field_count: usize
     // on 64-bit targets) is accounted for correctly. The flexible array member

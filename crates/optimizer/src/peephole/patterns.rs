@@ -231,6 +231,9 @@ fn match_binop_right_const(
             src: left.clone(),
         }),
         // x * 0 → 0
+        // Safety: replacing x * 0 -> 0 is safe because MIR operands are locals/constants,
+        // and DCE preserves the instruction that defined the local if it has side effects
+        // (RuntimeCalls are not considered pure by DCE).
         (BinOp::Mul, Constant::Int(0)) => Some(InstructionKind::Const {
             dest,
             value: Constant::Int(0),
@@ -332,6 +335,9 @@ fn match_binop_left_const(
             src: right.clone(),
         }),
         // 0 * x → 0
+        // Safety: replacing 0 * x -> 0 is safe because MIR operands are locals/constants,
+        // and DCE preserves the instruction that defined the local if it has side effects
+        // (RuntimeCalls are not considered pure by DCE).
         (BinOp::Mul, Constant::Int(0)) => Some(InstructionKind::Const {
             dest,
             value: Constant::Int(0),

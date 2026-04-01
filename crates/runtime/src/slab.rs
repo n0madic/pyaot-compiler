@@ -300,13 +300,17 @@ unsafe fn finalize_object(obj_ptr: *mut Obj) {
             crate::stringio::bytesio_finalize(obj_ptr);
         }
         TypeTagKind::Instance => {
-            // Call __del__ if registered for this class
+            // Call __del__ if registered for this class.
+            // Use catch_unwind to prevent panics from corrupting the slab free list.
             let instance = obj_ptr as *mut crate::object::InstanceObj;
             let class_id = (*instance).class_id;
             let del_fn = crate::vtable::get_del_func(class_id);
             if !del_fn.is_null() {
                 let del_fn: extern "C" fn(i64) -> i64 = std::mem::transmute(del_fn);
-                del_fn(obj_ptr as i64);
+                let obj_i64 = obj_ptr as i64;
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    del_fn(obj_i64);
+                }));
             }
         }
         _ => {}

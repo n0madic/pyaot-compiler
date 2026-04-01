@@ -173,6 +173,7 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::TupleConcat
         | mir::RuntimeFunc::TupleIndex
         | mir::RuntimeFunc::TupleCount
+        | mir::RuntimeFunc::TupleSetHeapMask
         | mir::RuntimeFunc::CallWithTupleArgs => {
             tuple::compile_tuple_call(builder, dest, func, args, ctx)?;
             Ok(())
@@ -473,8 +474,11 @@ pub fn compile_runtime_call(
         }
 
         _ => {
-            // Other runtime functions not yet implemented
-            Ok(())
+            panic!(
+                "codegen: unhandled RuntimeFunc variant: {:?}. \
+                 Every RuntimeFunc must have a corresponding match arm in compile_runtime_call.",
+                func
+            );
         }
     }
 }

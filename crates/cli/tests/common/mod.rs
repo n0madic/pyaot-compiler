@@ -181,8 +181,8 @@ pub fn run_pyaot(
         }
     }
 
-    // CPython differential check (only when PYAOT_DIFF_TEST=1)
-    if should_run_cpython_diff() && !is_skipped_for_diff(test_name) {
+    // CPython differential check
+    if !is_skipped_for_diff(test_name) {
         match run_in_cpython(py_file) {
             Ok(cpython_stdout) => {
                 let pyaot_normalized = normalize_output(&stdout);
@@ -219,11 +219,6 @@ const CPYTHON_DIFF_SKIP: &[&str] = &[
     "runtime_file_io",           // temp file paths, timing-dependent
     "runtime_stdlib_subprocess", // str vs bytes capture differences
 ];
-
-/// Check if CPython differential testing is enabled via environment variable.
-fn should_run_cpython_diff() -> bool {
-    std::env::var("PYAOT_DIFF_TEST").is_ok_and(|v| v == "1" || v == "true")
-}
 
 /// Check if a test is on the skip list for differential testing.
 fn is_skipped_for_diff(test_name: &str) -> bool {

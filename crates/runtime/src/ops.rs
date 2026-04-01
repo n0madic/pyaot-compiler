@@ -139,31 +139,7 @@ pub extern "C" fn rt_div_float(a: f64, b: f64) -> f64 {
     a / b
 }
 
-/// Print an integer (legacy - with newline)
-#[no_mangle]
-pub extern "C" fn rt_print_int(value: i64) {
-    println!("{}", value);
-}
-
-/// Print a float (legacy - with newline)
-#[no_mangle]
-pub extern "C" fn rt_print_float(value: f64) {
-    println!("{}", crate::utils::format_float_python(value));
-}
-
-/// Print a boolean (legacy - with newline)
-#[no_mangle]
-pub extern "C" fn rt_print_bool(value: bool) {
-    println!("{}", if value { "True" } else { "False" });
-}
-
-/// Print None (legacy - with newline)
-#[no_mangle]
-pub extern "C" fn rt_print_none() {
-    println!("None");
-}
-
-// === New print functions for print() builtin ===
+// === Print functions for print() builtin ===
 
 /// Print an integer value (no newline)
 #[no_mangle]
@@ -250,7 +226,15 @@ unsafe fn print_elem_repr(elem: *mut Obj, elem_tag: u8) {
     }
 }
 
-/// Print Python repr of any boxed object (strings get quotes)
+/// Print Python repr of any boxed object (strings get quotes).
+///
+/// NOTE: This function intentionally duplicates much of `rt_print_obj` below.
+/// The key difference is that `print_obj_repr` renders strings in repr mode
+/// (with single quotes and escape sequences), while `rt_print_obj` renders
+/// strings in str mode (raw content, no quotes). All other type arms are
+/// identical. We keep them separate rather than adding a `repr: bool` parameter
+/// to avoid branching overhead on a hot path that is called recursively for
+/// every element in nested containers.
 unsafe fn print_obj_repr(obj: *mut Obj) {
     if obj.is_null() {
         print!("None");
