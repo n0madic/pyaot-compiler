@@ -961,8 +961,10 @@ impl<'a> Lowering<'a> {
         // Positional class patterns require __match_args__ support, which is not
         // yet implemented.  Emit an error instead of silently ignoring sub-patterns.
         if !patterns.is_empty() {
-            return Err(pyaot_diagnostics::CompilerError::codegen_error(
+            let cls_expr = &ctx.hir_module.exprs[cls_expr_id];
+            return Err(pyaot_diagnostics::CompilerError::codegen_error_at(
                 "positional class patterns are not yet supported (__match_args__ required)",
+                cls_expr.span,
             ));
         }
 

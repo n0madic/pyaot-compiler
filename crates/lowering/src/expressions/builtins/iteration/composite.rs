@@ -301,7 +301,10 @@ impl<'a> Lowering<'a> {
         let func_or_builtin = self
             .extract_func_or_builtin(func_expr, hir_module)
             .ok_or_else(|| {
-                CompilerError::codegen_error("map() first argument must be a function")
+                CompilerError::codegen_error_at(
+                    "map() first argument must be a function",
+                    func_expr.span,
+                )
             })?;
 
         // Get function pointer and captures based on whether it's a user function or builtin
@@ -504,7 +507,10 @@ impl<'a> Lowering<'a> {
         let func_or_builtin = self
             .extract_func_or_builtin(func_expr, hir_module)
             .ok_or_else(|| {
-                CompilerError::codegen_error("reduce() first argument must be a function")
+                CompilerError::codegen_error_at(
+                    "reduce() first argument must be a function",
+                    func_expr.span,
+                )
             })?;
 
         // Extract func_id before consuming func_or_builtin (for result type inference)
@@ -641,8 +647,9 @@ impl<'a> Lowering<'a> {
             let func_or_builtin = self
                 .extract_func_or_builtin(func_expr, hir_module)
                 .ok_or_else(|| {
-                    CompilerError::codegen_error(
+                    CompilerError::codegen_error_at(
                         "filter() first argument must be a function or None",
+                        func_expr.span,
                     )
                 })?;
 

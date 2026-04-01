@@ -716,8 +716,10 @@ impl<'a> Lowering<'a> {
                     (*tag, vt)
                 }
                 _ => {
-                    return Err(CompilerError::codegen_error(
+                    let factory_expr = &hir_module.exprs[args[0]];
+                    return Err(CompilerError::codegen_error_at(
                         "defaultdict factory must be a type name (int, str, list, etc.)",
+                        factory_expr.span,
                     ));
                 }
             }

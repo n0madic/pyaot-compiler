@@ -220,13 +220,14 @@ impl<'a> Lowering<'a> {
                         if class_def.is_exception_class {
                             // Validate class_id fits in u8
                             if class_id.0 > MAX_EXCEPTION_CLASS_ID {
-                                return Err(pyaot_diagnostics::CompilerError::CodegenError {
-                                    message: format!(
+                                return Err(pyaot_diagnostics::CompilerError::codegen_error_at(
+                                    format!(
                                         "Exception class {:?} has class_id {} which exceeds the maximum \
                                          supported class_id for exception handling ({}).",
                                         class_def.name, class_id.0, MAX_EXCEPTION_CLASS_ID
                                     ),
-                                });
+                                    func_expr.span,
+                                ));
                             }
                             let id = class_id.0 as u8;
 

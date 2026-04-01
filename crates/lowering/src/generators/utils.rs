@@ -44,8 +44,9 @@ impl<'a> Lowering<'a> {
                 } else if let Some(&mir_local) = var_to_mir_local.get(var_id) {
                     Ok(mir::Operand::Local(mir_local))
                 } else {
-                    Err(pyaot_diagnostics::CompilerError::codegen_error(
+                    Err(pyaot_diagnostics::CompilerError::codegen_error_at(
                         "unresolved variable in generator yield expression",
+                        expr.span,
                     ))
                 }
             }
@@ -122,8 +123,9 @@ impl<'a> Lowering<'a> {
                         }
                     }
                 }
-                Err(pyaot_diagnostics::CompilerError::codegen_error(
+                Err(pyaot_diagnostics::CompilerError::codegen_error_at(
                     "unsupported attribute access pattern in generator yield expression",
+                    expr.span,
                 ))
             }
             hir::ExprKind::UnOp { op, operand } => {
@@ -276,10 +278,10 @@ impl<'a> Lowering<'a> {
 
                 Ok(mir::Operand::Local(result_local))
             }
-            other => Err(pyaot_diagnostics::CompilerError::codegen_error(format!(
-                "unsupported expression in generator yield: {:?}",
-                other
-            ))),
+            other => Err(pyaot_diagnostics::CompilerError::codegen_error_at(
+                format!("unsupported expression in generator yield: {:?}", other),
+                expr.span,
+            )),
         }
     }
 
@@ -305,8 +307,9 @@ impl<'a> Lowering<'a> {
                 } else if let Some(&mir_local) = var_to_mir_local.get(var_id) {
                     Ok(mir::Operand::Local(mir_local))
                 } else {
-                    Err(pyaot_diagnostics::CompilerError::codegen_error(
+                    Err(pyaot_diagnostics::CompilerError::codegen_error_at(
                         "unresolved variable in generator filter expression",
+                        expr.span,
                     ))
                 }
             }
@@ -475,10 +478,13 @@ impl<'a> Lowering<'a> {
                     _ => Ok(operand_val),
                 }
             }
-            other => Err(pyaot_diagnostics::CompilerError::codegen_error(format!(
-                "unsupported expression in generator filter condition: {:?}",
-                other
-            ))),
+            other => Err(pyaot_diagnostics::CompilerError::codegen_error_at(
+                format!(
+                    "unsupported expression in generator filter condition: {:?}",
+                    other
+                ),
+                expr.span,
+            )),
         }
     }
 
@@ -494,15 +500,16 @@ impl<'a> Lowering<'a> {
                 if let Some(&mir_local) = var_to_mir_local.get(var_id) {
                     Ok(mir::Operand::Local(mir_local))
                 } else {
-                    Err(pyaot_diagnostics::CompilerError::codegen_error(
+                    Err(pyaot_diagnostics::CompilerError::codegen_error_at(
                         "unresolved variable in generator operand expression",
+                        expr.span,
                     ))
                 }
             }
-            other => Err(pyaot_diagnostics::CompilerError::codegen_error(format!(
-                "unsupported expression in generator operand: {:?}",
-                other
-            ))),
+            other => Err(pyaot_diagnostics::CompilerError::codegen_error_at(
+                format!("unsupported expression in generator operand: {:?}", other),
+                expr.span,
+            )),
         }
     }
 
@@ -805,9 +812,10 @@ impl<'a> Lowering<'a> {
                 });
             }
         } else {
-            return Err(pyaot_diagnostics::CompilerError::codegen_error(
+            return Err(pyaot_diagnostics::CompilerError::codegen_error_at(
                 "unsupported while-loop condition in generator \
                  (only comparisons, `while True`, and bare variables are supported)",
+                cond_expr.span,
             ));
         }
 
