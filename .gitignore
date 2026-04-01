@@ -36,3 +36,5 @@ examples/*_out
 *PLAN*.md
 test.py
 IMPROVEMENT_PLAN.md
+.claude/commands
+.claude/feature_contracts
