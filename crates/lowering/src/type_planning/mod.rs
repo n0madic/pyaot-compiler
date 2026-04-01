@@ -7,7 +7,7 @@
 
 mod check;
 pub(crate) mod helpers;
-mod infer;
+pub(crate) mod infer;
 mod pre_scan;
 
 use indexmap::IndexMap;

@@ -715,3 +715,21 @@ pub(crate) fn extract_iterable_element_type(ty: &Type) -> Type {
         _ => Type::Any,
     }
 }
+
+/// Extract element type for iteration contexts.
+/// Unlike `extract_iterable_element_type` which computes the union of all tuple elements,
+/// this returns only the first tuple element type — appropriate for iteration over
+/// homogeneous containers where the first element represents the common type.
+pub(crate) fn extract_iterable_first_element_type(ty: &Type) -> Type {
+    match ty {
+        Type::List(elem) => (**elem).clone(),
+        Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
+        Type::Tuple(_) => Type::Any,
+        Type::Set(elem) => (**elem).clone(),
+        Type::Dict(key, _) => (**key).clone(),
+        Type::Str => Type::Str,
+        Type::Bytes => Type::Int,
+        Type::Iterator(elem) => (**elem).clone(),
+        _ => Type::Any,
+    }
+}

@@ -529,11 +529,8 @@ impl<'a> Lowering<'a> {
 
         // Determine element type (used as a fallback for non-tuple types and for
         // tuple elements whose index exceeds the statically-known length)
-        let elem_type = match subject_type {
-            Type::List(elem) => (**elem).clone(),
-            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-            _ => Type::Any,
-        };
+        let elem_type =
+            crate::type_planning::infer::extract_iterable_first_element_type(subject_type);
 
         // Get length check function
         let len_func = match subject_type {

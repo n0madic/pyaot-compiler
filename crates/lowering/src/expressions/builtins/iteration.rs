@@ -52,16 +52,7 @@ impl<'a> Lowering<'a> {
         }
 
         // Determine element type from container type
-        let elem_type = match &arg_type {
-            Type::List(elem) => (**elem).clone(),
-            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-            Type::Tuple(_) => Type::Any,
-            Type::Dict(key, _) => (**key).clone(),
-            Type::Set(elem) => (**elem).clone(),
-            Type::Str => Type::Str,
-            Type::Bytes => Type::Int, // bytes yields integers
-            _ => Type::Any,
-        };
+        let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
 
         // Create result local with Iterator type
         let result_local = self.alloc_and_add_local(Type::Iterator(Box::new(elem_type)), mir_func);
@@ -251,15 +242,7 @@ impl<'a> Lowering<'a> {
         let arg_type = self.get_expr_type(arg_expr, hir_module);
 
         // Determine element type from container type
-        let elem_type = match &arg_type {
-            Type::List(elem) => (**elem).clone(),
-            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-            Type::Tuple(_) => Type::Any,
-            Type::Dict(key, _) => (**key).clone(),
-            Type::Str => Type::Str,
-            Type::Bytes => Type::Int, // bytes yields integers
-            _ => Type::Any,
-        };
+        let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
 
         // Create result local with Iterator type
         let result_local = self.alloc_and_add_local(Type::Iterator(Box::new(elem_type)), mir_func);
@@ -365,15 +348,7 @@ impl<'a> Lowering<'a> {
         let arg_type = self.get_expr_type(arg_expr, hir_module);
 
         // Determine element type from container type
-        let elem_type = match &arg_type {
-            Type::List(elem) => (**elem).clone(),
-            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-            Type::Str => Type::Str,
-            Type::Dict(key, _) => (**key).clone(),
-            Type::Set(elem) => (**elem).clone(),
-            Type::Bytes => Type::Int,
-            _ => Type::Any,
-        };
+        let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
 
         // Create inner iterator first
         let inner_iter = self.lower_iter(args, hir_module, mir_func)?;
@@ -441,15 +416,7 @@ impl<'a> Lowering<'a> {
         let arg_type = self.get_expr_type(arg_expr, hir_module);
 
         // Determine element type from container type
-        let elem_type = match &arg_type {
-            Type::List(elem) => (**elem).clone(),
-            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-            Type::Tuple(_) => Type::Any,
-            Type::Dict(key, _) => (**key).clone(),
-            Type::Set(elem) => (**elem).clone(),
-            Type::Str => Type::Str,
-            _ => Type::Any,
-        };
+        let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
 
         // Determine elem_tag for boxing raw elements before calling key function.
         // Only builtin wrappers need boxing - user functions work with raw values.
@@ -714,16 +681,7 @@ impl<'a> Lowering<'a> {
         let first_elem_type = if first_is_range {
             Type::Int
         } else {
-            match &first_type {
-                Type::List(elem) => (**elem).clone(),
-                Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-                Type::Str => Type::Str,
-                Type::Dict(key, _) => (**key).clone(),
-                Type::Set(elem) => (**elem).clone(),
-                Type::Bytes => Type::Int,
-                Type::Iterator(elem) => (**elem).clone(),
-                _ => Type::Any,
-            }
+            crate::type_planning::infer::extract_iterable_first_element_type(&first_type)
         };
 
         // Create first iterator
@@ -791,16 +749,7 @@ impl<'a> Lowering<'a> {
         let second_elem_type = if second_is_range {
             Type::Int
         } else {
-            match &second_type {
-                Type::List(elem) => (**elem).clone(),
-                Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-                Type::Str => Type::Str,
-                Type::Dict(key, _) => (**key).clone(),
-                Type::Set(elem) => (**elem).clone(),
-                Type::Bytes => Type::Int,
-                Type::Iterator(elem) => (**elem).clone(),
-                _ => Type::Any,
-            }
+            crate::type_planning::infer::extract_iterable_first_element_type(&second_type)
         };
 
         // Create second iterator
@@ -1301,14 +1250,8 @@ impl<'a> Lowering<'a> {
         // Element type is same as input iterator
         let iterable_expr = &hir_module.exprs[args[1]];
         let iterable_type = self.get_expr_type(iterable_expr, hir_module);
-        let elem_type = match &iterable_type {
-            Type::List(elem) => (**elem).clone(),
-            Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-            Type::Str => Type::Str,
-            Type::Dict(key, _) => (**key).clone(),
-            Type::Set(elem) => (**elem).clone(),
-            _ => Type::Any,
-        };
+        let elem_type =
+            crate::type_planning::infer::extract_iterable_first_element_type(&iterable_type);
 
         // Determine elem_tag for truthiness filtering
         // Match how list literals store elements (see collections.rs):
@@ -1585,16 +1528,7 @@ impl<'a> Lowering<'a> {
         let elem_type = if is_range {
             Type::Int
         } else {
-            match &expr_type {
-                Type::List(elem) => (**elem).clone(),
-                Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-                Type::Str => Type::Str,
-                Type::Dict(key, _) => (**key).clone(),
-                Type::Set(elem) => (**elem).clone(),
-                Type::Bytes => Type::Int,
-                Type::Iterator(elem) => (**elem).clone(),
-                _ => Type::Any,
-            }
+            crate::type_planning::infer::extract_iterable_first_element_type(&expr_type)
         };
 
         // Create iterator

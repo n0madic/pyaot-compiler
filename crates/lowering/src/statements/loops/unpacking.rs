@@ -370,16 +370,8 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             let arg_type = self.get_expr_type(arg_expr, hir_module);
-            let elem_type = match &arg_type {
-                Type::List(elem) => (**elem).clone(),
-                Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-                Type::Str => Type::Str,
-                Type::Dict(key, _) => (**key).clone(),
-                Type::Set(elem) => (**elem).clone(),
-                Type::Bytes => Type::Int,
-                Type::Iterator(elem) => (**elem).clone(),
-                _ => Type::Any,
-            };
+            let elem_type =
+                crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
             elem_types.push(elem_type);
         }
         elem_types

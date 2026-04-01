@@ -641,3 +641,111 @@ pub extern "C" fn rt_math_perm(n: i64, k: i64) -> i64 {
     }
     result as i64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pow_float() {
+        assert_eq!(rt_pow_float(2.0, 3.0), 8.0);
+        assert_eq!(rt_pow_float(2.0, 0.0), 1.0);
+    }
+
+    #[test]
+    fn test_pow_int_basic() {
+        assert_eq!(rt_pow_int(2, 10), 1024);
+        assert_eq!(rt_pow_int(3, 0), 1);
+        assert_eq!(rt_pow_int(0, 5), 0);
+        assert_eq!(rt_pow_int(1, 1000), 1);
+        assert_eq!(rt_pow_int(-1, 3), -1);
+        assert_eq!(rt_pow_int(-1, 4), 1);
+    }
+
+    #[test]
+    fn test_pow_int_negative_exp() {
+        assert_eq!(rt_pow_int(2, -1), 0);
+        assert_eq!(rt_pow_int(1, -5), 1);
+        assert_eq!(rt_pow_int(-1, -3), -1);
+        assert_eq!(rt_pow_int(-1, -4), 1);
+    }
+
+    #[test]
+    fn test_round_to_int_bankers() {
+        assert_eq!(rt_round_to_int(0.5), 0);
+        assert_eq!(rt_round_to_int(1.5), 2);
+        assert_eq!(rt_round_to_int(2.5), 2);
+        assert_eq!(rt_round_to_int(3.5), 4);
+        assert_eq!(rt_round_to_int(1.3), 1);
+        assert_eq!(rt_round_to_int(1.7), 2);
+        assert_eq!(rt_round_to_int(-1.3), -1);
+        assert_eq!(rt_round_to_int(-1.7), -2);
+    }
+
+    #[test]
+    fn test_float_to_int_basic() {
+        assert_eq!(rt_float_to_int(3.7), 3);
+        assert_eq!(rt_float_to_int(-3.7), -3);
+        assert_eq!(rt_float_to_int(0.0), 0);
+        assert_eq!(rt_float_to_int(1.0), 1);
+    }
+
+    #[test]
+    fn test_math_sqrt() {
+        assert_eq!(rt_math_sqrt(4.0), 2.0);
+        assert_eq!(rt_math_sqrt(0.0), 0.0);
+    }
+
+    #[test]
+    fn test_math_floor_ceil() {
+        assert_eq!(rt_math_floor(1.7), 1);
+        assert_eq!(rt_math_floor(-1.7), -2);
+        assert_eq!(rt_math_ceil(1.3), 2);
+        assert_eq!(rt_math_ceil(-1.3), -1);
+    }
+
+    #[test]
+    fn test_math_gcd() {
+        assert_eq!(rt_math_gcd(12, 8), 4);
+        assert_eq!(rt_math_gcd(7, 13), 1);
+        assert_eq!(rt_math_gcd(0, 5), 5);
+        assert_eq!(rt_math_gcd(-12, 8), 4);
+    }
+
+    #[test]
+    fn test_math_factorial() {
+        assert_eq!(rt_math_factorial(0), 1);
+        assert_eq!(rt_math_factorial(1), 1);
+        assert_eq!(rt_math_factorial(5), 120);
+        assert_eq!(rt_math_factorial(10), 3628800);
+    }
+
+    #[test]
+    fn test_math_comb() {
+        assert_eq!(rt_math_comb(5, 2), 10);
+        assert_eq!(rt_math_comb(10, 0), 1);
+        assert_eq!(rt_math_comb(10, 10), 1);
+        assert_eq!(rt_math_comb(5, 6), 0);
+    }
+
+    #[test]
+    fn test_math_perm() {
+        assert_eq!(rt_math_perm(5, 2), 20);
+        assert_eq!(rt_math_perm(5, 0), 1);
+        assert_eq!(rt_math_perm(5, 6), 0);
+    }
+
+    #[test]
+    fn test_math_trig() {
+        assert!((rt_math_sin(0.0)).abs() < 1e-10);
+        assert!((rt_math_cos(0.0) - 1.0).abs() < 1e-10);
+        assert!((rt_math_tan(0.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_math_abs_degrees_radians() {
+        assert_eq!(rt_math_fabs(-3.14), 3.14);
+        assert!((rt_math_degrees(std::f64::consts::PI) - 180.0).abs() < 1e-10);
+        assert!((rt_math_radians(180.0) - std::f64::consts::PI).abs() < 1e-10);
+    }
+}

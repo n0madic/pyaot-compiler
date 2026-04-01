@@ -4,7 +4,7 @@
 //! Const, Copy, BinOp, UnOp, and CallDirect.
 
 use cranelift_codegen::ir::types as cltypes;
-use cranelift_codegen::ir::{AbiParam, InstBuilder, Value};
+use cranelift_codegen::ir::{AbiParam, FuncRef, InstBuilder, Value};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
@@ -235,20 +235,7 @@ pub fn compile_instruction(
                     // Fallback: check Cranelift function signature for type mismatch.
                     // This handles cases where param_types is unavailable (e.g., None
                     // constant passed as default for a pointer-typed parameter).
-                    _ => {
-                        let sig = &builder.func.dfg.signatures
-                            [builder.func.dfg.ext_funcs[func_ref].signature];
-                        if let Some(expected_param) = sig.params.get(i) {
-                            let expected_ty = expected_param.value_type;
-                            if arg_cl_type == cltypes::I8 && expected_ty == cltypes::I64 {
-                                builder.ins().uextend(cltypes::I64, arg_val)
-                            } else {
-                                arg_val
-                            }
-                        } else {
-                            arg_val
-                        }
-                    }
+                    _ => coerce_arg_by_signature(builder, ctx.module, arg_val, func_ref, i)?,
                 };
 
                 arg_vals.push(coerced_val);
@@ -286,30 +273,12 @@ pub fn compile_instruction(
             // Get a function reference
             let func_ref = ctx.module.declare_func_in_func(cl_func_id, builder.func);
 
-            // Prepare arguments with type coercion (same as CallDirect)
+            // Prepare arguments with type coercion via Cranelift signature inspection
             let mut arg_vals = Vec::new();
             for (i, arg) in args.iter().enumerate() {
                 let arg_val = load_operand(builder, arg, ctx.var_map);
-                // Check Cranelift function signature for type mismatch and coerce
-                let arg_cl_type = builder.func.dfg.value_type(arg_val);
-                let sig =
-                    &builder.func.dfg.signatures[builder.func.dfg.ext_funcs[func_ref].signature];
-                let coerced_val = if let Some(expected_param) = sig.params.get(i) {
-                    let expected_ty = expected_param.value_type;
-                    if arg_cl_type == expected_ty {
-                        arg_val
-                    } else if arg_cl_type == cltypes::I8 && expected_ty == cltypes::I64 {
-                        builder.ins().uextend(cltypes::I64, arg_val)
-                    } else if arg_cl_type == cltypes::F64 && expected_ty == cltypes::I64 {
-                        // Box the float via rt_box_float (same as CallDirect)
-                        // to produce a proper heap object pointer for Any/Union params
-                        box_primitive(builder, ctx.module, "rt_box_float", cltypes::F64, arg_val)?
-                    } else {
-                        arg_val
-                    }
-                } else {
-                    arg_val
-                };
+                let coerced_val =
+                    coerce_arg_by_signature(builder, ctx.module, arg_val, func_ref, i)?;
                 arg_vals.push(coerced_val);
             }
 
@@ -1113,6 +1082,44 @@ fn call_int_binop_rt(
     let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
     let call_inst = builder.ins().call(func_ref, &[left, right]);
     Ok(get_call_result(builder, call_inst))
+}
+
+/// Coerce a call argument based on the Cranelift function signature.
+///
+/// Handles mismatches between the actual argument type and the expected parameter type:
+/// - I8 -> I64: zero-extend (bool/None to int-sized)
+/// - F64 -> I64: box float via `rt_box_float` (for Any/Union parameters)
+/// - Same type or unrecognized mismatch: pass through unchanged
+fn coerce_arg_by_signature(
+    builder: &mut FunctionBuilder,
+    module: &mut cranelift_object::ObjectModule,
+    arg_val: Value,
+    func_ref: FuncRef,
+    arg_index: usize,
+) -> pyaot_diagnostics::Result<Value> {
+    let arg_type = builder.func.dfg.value_type(arg_val);
+    let sig = &builder.func.dfg.signatures[builder.func.dfg.ext_funcs[func_ref].signature];
+    let Some(expected_param) = sig.params.get(arg_index) else {
+        return Ok(arg_val);
+    };
+    let expected_ty = expected_param.value_type;
+
+    if arg_type == expected_ty {
+        return Ok(arg_val);
+    }
+
+    // I8 -> I64: extend bool/None to int-sized
+    if arg_type == cltypes::I8 && expected_ty == cltypes::I64 {
+        return Ok(builder.ins().uextend(cltypes::I64, arg_val));
+    }
+
+    // F64 -> I64: box float for Any/Union parameters
+    if arg_type == cltypes::F64 && expected_ty == cltypes::I64 {
+        return box_primitive(builder, module, "rt_box_float", cltypes::F64, arg_val);
+    }
+
+    // Fallback: pass through unchanged
+    Ok(arg_val)
 }
 
 /// Box a primitive value (int, float, bool) for passing to Any-typed parameters.

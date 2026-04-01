@@ -591,3 +591,273 @@ pub(crate) fn infer_set_type(elem_types: Vec<Type>) -> Type {
         Type::Set(Box::new(unify_element_types(elem_types)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === resolve_binop_type ===
+
+    #[test]
+    fn test_binop_int_add() {
+        let result = resolve_binop_type(&hir::BinOp::Add, &Type::Int, &Type::Int);
+        assert_eq!(result, Some(Type::Int));
+    }
+
+    #[test]
+    fn test_binop_float_add() {
+        let result = resolve_binop_type(&hir::BinOp::Add, &Type::Float, &Type::Float);
+        assert_eq!(result, Some(Type::Float));
+    }
+
+    #[test]
+    fn test_binop_int_float_promotion() {
+        let result = resolve_binop_type(&hir::BinOp::Add, &Type::Int, &Type::Float);
+        assert_eq!(result, Some(Type::Float));
+    }
+
+    #[test]
+    fn test_binop_div_always_float() {
+        let result = resolve_binop_type(&hir::BinOp::Div, &Type::Int, &Type::Int);
+        assert_eq!(result, Some(Type::Float));
+    }
+
+    #[test]
+    fn test_binop_str_concat() {
+        let result = resolve_binop_type(&hir::BinOp::Add, &Type::Str, &Type::Str);
+        assert_eq!(result, Some(Type::Str));
+    }
+
+    #[test]
+    fn test_binop_str_mul() {
+        let result = resolve_binop_type(&hir::BinOp::Mul, &Type::Str, &Type::Int);
+        assert_eq!(result, Some(Type::Str));
+        let result = resolve_binop_type(&hir::BinOp::Mul, &Type::Int, &Type::Str);
+        assert_eq!(result, Some(Type::Str));
+    }
+
+    #[test]
+    fn test_binop_str_format() {
+        let result = resolve_binop_type(&hir::BinOp::Mod, &Type::Str, &Type::Int);
+        assert_eq!(result, Some(Type::Str));
+    }
+
+    #[test]
+    fn test_binop_bool_promoted_to_int() {
+        let result = resolve_binop_type(&hir::BinOp::Add, &Type::Bool, &Type::Bool);
+        assert_eq!(result, Some(Type::Int));
+    }
+
+    #[test]
+    fn test_binop_list_concat() {
+        let list_int = Type::List(Box::new(Type::Int));
+        let result = resolve_binop_type(&hir::BinOp::Add, &list_int, &list_int);
+        assert_eq!(result, Some(list_int));
+    }
+
+    // === union_or_any ===
+
+    #[test]
+    fn test_union_or_any_same_types() {
+        assert_eq!(union_or_any(Type::Int, Type::Int), Type::Int);
+    }
+
+    #[test]
+    fn test_union_or_any_with_any() {
+        assert_eq!(union_or_any(Type::Int, Type::Any), Type::Any);
+        assert_eq!(union_or_any(Type::Any, Type::Str), Type::Any);
+    }
+
+    #[test]
+    fn test_union_or_any_different_types() {
+        let result = union_or_any(Type::Int, Type::Str);
+        assert!(matches!(result, Type::Union(_)));
+    }
+
+    // === unify_element_types ===
+
+    #[test]
+    fn test_unify_empty() {
+        assert_eq!(unify_element_types(vec![]), Type::Any);
+    }
+
+    #[test]
+    fn test_unify_homogeneous() {
+        assert_eq!(
+            unify_element_types(vec![Type::Int, Type::Int, Type::Int]),
+            Type::Int
+        );
+    }
+
+    #[test]
+    fn test_unify_heterogeneous() {
+        let result = unify_element_types(vec![Type::Int, Type::Str]);
+        assert!(matches!(result, Type::Union(_)));
+    }
+
+    // === unwrap_optional ===
+
+    #[test]
+    fn test_unwrap_optional_union() {
+        let optional_int = Type::Union(vec![Type::Int, Type::None]);
+        assert_eq!(unwrap_optional(&optional_int), Type::Int);
+    }
+
+    #[test]
+    fn test_unwrap_optional_non_optional() {
+        assert_eq!(unwrap_optional(&Type::Int), Type::Int);
+    }
+
+    // === infer_list_type ===
+
+    #[test]
+    fn test_infer_list_type_empty() {
+        let result = infer_list_type(vec![], None);
+        assert_eq!(result, Type::List(Box::new(Type::Any)));
+    }
+
+    #[test]
+    fn test_infer_list_type_homogeneous() {
+        let result = infer_list_type(vec![Type::Int, Type::Int], None);
+        assert_eq!(result, Type::List(Box::new(Type::Int)));
+    }
+
+    // === infer_dict_type ===
+
+    #[test]
+    fn test_infer_dict_type_empty() {
+        let result = infer_dict_type(vec![], vec![]);
+        assert_eq!(result, Type::Dict(Box::new(Type::Any), Box::new(Type::Any)));
+    }
+
+    #[test]
+    fn test_infer_dict_type_str_int() {
+        let result = infer_dict_type(vec![Type::Str], vec![Type::Int]);
+        assert_eq!(result, Type::Dict(Box::new(Type::Str), Box::new(Type::Int)));
+    }
+
+    // === infer_set_type ===
+
+    #[test]
+    fn test_infer_set_type_empty() {
+        assert_eq!(infer_set_type(vec![]), Type::Set(Box::new(Type::Any)));
+    }
+
+    #[test]
+    fn test_infer_set_type_int() {
+        assert_eq!(
+            infer_set_type(vec![Type::Int, Type::Int]),
+            Type::Set(Box::new(Type::Int))
+        );
+    }
+
+    // === resolve_method_return_type ===
+
+    #[test]
+    fn test_str_method_types() {
+        assert_eq!(
+            resolve_method_return_type(&Type::Str, "upper"),
+            Some(Type::Str)
+        );
+        assert_eq!(
+            resolve_method_return_type(&Type::Str, "split"),
+            Some(Type::List(Box::new(Type::Str)))
+        );
+        assert_eq!(
+            resolve_method_return_type(&Type::Str, "find"),
+            Some(Type::Int)
+        );
+        assert_eq!(
+            resolve_method_return_type(&Type::Str, "startswith"),
+            Some(Type::Bool)
+        );
+    }
+
+    #[test]
+    fn test_list_method_types() {
+        let list_int = Type::List(Box::new(Type::Int));
+        assert_eq!(
+            resolve_method_return_type(&list_int, "pop"),
+            Some(Type::Int)
+        );
+        assert_eq!(
+            resolve_method_return_type(&list_int, "index"),
+            Some(Type::Int)
+        );
+        assert_eq!(
+            resolve_method_return_type(&list_int, "append"),
+            Some(Type::None)
+        );
+    }
+
+    #[test]
+    fn test_dict_method_types() {
+        let dict = Type::Dict(Box::new(Type::Str), Box::new(Type::Int));
+        assert_eq!(resolve_method_return_type(&dict, "get"), Some(Type::Int));
+        assert_eq!(
+            resolve_method_return_type(&dict, "keys"),
+            Some(Type::List(Box::new(Type::Str)))
+        );
+    }
+
+    #[test]
+    fn test_unknown_method() {
+        assert_eq!(resolve_method_return_type(&Type::Int, "nonexistent"), None);
+    }
+
+    // === resolve_index_type ===
+
+    #[test]
+    fn test_index_str() {
+        let expr = hir::Expr {
+            kind: hir::ExprKind::Int(0),
+            ty: Some(Type::Int),
+            span: pyaot_utils::Span::dummy(),
+        };
+        assert_eq!(resolve_index_type(&Type::Str, &expr), Type::Str);
+    }
+
+    #[test]
+    fn test_index_list() {
+        let list = Type::List(Box::new(Type::Int));
+        let expr = hir::Expr {
+            kind: hir::ExprKind::Int(0),
+            ty: Some(Type::Int),
+            span: pyaot_utils::Span::dummy(),
+        };
+        assert_eq!(resolve_index_type(&list, &expr), Type::Int);
+    }
+
+    #[test]
+    fn test_index_dict() {
+        let dict = Type::Dict(Box::new(Type::Str), Box::new(Type::Int));
+        let expr = hir::Expr {
+            kind: hir::ExprKind::Int(0),
+            ty: Some(Type::Int),
+            span: pyaot_utils::Span::dummy(),
+        };
+        assert_eq!(resolve_index_type(&dict, &expr), Type::Int);
+    }
+
+    #[test]
+    fn test_index_tuple_const() {
+        let tuple = Type::Tuple(vec![Type::Int, Type::Str, Type::Bool]);
+        let expr = hir::Expr {
+            kind: hir::ExprKind::Int(1),
+            ty: Some(Type::Int),
+            span: pyaot_utils::Span::dummy(),
+        };
+        assert_eq!(resolve_index_type(&tuple, &expr), Type::Str);
+    }
+
+    #[test]
+    fn test_index_tuple_negative() {
+        let tuple = Type::Tuple(vec![Type::Int, Type::Str, Type::Bool]);
+        let expr = hir::Expr {
+            kind: hir::ExprKind::Int(-1),
+            ty: Some(Type::Int),
+            span: pyaot_utils::Span::dummy(),
+        };
+        assert_eq!(resolve_index_type(&tuple, &expr), Type::Bool);
+    }
+}

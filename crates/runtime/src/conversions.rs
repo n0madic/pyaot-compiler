@@ -1,7 +1,6 @@
 //! Type conversion operations for Python runtime
 
 use crate::exceptions;
-use crate::gc;
 use crate::object::{
     BytesObj, DictObj, ListObj, Obj, ObjHeader, SetObj, StrObj, TupleObj, TypeTagKind,
 };
@@ -11,92 +10,36 @@ use crate::string::rt_make_str;
 /// Returns: pointer to new allocated StrObj
 #[no_mangle]
 pub extern "C" fn rt_int_to_str(value: i64) -> *mut Obj {
-    use crate::object::{ObjHeader, StrObj, TypeTagKind};
-
     let s = value.to_string();
     let bytes = s.as_bytes();
-    let len = bytes.len();
-
-    let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
-    let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-
-    unsafe {
-        let str_obj = obj as *mut StrObj;
-        (*str_obj).len = len;
-        if len > 0 {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), (*str_obj).data.as_mut_ptr(), len);
-        }
-    }
-
-    obj
+    unsafe { crate::string::rt_make_str_impl(bytes.as_ptr(), bytes.len()) }
 }
 
 /// Convert a float to a string
 /// Returns: pointer to new allocated StrObj
 #[no_mangle]
 pub extern "C" fn rt_float_to_str(value: f64) -> *mut Obj {
-    use crate::object::{ObjHeader, StrObj, TypeTagKind};
-
     let s = crate::utils::format_float_python(value);
     let bytes = s.as_bytes();
-    let len = bytes.len();
-
-    let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
-    let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-
-    unsafe {
-        let str_obj = obj as *mut StrObj;
-        (*str_obj).len = len;
-        if len > 0 {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), (*str_obj).data.as_mut_ptr(), len);
-        }
-    }
-
-    obj
+    unsafe { crate::string::rt_make_str_impl(bytes.as_ptr(), bytes.len()) }
 }
 
 /// Convert a boolean to a string ("True" or "False")
 /// Returns: pointer to new allocated StrObj
 #[no_mangle]
 pub extern "C" fn rt_bool_to_str(value: i8) -> *mut Obj {
-    use crate::object::{ObjHeader, StrObj, TypeTagKind};
-
     let s = if value != 0 { "True" } else { "False" };
     let bytes = s.as_bytes();
-    let len = bytes.len();
-
-    let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
-    let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-
-    unsafe {
-        let str_obj = obj as *mut StrObj;
-        (*str_obj).len = len;
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), (*str_obj).data.as_mut_ptr(), len);
-    }
-
-    obj
+    unsafe { crate::string::rt_make_str_impl(bytes.as_ptr(), bytes.len()) }
 }
 
 /// Convert None to a string ("None")
 /// Returns: pointer to new allocated StrObj
 #[no_mangle]
 pub extern "C" fn rt_none_to_str() -> *mut Obj {
-    use crate::object::{ObjHeader, StrObj, TypeTagKind};
-
     let s = "None";
     let bytes = s.as_bytes();
-    let len = bytes.len();
-
-    let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
-    let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-
-    unsafe {
-        let str_obj = obj as *mut StrObj;
-        (*str_obj).len = len;
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), (*str_obj).data.as_mut_ptr(), len);
-    }
-
-    obj
+    unsafe { crate::string::rt_make_str_impl(bytes.as_ptr(), bytes.len()) }
 }
 
 /// Convert a string to an integer
@@ -182,8 +125,6 @@ pub extern "C" fn rt_str_to_float(str_obj: *mut Obj) -> f64 {
 /// Raises: ValueError if codepoint is out of range
 #[no_mangle]
 pub extern "C" fn rt_int_to_chr(codepoint: i64) -> *mut Obj {
-    use crate::object::{ObjHeader, StrObj, TypeTagKind};
-
     if !(0..=0x10FFFF).contains(&codepoint) {
         let msg = b"chr() arg not in range(0x110000)";
         unsafe {
@@ -203,18 +144,7 @@ pub extern "C" fn rt_int_to_chr(codepoint: i64) -> *mut Obj {
 
     let s = ch.to_string();
     let bytes = s.as_bytes();
-    let len = bytes.len();
-
-    let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
-    let obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-
-    unsafe {
-        let str_obj = obj as *mut StrObj;
-        (*str_obj).len = len;
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), (*str_obj).data.as_mut_ptr(), len);
-    }
-
-    obj
+    unsafe { crate::string::rt_make_str_impl(bytes.as_ptr(), bytes.len()) }
 }
 
 /// Convert character to integer code point: ord(s) -> i64
@@ -269,7 +199,7 @@ pub extern "C" fn rt_chr_to_int(str_obj: *mut Obj) -> i64 {
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_obj_to_str(obj: *mut Obj) -> *mut Obj {
-    use crate::object::{BoolObj, FloatObj, IntObj, ObjHeader, StrObj, TypeTagKind};
+    use crate::object::{BoolObj, FloatObj, IntObj, TypeTagKind};
 
     if obj.is_null() {
         return rt_none_to_str();
@@ -295,16 +225,7 @@ pub extern "C" fn rt_obj_to_str(obj: *mut Obj) -> *mut Obj {
                 // For containers and other types, build repr string
                 let s = obj_to_repr_string(obj);
                 let bytes = s.as_bytes();
-                let len = bytes.len();
-
-                let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>() + len;
-                let new_obj = gc::gc_alloc(size, TypeTagKind::Str as u8);
-
-                let str_obj = new_obj as *mut StrObj;
-                (*str_obj).len = len;
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), (*str_obj).data.as_mut_ptr(), len);
-
-                new_obj
+                crate::string::rt_make_str_impl(bytes.as_ptr(), bytes.len())
             }
         }
     }
