@@ -120,7 +120,7 @@ impl<'a> Lowering<'a> {
                         });
                     }
                     Type::Int => {
-                        // ListGetInt transparently handles both ELEM_RAW_INT and
+                        // ListGetTyped(Int) transparently handles both ELEM_RAW_INT and
                         // ELEM_HEAP_OBJ storage (unboxes IntObj when needed).
                         mir_func.add_local(mir::Local {
                             id: result_local,
@@ -130,7 +130,7 @@ impl<'a> Lowering<'a> {
                         });
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: result_local,
-                            func: mir::RuntimeFunc::ListGetInt,
+                            func: mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Int),
                             args: vec![obj_operand, index_operand],
                         });
                     }

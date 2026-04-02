@@ -88,6 +88,15 @@ impl MinMaxOp {
             MinMaxOp::Max => "max",
         }
     }
+
+    /// Numeric tag for passing to generic runtime minmax functions.
+    /// Min=0, Max=1
+    pub fn to_tag(&self) -> u8 {
+        match self {
+            MinMaxOp::Min => 0,
+            MinMaxOp::Max => 1,
+        }
+    }
 }
 
 /// Element type kind for min/max operations
@@ -235,6 +244,18 @@ impl ComparisonOp {
             ComparisonOp::Gte => "_gte",
         }
     }
+
+    /// Numeric tag for passing to generic runtime comparison functions.
+    /// Lt=0, Lte=1, Gt=2, Gte=3. Eq is not used with generic cmp functions.
+    pub fn to_tag(&self) -> u8 {
+        match self {
+            ComparisonOp::Lt => 0,
+            ComparisonOp::Lte => 1,
+            ComparisonOp::Gt => 2,
+            ComparisonOp::Gte => 3,
+            ComparisonOp::Eq => unreachable!("Eq does not use generic cmp dispatch"),
+        }
+    }
 }
 
 /// Comparable target kind for comparison operations
@@ -274,21 +295,15 @@ impl CompareKind {
             (CompareKind::ListInt, _) => "rt_list_eq_int",
             (CompareKind::ListFloat, _) => "rt_list_eq_float",
             (CompareKind::ListStr, _) => "rt_list_eq_str",
-            // List ordering comparisons (uses elem_tag at runtime)
+            // List ordering uses generic rt_list_cmp with op_tag parameter
             (CompareKind::List, ComparisonOp::Eq) => "rt_list_eq_int", // fallback; equality should use type-specific variants
-            (CompareKind::List, ComparisonOp::Lt) => "rt_list_lt",
-            (CompareKind::List, ComparisonOp::Lte) => "rt_list_lte",
-            (CompareKind::List, ComparisonOp::Gt) => "rt_list_gt",
-            (CompareKind::List, ComparisonOp::Gte) => "rt_list_gte",
+            (CompareKind::List, _) => "rt_list_cmp",
             // String and bytes only support Eq
             (CompareKind::Str, _) => "rt_str_eq",
             (CompareKind::Bytes, _) => "rt_bytes_eq",
-            // Tuple supports all comparison ops
+            // Tuple: equality uses rt_tuple_eq, ordering uses generic rt_tuple_cmp
             (CompareKind::Tuple, ComparisonOp::Eq) => "rt_tuple_eq",
-            (CompareKind::Tuple, ComparisonOp::Lt) => "rt_tuple_lt",
-            (CompareKind::Tuple, ComparisonOp::Lte) => "rt_tuple_lte",
-            (CompareKind::Tuple, ComparisonOp::Gt) => "rt_tuple_gt",
-            (CompareKind::Tuple, ComparisonOp::Gte) => "rt_tuple_gte",
+            (CompareKind::Tuple, _) => "rt_tuple_cmp",
             // Object supports all comparison ops
             (CompareKind::Obj, ComparisonOp::Eq) => "rt_obj_eq",
             (CompareKind::Obj, ComparisonOp::Lt) => "rt_obj_lt",
@@ -305,6 +320,12 @@ impl CompareKind {
             self,
             CompareKind::List | CompareKind::Tuple | CompareKind::Obj
         )
+    }
+
+    /// Whether this kind uses a generic cmp function with an op_tag parameter
+    /// for ordering operations (List and Tuple ordering).
+    pub fn needs_op_tag(&self) -> bool {
+        matches!(self, CompareKind::List | CompareKind::Tuple)
     }
 }
 
@@ -448,5 +469,63 @@ impl ConversionTypeKind {
     /// Build runtime function name for conversion: "rt_{from}_to_{to}"
     pub fn runtime_func_name(from: ConversionTypeKind, to: ConversionTypeKind) -> String {
         format!("rt_{}_to_{}", from.name(), to.name())
+    }
+}
+
+/// Search operation kind for string/bytes search methods
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SearchOp {
+    /// find() - first occurrence, returns -1 if not found
+    Find,
+    /// rfind() - last occurrence, returns -1 if not found
+    Rfind,
+    /// index() - first occurrence, raises ValueError if not found
+    Index,
+    /// rindex() - last occurrence, raises ValueError if not found
+    Rindex,
+}
+
+impl SearchOp {
+    /// Runtime function suffix: "_find", "_rfind", "_index", "_rindex"
+    pub fn suffix(&self) -> &'static str {
+        match self {
+            SearchOp::Find => "_find",
+            SearchOp::Rfind => "_rfind",
+            SearchOp::Index => "_index",
+            SearchOp::Rindex => "_rindex",
+        }
+    }
+
+    /// Numeric tag for passing to generic runtime search functions.
+    /// Find=0, Rfind=1, Index=2, Rindex=3
+    pub fn to_tag(&self) -> u8 {
+        match self {
+            SearchOp::Find => 0,
+            SearchOp::Rfind => 1,
+            SearchOp::Index => 2,
+            SearchOp::Rindex => 3,
+        }
+    }
+}
+
+/// Element type kind for typed collection element access
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GetElementKind {
+    /// Integer elements - returns i64
+    Int,
+    /// Float elements - returns f64
+    Float,
+    /// Bool elements - returns i8
+    Bool,
+}
+
+impl GetElementKind {
+    /// Runtime function suffix: "_int", "_float", "_bool"
+    pub fn suffix(&self) -> &'static str {
+        match self {
+            GetElementKind::Int => "_int",
+            GetElementKind::Float => "_float",
+            GetElementKind::Bool => "_bool",
+        }
     }
 }

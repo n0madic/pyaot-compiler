@@ -100,31 +100,29 @@ pub extern "C" fn rt_bytes_rfind(bytes: *mut Obj, sub: *mut Obj) -> i64 {
     }
 }
 
-/// Find sub-bytes, raise ValueError if not found
-/// Returns: index of first occurrence
+/// Generic bytes search with operation tag.
+/// op_tag: 0=find, 1=rfind, 2=index, 3=rindex
 #[no_mangle]
-pub extern "C" fn rt_bytes_index(bytes: *mut Obj, sub: *mut Obj) -> i64 {
-    let result = rt_bytes_find(bytes, sub);
-    if result < 0 {
-        unsafe {
-            let msg = b"subsection not found";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+pub extern "C" fn rt_bytes_search(bytes: *mut Obj, sub: *mut Obj, op_tag: u8) -> i64 {
+    let result = match op_tag {
+        0 => rt_bytes_find(bytes, sub),
+        1 => rt_bytes_rfind(bytes, sub),
+        2 | 3 => {
+            let r = if op_tag == 2 {
+                rt_bytes_find(bytes, sub)
+            } else {
+                rt_bytes_rfind(bytes, sub)
+            };
+            if r < 0 {
+                unsafe {
+                    let msg = b"subsection not found";
+                    crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+                }
+            }
+            r
         }
-    }
-    result
-}
-
-/// Find sub-bytes from the right, raise ValueError if not found
-/// Returns: index of last occurrence
-#[no_mangle]
-pub extern "C" fn rt_bytes_rindex(bytes: *mut Obj, sub: *mut Obj) -> i64 {
-    let result = rt_bytes_rfind(bytes, sub);
-    if result < 0 {
-        unsafe {
-            let msg = b"subsection not found";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
-        }
-    }
+        _ => unreachable!("invalid search op_tag: {op_tag}"),
+    };
     result
 }
 

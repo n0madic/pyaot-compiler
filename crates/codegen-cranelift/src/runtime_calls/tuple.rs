@@ -121,15 +121,21 @@ pub fn compile_tuple_call(
         mir::RuntimeFunc::TupleSliceToList => {
             compile_slice3(builder, "rt_tuple_slice_to_list", args, dest, ctx)?;
         }
-        mir::RuntimeFunc::TupleGetInt => {
-            // rt_tuple_get_int(tuple: *mut Obj, index: i64) -> i64
+        mir::RuntimeFunc::TupleGetTyped(elem) => {
+            let func_name = format!("rt_tuple_get{}", elem.suffix());
+            let ret_type = match elem {
+                mir::GetElementKind::Int => cltypes::I64,
+                mir::GetElementKind::Float => cltypes::F64,
+                mir::GetElementKind::Bool => cltypes::I8,
+            };
+
             let mut sig = ctx.module.make_signature();
             sig.call_conv = CallConv::SystemV;
             sig.params.push(AbiParam::new(cltypes::I64)); // tuple
             sig.params.push(AbiParam::new(cltypes::I64)); // index
-            sig.returns.push(AbiParam::new(cltypes::I64)); // result
+            sig.returns.push(AbiParam::new(ret_type)); // result
 
-            let func_id = declare_runtime_function(ctx.module, "rt_tuple_get_int", &sig)?;
+            let func_id = declare_runtime_function(ctx.module, &func_name, &sig)?;
             let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
 
             let tuple = load_operand(builder, &args[0], ctx.var_map);
@@ -142,51 +148,9 @@ pub fn compile_tuple_call(
                 .get(&dest)
                 .expect("internal error: dest local not in var_map - codegen bug");
             builder.def_var(dest_var, result_val);
-            update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
-        }
-        mir::RuntimeFunc::TupleGetFloat => {
-            // rt_tuple_get_float(tuple: *mut Obj, index: i64) -> f64
-            let mut sig = ctx.module.make_signature();
-            sig.call_conv = CallConv::SystemV;
-            sig.params.push(AbiParam::new(cltypes::I64)); // tuple
-            sig.params.push(AbiParam::new(cltypes::I64)); // index
-            sig.returns.push(AbiParam::new(cltypes::F64)); // result
-
-            let func_id = declare_runtime_function(ctx.module, "rt_tuple_get_float", &sig)?;
-            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-
-            let tuple = load_operand(builder, &args[0], ctx.var_map);
-            let index = load_operand(builder, &args[1], ctx.var_map);
-            let call_inst = builder.ins().call(func_ref, &[tuple, index]);
-
-            let result_val = get_call_result(builder, call_inst);
-            let dest_var = *ctx
-                .var_map
-                .get(&dest)
-                .expect("internal error: dest local not in var_map - codegen bug");
-            builder.def_var(dest_var, result_val);
-        }
-        mir::RuntimeFunc::TupleGetBool => {
-            // rt_tuple_get_bool(tuple: *mut Obj, index: i64) -> i8
-            let mut sig = ctx.module.make_signature();
-            sig.call_conv = CallConv::SystemV;
-            sig.params.push(AbiParam::new(cltypes::I64)); // tuple
-            sig.params.push(AbiParam::new(cltypes::I64)); // index
-            sig.returns.push(AbiParam::new(cltypes::I8)); // result
-
-            let func_id = declare_runtime_function(ctx.module, "rt_tuple_get_bool", &sig)?;
-            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-
-            let tuple = load_operand(builder, &args[0], ctx.var_map);
-            let index = load_operand(builder, &args[1], ctx.var_map);
-            let call_inst = builder.ins().call(func_ref, &[tuple, index]);
-
-            let result_val = get_call_result(builder, call_inst);
-            let dest_var = *ctx
-                .var_map
-                .get(&dest)
-                .expect("internal error: dest local not in var_map - codegen bug");
-            builder.def_var(dest_var, result_val);
+            if matches!(elem, mir::GetElementKind::Int) {
+                update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
+            }
         }
         mir::RuntimeFunc::TupleFromList => {
             // rt_tuple_from_list(list: *mut Obj) -> *mut Obj

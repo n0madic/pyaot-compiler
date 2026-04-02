@@ -302,7 +302,7 @@ impl<'a> Lowering<'a> {
                 // Use specialized list get for Int (raw i64), otherwise generic
                 // Bool and Float are boxed in lists, so use ListGet
                 match &elem_type {
-                    Type::Int => mir::RuntimeFunc::ListGetInt,
+                    Type::Int => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Int),
                     _ => mir::RuntimeFunc::ListGet, // Bool, Float, etc. are boxed
                 }
             }
@@ -311,9 +311,9 @@ impl<'a> Lowering<'a> {
                 // depends on the element type: ELEM_RAW_INT for Int, ELEM_HEAP_OBJ
                 // for everything else. Use specialized get functions accordingly.
                 match &elem_type {
-                    Type::Int => mir::RuntimeFunc::ListGetInt,
-                    Type::Float => mir::RuntimeFunc::ListGetFloat,
-                    Type::Bool => mir::RuntimeFunc::ListGetBool,
+                    Type::Int => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Int),
+                    Type::Float => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Float),
+                    Type::Bool => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Bool),
                     _ => mir::RuntimeFunc::ListGet,
                 }
             }
@@ -332,7 +332,7 @@ impl<'a> Lowering<'a> {
             iter_local
         };
 
-        // Specialized get functions (ListGetInt, ListGetFloat, ListGetBool) handle
+        // Specialized get functions (ListGetTyped) handle
         // both ELEM_RAW_INT and ELEM_HEAP_OBJ transparently, so no manual unboxing needed.
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: target_local,

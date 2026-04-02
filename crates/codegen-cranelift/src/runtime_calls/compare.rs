@@ -23,14 +23,17 @@ pub fn compile_compare_call(
     args: &[Operand],
     ctx: &mut CodegenContext,
 ) -> Result<()> {
-    // All comparison functions take two pointer args and return i8 (bool)
+    let needs_op_tag = kind.needs_op_tag() && !matches!(op, ComparisonOp::Eq);
+
     let mut sig = ctx.module.make_signature();
     sig.call_conv = CallConv::SystemV;
     sig.params.push(AbiParam::new(cltypes::I64)); // a
     sig.params.push(AbiParam::new(cltypes::I64)); // b
+    if needs_op_tag {
+        sig.params.push(AbiParam::new(cltypes::I8)); // op_tag
+    }
     sig.returns.push(AbiParam::new(cltypes::I8)); // result (0 or 1)
 
-    // Get the runtime function name
     let func_name = kind.runtime_func_name(op);
 
     let func_id = declare_runtime_function(ctx.module, func_name, &sig)?;
@@ -38,7 +41,13 @@ pub fn compile_compare_call(
 
     let a = load_operand(builder, &args[0], ctx.var_map);
     let b = load_operand(builder, &args[1], ctx.var_map);
-    let call_inst = builder.ins().call(func_ref, &[a, b]);
+
+    let call_inst = if needs_op_tag {
+        let tag = builder.ins().iconst(cltypes::I8, op.to_tag() as i64);
+        builder.ins().call(func_ref, &[a, b, tag])
+    } else {
+        builder.ins().call(func_ref, &[a, b])
+    };
 
     let result_val = get_call_result(builder, call_inst);
     let dest_var = *ctx

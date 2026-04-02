@@ -226,6 +226,16 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
     }
 }
 
+/// Probe configuration for compact hash table slot search.
+pub struct CompactProbeConfig {
+    /// Value meaning "slot is empty" (e.g., `EMPTY_INDEX = -1`)
+    pub empty: i64,
+    /// Value meaning "slot is a tombstone" (e.g., `DUMMY_INDEX = -2`)
+    pub dummy: i64,
+    /// When true, track tombstones and return the best insertion slot
+    pub for_insert: bool,
+}
+
 /// Find a slot in a compact-layout (dict-style) hash table's indices array.
 ///
 /// Dict uses a two-level structure:
@@ -241,28 +251,15 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
 /// * Key not found + `for_insert`: `slot` = best insertion slot, `entry_idx = -1`
 /// * Key not found + `!for_insert`: `(0, -1)` — slot value is not meaningful
 ///
-/// # Arguments
-/// * `capacity` - Indices table size (MUST be power of 2)
-/// * `hash` - Hash of the search key
-/// * `for_insert` - When true, track tombstones and return the best insertion slot
-/// * `get_index` - `|slot| -> i64`: reads `indices[slot]`
-/// * `get_entry_key` - `|entry_idx: i64| -> *mut Obj`: reads the key at that entry
-/// * `get_entry_hash` - `|entry_idx: i64| -> u64`: reads the stored hash at that entry
-/// * `empty_sentinel` - Value meaning "slot is empty" (e.g., `EMPTY_INDEX = -1`)
-/// * `dummy_sentinel` - Value meaning "slot is a tombstone" (e.g., `DUMMY_INDEX = -2`)
-/// * `search_key` - Key to search for
-///
 /// # Safety
 /// Caller must ensure closures access valid memory and `capacity` is a power of 2.
 pub unsafe fn find_compact_slot_generic<F, G, H>(
     capacity: usize,
     hash: u64,
-    for_insert: bool,
     get_index: F,
     get_entry_key: G,
     get_entry_hash: H,
-    empty_sentinel: i64,
-    dummy_sentinel: i64,
+    config: CompactProbeConfig,
     search_key: *mut Obj,
 ) -> (usize, i64)
 where
@@ -283,8 +280,8 @@ where
         let slot = (base + offset) & mask;
         let entry_idx = get_index(slot);
 
-        if entry_idx == empty_sentinel {
-            if for_insert {
+        if entry_idx == config.empty {
+            if config.for_insert {
                 let insert_slot = if first_available >= 0 {
                     first_available as usize
                 } else {
@@ -294,8 +291,8 @@ where
             }
             return (0, -1);
         }
-        if entry_idx == dummy_sentinel {
-            if for_insert && first_available < 0 {
+        if entry_idx == config.dummy {
+            if config.for_insert && first_available < 0 {
                 first_available = slot as i64;
             }
             continue;
@@ -309,7 +306,7 @@ where
     }
 
     // Table full (shouldn't happen with proper load factor)
-    if for_insert {
+    if config.for_insert {
         (first_available.max(0) as usize, -1)
     } else {
         (0, -1)

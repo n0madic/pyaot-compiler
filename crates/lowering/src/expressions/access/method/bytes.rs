@@ -52,10 +52,22 @@ impl<'a> Lowering<'a> {
         let (result_ty, runtime_func): (Type, mir::RuntimeFunc) = match method_name {
             "startswith" => (Type::Bool, mir::RuntimeFunc::BytesStartsWith),
             "endswith" => (Type::Bool, mir::RuntimeFunc::BytesEndsWith),
-            "find" => (Type::Int, mir::RuntimeFunc::BytesFind),
-            "rfind" => (Type::Int, mir::RuntimeFunc::BytesRfind),
-            "index" => (Type::Int, mir::RuntimeFunc::BytesIndex),
-            "rindex" => (Type::Int, mir::RuntimeFunc::BytesRindex),
+            "find" => (
+                Type::Int,
+                mir::RuntimeFunc::BytesSearch(mir::SearchOp::Find),
+            ),
+            "rfind" => (
+                Type::Int,
+                mir::RuntimeFunc::BytesSearch(mir::SearchOp::Rfind),
+            ),
+            "index" => (
+                Type::Int,
+                mir::RuntimeFunc::BytesSearch(mir::SearchOp::Index),
+            ),
+            "rindex" => (
+                Type::Int,
+                mir::RuntimeFunc::BytesSearch(mir::SearchOp::Rindex),
+            ),
             "count" => (Type::Int, mir::RuntimeFunc::BytesCount),
             "replace" => (Type::Bytes, mir::RuntimeFunc::BytesReplace),
             "strip" => (Type::Bytes, mir::RuntimeFunc::BytesStrip),

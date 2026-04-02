@@ -18,8 +18,8 @@ pub use core::{
 };
 
 pub use search::{
-    rt_bytes_contains, rt_bytes_count, rt_bytes_find, rt_bytes_index, rt_bytes_join,
-    rt_bytes_rfind, rt_bytes_rindex, rt_bytes_rsplit, rt_bytes_split,
+    rt_bytes_contains, rt_bytes_count, rt_bytes_find, rt_bytes_join, rt_bytes_rfind,
+    rt_bytes_rsplit, rt_bytes_search, rt_bytes_split,
 };
 
 pub use transform::{

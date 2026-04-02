@@ -20,13 +20,13 @@ impl<'a> Lowering<'a> {
                 match elem {
                     Type::Bool => (
                         mir::RuntimeFunc::ListLen,
-                        mir::RuntimeFunc::ListGetBool,
+                        mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Bool),
                         Type::Bool,
                         mir::Constant::Bool(false),
                     ),
                     Type::Int => (
                         mir::RuntimeFunc::ListLen,
-                        mir::RuntimeFunc::ListGetInt,
+                        mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Int),
                         Type::Int,
                         mir::Constant::Int(0),
                     ),

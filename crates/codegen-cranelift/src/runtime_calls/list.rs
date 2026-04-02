@@ -56,41 +56,45 @@ pub fn compile_list_call(
         mir::RuntimeFunc::ListGet => {
             compile_container_get(builder, "rt_list_get", &args[0], &args[1], dest, ctx)?;
         }
-        mir::RuntimeFunc::ListGetInt => {
-            compile_list_binary_to_i64(builder, "rt_list_get_int", &args[0], &args[1], dest, ctx)?;
-        }
-        mir::RuntimeFunc::ListGetFloat => {
-            // rt_list_get_float(list: *mut Obj, index: i64) -> f64
-            use crate::utils::load_operand;
-            use cranelift_codegen::ir::AbiParam;
-            use cranelift_codegen::isa::CallConv;
-            use cranelift_module::{Linkage, Module};
+        mir::RuntimeFunc::ListGetTyped(elem) => {
+            let func_name = format!("rt_list_get{}", elem.suffix());
+            match elem {
+                mir::GetElementKind::Int => {
+                    compile_list_binary_to_i64(builder, &func_name, &args[0], &args[1], dest, ctx)?;
+                }
+                mir::GetElementKind::Float => {
+                    use crate::utils::load_operand;
+                    use cranelift_codegen::ir::AbiParam;
+                    use cranelift_codegen::isa::CallConv;
+                    use cranelift_module::{Linkage, Module};
 
-            let mut sig = ctx.module.make_signature();
-            sig.call_conv = CallConv::SystemV;
-            sig.params.push(AbiParam::new(cltypes::I64)); // list
-            sig.params.push(AbiParam::new(cltypes::I64)); // index
-            sig.returns.push(AbiParam::new(cltypes::F64)); // result
+                    let mut sig = ctx.module.make_signature();
+                    sig.call_conv = CallConv::SystemV;
+                    sig.params.push(AbiParam::new(cltypes::I64)); // list
+                    sig.params.push(AbiParam::new(cltypes::I64)); // index
+                    sig.returns.push(AbiParam::new(cltypes::F64)); // result
 
-            let func_id = ctx
-                .module
-                .declare_function("rt_list_get_float", Linkage::Import, &sig)
-                .expect("failed to declare rt_list_get_float function");
-            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+                    let func_id = ctx
+                        .module
+                        .declare_function(&func_name, Linkage::Import, &sig)
+                        .expect("failed to declare rt_list_get_float function");
+                    let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
 
-            let list_val = load_operand(builder, &args[0], ctx.var_map);
-            let index_val = load_operand(builder, &args[1], ctx.var_map);
-            let call_inst = builder.ins().call(func_ref, &[list_val, index_val]);
-            let result_val = builder.inst_results(call_inst)[0];
+                    let list_val = load_operand(builder, &args[0], ctx.var_map);
+                    let index_val = load_operand(builder, &args[1], ctx.var_map);
+                    let call_inst = builder.ins().call(func_ref, &[list_val, index_val]);
+                    let result_val = builder.inst_results(call_inst)[0];
 
-            let dest_var = *ctx
-                .var_map
-                .get(&dest)
-                .expect("internal error: local not in var_map - codegen bug");
-            builder.def_var(dest_var, result_val);
-        }
-        mir::RuntimeFunc::ListGetBool => {
-            compile_list_binary_to_i8(builder, "rt_list_get_bool", &args[0], &args[1], dest, ctx)?;
+                    let dest_var = *ctx
+                        .var_map
+                        .get(&dest)
+                        .expect("internal error: local not in var_map - codegen bug");
+                    builder.def_var(dest_var, result_val);
+                }
+                mir::GetElementKind::Bool => {
+                    compile_list_binary_to_i8(builder, &func_name, &args[0], &args[1], dest, ctx)?;
+                }
+            }
         }
         mir::RuntimeFunc::ListLen => {
             compile_container_len(builder, "rt_list_len", &args[0], dest, ctx)?;

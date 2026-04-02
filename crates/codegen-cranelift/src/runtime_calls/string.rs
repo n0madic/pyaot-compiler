@@ -252,19 +252,8 @@ pub fn compile_string_call(
                 true,
             )?;
         }
-        mir::RuntimeFunc::StrFind => {
-            compile_binary_runtime_call(
-                builder,
-                "rt_str_find",
-                cltypes::I64,
-                cltypes::I64,
-                cltypes::I64,
-                &args[0],
-                &args[1],
-                dest,
-                ctx,
-                true,
-            )?;
+        mir::RuntimeFunc::StrSearch(op) => {
+            compile_str_search(builder, dest, *op, args, ctx)?;
         }
         mir::RuntimeFunc::StrCount => {
             compile_binary_runtime_call(
@@ -620,48 +609,6 @@ pub fn compile_string_call(
                 true,
             )?;
         }
-        mir::RuntimeFunc::StrRfind => {
-            compile_binary_runtime_call(
-                builder,
-                "rt_str_rfind",
-                cltypes::I64,
-                cltypes::I64,
-                cltypes::I64,
-                &args[0],
-                &args[1],
-                dest,
-                ctx,
-                true,
-            )?;
-        }
-        mir::RuntimeFunc::StrRindex => {
-            compile_binary_runtime_call(
-                builder,
-                "rt_str_rindex",
-                cltypes::I64,
-                cltypes::I64,
-                cltypes::I64,
-                &args[0],
-                &args[1],
-                dest,
-                ctx,
-                true,
-            )?;
-        }
-        mir::RuntimeFunc::StrIndex => {
-            compile_binary_runtime_call(
-                builder,
-                "rt_str_index",
-                cltypes::I64,
-                cltypes::I64,
-                cltypes::I64,
-                &args[0],
-                &args[1],
-                dest,
-                ctx,
-                true,
-            )?;
-        }
         mir::RuntimeFunc::StrRsplit => {
             compile_ternary_runtime_call(
                 builder,
@@ -706,5 +653,39 @@ pub fn compile_string_call(
         }
         _ => unreachable!("Non-string function passed to compile_string_call"),
     }
+    Ok(())
+}
+
+/// Compile a unified string search operation (find/rfind/index/rindex)
+/// Calls rt_str_search(str, sub, op_tag) -> i64
+fn compile_str_search(
+    builder: &mut FunctionBuilder,
+    dest: LocalId,
+    op: mir::SearchOp,
+    args: &[Operand],
+    ctx: &mut CodegenContext,
+) -> Result<()> {
+    let mut sig = ctx.module.make_signature();
+    sig.call_conv = CallConv::SystemV;
+    sig.params.push(AbiParam::new(cltypes::I64)); // str_obj
+    sig.params.push(AbiParam::new(cltypes::I64)); // sub
+    sig.params.push(AbiParam::new(cltypes::I8)); // op_tag
+    sig.returns.push(AbiParam::new(cltypes::I64)); // result
+
+    let func_id = declare_runtime_function(ctx.module, "rt_str_search", &sig)?;
+    let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+
+    let str_val = load_operand(builder, &args[0], ctx.var_map);
+    let sub_val = load_operand(builder, &args[1], ctx.var_map);
+    let tag = builder.ins().iconst(cltypes::I8, op.to_tag() as i64);
+    let call_inst = builder.ins().call(func_ref, &[str_val, sub_val, tag]);
+
+    let result_val = get_call_result(builder, call_inst);
+    let dest_var = *ctx
+        .var_map
+        .get(&dest)
+        .expect("internal error: dest local not in var_map - codegen bug");
+    builder.def_var(dest_var, result_val);
+    update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
     Ok(())
 }

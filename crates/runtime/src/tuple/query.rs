@@ -63,112 +63,46 @@ pub extern "C" fn rt_tuple_count(tuple: *mut Obj, value: *mut Obj) -> i64 {
     }
 }
 
-/// Find minimum element in an integer tuple
+/// Generic tuple min/max for int and float elements.
+/// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float.
+/// Returns i64 (for float, result is f64::to_bits()).
 #[no_mangle]
-pub extern "C" fn rt_tuple_min_int(tuple: *mut Obj) -> i64 {
-    use crate::minmax_utils::find_extremum_int;
+pub extern "C" fn rt_tuple_minmax(tuple: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
+    use crate::minmax_utils::{find_extremum_float, find_extremum_int};
     if tuple.is_null() {
         return 0;
     }
     unsafe {
         let tuple_obj = tuple as *mut crate::object::TupleObj;
         if (*tuple_obj).len == 0 {
-            let msg = b"min() arg is an empty sequence";
+            let msg = if is_min == 0 {
+                b"min() arg is an empty sequence" as &[u8]
+            } else {
+                b"max() arg is an empty sequence"
+            };
             crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
         }
-        find_extremum_int(
-            (*tuple_obj).data.as_ptr() as *const usize,
-            (*tuple_obj).len,
-            true,
-        )
+        let data = (*tuple_obj).data.as_ptr() as *const usize;
+        let len = (*tuple_obj).len;
+        let want_min = is_min == 0;
+        if elem_kind == 1 {
+            find_extremum_float(data, len, want_min).to_bits() as i64
+        } else {
+            find_extremum_int(data, len, want_min)
+        }
     }
 }
 
-/// Find maximum element in an integer tuple
+/// Generic tuple min/max with key function.
+/// is_min: 0=min, 1=max
 #[no_mangle]
-pub extern "C" fn rt_tuple_max_int(tuple: *mut Obj) -> i64 {
-    use crate::minmax_utils::find_extremum_int;
-    if tuple.is_null() {
-        return 0;
-    }
-    unsafe {
-        let tuple_obj = tuple as *mut crate::object::TupleObj;
-        if (*tuple_obj).len == 0 {
-            let msg = b"max() arg is an empty sequence";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
-        }
-        find_extremum_int(
-            (*tuple_obj).data.as_ptr() as *const usize,
-            (*tuple_obj).len,
-            false,
-        )
-    }
-}
-
-/// Find minimum element in a float tuple
-#[no_mangle]
-pub extern "C" fn rt_tuple_min_float(tuple: *mut Obj) -> f64 {
-    use crate::minmax_utils::find_extremum_float;
-    if tuple.is_null() {
-        return 0.0;
-    }
-    unsafe {
-        let tuple_obj = tuple as *mut crate::object::TupleObj;
-        if (*tuple_obj).len == 0 {
-            let msg = b"min() arg is an empty sequence";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
-        }
-        find_extremum_float(
-            (*tuple_obj).data.as_ptr() as *const usize,
-            (*tuple_obj).len,
-            true,
-        )
-    }
-}
-
-/// Find maximum element in a float tuple
-#[no_mangle]
-pub extern "C" fn rt_tuple_max_float(tuple: *mut Obj) -> f64 {
-    use crate::minmax_utils::find_extremum_float;
-    if tuple.is_null() {
-        return 0.0;
-    }
-    unsafe {
-        let tuple_obj = tuple as *mut crate::object::TupleObj;
-        if (*tuple_obj).len == 0 {
-            let msg = b"max() arg is an empty sequence";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
-        }
-        find_extremum_float(
-            (*tuple_obj).data.as_ptr() as *const usize,
-            (*tuple_obj).len,
-            false,
-        )
-    }
-}
-
-/// Find minimum element in a tuple with key function
-#[no_mangle]
-pub extern "C" fn rt_tuple_min_with_key(
+pub extern "C" fn rt_tuple_minmax_with_key(
     tuple: *mut Obj,
     key_fn: i64,
     elem_tag: i64,
     captures: *mut Obj,
     capture_count: i64,
-) -> *mut Obj {
-    unsafe {
-        find_tuple_extremum_with_key(tuple, key_fn, elem_tag, captures, capture_count as u8, true)
-    }
-}
-
-/// Find maximum element in a tuple with key function
-#[no_mangle]
-pub extern "C" fn rt_tuple_max_with_key(
-    tuple: *mut Obj,
-    key_fn: i64,
-    elem_tag: i64,
-    captures: *mut Obj,
-    capture_count: i64,
+    is_min: u8,
 ) -> *mut Obj {
     unsafe {
         find_tuple_extremum_with_key(
@@ -177,7 +111,7 @@ pub extern "C" fn rt_tuple_max_with_key(
             elem_tag,
             captures,
             capture_count as u8,
-            false,
+            is_min == 0,
         )
     }
 }

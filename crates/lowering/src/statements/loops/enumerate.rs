@@ -443,12 +443,12 @@ impl<'a> Lowering<'a> {
 
         // After DictKeys/SetToList conversion, the result list's elem_tag depends on
         // the element type. Use specialized get functions that handle both raw and boxed
-        // storage transparently (ListGetInt, ListGetFloat, ListGetBool).
+        // storage transparently (ListGetTyped).
         let get_func = match iterable_kind {
             IterableKind::List | IterableKind::Dict | IterableKind::Set => match &elem_type {
-                Type::Int => mir::RuntimeFunc::ListGetInt,
-                Type::Float => mir::RuntimeFunc::ListGetFloat,
-                Type::Bool => mir::RuntimeFunc::ListGetBool,
+                Type::Int => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Int),
+                Type::Float => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Float),
+                Type::Bool => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Bool),
                 _ => mir::RuntimeFunc::ListGet,
             },
             IterableKind::Tuple => mir::RuntimeFunc::TupleGet,

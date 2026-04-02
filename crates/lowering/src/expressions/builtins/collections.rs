@@ -278,7 +278,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         // Use expected_type from assignment context (e.g. `x: list[int] = list(...)`)
-        // for precise element type. This enables ListGetInt instead of generic ListGet.
+        // for precise element type. This enables ListGetTyped instead of generic ListGet.
         let list_elem_type = if let Some(Type::List(ref expected_elem)) = self.expected_type {
             (**expected_elem).clone()
         } else {
@@ -318,7 +318,7 @@ impl<'a> Lowering<'a> {
         // Use the lowered operand type if the HIR type is unknown (Any).
         // map/filter infer Iterator(Int) during lowering, but the HIR may still say Any.
         // We always use ELEM_HEAP_OBJ for map/filter iterators because the map callback
-        // ABI returns *mut Obj (boxed), and ListGetInt can transparently unbox both.
+        // ABI returns *mut Obj (boxed), and ListGetTyped(Int) can transparently unbox both.
         let lowered_type = self.operand_type(&source_operand, mir_func);
         let iter_type = match &hir_type {
             Type::Any if matches!(lowered_type, Type::Iterator(_)) => lowered_type,
@@ -365,8 +365,8 @@ impl<'a> Lowering<'a> {
             }
             Type::Iterator(_) => {
                 // Always use ELEM_HEAP_OBJ for generic iterators (map, filter, etc.)
-                // because the iterator protocol returns *mut Obj. ListGetInt/ListGetBool
-                // transparently handle unboxing from ELEM_HEAP_OBJ storage.
+                // because the iterator protocol returns *mut Obj. ListGetTyped(Int/Bool)
+                // transparently handles unboxing from ELEM_HEAP_OBJ storage.
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::ListFromIter,

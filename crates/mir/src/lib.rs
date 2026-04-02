@@ -16,8 +16,9 @@ mod terminators;
 pub use core::{BasicBlock, Function, Local, Module, VtableEntry, VtableInfo};
 pub use instructions::{Instruction, InstructionKind};
 pub use kinds::{
-    CompareKind, ComparisonOp, ContainerKind, ConversionTypeKind, ElementKind, IterDirection,
-    IterSourceKind, MinMaxOp, PrintKind, ReprTargetKind, SortableKind, StringFormat, ValueKind,
+    CompareKind, ComparisonOp, ContainerKind, ConversionTypeKind, ElementKind, GetElementKind,
+    IterDirection, IterSourceKind, MinMaxOp, PrintKind, ReprTargetKind, SearchOp, SortableKind,
+    StringFormat, ValueKind,
 };
 pub use operands::{Constant, Operand};
 pub use operators::{BinOp, UnOp};

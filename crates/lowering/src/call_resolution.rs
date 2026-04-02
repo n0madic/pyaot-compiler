@@ -331,8 +331,14 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> LocalId {
         let (get_func, needs_unbox) = match elem_type {
-            Type::Int => (mir::RuntimeFunc::ListGetInt, false),
-            Type::Float => (mir::RuntimeFunc::ListGetFloat, false),
+            Type::Int => (
+                mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Int),
+                false,
+            ),
+            Type::Float => (
+                mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Float),
+                false,
+            ),
             Type::Bool => (mir::RuntimeFunc::ListGet, true),
             _ => (mir::RuntimeFunc::ListGet, false),
         };

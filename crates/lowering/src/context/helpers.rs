@@ -646,9 +646,9 @@ impl<'a> Lowering<'a> {
     /// Primitive types (Int, Float, Bool) use specialized getters that handle unboxing.
     pub(crate) fn tuple_get_func(elem_type: &Type) -> mir::RuntimeFunc {
         match elem_type {
-            Type::Int => mir::RuntimeFunc::TupleGetInt,
-            Type::Float => mir::RuntimeFunc::TupleGetFloat,
-            Type::Bool => mir::RuntimeFunc::TupleGetBool,
+            Type::Int => mir::RuntimeFunc::TupleGetTyped(mir::GetElementKind::Int),
+            Type::Float => mir::RuntimeFunc::TupleGetTyped(mir::GetElementKind::Float),
+            Type::Bool => mir::RuntimeFunc::TupleGetTyped(mir::GetElementKind::Bool),
             _ => mir::RuntimeFunc::TupleGet,
         }
     }

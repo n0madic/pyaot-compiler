@@ -28,8 +28,8 @@ pub use predicates::{
     rt_str_isupper,
 };
 pub use search::{
-    rt_str_contains, rt_str_count, rt_str_endswith, rt_str_eq, rt_str_find, rt_str_index,
-    rt_str_rfind, rt_str_rindex, rt_str_startswith,
+    rt_str_contains, rt_str_count, rt_str_endswith, rt_str_eq, rt_str_find, rt_str_rfind,
+    rt_str_search, rt_str_startswith,
 };
 pub(crate) use slice::utf8_char_width;
 pub use slice::{rt_str_getchar, rt_str_slice, rt_str_slice_step};

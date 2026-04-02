@@ -15,10 +15,7 @@ pub use comparison::{rt_set_isdisjoint, rt_set_issubset, rt_set_issuperset};
 
 pub use convert::rt_set_to_list;
 
-pub use core::{
-    rt_make_set, rt_set_len, rt_set_max_float, rt_set_max_int, rt_set_max_with_key,
-    rt_set_min_float, rt_set_min_int, rt_set_min_with_key, set_finalize,
-};
+pub use core::{rt_make_set, rt_set_len, rt_set_minmax, rt_set_minmax_with_key, set_finalize};
 
 pub use ops::{
     rt_set_add, rt_set_clear, rt_set_contains, rt_set_copy, rt_set_difference_update,

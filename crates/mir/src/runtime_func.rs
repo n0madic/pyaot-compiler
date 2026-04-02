@@ -1,8 +1,9 @@
 //! Runtime function definitions for MIR
 
 use crate::{
-    CompareKind, ComparisonOp, ContainerKind, ConversionTypeKind, ElementKind, IterDirection,
-    IterSourceKind, MinMaxOp, PrintKind, ReprTargetKind, SortableKind, StringFormat, ValueKind,
+    CompareKind, ComparisonOp, ContainerKind, ConversionTypeKind, ElementKind, GetElementKind,
+    IterDirection, IterSourceKind, MinMaxOp, PrintKind, ReprTargetKind, SearchOp, SortableKind,
+    StringFormat, ValueKind,
 };
 use pyaot_stdlib_defs::{StdlibAttrDef, StdlibFunctionDef, StdlibMethodDef};
 
@@ -107,12 +108,8 @@ pub enum RuntimeFunc {
     TupleIndex,
     /// Tuple count (count occurrences of value)
     TupleCount,
-    /// Tuple get int element (with automatic unboxing): rt_tuple_get_int(tuple, index) -> i64
-    TupleGetInt,
-    /// Tuple get float element (with automatic unboxing): rt_tuple_get_float(tuple, index) -> f64
-    TupleGetFloat,
-    /// Tuple get bool element (with automatic unboxing): rt_tuple_get_bool(tuple, index) -> i8
-    TupleGetBool,
+    /// Tuple get typed element (with automatic unboxing)
+    TupleGetTyped(GetElementKind),
     /// Call a function pointer with arguments unpacked from a tuple.
     /// Used for *args forwarding in decorator wrappers: func(*args)
     /// rt_call_with_tuple_args(func_ptr, args_tuple) -> result
@@ -122,12 +119,8 @@ pub enum RuntimeFunc {
     TupleConcat,
     /// Concatenate two lists: rt_list_concat(list1, list2) -> list
     ListConcat,
-    /// List get int element (with automatic unboxing): rt_list_get_int(list, index) -> i64
-    ListGetInt,
-    /// List get float element (with automatic unboxing): rt_list_get_float(list, index) -> f64
-    ListGetFloat,
-    /// List get bool element (with automatic unboxing): rt_list_get_bool(list, index) -> i8
-    ListGetBool,
+    /// List get typed element (with automatic unboxing)
+    ListGetTyped(GetElementKind),
     /// Dict set (insert/update)
     DictSet,
     /// Dict get (lookup)
@@ -192,14 +185,8 @@ pub enum RuntimeFunc {
     StrStartsWith,
     /// String endswith()
     StrEndsWith,
-    /// String find()
-    StrFind,
-    /// String rfind()
-    StrRfind,
-    /// String rindex (raises ValueError)
-    StrRindex,
-    /// String index (raises ValueError)
-    StrIndex,
+    /// String search: find/rfind/index/rindex with operation tag
+    StrSearch(SearchOp),
     /// String rsplit()
     StrRsplit,
     /// String isascii check
@@ -441,14 +428,8 @@ pub enum RuntimeFunc {
     BytesStartsWith,
     /// Bytes endswith: rt_bytes_endswith(bytes: *mut Obj, suffix: *mut Obj) -> i8
     BytesEndsWith,
-    /// Bytes find: rt_bytes_find(bytes: *mut Obj, sub: *mut Obj) -> i64
-    BytesFind,
-    /// Bytes rfind: rt_bytes_rfind(bytes: *mut Obj, sub: *mut Obj) -> i64
-    BytesRfind,
-    /// Bytes index: rt_bytes_index(bytes: *mut Obj, sub: *mut Obj) -> i64
-    BytesIndex,
-    /// Bytes rindex: rt_bytes_rindex(bytes: *mut Obj, sub: *mut Obj) -> i64
-    BytesRindex,
+    /// Bytes search: find/rfind/index/rindex with operation tag
+    BytesSearch(SearchOp),
     /// Bytes count: rt_bytes_count(bytes: *mut Obj, sub: *mut Obj) -> i64
     BytesCount,
     /// Bytes replace: rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut Obj

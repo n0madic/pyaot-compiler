@@ -3,7 +3,7 @@
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::gc;
-use crate::hash_table_utils::find_compact_slot_generic;
+use crate::hash_table_utils::{find_compact_slot_generic, CompactProbeConfig};
 use crate::object::{DictEntry, DictObj, Obj, TypeTagKind};
 
 /// Sentinel value for empty slot in indices table
@@ -57,12 +57,14 @@ pub(super) unsafe fn lookup_entry(dict: *mut DictObj, key: *mut Obj, hash: u64) 
     let (_, entry_idx) = find_compact_slot_generic(
         (*dict).indices_capacity,
         hash,
-        false,
         |slot| *(*dict).indices.add(slot),
         |ei| (*(*dict).entries.add(ei as usize)).key,
         |ei| (*(*dict).entries.add(ei as usize)).hash,
-        EMPTY_INDEX,
-        DUMMY_INDEX,
+        CompactProbeConfig {
+            empty: EMPTY_INDEX,
+            dummy: DUMMY_INDEX,
+            for_insert: false,
+        },
         key,
     );
     entry_idx
@@ -81,12 +83,14 @@ pub(super) unsafe fn find_insert_slot(
     find_compact_slot_generic(
         (*dict).indices_capacity,
         hash,
-        true,
         |slot| *(*dict).indices.add(slot),
         |ei| (*(*dict).entries.add(ei as usize)).key,
         |ei| (*(*dict).entries.add(ei as usize)).hash,
-        EMPTY_INDEX,
-        DUMMY_INDEX,
+        CompactProbeConfig {
+            empty: EMPTY_INDEX,
+            dummy: DUMMY_INDEX,
+            for_insert: true,
+        },
         key,
     )
 }

@@ -73,7 +73,7 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::StrStrip
         | mir::RuntimeFunc::StrStartsWith
         | mir::RuntimeFunc::StrEndsWith
-        | mir::RuntimeFunc::StrFind
+        | mir::RuntimeFunc::StrSearch(_)
         | mir::RuntimeFunc::StrReplace
         // New string methods
         | mir::RuntimeFunc::StrCount
@@ -100,9 +100,6 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::StrPartition
         | mir::RuntimeFunc::StrRpartition
         | mir::RuntimeFunc::StrExpandTabs
-        | mir::RuntimeFunc::StrRfind
-        | mir::RuntimeFunc::StrRindex
-        | mir::RuntimeFunc::StrIndex
         | mir::RuntimeFunc::StrRsplit
         | mir::RuntimeFunc::StrIsAscii
         | mir::RuntimeFunc::StrEncode
@@ -119,9 +116,7 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::ListPush
         | mir::RuntimeFunc::ListSet
         | mir::RuntimeFunc::ListGet
-        | mir::RuntimeFunc::ListGetInt
-        | mir::RuntimeFunc::ListGetFloat
-        | mir::RuntimeFunc::ListGetBool
+        | mir::RuntimeFunc::ListGetTyped(_)
         | mir::RuntimeFunc::ListLen
         | mir::RuntimeFunc::ListSlice
         | mir::RuntimeFunc::ListSliceStep
@@ -161,9 +156,7 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::TupleSlice
         | mir::RuntimeFunc::TupleSliceStep
         | mir::RuntimeFunc::TupleSliceToList
-        | mir::RuntimeFunc::TupleGetInt
-        | mir::RuntimeFunc::TupleGetFloat
-        | mir::RuntimeFunc::TupleGetBool
+        | mir::RuntimeFunc::TupleGetTyped(_)
         | mir::RuntimeFunc::TupleFromList
         | mir::RuntimeFunc::TupleFromStr
         | mir::RuntimeFunc::TupleFromRange
@@ -358,10 +351,7 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::BytesDecode
         | mir::RuntimeFunc::BytesStartsWith
         | mir::RuntimeFunc::BytesEndsWith
-        | mir::RuntimeFunc::BytesFind
-        | mir::RuntimeFunc::BytesRfind
-        | mir::RuntimeFunc::BytesIndex
-        | mir::RuntimeFunc::BytesRindex
+        | mir::RuntimeFunc::BytesSearch(_)
         | mir::RuntimeFunc::BytesCount
         | mir::RuntimeFunc::BytesReplace
         | mir::RuntimeFunc::BytesSplit

@@ -1,99 +1,59 @@
-//! List min/max operations for integer and float lists
+//! List min/max operations
 
 use crate::minmax_utils::{find_extremum_float, find_extremum_int};
 use crate::object::{ListObj, Obj};
 use crate::sorted::compare_key_values;
 
-/// Find minimum element in an integer list
+/// Generic list min/max for int and float elements.
+/// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float.
+/// Returns i64 (for float, result is f64::to_bits()).
 #[no_mangle]
-pub extern "C" fn rt_list_min_int(list: *mut Obj) -> i64 {
+pub extern "C" fn rt_list_minmax(list: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
     if list.is_null() {
         return 0;
     }
     unsafe {
         let list_obj = list as *mut ListObj;
         if (*list_obj).len == 0 {
-            let msg = b"min() arg is an empty sequence";
+            let msg = if is_min == 0 {
+                b"min() arg is an empty sequence" as &[u8]
+            } else {
+                b"max() arg is an empty sequence"
+            };
             crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
         }
-        find_extremum_int((*list_obj).data as *const usize, (*list_obj).len, true)
+        let data = (*list_obj).data as *const usize;
+        let len = (*list_obj).len;
+        let want_min = is_min == 0;
+        if elem_kind == 1 {
+            find_extremum_float(data, len, want_min).to_bits() as i64
+        } else {
+            find_extremum_int(data, len, want_min)
+        }
     }
 }
 
-/// Find maximum element in an integer list
+/// Generic list min/max with key function.
+/// is_min: 0=min, 1=max
 #[no_mangle]
-pub extern "C" fn rt_list_max_int(list: *mut Obj) -> i64 {
-    if list.is_null() {
-        return 0;
-    }
-    unsafe {
-        let list_obj = list as *mut ListObj;
-        if (*list_obj).len == 0 {
-            let msg = b"max() arg is an empty sequence";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
-        }
-        find_extremum_int((*list_obj).data as *const usize, (*list_obj).len, false)
-    }
-}
-
-/// Find minimum element in a float list
-#[no_mangle]
-pub extern "C" fn rt_list_min_float(list: *mut Obj) -> f64 {
-    if list.is_null() {
-        return 0.0;
-    }
-    unsafe {
-        let list_obj = list as *mut ListObj;
-        if (*list_obj).len == 0 {
-            let msg = b"min() arg is an empty sequence";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
-        }
-        find_extremum_float((*list_obj).data as *const usize, (*list_obj).len, true)
-    }
-}
-
-/// Find maximum element in a float list
-#[no_mangle]
-pub extern "C" fn rt_list_max_float(list: *mut Obj) -> f64 {
-    if list.is_null() {
-        return 0.0;
-    }
-    unsafe {
-        let list_obj = list as *mut ListObj;
-        if (*list_obj).len == 0 {
-            let msg = b"max() arg is an empty sequence";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
-        }
-        find_extremum_float((*list_obj).data as *const usize, (*list_obj).len, false)
-    }
-}
-
-/// Find minimum element in a list with key function
-/// key_fn: function pointer for key extraction
-/// elem_tag: element storage type (0=ELEM_HEAP_OBJ, 1=ELEM_RAW_INT, 2=ELEM_RAW_BOOL)
-/// captures: tuple of captured variables (null if no captures)
-/// capture_count: number of captured variables
-#[no_mangle]
-pub extern "C" fn rt_list_min_with_key(
+pub extern "C" fn rt_list_minmax_with_key(
     list: *mut Obj,
     key_fn: i64,
     elem_tag: i64,
     captures: *mut Obj,
     capture_count: i64,
+    is_min: u8,
 ) -> *mut Obj {
-    unsafe { find_extremum_with_key(list, key_fn, elem_tag, captures, capture_count as u8, true) }
-}
-
-/// Find maximum element in a list with key function
-#[no_mangle]
-pub extern "C" fn rt_list_max_with_key(
-    list: *mut Obj,
-    key_fn: i64,
-    elem_tag: i64,
-    captures: *mut Obj,
-    capture_count: i64,
-) -> *mut Obj {
-    unsafe { find_extremum_with_key(list, key_fn, elem_tag, captures, capture_count as u8, false) }
+    unsafe {
+        find_extremum_with_key(
+            list,
+            key_fn,
+            elem_tag,
+            captures,
+            capture_count as u8,
+            is_min == 0,
+        )
+    }
 }
 
 /// Call key function with captures support

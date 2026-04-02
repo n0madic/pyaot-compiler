@@ -152,226 +152,63 @@ pub extern "C" fn rt_tuple_eq(a: *mut Obj, b: *mut Obj) -> i8 {
     }
 }
 
-/// Tuple less-than comparison - returns i8 (bool)
-/// Implements element-wise lexicographic comparison following Python semantics
-#[no_mangle]
-pub extern "C" fn rt_tuple_lt(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        // Handle null cases
-        if a.is_null() && b.is_null() {
-            return 0; // null == null, not <
-        }
-        if a.is_null() {
-            return 1; // null < non-null
-        }
-        if b.is_null() {
-            return 0; // non-null not < null
-        }
+/// Lexicographic ordering comparison for two tuples.
+/// Uses elem_tag from each TupleObj to dispatch element comparison.
+unsafe fn tuple_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
 
-        let tuple_a = a as *mut crate::object::TupleObj;
-        let tuple_b = b as *mut crate::object::TupleObj;
-        let len_a = (*tuple_a).len;
-        let len_b = (*tuple_b).len;
-        let min_len = len_a.min(len_b);
-        let elem_tag_a = (*tuple_a).elem_tag;
-        let elem_tag_b = (*tuple_b).elem_tag;
+    if a.is_null() && b.is_null() {
+        return Ordering::Equal;
+    }
+    if a.is_null() {
+        return Ordering::Less;
+    }
+    if b.is_null() {
+        return Ordering::Greater;
+    }
 
-        let data_a = (*tuple_a).data.as_ptr();
-        let data_b = (*tuple_b).data.as_ptr();
+    let tuple_a = a as *mut crate::object::TupleObj;
+    let tuple_b = b as *mut crate::object::TupleObj;
+    let len_a = (*tuple_a).len;
+    let len_b = (*tuple_b).len;
+    let min_len = len_a.min(len_b);
+    let elem_tag_a = (*tuple_a).elem_tag;
+    let elem_tag_b = (*tuple_b).elem_tag;
 
-        // Compare element-by-element
-        for i in 0..min_len {
-            let elem_a = *data_a.add(i);
-            let elem_b = *data_b.add(i);
+    let data_a = (*tuple_a).data.as_ptr();
+    let data_b = (*tuple_b).data.as_ptr();
 
-            use crate::sorted::compare_list_elements;
-            let (cmp_a, cmp_b, cmp_tag) = if elem_tag_a == elem_tag_b {
-                (elem_a, elem_b, elem_tag_a)
-            } else {
-                let boxed_a = box_if_raw(elem_a, elem_tag_a);
-                let boxed_b = box_if_raw(elem_b, elem_tag_b);
-                (boxed_a, boxed_b, crate::object::ELEM_HEAP_OBJ)
-            };
-            match compare_list_elements(cmp_a, cmp_b, cmp_tag) {
-                std::cmp::Ordering::Less => return 1,    // a < b
-                std::cmp::Ordering::Greater => return 0, // a > b
-                std::cmp::Ordering::Equal => continue,   // check next element
-            }
-        }
+    for i in 0..min_len {
+        let elem_a = *data_a.add(i);
+        let elem_b = *data_b.add(i);
 
-        // All compared elements are equal - shorter tuple is less
-        if len_a < len_b {
-            1
+        let (cmp_a, cmp_b, cmp_tag) = if elem_tag_a == elem_tag_b {
+            (elem_a, elem_b, elem_tag_a)
         } else {
-            0
+            let boxed_a = box_if_raw(elem_a, elem_tag_a);
+            let boxed_b = box_if_raw(elem_b, elem_tag_b);
+            (boxed_a, boxed_b, crate::object::ELEM_HEAP_OBJ)
+        };
+        match crate::sorted::compare_list_elements(cmp_a, cmp_b, cmp_tag) {
+            Ordering::Equal => continue,
+            ord => return ord,
         }
     }
+
+    len_a.cmp(&len_b)
 }
 
-/// Tuple less-than-or-equal comparison - returns i8 (bool)
-/// Implements element-wise lexicographic comparison following Python semantics
+/// Generic tuple ordering comparison with operation tag.
+/// op_tag: 0=Lt, 1=Lte, 2=Gt, 3=Gte
 #[no_mangle]
-pub extern "C" fn rt_tuple_lte(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        // Handle null cases
-        if a.is_null() && b.is_null() {
-            return 1; // null == null, so <=
-        }
-        if a.is_null() {
-            return 1; // null < non-null, so <=
-        }
-        if b.is_null() {
-            return 0; // non-null not <= null
-        }
-
-        let tuple_a = a as *mut crate::object::TupleObj;
-        let tuple_b = b as *mut crate::object::TupleObj;
-        let len_a = (*tuple_a).len;
-        let len_b = (*tuple_b).len;
-        let min_len = len_a.min(len_b);
-        let elem_tag_a = (*tuple_a).elem_tag;
-        let elem_tag_b = (*tuple_b).elem_tag;
-
-        let data_a = (*tuple_a).data.as_ptr();
-        let data_b = (*tuple_b).data.as_ptr();
-
-        // Compare element-by-element
-        for i in 0..min_len {
-            let elem_a = *data_a.add(i);
-            let elem_b = *data_b.add(i);
-
-            use crate::sorted::compare_list_elements;
-            let (cmp_a, cmp_b, cmp_tag) = if elem_tag_a == elem_tag_b {
-                (elem_a, elem_b, elem_tag_a)
-            } else {
-                let boxed_a = box_if_raw(elem_a, elem_tag_a);
-                let boxed_b = box_if_raw(elem_b, elem_tag_b);
-                (boxed_a, boxed_b, crate::object::ELEM_HEAP_OBJ)
-            };
-            match compare_list_elements(cmp_a, cmp_b, cmp_tag) {
-                std::cmp::Ordering::Less => return 1,    // a < b, so <=
-                std::cmp::Ordering::Greater => return 0, // a > b, so not <=
-                std::cmp::Ordering::Equal => continue,   // check next element
-            }
-        }
-
-        // All compared elements are equal - shorter or equal length satisfies <=
-        if len_a <= len_b {
-            1
-        } else {
-            0
-        }
-    }
-}
-
-/// Tuple greater-than comparison - returns i8 (bool)
-/// Implements element-wise lexicographic comparison following Python semantics
-#[no_mangle]
-pub extern "C" fn rt_tuple_gt(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        // Handle null cases
-        if a.is_null() && b.is_null() {
-            return 0; // null == null, not >
-        }
-        if a.is_null() {
-            return 0; // null < non-null, not >
-        }
-        if b.is_null() {
-            return 1; // non-null > null
-        }
-
-        let tuple_a = a as *mut crate::object::TupleObj;
-        let tuple_b = b as *mut crate::object::TupleObj;
-        let len_a = (*tuple_a).len;
-        let len_b = (*tuple_b).len;
-        let min_len = len_a.min(len_b);
-        let elem_tag_a = (*tuple_a).elem_tag;
-        let elem_tag_b = (*tuple_b).elem_tag;
-
-        let data_a = (*tuple_a).data.as_ptr();
-        let data_b = (*tuple_b).data.as_ptr();
-
-        // Compare element-by-element
-        for i in 0..min_len {
-            let elem_a = *data_a.add(i);
-            let elem_b = *data_b.add(i);
-
-            use crate::sorted::compare_list_elements;
-            let (cmp_a, cmp_b, cmp_tag) = if elem_tag_a == elem_tag_b {
-                (elem_a, elem_b, elem_tag_a)
-            } else {
-                let boxed_a = box_if_raw(elem_a, elem_tag_a);
-                let boxed_b = box_if_raw(elem_b, elem_tag_b);
-                (boxed_a, boxed_b, crate::object::ELEM_HEAP_OBJ)
-            };
-            match compare_list_elements(cmp_a, cmp_b, cmp_tag) {
-                std::cmp::Ordering::Less => return 0,    // a < b, not >
-                std::cmp::Ordering::Greater => return 1, // a > b
-                std::cmp::Ordering::Equal => continue,   // check next element
-            }
-        }
-
-        // All compared elements are equal - longer tuple is greater
-        if len_a > len_b {
-            1
-        } else {
-            0
-        }
-    }
-}
-
-/// Tuple greater-than-or-equal comparison - returns i8 (bool)
-/// Implements element-wise lexicographic comparison following Python semantics
-#[no_mangle]
-pub extern "C" fn rt_tuple_gte(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        // Handle null cases
-        if a.is_null() && b.is_null() {
-            return 1; // null == null, so >=
-        }
-        if a.is_null() {
-            return 0; // null < non-null, not >=
-        }
-        if b.is_null() {
-            return 1; // non-null > null, so >=
-        }
-
-        let tuple_a = a as *mut crate::object::TupleObj;
-        let tuple_b = b as *mut crate::object::TupleObj;
-        let len_a = (*tuple_a).len;
-        let len_b = (*tuple_b).len;
-        let min_len = len_a.min(len_b);
-        let elem_tag_a = (*tuple_a).elem_tag;
-        let elem_tag_b = (*tuple_b).elem_tag;
-
-        let data_a = (*tuple_a).data.as_ptr();
-        let data_b = (*tuple_b).data.as_ptr();
-
-        // Compare element-by-element
-        for i in 0..min_len {
-            let elem_a = *data_a.add(i);
-            let elem_b = *data_b.add(i);
-
-            use crate::sorted::compare_list_elements;
-            let (cmp_a, cmp_b, cmp_tag) = if elem_tag_a == elem_tag_b {
-                (elem_a, elem_b, elem_tag_a)
-            } else {
-                let boxed_a = box_if_raw(elem_a, elem_tag_a);
-                let boxed_b = box_if_raw(elem_b, elem_tag_b);
-                (boxed_a, boxed_b, crate::object::ELEM_HEAP_OBJ)
-            };
-            match compare_list_elements(cmp_a, cmp_b, cmp_tag) {
-                std::cmp::Ordering::Less => return 0,    // a < b, not >=
-                std::cmp::Ordering::Greater => return 1, // a > b, so >=
-                std::cmp::Ordering::Equal => continue,   // check next element
-            }
-        }
-
-        // All compared elements are equal - longer or equal length satisfies >=
-        if len_a >= len_b {
-            1
-        } else {
-            0
-        }
+pub extern "C" fn rt_tuple_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
+    use std::cmp::Ordering;
+    let ord = unsafe { tuple_cmp_ordering(a, b) };
+    match op_tag {
+        0 => (ord == Ordering::Less) as i8,
+        1 => (ord != Ordering::Greater) as i8,
+        2 => (ord == Ordering::Greater) as i8,
+        3 => (ord != Ordering::Less) as i8,
+        _ => unreachable!("invalid comparison op_tag: {op_tag}"),
     }
 }

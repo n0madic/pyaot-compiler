@@ -193,182 +193,87 @@ pub unsafe fn set_finalize(set: *mut Obj) {
     }
 }
 
-/// Find minimum element in an integer set
-/// Returns the minimum i64 value, or 0 if set is empty
+/// Generic set min/max for int and float elements.
+/// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float.
+/// Returns i64 (for float, result is f64::to_bits()).
 #[no_mangle]
-pub extern "C" fn rt_set_min_int(set: *mut Obj) -> i64 {
-    use crate::object::IntObj;
+pub extern "C" fn rt_set_minmax(set: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
+    use crate::object::{FloatObj, IntObj};
 
     if set.is_null() {
         return 0;
     }
 
     unsafe {
-        debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_min_int");
+        debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_minmax");
         let set_obj = set as *mut SetObj;
         let len = (*set_obj).len;
         let capacity = (*set_obj).capacity;
 
         if len == 0 {
-            let msg = b"min() arg is an empty sequence";
+            let msg = if is_min == 0 {
+                b"min() arg is an empty sequence" as &[u8]
+            } else {
+                b"max() arg is an empty sequence"
+            };
             crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
         }
 
         let entries = (*set_obj).entries;
-        let mut min_val: Option<i64> = None;
+        let want_min = is_min == 0;
 
-        for i in 0..capacity {
-            let entry = entries.add(i);
-            let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                let int_obj = elem as *mut IntObj;
-                let val = (*int_obj).value;
-                match min_val {
-                    None => min_val = Some(val),
-                    Some(current_min) if val < current_min => min_val = Some(val),
-                    _ => {}
+        if elem_kind == 1 {
+            // Float elements
+            let mut result: Option<f64> = None;
+            for i in 0..capacity {
+                let entry = entries.add(i);
+                let elem = (*entry).elem;
+                if !elem.is_null() && elem != TOMBSTONE {
+                    let val = (*(elem as *mut FloatObj)).value;
+                    match result {
+                        None => result = Some(val),
+                        Some(current) => {
+                            if (want_min && val < current) || (!want_min && val > current) {
+                                result = Some(val);
+                            }
+                        }
+                    }
                 }
             }
+            result.unwrap_or(0.0).to_bits() as i64
+        } else {
+            // Int elements
+            let mut result: Option<i64> = None;
+            for i in 0..capacity {
+                let entry = entries.add(i);
+                let elem = (*entry).elem;
+                if !elem.is_null() && elem != TOMBSTONE {
+                    let val = (*(elem as *mut IntObj)).value;
+                    match result {
+                        None => result = Some(val),
+                        Some(current) => {
+                            if (want_min && val < current) || (!want_min && val > current) {
+                                result = Some(val);
+                            }
+                        }
+                    }
+                }
+            }
+            result.unwrap_or(0)
         }
-
-        min_val.unwrap_or(0)
     }
 }
 
-/// Find maximum element in an integer set
-/// Returns the maximum i64 value, or 0 if set is empty
+/// Generic set min/max with key function.
+/// is_min: 0=min, 1=max
 #[no_mangle]
-pub extern "C" fn rt_set_max_int(set: *mut Obj) -> i64 {
-    use crate::object::IntObj;
-
-    if set.is_null() {
-        return 0;
-    }
-
-    unsafe {
-        debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_max_int");
-        let set_obj = set as *mut SetObj;
-        let len = (*set_obj).len;
-        let capacity = (*set_obj).capacity;
-
-        if len == 0 {
-            let msg = b"max() arg is an empty sequence";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
-        }
-
-        let entries = (*set_obj).entries;
-        let mut max_val: Option<i64> = None;
-
-        for i in 0..capacity {
-            let entry = entries.add(i);
-            let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                let int_obj = elem as *mut IntObj;
-                let val = (*int_obj).value;
-                match max_val {
-                    None => max_val = Some(val),
-                    Some(current_max) if val > current_max => max_val = Some(val),
-                    _ => {}
-                }
-            }
-        }
-
-        max_val.unwrap_or(0)
-    }
-}
-
-/// Find minimum element in a float set
-/// Returns the minimum f64 value, or 0.0 if set is empty
-#[no_mangle]
-pub extern "C" fn rt_set_min_float(set: *mut Obj) -> f64 {
-    use crate::object::FloatObj;
-
-    if set.is_null() {
-        return 0.0;
-    }
-
-    unsafe {
-        debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_min_float");
-        let set_obj = set as *mut SetObj;
-        let len = (*set_obj).len;
-        let capacity = (*set_obj).capacity;
-
-        if len == 0 {
-            let msg = b"min() arg is an empty sequence";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
-        }
-
-        let entries = (*set_obj).entries;
-        let mut min_val: Option<f64> = None;
-
-        for i in 0..capacity {
-            let entry = entries.add(i);
-            let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                let float_obj = elem as *mut FloatObj;
-                let val = (*float_obj).value;
-                match min_val {
-                    None => min_val = Some(val),
-                    Some(current_min) if val < current_min => min_val = Some(val),
-                    _ => {}
-                }
-            }
-        }
-
-        min_val.unwrap_or(0.0)
-    }
-}
-
-/// Find maximum element in a float set
-/// Returns the maximum f64 value, or 0.0 if set is empty
-#[no_mangle]
-pub extern "C" fn rt_set_max_float(set: *mut Obj) -> f64 {
-    use crate::object::FloatObj;
-
-    if set.is_null() {
-        return 0.0;
-    }
-
-    unsafe {
-        debug_assert_type_tag!(set, TypeTagKind::Set, "rt_set_max_float");
-        let set_obj = set as *mut SetObj;
-        let len = (*set_obj).len;
-        let capacity = (*set_obj).capacity;
-
-        if len == 0 {
-            let msg = b"max() arg is an empty sequence";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
-        }
-
-        let entries = (*set_obj).entries;
-        let mut max_val: Option<f64> = None;
-
-        for i in 0..capacity {
-            let entry = entries.add(i);
-            let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                let float_obj = elem as *mut FloatObj;
-                let val = (*float_obj).value;
-                match max_val {
-                    None => max_val = Some(val),
-                    Some(current_max) if val > current_max => max_val = Some(val),
-                    _ => {}
-                }
-            }
-        }
-
-        max_val.unwrap_or(0.0)
-    }
-}
-
-/// Find minimum element in a set with key function
-#[no_mangle]
-pub extern "C" fn rt_set_min_with_key(
+pub extern "C" fn rt_set_minmax_with_key(
     set: *mut Obj,
     key_fn: i64,
     needs_unbox: i64,
     captures: *mut Obj,
     capture_count: i64,
+    is_min: u8,
 ) -> *mut Obj {
     unsafe {
         find_set_extremum_with_key(
@@ -377,28 +282,7 @@ pub extern "C" fn rt_set_min_with_key(
             needs_unbox,
             captures,
             capture_count as u8,
-            true,
-        )
-    }
-}
-
-/// Find maximum element in a set with key function
-#[no_mangle]
-pub extern "C" fn rt_set_max_with_key(
-    set: *mut Obj,
-    key_fn: i64,
-    needs_unbox: i64,
-    captures: *mut Obj,
-    capture_count: i64,
-) -> *mut Obj {
-    unsafe {
-        find_set_extremum_with_key(
-            set,
-            key_fn,
-            needs_unbox,
-            captures,
-            capture_count as u8,
-            false,
+            is_min == 0,
         )
     }
 }

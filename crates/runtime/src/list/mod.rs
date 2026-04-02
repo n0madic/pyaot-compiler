@@ -27,10 +27,7 @@ mod slice;
 mod timsort;
 
 // Re-export all public functions
-pub use compare::{
-    rt_list_eq_float, rt_list_eq_int, rt_list_eq_str, rt_list_gt, rt_list_gte, rt_list_lt,
-    rt_list_lte,
-};
+pub use compare::{rt_list_cmp, rt_list_eq_float, rt_list_eq_int, rt_list_eq_str};
 pub use convert::{
     rt_list_from_dict, rt_list_from_iter, rt_list_from_range, rt_list_from_set, rt_list_from_str,
     rt_list_from_tuple, rt_list_tail_to_tuple, rt_list_tail_to_tuple_bool,
@@ -40,7 +37,7 @@ pub use core::{
     list_finalize, rt_list_get, rt_list_get_bool, rt_list_get_float, rt_list_get_int, rt_list_len,
     rt_list_push, rt_list_set, rt_make_list,
 };
-pub use minmax::{rt_list_max_float, rt_list_max_int, rt_list_min_float, rt_list_min_int};
+pub use minmax::{rt_list_minmax, rt_list_minmax_with_key};
 pub use mutation::{
     rt_list_append, rt_list_clear, rt_list_extend, rt_list_insert, rt_list_pop, rt_list_remove,
     rt_list_reverse, rt_list_sort,

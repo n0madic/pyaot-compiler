@@ -148,46 +148,16 @@ unsafe fn list_cmp_ordering(a: *mut Obj, b: *mut Obj) -> Ordering {
     len_a.cmp(&len_b)
 }
 
-/// List less-than comparison (lexicographic)
+/// Generic list ordering comparison with operation tag.
+/// op_tag: 0=Lt, 1=Lte, 2=Gt, 3=Gte
 #[no_mangle]
-pub extern "C" fn rt_list_lt(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        match list_cmp_ordering(a, b) {
-            Ordering::Less => 1,
-            _ => 0,
-        }
-    }
-}
-
-/// List less-than-or-equal comparison (lexicographic)
-#[no_mangle]
-pub extern "C" fn rt_list_lte(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        match list_cmp_ordering(a, b) {
-            Ordering::Greater => 0,
-            _ => 1,
-        }
-    }
-}
-
-/// List greater-than comparison (lexicographic)
-#[no_mangle]
-pub extern "C" fn rt_list_gt(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        match list_cmp_ordering(a, b) {
-            Ordering::Greater => 1,
-            _ => 0,
-        }
-    }
-}
-
-/// List greater-than-or-equal comparison (lexicographic)
-#[no_mangle]
-pub extern "C" fn rt_list_gte(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        match list_cmp_ordering(a, b) {
-            Ordering::Less => 0,
-            _ => 1,
-        }
+pub extern "C" fn rt_list_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
+    let ord = unsafe { list_cmp_ordering(a, b) };
+    match op_tag {
+        0 => (ord == Ordering::Less) as i8,
+        1 => (ord != Ordering::Greater) as i8,
+        2 => (ord == Ordering::Greater) as i8,
+        3 => (ord != Ordering::Less) as i8,
+        _ => unreachable!("invalid comparison op_tag: {op_tag}"),
     }
 }
