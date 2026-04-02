@@ -1,277 +1,15 @@
-//! Dictionary operations for Python runtime
-//!
-//! Uses CPython 3.6+ compact dict design to preserve insertion order:
-//! - `indices`: hash index table mapping hash slots to entry indices
-//! - `entries`: dense array of DictEntry stored in insertion order
+//! Dictionary get, set, delete, contains, update, merge, pop, setdefault operations
 
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
-use crate::gc;
 use crate::hash_table_utils::{eq_hashable_obj, hash_hashable_obj};
-use crate::list::{rt_list_push, rt_make_list};
-use crate::object::{
-    DictEntry, DictObj, ListObj, Obj, StrObj, TypeTagKind, ELEM_HEAP_OBJ, ELEM_RAW_INT,
-};
+use crate::object::{DictObj, Obj, StrObj, TypeTagKind};
 use crate::string::rt_make_str_interned;
-use crate::tuple::{rt_make_tuple, rt_tuple_set};
 
-/// Sentinel value for empty slot in indices table
-const EMPTY_INDEX: i64 = -1;
-/// Sentinel value for deleted slot in indices table (tombstone for probe chain)
-const DUMMY_INDEX: i64 = -2;
-
-/// Maximum string length to intern for dict keys
-const MAX_DICT_KEY_INTERN_LENGTH: usize = 256;
-
-/// Bit position of the factory_tag byte packed into the high byte of
-/// `DictObj::entries_capacity` for DefaultDict objects.
-pub(crate) const FACTORY_TAG_SHIFT: usize = 56;
-/// Mask for the real entries_capacity stored in the lower 56 bits.
-pub(crate) const CAPACITY_MASK: usize = (1usize << FACTORY_TAG_SHIFT) - 1;
-
-/// Return the real entries_capacity for any DictObj.
-///
-/// DefaultDict objects pack a factory_tag into the high byte of
-/// `entries_capacity`. This helper strips that byte so all dict
-/// operations use the correct physical capacity.
-#[inline]
-pub(crate) fn real_entries_capacity(dict: *mut DictObj) -> usize {
-    unsafe { (*dict).entries_capacity & CAPACITY_MASK }
-}
-
-/// Write a new real entries_capacity while preserving any packed factory_tag
-/// in the high byte.
-#[inline]
-pub(crate) unsafe fn set_real_entries_capacity(dict: *mut DictObj, capacity: usize) {
-    let tag_byte = (*dict).entries_capacity & !CAPACITY_MASK; // high byte(s) only
-    (*dict).entries_capacity = tag_byte | (capacity & CAPACITY_MASK);
-}
-
-/// Round up to the next power of 2 (required for mask-based probing).
-#[inline]
-fn next_power_of_2(n: usize) -> usize {
-    if n == 0 {
-        return 1;
-    }
-    if n.is_power_of_two() {
-        return n;
-    }
-    n.next_power_of_two()
-}
-
-/// Look up a key in the dict's index table.
-/// Returns the entry index (>= 0) if found, or -1 if not found.
-#[inline]
-unsafe fn lookup_entry(dict: *mut DictObj, key: *mut Obj, hash: u64) -> i64 {
-    let cap = (*dict).indices_capacity;
-    if cap == 0 {
-        return -1;
-    }
-    let mask = cap - 1;
-    let base = hash as usize;
-
-    for probe in 0..cap {
-        let offset = (probe * (probe + 1)) >> 1;
-        let slot = (base + offset) & mask;
-        let entry_idx = *(*dict).indices.add(slot);
-
-        if entry_idx == EMPTY_INDEX {
-            return -1;
-        }
-        if entry_idx == DUMMY_INDEX {
-            continue;
-        }
-        // Valid entry — check if key matches
-        let entry = (*dict).entries.add(entry_idx as usize);
-        if (*entry).hash == hash && eq_hashable_obj((*entry).key, key) {
-            return entry_idx;
-        }
-    }
-    -1
-}
-
-/// Find a slot in the indices table for insertion.
-/// Returns (best_slot_for_insert, entry_index_if_found).
-/// If found: entry_index >= 0 (existing entry to update)
-/// If not found: entry_index == -1, slot is the best position for a new index entry
-#[inline]
-unsafe fn find_insert_slot(dict: *mut DictObj, key: *mut Obj, hash: u64) -> (usize, i64) {
-    let cap = (*dict).indices_capacity;
-    let mask = cap - 1;
-    let base = hash as usize;
-    let mut first_available: i64 = -1;
-
-    for probe in 0..cap {
-        let offset = (probe * (probe + 1)) >> 1;
-        let slot = (base + offset) & mask;
-        let entry_idx = *(*dict).indices.add(slot);
-
-        if entry_idx == EMPTY_INDEX {
-            let insert_slot = if first_available >= 0 {
-                first_available as usize
-            } else {
-                slot
-            };
-            return (insert_slot, -1);
-        }
-        if entry_idx == DUMMY_INDEX {
-            if first_available < 0 {
-                first_available = slot as i64;
-            }
-            continue;
-        }
-        // Valid entry — check if key matches
-        let entry = (*dict).entries.add(entry_idx as usize);
-        if (*entry).hash == hash && eq_hashable_obj((*entry).key, key) {
-            return (slot, entry_idx);
-        }
-    }
-
-    // Table full (shouldn't happen with proper load factor)
-    (first_available.max(0) as usize, -1)
-}
-
-/// Rebuild indices table and compact entries array.
-/// Called when load factor is too high.
-unsafe fn dict_resize(dict: *mut DictObj) {
-    use std::alloc::{alloc_zeroed, dealloc, Layout};
-
-    let old_entries = (*dict).entries;
-    let old_entries_len = (*dict).entries_len;
-    // Use real capacity: DefaultDict packs factory_tag into the high byte.
-    let old_entries_capacity = real_entries_capacity(dict);
-    let old_indices = (*dict).indices;
-    let old_indices_capacity = (*dict).indices_capacity;
-    let active_count = (*dict).len;
-
-    // Calculate new indices capacity: at least 2x active entries, power of 2, min 8
-    let min_indices = if active_count == 0 {
-        8
-    } else {
-        active_count * 3 // ~33% load factor after resize
-    };
-    let new_indices_capacity = next_power_of_2(min_indices.max(8));
-
-    // New entries capacity matches indices capacity
-    let new_entries_capacity = new_indices_capacity;
-
-    // Allocate new indices table
-    let indices_layout = Layout::array::<i64>(new_indices_capacity)
-        .expect("Allocation size overflow - capacity too large");
-    let new_indices = alloc_zeroed(indices_layout) as *mut i64;
-    // Initialize to EMPTY_INDEX (-1)
-    // Note: alloc_zeroed gives us 0, but we need -1
-    for i in 0..new_indices_capacity {
-        *new_indices.add(i) = EMPTY_INDEX;
-    }
-
-    // Allocate new entries array
-    let entries_layout = Layout::array::<DictEntry>(new_entries_capacity)
-        .expect("Allocation size overflow - capacity too large");
-    let new_entries = alloc_zeroed(entries_layout) as *mut DictEntry;
-
-    // Compact: copy only active entries (skip deleted), rebuild indices
-    let mask = new_indices_capacity - 1;
-    let mut new_len: usize = 0;
-
-    for i in 0..old_entries_len {
-        let old_entry = old_entries.add(i);
-        let key = (*old_entry).key;
-        if key.is_null() {
-            continue; // Skip deleted entries
-        }
-
-        // Copy entry to new position
-        let new_entry = new_entries.add(new_len);
-        (*new_entry).hash = (*old_entry).hash;
-        (*new_entry).key = key;
-        (*new_entry).value = (*old_entry).value;
-
-        // Insert into new indices table
-        let hash = (*old_entry).hash;
-        let base = hash as usize;
-        for probe in 0..new_indices_capacity {
-            let offset = (probe * (probe + 1)) >> 1;
-            let slot = (base + offset) & mask;
-            if *new_indices.add(slot) == EMPTY_INDEX {
-                *new_indices.add(slot) = new_len as i64;
-                break;
-            }
-        }
-
-        new_len += 1;
-    }
-
-    // Update dict. Use set_real_entries_capacity to preserve any packed
-    // factory_tag in the high byte (DefaultDict objects).
-    (*dict).indices = new_indices;
-    (*dict).indices_capacity = new_indices_capacity;
-    (*dict).entries = new_entries;
-    (*dict).entries_len = new_len;
-    set_real_entries_capacity(dict, new_entries_capacity);
-    // len stays the same (active_count)
-
-    // Free old arrays
-    if !old_indices.is_null() && old_indices_capacity > 0 {
-        let layout = Layout::array::<i64>(old_indices_capacity)
-            .expect("Allocation size overflow - capacity too large");
-        dealloc(old_indices as *mut u8, layout);
-    }
-    if !old_entries.is_null() && old_entries_capacity > 0 {
-        let layout = Layout::array::<DictEntry>(old_entries_capacity)
-            .expect("Allocation size overflow - capacity too large");
-        dealloc(old_entries as *mut u8, layout);
-    }
-}
-
-/// Create a new dictionary with given initial capacity
-/// Returns: pointer to allocated DictObj
-#[no_mangle]
-pub extern "C" fn rt_make_dict(capacity: i64) -> *mut Obj {
-    use std::alloc::{alloc_zeroed, Layout};
-
-    // Ensure capacity is power of 2 for efficient mask-based probing.
-    // Account for load factor: if the caller requests N item slots, we need
-    // the indices table to be large enough that N items fit at ≤66% load.
-    // Using N * 3/2 as the minimum indices size achieves this.
-    let indices_capacity = if capacity <= 0 {
-        8
-    } else {
-        let needed = (capacity as usize * 3 / 2).max(8);
-        next_power_of_2(needed)
-    };
-    let entries_capacity = indices_capacity;
-
-    // Allocate DictObj using GC
-    let dict_size = std::mem::size_of::<DictObj>();
-    let obj = gc::gc_alloc(dict_size, TypeTagKind::Dict as u8);
-
-    unsafe {
-        let dict = obj as *mut DictObj;
-        (*dict).len = 0;
-        (*dict).entries_len = 0;
-
-        // Allocate indices table
-        let indices_layout = Layout::array::<i64>(indices_capacity)
-            .expect("Allocation size overflow - capacity too large");
-        let indices_ptr = alloc_zeroed(indices_layout) as *mut i64;
-        // Initialize to EMPTY_INDEX (-1)
-        for i in 0..indices_capacity {
-            *indices_ptr.add(i) = EMPTY_INDEX;
-        }
-        (*dict).indices = indices_ptr;
-        (*dict).indices_capacity = indices_capacity;
-
-        // Allocate entries array
-        let entries_layout = Layout::array::<DictEntry>(entries_capacity)
-            .expect("Allocation size overflow - capacity too large");
-        let entries_ptr = alloc_zeroed(entries_layout) as *mut DictEntry;
-        (*dict).entries = entries_ptr;
-        (*dict).entries_capacity = entries_capacity;
-    }
-
-    obj
-}
+use super::core::{
+    dict_resize, find_insert_slot, lookup_entry, real_entries_capacity,
+    rt_make_dict, DUMMY_INDEX, EMPTY_INDEX, MAX_DICT_KEY_INTERN_LENGTH,
+};
 
 /// Set a key-value pair in the dictionary
 /// If key exists, updates value. If not, inserts new entry.
@@ -394,20 +132,6 @@ pub extern "C" fn rt_dict_get(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
         } else {
             std::ptr::null_mut()
         }
-    }
-}
-
-/// Get length of dictionary (number of entries)
-#[no_mangle]
-pub extern "C" fn rt_dict_len(dict: *mut Obj) -> i64 {
-    if dict.is_null() {
-        return 0;
-    }
-
-    unsafe {
-        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_len");
-        let dict_obj = dict as *mut DictObj;
-        (*dict_obj).len as i64
     }
 }
 
@@ -573,203 +297,6 @@ pub extern "C" fn rt_dict_copy(dict: *mut Obj) -> *mut Obj {
     }
 }
 
-/// Get list of all keys in dictionary (insertion order)
-/// elem_tag controls the result list's storage format:
-///   0 (ELEM_HEAP_OBJ) — store as-is (keys are already *mut Obj)
-///   1 (ELEM_RAW_INT) — unbox IntObj to raw i64
-/// Returns: pointer to new ListObj
-#[no_mangle]
-pub extern "C" fn rt_dict_keys(dict: *mut Obj, elem_tag: u8) -> *mut Obj {
-    use crate::gc::{gc_pop, gc_push, ShadowFrame};
-
-    if dict.is_null() {
-        return rt_make_list(0, elem_tag);
-    }
-
-    unsafe {
-        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_keys");
-        let dict_obj = dict as *mut DictObj;
-        let len = (*dict_obj).len;
-
-        let keys_list = rt_make_list(len as i64, elem_tag);
-        let list_obj = keys_list as *mut ListObj;
-
-        // Protect keys_list from GC during iteration. Although the loop body
-        // does not currently perform GC allocations, rooting it here is a
-        // safety net against future changes and matches the pattern used
-        // throughout the runtime.
-        let mut roots: [*mut Obj; 1] = [keys_list];
-        let mut frame = ShadowFrame {
-            prev: std::ptr::null_mut(),
-            nroots: 1,
-            roots: roots.as_mut_ptr(),
-        };
-        gc_push(&mut frame);
-
-        // Iterate entries in insertion order
-        let mut idx = 0usize;
-        for i in 0..(*dict_obj).entries_len {
-            let entry = (*dict_obj).entries.add(i);
-            let key = (*entry).key;
-            if !key.is_null() {
-                if elem_tag == ELEM_RAW_INT {
-                    let raw_val = crate::boxing::rt_unbox_int(key);
-                    *(*list_obj).data.add(idx) = raw_val as *mut Obj;
-                } else {
-                    *(*list_obj).data.add(idx) = key;
-                }
-                idx += 1;
-            }
-        }
-        (*list_obj).len = idx;
-
-        gc_pop();
-        keys_list
-    }
-}
-
-/// Get list of all values in dictionary (insertion order)
-/// elem_tag controls the result list's storage format:
-///   0 (ELEM_HEAP_OBJ) — store as-is (boxed values)
-///   1 (ELEM_RAW_INT) — unbox IntObj to raw i64
-/// Returns: pointer to new ListObj
-#[no_mangle]
-pub extern "C" fn rt_dict_values(dict: *mut Obj, elem_tag: u8) -> *mut Obj {
-    use crate::gc::{gc_pop, gc_push, ShadowFrame};
-
-    if dict.is_null() {
-        return rt_make_list(0, elem_tag);
-    }
-
-    unsafe {
-        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_values");
-        let dict_obj = dict as *mut DictObj;
-        let len = (*dict_obj).len;
-
-        let values_list = rt_make_list(len as i64, elem_tag);
-        let list_obj = values_list as *mut ListObj;
-
-        // Protect values_list from GC during iteration. Although the loop body
-        // does not currently perform GC allocations, rooting it here is a
-        // safety net against future changes and matches the pattern used
-        // throughout the runtime.
-        let mut roots: [*mut Obj; 1] = [values_list];
-        let mut frame = ShadowFrame {
-            prev: std::ptr::null_mut(),
-            nroots: 1,
-            roots: roots.as_mut_ptr(),
-        };
-        gc_push(&mut frame);
-
-        // Iterate entries in insertion order
-        let mut idx = 0usize;
-        for i in 0..(*dict_obj).entries_len {
-            let entry = (*dict_obj).entries.add(i);
-            let key = (*entry).key;
-            if !key.is_null() {
-                let value = (*entry).value;
-                if elem_tag == ELEM_RAW_INT {
-                    let raw_val = crate::boxing::rt_unbox_int(value);
-                    *(*list_obj).data.add(idx) = raw_val as *mut Obj;
-                } else {
-                    *(*list_obj).data.add(idx) = value;
-                }
-                idx += 1;
-            }
-        }
-        (*list_obj).len = idx;
-
-        gc_pop();
-        values_list
-    }
-}
-
-/// Get list of (key, value) tuples for all entries (insertion order)
-/// Returns: pointer to new ListObj containing TupleObj elements
-#[no_mangle]
-pub extern "C" fn rt_dict_items(dict: *mut Obj) -> *mut Obj {
-    use crate::gc::{gc_pop, gc_push, ShadowFrame};
-
-    if dict.is_null() {
-        return rt_make_list(0, ELEM_HEAP_OBJ);
-    }
-
-    unsafe {
-        debug_assert_type_tag!(dict, TypeTagKind::Dict, "rt_dict_items");
-        let dict_obj = dict as *mut DictObj;
-        let len = (*dict_obj).len;
-
-        let items_list = rt_make_list(len as i64, ELEM_HEAP_OBJ);
-
-        // CRITICAL: Protect items_list from GC. rt_make_tuple and rt_list_push
-        // both trigger GC allocations inside the loop, so items_list must be
-        // rooted or it may be collected between iterations.
-        //
-        // The roots slot at index 1 is reserved for the per-iteration tuple so
-        // that it is also reachable during the rt_list_push call that follows.
-        let mut roots: [*mut Obj; 2] = [items_list, std::ptr::null_mut()];
-        let mut frame = ShadowFrame {
-            prev: std::ptr::null_mut(),
-            nroots: 2,
-            roots: roots.as_mut_ptr(),
-        };
-        gc_push(&mut frame);
-
-        // Iterate entries in insertion order
-        for i in 0..(*dict_obj).entries_len {
-            let entry = (*dict_obj).entries.add(i);
-            let key = (*entry).key;
-            if !key.is_null() {
-                // Root the tuple before rt_list_push, which may allocate
-                let tuple = rt_make_tuple(2, ELEM_HEAP_OBJ);
-                roots[1] = tuple;
-                rt_tuple_set(tuple, 0, key);
-                rt_tuple_set(tuple, 1, (*entry).value);
-                rt_list_push(items_list, tuple);
-                roots[1] = std::ptr::null_mut();
-            }
-        }
-
-        gc_pop();
-        items_list
-    }
-}
-
-/// Finalize a dictionary by freeing its indices and entries arrays.
-/// Called by GC during sweep phase before freeing the DictObj itself.
-///
-/// # Safety
-/// The caller must ensure that `dict` is a valid pointer to a DictObj
-/// that is about to be deallocated.
-pub unsafe fn dict_finalize(dict: *mut Obj) {
-    use std::alloc::{dealloc, Layout};
-
-    if dict.is_null() {
-        return;
-    }
-
-    let dict_obj = dict as *mut DictObj;
-
-    // Free indices array
-    let indices = (*dict_obj).indices;
-    let indices_capacity = (*dict_obj).indices_capacity;
-    if !indices.is_null() && indices_capacity > 0 {
-        let layout = Layout::array::<i64>(indices_capacity)
-            .expect("Allocation size overflow - capacity too large");
-        dealloc(indices as *mut u8, layout);
-    }
-
-    // Free entries array. Use real_entries_capacity to strip any packed
-    // factory_tag (DefaultDict objects pack it into the high byte).
-    let entries = (*dict_obj).entries;
-    let entries_capacity = real_entries_capacity(dict_obj);
-    if !entries.is_null() && entries_capacity > 0 {
-        let layout = Layout::array::<DictEntry>(entries_capacity)
-            .expect("Allocation size overflow - capacity too large");
-        dealloc(entries as *mut u8, layout);
-    }
-}
-
 /// Update dictionary with entries from another dictionary (preserves insertion order of other)
 #[no_mangle]
 pub extern "C" fn rt_dict_update(dict: *mut Obj, other: *mut Obj) {
@@ -808,56 +335,6 @@ pub extern "C" fn rt_dict_update(dict: *mut Obj, other: *mut Obj) {
     }
 }
 
-/// Create a dict from a list of (key, value) pairs
-/// Each element of the list should be a 2-tuple
-/// Returns: pointer to new DictObj
-#[no_mangle]
-pub extern "C" fn rt_dict_from_pairs(pairs: *mut Obj) -> *mut Obj {
-    use crate::gc::{gc_pop, gc_push, ShadowFrame};
-    use crate::object::{ListObj, TupleObj};
-
-    let dict = rt_make_dict(8);
-
-    if pairs.is_null() {
-        return dict;
-    }
-
-    unsafe {
-        debug_assert_type_tag!(pairs, TypeTagKind::List, "rt_dict_from_pairs");
-
-        // Root both the new dict and the source pairs list across rt_dict_set calls
-        // which may trigger GC.
-        let mut roots: [*mut Obj; 2] = [dict, pairs];
-        let mut frame = ShadowFrame {
-            prev: std::ptr::null_mut(),
-            nroots: 2,
-            roots: roots.as_mut_ptr(),
-        };
-        gc_push(&mut frame);
-
-        let len = (*(roots[1] as *mut ListObj)).len;
-        for i in 0..len {
-            let list = roots[1] as *mut ListObj;
-            let pair = *(*list).data.add(i);
-            if pair.is_null() {
-                continue;
-            }
-
-            // Each pair should be a 2-tuple
-            let tuple = pair as *mut TupleObj;
-            if (*tuple).len >= 2 {
-                let key = *(*tuple).data.as_ptr();
-                let value = *(*tuple).data.as_ptr().add(1);
-                rt_dict_set(roots[0], key, value);
-            }
-        }
-
-        gc_pop();
-    }
-
-    dict
-}
-
 /// dict.setdefault(key, default) - Get value for key, set to default if not present
 /// If key exists in dict, returns the existing value.
 /// If key not in dict, sets dict[key] = default and returns default.
@@ -888,6 +365,8 @@ pub extern "C" fn rt_dict_setdefault(dict: *mut Obj, key: *mut Obj, default: *mu
 #[no_mangle]
 pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
     use crate::exceptions::{rt_exc_raise, ExceptionType};
+    use crate::object::ELEM_HEAP_OBJ;
+    use crate::tuple::{rt_make_tuple, rt_tuple_set};
 
     if dict.is_null() {
         let msg = b"KeyError: 'popitem(): dictionary is empty'";
@@ -1078,4 +557,54 @@ pub extern "C" fn rt_dict_merge(dict1: *mut Obj, dict2: *mut Obj) -> *mut Obj {
 
     gc_pop();
     roots[0]
+}
+
+/// Create a dict from a list of (key, value) pairs
+/// Each element of the list should be a 2-tuple
+/// Returns: pointer to new DictObj
+#[no_mangle]
+pub extern "C" fn rt_dict_from_pairs(pairs: *mut Obj) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+    use crate::object::{ListObj, TupleObj};
+
+    let dict = rt_make_dict(8);
+
+    if pairs.is_null() {
+        return dict;
+    }
+
+    unsafe {
+        debug_assert_type_tag!(pairs, TypeTagKind::List, "rt_dict_from_pairs");
+
+        // Root both the new dict and the source pairs list across rt_dict_set calls
+        // which may trigger GC.
+        let mut roots: [*mut Obj; 2] = [dict, pairs];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 2,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        let len = (*(roots[1] as *mut ListObj)).len;
+        for i in 0..len {
+            let list = roots[1] as *mut ListObj;
+            let pair = *(*list).data.add(i);
+            if pair.is_null() {
+                continue;
+            }
+
+            // Each pair should be a 2-tuple
+            let tuple = pair as *mut TupleObj;
+            if (*tuple).len >= 2 {
+                let key = *(*tuple).data.as_ptr();
+                let value = *(*tuple).data.as_ptr().add(1);
+                rt_dict_set(roots[0], key, value);
+            }
+        }
+
+        gc_pop();
+    }
+
+    dict
 }
