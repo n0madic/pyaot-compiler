@@ -6,7 +6,8 @@ pub extern "C" fn rt_add_int(a: i64, b: i64) -> i64 {
     match a.checked_add(b) {
         Some(value) => value,
         None => unsafe {
-            crate::exceptions::rt_exc_raise_overflow_error(
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::OverflowError as u8,
                 b"integer overflow".as_ptr(),
                 b"integer overflow".len(),
             )
@@ -20,7 +21,8 @@ pub extern "C" fn rt_sub_int(a: i64, b: i64) -> i64 {
     match a.checked_sub(b) {
         Some(value) => value,
         None => unsafe {
-            crate::exceptions::rt_exc_raise_overflow_error(
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::OverflowError as u8,
                 b"integer overflow".as_ptr(),
                 b"integer overflow".len(),
             )
@@ -34,7 +36,8 @@ pub extern "C" fn rt_mul_int(a: i64, b: i64) -> i64 {
     match a.checked_mul(b) {
         Some(value) => value,
         None => unsafe {
-            crate::exceptions::rt_exc_raise_overflow_error(
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::OverflowError as u8,
                 b"integer overflow".as_ptr(),
                 b"integer overflow".len(),
             )
@@ -47,7 +50,8 @@ pub extern "C" fn rt_mul_int(a: i64, b: i64) -> i64 {
 pub extern "C" fn rt_div_int(a: i64, b: i64) -> i64 {
     if b == 0 {
         unsafe {
-            crate::exceptions::rt_exc_raise_zero_division_error(
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ZeroDivisionError as u8,
                 b"division by zero".as_ptr(),
                 b"division by zero".len(),
             )
@@ -55,7 +59,8 @@ pub extern "C" fn rt_div_int(a: i64, b: i64) -> i64 {
     }
     if a == i64::MIN && b == -1 {
         unsafe {
-            crate::exceptions::rt_exc_raise_overflow_error(
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::OverflowError as u8,
                 b"integer overflow".as_ptr(),
                 b"integer overflow".len(),
             )
@@ -78,7 +83,8 @@ pub extern "C" fn rt_div_int(a: i64, b: i64) -> i64 {
 pub extern "C" fn rt_true_div_int(a: i64, b: i64) -> f64 {
     if b == 0 {
         unsafe {
-            crate::exceptions::rt_exc_raise_zero_division_error(
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ZeroDivisionError as u8,
                 b"division by zero".as_ptr(),
                 b"division by zero".len(),
             )
@@ -92,7 +98,8 @@ pub extern "C" fn rt_true_div_int(a: i64, b: i64) -> f64 {
 pub extern "C" fn rt_mod_int(a: i64, b: i64) -> i64 {
     if b == 0 {
         unsafe {
-            crate::exceptions::rt_exc_raise_zero_division_error(
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::ZeroDivisionError as u8,
                 b"integer modulo by zero".as_ptr(),
                 b"integer modulo by zero".len(),
             )
@@ -100,7 +107,8 @@ pub extern "C" fn rt_mod_int(a: i64, b: i64) -> i64 {
     }
     if a == i64::MIN && b == -1 {
         unsafe {
-            crate::exceptions::rt_exc_raise_overflow_error(
+            crate::exceptions::rt_exc_raise(
+                crate::exceptions::ExceptionType::OverflowError as u8,
                 b"integer overflow".as_ptr(),
                 b"integer overflow".len(),
             )

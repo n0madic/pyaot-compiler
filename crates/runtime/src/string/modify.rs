@@ -195,7 +195,11 @@ pub extern "C" fn rt_str_mul(str_obj: *mut Obj, count: i64) -> *mut Obj {
             Some(l) => l,
             None => {
                 let msg = b"repeated string is too long";
-                crate::exceptions::rt_exc_raise_overflow_error(msg.as_ptr(), msg.len());
+                crate::exceptions::rt_exc_raise(
+                    crate::exceptions::ExceptionType::OverflowError as u8,
+                    msg.as_ptr(),
+                    msg.len(),
+                );
             }
         };
 

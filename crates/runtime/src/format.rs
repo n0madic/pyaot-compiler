@@ -672,14 +672,14 @@ pub unsafe extern "C" fn rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mu
             let int_obj = &*(value as *const IntObj);
             match format_int(int_obj.value, &format_spec) {
                 Ok(s) => s,
-                Err(e) => crate::utils::raise_value_error_owned(e),
+                Err(e) => crate::raise_exc_string!(crate::exceptions::ExceptionType::ValueError, e),
             }
         }
         TypeTagKind::Float => {
             let float_obj = &*(value as *const FloatObj);
             match format_float(float_obj.value, &format_spec) {
                 Ok(s) => s,
-                Err(e) => crate::utils::raise_value_error_owned(e),
+                Err(e) => crate::raise_exc_string!(crate::exceptions::ExceptionType::ValueError, e),
             }
         }
         TypeTagKind::Bool => {
@@ -687,7 +687,7 @@ pub unsafe extern "C" fn rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mu
             let bool_val = bool_obj.value;
             match format_bool(bool_val, &format_spec) {
                 Ok(s) => s,
-                Err(e) => crate::utils::raise_value_error_owned(e),
+                Err(e) => crate::raise_exc_string!(crate::exceptions::ExceptionType::ValueError, e),
             }
         }
         TypeTagKind::Str => {
@@ -697,7 +697,7 @@ pub unsafe extern "C" fn rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mu
                 .unwrap_or_else(|_| raise_value_error("Invalid UTF-8 in string"));
             match format_str(s, &format_spec) {
                 Ok(s) => s,
-                Err(e) => crate::utils::raise_value_error_owned(e),
+                Err(e) => crate::raise_exc_string!(crate::exceptions::ExceptionType::ValueError, e),
             }
         }
         _ => {

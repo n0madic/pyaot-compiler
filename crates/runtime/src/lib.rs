@@ -52,8 +52,34 @@ macro_rules! debug_assert_type_tag {
 /// ```
 #[macro_export]
 macro_rules! raise_exc {
+    // Arm 1: format-style — raise_exc!(ExcType, "fmt {}", arg)
     ($exc_type:expr, $($arg:tt)*) => {{
         let mut msg = format!($($arg)*);
+        let ptr = msg.as_mut_ptr();
+        let len = msg.len();
+        let cap = msg.capacity();
+        std::mem::forget(msg);
+        $crate::exceptions::rt_exc_raise_owned($exc_type as u8, ptr, len, cap)
+    }};
+}
+
+/// Raise an exception with a pre-built owned String message.
+///
+/// Like `raise_exc!` but takes an already-constructed String instead of format
+/// arguments. Transfers ownership of the String buffer to the exception system
+/// before longjmp, preventing memory leaks.
+///
+/// # Safety
+/// Must be called within an `unsafe` block.
+///
+/// # Usage
+/// ```text
+/// unsafe { raise_exc_string!(ExceptionType::ValueError, some_string); }
+/// ```
+#[macro_export]
+macro_rules! raise_exc_string {
+    ($exc_type:expr, $msg:expr) => {{
+        let mut msg: String = $msg;
         let ptr = msg.as_mut_ptr();
         let len = msg.len();
         let cap = msg.capacity();

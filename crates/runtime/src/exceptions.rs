@@ -837,42 +837,6 @@ pub unsafe extern "C" fn rt_exc_raise_attr_error(message: *const u8, len: usize)
     rt_exc_raise(ExceptionType::AttributeError as u8, message, len)
 }
 
-/// Helper function to raise an IOError with a message
-///
-/// # Safety
-/// If `len > 0`, `message` must be a valid pointer to `len` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn rt_exc_raise_io_error(message: *const u8, len: usize) -> ! {
-    rt_exc_raise(ExceptionType::IOError as u8, message, len)
-}
-
-/// Helper function to raise a ZeroDivisionError with a message
-///
-/// # Safety
-/// If `len > 0`, `message` must be a valid pointer to `len` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn rt_exc_raise_zero_division_error(message: *const u8, len: usize) -> ! {
-    rt_exc_raise(ExceptionType::ZeroDivisionError as u8, message, len)
-}
-
-/// Helper function to raise an OverflowError with a message
-///
-/// # Safety
-/// If `len > 0`, `message` must be a valid pointer to `len` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn rt_exc_raise_overflow_error(message: *const u8, len: usize) -> ! {
-    rt_exc_raise(ExceptionType::OverflowError as u8, message, len)
-}
-
-/// Helper function to raise a MemoryError with a message
-///
-/// # Safety
-/// If `len > 0`, `message` must be a valid pointer to `len` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn rt_exc_raise_memory_error(message: *const u8, len: usize) -> ! {
-    rt_exc_raise(ExceptionType::MemoryError as u8, message, len)
-}
-
 /// Number of fields in a built-in exception instance (just `.args`).
 const BUILTIN_EXC_FIELD_COUNT: i64 = 1;
 

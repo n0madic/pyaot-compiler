@@ -82,10 +82,11 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
-                crate::utils::raise_runtime_error_owned(format!(
+                crate::raise_exc!(
+                    crate::exceptions::ExceptionType::RuntimeError,
                     "subprocess.run: failed to execute command: {}",
                     e
-                ));
+                );
             }
         };
 
@@ -98,10 +99,11 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
                     match child.wait_with_output() {
                         Ok(out) => break out,
                         Err(e) => {
-                            crate::utils::raise_runtime_error_owned(format!(
+                            crate::raise_exc!(
+                                crate::exceptions::ExceptionType::RuntimeError,
                                 "subprocess.run: failed to collect output: {}",
                                 e
-                            ));
+                            );
                         }
                     }
                 }
@@ -122,10 +124,11 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
                     std::thread::sleep(POLL_INTERVAL);
                 }
                 Err(e) => {
-                    crate::utils::raise_runtime_error_owned(format!(
+                    crate::raise_exc!(
+                        crate::exceptions::ExceptionType::RuntimeError,
                         "subprocess.run: wait failed: {}",
                         e
-                    ));
+                    );
                 }
             }
         };
@@ -135,11 +138,12 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
 
         // Check if we should raise on non-zero exit
         if check != 0 && returncode != 0 {
-            crate::utils::raise_runtime_error_owned(format!(
+            crate::raise_exc!(
+                crate::exceptions::ExceptionType::RuntimeError,
                 "Command '{}' returned non-zero exit status {}",
                 cmd_args.join(" "),
                 returncode
-            ));
+            );
         }
 
         // Allocate stdout/stderr/args_copy and the CompletedProcess object.

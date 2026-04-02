@@ -221,7 +221,7 @@ pub unsafe extern "C" fn rt_file_open(
                 }
                 _ => format!("{}: '{}'", e, filename_str),
             };
-            crate::utils::raise_io_error_owned(msg);
+            raise_exc_string!(crate::exceptions::ExceptionType::IOError, msg);
         }
     }
 }
@@ -268,13 +268,21 @@ pub unsafe extern "C" fn rt_file_read(file: *mut Obj) -> *mut Obj {
                 match decode_bytes(&buffer, enc) {
                     Ok(s) => crate::string::rt_make_str(s.as_ptr(), s.len()),
                     Err(e) => {
-                        crate::utils::raise_io_error_owned(format!("read error: {}", e));
+                        raise_exc!(
+                            crate::exceptions::ExceptionType::IOError,
+                            "read error: {}",
+                            e
+                        );
                     }
                 }
             }
         }
         Err(e) => {
-            crate::utils::raise_io_error_owned(format!("read error: {}", e));
+            raise_exc!(
+                crate::exceptions::ExceptionType::IOError,
+                "read error: {}",
+                e
+            );
         }
     }
 }
@@ -322,13 +330,21 @@ pub unsafe extern "C" fn rt_file_read_n(file: *mut Obj, n: i64) -> *mut Obj {
                 match decode_bytes(&buffer, enc) {
                     Ok(s) => crate::string::rt_make_str(s.as_ptr(), s.len()),
                     Err(e) => {
-                        crate::utils::raise_io_error_owned(format!("read error: {}", e));
+                        raise_exc!(
+                            crate::exceptions::ExceptionType::IOError,
+                            "read error: {}",
+                            e
+                        );
                     }
                 }
             }
         }
         Err(e) => {
-            crate::utils::raise_io_error_owned(format!("read error: {}", e));
+            raise_exc!(
+                crate::exceptions::ExceptionType::IOError,
+                "read error: {}",
+                e
+            );
         }
     }
 }
@@ -377,7 +393,11 @@ pub unsafe extern "C" fn rt_file_readline(file: *mut Obj) -> *mut Obj {
                 }
             }
             Err(e) => {
-                crate::utils::raise_io_error_owned(format!("read error: {}", e));
+                raise_exc!(
+                    crate::exceptions::ExceptionType::IOError,
+                    "read error: {}",
+                    e
+                );
             }
         }
     }
@@ -391,7 +411,11 @@ pub unsafe extern "C" fn rt_file_readline(file: *mut Obj) -> *mut Obj {
         match decode_bytes(&line, enc) {
             Ok(s) => crate::string::rt_make_str(s.as_ptr(), s.len()),
             Err(e) => {
-                crate::utils::raise_io_error_owned(format!("read error: {}", e));
+                raise_exc!(
+                    crate::exceptions::ExceptionType::IOError,
+                    "read error: {}",
+                    e
+                );
             }
         }
     }
@@ -417,7 +441,11 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
     let mut limited = Read::take(handle, MAX_READ_ALL_SIZE + 1);
     let mut raw = Vec::new();
     if let Err(e) = limited.read_to_end(&mut raw) {
-        crate::utils::raise_io_error_owned(format!("read error: {}", e));
+        raise_exc!(
+            crate::exceptions::ExceptionType::IOError,
+            "read error: {}",
+            e
+        );
     }
     if raw.len() as u64 > MAX_READ_ALL_SIZE {
         let msg = b"readlines(): file too large; use read(n) for files over 1 GB";
@@ -469,7 +497,11 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
             Ok(s) => s,
             Err(e) => {
                 crate::gc::gc_pop();
-                crate::utils::raise_io_error_owned(format!("read error: {}", e));
+                raise_exc!(
+                    crate::exceptions::ExceptionType::IOError,
+                    "read error: {}",
+                    e
+                );
             }
         };
 
@@ -540,7 +572,11 @@ pub unsafe extern "C" fn rt_file_write(file: *mut Obj, data: *mut Obj) -> i64 {
                 encoded_buf = match encode_str(s, enc) {
                     Ok(b) => b,
                     Err(e) => {
-                        crate::utils::raise_io_error_owned(format!("write error: {}", e));
+                        raise_exc!(
+                            crate::exceptions::ExceptionType::IOError,
+                            "write error: {}",
+                            e
+                        );
                     }
                 };
                 &encoded_buf
@@ -560,7 +596,11 @@ pub unsafe extern "C" fn rt_file_write(file: *mut Obj, data: *mut Obj) -> i64 {
     match handle.write(bytes) {
         Ok(written) => written as i64,
         Err(e) => {
-            crate::utils::raise_io_error_owned(format!("write error: {}", e));
+            raise_exc!(
+                crate::exceptions::ExceptionType::IOError,
+                "write error: {}",
+                e
+            );
         }
     }
 }
@@ -602,7 +642,11 @@ pub unsafe extern "C" fn rt_file_flush(file: *mut Obj) {
     let handle = &mut *(*file_obj).handle;
 
     if let Err(e) = handle.flush() {
-        crate::utils::raise_io_error_owned(format!("flush error: {}", e));
+        raise_exc!(
+            crate::exceptions::ExceptionType::IOError,
+            "flush error: {}",
+            e
+        );
     }
 }
 

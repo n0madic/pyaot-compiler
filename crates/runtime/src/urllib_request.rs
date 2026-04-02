@@ -178,7 +178,7 @@ pub extern "C" fn rt_urlopen(url: *mut Obj, data: *mut Obj, timeout: f64) -> *mu
                 create_http_response(status, &final_url, headers_dict, &body_bytes)
             }
             Err(e) => {
-                crate::utils::raise_io_error_owned(format!("urlopen: {}", e));
+                crate::raise_exc!(crate::exceptions::ExceptionType::IOError, "urlopen: {}", e);
             }
         }
     }
