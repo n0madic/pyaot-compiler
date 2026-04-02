@@ -381,13 +381,7 @@ fn compile_to_string_repr(
             )?;
         }
         // All heap types take i64 (pointer) input
-        mir::ReprTargetKind::Str
-        | mir::ReprTargetKind::List
-        | mir::ReprTargetKind::Tuple
-        | mir::ReprTargetKind::Dict
-        | mir::ReprTargetKind::Set
-        | mir::ReprTargetKind::Bytes
-        | mir::ReprTargetKind::Obj => {
+        mir::ReprTargetKind::Str | mir::ReprTargetKind::Bytes | mir::ReprTargetKind::Collection => {
             compile_unary_runtime_call(
                 builder,
                 &func_name,

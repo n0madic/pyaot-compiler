@@ -408,12 +408,8 @@ impl<'a> Lowering<'a> {
             Type::Bool => mir::ReprTargetKind::Bool,
             Type::None => mir::ReprTargetKind::None,
             Type::Str => mir::ReprTargetKind::Str,
-            Type::List(_) => mir::ReprTargetKind::List,
-            Type::Tuple(_) => mir::ReprTargetKind::Tuple,
-            Type::Dict(_, _) => mir::ReprTargetKind::Dict,
-            Type::Set(_) => mir::ReprTargetKind::Set,
             Type::Bytes => mir::ReprTargetKind::Bytes,
-            _ => mir::ReprTargetKind::Obj, // Runtime dispatch for unknown types
+            _ => mir::ReprTargetKind::Collection, // Runtime type-dispatched for containers and unknown types
         };
         let runtime_func = mir::RuntimeFunc::ToStringRepr(target_kind, mir::StringFormat::Repr);
 
@@ -450,12 +446,8 @@ impl<'a> Lowering<'a> {
             Type::Bool => (mir::ReprTargetKind::Bool, mir::StringFormat::Repr), // No non-ASCII possible
             Type::None => (mir::ReprTargetKind::None, mir::StringFormat::Repr), // No non-ASCII possible
             Type::Str => (mir::ReprTargetKind::Str, mir::StringFormat::Ascii),
-            Type::List(_) => (mir::ReprTargetKind::List, mir::StringFormat::Ascii),
-            Type::Tuple(_) => (mir::ReprTargetKind::Tuple, mir::StringFormat::Ascii),
-            Type::Dict(_, _) => (mir::ReprTargetKind::Dict, mir::StringFormat::Ascii),
-            Type::Set(_) => (mir::ReprTargetKind::Set, mir::StringFormat::Ascii),
             Type::Bytes => (mir::ReprTargetKind::Bytes, mir::StringFormat::Repr), // Bytes repr already escapes
-            _ => (mir::ReprTargetKind::Obj, mir::StringFormat::Ascii), // Runtime dispatch for unknown types
+            _ => (mir::ReprTargetKind::Collection, mir::StringFormat::Ascii), // Runtime type-dispatched
         };
         let runtime_func = mir::RuntimeFunc::ToStringRepr(target_kind, format);
 

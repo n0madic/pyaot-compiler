@@ -392,18 +392,10 @@ pub enum ReprTargetKind {
     None,
     /// String object pointer
     Str,
-    /// List object pointer
-    List,
-    /// Tuple object pointer
-    Tuple,
-    /// Dict object pointer
-    Dict,
-    /// Set object pointer
-    Set,
     /// Bytes object pointer
     Bytes,
-    /// Generic object pointer (runtime dispatch)
-    Obj,
+    /// Collection (list, tuple, dict, set) or generic object - runtime type-dispatched
+    Collection,
 }
 
 impl ReprTargetKind {
@@ -415,12 +407,8 @@ impl ReprTargetKind {
             ReprTargetKind::Bool => "bool",
             ReprTargetKind::None => "none",
             ReprTargetKind::Str => "str",
-            ReprTargetKind::List => "list",
-            ReprTargetKind::Tuple => "tuple",
-            ReprTargetKind::Dict => "dict",
-            ReprTargetKind::Set => "set",
             ReprTargetKind::Bytes => "bytes",
-            ReprTargetKind::Obj => "obj",
+            ReprTargetKind::Collection => "collection",
         }
     }
 

@@ -252,7 +252,7 @@ pub extern "C" fn rt_builtin_chr(obj: *mut Obj) -> *mut Obj {
 /// Returns repr string of object.
 #[no_mangle]
 pub extern "C" fn rt_builtin_repr(obj: *mut Obj) -> *mut Obj {
-    crate::conversions::rt_repr_obj(obj)
+    crate::conversions::rt_repr_collection(obj)
 }
 
 /// type(obj) -> *mut Obj (StrObj)

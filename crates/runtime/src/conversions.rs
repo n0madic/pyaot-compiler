@@ -739,38 +739,11 @@ pub extern "C" fn rt_repr_str(str_obj: *mut Obj) -> *mut Obj {
     }
 }
 
-/// repr(list) -> string
+/// repr() for collections (list, tuple, dict, set) and generic objects - runtime type-dispatched
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_repr_list(list_obj: *mut Obj) -> *mut Obj {
-    let s = unsafe { obj_to_repr_string(list_obj) };
-    let bytes = s.as_bytes();
-    unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
-}
-
-/// repr(tuple) -> string
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_repr_tuple(tuple_obj: *mut Obj) -> *mut Obj {
-    let s = unsafe { obj_to_repr_string(tuple_obj) };
-    let bytes = s.as_bytes();
-    unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
-}
-
-/// repr(dict) -> string
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_repr_dict(dict_obj: *mut Obj) -> *mut Obj {
-    let s = unsafe { obj_to_repr_string(dict_obj) };
-    let bytes = s.as_bytes();
-    unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
-}
-
-/// repr(set) -> string
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_repr_set(set_obj: *mut Obj) -> *mut Obj {
-    let s = unsafe { obj_to_repr_string(set_obj) };
+pub extern "C" fn rt_repr_collection(obj: *mut Obj) -> *mut Obj {
+    let s = unsafe { obj_to_repr_string(obj) };
     let bytes = s.as_bytes();
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
 }
@@ -804,15 +777,6 @@ pub extern "C" fn rt_repr_bytes(bytes_obj: *mut Obj) -> *mut Obj {
         let result_bytes = s.as_bytes();
         rt_make_str(result_bytes.as_ptr(), result_bytes.len())
     }
-}
-
-/// repr(obj) - generic runtime dispatch
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_repr_obj(obj: *mut Obj) -> *mut Obj {
-    let s = unsafe { obj_to_repr_string(obj) };
-    let bytes = s.as_bytes();
-    unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
 }
 
 // ==================== ASCII conversion functions ====================
@@ -998,46 +962,10 @@ unsafe fn obj_to_ascii_string(obj: *mut Obj) -> String {
     }
 }
 
-/// ascii(list) -> string
+/// ascii() for collections (list, tuple, dict, set) and generic objects - runtime type-dispatched
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_ascii_list(list_obj: *mut Obj) -> *mut Obj {
-    let s = unsafe { obj_to_ascii_string(list_obj) };
-    let bytes = s.as_bytes();
-    unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
-}
-
-/// ascii(tuple) -> string
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_ascii_tuple(tuple_obj: *mut Obj) -> *mut Obj {
-    let s = unsafe { obj_to_ascii_string(tuple_obj) };
-    let bytes = s.as_bytes();
-    unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
-}
-
-/// ascii(dict) -> string
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_ascii_dict(dict_obj: *mut Obj) -> *mut Obj {
-    let s = unsafe { obj_to_ascii_string(dict_obj) };
-    let bytes = s.as_bytes();
-    unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
-}
-
-/// ascii(set) -> string
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_ascii_set(set_obj: *mut Obj) -> *mut Obj {
-    let s = unsafe { obj_to_ascii_string(set_obj) };
-    let bytes = s.as_bytes();
-    unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
-}
-
-/// ascii(obj) - generic runtime dispatch
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_ascii_obj(obj: *mut Obj) -> *mut Obj {
+pub extern "C" fn rt_ascii_collection(obj: *mut Obj) -> *mut Obj {
     let s = unsafe { obj_to_ascii_string(obj) };
     let bytes = s.as_bytes();
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
