@@ -16,6 +16,6 @@ pub use core::{
 };
 
 pub use query::{
-    rt_tuple_count, rt_tuple_index, rt_tuple_max_float, rt_tuple_max_int,
-    rt_tuple_max_with_key, rt_tuple_min_float, rt_tuple_min_int, rt_tuple_min_with_key,
+    rt_tuple_count, rt_tuple_index, rt_tuple_max_float, rt_tuple_max_int, rt_tuple_max_with_key,
+    rt_tuple_min_float, rt_tuple_min_int, rt_tuple_min_with_key,
 };

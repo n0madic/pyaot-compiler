@@ -19,12 +19,7 @@ pub(super) fn next_power_of_2(n: usize) -> usize {
     n.next_power_of_two()
 }
 
-pub(super) fn find_set_slot(
-    set: *mut SetObj,
-    elem: *mut Obj,
-    hash: u64,
-    for_insert: bool,
-) -> i64 {
+pub(super) fn find_set_slot(set: *mut SetObj, elem: *mut Obj, hash: u64, for_insert: bool) -> i64 {
     unsafe {
         find_slot_generic(
             (*set).capacity,

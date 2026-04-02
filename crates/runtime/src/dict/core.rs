@@ -3,7 +3,7 @@
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::gc;
-use crate::hash_table_utils::eq_hashable_obj;
+use crate::hash_table_utils::find_compact_slot_generic;
 use crate::object::{DictEntry, DictObj, Obj, TypeTagKind};
 
 /// Sentinel value for empty slot in indices table
@@ -54,31 +54,18 @@ pub(super) fn next_power_of_2(n: usize) -> usize {
 /// Returns the entry index (>= 0) if found, or -1 if not found.
 #[inline]
 pub(super) unsafe fn lookup_entry(dict: *mut DictObj, key: *mut Obj, hash: u64) -> i64 {
-    let cap = (*dict).indices_capacity;
-    if cap == 0 {
-        return -1;
-    }
-    let mask = cap - 1;
-    let base = hash as usize;
-
-    for probe in 0..cap {
-        let offset = (probe * (probe + 1)) >> 1;
-        let slot = (base + offset) & mask;
-        let entry_idx = *(*dict).indices.add(slot);
-
-        if entry_idx == EMPTY_INDEX {
-            return -1;
-        }
-        if entry_idx == DUMMY_INDEX {
-            continue;
-        }
-        // Valid entry — check if key matches
-        let entry = (*dict).entries.add(entry_idx as usize);
-        if (*entry).hash == hash && eq_hashable_obj((*entry).key, key) {
-            return entry_idx;
-        }
-    }
-    -1
+    let (_, entry_idx) = find_compact_slot_generic(
+        (*dict).indices_capacity,
+        hash,
+        false,
+        |slot| *(*dict).indices.add(slot),
+        |ei| (*(*dict).entries.add(ei as usize)).key,
+        |ei| (*(*dict).entries.add(ei as usize)).hash,
+        EMPTY_INDEX,
+        DUMMY_INDEX,
+        key,
+    );
+    entry_idx
 }
 
 /// Find a slot in the indices table for insertion.
@@ -86,40 +73,22 @@ pub(super) unsafe fn lookup_entry(dict: *mut DictObj, key: *mut Obj, hash: u64) 
 /// If found: entry_index >= 0 (existing entry to update)
 /// If not found: entry_index == -1, slot is the best position for a new index entry
 #[inline]
-pub(super) unsafe fn find_insert_slot(dict: *mut DictObj, key: *mut Obj, hash: u64) -> (usize, i64) {
-    let cap = (*dict).indices_capacity;
-    let mask = cap - 1;
-    let base = hash as usize;
-    let mut first_available: i64 = -1;
-
-    for probe in 0..cap {
-        let offset = (probe * (probe + 1)) >> 1;
-        let slot = (base + offset) & mask;
-        let entry_idx = *(*dict).indices.add(slot);
-
-        if entry_idx == EMPTY_INDEX {
-            let insert_slot = if first_available >= 0 {
-                first_available as usize
-            } else {
-                slot
-            };
-            return (insert_slot, -1);
-        }
-        if entry_idx == DUMMY_INDEX {
-            if first_available < 0 {
-                first_available = slot as i64;
-            }
-            continue;
-        }
-        // Valid entry — check if key matches
-        let entry = (*dict).entries.add(entry_idx as usize);
-        if (*entry).hash == hash && eq_hashable_obj((*entry).key, key) {
-            return (slot, entry_idx);
-        }
-    }
-
-    // Table full (shouldn't happen with proper load factor)
-    (first_available.max(0) as usize, -1)
+pub(super) unsafe fn find_insert_slot(
+    dict: *mut DictObj,
+    key: *mut Obj,
+    hash: u64,
+) -> (usize, i64) {
+    find_compact_slot_generic(
+        (*dict).indices_capacity,
+        hash,
+        true,
+        |slot| *(*dict).indices.add(slot),
+        |ei| (*(*dict).entries.add(ei as usize)).key,
+        |ei| (*(*dict).entries.add(ei as usize)).hash,
+        EMPTY_INDEX,
+        DUMMY_INDEX,
+        key,
+    )
 }
 
 /// Rebuild indices table and compact entries array.

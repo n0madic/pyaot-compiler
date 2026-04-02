@@ -7,8 +7,8 @@ use crate::object::{DictObj, Obj, StrObj, TypeTagKind};
 use crate::string::rt_make_str_interned;
 
 use super::core::{
-    dict_resize, find_insert_slot, lookup_entry, real_entries_capacity,
-    rt_make_dict, DUMMY_INDEX, EMPTY_INDEX, MAX_DICT_KEY_INTERN_LENGTH,
+    dict_resize, find_insert_slot, lookup_entry, real_entries_capacity, rt_make_dict, DUMMY_INDEX,
+    EMPTY_INDEX, MAX_DICT_KEY_INTERN_LENGTH,
 };
 
 /// Set a key-value pair in the dictionary

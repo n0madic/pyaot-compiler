@@ -18,6 +18,6 @@ pub use iteration::{rt_dict_items, rt_dict_keys, rt_dict_values};
 
 pub use ops::{
     rt_dict_clear, rt_dict_contains, rt_dict_copy, rt_dict_from_pairs, rt_dict_fromkeys,
-    rt_dict_get, rt_dict_get_default, rt_dict_merge, rt_dict_pop, rt_dict_popitem,
-    rt_dict_set, rt_dict_setdefault, rt_dict_update,
+    rt_dict_get, rt_dict_get_default, rt_dict_merge, rt_dict_pop, rt_dict_popitem, rt_dict_set,
+    rt_dict_setdefault, rt_dict_update,
 };

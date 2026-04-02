@@ -226,6 +226,96 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
     }
 }
 
+/// Find a slot in a compact-layout (dict-style) hash table's indices array.
+///
+/// Dict uses a two-level structure:
+///   - **indices table** (`capacity` slots): each slot holds an entry index, or an
+///     `empty_sentinel` / `dummy_sentinel` (tombstone).
+///   - **entries array** (dense): entry_idx points to a `(hash, key, value)` record.
+///
+/// Uses the same triangular probing sequence as [`find_slot_generic`].
+///
+/// # Returns
+/// `(slot, entry_idx)` where:
+/// * Key found: `slot` = matching slot in indices table, `entry_idx >= 0`
+/// * Key not found + `for_insert`: `slot` = best insertion slot, `entry_idx = -1`
+/// * Key not found + `!for_insert`: `(0, -1)` — slot value is not meaningful
+///
+/// # Arguments
+/// * `capacity` - Indices table size (MUST be power of 2)
+/// * `hash` - Hash of the search key
+/// * `for_insert` - When true, track tombstones and return the best insertion slot
+/// * `get_index` - `|slot| -> i64`: reads `indices[slot]`
+/// * `get_entry_key` - `|entry_idx: i64| -> *mut Obj`: reads the key at that entry
+/// * `get_entry_hash` - `|entry_idx: i64| -> u64`: reads the stored hash at that entry
+/// * `empty_sentinel` - Value meaning "slot is empty" (e.g., `EMPTY_INDEX = -1`)
+/// * `dummy_sentinel` - Value meaning "slot is a tombstone" (e.g., `DUMMY_INDEX = -2`)
+/// * `search_key` - Key to search for
+///
+/// # Safety
+/// Caller must ensure closures access valid memory and `capacity` is a power of 2.
+pub unsafe fn find_compact_slot_generic<F, G, H>(
+    capacity: usize,
+    hash: u64,
+    for_insert: bool,
+    get_index: F,
+    get_entry_key: G,
+    get_entry_hash: H,
+    empty_sentinel: i64,
+    dummy_sentinel: i64,
+    search_key: *mut Obj,
+) -> (usize, i64)
+where
+    F: Fn(usize) -> i64,
+    G: Fn(i64) -> *mut Obj,
+    H: Fn(i64) -> u64,
+{
+    if capacity == 0 {
+        return (0, -1);
+    }
+
+    let mask = capacity - 1;
+    let base = hash as usize;
+    let mut first_available: i64 = -1;
+
+    for probe in 0..capacity {
+        let offset = (probe * (probe + 1)) >> 1;
+        let slot = (base + offset) & mask;
+        let entry_idx = get_index(slot);
+
+        if entry_idx == empty_sentinel {
+            if for_insert {
+                let insert_slot = if first_available >= 0 {
+                    first_available as usize
+                } else {
+                    slot
+                };
+                return (insert_slot, -1);
+            }
+            return (0, -1);
+        }
+        if entry_idx == dummy_sentinel {
+            if for_insert && first_available < 0 {
+                first_available = slot as i64;
+            }
+            continue;
+        }
+        // Valid entry — check key match
+        if get_entry_hash(entry_idx) == hash
+            && eq_hashable_obj(get_entry_key(entry_idx), search_key)
+        {
+            return (slot, entry_idx);
+        }
+    }
+
+    // Table full (shouldn't happen with proper load factor)
+    if for_insert {
+        (first_available.max(0) as usize, -1)
+    } else {
+        (0, -1)
+    }
+}
+
 /// Generic hash table slot finder using triangular probing with mask-based indexing.
 /// Used by both dict and set implementations.
 ///
