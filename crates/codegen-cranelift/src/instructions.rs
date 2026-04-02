@@ -12,6 +12,8 @@ use pyaot_diagnostics::Result;
 use pyaot_mir::{self as mir, Operand};
 use pyaot_types::Type;
 
+use pyaot_core_defs::layout;
+
 use crate::context::CodegenContext;
 use crate::exceptions::{
     compile_exc_check_class, compile_exc_check_type, compile_exc_clear, compile_exc_end_handling,
@@ -354,14 +356,8 @@ pub fn compile_instruction(
             // Load the object pointer (self)
             let obj_val = load_operand(builder, obj, ctx.var_map);
 
-            // InstanceObj layout:
-            // - header: ObjHeader is 16 bytes: type_tag(1) + marked(1) + padding(6) + size(8).
-            //   Vtable pointer follows at offset 16.
-            // - vtable: *const u8 (8 bytes) - at offset 16
-            // - class_id: u8
-            // - field_count: usize
-            // - fields: [*mut Obj; 0]
-            let vtable_offset = 16i32;
+            // InstanceObj: ObjHeader followed by vtable pointer
+            let vtable_offset = layout::INSTANCE_VTABLE_OFFSET;
 
             // Load vtable pointer from instance
             let vtable_ptr = builder.ins().load(
@@ -372,8 +368,7 @@ pub fn compile_instruction(
             );
 
             // Vtable layout: [num_slots: u64, method_ptrs: [*const (); num_slots]]
-            // Method pointer at offset 8 + slot * 8
-            let method_offset = (8 + slot * 8) as i32;
+            let method_offset = layout::vtable_slot_offset(*slot);
             let method_ptr = builder.ins().load(
                 cltypes::I64,
                 cranelift_codegen::ir::MemFlags::new(),

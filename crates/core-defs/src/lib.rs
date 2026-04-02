@@ -20,6 +20,7 @@
 pub mod builtins;
 pub mod elem_tags;
 pub mod exceptions;
+pub mod layout;
 pub mod type_tags;
 
 pub use exceptions::{

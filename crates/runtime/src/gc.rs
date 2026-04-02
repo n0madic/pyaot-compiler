@@ -93,6 +93,22 @@ pub struct ShadowFrame {
     pub roots: *mut *mut Obj,
 }
 
+// Compile-time assertions: ShadowFrame layout must match codegen constants
+const _: () = assert!(
+    std::mem::size_of::<ShadowFrame>() == pyaot_core_defs::layout::SHADOW_FRAME_SIZE as usize,
+    "ShadowFrame size does not match layout::SHADOW_FRAME_SIZE"
+);
+const _: () = assert!(
+    std::mem::offset_of!(ShadowFrame, nroots)
+        == pyaot_core_defs::layout::SHADOW_FRAME_NROOTS_OFFSET as usize,
+    "ShadowFrame nroots offset does not match layout::SHADOW_FRAME_NROOTS_OFFSET"
+);
+const _: () = assert!(
+    std::mem::offset_of!(ShadowFrame, roots)
+        == pyaot_core_defs::layout::SHADOW_FRAME_ROOTS_OFFSET as usize,
+    "ShadowFrame roots offset does not match layout::SHADOW_FRAME_ROOTS_OFFSET"
+);
+
 /// Global GC state
 struct GcState {
     /// Top of shadow stack

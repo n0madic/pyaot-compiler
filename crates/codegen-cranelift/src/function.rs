@@ -16,6 +16,7 @@ use pyaot_diagnostics::Result;
 use pyaot_mir as mir;
 use pyaot_utils::{FuncId, LineMap, LocalId, StringInterner};
 
+use pyaot_core_defs::layout;
 use std::collections::HashSet;
 
 use crate::context::{CodegenContext, GcFrameData};
@@ -247,17 +248,16 @@ fn generate_gc_prologue(
     entry_params: &[cranelift_codegen::ir::Value],
 ) -> GcFrameData {
     // Create stack slot for ShadowFrame struct
-    // ShadowFrame: prev (8 bytes) + nroots (8 bytes) + roots ptr (8 bytes) = 24 bytes
     let frame_slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
-        24,
+        layout::SHADOW_FRAME_SIZE,
         3, // 8-byte alignment (2^3 = 8)
     ));
 
-    // Create stack slot for roots array (8 bytes per root pointer)
+    // Create stack slot for roots array (one pointer per root)
     let roots_slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
-        (8 * nroots) as u32,
+        layout::gc_roots_array_size(nroots),
         3, // 8-byte alignment (2^3 = 8)
     ));
 
@@ -272,21 +272,26 @@ fn generate_gc_prologue(
 
     // frame.nroots = nroots
     let nroots_val = builder.ins().iconst(cltypes::I64, nroots as i64);
-    builder
-        .ins()
-        .store(MemFlags::new(), nroots_val, frame_addr, 8);
+    builder.ins().store(
+        MemFlags::new(),
+        nroots_val,
+        frame_addr,
+        layout::SHADOW_FRAME_NROOTS_OFFSET,
+    );
 
     // frame.roots = roots_addr
-    builder
-        .ins()
-        .store(MemFlags::new(), roots_addr, frame_addr, 16);
+    builder.ins().store(
+        MemFlags::new(),
+        roots_addr,
+        frame_addr,
+        layout::SHADOW_FRAME_ROOTS_OFFSET,
+    );
 
     // Initialize all roots to null
     for i in 0..nroots {
-        let offset = (8 * i) as i32;
         builder
             .ins()
-            .store(MemFlags::new(), zero, roots_addr, offset);
+            .store(MemFlags::new(), zero, roots_addr, layout::gc_root_offset(i));
     }
 
     // Call gc_push(frame_addr)
@@ -299,10 +304,12 @@ fn generate_gc_prologue(
     for (idx, param) in func.params.iter().enumerate() {
         if let Some(&(_, root_idx)) = gc_roots.iter().find(|(id, _)| *id == param.id) {
             let roots_addr = builder.ins().stack_addr(cltypes::I64, roots_slot, 0);
-            let offset = (8 * root_idx) as i32;
-            builder
-                .ins()
-                .store(MemFlags::new(), entry_params[idx], roots_addr, offset);
+            builder.ins().store(
+                MemFlags::new(),
+                entry_params[idx],
+                roots_addr,
+                layout::gc_root_offset(root_idx),
+            );
         }
     }
 

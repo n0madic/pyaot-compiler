@@ -46,6 +46,7 @@ use cranelift_codegen::ir::{AbiParam, InstBuilder};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{Linkage, Module};
+use pyaot_core_defs::layout;
 use pyaot_utils::{FuncId, RESUME_FUNC_ID_OFFSET};
 
 use function::{
@@ -329,9 +330,7 @@ impl Codegen {
             let class_id = vtable_info.class_id.0;
             let num_slots = vtable_info.entries.len();
 
-            // Vtable layout: [num_slots: u64, method_ptrs: [*const (); num_slots]]
-            // Total size: 8 + 8 * num_slots bytes
-            let vtable_size = 8 + 8 * num_slots;
+            let vtable_size = layout::vtable_data_size(num_slots);
 
             // Declare the data object
             let data_name = format!("__vtable_{}", class_id);
@@ -351,9 +350,9 @@ impl Codegen {
 
             data_desc.define(init_data.into_boxed_slice());
 
-            // Write function pointers starting at offset 8
+            // Write function pointers starting after num_slots header
             for entry in &vtable_info.entries {
-                let offset = 8 + entry.slot * 8;
+                let offset = layout::vtable_slot_offset(entry.slot) as usize;
                 if let Some(&cl_func_id) = func_ids.get(&entry.method_func_id) {
                     // Get the function reference for this data section
                     let func_ref = self.module.declare_func_in_data(cl_func_id, &mut data_desc);
@@ -477,10 +476,8 @@ impl Codegen {
         // Get the generator pointer parameter
         let gen_ptr = builder.block_params(entry_block)[0];
 
-        // Load func_id from generator object
-        // GeneratorObj layout: header (ObjHeader: type_tag(1) + marked(1) + size(8) = 10 bytes, aligned to 16)
-        // func_id is at offset 16 (after header)
-        let func_id_offset = 16i32; // offset of func_id in GeneratorObj
+        // Load func_id from generator object (right after ObjHeader)
+        let func_id_offset = layout::GENERATOR_FUNC_ID_OFFSET;
         let func_id_val = builder.ins().load(
             cltypes::I32,
             cranelift_codegen::ir::MemFlags::new(),

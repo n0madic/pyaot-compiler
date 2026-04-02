@@ -8,6 +8,8 @@ use cranelift_module::{FuncId as ClFuncId, Linkage, Module};
 use cranelift_object::ObjectModule;
 use pyaot_utils::LocalId;
 
+use pyaot_core_defs::layout;
+
 use crate::context::GcFrameData;
 
 /// Declare gc_push function: extern "C" fn(*mut ShadowFrame)
@@ -45,10 +47,12 @@ pub fn update_gc_root_if_needed(
             let roots_addr = builder
                 .ins()
                 .stack_addr(cltypes::I64, gc_data.roots_slot, 0);
-            let offset = (8 * root_idx) as i32;
-            builder
-                .ins()
-                .store(MemFlags::new(), value, roots_addr, offset);
+            builder.ins().store(
+                MemFlags::new(),
+                value,
+                roots_addr,
+                layout::gc_root_offset(root_idx),
+            );
         }
     }
 }

@@ -3,6 +3,7 @@
 // Re-export TypeTagKind as the canonical type tag for the runtime.
 // This eliminates the duplicate TypeTagKind enum and uses the single source
 // of truth from core-defs.
+use pyaot_core_defs::layout;
 pub use pyaot_core_defs::TypeTagKind;
 
 /// Iterator kind for different container types
@@ -58,6 +59,12 @@ pub struct ObjHeader {
     pub marked: bool, // GC mark bit
     pub size: usize,  // Size in bytes
 }
+
+// Compile-time assertion: ObjHeader size must match the layout constant
+const _: () = assert!(
+    std::mem::size_of::<ObjHeader>() == layout::OBJ_HEADER_SIZE,
+    "ObjHeader size does not match layout::OBJ_HEADER_SIZE"
+);
 
 /// Base object type (all heap objects start with ObjHeader)
 #[repr(C)]
@@ -287,6 +294,12 @@ pub struct InstanceObj {
     pub fields: [*mut Obj; 0], // Flexible array of field pointers
 }
 
+// Compile-time assertion: vtable field offset must match the layout constant
+const _: () = assert!(
+    std::mem::offset_of!(InstanceObj, vtable) == layout::INSTANCE_VTABLE_OFFSET as usize,
+    "InstanceObj vtable offset does not match layout::INSTANCE_VTABLE_OFFSET"
+);
+
 /// Iterator object for first-class iterator protocol
 /// Supports iteration over lists, tuples, dicts, strings, and ranges
 #[repr(C)]
@@ -316,6 +329,12 @@ pub struct GeneratorObj {
     pub type_tags: *mut u8, // Type tag array for each local (for precise GC)
     pub locals: [i64; 0], // Flexible array: local variables (i64 for int/float/bool/ptr)
 }
+
+// Compile-time assertion: func_id field offset must match the layout constant
+const _: () = assert!(
+    std::mem::offset_of!(GeneratorObj, func_id) == layout::GENERATOR_FUNC_ID_OFFSET as usize,
+    "GeneratorObj func_id offset does not match layout::GENERATOR_FUNC_ID_OFFSET"
+);
 
 /// Regex match object for re module
 /// Stores match result from re.search() or re.match()

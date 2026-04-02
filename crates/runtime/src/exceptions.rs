@@ -8,16 +8,13 @@
 //! Exception types are defined in `pyaot-core-defs` crate, which serves as the
 //! single source of truth shared between the compiler and runtime.
 
+use pyaot_core_defs::layout;
 use pyaot_core_defs::BuiltinExceptionKind;
 use std::cell::RefCell;
 use std::ptr;
 
-/// Size of jmp_buf varies by platform
-/// macOS/iOS arm64: 192 bytes (defined as int[48] in <setjmp.h>)
-/// macOS/iOS x86_64: 148 bytes
-/// Linux x86_64: 200 bytes (defined as __jmp_buf_tag with __jmp_buf = long[8], __saved_mask = sigset_t)
-/// We use 200 bytes to be safe across platforms
-pub const JMP_BUF_SIZE: usize = 200;
+/// Re-export from core-defs for backwards compatibility within the runtime crate.
+pub const JMP_BUF_SIZE: usize = layout::JMP_BUF_SIZE;
 
 // Compile-time assertions that JMP_BUF_SIZE is large enough for the platform's jmp_buf.
 // Sizes are taken from each platform's <setjmp.h>. The libc crate does not expose
@@ -106,6 +103,16 @@ pub struct ExceptionFrame {
     /// Saved traceback call stack depth - restored when unwinding
     pub traceback_depth: usize,
 }
+
+// Compile-time assertions: ExceptionFrame layout must match codegen constants
+const _: () = assert!(
+    std::mem::size_of::<ExceptionFrame>() == layout::EXCEPTION_FRAME_SIZE as usize,
+    "ExceptionFrame size does not match layout::EXCEPTION_FRAME_SIZE"
+);
+const _: () = assert!(
+    std::mem::offset_of!(ExceptionFrame, jmp_buf) == layout::EXCEPTION_JMP_BUF_OFFSET as usize,
+    "ExceptionFrame jmp_buf offset does not match layout::EXCEPTION_JMP_BUF_OFFSET"
+);
 
 impl ExceptionFrame {
     /// Create a new zeroed exception frame
