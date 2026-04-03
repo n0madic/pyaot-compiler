@@ -7,6 +7,9 @@ use crate::types::{
     ConstValue, LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibMethodDef,
     StdlibModuleDef, TypeSpec, TYPE_DICT_STR_STR, TYPE_LIST_STR, TYPE_STR,
 };
+#[allow(unused_imports)]
+use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
+use pyaot_core_defs::RuntimeFuncDef;
 
 // Static type reference specific to urllib
 pub static TYPE_DICT_STR_LIST_STR: TypeSpec = TypeSpec::Dict(&TYPE_STR, &TYPE_LIST_STR);
@@ -25,6 +28,7 @@ pub static URLPARSE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_urlparse", &[P_I64], Some(R_I64), false),
 };
 
 /// urllib.parse.urlencode(params) - Encode a dict as a query string
@@ -37,6 +41,7 @@ pub static URLENCODE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_urlencode", &[P_I64], Some(R_I64), false),
 };
 
 /// urllib.parse.quote(string, safe='') - Percent-encode a string
@@ -52,6 +57,7 @@ pub static QUOTE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_quote", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 /// urllib.parse.unquote(string) - Decode percent-encoded string
@@ -63,6 +69,7 @@ pub static UNQUOTE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_unquote", &[P_I64], Some(R_I64), false),
 };
 
 /// urllib.parse.urljoin(base, url) - Join a base URL with a relative URL
@@ -77,6 +84,7 @@ pub static URLJOIN: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_urljoin", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 /// urllib.parse.parse_qs(query) - Parse a query string into a dict
@@ -89,6 +97,7 @@ pub static PARSE_QS: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_parse_qs", &[P_I64], Some(R_I64), false),
 };
 
 // =============================================================================
@@ -103,6 +112,7 @@ pub static PARSE_RESULT_GETURL: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Str,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_parse_result_geturl", &[P_I64], Some(R_I64), false),
 };
 
 /// ParseResult class definition
@@ -144,6 +154,7 @@ pub static URLOPEN: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 3,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_urlopen", &[P_I64, P_I64, P_F64], Some(R_I64), false),
 };
 
 // =============================================================================
@@ -158,6 +169,7 @@ pub static HTTP_RESPONSE_READ: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Bytes,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_http_response_read", &[P_I64], Some(R_I64), false),
 };
 
 /// HTTPResponse.geturl() - Get the URL of the response
@@ -168,6 +180,7 @@ pub static HTTP_RESPONSE_GETURL: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Str,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_http_response_geturl", &[P_I64], Some(R_I64), false),
 };
 
 /// HTTPResponse.getcode() - Get the HTTP status code
@@ -178,6 +191,7 @@ pub static HTTP_RESPONSE_GETCODE: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_http_response_getcode", &[P_I64], Some(R_I64), false),
 };
 
 /// HTTPResponse class definition

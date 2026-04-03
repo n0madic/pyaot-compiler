@@ -6,6 +6,9 @@ use crate::types::{
     ConstValue, LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibMethodDef,
     StdlibModuleDef, TypeSpec, TYPE_STR,
 };
+#[allow(unused_imports)]
+use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
+use pyaot_core_defs::RuntimeFuncDef;
 
 /// subprocess.run function
 /// Simplified version that takes:
@@ -24,6 +27,12 @@ pub static SUBPROCESS_RUN: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 3,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new(
+        "rt_subprocess_run",
+        &[P_I64, P_I8, P_I8],
+        Some(R_I64),
+        false,
+    ),
 };
 
 // ============= CompletedProcess class methods =============
@@ -36,6 +45,12 @@ static COMPLETED_PROCESS_ARGS: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::List(&TYPE_STR),
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new(
+        "rt_completed_process_get_args",
+        &[P_I64],
+        Some(R_I64),
+        false,
+    ),
 };
 
 /// CompletedProcess.returncode getter
@@ -46,6 +61,12 @@ static COMPLETED_PROCESS_RETURNCODE: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new(
+        "rt_completed_process_get_returncode",
+        &[P_I64],
+        Some(R_I64),
+        false,
+    ),
 };
 
 /// CompletedProcess.stdout getter
@@ -56,6 +77,12 @@ static COMPLETED_PROCESS_STDOUT: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Optional(&TYPE_STR),
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new(
+        "rt_completed_process_get_stdout",
+        &[P_I64],
+        Some(R_I64),
+        false,
+    ),
 };
 
 /// CompletedProcess.stderr getter
@@ -66,6 +93,12 @@ static COMPLETED_PROCESS_STDERR: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Optional(&TYPE_STR),
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new(
+        "rt_completed_process_get_stderr",
+        &[P_I64],
+        Some(R_I64),
+        false,
+    ),
 };
 
 /// CompletedProcess class definition

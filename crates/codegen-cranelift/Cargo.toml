@@ -8,7 +8,6 @@ pyaot-utils = { path = "../utils" }
 pyaot-mir = { path = "../mir" }
 pyaot-types = { path = "../types" }
 pyaot-diagnostics = { path = "../diagnostics" }
-pyaot-stdlib-defs = { path = "../stdlib-defs" }
 pyaot-core-defs = { path = "../core-defs" }
 cranelift-codegen = { workspace = true }
 cranelift-frontend = { workspace = true }

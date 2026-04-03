@@ -6,6 +6,9 @@ use crate::types::{
     ConstValue, LoweringHints, ParamDef, StdlibConstDef, StdlibFunctionDef, StdlibModuleDef,
     TypeSpec,
 };
+#[allow(unused_imports)]
+use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
+use pyaot_core_defs::RuntimeFuncDef;
 
 /// math.pi constant
 pub static MATH_PI: StdlibConstDef = StdlibConstDef {
@@ -51,6 +54,7 @@ pub static MATH_SQRT: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_sqrt", &[P_F64], Some(R_F64), false),
 };
 
 /// math.sin(x) - sine of x (in radians)
@@ -62,6 +66,7 @@ pub static MATH_SIN: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_sin", &[P_F64], Some(R_F64), false),
 };
 
 /// math.cos(x) - cosine of x (in radians)
@@ -73,6 +78,7 @@ pub static MATH_COS: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_cos", &[P_F64], Some(R_F64), false),
 };
 
 /// math.tan(x) - tangent of x (in radians)
@@ -84,6 +90,7 @@ pub static MATH_TAN: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_tan", &[P_F64], Some(R_F64), false),
 };
 
 /// math.ceil(x) - smallest integer >= x
@@ -95,6 +102,7 @@ pub static MATH_CEIL: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_ceil", &[P_F64], Some(R_I64), false),
 };
 
 /// math.floor(x) - largest integer <= x
@@ -106,6 +114,7 @@ pub static MATH_FLOOR: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_floor", &[P_F64], Some(R_I64), false),
 };
 
 /// math.factorial(n) - n! (factorial)
@@ -117,6 +126,7 @@ pub static MATH_FACTORIAL: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_factorial", &[P_I64], Some(R_I64), false),
 };
 
 /// math.log(x[, base]) - logarithm (natural log when base is omitted)
@@ -131,6 +141,7 @@ pub static MATH_LOG: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_log", &[P_F64, P_F64], Some(R_F64), false),
 };
 
 /// math.log2(x) - logarithm base 2
@@ -142,6 +153,7 @@ pub static MATH_LOG2: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_log2", &[P_F64], Some(R_F64), false),
 };
 
 /// math.log10(x) - logarithm base 10
@@ -153,6 +165,7 @@ pub static MATH_LOG10: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_log10", &[P_F64], Some(R_F64), false),
 };
 
 /// math.exp(x) - exponential function e^x
@@ -164,6 +177,7 @@ pub static MATH_EXP: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_exp", &[P_F64], Some(R_F64), false),
 };
 
 /// math.asin(x) - arc sine (result in radians)
@@ -175,6 +189,7 @@ pub static MATH_ASIN: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_asin", &[P_F64], Some(R_F64), false),
 };
 
 /// math.acos(x) - arc cosine (result in radians)
@@ -186,6 +201,7 @@ pub static MATH_ACOS: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_acos", &[P_F64], Some(R_F64), false),
 };
 
 /// math.atan(x) - arc tangent (result in radians)
@@ -197,6 +213,7 @@ pub static MATH_ATAN: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_atan", &[P_F64], Some(R_F64), false),
 };
 
 /// math.sinh(x) - hyperbolic sine
@@ -208,6 +225,7 @@ pub static MATH_SINH: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_sinh", &[P_F64], Some(R_F64), false),
 };
 
 /// math.cosh(x) - hyperbolic cosine
@@ -219,6 +237,7 @@ pub static MATH_COSH: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_cosh", &[P_F64], Some(R_F64), false),
 };
 
 /// math.tanh(x) - hyperbolic tangent
@@ -230,6 +249,7 @@ pub static MATH_TANH: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_tanh", &[P_F64], Some(R_F64), false),
 };
 
 /// math.fabs(x) - absolute value as float
@@ -241,6 +261,7 @@ pub static MATH_FABS: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_fabs", &[P_F64], Some(R_F64), false),
 };
 
 /// math.degrees(x) - convert radians to degrees
@@ -252,6 +273,7 @@ pub static MATH_DEGREES: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_degrees", &[P_F64], Some(R_F64), false),
 };
 
 /// math.radians(x) - convert degrees to radians
@@ -263,6 +285,7 @@ pub static MATH_RADIANS: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_radians", &[P_F64], Some(R_F64), false),
 };
 
 /// math.trunc(x) - truncate to integer
@@ -274,6 +297,7 @@ pub static MATH_TRUNC: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_trunc", &[P_F64], Some(R_I64), false),
 };
 
 /// math.isnan(x) - test if x is NaN
@@ -285,6 +309,7 @@ pub static MATH_ISNAN: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_isnan", &[P_F64], Some(R_I8), false),
 };
 
 /// math.isinf(x) - test if x is infinite
@@ -296,6 +321,7 @@ pub static MATH_ISINF: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_isinf", &[P_F64], Some(R_I8), false),
 };
 
 /// math.isfinite(x) - test if x is finite
@@ -307,6 +333,7 @@ pub static MATH_ISFINITE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_isfinite", &[P_F64], Some(R_I8), false),
 };
 
 /// math.atan2(y, x) - arc tangent of y/x (result in radians)
@@ -321,6 +348,7 @@ pub static MATH_ATAN2: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_atan2", &[P_F64, P_F64], Some(R_F64), false),
 };
 
 /// math.fmod(x, y) - floating point remainder
@@ -335,6 +363,7 @@ pub static MATH_FMOD: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_fmod", &[P_F64, P_F64], Some(R_F64), false),
 };
 
 /// math.copysign(x, y) - magnitude of x with sign of y
@@ -349,6 +378,7 @@ pub static MATH_COPYSIGN: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_copysign", &[P_F64, P_F64], Some(R_F64), false),
 };
 
 /// math.hypot(x, y) - Euclidean distance sqrt(x*x + y*y)
@@ -363,6 +393,7 @@ pub static MATH_HYPOT: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_hypot", &[P_F64, P_F64], Some(R_F64), false),
 };
 
 /// math.pow(x, y) - x raised to the power y
@@ -377,6 +408,7 @@ pub static MATH_POW: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_pow", &[P_F64, P_F64], Some(R_F64), false),
 };
 
 /// math.gcd(a, b) - greatest common divisor
@@ -391,6 +423,7 @@ pub static MATH_GCD: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_gcd", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 /// math.lcm(a, b) - least common multiple
@@ -405,6 +438,7 @@ pub static MATH_LCM: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_lcm", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 /// math.comb(n, k) - binomial coefficient (n choose k)
@@ -419,6 +453,7 @@ pub static MATH_COMB: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_comb", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 /// math.perm(n, k) - permutation count (n! / (n-k)!)
@@ -433,6 +468,7 @@ pub static MATH_PERM: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_math_perm", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 /// math module definition

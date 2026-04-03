@@ -5,7 +5,6 @@
 //! operations, dictionary operations, and type conversions.
 
 mod print;
-mod stdlib;
 mod string;
 
 use cranelift_frontend::FunctionBuilder;
@@ -45,16 +44,8 @@ pub fn compile_runtime_call(
         // Instance, Global, ClassAttr, Cell ops: migrated to RuntimeFunc::Call (handled by generic handler)
         // Iterator, Generator, Hash, Id, Set, Compare, ContainerMinMax, Bytes, Object ops: same
 
-        // Standard library operations (sys, os, re, json)
-        // StdlibCall/StdlibAttrGet - unified handlers using definitions (Single Source of Truth)
-        // ObjectFieldGet/ObjectMethodCall - generic object field/method access (Single Source of Truth)
-        mir::RuntimeFunc::StdlibCall(_)
-        | mir::RuntimeFunc::StdlibAttrGet(_)
-        | mir::RuntimeFunc::ObjectFieldGet(_)
-        | mir::RuntimeFunc::ObjectMethodCall(_) => {
-            stdlib::compile_stdlib_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
+        // Stdlib calls (StdlibCall, StdlibAttrGet, ObjectFieldGet, ObjectMethodCall):
+        // Migrated to RuntimeFunc::Call(&def.codegen) — handled by generic descriptor handler below.
 
         // File I/O: migrated to RuntimeFunc::Call (handled by generic handler)
 

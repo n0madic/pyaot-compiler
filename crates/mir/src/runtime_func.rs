@@ -2,7 +2,6 @@
 
 use crate::PrintKind;
 use pyaot_core_defs::RuntimeFuncDef;
-use pyaot_stdlib_defs::{StdlibAttrDef, StdlibFunctionDef, StdlibMethodDef};
 
 /// Runtime functions
 #[derive(Debug, Clone, Copy)]
@@ -13,25 +12,9 @@ pub enum RuntimeFunc {
     /// emits the call, and handles GC root tracking — all from the descriptor.
     Call(&'static RuntimeFuncDef),
 
-    // ==================== Stdlib calls (generic) ====================
-    /// Call a stdlib function by definition (Single Source of Truth)
-    /// Codegen uses func_def.runtime_name for the function name
-    /// and func_def.return_type + func_def.params for signature
-    StdlibCall(&'static StdlibFunctionDef),
-
-    /// Get a stdlib attribute by definition (Single Source of Truth)
-    /// Codegen uses attr_def.runtime_getter for the function name
-    StdlibAttrGet(&'static StdlibAttrDef),
-
-    /// Get an object field by definition (Single Source of Truth)
-    /// Codegen uses field_def.runtime_getter for the function name
-    /// This replaces individual field getter variants (e.g., StructTimeGetTmYear)
-    ObjectFieldGet(&'static pyaot_stdlib_defs::ObjectFieldDef),
-
-    /// Call an object method by definition (Single Source of Truth)
-    /// Codegen uses method_def.runtime_name for the function name
-    /// This replaces individual method variants (e.g., MatchGroup, MatchStart)
-    ObjectMethodCall(&'static StdlibMethodDef),
+    // StdlibCall, StdlibAttrGet, ObjectFieldGet, ObjectMethodCall:
+    // Migrated to RuntimeFunc::Call(&def.codegen) — each stdlib def struct now
+    // carries a `codegen: RuntimeFuncDef` field populated at definition site.
 
     // ==================== String operations ====================
     /// Allocate string on heap (takes data pointer and length)

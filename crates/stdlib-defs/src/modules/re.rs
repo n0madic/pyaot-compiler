@@ -6,6 +6,9 @@ use crate::types::{
     LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibMethodDef, StdlibModuleDef,
     TypeSpec, TYPE_INT, TYPE_STR,
 };
+#[allow(unused_imports)]
+use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
+use pyaot_core_defs::RuntimeFuncDef;
 
 // ============= Match class methods =============
 // These are public so they can be referenced by ObjectTypeDef in object_types.rs
@@ -18,6 +21,8 @@ pub static MATCH_GROUP: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Optional(&TYPE_STR),
     min_args: 0,
     max_args: 1,
+    // self (I64) + n (I64) -> Optional[str] (I64)
+    codegen: RuntimeFuncDef::new("rt_match_group", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 /// Match.start method
@@ -28,6 +33,8 @@ pub static MATCH_START: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    // self (I64) -> Int (I64)
+    codegen: RuntimeFuncDef::new("rt_match_start", &[P_I64], Some(R_I64), false),
 };
 
 /// Match.end method
@@ -38,6 +45,7 @@ pub static MATCH_END: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_match_end", &[P_I64], Some(R_I64), false),
 };
 
 /// Match.groups method
@@ -48,6 +56,7 @@ pub static MATCH_GROUPS: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Tuple(&TYPE_STR),
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_match_groups", &[P_I64], Some(R_I64), false),
 };
 
 /// Match.span method
@@ -58,6 +67,7 @@ pub static MATCH_SPAN: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Tuple(&TYPE_INT),
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_match_span", &[P_I64], Some(R_I64), false),
 };
 
 /// Match class definition
@@ -87,6 +97,7 @@ pub static RE_SEARCH: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX, // Takes Str directly
+    codegen: RuntimeFuncDef::new("rt_re_search", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 /// re.match function
@@ -101,6 +112,7 @@ pub static RE_MATCH: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX, // Takes Str directly
+    codegen: RuntimeFuncDef::new("rt_re_match", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 /// re.sub function
@@ -116,6 +128,7 @@ pub static RE_SUB: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 3,
     max_args: 3,
     hints: LoweringHints::NO_AUTO_BOX, // Takes Str directly
+    codegen: RuntimeFuncDef::new("rt_re_sub", &[P_I64, P_I64, P_I64], Some(R_I64), false),
 };
 
 /// re module definition

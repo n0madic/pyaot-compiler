@@ -70,7 +70,7 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::ObjectFieldGet(field_def),
+                    func: mir::RuntimeFunc::Call(&field_def.codegen),
                     args: vec![obj_operand],
                 });
 

@@ -3,6 +3,9 @@
 //! Provides base64 encoding/decoding functions.
 
 use crate::types::{LoweringHints, ParamDef, StdlibFunctionDef, StdlibModuleDef, TypeSpec};
+#[allow(unused_imports)]
+use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
+use pyaot_core_defs::RuntimeFuncDef;
 
 /// base64.b64encode(data) -> bytes
 pub static BASE64_B64ENCODE: StdlibFunctionDef = StdlibFunctionDef {
@@ -13,6 +16,7 @@ pub static BASE64_B64ENCODE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new("rt_base64_b64encode", &[P_I64], Some(R_I64), false),
 };
 
 /// base64.b64decode(data) -> bytes
@@ -24,6 +28,7 @@ pub static BASE64_B64DECODE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new("rt_base64_b64decode", &[P_I64], Some(R_I64), false),
 };
 
 /// base64.urlsafe_b64encode(data) -> bytes
@@ -35,6 +40,7 @@ pub static BASE64_URLSAFE_B64ENCODE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new("rt_base64_urlsafe_b64encode", &[P_I64], Some(R_I64), false),
 };
 
 /// base64.urlsafe_b64decode(data) -> bytes
@@ -46,6 +52,7 @@ pub static BASE64_URLSAFE_B64DECODE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new("rt_base64_urlsafe_b64decode", &[P_I64], Some(R_I64), false),
 };
 
 /// base64 module definition

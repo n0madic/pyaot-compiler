@@ -8,6 +8,8 @@
 //! references directly. This means adding a new stdlib function only requires
 //! adding its definition - no separate enum to maintain.
 
+use pyaot_core_defs::RuntimeFuncDef;
+
 // ============= Type specifications =============
 
 /// Type specification for stdlib function parameters and return types
@@ -220,6 +222,8 @@ pub struct StdlibFunctionDef {
     pub max_args: usize,
     /// Lowering hints for special handling
     pub hints: LoweringHints,
+    /// Codegen descriptor for the generic RuntimeFunc::Call handler
+    pub codegen: RuntimeFuncDef,
 }
 
 impl StdlibFunctionDef {
@@ -252,6 +256,8 @@ pub struct StdlibAttrDef {
     pub ty: TypeSpec,
     /// Whether the attribute is writable (most are read-only)
     pub writable: bool,
+    /// Codegen descriptor for the generic RuntimeFunc::Call handler
+    pub codegen: RuntimeFuncDef,
 }
 
 /// Constant definition for a stdlib module constant
@@ -292,6 +298,8 @@ pub struct StdlibMethodDef {
     pub min_args: usize,
     /// Maximum number of arguments (excluding self)
     pub max_args: usize,
+    /// Codegen descriptor for the generic RuntimeFunc::Call handler
+    pub codegen: RuntimeFuncDef,
 }
 
 /// Module definition for a stdlib module
@@ -410,6 +418,32 @@ pub(crate) const fn const_str_eq(a: &str, b: &str) -> bool {
         i += 1;
     }
     true
+}
+
+// ============= TypeSpec → RuntimeFuncDef conversion helpers =============
+
+use pyaot_core_defs::runtime_func_def::{ParamType, ReturnType};
+
+impl TypeSpec {
+    /// Convert to Cranelift parameter type for codegen descriptors.
+    pub const fn to_param_type(&self) -> ParamType {
+        match self {
+            TypeSpec::Float => ParamType::F64,
+            TypeSpec::Bool => ParamType::I8,
+            _ => ParamType::I64,
+        }
+    }
+
+    /// Convert to Cranelift return type for codegen descriptors.
+    /// Returns `None` for void (TypeSpec::None).
+    pub const fn to_return_type(&self) -> Option<ReturnType> {
+        match self {
+            TypeSpec::None => None,
+            TypeSpec::Float => Some(ReturnType::F64),
+            TypeSpec::Bool => Some(ReturnType::I8),
+            _ => Some(ReturnType::I64),
+        }
+    }
 }
 
 // Static type references for nested types

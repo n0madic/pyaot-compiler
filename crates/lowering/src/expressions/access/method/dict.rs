@@ -241,8 +241,8 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::StdlibCall(
-                        &pyaot_stdlib_defs::modules::collections::ORDERED_DICT_POPITEM_FUNC,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_stdlib_defs::modules::collections::ORDERED_DICT_POPITEM_FUNC.codegen,
                     ),
                     args: vec![obj_operand, last_arg],
                 });
@@ -288,8 +288,9 @@ impl<'a> Lowering<'a> {
                 };
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::StdlibCall(
-                        &pyaot_stdlib_defs::modules::collections::ORDERED_DICT_MOVE_TO_END_FUNC,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_stdlib_defs::modules::collections::ORDERED_DICT_MOVE_TO_END_FUNC
+                            .codegen,
                     ),
                     args: vec![obj_operand, boxed_key, last_arg],
                 });

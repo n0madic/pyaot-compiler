@@ -6,6 +6,9 @@ use crate::types::{
     LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibMethodDef, StdlibModuleDef,
     TypeSpec,
 };
+#[allow(unused_imports)]
+use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
+use pyaot_core_defs::RuntimeFuncDef;
 
 /// hashlib.md5(data) -> Hash object
 pub static HASHLIB_MD5: StdlibFunctionDef = StdlibFunctionDef {
@@ -16,6 +19,7 @@ pub static HASHLIB_MD5: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new("rt_hashlib_md5", &[P_I64], Some(R_I64), false),
 };
 
 /// hashlib.sha1(data) -> Hash object
@@ -27,6 +31,7 @@ pub static HASHLIB_SHA1: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new("rt_hashlib_sha1", &[P_I64], Some(R_I64), false),
 };
 
 /// hashlib.sha256(data) -> Hash object
@@ -38,6 +43,7 @@ pub static HASHLIB_SHA256: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new("rt_hashlib_sha256", &[P_I64], Some(R_I64), false),
 };
 
 /// Hash.hexdigest() method
@@ -48,6 +54,7 @@ pub static HASH_HEXDIGEST: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Str,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_hash_hexdigest", &[P_I64], Some(R_I64), false),
 };
 
 /// Hash.digest() method
@@ -58,6 +65,7 @@ pub static HASH_DIGEST: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Bytes,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_hash_digest", &[P_I64], Some(R_I64), false),
 };
 
 /// Hash class definition

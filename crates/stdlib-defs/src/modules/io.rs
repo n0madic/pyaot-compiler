@@ -6,6 +6,9 @@ use crate::types::{
     ConstValue, LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibMethodDef,
     StdlibModuleDef, TypeSpec,
 };
+#[allow(unused_imports)]
+use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
+use pyaot_core_defs::RuntimeFuncDef;
 
 /// io.StringIO(initial?) constructor
 pub static IO_STRINGIO: StdlibFunctionDef = StdlibFunctionDef {
@@ -16,6 +19,7 @@ pub static IO_STRINGIO: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_stringio_new", &[P_I64], Some(R_I64), false),
 };
 
 /// io.BytesIO(initial?) constructor
@@ -27,6 +31,7 @@ pub static IO_BYTESIO: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_bytesio_new", &[P_I64], Some(R_I64), false),
 };
 
 // StringIO methods
@@ -37,6 +42,7 @@ pub static STRINGIO_WRITE: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 1,
     max_args: 1,
+    codegen: RuntimeFuncDef::new("rt_stringio_write", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 pub static STRINGIO_READ: StdlibMethodDef = StdlibMethodDef {
@@ -50,6 +56,7 @@ pub static STRINGIO_READ: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Str,
     min_args: 0,
     max_args: 1,
+    codegen: RuntimeFuncDef::new("rt_stringio_read", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 pub static STRINGIO_READLINE: StdlibMethodDef = StdlibMethodDef {
@@ -59,6 +66,7 @@ pub static STRINGIO_READLINE: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Str,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_stringio_readline", &[P_I64], Some(R_I64), false),
 };
 
 pub static STRINGIO_GETVALUE: StdlibMethodDef = StdlibMethodDef {
@@ -68,6 +76,7 @@ pub static STRINGIO_GETVALUE: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Str,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_stringio_getvalue", &[P_I64], Some(R_I64), false),
 };
 
 pub static STRINGIO_SEEK: StdlibMethodDef = StdlibMethodDef {
@@ -77,6 +86,7 @@ pub static STRINGIO_SEEK: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 1,
     max_args: 1,
+    codegen: RuntimeFuncDef::new("rt_stringio_seek", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 pub static STRINGIO_TELL: StdlibMethodDef = StdlibMethodDef {
@@ -86,6 +96,7 @@ pub static STRINGIO_TELL: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_stringio_tell", &[P_I64], Some(R_I64), false),
 };
 
 pub static STRINGIO_CLOSE: StdlibMethodDef = StdlibMethodDef {
@@ -95,6 +106,7 @@ pub static STRINGIO_CLOSE: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::None,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::void("rt_stringio_close", &[P_I64]),
 };
 
 pub static STRINGIO_TRUNCATE: StdlibMethodDef = StdlibMethodDef {
@@ -108,6 +120,7 @@ pub static STRINGIO_TRUNCATE: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 1,
+    codegen: RuntimeFuncDef::new("rt_stringio_truncate", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 // BytesIO methods
@@ -118,6 +131,7 @@ pub static BYTESIO_WRITE: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 1,
     max_args: 1,
+    codegen: RuntimeFuncDef::new("rt_bytesio_write", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 pub static BYTESIO_READ: StdlibMethodDef = StdlibMethodDef {
@@ -131,6 +145,7 @@ pub static BYTESIO_READ: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Bytes,
     min_args: 0,
     max_args: 1,
+    codegen: RuntimeFuncDef::new("rt_bytesio_read", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 pub static BYTESIO_GETVALUE: StdlibMethodDef = StdlibMethodDef {
@@ -140,6 +155,7 @@ pub static BYTESIO_GETVALUE: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Bytes,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_bytesio_getvalue", &[P_I64], Some(R_I64), false),
 };
 
 pub static BYTESIO_SEEK: StdlibMethodDef = StdlibMethodDef {
@@ -149,6 +165,7 @@ pub static BYTESIO_SEEK: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 1,
     max_args: 1,
+    codegen: RuntimeFuncDef::new("rt_bytesio_seek", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 pub static BYTESIO_TELL: StdlibMethodDef = StdlibMethodDef {
@@ -158,6 +175,7 @@ pub static BYTESIO_TELL: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_bytesio_tell", &[P_I64], Some(R_I64), false),
 };
 
 pub static BYTESIO_CLOSE: StdlibMethodDef = StdlibMethodDef {
@@ -167,6 +185,7 @@ pub static BYTESIO_CLOSE: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::None,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::void("rt_bytesio_close", &[P_I64]),
 };
 
 /// StringIO class definition

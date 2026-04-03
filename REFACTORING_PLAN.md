@@ -149,7 +149,7 @@ Phase 4 (Frontend & Codegen)
 
 **Duration estimate:** Small. Independent changes, can be done incrementally.
 
-### 0.1 — Unified Error Hierarchy (P25)
+### 0.1 — Unified Error Hierarchy (P25) ✅ DONE
 
 **Problem:** `CompilerError` has inconsistent structure — some variants carry `Span`, some don't. Error creation uses 3+ different patterns.
 
@@ -191,7 +191,7 @@ impl CompilerError {
 
 **Files touched:** `crates/diagnostics/src/lib.rs`, all error creation sites across frontend, lowering, codegen.
 
-### 0.2 — Layout Constants (P19)
+### 0.2 — Layout Constants (P19) ✅ DONE
 
 **Problem:** 8+ hardcoded magic numbers for object layout offsets scattered across codegen.
 
@@ -242,7 +242,7 @@ pub mod layout {
 const _: () = assert!(std::mem::size_of::<ObjHeader>() == layout::OBJ_HEADER_SIZE as usize);
 ```
 
-### 0.3 — Unified Exception Raising in Runtime (P8)
+### 0.3 — Unified Exception Raising in Runtime (P8) ✅ DONE
 
 **Problem:** Three strategies mixed: `raise_exc!` macro, direct `rt_exc_raise()`, specialized wrappers. 231 direct calls risk memory leaks (longjmp skips destructors).
 
@@ -265,7 +265,7 @@ const _: () = assert!(std::mem::size_of::<ObjHeader>() == layout::OBJ_HEADER_SIZ
 
 **Duration estimate:** Medium. Significant refactoring but each step is mechanically testable.
 
-### 1.1 — Split Runtime God-Files into Submodules (P7)
+### 1.1 — Split Runtime God-Files into Submodules (P7) ✅ DONE
 
 **Problem:** `dict.rs` (1,081 LOC), `set.rs` (1,217 LOC), `tuple.rs` (1,418 LOC), `bytes.rs` (1,354 LOC) are monolithic. `list/` and `string/` already demonstrate the correct pattern.
 
@@ -323,7 +323,7 @@ runtime/src/
 
 **Order:** dict → set → tuple → bytes → ops → conversions → exceptions (simplest first).
 
-### 1.2 — Unify Hash Table Implementation (P9)
+### 1.2 — Unify Hash Table Implementation (P9) ✅ DONE
 
 **Problem:** `dict.rs` implements probe-sequence logic ad-hoc (`lookup_entry` lines 65-91), while `set.rs` properly uses `hash_table_utils.rs` via `find_slot_generic`. Dict predates the generic extraction.
 
@@ -337,7 +337,7 @@ runtime/src/
 
 **Files touched:** `runtime/src/hash_table_utils.rs`, `runtime/src/dict/core.rs` (after 1.1 split).
 
-### 1.3 — Generic Runtime Functions (P5 + P6)
+### 1.3 — Generic Runtime Functions (P5 + P6) ✅ DONE
 
 **Problem:** 246 `extern "C"` functions, many being monomorphic variants:
 - `rt_list_get_int`, `rt_list_get_float`, `rt_list_get_bool` → 3 functions for 1 operation
@@ -387,7 +387,7 @@ extern "C" fn rt_list_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
 
 **Interplay with Phase 2:** Each consolidation directly removes RuntimeFunc variants, making the Phase 2 migration smaller. This is why Phase 1 must precede Phase 2.
 
-### 1.4 — Runtime Repr/Conversion Unification (P6 partial)
+### 1.4 — Runtime Repr/Conversion Unification (P6 partial) ✅ DONE
 
 **Problem:** `conversions.rs` has 39 monomorphic functions. Container repr (`rt_repr_dict`, `rt_repr_list`, `rt_repr_tuple`, `rt_repr_set`) all follow the same iterate-format-concat pattern. Same for `rt_ascii_*` variants.
 

@@ -5,6 +5,9 @@
 use crate::types::{
     ConstValue, LoweringHints, ParamDef, StdlibFunctionDef, StdlibModuleDef, TypeSpec,
 };
+#[allow(unused_imports)]
+use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
+use pyaot_core_defs::RuntimeFuncDef;
 
 /// random.random() -> float in [0.0, 1.0)
 pub static RANDOM_RANDOM: StdlibFunctionDef = StdlibFunctionDef {
@@ -15,6 +18,7 @@ pub static RANDOM_RANDOM: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 0,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_random_random", &[], Some(R_F64), false),
 };
 
 /// random.randint(a, b) -> int in [a, b]
@@ -29,6 +33,7 @@ pub static RANDOM_RANDINT: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_random_randint", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 /// random.choice(seq) -> element
@@ -40,6 +45,7 @@ pub static RANDOM_CHOICE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new("rt_random_choice", &[P_I64], Some(R_I64), false),
 };
 
 /// random.shuffle(seq) -> None
@@ -51,6 +57,7 @@ pub static RANDOM_SHUFFLE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::void("rt_random_shuffle", &[P_I64]),
 };
 
 /// random.seed(n) -> None
@@ -69,6 +76,8 @@ pub static RANDOM_SEED: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX_PASS_ARG_COUNT,
+    // pass_arg_count: lowering appends an extra PI64 for the arg count
+    codegen: RuntimeFuncDef::void("rt_random_seed", &[P_I64, P_I64]),
 };
 
 /// random.uniform(a, b) -> float
@@ -83,6 +92,7 @@ pub static RANDOM_UNIFORM: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_random_uniform", &[P_F64, P_F64], Some(R_F64), false),
 };
 
 /// random.randrange(start, stop?, step?) -> int
@@ -98,6 +108,12 @@ pub static RANDOM_RANDRANGE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 3,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new(
+        "rt_random_randrange",
+        &[P_I64, P_I64, P_I64],
+        Some(R_I64),
+        false,
+    ),
 };
 
 /// random.sample(population, k) -> list
@@ -112,6 +128,7 @@ pub static RANDOM_SAMPLE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new("rt_random_sample", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 /// random.gauss(mu, sigma) -> float
@@ -126,6 +143,7 @@ pub static RANDOM_GAUSS: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_random_gauss", &[P_F64, P_F64], Some(R_F64), false),
 };
 
 /// random.choices(population, weights=None, k=1) -> list
@@ -142,6 +160,12 @@ pub static RANDOM_CHOICES: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 3,
     hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new(
+        "rt_random_choices",
+        &[P_I64, P_I64, P_I64],
+        Some(R_I64),
+        false,
+    ),
 };
 
 /// random module definition

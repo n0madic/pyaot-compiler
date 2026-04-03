@@ -5,6 +5,9 @@
 //! recognition; the actual lowering intercepts them before StdlibCall dispatch.
 
 use crate::types::{LoweringHints, ParamDef, StdlibFunctionDef, StdlibModuleDef, TypeSpec};
+#[allow(unused_imports)]
+use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
+use pyaot_core_defs::RuntimeFuncDef;
 
 static CHAIN: StdlibFunctionDef = StdlibFunctionDef {
     name: "chain",
@@ -14,6 +17,7 @@ static CHAIN: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 255, // variadic
     hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new("rt_chain_new", &[P_I64], Some(R_I64), false),
 };
 
 static ISLICE: StdlibFunctionDef = StdlibFunctionDef {
@@ -29,6 +33,12 @@ static ISLICE: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 4,
     hints: LoweringHints::DEFAULT,
+    codegen: RuntimeFuncDef::new(
+        "rt_islice_new",
+        &[P_I64, P_I64, P_I64, P_I64],
+        Some(R_I64),
+        false,
+    ),
 };
 
 pub static ITERTOOLS_MODULE: StdlibModuleDef = StdlibModuleDef {

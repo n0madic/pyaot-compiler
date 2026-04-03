@@ -34,7 +34,7 @@ impl<'a> Lowering<'a> {
         // Emit generic StdlibAttrGet - codegen will use attr_def.runtime_getter
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::StdlibAttrGet(attr_def),
+            func: mir::RuntimeFunc::Call(&attr_def.codegen),
             args: vec![],
         });
 
@@ -107,7 +107,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::StdlibCall(func_def),
+            func: mir::RuntimeFunc::Call(&func_def.codegen),
             args: mir_args,
         });
 
@@ -213,7 +213,7 @@ impl<'a> Lowering<'a> {
         let result_local = self.alloc_and_add_local(result_type, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::StdlibCall(func_def),
+            func: mir::RuntimeFunc::Call(&func_def.codegen),
             args: vec![mir::Operand::Local(list_local)],
         });
 
@@ -286,7 +286,7 @@ impl<'a> Lowering<'a> {
         // Emit the generic ObjectMethodCall
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::ObjectMethodCall(method_def),
+            func: mir::RuntimeFunc::Call(&method_def.codegen),
             args: mir_args,
         });
 

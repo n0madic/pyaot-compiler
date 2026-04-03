@@ -33,6 +33,7 @@ use crate::modules::io;
 use crate::modules::re;
 use crate::modules::urllib;
 use crate::types::{StdlibMethodDef, TypeSpec};
+use pyaot_core_defs::RuntimeFuncDef;
 use pyaot_core_defs::TypeTagKind;
 
 /// Field definition for a runtime object type
@@ -47,6 +48,8 @@ pub struct ObjectFieldDef {
     pub runtime_getter: &'static str,
     /// Field type
     pub field_type: TypeSpec,
+    /// Codegen descriptor for the generic RuntimeFunc::Call handler
+    pub codegen: RuntimeFuncDef,
 }
 
 /// Display format specification for an object type
@@ -121,21 +124,25 @@ static COMPLETED_PROCESS_FIELDS: &[ObjectFieldDef] = &[
         name: "args",
         runtime_getter: "rt_completed_process_get_args",
         field_type: TYPE_LIST_STR,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_completed_process_get_args"),
     },
     ObjectFieldDef {
         name: "returncode",
         runtime_getter: "rt_completed_process_get_returncode",
         field_type: TypeSpec::Int,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_completed_process_get_returncode"),
     },
     ObjectFieldDef {
         name: "stdout",
         runtime_getter: "rt_completed_process_get_stdout",
         field_type: TYPE_OPTIONAL_STR,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_completed_process_get_stdout"),
     },
     ObjectFieldDef {
         name: "stderr",
         runtime_getter: "rt_completed_process_get_stderr",
         field_type: TYPE_OPTIONAL_STR,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_completed_process_get_stderr"),
     },
 ];
 
@@ -156,46 +163,55 @@ static STRUCT_TIME_FIELDS: &[ObjectFieldDef] = &[
         name: "tm_year",
         runtime_getter: "rt_struct_time_get_tm_year",
         field_type: TypeSpec::Int,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_struct_time_get_tm_year"),
     },
     ObjectFieldDef {
         name: "tm_mon",
         runtime_getter: "rt_struct_time_get_tm_mon",
         field_type: TypeSpec::Int,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_struct_time_get_tm_mon"),
     },
     ObjectFieldDef {
         name: "tm_mday",
         runtime_getter: "rt_struct_time_get_tm_mday",
         field_type: TypeSpec::Int,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_struct_time_get_tm_mday"),
     },
     ObjectFieldDef {
         name: "tm_hour",
         runtime_getter: "rt_struct_time_get_tm_hour",
         field_type: TypeSpec::Int,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_struct_time_get_tm_hour"),
     },
     ObjectFieldDef {
         name: "tm_min",
         runtime_getter: "rt_struct_time_get_tm_min",
         field_type: TypeSpec::Int,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_struct_time_get_tm_min"),
     },
     ObjectFieldDef {
         name: "tm_sec",
         runtime_getter: "rt_struct_time_get_tm_sec",
         field_type: TypeSpec::Int,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_struct_time_get_tm_sec"),
     },
     ObjectFieldDef {
         name: "tm_wday",
         runtime_getter: "rt_struct_time_get_tm_wday",
         field_type: TypeSpec::Int,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_struct_time_get_tm_wday"),
     },
     ObjectFieldDef {
         name: "tm_yday",
         runtime_getter: "rt_struct_time_get_tm_yday",
         field_type: TypeSpec::Int,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_struct_time_get_tm_yday"),
     },
     ObjectFieldDef {
         name: "tm_isdst",
         runtime_getter: "rt_struct_time_get_tm_isdst",
         field_type: TypeSpec::Int,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_struct_time_get_tm_isdst"),
     },
 ];
 
@@ -255,31 +271,37 @@ static PARSE_RESULT_FIELDS: &[ObjectFieldDef] = &[
         name: "scheme",
         runtime_getter: "rt_parse_result_get_scheme",
         field_type: TypeSpec::Str,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_parse_result_get_scheme"),
     },
     ObjectFieldDef {
         name: "netloc",
         runtime_getter: "rt_parse_result_get_netloc",
         field_type: TypeSpec::Str,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_parse_result_get_netloc"),
     },
     ObjectFieldDef {
         name: "path",
         runtime_getter: "rt_parse_result_get_path",
         field_type: TypeSpec::Str,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_parse_result_get_path"),
     },
     ObjectFieldDef {
         name: "params",
         runtime_getter: "rt_parse_result_get_params",
         field_type: TypeSpec::Str,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_parse_result_get_params"),
     },
     ObjectFieldDef {
         name: "query",
         runtime_getter: "rt_parse_result_get_query",
         field_type: TypeSpec::Str,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_parse_result_get_query"),
     },
     ObjectFieldDef {
         name: "fragment",
         runtime_getter: "rt_parse_result_get_fragment",
         field_type: TypeSpec::Str,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_parse_result_get_fragment"),
     },
 ];
 
@@ -303,16 +325,19 @@ static HTTP_RESPONSE_FIELDS: &[ObjectFieldDef] = &[
         name: "status",
         runtime_getter: "rt_http_response_get_status",
         field_type: TypeSpec::Int,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_http_response_get_status"),
     },
     ObjectFieldDef {
         name: "url",
         runtime_getter: "rt_http_response_get_url",
         field_type: TypeSpec::Str,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_http_response_get_url"),
     },
     ObjectFieldDef {
         name: "headers",
         runtime_getter: "rt_http_response_get_headers",
         field_type: TYPE_DICT_STR_STR,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_http_response_get_headers"),
     },
 ];
 

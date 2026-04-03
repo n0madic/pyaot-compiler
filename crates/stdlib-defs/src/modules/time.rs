@@ -6,6 +6,9 @@ use crate::types::{
     ConstValue, LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibMethodDef,
     StdlibModuleDef, TypeSpec,
 };
+#[allow(unused_imports)]
+use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
+use pyaot_core_defs::RuntimeFuncDef;
 
 /// time.sleep(seconds) - Pause execution for the given number of seconds
 pub static TIME_SLEEP: StdlibFunctionDef = StdlibFunctionDef {
@@ -16,6 +19,7 @@ pub static TIME_SLEEP: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::void("rt_time_sleep", &[P_F64]),
 };
 
 /// time.time() - Return current Unix timestamp as float
@@ -27,6 +31,7 @@ pub static TIME_TIME: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 0,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_time_time", &[], Some(R_F64), false),
 };
 
 /// time.monotonic() - Return monotonic clock value for measuring intervals
@@ -38,6 +43,7 @@ pub static TIME_MONOTONIC: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 0,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_time_monotonic", &[], Some(R_F64), false),
 };
 
 /// time.perf_counter() - Return high-resolution performance counter
@@ -49,6 +55,7 @@ pub static TIME_PERF_COUNTER: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 0,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_time_perf_counter", &[], Some(R_F64), false),
 };
 
 /// time.ctime([seconds]) - Convert seconds to readable local time string
@@ -65,6 +72,7 @@ pub static TIME_CTIME: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_time_ctime", &[P_F64], Some(R_I64), false),
 };
 
 /// time.localtime([seconds]) - Convert seconds to local time struct_time
@@ -81,6 +89,7 @@ pub static TIME_LOCALTIME: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_time_localtime", &[P_F64], Some(R_I64), false),
 };
 
 /// time.gmtime([seconds]) - Convert seconds to UTC struct_time
@@ -97,6 +106,7 @@ pub static TIME_GMTIME: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 0,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_time_gmtime", &[P_F64], Some(R_I64), false),
 };
 
 /// time.mktime(t) - Convert struct_time to seconds since epoch
@@ -108,6 +118,7 @@ pub static TIME_MKTIME: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_time_mktime", &[P_I64], Some(R_F64), false),
 };
 
 /// time.strftime(format[, t]) - Format struct_time to string
@@ -124,6 +135,7 @@ pub static TIME_STRFTIME: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 1,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_time_strftime", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 /// time.strptime(string, format) - Parse string to struct_time
@@ -139,6 +151,7 @@ pub static TIME_STRPTIME: StdlibFunctionDef = StdlibFunctionDef {
     min_args: 2,
     max_args: 2,
     hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new("rt_time_strptime", &[P_I64, P_I64], Some(R_I64), false),
 };
 
 // ============= struct_time class methods =============
@@ -151,6 +164,7 @@ static STRUCT_TIME_TM_YEAR: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_year", &[P_I64], Some(R_I64), false),
 };
 
 /// struct_time.tm_mon getter
@@ -161,6 +175,7 @@ static STRUCT_TIME_TM_MON: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_mon", &[P_I64], Some(R_I64), false),
 };
 
 /// struct_time.tm_mday getter
@@ -171,6 +186,7 @@ static STRUCT_TIME_TM_MDAY: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_mday", &[P_I64], Some(R_I64), false),
 };
 
 /// struct_time.tm_hour getter
@@ -181,6 +197,7 @@ static STRUCT_TIME_TM_HOUR: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_hour", &[P_I64], Some(R_I64), false),
 };
 
 /// struct_time.tm_min getter
@@ -191,6 +208,7 @@ static STRUCT_TIME_TM_MIN: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_min", &[P_I64], Some(R_I64), false),
 };
 
 /// struct_time.tm_sec getter
@@ -201,6 +219,7 @@ static STRUCT_TIME_TM_SEC: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_sec", &[P_I64], Some(R_I64), false),
 };
 
 /// struct_time.tm_wday getter
@@ -211,6 +230,7 @@ static STRUCT_TIME_TM_WDAY: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_wday", &[P_I64], Some(R_I64), false),
 };
 
 /// struct_time.tm_yday getter
@@ -221,6 +241,7 @@ static STRUCT_TIME_TM_YDAY: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_yday", &[P_I64], Some(R_I64), false),
 };
 
 /// struct_time.tm_isdst getter
@@ -231,6 +252,7 @@ static STRUCT_TIME_TM_ISDST: StdlibMethodDef = StdlibMethodDef {
     return_type: TypeSpec::Int,
     min_args: 0,
     max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_isdst", &[P_I64], Some(R_I64), false),
 };
 
 /// struct_time class definition

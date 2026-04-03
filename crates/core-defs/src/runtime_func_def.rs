@@ -49,11 +49,21 @@ pub struct RuntimeFuncDef {
     pub gc_roots_result: bool,
 }
 
-// Shorthand aliases for use in static definitions
+// Shorthand aliases for use in static definitions (private, used within this module)
 #[allow(unused_imports)]
 use ParamType::{F64 as PF64, I32 as PI32, I64 as PI64, I8 as PI8};
 #[allow(unused_imports)]
 use ReturnType::{F64 as RF64, I32 as RI32, I64 as RI64, I8 as RI8};
+
+// Public shorthand aliases for use in other crates (e.g., stdlib-defs codegen fields)
+pub const P_I64: ParamType = ParamType::I64;
+pub const P_F64: ParamType = ParamType::F64;
+pub const P_I8: ParamType = ParamType::I8;
+pub const P_I32: ParamType = ParamType::I32;
+pub const R_I64: ReturnType = ReturnType::I64;
+pub const R_F64: ReturnType = ReturnType::F64;
+pub const R_I8: ReturnType = ReturnType::I8;
+pub const R_I32: ReturnType = ReturnType::I32;
 
 impl RuntimeFuncDef {
     /// General constructor.

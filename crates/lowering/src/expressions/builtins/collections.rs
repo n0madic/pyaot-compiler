@@ -59,8 +59,8 @@ impl<'a> Lowering<'a> {
             Type::RuntimeObject(TypeTagKind::Deque) => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::StdlibCall(
-                        &pyaot_stdlib_defs::modules::collections::DEQUE_LEN,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_stdlib_defs::modules::collections::DEQUE_LEN.codegen,
                     ),
                     args: vec![arg_operand],
                 });
