@@ -565,6 +565,34 @@ assert bul_test2 == b"hello world", "bytes.lower should work"
 
 print("bytes.upper/lower() tests passed")
 
+# ===== SECTION: bytes method return type inference (no type annotations) =====
+# Regression test: without explicit type annotation, bytes method results
+# must still be inferred as bytes (not Any/Int) so print() dispatches correctly.
+brti_data = b"  Hello World  "
+brti_upper = brti_data.upper()
+assert brti_upper == b"  HELLO WORLD  ", "untyped bytes.upper result"
+brti_lower = brti_data.lower()
+assert brti_lower == b"  hello world  ", "untyped bytes.lower result"
+brti_strip = brti_data.strip()
+assert brti_strip == b"Hello World", "untyped bytes.strip result"
+brti_lstrip = brti_data.lstrip()
+assert brti_lstrip == b"Hello World  ", "untyped bytes.lstrip result"
+brti_rstrip = brti_data.rstrip()
+assert brti_rstrip == b"  Hello World", "untyped bytes.rstrip result"
+brti_replace = brti_data.replace(b"Hello", b"Hi")
+assert brti_replace == b"  Hi World  ", "untyped bytes.replace result"
+brti_find = brti_data.find(b"Hello")
+assert brti_find == 2, "untyped bytes.find result"
+brti_count = brti_data.count(b" ")
+assert brti_count == 5, "untyped bytes.count result"
+brti_sw = brti_data.startswith(b"  H")
+assert brti_sw == True, "untyped bytes.startswith result"
+brti_ew = brti_data.endswith(b"  ")
+assert brti_ew == True, "untyped bytes.endswith result"
+brti_decoded = brti_data.decode()
+assert brti_decoded == "  Hello World  ", "untyped bytes.decode result"
+print("bytes method return type inference tests passed")
+
 # ===== SECTION: bytes.join() =====
 bj_sep: bytes = b","
 bj_parts: list[bytes] = [b"a", b"b", b"c"]

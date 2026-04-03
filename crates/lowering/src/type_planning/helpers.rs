@@ -66,6 +66,22 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
             "issubset" | "issuperset" | "isdisjoint" => Some(Type::Bool),
             _ => None,
         },
+        Type::Bytes => match method_name {
+            // Bytes transformation methods
+            "upper" | "lower" | "strip" | "lstrip" | "rstrip" | "replace" | "join" | "fromhex" => {
+                Some(Type::Bytes)
+            }
+            // Decode returns str
+            "decode" => Some(Type::Str),
+            // Methods returning list
+            "split" | "rsplit" => Some(Type::List(Box::new(Type::Bytes))),
+            // Integer methods
+            "find" | "rfind" | "index" | "rindex" | "count" => Some(Type::Int),
+            // Boolean predicates
+            "startswith" | "endswith" => Some(Type::Bool),
+            // Concatenation/repetition (handled via operators, but for completeness)
+            _ => None,
+        },
         Type::File => match method_name {
             "read" | "readline" => Some(Type::Str),
             "readlines" => Some(Type::List(Box::new(Type::Str))),
