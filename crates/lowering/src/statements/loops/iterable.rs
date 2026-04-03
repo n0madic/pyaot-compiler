@@ -227,7 +227,9 @@ impl<'a> Lowering<'a> {
                 IterableKind::Tuple => {
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN)
                 }
-                IterableKind::Str => mir::RuntimeFunc::StrLenInt,
+                IterableKind::Str => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_LEN_INT)
+                }
                 IterableKind::Bytes => {
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_LEN)
                 }
@@ -332,7 +334,9 @@ impl<'a> Lowering<'a> {
                 }
             }
             IterableKind::Tuple => Self::tuple_get_func(&elem_type),
-            IterableKind::Str => mir::RuntimeFunc::StrGetChar,
+            IterableKind::Str => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_GETCHAR)
+            }
             IterableKind::Bytes => {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_GET)
             }

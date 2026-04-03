@@ -30,7 +30,9 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::GeneratorSend,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_GENERATOR_SEND,
+                    ),
                     args: vec![obj_operand, value_operand],
                 });
 
@@ -42,7 +44,9 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::GeneratorClose,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_GENERATOR_CLOSE,
+                    ),
                     args: vec![obj_operand],
                 });
 

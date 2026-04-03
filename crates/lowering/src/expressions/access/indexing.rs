@@ -55,7 +55,9 @@ impl<'a> Lowering<'a> {
                 });
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::StrSubscript,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_STR_SUBSCRIPT,
+                    ),
                     args: vec![obj_operand, index_operand],
                 });
             }

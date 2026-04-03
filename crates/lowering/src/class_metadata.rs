@@ -349,7 +349,7 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::RegisterClass,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_REGISTER_CLASS),
                 args: vec![
                     mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                     mir::Operand::Constant(mir::Constant::Int(parent_class_id)),
@@ -389,7 +389,9 @@ impl<'a> Lowering<'a> {
             }
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::RegisterClassFields,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_REGISTER_CLASS_FIELDS,
+                ),
                 args: vec![
                     mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                     mir::Operand::Constant(mir::Constant::Int(heap_field_mask)),
@@ -403,7 +405,9 @@ impl<'a> Lowering<'a> {
                 .unwrap_or(0);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::RegisterClassFieldCount,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_REGISTER_CLASS_FIELD_COUNT,
+                ),
                 args: vec![
                     mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                     mir::Operand::Constant(mir::Constant::Int(total_field_count)),
@@ -417,13 +421,28 @@ impl<'a> Lowering<'a> {
                 .map(|ci| {
                     let mut regs = Vec::new();
                     if let Some(f) = ci.del_func {
-                        regs.push((f, mir::RuntimeFunc::RegisterDelFunc));
+                        regs.push((
+                            f,
+                            mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_REGISTER_DEL_FUNC,
+                            ),
+                        ));
                     }
                     if let Some(f) = ci.copy_func {
-                        regs.push((f, mir::RuntimeFunc::RegisterCopyFunc));
+                        regs.push((
+                            f,
+                            mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_REGISTER_COPY_FUNC,
+                            ),
+                        ));
                     }
                     if let Some(f) = ci.deepcopy_func {
-                        regs.push((f, mir::RuntimeFunc::RegisterDeepCopyFunc));
+                        regs.push((
+                            f,
+                            mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_REGISTER_DEEPCOPY_FUNC,
+                            ),
+                        ));
                     }
                     regs
                 })
@@ -463,7 +482,9 @@ impl<'a> Lowering<'a> {
             for (name_hash, slot) in method_slots {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::RegisterMethodName,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_REGISTER_METHOD_NAME,
+                    ),
                     args: vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                         mir::Operand::Constant(mir::Constant::Int(name_hash)),

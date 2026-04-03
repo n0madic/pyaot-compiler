@@ -1,5 +1,6 @@
 //! String method lowering
 
+use pyaot_core_defs::runtime_func_def;
 use pyaot_diagnostics::Result;
 use pyaot_mir as mir;
 use pyaot_types::Type;
@@ -55,7 +56,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.alloc_and_add_local(Type::Bytes, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::StrEncode,
+                    func: mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_ENCODE),
                     args: vec![obj_operand, encoding_arg],
                 });
                 return Ok(mir::Operand::Local(result_local));
@@ -63,48 +64,127 @@ impl<'a> Lowering<'a> {
             _ => {}
         }
 
+        // Handle find/rfind/index/rindex: need op_tag as 3rd argument
+        if let Some((op_tag, def)) = match method_name {
+            "find" => Some((mir::SearchOp::Find.to_tag(), &runtime_func_def::RT_STR_FIND)),
+            "rfind" => Some((
+                mir::SearchOp::Rfind.to_tag(),
+                &runtime_func_def::RT_STR_RFIND,
+            )),
+            "index" => Some((
+                mir::SearchOp::Index.to_tag(),
+                &runtime_func_def::RT_STR_INDEX,
+            )),
+            "rindex" => Some((
+                mir::SearchOp::Rindex.to_tag(),
+                &runtime_func_def::RT_STR_RINDEX,
+            )),
+            _ => None,
+        } {
+            let result_local = self.alloc_and_add_local(Type::Int, mir_func);
+            let mut all_args = vec![obj_operand];
+            all_args.extend(arg_operands);
+            all_args.push(mir::Operand::Constant(mir::Constant::Int(op_tag as i64)));
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(def),
+                args: all_args,
+            });
+            return Ok(mir::Operand::Local(result_local));
+        }
+
         // Simple methods that just need (obj, args...) -> result
         let (result_ty, runtime_func): (Type, mir::RuntimeFunc) = match method_name {
-            "upper" => (Type::Str, mir::RuntimeFunc::StrUpper),
-            "lower" => (Type::Str, mir::RuntimeFunc::StrLower),
-            "strip" => (Type::Str, mir::RuntimeFunc::StrStrip),
-            "startswith" => (Type::Bool, mir::RuntimeFunc::StrStartsWith),
-            "endswith" => (Type::Bool, mir::RuntimeFunc::StrEndsWith),
-            "find" => (Type::Int, mir::RuntimeFunc::StrSearch(mir::SearchOp::Find)),
-            "rfind" => (Type::Int, mir::RuntimeFunc::StrSearch(mir::SearchOp::Rfind)),
-            "index" => (Type::Int, mir::RuntimeFunc::StrSearch(mir::SearchOp::Index)),
-            "rindex" => (
-                Type::Int,
-                mir::RuntimeFunc::StrSearch(mir::SearchOp::Rindex),
+            "upper" => (
+                Type::Str,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_UPPER),
             ),
-            "replace" => (Type::Str, mir::RuntimeFunc::StrReplace),
-            "count" => (Type::Int, mir::RuntimeFunc::StrCount),
-            "title" => (Type::Str, mir::RuntimeFunc::StrTitle),
-            "capitalize" => (Type::Str, mir::RuntimeFunc::StrCapitalize),
-            "swapcase" => (Type::Str, mir::RuntimeFunc::StrSwapcase),
+            "lower" => (
+                Type::Str,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_LOWER),
+            ),
+            "strip" => (
+                Type::Str,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_STRIP),
+            ),
+            "startswith" => (
+                Type::Bool,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_STARTSWITH),
+            ),
+            "endswith" => (
+                Type::Bool,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_ENDSWITH),
+            ),
+            "replace" => (
+                Type::Str,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_REPLACE),
+            ),
+            "count" => (
+                Type::Int,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_COUNT),
+            ),
+            "title" => (
+                Type::Str,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_TITLE),
+            ),
+            "capitalize" => (
+                Type::Str,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_CAPITALIZE),
+            ),
+            "swapcase" => (
+                Type::Str,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_SWAPCASE),
+            ),
             // Character predicates
-            "isdigit" => (Type::Bool, mir::RuntimeFunc::StrIsDigit),
-            "isalpha" => (Type::Bool, mir::RuntimeFunc::StrIsAlpha),
-            "isalnum" => (Type::Bool, mir::RuntimeFunc::StrIsAlnum),
-            "isspace" => (Type::Bool, mir::RuntimeFunc::StrIsSpace),
-            "isupper" => (Type::Bool, mir::RuntimeFunc::StrIsUpper),
-            "islower" => (Type::Bool, mir::RuntimeFunc::StrIsLower),
-            "isascii" => (Type::Bool, mir::RuntimeFunc::StrIsAscii),
+            "isdigit" => (
+                Type::Bool,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_ISDIGIT),
+            ),
+            "isalpha" => (
+                Type::Bool,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_ISALPHA),
+            ),
+            "isalnum" => (
+                Type::Bool,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_ISALNUM),
+            ),
+            "isspace" => (
+                Type::Bool,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_ISSPACE),
+            ),
+            "isupper" => (
+                Type::Bool,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_ISUPPER),
+            ),
+            "islower" => (
+                Type::Bool,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_ISLOWER),
+            ),
+            "isascii" => (
+                Type::Bool,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_ISASCII),
+            ),
             // encode is handled above with default encoding
             // New string methods
-            "removeprefix" => (Type::Str, mir::RuntimeFunc::StrRemovePrefix),
-            "removesuffix" => (Type::Str, mir::RuntimeFunc::StrRemoveSuffix),
+            "removeprefix" => (
+                Type::Str,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_REMOVEPREFIX),
+            ),
+            "removesuffix" => (
+                Type::Str,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_REMOVESUFFIX),
+            ),
             "splitlines" => (
                 Type::List(Box::new(Type::Str)),
-                mir::RuntimeFunc::StrSplitLines,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_SPLITLINES),
             ),
             "partition" => (
                 Type::Tuple(vec![Type::Str, Type::Str, Type::Str]),
-                mir::RuntimeFunc::StrPartition,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_PARTITION),
             ),
             "rpartition" => (
                 Type::Tuple(vec![Type::Str, Type::Str, Type::Str]),
-                mir::RuntimeFunc::StrRpartition,
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_RPARTITION),
             ),
             _ => {
                 // Unknown method
@@ -136,8 +216,8 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         let runtime_func = match method_name {
-            "split" => mir::RuntimeFunc::StrSplit,
-            "rsplit" => mir::RuntimeFunc::StrRsplit,
+            "split" => mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_SPLIT),
+            "rsplit" => mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_RSPLIT),
             _ => unreachable!(),
         };
         self.lower_split_variant_impl(obj_operand, arg_operands, runtime_func, Type::Str, mir_func)
@@ -153,7 +233,7 @@ impl<'a> Lowering<'a> {
         self.lower_join_impl(
             obj_operand,
             arg_operands,
-            mir::RuntimeFunc::StrJoin,
+            mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_JOIN),
             Type::Str,
             mir_func,
         )
@@ -174,8 +254,8 @@ impl<'a> Lowering<'a> {
             .unwrap_or(mir::Operand::Constant(mir::Constant::Int(0)));
 
         let runtime_func = match method_name {
-            "lstrip" => mir::RuntimeFunc::StrLstrip,
-            "rstrip" => mir::RuntimeFunc::StrRstrip,
+            "lstrip" => mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_LSTRIP),
+            "rstrip" => mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_RSTRIP),
             _ => unreachable!(),
         };
 
@@ -211,9 +291,9 @@ impl<'a> Lowering<'a> {
             .unwrap_or(mir::Operand::Constant(mir::Constant::Int(0)));
 
         let runtime_func = match method_name {
-            "center" => mir::RuntimeFunc::StrCenter,
-            "ljust" => mir::RuntimeFunc::StrLjust,
-            "rjust" => mir::RuntimeFunc::StrRjust,
+            "center" => mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_CENTER),
+            "ljust" => mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_LJUST),
+            "rjust" => mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_RJUST),
             _ => unreachable!(),
         };
 
@@ -245,7 +325,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::StrExpandTabs,
+            func: mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_EXPANDTABS),
             args: vec![obj_operand, tabsize_operand],
         });
 
@@ -269,7 +349,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::StrZfill,
+            func: mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_ZFILL),
             args: vec![obj_operand, width_operand],
         });
 

@@ -1,6 +1,7 @@
 //! Tests for property flattening pass
 
 use indexmap::IndexMap;
+use pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD;
 use pyaot_mir::{
     BasicBlock, Constant, Function, Instruction, InstructionKind, Local, Module, Operand,
     RuntimeFunc, Terminator,
@@ -49,7 +50,7 @@ fn make_trivial_getter(func_id: FuncId, offset: i64, self_type: Type) -> Functio
             id: block_id,
             instructions: vec![make_inst(InstructionKind::RuntimeCall {
                 dest: LocalId::from(1u32),
-                func: RuntimeFunc::InstanceGetField,
+                func: RuntimeFunc::Call(&RT_INSTANCE_GET_FIELD),
                 args: vec![
                     Operand::Local(LocalId::from(0u32)),
                     Operand::Constant(Constant::Int(offset)),
@@ -136,7 +137,9 @@ fn test_flatten_trivial_getter() {
     match &inst.kind {
         InstructionKind::RuntimeCall { dest, func, args } => {
             assert_eq!(*dest, LocalId::from(11u32));
-            assert!(matches!(func, RuntimeFunc::InstanceGetField));
+            assert!(
+                matches!(func, RuntimeFunc::Call(def) if def.symbol == RT_INSTANCE_GET_FIELD.symbol)
+            );
             assert_eq!(args.len(), 2);
             assert_eq!(args[0], Operand::Local(LocalId::from(10u32)));
             assert_eq!(args[1], Operand::Constant(Constant::Int(offset)));
@@ -181,7 +184,7 @@ fn test_skip_non_trivial_getter_multiple_blocks() {
             id: block1,
             instructions: vec![make_inst(InstructionKind::RuntimeCall {
                 dest: LocalId::from(1u32),
-                func: RuntimeFunc::InstanceGetField,
+                func: RuntimeFunc::Call(&RT_INSTANCE_GET_FIELD),
                 args: vec![
                     Operand::Local(LocalId::from(0u32)),
                     Operand::Constant(Constant::Int(0)),
@@ -247,7 +250,7 @@ fn test_skip_non_trivial_getter_multiple_instructions() {
                 // Two instructions — not trivial
                 make_inst(InstructionKind::RuntimeCall {
                     dest: LocalId::from(1u32),
-                    func: RuntimeFunc::InstanceGetField,
+                    func: RuntimeFunc::Call(&RT_INSTANCE_GET_FIELD),
                     args: vec![
                         Operand::Local(LocalId::from(0u32)),
                         Operand::Constant(Constant::Int(0)),

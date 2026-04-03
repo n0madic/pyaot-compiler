@@ -22,6 +22,83 @@ impl ValueKind {
             ValueKind::Ptr => "_ptr",
         }
     }
+
+    /// Get static RuntimeFuncDef for GlobalGet of this kind
+    pub fn global_get_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        match self {
+            ValueKind::Int => &RT_GLOBAL_GET_INT,
+            ValueKind::Float => &RT_GLOBAL_GET_FLOAT,
+            ValueKind::Bool => &RT_GLOBAL_GET_BOOL,
+            ValueKind::Ptr => &RT_GLOBAL_GET_PTR,
+        }
+    }
+
+    /// Get static RuntimeFuncDef for GlobalSet of this kind
+    pub fn global_set_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        match self {
+            ValueKind::Int => &RT_GLOBAL_SET_INT,
+            ValueKind::Float => &RT_GLOBAL_SET_FLOAT,
+            ValueKind::Bool => &RT_GLOBAL_SET_BOOL,
+            ValueKind::Ptr => &RT_GLOBAL_SET_PTR,
+        }
+    }
+
+    /// Get static RuntimeFuncDef for ClassAttrGet of this kind
+    pub fn class_attr_get_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        match self {
+            ValueKind::Int => &RT_CLASS_ATTR_GET_INT,
+            ValueKind::Float => &RT_CLASS_ATTR_GET_FLOAT,
+            ValueKind::Bool => &RT_CLASS_ATTR_GET_BOOL,
+            ValueKind::Ptr => &RT_CLASS_ATTR_GET_PTR,
+        }
+    }
+
+    /// Get static RuntimeFuncDef for ClassAttrSet of this kind
+    pub fn class_attr_set_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        match self {
+            ValueKind::Int => &RT_CLASS_ATTR_SET_INT,
+            ValueKind::Float => &RT_CLASS_ATTR_SET_FLOAT,
+            ValueKind::Bool => &RT_CLASS_ATTR_SET_BOOL,
+            ValueKind::Ptr => &RT_CLASS_ATTR_SET_PTR,
+        }
+    }
+
+    /// Get static RuntimeFuncDef for MakeCell of this kind
+    pub fn make_cell_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        match self {
+            ValueKind::Int => &RT_MAKE_CELL_INT,
+            ValueKind::Float => &RT_MAKE_CELL_FLOAT,
+            ValueKind::Bool => &RT_MAKE_CELL_BOOL,
+            ValueKind::Ptr => &RT_MAKE_CELL_PTR,
+        }
+    }
+
+    /// Get static RuntimeFuncDef for CellGet of this kind
+    pub fn cell_get_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        match self {
+            ValueKind::Int => &RT_CELL_GET_INT,
+            ValueKind::Float => &RT_CELL_GET_FLOAT,
+            ValueKind::Bool => &RT_CELL_GET_BOOL,
+            ValueKind::Ptr => &RT_CELL_GET_PTR,
+        }
+    }
+
+    /// Get static RuntimeFuncDef for CellSet of this kind
+    pub fn cell_set_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        match self {
+            ValueKind::Int => &RT_CELL_SET_INT,
+            ValueKind::Float => &RT_CELL_SET_FLOAT,
+            ValueKind::Bool => &RT_CELL_SET_BOOL,
+            ValueKind::Ptr => &RT_CELL_SET_PTR,
+        }
+    }
 }
 
 /// String format for repr/ascii operations
@@ -67,6 +144,32 @@ impl ContainerKind {
             ContainerKind::Set => "set",
             ContainerKind::Dict => "dict",
             ContainerKind::Str => "str",
+        }
+    }
+
+    /// Get the static RuntimeFuncDef for minmax (Int/Float variant).
+    /// Signature: (container, is_min, elem_kind) -> i64
+    pub fn minmax_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        match self {
+            ContainerKind::List => &RT_LIST_MINMAX,
+            ContainerKind::Tuple => &RT_TUPLE_MINMAX,
+            ContainerKind::Set => &RT_SET_MINMAX,
+            ContainerKind::Dict => &RT_DICT_MINMAX,
+            ContainerKind::Str => &RT_STR_MINMAX,
+        }
+    }
+
+    /// Get the static RuntimeFuncDef for minmax with key function.
+    /// Signature: (container, key_fn, elem_tag, captures, count, is_min) -> *mut Obj
+    pub fn minmax_with_key_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        match self {
+            ContainerKind::List => &RT_LIST_MINMAX_WITH_KEY,
+            ContainerKind::Tuple => &RT_TUPLE_MINMAX_WITH_KEY,
+            ContainerKind::Set => &RT_SET_MINMAX_WITH_KEY,
+            ContainerKind::Dict => &RT_DICT_MINMAX_WITH_KEY,
+            ContainerKind::Str => &RT_STR_MINMAX_WITH_KEY,
         }
     }
 }
@@ -161,6 +264,32 @@ impl IterSourceKind {
     pub fn requires_range_args(&self) -> bool {
         matches!(self, IterSourceKind::Range)
     }
+
+    /// Get the static RuntimeFuncDef for creating an iterator from this source and direction.
+    pub fn iterator_def(
+        &self,
+        direction: IterDirection,
+    ) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        match (direction, self) {
+            (IterDirection::Forward, IterSourceKind::List) => &RT_ITER_LIST,
+            (IterDirection::Forward, IterSourceKind::Tuple) => &RT_ITER_TUPLE,
+            (IterDirection::Forward, IterSourceKind::Dict) => &RT_ITER_DICT,
+            (IterDirection::Forward, IterSourceKind::Str) => &RT_ITER_STR,
+            (IterDirection::Forward, IterSourceKind::Range) => &RT_ITER_RANGE,
+            (IterDirection::Forward, IterSourceKind::Set) => &RT_ITER_SET,
+            (IterDirection::Forward, IterSourceKind::Bytes) => &RT_ITER_BYTES,
+            (IterDirection::Forward, IterSourceKind::Generator) => &RT_ITER_GENERATOR,
+            (IterDirection::Reversed, IterSourceKind::List) => &RT_ITER_REVERSED_LIST,
+            (IterDirection::Reversed, IterSourceKind::Tuple) => &RT_ITER_REVERSED_TUPLE,
+            (IterDirection::Reversed, IterSourceKind::Dict) => &RT_ITER_REVERSED_DICT,
+            (IterDirection::Reversed, IterSourceKind::Str) => &RT_ITER_REVERSED_STR,
+            (IterDirection::Reversed, IterSourceKind::Range) => &RT_ITER_REVERSED_RANGE,
+            (IterDirection::Reversed, IterSourceKind::Set) => &RT_ITER_REVERSED_SET,
+            (IterDirection::Reversed, IterSourceKind::Bytes) => &RT_ITER_REVERSED_BYTES,
+            (IterDirection::Reversed, IterSourceKind::Generator) => &RT_ITER_REVERSED_GENERATOR,
+        }
+    }
 }
 
 /// Iterator direction for iterator creation
@@ -215,6 +344,33 @@ impl SortableKind {
     /// Whether this source requires special args (start, stop, step) instead of one container
     pub fn is_range(&self) -> bool {
         matches!(self, SortableKind::Range)
+    }
+
+    /// Get the static RuntimeFuncDef for sorted() on this source.
+    /// - `has_key=false`: returns the no-key variant (Range uses special 4-arg version,
+    ///   Set/Dict use 3-arg version with elem_tag, others use 2-arg version)
+    /// - `has_key=true`: returns the with-key variant (6-arg version)
+    pub fn sorted_def(&self, has_key: bool) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        if has_key {
+            match self {
+                SortableKind::List => &RT_SORTED_LIST_WITH_KEY,
+                SortableKind::Tuple => &RT_SORTED_TUPLE_WITH_KEY,
+                SortableKind::Str => &RT_SORTED_STR_WITH_KEY,
+                SortableKind::Set => &RT_SORTED_SET_WITH_KEY,
+                SortableKind::Dict => &RT_SORTED_DICT_WITH_KEY,
+                SortableKind::Range => unreachable!("sorted() with key is not supported for Range"),
+            }
+        } else {
+            match self {
+                SortableKind::List => &RT_SORTED_LIST,
+                SortableKind::Tuple => &RT_SORTED_TUPLE,
+                SortableKind::Str => &RT_SORTED_STR,
+                SortableKind::Set => &RT_SORTED_SET,
+                SortableKind::Dict => &RT_SORTED_DICT,
+                SortableKind::Range => &RT_SORTED_RANGE,
+            }
+        }
     }
 }
 
@@ -327,6 +483,27 @@ impl CompareKind {
     pub fn needs_op_tag(&self) -> bool {
         matches!(self, CompareKind::List | CompareKind::Tuple)
     }
+
+    /// Get the static RuntimeFuncDef for this comparison kind and operation.
+    pub fn runtime_func_def(&self, op: ComparisonOp) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        match (self, op) {
+            (CompareKind::ListInt, _) => &RT_CMP_LIST_INT_EQ,
+            (CompareKind::ListFloat, _) => &RT_CMP_LIST_FLOAT_EQ,
+            (CompareKind::ListStr, _) => &RT_CMP_LIST_STR_EQ,
+            (CompareKind::List, ComparisonOp::Eq) => &RT_CMP_LIST_EQ,
+            (CompareKind::List, _) => &RT_CMP_LIST_ORD,
+            (CompareKind::Str, _) => &RT_CMP_STR_EQ,
+            (CompareKind::Bytes, _) => &RT_CMP_BYTES_EQ,
+            (CompareKind::Tuple, ComparisonOp::Eq) => &RT_CMP_TUPLE_EQ,
+            (CompareKind::Tuple, _) => &RT_CMP_TUPLE_ORD,
+            (CompareKind::Obj, ComparisonOp::Eq) => &RT_CMP_OBJ_EQ,
+            (CompareKind::Obj, ComparisonOp::Lt) => &RT_CMP_OBJ_LT,
+            (CompareKind::Obj, ComparisonOp::Lte) => &RT_CMP_OBJ_LTE,
+            (CompareKind::Obj, ComparisonOp::Gt) => &RT_CMP_OBJ_GT,
+            (CompareKind::Obj, ComparisonOp::Gte) => &RT_CMP_OBJ_GTE,
+        }
+    }
 }
 
 /// Print operation kind for typed print operations
@@ -424,6 +601,30 @@ impl ReprTargetKind {
     pub fn is_nullary(&self) -> bool {
         matches!(self, ReprTargetKind::None)
     }
+
+    /// Get the static RuntimeFuncDef for this repr/ascii target kind and format.
+    pub fn runtime_func_def(
+        &self,
+        format: StringFormat,
+    ) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        match (format, self) {
+            (StringFormat::Repr, ReprTargetKind::Int) => &RT_REPR_INT,
+            (StringFormat::Repr, ReprTargetKind::Float) => &RT_REPR_FLOAT,
+            (StringFormat::Repr, ReprTargetKind::Bool) => &RT_REPR_BOOL,
+            (StringFormat::Repr, ReprTargetKind::None) => &RT_REPR_NONE,
+            (StringFormat::Repr, ReprTargetKind::Str) => &RT_REPR_STR,
+            (StringFormat::Repr, ReprTargetKind::Bytes) => &RT_REPR_BYTES,
+            (StringFormat::Repr, ReprTargetKind::Collection) => &RT_REPR_COLLECTION,
+            (StringFormat::Ascii, ReprTargetKind::Int) => &RT_ASCII_INT,
+            (StringFormat::Ascii, ReprTargetKind::Float) => &RT_ASCII_FLOAT,
+            (StringFormat::Ascii, ReprTargetKind::Bool) => &RT_ASCII_BOOL,
+            (StringFormat::Ascii, ReprTargetKind::None) => &RT_ASCII_NONE,
+            (StringFormat::Ascii, ReprTargetKind::Str) => &RT_ASCII_STR,
+            (StringFormat::Ascii, ReprTargetKind::Bytes) => &RT_ASCII_BYTES,
+            (StringFormat::Ascii, ReprTargetKind::Collection) => &RT_ASCII_COLLECTION,
+        }
+    }
 }
 
 /// Type kind for conversion operations between primitive types and strings
@@ -457,6 +658,27 @@ impl ConversionTypeKind {
     /// Build runtime function name for conversion: "rt_{from}_to_{to}"
     pub fn runtime_func_name(from: ConversionTypeKind, to: ConversionTypeKind) -> String {
         format!("rt_{}_to_{}", from.name(), to.name())
+    }
+
+    /// Get the static RuntimeFuncDef for this conversion (from, to) pair.
+    pub fn convert_def(
+        from: ConversionTypeKind,
+        to: ConversionTypeKind,
+    ) -> &'static pyaot_core_defs::RuntimeFuncDef {
+        use pyaot_core_defs::runtime_func_def::*;
+        match (from, to) {
+            (ConversionTypeKind::Int, ConversionTypeKind::Str) => &RT_INT_TO_STR,
+            (ConversionTypeKind::Float, ConversionTypeKind::Str) => &RT_FLOAT_TO_STR,
+            (ConversionTypeKind::Bool, ConversionTypeKind::Str) => &RT_BOOL_TO_STR,
+            (ConversionTypeKind::None, ConversionTypeKind::Str) => &RT_NONE_TO_STR,
+            (ConversionTypeKind::Str, ConversionTypeKind::Int) => &RT_STR_TO_INT,
+            (ConversionTypeKind::Str, ConversionTypeKind::Float) => &RT_STR_TO_FLOAT,
+            _ => unreachable!(
+                "Unsupported conversion: {:?} -> {:?}",
+                from.name(),
+                to.name()
+            ),
+        }
     }
 }
 

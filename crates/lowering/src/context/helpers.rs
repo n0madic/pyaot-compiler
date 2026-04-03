@@ -165,7 +165,7 @@ impl<'a> Lowering<'a> {
             Type::Str => {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 self.emit_collection_bool_via_len(
-                    mir::RuntimeFunc::StrLenInt,
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_LEN_INT),
                     operand,
                     result_local,
                     mir_func,
@@ -334,7 +334,7 @@ impl<'a> Lowering<'a> {
             Type::Str => {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 self.emit_collection_bool_via_len_in_block(
-                    mir::RuntimeFunc::StrLenInt,
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_LEN_INT),
                     operand,
                     result_local,
                     mir_func,

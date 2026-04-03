@@ -98,19 +98,18 @@ impl<'a> Lowering<'a> {
                     let result_type = elem_type.as_ref().clone();
                     let result_local = self.alloc_and_add_local(result_type, mir_func);
 
+                    let is_min_operand =
+                        mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::ContainerMinMax {
-                            container: ContainerKind::List,
-                            op,
-                            elem: ElementKind::WithKey,
-                        },
+                        func: mir::RuntimeFunc::Call(ContainerKind::List.minmax_with_key_def()),
                         args: vec![
                             list_operand,
                             resolved.func_addr,
                             elem_tag_operand,
                             resolved.captures,
                             resolved.capture_count,
+                            is_min_operand,
                         ],
                     });
 
@@ -127,14 +126,18 @@ impl<'a> Lowering<'a> {
                 };
                 let result_local = self.alloc_and_add_local(result_type, mir_func);
 
+                let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
+                let elem_kind_val: u8 = if matches!(elem_kind, ElementKind::Float) {
+                    1
+                } else {
+                    0
+                };
+                let elem_kind_operand =
+                    mir::Operand::Constant(mir::Constant::Int(elem_kind_val as i64));
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::ContainerMinMax {
-                        container: ContainerKind::List,
-                        op,
-                        elem: elem_kind,
-                    },
-                    args: vec![list_operand],
+                    func: mir::RuntimeFunc::Call(ContainerKind::List.minmax_def()),
+                    args: vec![list_operand, is_min_operand, elem_kind_operand],
                 });
 
                 return Ok(mir::Operand::Local(result_local));
@@ -169,19 +172,18 @@ impl<'a> Lowering<'a> {
                     // Result type matches first element type (for heterogeneous tuples)
                     let result_local = self.alloc_and_add_local(first_elem_type, mir_func);
 
+                    let is_min_operand =
+                        mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::ContainerMinMax {
-                            container: ContainerKind::Tuple,
-                            op,
-                            elem: ElementKind::WithKey,
-                        },
+                        func: mir::RuntimeFunc::Call(ContainerKind::Tuple.minmax_with_key_def()),
                         args: vec![
                             tuple_operand,
                             resolved.func_addr,
                             elem_tag_operand,
                             resolved.captures,
                             resolved.capture_count,
+                            is_min_operand,
                         ],
                     });
 
@@ -198,14 +200,18 @@ impl<'a> Lowering<'a> {
                 };
                 let result_local = self.alloc_and_add_local(result_type, mir_func);
 
+                let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
+                let elem_kind_val: u8 = if matches!(elem_kind, ElementKind::Float) {
+                    1
+                } else {
+                    0
+                };
+                let elem_kind_operand =
+                    mir::Operand::Constant(mir::Constant::Int(elem_kind_val as i64));
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::ContainerMinMax {
-                        container: ContainerKind::Tuple,
-                        op,
-                        elem: elem_kind,
-                    },
-                    args: vec![tuple_operand],
+                    func: mir::RuntimeFunc::Call(ContainerKind::Tuple.minmax_def()),
+                    args: vec![tuple_operand, is_min_operand, elem_kind_operand],
                 });
 
                 return Ok(mir::Operand::Local(result_local));
@@ -244,19 +250,18 @@ impl<'a> Lowering<'a> {
                     // Runtime returns *mut Obj, need to unbox for primitives
                     let heap_result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
+                    let is_min_operand =
+                        mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: heap_result_local,
-                        func: mir::RuntimeFunc::ContainerMinMax {
-                            container: ContainerKind::Set,
-                            op,
-                            elem: ElementKind::WithKey,
-                        },
+                        func: mir::RuntimeFunc::Call(ContainerKind::Set.minmax_with_key_def()),
                         args: vec![
                             set_operand,
                             resolved.func_addr,
                             needs_unbox_operand,
                             resolved.captures,
                             resolved.capture_count,
+                            is_min_operand,
                         ],
                     });
 
@@ -298,14 +303,18 @@ impl<'a> Lowering<'a> {
                 };
                 let result_local = self.alloc_and_add_local(result_type, mir_func);
 
+                let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
+                let elem_kind_val: u8 = if matches!(elem_kind, ElementKind::Float) {
+                    1
+                } else {
+                    0
+                };
+                let elem_kind_operand =
+                    mir::Operand::Constant(mir::Constant::Int(elem_kind_val as i64));
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::ContainerMinMax {
-                        container: ContainerKind::Set,
-                        op,
-                        elem: elem_kind,
-                    },
-                    args: vec![set_operand],
+                    func: mir::RuntimeFunc::Call(ContainerKind::Set.minmax_def()),
+                    args: vec![set_operand, is_min_operand, elem_kind_operand],
                 });
 
                 return Ok(mir::Operand::Local(result_local));
@@ -338,7 +347,9 @@ impl<'a> Lowering<'a> {
                 let first_local = self.alloc_and_add_local(Type::Int, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: first_local,
-                    func: mir::RuntimeFunc::IterNextNoExc,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC,
+                    ),
                     args: vec![mir::Operand::Local(iter_local)],
                 });
 
@@ -376,14 +387,18 @@ impl<'a> Lowering<'a> {
                 let next_local = self.alloc_and_add_local(Type::Int, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: next_local,
-                    func: mir::RuntimeFunc::IterNextNoExc,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC,
+                    ),
                     args: vec![mir::Operand::Local(iter_local)],
                 });
 
                 let exhausted_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: exhausted_local,
-                    func: mir::RuntimeFunc::GeneratorIsExhausted,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED,
+                    ),
                     args: vec![mir::Operand::Local(iter_local)],
                 });
 

@@ -425,7 +425,7 @@ fn test_runtime_call_kept_even_if_unused() {
     entry.instructions = vec![Instruction {
         kind: InstructionKind::RuntimeCall {
             dest: lid(0),
-            func: RuntimeFunc::PrintNewline,
+            func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_PRINT_NEWLINE),
             args: vec![],
         },
         span: None,

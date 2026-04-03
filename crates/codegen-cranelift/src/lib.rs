@@ -8,7 +8,6 @@
 //! - `utils` - Utility functions (type conversion, name mangling, operand loading)
 //! - `gc` - GC prologue/epilogue and root management
 //! - `runtime_calls` - Runtime function call generation
-//! - `runtime_helpers` - Helper functions for runtime calls (reduces code duplication)
 //! - `exceptions` - Exception handling instructions and terminators
 //! - `instructions` - Core instruction compilation
 //! - `terminators` - Terminator compilation
@@ -23,7 +22,6 @@ mod function;
 mod gc;
 mod instructions;
 mod runtime_calls;
-mod runtime_helpers;
 mod terminators;
 mod traceback;
 mod utils;

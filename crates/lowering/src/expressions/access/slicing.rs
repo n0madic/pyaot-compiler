@@ -52,14 +52,18 @@ impl<'a> Lowering<'a> {
                     let step_operand = self.lower_expr(step_expr, hir_module, mir_func)?;
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::StrSliceStep,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_STR_SLICE_STEP,
+                        ),
                         args: vec![obj_operand, start_operand, end_operand, step_operand],
                     });
                 } else {
                     // Simple slice without step
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::StrSlice,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_STR_SLICE,
+                        ),
                         args: vec![obj_operand, start_operand, end_operand],
                     });
                 }

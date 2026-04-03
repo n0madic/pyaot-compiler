@@ -46,40 +46,40 @@ impl<'a> Lowering<'a> {
 
     /// Get the appropriate runtime function for setting a global variable based on its type
     pub(crate) fn get_global_set_func(&self, var_type: &Type) -> mir::RuntimeFunc {
-        mir::RuntimeFunc::GlobalSet(self.type_to_value_kind(var_type))
+        mir::RuntimeFunc::Call(self.type_to_value_kind(var_type).global_set_def())
     }
 
     /// Get the appropriate runtime function for getting a global variable based on its type
     pub(crate) fn get_global_get_func(&self, var_type: &Type) -> mir::RuntimeFunc {
-        mir::RuntimeFunc::GlobalGet(self.type_to_value_kind(var_type))
+        mir::RuntimeFunc::Call(self.type_to_value_kind(var_type).global_get_def())
     }
 
     // ==================== Cell Storage (for closures/nonlocal) ====================
 
     /// Get the appropriate runtime function for creating a cell based on type
     pub(crate) fn get_make_cell_func(&self, var_type: &Type) -> mir::RuntimeFunc {
-        mir::RuntimeFunc::MakeCell(self.type_to_value_kind(var_type))
+        mir::RuntimeFunc::Call(self.type_to_value_kind(var_type).make_cell_def())
     }
 
     /// Get the appropriate runtime function for getting a value from a cell based on type
     pub(crate) fn get_cell_get_func(&self, var_type: &Type) -> mir::RuntimeFunc {
-        mir::RuntimeFunc::CellGet(self.type_to_value_kind(var_type))
+        mir::RuntimeFunc::Call(self.type_to_value_kind(var_type).cell_get_def())
     }
 
     /// Get the appropriate runtime function for setting a value in a cell based on type
     pub(crate) fn get_cell_set_func(&self, var_type: &Type) -> mir::RuntimeFunc {
-        mir::RuntimeFunc::CellSet(self.type_to_value_kind(var_type))
+        mir::RuntimeFunc::Call(self.type_to_value_kind(var_type).cell_set_def())
     }
 
     // ==================== Class Attribute Storage ====================
 
     /// Get the appropriate runtime function for setting a class attribute based on type
     pub(crate) fn get_class_attr_set_func(&self, attr_type: &Type) -> mir::RuntimeFunc {
-        mir::RuntimeFunc::ClassAttrSet(self.type_to_value_kind(attr_type))
+        mir::RuntimeFunc::Call(self.type_to_value_kind(attr_type).class_attr_set_def())
     }
 
     /// Get the appropriate runtime function for getting a class attribute based on type
     pub(crate) fn get_class_attr_get_func(&self, attr_type: &Type) -> mir::RuntimeFunc {
-        mir::RuntimeFunc::ClassAttrGet(self.type_to_value_kind(attr_type))
+        mir::RuntimeFunc::Call(self.type_to_value_kind(attr_type).class_attr_get_def())
     }
 }

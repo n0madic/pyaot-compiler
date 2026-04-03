@@ -72,10 +72,7 @@ impl<'a> Lowering<'a> {
             }
         };
 
-        let iter_func = mir::RuntimeFunc::MakeIterator {
-            source,
-            direction: mir::IterDirection::Forward,
-        };
+        let iter_func = mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Forward));
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
@@ -149,10 +146,9 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::MakeIterator {
-                source: mir::IterSourceKind::Range,
-                direction: mir::IterDirection::Forward,
-            },
+            func: mir::RuntimeFunc::Call(
+                mir::IterSourceKind::Range.iterator_def(mir::IterDirection::Forward),
+            ),
             args: vec![start_operand, stop_operand, step_operand],
         });
 
@@ -207,7 +203,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::IterNext,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT),
             args: vec![arg_operand],
         });
 
@@ -253,10 +249,9 @@ impl<'a> Lowering<'a> {
                     self.parse_range_args(range_args, hir_module, mir_func)?;
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: iter_local,
-                    func: mir::RuntimeFunc::MakeIterator {
-                        source: mir::IterSourceKind::Range,
-                        direction: mir::IterDirection::Forward,
-                    },
+                    func: mir::RuntimeFunc::Call(
+                        mir::IterSourceKind::Range.iterator_def(mir::IterDirection::Forward),
+                    ),
                     args: vec![start, stop, step],
                 });
             }
@@ -275,10 +270,7 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: iter_local,
-                func: mir::RuntimeFunc::MakeIterator {
-                    source,
-                    direction: mir::IterDirection::Forward,
-                },
+                func: mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Forward)),
                 args: vec![operand],
             });
         }

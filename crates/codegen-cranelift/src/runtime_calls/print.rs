@@ -1,4 +1,11 @@
 //! Print operations code generation
+//!
+//! Only handles special cases that embed string constants in the binary:
+//! - AssertFail: embeds null-terminated message string
+//! - PrintValue(Str): embeds null-terminated C string for raw printing
+//! - PrintValue(None): prints literal "None" (no argument)
+//!
+//! All other print operations are migrated to RuntimeFunc::Call(&RuntimeFuncDef).
 
 use cranelift_codegen::ir::types as cltypes;
 use cranelift_codegen::ir::{AbiParam, InstBuilder};
@@ -10,13 +17,12 @@ use pyaot_mir::{self as mir, Operand, PrintKind};
 use pyaot_utils::LocalId;
 
 use crate::context::CodegenContext;
-use crate::gc::update_gc_root_if_needed;
-use crate::utils::{create_string_data, declare_runtime_function, get_call_result, load_operand};
+use crate::utils::{create_string_data, declare_runtime_function, load_operand};
 
-/// Compile a print-related runtime call
+/// Compile a print-related runtime call (special cases only)
 pub fn compile_print_call(
     builder: &mut FunctionBuilder,
-    dest: LocalId,
+    _dest: LocalId,
     func: &mir::RuntimeFunc,
     args: &[Operand],
     ctx: &mut CodegenContext,
@@ -48,95 +54,8 @@ pub fn compile_print_call(
 
             builder.ins().call(func_ref, &[msg_val]);
         }
-        mir::RuntimeFunc::AssertFailObj => {
-            // Declare rt_assert_fail_obj: extern "C" fn(*const Obj) -> !
-            let mut sig = ctx.module.make_signature();
-            sig.call_conv = CallConv::SystemV;
-            sig.params.push(AbiParam::new(cltypes::I64)); // pointer to string object
-
-            let func_id = declare_runtime_function(ctx.module, "rt_assert_fail_obj", &sig)?;
-            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-
-            // Load message argument (string object pointer)
-            let msg_val = if !args.is_empty() {
-                load_operand(builder, &args[0], ctx.var_map)
-            } else {
-                builder.ins().iconst(cltypes::I64, 0)
-            };
-
-            builder.ins().call(func_ref, &[msg_val]);
-        }
         mir::RuntimeFunc::PrintValue(kind) => {
             compile_print_value(builder, *kind, args, ctx)?;
-        }
-        mir::RuntimeFunc::PrintNewline => {
-            let mut sig = ctx.module.make_signature();
-            sig.call_conv = CallConv::SystemV;
-
-            let func_id = declare_runtime_function(ctx.module, "rt_print_newline", &sig)?;
-            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-
-            builder.ins().call(func_ref, &[]);
-        }
-        mir::RuntimeFunc::PrintSep => {
-            let mut sig = ctx.module.make_signature();
-            sig.call_conv = CallConv::SystemV;
-
-            let func_id = declare_runtime_function(ctx.module, "rt_print_sep", &sig)?;
-            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-
-            builder.ins().call(func_ref, &[]);
-        }
-        mir::RuntimeFunc::Input => {
-            // rt_input(prompt: *mut Obj) -> *mut Obj (str)
-            let mut sig = ctx.module.make_signature();
-            sig.call_conv = CallConv::SystemV;
-            sig.params.push(AbiParam::new(cltypes::I64)); // prompt
-            sig.returns.push(AbiParam::new(cltypes::I64)); // result str
-
-            let func_id = declare_runtime_function(ctx.module, "rt_input", &sig)?;
-            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-
-            let prompt = load_operand(builder, &args[0], ctx.var_map);
-            let call_inst = builder.ins().call(func_ref, &[prompt]);
-
-            let result_val = get_call_result(builder, call_inst);
-            let dest_var = *ctx
-                .var_map
-                .get(&dest)
-                .expect("internal error: dest local not in var_map - codegen bug");
-            builder.def_var(dest_var, result_val);
-            update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
-        }
-        mir::RuntimeFunc::PrintSetStderr => {
-            // rt_print_set_stderr() - void, no args
-            let mut sig = ctx.module.make_signature();
-            sig.call_conv = CallConv::SystemV;
-
-            let func_id = declare_runtime_function(ctx.module, "rt_print_set_stderr", &sig)?;
-            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-
-            builder.ins().call(func_ref, &[]);
-        }
-        mir::RuntimeFunc::PrintSetStdout => {
-            // rt_print_set_stdout() - void, no args
-            let mut sig = ctx.module.make_signature();
-            sig.call_conv = CallConv::SystemV;
-
-            let func_id = declare_runtime_function(ctx.module, "rt_print_set_stdout", &sig)?;
-            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-
-            builder.ins().call(func_ref, &[]);
-        }
-        mir::RuntimeFunc::PrintFlush => {
-            // rt_print_flush() - void, no args
-            let mut sig = ctx.module.make_signature();
-            sig.call_conv = CallConv::SystemV;
-
-            let func_id = declare_runtime_function(ctx.module, "rt_print_flush", &sig)?;
-            let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
-
-            builder.ins().call(func_ref, &[]);
         }
         _ => unreachable!("Non-print function passed to compile_print_call"),
     }
@@ -144,7 +63,8 @@ pub fn compile_print_call(
     Ok(())
 }
 
-/// Compile a PrintValue call based on the PrintKind
+/// Compile a PrintValue call for Str and None kinds only.
+/// Other PrintKind variants are handled via RuntimeFunc::Call(&RuntimeFuncDef).
 fn compile_print_value(
     builder: &mut FunctionBuilder,
     kind: PrintKind,
@@ -154,41 +74,37 @@ fn compile_print_value(
     let mut sig = ctx.module.make_signature();
     sig.call_conv = CallConv::SystemV;
 
-    // Add parameter based on kind
     match kind {
-        PrintKind::Int => sig.params.push(AbiParam::new(cltypes::I64)),
-        PrintKind::Float => sig.params.push(AbiParam::new(cltypes::F64)),
-        PrintKind::Bool => sig.params.push(AbiParam::new(cltypes::I8)),
-        PrintKind::None => {} // No parameter
-        PrintKind::Str => sig.params.push(AbiParam::new(cltypes::I64)), // raw string pointer
-        PrintKind::StrObj | PrintKind::BytesObj | PrintKind::Obj => {
-            sig.params.push(AbiParam::new(cltypes::I64)) // heap object pointer
+        PrintKind::Str => {
+            // Raw string pointer (null-terminated C string embedded in binary)
+            sig.params.push(AbiParam::new(cltypes::I64));
         }
+        PrintKind::None => {
+            // No parameter
+        }
+        _ => unreachable!(
+            "PrintValue({kind:?}) should use RuntimeFunc::Call descriptor, not special codegen"
+        ),
     }
 
     let func_id = declare_runtime_function(ctx.module, kind.runtime_func_name(), &sig)?;
     let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
 
-    // Build call arguments
-    if kind.has_argument() {
-        let val = if kind == PrintKind::Str {
-            // For raw strings, handle string constants specially
-            if !args.is_empty() {
-                if let Operand::Constant(mir::Constant::Str(s)) = &args[0] {
-                    let data_id = create_string_data(ctx.module, *s, ctx.interner);
-                    let gv = ctx.module.declare_data_in_func(data_id, builder.func);
-                    builder.ins().global_value(cltypes::I64, gv)
-                } else {
-                    load_operand(builder, &args[0], ctx.var_map)
-                }
+    if kind == PrintKind::Str {
+        let val = if !args.is_empty() {
+            if let Operand::Constant(mir::Constant::Str(s)) = &args[0] {
+                let data_id = create_string_data(ctx.module, *s, ctx.interner);
+                let gv = ctx.module.declare_data_in_func(data_id, builder.func);
+                builder.ins().global_value(cltypes::I64, gv)
             } else {
-                builder.ins().iconst(cltypes::I64, 0)
+                load_operand(builder, &args[0], ctx.var_map)
             }
         } else {
-            load_operand(builder, &args[0], ctx.var_map)
+            builder.ins().iconst(cltypes::I64, 0)
         };
         builder.ins().call(func_ref, &[val]);
     } else {
+        // PrintKind::None - no arguments
         builder.ins().call(func_ref, &[]);
     }
 

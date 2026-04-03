@@ -374,7 +374,9 @@ impl<'a> Lowering<'a> {
                 IterableKind::Tuple => {
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN)
                 }
-                IterableKind::Str => mir::RuntimeFunc::StrLenInt,
+                IterableKind::Str => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_LEN_INT)
+                }
                 IterableKind::Bytes => {
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_LEN)
                 }
@@ -466,7 +468,9 @@ impl<'a> Lowering<'a> {
             IterableKind::Tuple => {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
             }
-            IterableKind::Str => mir::RuntimeFunc::StrGetChar,
+            IterableKind::Str => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_GETCHAR)
+            }
             IterableKind::Bytes => {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_GET)
             }
@@ -568,7 +572,7 @@ impl<'a> Lowering<'a> {
         );
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: enum_iter_local,
-            func: mir::RuntimeFunc::IterEnumerate,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_ENUMERATE),
             args: vec![mir::Operand::Local(iter_local), start_operand],
         });
 
@@ -606,14 +610,16 @@ impl<'a> Lowering<'a> {
             self.alloc_and_add_local(Type::Tuple(vec![Type::Int, elem_type.clone()]), mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: next_local,
-            func: mir::RuntimeFunc::IterNextNoExc,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
             args: vec![mir::Operand::Local(enum_iter_local)],
         });
 
         let exhausted_local = self.alloc_and_add_local(Type::Bool, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: exhausted_local,
-            func: mir::RuntimeFunc::GeneratorIsExhausted,
+            func: mir::RuntimeFunc::Call(
+                &pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED,
+            ),
             args: vec![mir::Operand::Local(enum_iter_local)],
         });
 

@@ -45,7 +45,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::IterEnumerate,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_ENUMERATE),
             args: vec![inner_iter, start_operand],
         });
 
@@ -98,10 +98,9 @@ impl<'a> Lowering<'a> {
                         self.parse_range_args(range_args, hir_module, mir_func)?;
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: iter_local,
-                        func: mir::RuntimeFunc::MakeIterator {
-                            source: mir::IterSourceKind::Range,
-                            direction: mir::IterDirection::Forward,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::IterSourceKind::Range.iterator_def(mir::IterDirection::Forward),
+                        ),
                         args: vec![start, stop, step],
                     });
                 }
@@ -119,10 +118,7 @@ impl<'a> Lowering<'a> {
                 };
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: iter_local,
-                    func: mir::RuntimeFunc::MakeIterator {
-                        source,
-                        direction: mir::IterDirection::Forward,
-                    },
+                    func: mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Forward)),
                     args: vec![arg_operand],
                 });
             }
@@ -149,7 +145,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::ChainNew,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CHAIN_NEW),
             args: vec![
                 mir::Operand::Local(iters_list_local),
                 mir::Operand::Constant(mir::Constant::Int(num_iters)),
@@ -198,10 +194,9 @@ impl<'a> Lowering<'a> {
                     self.parse_range_args(range_args, hir_module, mir_func)?;
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: inner_iter_local,
-                    func: mir::RuntimeFunc::MakeIterator {
-                        source: mir::IterSourceKind::Range,
-                        direction: mir::IterDirection::Forward,
-                    },
+                    func: mir::RuntimeFunc::Call(
+                        mir::IterSourceKind::Range.iterator_def(mir::IterDirection::Forward),
+                    ),
                     args: vec![start, stop, step],
                 });
             }
@@ -219,10 +214,7 @@ impl<'a> Lowering<'a> {
             };
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: inner_iter_local,
-                func: mir::RuntimeFunc::MakeIterator {
-                    source,
-                    direction: mir::IterDirection::Forward,
-                },
+                func: mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Forward)),
                 args: vec![iter_operand],
             });
         }
@@ -266,7 +258,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::ISliceNew,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ISLICE_NEW),
             args: vec![
                 mir::Operand::Local(inner_iter_local),
                 start_op,

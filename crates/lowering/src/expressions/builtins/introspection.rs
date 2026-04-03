@@ -51,7 +51,9 @@ impl<'a> Lowering<'a> {
                     let effective_class_id = self.get_effective_class_id(*class_id);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::IsinstanceClassInherited,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS_INHERITED,
+                        ),
                         args: vec![
                             obj_operand,
                             mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
@@ -83,7 +85,9 @@ impl<'a> Lowering<'a> {
 
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: tag_local,
-                            func: mir::RuntimeFunc::GetTypeTag,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG,
+                            ),
                             args: vec![obj_operand],
                         });
 
@@ -139,7 +143,7 @@ impl<'a> Lowering<'a> {
                 // Call runtime function to check inheritance
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::IsSubclass,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ISSUBCLASS),
                     args: vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                         mir::Operand::Constant(mir::Constant::Int(effective_parent_id)),
@@ -410,12 +414,18 @@ impl<'a> Lowering<'a> {
             Type::Bytes => mir::ReprTargetKind::Bytes,
             _ => mir::ReprTargetKind::Collection, // Runtime type-dispatched for containers and unknown types
         };
-        let runtime_func = mir::RuntimeFunc::ToStringRepr(target_kind, mir::StringFormat::Repr);
+        let def = target_kind.runtime_func_def(mir::StringFormat::Repr);
+        // For nullary repr (None), pass no args; for others, pass the operand
+        let call_args = if target_kind.is_nullary() {
+            vec![]
+        } else {
+            vec![arg_operand]
+        };
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: runtime_func,
-            args: vec![arg_operand],
+            func: mir::RuntimeFunc::Call(def),
+            args: call_args,
         });
 
         Ok(mir::Operand::Local(result_local))
@@ -448,12 +458,18 @@ impl<'a> Lowering<'a> {
             Type::Bytes => (mir::ReprTargetKind::Bytes, mir::StringFormat::Repr), // Bytes repr already escapes
             _ => (mir::ReprTargetKind::Collection, mir::StringFormat::Ascii), // Runtime type-dispatched
         };
-        let runtime_func = mir::RuntimeFunc::ToStringRepr(target_kind, format);
+        let def = target_kind.runtime_func_def(format);
+        // For nullary (None), pass no args; for others, pass the operand
+        let call_args = if target_kind.is_nullary() {
+            vec![]
+        } else {
+            vec![arg_operand]
+        };
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: runtime_func,
-            args: vec![arg_operand],
+            func: mir::RuntimeFunc::Call(def),
+            args: call_args,
         });
 
         Ok(mir::Operand::Local(result_local))
@@ -509,7 +525,7 @@ impl<'a> Lowering<'a> {
             // Runtime dispatch
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::TypeName,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TYPE_NAME),
                 args: vec![arg_operand],
             });
         }
@@ -638,7 +654,9 @@ impl<'a> Lowering<'a> {
 
                             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                                 dest: result_local,
-                                func: mir::RuntimeFunc::InstanceGetField,
+                                func: mir::RuntimeFunc::Call(
+                                    &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
+                                ),
                                 args: vec![
                                     obj_operand,
                                     mir::Operand::Constant(mir::Constant::Int(offset as i64)),
@@ -720,7 +738,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::FormatValue,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FORMAT_VALUE),
             args: vec![boxed_value, spec_operand],
         });
 
@@ -743,7 +761,7 @@ impl<'a> Lowering<'a> {
         let result_local = self.alloc_and_add_local(Type::Any, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::ObjectNew,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_OBJECT_NEW),
             args: vec![cls_operand],
         });
 
@@ -781,7 +799,9 @@ impl<'a> Lowering<'a> {
 
                             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                                 dest: dummy_local,
-                                func: mir::RuntimeFunc::InstanceSetField,
+                                func: mir::RuntimeFunc::Call(
+                                    &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD,
+                                ),
                                 args: vec![
                                     obj_operand,
                                     mir::Operand::Constant(mir::Constant::Int(offset as i64)),

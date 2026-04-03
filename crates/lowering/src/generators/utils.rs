@@ -89,7 +89,7 @@ impl<'a> Lowering<'a> {
                                 block.instructions.push(mir::Instruction {
                                     kind: mir::InstructionKind::RuntimeCall {
                                         dest: raw_local,
-                                        func: mir::RuntimeFunc::InstanceGetField,
+                                        func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD),
                                         args: vec![
                                             mir::Operand::Local(loop_var_local),
                                             mir::Operand::Constant(mir::Constant::Int(

@@ -87,7 +87,9 @@ impl<'a> Lowering<'a> {
             IterableKind::Tuple => {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN)
             }
-            IterableKind::Str => mir::RuntimeFunc::StrLenInt,
+            IterableKind::Str => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_LEN_INT)
+            }
             IterableKind::Bytes => {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_LEN)
             }
@@ -164,7 +166,9 @@ impl<'a> Lowering<'a> {
             IterableKind::Tuple => {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
             }
-            IterableKind::Str => mir::RuntimeFunc::StrGetChar,
+            IterableKind::Str => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_GETCHAR)
+            }
             IterableKind::Bytes => {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_GET)
             }
@@ -303,14 +307,16 @@ impl<'a> Lowering<'a> {
         let next_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: next_local,
-            func: mir::RuntimeFunc::IterNextNoExc,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
             args: vec![mir::Operand::Local(iter_local)],
         });
 
         let exhausted_local = self.alloc_and_add_local(Type::Bool, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: exhausted_local,
-            func: mir::RuntimeFunc::GeneratorIsExhausted,
+            func: mir::RuntimeFunc::Call(
+                &pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED,
+            ),
             args: vec![mir::Operand::Local(iter_local)],
         });
 

@@ -130,7 +130,9 @@ impl<'a> Lowering<'a> {
         entry_block.instructions.push(mir::Instruction {
             kind: mir::InstructionKind::RuntimeCall {
                 dest: state_local,
-                func: mir::RuntimeFunc::GeneratorGetState,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_GENERATOR_GET_STATE,
+                ),
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
             span: None,
@@ -142,7 +144,9 @@ impl<'a> Lowering<'a> {
         entry_block.instructions.push(mir::Instruction {
             kind: mir::InstructionKind::RuntimeCall {
                 dest: exhausted_local,
-                func: mir::RuntimeFunc::GeneratorIsExhausted,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED,
+                ),
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
             span: None,
@@ -281,7 +285,9 @@ impl<'a> Lowering<'a> {
                         state_block.instructions.push(mir::Instruction {
                             kind: mir::InstructionKind::RuntimeCall {
                                 dest: sent_value_local,
-                                func: mir::RuntimeFunc::GeneratorGetSentValue,
+                                func: mir::RuntimeFunc::Call(
+                                    &pyaot_core_defs::runtime_func_def::RT_GENERATOR_GET_SENT_VALUE,
+                                ),
                                 args: vec![mir::Operand::Local(gen_param_local)],
                             },
                             span: None,
@@ -290,7 +296,9 @@ impl<'a> Lowering<'a> {
                         state_block.instructions.push(mir::Instruction {
                             kind: mir::InstructionKind::RuntimeCall {
                                 dest: state_local,
-                                func: mir::RuntimeFunc::GeneratorSetLocal,
+                                func: mir::RuntimeFunc::Call(
+                                    &pyaot_core_defs::runtime_func_def::RT_GENERATOR_SET_LOCAL,
+                                ),
                                 args: vec![
                                     mir::Operand::Local(gen_param_local),
                                     mir::Operand::Constant(mir::Constant::Int(
@@ -332,7 +340,9 @@ impl<'a> Lowering<'a> {
             state_block.instructions.push(mir::Instruction {
                 kind: mir::InstructionKind::RuntimeCall {
                     dest: state_local,
-                    func: mir::RuntimeFunc::GeneratorSetState,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_GENERATOR_SET_STATE,
+                    ),
                     args: vec![
                         mir::Operand::Local(gen_param_local),
                         mir::Operand::Constant(mir::Constant::Int(next_state)),
@@ -358,7 +368,9 @@ impl<'a> Lowering<'a> {
         final_state_block.instructions.push(mir::Instruction {
             kind: mir::InstructionKind::RuntimeCall {
                 dest: state_local,
-                func: mir::RuntimeFunc::GeneratorSetExhausted,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_GENERATOR_SET_EXHAUSTED,
+                ),
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
             span: None,
@@ -405,7 +417,9 @@ impl<'a> Lowering<'a> {
                     block.instructions.push(mir::Instruction {
                         kind: mir::InstructionKind::RuntimeCall {
                             dest: var_local,
-                            func: mir::RuntimeFunc::GeneratorGetLocal,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_GENERATOR_GET_LOCAL,
+                            ),
                             args: vec![
                                 mir::Operand::Local(gen_param_local),
                                 mir::Operand::Constant(mir::Constant::Int(gen_local_idx as i64)),

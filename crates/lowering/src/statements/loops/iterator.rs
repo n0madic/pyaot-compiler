@@ -77,7 +77,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: next_local,
-            func: mir::RuntimeFunc::IterNextNoExc,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
             args: vec![mir::Operand::Local(iter_local)],
         });
 
@@ -86,7 +86,9 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: exhausted_local,
-            func: mir::RuntimeFunc::GeneratorIsExhausted,
+            func: mir::RuntimeFunc::Call(
+                &pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED,
+            ),
             args: vec![mir::Operand::Local(iter_local)],
         });
 

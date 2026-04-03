@@ -319,7 +319,7 @@ impl<'a> Lowering<'a> {
                 let effective_var_id = self.get_effective_var_id(*var_id);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: closure_local,
-                    func: mir::RuntimeFunc::GlobalGet(mir::ValueKind::Ptr),
+                    func: mir::RuntimeFunc::Call(mir::ValueKind::Ptr.global_get_def()),
                     args: vec![mir::Operand::Constant(mir::Constant::Int(effective_var_id))],
                 });
 
@@ -479,7 +479,7 @@ impl<'a> Lowering<'a> {
             let type_tag_local = self.alloc_and_add_local(Type::Int, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: type_tag_local,
-                func: mir::RuntimeFunc::GetTypeTag,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
                 args: vec![inner_result.clone()],
             });
 

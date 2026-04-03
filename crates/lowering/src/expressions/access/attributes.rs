@@ -88,7 +88,9 @@ impl<'a> Lowering<'a> {
             let result_local = self.alloc_and_add_local(Type::Str, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::TypeNameExtract,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_TYPE_NAME_EXTRACT,
+                ),
                 args: vec![obj_operand],
             });
             return Ok(mir::Operand::Local(result_local));
@@ -101,7 +103,9 @@ impl<'a> Lowering<'a> {
                 // .args is field 0 on built-in exception instances
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::InstanceGetField,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
+                    ),
                     args: vec![obj_operand, mir::Operand::Constant(mir::Constant::Int(0))],
                 });
                 return Ok(mir::Operand::Local(result_local));
@@ -112,7 +116,9 @@ impl<'a> Lowering<'a> {
                 let result_local = self.alloc_and_add_local(Type::Str, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::ExcClassName,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_EXC_CLASS_NAME,
+                    ),
                     args: vec![obj_operand],
                 });
                 return Ok(mir::Operand::Local(result_local));
@@ -130,7 +136,9 @@ impl<'a> Lowering<'a> {
                     let result_local = self.alloc_and_add_local(Type::Str, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::ExcClassName,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_EXC_CLASS_NAME,
+                        ),
                         args: vec![obj_operand],
                     });
                     return Ok(mir::Operand::Local(result_local));
@@ -170,7 +178,9 @@ impl<'a> Lowering<'a> {
                     // Get the field value from instance
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::InstanceGetField,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
+                        ),
                         args: vec![
                             obj_operand,
                             mir::Operand::Constant(mir::Constant::Int(offset as i64)),
@@ -215,7 +225,9 @@ impl<'a> Lowering<'a> {
                     // Get the field value from instance
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::InstanceGetField,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
+                        ),
                         args: vec![
                             obj_operand,
                             mir::Operand::Constant(mir::Constant::Int(offset as i64)),

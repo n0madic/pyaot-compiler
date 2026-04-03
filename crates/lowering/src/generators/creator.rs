@@ -78,7 +78,7 @@ impl<'a> Lowering<'a> {
         entry_block.instructions.push(mir::Instruction {
             kind: mir::InstructionKind::RuntimeCall {
                 dest: gen_local,
-                func: mir::RuntimeFunc::MakeGenerator,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_GENERATOR),
                 args: vec![
                     mir::Operand::Constant(mir::Constant::Int(func.id.0 as i64)),
                     mir::Operand::Constant(mir::Constant::Int(num_locals as i64)),
@@ -97,7 +97,9 @@ impl<'a> Lowering<'a> {
                     entry_block.instructions.push(mir::Instruction {
                         kind: mir::InstructionKind::RuntimeCall {
                             dest: dummy_local,
-                            func: mir::RuntimeFunc::GeneratorSetLocal,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_GENERATOR_SET_LOCAL,
+                            ),
                             args: vec![
                                 mir::Operand::Local(gen_local),
                                 mir::Operand::Constant(mir::Constant::Int(
@@ -141,7 +143,9 @@ impl<'a> Lowering<'a> {
                             entry_block.instructions.push(mir::Instruction {
                                 kind: mir::InstructionKind::RuntimeCall {
                                     dest: dummy_local,
-                                    func: mir::RuntimeFunc::GeneratorSetLocal,
+                                    func: mir::RuntimeFunc::Call(
+                                        &pyaot_core_defs::runtime_func_def::RT_GENERATOR_SET_LOCAL,
+                                    ),
                                     args: vec![
                                         mir::Operand::Local(gen_local),
                                         mir::Operand::Constant(mir::Constant::Int(
@@ -197,7 +201,9 @@ impl<'a> Lowering<'a> {
             entry_block.instructions.push(mir::Instruction {
                 kind: mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::GeneratorSetLocal,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_GENERATOR_SET_LOCAL,
+                    ),
                     args: vec![
                         mir::Operand::Local(gen_local),
                         mir::Operand::Constant(mir::Constant::Int(0)), // Slot 0 for iterator
@@ -213,7 +219,9 @@ impl<'a> Lowering<'a> {
             entry_block.instructions.push(mir::Instruction {
                 kind: mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::GeneratorSetLocalType,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_GENERATOR_SET_LOCAL_TYPE,
+                    ),
                     args: vec![
                         mir::Operand::Local(gen_local),
                         mir::Operand::Constant(mir::Constant::Int(0)), // Slot 0
@@ -369,10 +377,9 @@ impl<'a> Lowering<'a> {
                 block.instructions.push(mir::Instruction {
                     kind: mir::InstructionKind::RuntimeCall {
                         dest: dest_local,
-                        func: mir::RuntimeFunc::MakeIterator {
-                            source: mir::IterSourceKind::List,
-                            direction: mir::IterDirection::Forward,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::IterSourceKind::List.iterator_def(mir::IterDirection::Forward),
+                        ),
                         args: vec![mir::Operand::Local(list_local)],
                     },
                     span: None,
@@ -399,10 +406,9 @@ impl<'a> Lowering<'a> {
                     block.instructions.push(mir::Instruction {
                         kind: mir::InstructionKind::RuntimeCall {
                             dest: dest_local,
-                            func: mir::RuntimeFunc::MakeIterator {
-                                source: iter_source,
-                                direction: mir::IterDirection::Forward,
-                            },
+                            func: mir::RuntimeFunc::Call(
+                                iter_source.iterator_def(mir::IterDirection::Forward),
+                            ),
                             args: vec![mir::Operand::Local(mir_local)],
                         },
                         span: None,
@@ -441,10 +447,9 @@ impl<'a> Lowering<'a> {
                     block.instructions.push(mir::Instruction {
                         kind: mir::InstructionKind::RuntimeCall {
                             dest: dest_local,
-                            func: mir::RuntimeFunc::MakeIterator {
-                                source: iter_source,
-                                direction: mir::IterDirection::Forward,
-                            },
+                            func: mir::RuntimeFunc::Call(
+                                iter_source.iterator_def(mir::IterDirection::Forward),
+                            ),
                             args: vec![mir::Operand::Local(global_local)],
                         },
                         span: None,

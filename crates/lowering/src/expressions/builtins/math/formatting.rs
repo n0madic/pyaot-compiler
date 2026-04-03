@@ -24,7 +24,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::IntToBin,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_BIN),
             args: vec![n_operand],
         });
 
@@ -47,7 +47,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::IntToHex,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_HEX),
             args: vec![n_operand],
         });
 
@@ -70,7 +70,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::IntToOct,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_OCT),
             args: vec![n_operand],
         });
 
@@ -120,7 +120,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::IntFmtGrouped,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_FMT_GROUPED),
             args: vec![n_operand, sep_operand],
         });
 
@@ -149,7 +149,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::FloatFmtGrouped,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FLOAT_FMT_GROUPED),
             args: vec![f_operand, prec_operand, sep_operand],
         });
 

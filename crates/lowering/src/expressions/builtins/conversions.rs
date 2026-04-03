@@ -52,40 +52,40 @@ impl<'a> Lowering<'a> {
                 Type::Int => {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Convert {
-                            from: mir::ConversionTypeKind::Int,
-                            to: mir::ConversionTypeKind::Str,
-                        },
+                        func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
+                            mir::ConversionTypeKind::Int,
+                            mir::ConversionTypeKind::Str,
+                        )),
                         args: vec![arg_operand],
                     });
                 }
                 Type::Float => {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Convert {
-                            from: mir::ConversionTypeKind::Float,
-                            to: mir::ConversionTypeKind::Str,
-                        },
+                        func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
+                            mir::ConversionTypeKind::Float,
+                            mir::ConversionTypeKind::Str,
+                        )),
                         args: vec![arg_operand],
                     });
                 }
                 Type::Bool => {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Convert {
-                            from: mir::ConversionTypeKind::Bool,
-                            to: mir::ConversionTypeKind::Str,
-                        },
+                        func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
+                            mir::ConversionTypeKind::Bool,
+                            mir::ConversionTypeKind::Str,
+                        )),
                         args: vec![arg_operand],
                     });
                 }
                 Type::None => {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Convert {
-                            from: mir::ConversionTypeKind::None,
-                            to: mir::ConversionTypeKind::Str,
-                        },
+                        func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
+                            mir::ConversionTypeKind::None,
+                            mir::ConversionTypeKind::Str,
+                        )),
                         args: vec![],
                     });
                 }
@@ -212,17 +212,19 @@ impl<'a> Lowering<'a> {
 
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::StrToIntWithBase,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_STR_TO_INT_WITH_BASE,
+                        ),
                         args: vec![arg_operand, base_operand],
                     });
                 } else {
                     // int(str) - use default base 10
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Convert {
-                            from: mir::ConversionTypeKind::Str,
-                            to: mir::ConversionTypeKind::Int,
-                        },
+                        func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
+                            mir::ConversionTypeKind::Str,
+                            mir::ConversionTypeKind::Int,
+                        )),
                         args: vec![arg_operand],
                     });
                 }
@@ -304,10 +306,10 @@ impl<'a> Lowering<'a> {
                 // float(str) -> parse string to float (can raise ValueError)
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::Convert {
-                        from: mir::ConversionTypeKind::Str,
-                        to: mir::ConversionTypeKind::Float,
-                    },
+                    func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
+                        mir::ConversionTypeKind::Str,
+                        mir::ConversionTypeKind::Float,
+                    )),
                     args: vec![arg_operand],
                 });
             }
@@ -389,7 +391,7 @@ impl<'a> Lowering<'a> {
             }
             Type::Str => {
                 self.emit_collection_bool_via_len(
-                    mir::RuntimeFunc::StrLenInt,
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_LEN_INT),
                     arg_operand,
                     result_local,
                     mir_func,
@@ -566,7 +568,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::IntToChr,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_CHR),
             args: vec![i_operand],
         });
 
@@ -589,7 +591,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::ChrToInt,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CHR_TO_INT),
             args: vec![s_operand],
         });
 

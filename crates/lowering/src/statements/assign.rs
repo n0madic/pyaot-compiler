@@ -833,7 +833,9 @@ impl<'a> Lowering<'a> {
                     // Set the field value
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: dummy_local,
-                        func: mir::RuntimeFunc::InstanceSetField,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD,
+                        ),
                         args: vec![
                             obj_operand,
                             mir::Operand::Constant(mir::Constant::Int(offset as i64)),

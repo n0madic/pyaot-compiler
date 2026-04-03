@@ -679,7 +679,7 @@ impl<'a> Lowering<'a> {
                         let default_local = self.alloc_gc_local(Type::Any, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: default_local,
-                            func: mir::RuntimeFunc::GlobalGet(ValueKind::Ptr),
+                            func: mir::RuntimeFunc::Call(ValueKind::Ptr.global_get_def()),
                             args: vec![mir::Operand::Constant(mir::Constant::Int(slot as i64))],
                         });
                         resolved[i] = Some(mir::Operand::Local(default_local));

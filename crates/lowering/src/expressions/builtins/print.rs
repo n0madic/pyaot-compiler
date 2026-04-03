@@ -1,5 +1,6 @@
 //! Print and input function lowering
 
+use pyaot_core_defs::runtime_func_def;
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir::{self as mir, PrintKind};
@@ -64,7 +65,7 @@ impl<'a> Lowering<'a> {
         if use_stderr {
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::PrintSetStderr,
+                func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_SET_STDERR),
                 args: vec![],
             });
         }
@@ -94,7 +95,7 @@ impl<'a> Lowering<'a> {
                 });
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::PrintValue(PrintKind::StrObj),
+                    func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
                     args: vec![mir::Operand::Local(str_local)],
                 });
             }
@@ -142,22 +143,28 @@ impl<'a> Lowering<'a> {
                 }
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::PrintValue(PrintKind::StrObj),
+                    func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
                     args: vec![mir::Operand::Local(str_local)],
                 });
+            } else if matches!(&arg_type, Type::None) {
+                // PrintValue(None) stays as special variant (no argument)
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: dummy_local,
+                    func: mir::RuntimeFunc::PrintValue(PrintKind::None),
+                    args: vec![],
+                });
             } else {
-                // Determine the print kind based on type
-                let print_kind = if arg_type.is_union() {
+                // Select descriptor based on type
+                let print_def = if arg_type.is_union() {
                     // For Union types, use runtime dispatch
-                    PrintKind::Obj
+                    &runtime_func_def::RT_PRINT_OBJ
                 } else {
                     match &arg_type {
-                        Type::Int => PrintKind::Int,
-                        Type::Float => PrintKind::Float,
-                        Type::Bool => PrintKind::Bool,
-                        Type::None => PrintKind::None,
-                        Type::Str => PrintKind::StrObj,
-                        Type::Bytes => PrintKind::BytesObj,
+                        Type::Int => &runtime_func_def::RT_PRINT_INT,
+                        Type::Float => &runtime_func_def::RT_PRINT_FLOAT,
+                        Type::Bool => &runtime_func_def::RT_PRINT_BOOL,
+                        Type::Str => &runtime_func_def::RT_PRINT_STR_OBJ,
+                        Type::Bytes => &runtime_func_def::RT_PRINT_BYTES_OBJ,
                         // For heap types, use Obj for runtime dispatch
                         Type::List(_)
                         | Type::Tuple(_)
@@ -167,27 +174,20 @@ impl<'a> Lowering<'a> {
                         | Type::Iterator(_)
                         | Type::Union(_)
                         | Type::RuntimeObject(_)
-                        | Type::File => PrintKind::Obj,
+                        | Type::File => &runtime_func_def::RT_PRINT_OBJ,
                         // HeapAny: guaranteed *mut Obj — use runtime dispatch
-                        Type::HeapAny => PrintKind::Obj,
+                        Type::HeapAny => &runtime_func_def::RT_PRINT_OBJ,
                         // Any: ambiguous (could be raw i64) — print as Int
-                        Type::Any => PrintKind::Int,
+                        Type::Any => &runtime_func_def::RT_PRINT_INT,
                         // Compile-time-only types — should not appear at runtime
-                        _ => PrintKind::Int,
+                        _ => &runtime_func_def::RT_PRINT_INT,
                     }
-                };
-
-                // Build args based on print kind
-                let call_args = if print_kind.has_argument() {
-                    vec![arg_operand]
-                } else {
-                    vec![]
                 };
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::PrintValue(print_kind),
-                    args: call_args,
+                    func: mir::RuntimeFunc::Call(print_def),
+                    args: vec![arg_operand],
                 });
             }
 
@@ -197,14 +197,14 @@ impl<'a> Lowering<'a> {
                     // Custom separator - use StrObj for heap strings
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: dummy_local,
-                        func: mir::RuntimeFunc::PrintValue(PrintKind::StrObj),
+                        func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
                         args: vec![sep.clone()],
                     });
                 } else {
                     // Default separator (space)
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: dummy_local,
-                        func: mir::RuntimeFunc::PrintSep,
+                        func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_SEP),
                         args: vec![],
                     });
                 }
@@ -216,14 +216,14 @@ impl<'a> Lowering<'a> {
             // Custom end - use StrObj for heap strings
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::PrintValue(PrintKind::StrObj),
+                func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
                 args: vec![end.clone()],
             });
         } else {
             // Default end (newline)
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::PrintNewline,
+                func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_NEWLINE),
                 args: vec![],
             });
         }
@@ -232,7 +232,7 @@ impl<'a> Lowering<'a> {
         if use_stderr {
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::PrintSetStdout,
+                func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_SET_STDOUT),
                 args: vec![],
             });
         }
@@ -241,7 +241,7 @@ impl<'a> Lowering<'a> {
         if need_flush {
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::PrintFlush,
+                func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_FLUSH),
                 args: vec![],
             });
         }
@@ -276,7 +276,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::Input,
+            func: mir::RuntimeFunc::Call(&runtime_func_def::RT_INPUT),
             args: vec![prompt_operand],
         });
 

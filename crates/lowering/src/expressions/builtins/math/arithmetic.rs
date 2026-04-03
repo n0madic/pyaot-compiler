@@ -139,7 +139,7 @@ impl<'a> Lowering<'a> {
         let result_local = self.alloc_and_add_local(Type::Float, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::PowFloat,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_POW_FLOAT),
             args: vec![base_float, exp_float],
         });
 
@@ -164,7 +164,7 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::RoundToInt,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ROUND_TO_INT),
                 args: vec![x_operand],
             });
 
@@ -178,7 +178,9 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::RoundToDigits,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_ROUND_TO_DIGITS,
+                ),
                 args: vec![x_operand, ndigits_operand],
             });
 
@@ -276,14 +278,18 @@ impl<'a> Lowering<'a> {
             let next_local = self.alloc_and_add_local(Type::Int, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: next_local,
-                func: mir::RuntimeFunc::IterNextNoExc,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC,
+                ),
                 args: vec![mir::Operand::Local(iter_local)],
             });
 
             let exhausted_local = self.alloc_and_add_local(Type::Bool, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: exhausted_local,
-                func: mir::RuntimeFunc::GeneratorIsExhausted,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED,
+                ),
                 args: vec![mir::Operand::Local(iter_local)],
             });
 

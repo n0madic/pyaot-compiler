@@ -10,6 +10,7 @@ mod tests;
 
 use std::collections::HashMap;
 
+use pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD;
 use pyaot_mir::{Constant, InstructionKind, Module, Operand, RuntimeFunc, Terminator};
 use pyaot_utils::FuncId;
 
@@ -41,10 +42,13 @@ fn analyze_trivial_getter(func: &pyaot_mir::Function) -> Option<i64> {
 
     if let InstructionKind::RuntimeCall {
         dest,
-        func: RuntimeFunc::InstanceGetField,
+        func: RuntimeFunc::Call(def),
         args,
     } = &inst.kind
     {
+        if def.symbol != RT_INSTANCE_GET_FIELD.symbol {
+            return None;
+        }
         if args.len() != 2 {
             return None;
         }
@@ -103,7 +107,7 @@ pub fn flatten_property_getters(module: &mut Module) {
 
                             inst.kind = InstructionKind::RuntimeCall {
                                 dest,
-                                func: RuntimeFunc::InstanceGetField,
+                                func: RuntimeFunc::Call(&RT_INSTANCE_GET_FIELD),
                                 args: vec![obj_operand, Operand::Constant(Constant::Int(offset))],
                             };
                         }

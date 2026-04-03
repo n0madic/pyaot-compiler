@@ -197,7 +197,7 @@ impl<'a> Lowering<'a> {
         let type_tag_local = self.alloc_and_add_local(Type::Int, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: type_tag_local,
-            func: mir::RuntimeFunc::GetTypeTag,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
             args: vec![mir::Operand::Local(func_local)],
         });
 
@@ -316,7 +316,7 @@ impl<'a> Lowering<'a> {
         let type_tag_local = self.alloc_and_add_local(Type::Int, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: type_tag_local,
-            func: mir::RuntimeFunc::GetTypeTag,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
             args: vec![mir::Operand::Local(func_local)],
         });
 

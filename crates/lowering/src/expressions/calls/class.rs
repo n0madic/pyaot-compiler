@@ -75,7 +75,9 @@ impl<'a> Lowering<'a> {
                 // Default path: rt_make_instance(class_id, total_field_count)
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::MakeInstance,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_MAKE_INSTANCE,
+                    ),
                     args: vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                         mir::Operand::Constant(mir::Constant::Int(info.total_field_count as i64)),
@@ -174,7 +176,7 @@ impl<'a> Lowering<'a> {
             .unwrap_or(32);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::MakeInstance,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_INSTANCE),
             args: vec![
                 mir::Operand::Constant(mir::Constant::Int(class_id.0 as i64)),
                 mir::Operand::Constant(mir::Constant::Int(default_field_count)),

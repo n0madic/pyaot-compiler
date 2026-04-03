@@ -998,7 +998,9 @@ impl<'a> Lowering<'a> {
             if self.has_class(&class_id) {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: isinstance_local,
-                    func: mir::RuntimeFunc::IsinstanceClassInherited,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS_INHERITED,
+                    ),
                     args: vec![
                         ctx.subject.clone(),
                         mir::Operand::Constant(mir::Constant::Int(class_id.index() as i64)),
@@ -1075,7 +1077,9 @@ impl<'a> Lowering<'a> {
 
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: attr_local,
-                            func: mir::RuntimeFunc::InstanceGetField,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
+                            ),
                             args: vec![ctx.subject.clone(), mir::Operand::Local(offset_local)],
                         });
                     }
@@ -1132,10 +1136,9 @@ impl<'a> Lowering<'a> {
                 // String comparison
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::Compare {
-                        kind: mir::CompareKind::Str,
-                        op: mir::ComparisonOp::Eq,
-                    },
+                    func: mir::RuntimeFunc::Call(
+                        mir::CompareKind::Str.runtime_func_def(mir::ComparisonOp::Eq),
+                    ),
                     args: vec![left, right],
                 });
             }
@@ -1152,10 +1155,9 @@ impl<'a> Lowering<'a> {
                 // For other types, use object equality
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::Compare {
-                        kind: mir::CompareKind::Obj,
-                        op: mir::ComparisonOp::Eq,
-                    },
+                    func: mir::RuntimeFunc::Call(
+                        mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Eq),
+                    ),
                     args: vec![left, right],
                 });
             }

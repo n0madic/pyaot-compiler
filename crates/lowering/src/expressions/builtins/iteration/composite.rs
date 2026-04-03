@@ -28,10 +28,9 @@ impl<'a> Lowering<'a> {
             });
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::MakeIterator {
-                    source: mir::IterSourceKind::List,
-                    direction: mir::IterDirection::Forward,
-                },
+                func: mir::RuntimeFunc::Call(
+                    mir::IterSourceKind::List.iterator_def(mir::IterDirection::Forward),
+                ),
                 args: vec![mir::Operand::Local(result_local)],
             });
             return Ok(mir::Operand::Local(result_local));
@@ -60,7 +59,7 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::Zip3New,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ZIP3_NEW),
                 args: iter_locals,
             });
 
@@ -114,7 +113,7 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::ZipNNew,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ZIPN_NEW),
                 args: vec![
                     mir::Operand::Local(iter_list_local),
                     mir::Operand::Constant(mir::Constant::Int(count)),
@@ -157,10 +156,9 @@ impl<'a> Lowering<'a> {
                     self.parse_range_args(range_args, hir_module, mir_func)?;
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: first_iter_local,
-                    func: mir::RuntimeFunc::MakeIterator {
-                        source: mir::IterSourceKind::Range,
-                        direction: mir::IterDirection::Forward,
-                    },
+                    func: mir::RuntimeFunc::Call(
+                        mir::IterSourceKind::Range.iterator_def(mir::IterDirection::Forward),
+                    ),
                     args: vec![start, stop, step],
                 });
             }
@@ -179,10 +177,9 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: first_iter_local,
-                func: mir::RuntimeFunc::MakeIterator {
-                    source: first_source,
-                    direction: mir::IterDirection::Forward,
-                },
+                func: mir::RuntimeFunc::Call(
+                    first_source.iterator_def(mir::IterDirection::Forward),
+                ),
                 args: vec![first_operand],
             });
         }
@@ -225,10 +222,9 @@ impl<'a> Lowering<'a> {
                     self.parse_range_args(range_args, hir_module, mir_func)?;
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: second_iter_local,
-                    func: mir::RuntimeFunc::MakeIterator {
-                        source: mir::IterSourceKind::Range,
-                        direction: mir::IterDirection::Forward,
-                    },
+                    func: mir::RuntimeFunc::Call(
+                        mir::IterSourceKind::Range.iterator_def(mir::IterDirection::Forward),
+                    ),
                     args: vec![start, stop, step],
                 });
             }
@@ -247,10 +243,9 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: second_iter_local,
-                func: mir::RuntimeFunc::MakeIterator {
-                    source: second_source,
-                    direction: mir::IterDirection::Forward,
-                },
+                func: mir::RuntimeFunc::Call(
+                    second_source.iterator_def(mir::IterDirection::Forward),
+                ),
                 args: vec![second_operand],
             });
         }
@@ -269,7 +264,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::ZipNew,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ZIP_NEW),
             args: vec![
                 mir::Operand::Local(first_iter_local),
                 mir::Operand::Local(second_iter_local),
@@ -389,7 +384,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::MapNew,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAP_NEW),
             args: vec![
                 func_ptr_operand,
                 inner_iter,
@@ -598,7 +593,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::ReduceNew,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_REDUCE),
             args: vec![
                 func_ptr_operand,
                 inner_iter,
@@ -733,7 +728,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::FilterNew,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILTER_NEW),
             args: vec![
                 func_ptr_operand,
                 inner_iter,

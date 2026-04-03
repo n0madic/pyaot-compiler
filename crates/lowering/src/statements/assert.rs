@@ -2,6 +2,7 @@
 //!
 //! Handles: Assert
 
+use pyaot_core_defs::runtime_func_def;
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
@@ -66,7 +67,7 @@ impl<'a> Lowering<'a> {
                 let msg_operand = self.lower_expr(msg_expr, hir_module, mir_func)?;
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::AssertFailObj,
+                    func: mir::RuntimeFunc::Call(&runtime_func_def::RT_ASSERT_FAIL_OBJ),
                     args: vec![msg_operand],
                 });
             }

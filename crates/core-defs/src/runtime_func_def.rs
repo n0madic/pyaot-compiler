@@ -572,3 +572,654 @@ pub static RT_BYTES_FROM_HEX: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_byt
 /// rt_bytes_contains(bytes: *mut Obj, sub: *mut Obj) -> i8
 pub static RT_BYTES_CONTAINS: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_bytes_contains", &[PI64, PI64], Some(RI8), false);
+
+// ===== Math operations =====
+
+/// rt_pow_float(base: f64, exp: f64) -> f64
+pub static RT_POW_FLOAT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_pow_float", &[PF64, PF64], Some(RF64), false);
+/// rt_pow_int(base: i64, exp: i64) -> i64
+pub static RT_POW_INT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_pow_int", &[PI64, PI64], Some(RI64), false);
+/// rt_round_to_int(x: f64) -> i64
+pub static RT_ROUND_TO_INT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_round_to_int", &[PF64], Some(RI64), false);
+/// rt_round_to_digits(x: f64, ndigits: i64) -> f64
+pub static RT_ROUND_TO_DIGITS: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_round_to_digits", &[PF64, PI64], Some(RF64), false);
+/// rt_int_to_chr(code: i64) -> *mut Obj
+pub static RT_INT_TO_CHR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_to_chr");
+/// rt_chr_to_int(s: *mut Obj) -> i64
+pub static RT_CHR_TO_INT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_chr_to_int");
+
+// ===== Comparison operations =====
+// Compare(kind, op) → static defs for all valid (kind, op) combinations.
+// Signature: (a: I64, b: I64) -> I8 for eq-only variants.
+// Signature: (a: I64, b: I64, op_tag: I8) -> I8 for ordering variants with op_tag.
+// Signature: (a: I64, b: I64) -> I8 for Obj ordering (separate functions per op).
+
+/// rt_list_eq_int(a: *mut Obj, b: *mut Obj) -> i8
+pub static RT_CMP_LIST_INT_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_list_eq_int");
+/// rt_list_eq_float(a: *mut Obj, b: *mut Obj) -> i8
+pub static RT_CMP_LIST_FLOAT_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_list_eq_float");
+/// rt_list_eq_str(a: *mut Obj, b: *mut Obj) -> i8
+pub static RT_CMP_LIST_STR_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_list_eq_str");
+/// rt_list_eq_int(a: *mut Obj, b: *mut Obj) -> i8 (List Eq fallback)
+pub static RT_CMP_LIST_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_list_eq_int");
+/// rt_list_cmp(a: *mut Obj, b: *mut Obj, op_tag: i8) -> i8
+pub static RT_CMP_LIST_ORD: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_list_cmp", &[PI64, PI64, PI8], Some(RI8), false);
+/// rt_tuple_eq(a: *mut Obj, b: *mut Obj) -> i8
+pub static RT_CMP_TUPLE_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_tuple_eq");
+/// rt_tuple_cmp(a: *mut Obj, b: *mut Obj, op_tag: i8) -> i8
+pub static RT_CMP_TUPLE_ORD: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_tuple_cmp", &[PI64, PI64, PI8], Some(RI8), false);
+/// rt_str_eq(a: *mut Obj, b: *mut Obj) -> i8
+pub static RT_CMP_STR_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_str_eq");
+/// rt_bytes_eq(a: *mut Obj, b: *mut Obj) -> i8
+pub static RT_CMP_BYTES_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_bytes_eq");
+/// rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8
+pub static RT_CMP_OBJ_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_obj_eq");
+/// rt_obj_lt(a: *mut Obj, b: *mut Obj) -> i8
+pub static RT_CMP_OBJ_LT: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_obj_lt");
+/// rt_obj_lte(a: *mut Obj, b: *mut Obj) -> i8
+pub static RT_CMP_OBJ_LTE: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_obj_lte");
+/// rt_obj_gt(a: *mut Obj, b: *mut Obj) -> i8
+pub static RT_CMP_OBJ_GT: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_obj_gt");
+/// rt_obj_gte(a: *mut Obj, b: *mut Obj) -> i8
+pub static RT_CMP_OBJ_GTE: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_obj_gte");
+
+// ===== Container min/max operations =====
+// ContainerMinMax { container, op, elem } → static defs.
+// Int/Float: rt_{container}_minmax(container: I64, is_min: I8, elem_kind: I8) -> I64
+// WithKey: rt_{container}_minmax_with_key(container: I64, key_fn: I64, elem_tag: I64, captures: I64, count: I64, is_min: I8) -> I64
+
+/// rt_list_minmax(list: *mut Obj, is_min: i8, elem_kind: i8) -> i64
+pub static RT_LIST_MINMAX: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_list_minmax", &[PI64, PI8, PI8], Some(RI64), false);
+/// rt_tuple_minmax(tuple: *mut Obj, is_min: i8, elem_kind: i8) -> i64
+pub static RT_TUPLE_MINMAX: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_tuple_minmax", &[PI64, PI8, PI8], Some(RI64), false);
+/// rt_set_minmax(set: *mut Obj, is_min: i8, elem_kind: i8) -> i64
+pub static RT_SET_MINMAX: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_set_minmax", &[PI64, PI8, PI8], Some(RI64), false);
+/// rt_dict_minmax(dict: *mut Obj, is_min: i8, elem_kind: i8) -> i64
+pub static RT_DICT_MINMAX: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_dict_minmax", &[PI64, PI8, PI8], Some(RI64), false);
+/// rt_str_minmax(str: *mut Obj, is_min: i8, elem_kind: i8) -> i64
+pub static RT_STR_MINMAX: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_str_minmax", &[PI64, PI8, PI8], Some(RI64), false);
+/// rt_list_minmax_with_key(list: *mut Obj, key_fn: i64, elem_tag: i64, captures: i64, count: i64, is_min: i8) -> *mut Obj
+pub static RT_LIST_MINMAX_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_list_minmax_with_key",
+    &[PI64, PI64, PI64, PI64, PI64, PI8],
+    Some(RI64),
+    true,
+);
+/// rt_tuple_minmax_with_key(tuple: *mut Obj, key_fn: i64, elem_tag: i64, captures: i64, count: i64, is_min: i8) -> *mut Obj
+pub static RT_TUPLE_MINMAX_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_tuple_minmax_with_key",
+    &[PI64, PI64, PI64, PI64, PI64, PI8],
+    Some(RI64),
+    true,
+);
+/// rt_set_minmax_with_key(set: *mut Obj, key_fn: i64, elem_tag: i64, captures: i64, count: i64, is_min: i8) -> *mut Obj
+pub static RT_SET_MINMAX_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_set_minmax_with_key",
+    &[PI64, PI64, PI64, PI64, PI64, PI8],
+    Some(RI64),
+    true,
+);
+/// rt_dict_minmax_with_key(dict: *mut Obj, key_fn: i64, elem_tag: i64, captures: i64, count: i64, is_min: i8) -> *mut Obj
+pub static RT_DICT_MINMAX_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_dict_minmax_with_key",
+    &[PI64, PI64, PI64, PI64, PI64, PI8],
+    Some(RI64),
+    true,
+);
+/// rt_str_minmax_with_key(str: *mut Obj, key_fn: i64, elem_tag: i64, captures: i64, count: i64, is_min: i8) -> *mut Obj
+pub static RT_STR_MINMAX_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_str_minmax_with_key",
+    &[PI64, PI64, PI64, PI64, PI64, PI8],
+    Some(RI64),
+    true,
+);
+
+// ===== Conversion operations =====
+
+/// rt_int_to_str(value: i64) -> *mut Obj
+pub static RT_INT_TO_STR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_to_str");
+/// rt_float_to_str(value: f64) -> *mut Obj
+pub static RT_FLOAT_TO_STR: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_float_to_str", &[PF64], Some(RI64), true);
+/// rt_bool_to_str(value: i8) -> *mut Obj
+pub static RT_BOOL_TO_STR: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_bool_to_str", &[PI8], Some(RI64), true);
+/// rt_none_to_str() -> *mut Obj
+pub static RT_NONE_TO_STR: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_none_to_str", &[], Some(RI64), true);
+/// rt_str_to_int(s: *mut Obj) -> i64
+pub static RT_STR_TO_INT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_str_to_int");
+/// rt_str_to_float(s: *mut Obj) -> f64
+pub static RT_STR_TO_FLOAT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_str_to_float", &[PI64], Some(RF64), false);
+/// rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64
+pub static RT_STR_TO_INT_WITH_BASE: RuntimeFuncDef =
+    RuntimeFuncDef::binary_to_i64("rt_str_to_int_with_base");
+/// rt_str_contains(haystack: *mut Obj, needle: *mut Obj) -> i8
+pub static RT_STR_CONTAINS: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_str_contains", &[PI64, PI64], Some(RI8), true);
+/// rt_int_to_bin(n: i64) -> *mut Obj
+pub static RT_INT_TO_BIN: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_to_bin");
+/// rt_int_to_hex(n: i64) -> *mut Obj
+pub static RT_INT_TO_HEX: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_to_hex");
+/// rt_int_to_oct(n: i64) -> *mut Obj
+pub static RT_INT_TO_OCT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_to_oct");
+/// rt_int_fmt_bin(n: i64) -> *mut Obj
+pub static RT_INT_FMT_BIN: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_fmt_bin");
+/// rt_int_fmt_hex(n: i64) -> *mut Obj
+pub static RT_INT_FMT_HEX: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_fmt_hex");
+/// rt_int_fmt_hex_upper(n: i64) -> *mut Obj
+pub static RT_INT_FMT_HEX_UPPER: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_fmt_hex_upper");
+/// rt_int_fmt_oct(n: i64) -> *mut Obj
+pub static RT_INT_FMT_OCT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_fmt_oct");
+/// rt_int_fmt_grouped(n: i64, sep: i64) -> *mut Obj
+pub static RT_INT_FMT_GROUPED: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_int_fmt_grouped");
+/// rt_float_fmt_grouped(f: f64, precision: i64, sep: i64) -> *mut Obj
+pub static RT_FLOAT_FMT_GROUPED: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_float_fmt_grouped",
+    &[PF64, PI64, PI64],
+    Some(RI64),
+    true,
+);
+/// rt_type_name(obj: *mut Obj) -> *mut Obj
+pub static RT_TYPE_NAME: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_type_name");
+/// rt_type_name_extract(type_str: *mut Obj) -> *mut Obj
+pub static RT_TYPE_NAME_EXTRACT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_type_name_extract");
+/// rt_exc_class_name(instance: *mut Obj) -> *mut Obj
+pub static RT_EXC_CLASS_NAME: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_exc_class_name");
+/// rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mut Obj
+pub static RT_FORMAT_VALUE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_format_value");
+
+// ===== ToStringRepr operations (repr/ascii) =====
+// ToStringRepr(target_kind, format) → static defs for all valid combinations.
+// Function name pattern: "{format.prefix()}{target_kind.suffix()}"
+
+/// rt_repr_int(value: i64) -> *mut Obj
+pub static RT_REPR_INT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_repr_int");
+/// rt_repr_float(value: f64) -> *mut Obj
+pub static RT_REPR_FLOAT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_repr_float", &[PF64], Some(RI64), true);
+/// rt_repr_bool(value: i8) -> *mut Obj
+pub static RT_REPR_BOOL: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_repr_bool", &[PI8], Some(RI64), true);
+/// rt_repr_none() -> *mut Obj
+pub static RT_REPR_NONE: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_repr_none", &[], Some(RI64), true);
+/// rt_repr_str(s: *mut Obj) -> *mut Obj
+pub static RT_REPR_STR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_repr_str");
+/// rt_repr_bytes(b: *mut Obj) -> *mut Obj
+pub static RT_REPR_BYTES: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_repr_bytes");
+/// rt_repr_collection(obj: *mut Obj) -> *mut Obj
+pub static RT_REPR_COLLECTION: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_repr_collection");
+/// rt_ascii_int(value: i64) -> *mut Obj (same as repr for int)
+pub static RT_ASCII_INT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_ascii_int");
+/// rt_ascii_float(value: f64) -> *mut Obj (same as repr for float)
+pub static RT_ASCII_FLOAT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_ascii_float", &[PF64], Some(RI64), true);
+/// rt_ascii_bool(value: i8) -> *mut Obj (same as repr for bool)
+pub static RT_ASCII_BOOL: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_ascii_bool", &[PI8], Some(RI64), true);
+/// rt_ascii_none() -> *mut Obj (same as repr for None)
+pub static RT_ASCII_NONE: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_ascii_none", &[], Some(RI64), true);
+/// rt_ascii_str(s: *mut Obj) -> *mut Obj
+pub static RT_ASCII_STR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_ascii_str");
+/// rt_ascii_bytes(b: *mut Obj) -> *mut Obj
+pub static RT_ASCII_BYTES: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_ascii_bytes");
+/// rt_ascii_collection(obj: *mut Obj) -> *mut Obj
+pub static RT_ASCII_COLLECTION: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_ascii_collection");
+
+// ===== String operations =====
+
+/// rt_str_data(s: *mut Obj) -> i64 (data pointer, not GC-tracked)
+pub static RT_STR_DATA: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_str_data");
+/// rt_str_len(s: *mut Obj) -> i64 (byte length, not GC-tracked)
+pub static RT_STR_LEN: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_str_len");
+/// rt_str_len_int(s: *mut Obj) -> i64 (codepoint length for len() builtin, GC-tracked)
+pub static RT_STR_LEN_INT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_len_int");
+/// rt_str_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj
+pub static RT_STR_CONCAT: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_concat");
+/// rt_str_slice(s: *mut Obj, start: i64, stop: i64) -> *mut Obj
+pub static RT_STR_SLICE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_slice");
+/// rt_str_slice_step(s: *mut Obj, start: i64, stop: i64, step: i64) -> *mut Obj
+pub static RT_STR_SLICE_STEP: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_str_slice_step");
+/// rt_str_getchar(s: *mut Obj, byte_index: i64) -> *mut Obj
+pub static RT_STR_GETCHAR: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_getchar");
+/// rt_str_subscript(s: *mut Obj, char_index: i64) -> *mut Obj
+pub static RT_STR_SUBSCRIPT: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_subscript");
+/// rt_str_mul(s: *mut Obj, count: i64) -> *mut Obj
+pub static RT_STR_MUL: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_mul");
+/// rt_str_upper(s: *mut Obj) -> *mut Obj
+pub static RT_STR_UPPER: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_upper");
+/// rt_str_lower(s: *mut Obj) -> *mut Obj
+pub static RT_STR_LOWER: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_lower");
+/// rt_str_strip(s: *mut Obj) -> *mut Obj
+pub static RT_STR_STRIP: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_strip");
+/// rt_str_startswith(s: *mut Obj, prefix: *mut Obj) -> i8
+pub static RT_STR_STARTSWITH: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_str_startswith");
+/// rt_str_endswith(s: *mut Obj, suffix: *mut Obj) -> i8
+pub static RT_STR_ENDSWITH: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_str_endswith");
+/// rt_str_search(s: *mut Obj, sub: *mut Obj, op_tag: i8) -> i64 (find variant)
+pub static RT_STR_FIND: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI8], Some(RI64), true);
+/// rt_str_search(s: *mut Obj, sub: *mut Obj, op_tag: i8) -> i64 (rfind variant)
+pub static RT_STR_RFIND: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI8], Some(RI64), true);
+/// rt_str_search(s: *mut Obj, sub: *mut Obj, op_tag: i8) -> i64 (index variant)
+pub static RT_STR_INDEX: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI8], Some(RI64), true);
+/// rt_str_search(s: *mut Obj, sub: *mut Obj, op_tag: i8) -> i64 (rindex variant)
+pub static RT_STR_RINDEX: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_str_search", &[PI64, PI64, PI8], Some(RI64), true);
+/// rt_str_rsplit(s: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj
+pub static RT_STR_RSPLIT: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_rsplit");
+/// rt_str_isascii(s: *mut Obj) -> i8
+pub static RT_STR_ISASCII: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isascii");
+/// rt_str_encode(s: *mut Obj, encoding: *mut Obj) -> *mut Obj
+pub static RT_STR_ENCODE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_encode");
+/// rt_str_replace(s: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut Obj
+pub static RT_STR_REPLACE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_replace");
+/// rt_str_count(s: *mut Obj, sub: *mut Obj) -> i64
+pub static RT_STR_COUNT: RuntimeFuncDef = RuntimeFuncDef::binary_to_i64("rt_str_count");
+/// rt_str_split(s: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj
+pub static RT_STR_SPLIT: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_split");
+/// rt_str_join(sep: *mut Obj, list: *mut Obj) -> *mut Obj
+pub static RT_STR_JOIN: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_join");
+/// rt_str_lstrip(s: *mut Obj, chars: *mut Obj) -> *mut Obj
+pub static RT_STR_LSTRIP: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_lstrip");
+/// rt_str_rstrip(s: *mut Obj, chars: *mut Obj) -> *mut Obj
+pub static RT_STR_RSTRIP: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_rstrip");
+/// rt_str_title(s: *mut Obj) -> *mut Obj
+pub static RT_STR_TITLE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_title");
+/// rt_str_capitalize(s: *mut Obj) -> *mut Obj
+pub static RT_STR_CAPITALIZE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_capitalize");
+/// rt_str_swapcase(s: *mut Obj) -> *mut Obj
+pub static RT_STR_SWAPCASE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_swapcase");
+/// rt_str_center(s: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj
+pub static RT_STR_CENTER: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_center");
+/// rt_str_ljust(s: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj
+pub static RT_STR_LJUST: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_ljust");
+/// rt_str_rjust(s: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj
+pub static RT_STR_RJUST: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_str_rjust");
+/// rt_str_zfill(s: *mut Obj, width: i64) -> *mut Obj
+pub static RT_STR_ZFILL: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_zfill");
+/// rt_str_isdigit(s: *mut Obj) -> i8
+pub static RT_STR_ISDIGIT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isdigit");
+/// rt_str_isalpha(s: *mut Obj) -> i8
+pub static RT_STR_ISALPHA: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isalpha");
+/// rt_str_isalnum(s: *mut Obj) -> i8
+pub static RT_STR_ISALNUM: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isalnum");
+/// rt_str_isspace(s: *mut Obj) -> i8
+pub static RT_STR_ISSPACE: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isspace");
+/// rt_str_isupper(s: *mut Obj) -> i8
+pub static RT_STR_ISUPPER: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_isupper");
+/// rt_str_islower(s: *mut Obj) -> i8
+pub static RT_STR_ISLOWER: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_str_islower");
+/// rt_str_removeprefix(s: *mut Obj, prefix: *mut Obj) -> *mut Obj
+pub static RT_STR_REMOVEPREFIX: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_removeprefix");
+/// rt_str_removesuffix(s: *mut Obj, suffix: *mut Obj) -> *mut Obj
+pub static RT_STR_REMOVESUFFIX: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_removesuffix");
+/// rt_str_splitlines(s: *mut Obj) -> *mut Obj
+pub static RT_STR_SPLITLINES: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_str_splitlines");
+/// rt_str_partition(s: *mut Obj, sep: *mut Obj) -> *mut Obj
+pub static RT_STR_PARTITION: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_partition");
+/// rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj
+pub static RT_STR_RPARTITION: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_rpartition");
+/// rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj
+pub static RT_STR_EXPANDTABS: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_str_expandtabs");
+/// rt_make_string_builder(capacity: i64) -> *mut Obj
+pub static RT_MAKE_STRING_BUILDER: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_unary("rt_make_string_builder");
+/// rt_string_builder_append(builder: *mut Obj, s: *mut Obj) -> void
+pub static RT_STRING_BUILDER_APPEND: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_string_builder_append", &[PI64, PI64]);
+/// rt_string_builder_to_str(builder: *mut Obj) -> *mut Obj
+pub static RT_STRING_BUILDER_TO_STR: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_unary("rt_string_builder_to_str");
+
+// ===== Print operations =====
+
+/// rt_print_newline() -> void
+pub static RT_PRINT_NEWLINE: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_newline", &[]);
+/// rt_print_sep() -> void
+pub static RT_PRINT_SEP: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_sep", &[]);
+/// rt_print_flush() -> void
+pub static RT_PRINT_FLUSH: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_flush", &[]);
+/// rt_print_set_stderr() -> void
+pub static RT_PRINT_SET_STDERR: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_set_stderr", &[]);
+/// rt_print_set_stdout() -> void
+pub static RT_PRINT_SET_STDOUT: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_set_stdout", &[]);
+/// rt_input(prompt: *mut Obj) -> *mut Obj
+pub static RT_INPUT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_input");
+/// rt_print_int_value(value: i64) -> void
+pub static RT_PRINT_INT: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_int_value", &[PI64]);
+/// rt_print_float_value(value: f64) -> void
+pub static RT_PRINT_FLOAT: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_float_value", &[PF64]);
+/// rt_print_bool_value(value: i8) -> void
+pub static RT_PRINT_BOOL: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_bool_value", &[PI8]);
+/// rt_print_str_obj(s: *mut Obj) -> void
+pub static RT_PRINT_STR_OBJ: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_str_obj", &[PI64]);
+/// rt_print_bytes_obj(b: *mut Obj) -> void
+pub static RT_PRINT_BYTES_OBJ: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_bytes_obj", &[PI64]);
+/// rt_print_obj(obj: *mut Obj) -> void
+pub static RT_PRINT_OBJ: RuntimeFuncDef = RuntimeFuncDef::void("rt_print_obj", &[PI64]);
+/// rt_assert_fail_obj(msg: *mut Obj) -> void (diverges, but declared void for codegen)
+pub static RT_ASSERT_FAIL_OBJ: RuntimeFuncDef = RuntimeFuncDef::void("rt_assert_fail_obj", &[PI64]);
+
+// ===== Iterator operations =====
+
+// --- MakeIterator: forward variants ---
+/// rt_iter_list(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_LIST: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_list");
+/// rt_iter_tuple(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_TUPLE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_tuple");
+/// rt_iter_dict(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_DICT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_dict");
+/// rt_iter_str(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_STR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_str");
+/// rt_iter_range(start: i64, stop: i64, step: i64) -> *mut Obj
+pub static RT_ITER_RANGE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_iter_range");
+/// rt_iter_set(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_SET: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_set");
+/// rt_iter_bytes(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_BYTES: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_bytes");
+/// rt_iter_generator(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_GENERATOR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_generator");
+
+// --- MakeIterator: reversed variants ---
+/// rt_iter_reversed_list(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_REVERSED_LIST: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_unary("rt_iter_reversed_list");
+/// rt_iter_reversed_tuple(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_REVERSED_TUPLE: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_unary("rt_iter_reversed_tuple");
+/// rt_iter_reversed_dict(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_REVERSED_DICT: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_unary("rt_iter_reversed_dict");
+/// rt_iter_reversed_str(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_REVERSED_STR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_reversed_str");
+/// rt_iter_reversed_range(start: i64, stop: i64, step: i64) -> *mut Obj
+pub static RT_ITER_REVERSED_RANGE: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_ternary("rt_iter_reversed_range");
+/// rt_iter_reversed_set(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_REVERSED_SET: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_reversed_set");
+/// rt_iter_reversed_bytes(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_REVERSED_BYTES: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_unary("rt_iter_reversed_bytes");
+/// rt_iter_reversed_generator(container: *mut Obj) -> *mut Obj
+pub static RT_ITER_REVERSED_GENERATOR: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_unary("rt_iter_reversed_generator");
+
+// --- Iterator core ops ---
+/// rt_iter_next(iter: *mut Obj) -> *mut Obj
+pub static RT_ITER_NEXT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_next");
+/// rt_iter_next_no_exc(iter: *mut Obj) -> *mut Obj
+pub static RT_ITER_NEXT_NO_EXC: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_next_no_exc");
+/// rt_iter_is_exhausted(iter: *mut Obj) -> i8
+pub static RT_ITER_IS_EXHAUSTED: RuntimeFuncDef =
+    RuntimeFuncDef::unary_to_i8("rt_iter_is_exhausted");
+/// rt_iter_enumerate(inner: *mut Obj, start: i64) -> *mut Obj
+pub static RT_ITER_ENUMERATE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_iter_enumerate");
+
+// --- Sorted: no key, no elem_tag (List, Tuple, Str) ---
+/// rt_sorted_list(container: *mut Obj, reverse: i64) -> *mut Obj
+pub static RT_SORTED_LIST: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_sorted_list");
+/// rt_sorted_tuple(container: *mut Obj, reverse: i64) -> *mut Obj
+pub static RT_SORTED_TUPLE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_sorted_tuple");
+/// rt_sorted_str(container: *mut Obj, reverse: i64) -> *mut Obj
+pub static RT_SORTED_STR: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_sorted_str");
+
+// --- Sorted: no key, with elem_tag (Set, Dict) ---
+/// rt_sorted_set(container: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj
+pub static RT_SORTED_SET: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_sorted_set", &[PI64, PI64, PI8], Some(RI64), true);
+/// rt_sorted_dict(container: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj
+pub static RT_SORTED_DICT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_sorted_dict", &[PI64, PI64, PI8], Some(RI64), true);
+
+// --- Sorted: range (special args) ---
+/// rt_sorted_range(start: i64, stop: i64, step: i64, reverse: i64) -> *mut Obj
+pub static RT_SORTED_RANGE: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_sorted_range");
+
+// --- Sorted: with key (container, reverse, key_fn, elem_tag, captures, capture_count) ---
+/// rt_sorted_list_with_key(container, reverse, key_fn, elem_tag, captures, capture_count) -> *mut Obj
+pub static RT_SORTED_LIST_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_sorted_list_with_key",
+    &[PI64, PI64, PI64, PI64, PI64, PI64],
+    Some(RI64),
+    true,
+);
+/// rt_sorted_tuple_with_key(container, reverse, key_fn, elem_tag, captures, capture_count) -> *mut Obj
+pub static RT_SORTED_TUPLE_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_sorted_tuple_with_key",
+    &[PI64, PI64, PI64, PI64, PI64, PI64],
+    Some(RI64),
+    true,
+);
+/// rt_sorted_str_with_key(container, reverse, key_fn, elem_tag, captures, capture_count) -> *mut Obj
+pub static RT_SORTED_STR_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_sorted_str_with_key",
+    &[PI64, PI64, PI64, PI64, PI64, PI64],
+    Some(RI64),
+    true,
+);
+/// rt_sorted_set_with_key(container, reverse, key_fn, elem_tag, captures, capture_count) -> *mut Obj
+pub static RT_SORTED_SET_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_sorted_set_with_key",
+    &[PI64, PI64, PI64, PI64, PI64, PI64],
+    Some(RI64),
+    true,
+);
+/// rt_sorted_dict_with_key(container, reverse, key_fn, elem_tag, captures, capture_count) -> *mut Obj
+pub static RT_SORTED_DICT_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_sorted_dict_with_key",
+    &[PI64, PI64, PI64, PI64, PI64, PI64],
+    Some(RI64),
+    true,
+);
+
+// --- Zip operations ---
+/// rt_zip_new(iter1: *mut Obj, iter2: *mut Obj) -> *mut Obj
+pub static RT_ZIP_NEW: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_zip_new");
+/// rt_zip3_new(iter1: *mut Obj, iter2: *mut Obj, iter3: *mut Obj) -> *mut Obj
+pub static RT_ZIP3_NEW: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_zip3_new");
+/// rt_zipn_new(iters: *mut Obj, num_iters: i64) -> *mut Obj
+pub static RT_ZIPN_NEW: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_zipn_new");
+/// rt_zip_next(zip: *mut Obj) -> *mut Obj
+pub static RT_ZIP_NEXT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_zip_next");
+
+// --- Map/Filter/Reduce ---
+/// rt_map_new(func_ptr: i64, iter: *mut Obj, captures: *mut Obj, capture_count: i64) -> *mut Obj
+pub static RT_MAP_NEW: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_map_new");
+/// rt_filter_new(func_ptr: i64, iter: *mut Obj, elem_tag: i64, captures: *mut Obj, capture_count: i64) -> *mut Obj
+pub static RT_FILTER_NEW: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_filter_new",
+    &[PI64, PI64, PI64, PI64, PI64],
+    Some(RI64),
+    true,
+);
+/// rt_reduce(func_ptr, iter, initial, has_initial, captures, capture_count) -> *mut Obj
+pub static RT_REDUCE: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_reduce",
+    &[PI64, PI64, PI64, PI64, PI64, PI64],
+    Some(RI64),
+    true,
+);
+
+// --- itertools ---
+/// rt_chain_new(iters: *mut Obj, num_iters: i64) -> *mut Obj
+pub static RT_CHAIN_NEW: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_chain_new");
+/// rt_islice_new(iter: *mut Obj, start: i64, stop: i64, step: i64) -> *mut Obj
+pub static RT_ISLICE_NEW: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_islice_new");
+
+// ===== Generator operations =====
+
+/// rt_make_generator(func_id: u32, num_locals: u32) -> *mut Obj
+pub static RT_MAKE_GENERATOR: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_make_generator", &[PI32, PI32], Some(RI64), true);
+/// rt_generator_get_state(gen: *mut Obj) -> u32
+pub static RT_GENERATOR_GET_STATE: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_generator_get_state", &[PI64], Some(RI32), false);
+/// rt_generator_set_state(gen: *mut Obj, state: u32) -> void
+pub static RT_GENERATOR_SET_STATE: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_generator_set_state", &[PI64, PI32]);
+/// rt_generator_get_local(gen: *mut Obj, index: u32) -> i64
+pub static RT_GENERATOR_GET_LOCAL: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_generator_get_local", &[PI64, PI32], Some(RI64), false);
+/// rt_generator_set_local(gen: *mut Obj, index: u32, value: i64) -> void
+pub static RT_GENERATOR_SET_LOCAL: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_generator_set_local", &[PI64, PI32, PI64]);
+/// rt_generator_get_local_ptr(gen: *mut Obj, index: u32) -> *mut Obj
+pub static RT_GENERATOR_GET_LOCAL_PTR: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_generator_get_local_ptr",
+    &[PI64, PI32],
+    Some(RI64),
+    true,
+);
+/// rt_generator_set_local_ptr(gen: *mut Obj, index: u32, value: *mut Obj) -> void
+pub static RT_GENERATOR_SET_LOCAL_PTR: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_generator_set_local_ptr", &[PI64, PI32, PI64]);
+/// rt_generator_set_local_type(gen: *mut Obj, index: u32, type_tag: u8) -> void
+pub static RT_GENERATOR_SET_LOCAL_TYPE: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_generator_set_local_type", &[PI64, PI32, PI8]);
+/// rt_generator_set_exhausted(gen: *mut Obj) -> void
+pub static RT_GENERATOR_SET_EXHAUSTED: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_generator_set_exhausted", &[PI64]);
+/// rt_generator_is_exhausted(gen: *mut Obj) -> i8
+pub static RT_GENERATOR_IS_EXHAUSTED: RuntimeFuncDef =
+    RuntimeFuncDef::unary_to_i8("rt_generator_is_exhausted");
+/// rt_generator_send(gen: *mut Obj, value: i64) -> *mut Obj
+pub static RT_GENERATOR_SEND: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_generator_send");
+/// rt_generator_get_sent_value(gen: *mut Obj) -> i64
+pub static RT_GENERATOR_GET_SENT_VALUE: RuntimeFuncDef =
+    RuntimeFuncDef::unary_to_i64("rt_generator_get_sent_value");
+/// rt_generator_close(gen: *mut Obj) -> void
+pub static RT_GENERATOR_CLOSE: RuntimeFuncDef = RuntimeFuncDef::void("rt_generator_close", &[PI64]);
+/// rt_generator_is_closing(gen: *mut Obj) -> i8
+pub static RT_GENERATOR_IS_CLOSING: RuntimeFuncDef =
+    RuntimeFuncDef::unary_to_i8("rt_generator_is_closing");
+
+// ===== Global variable storage =====
+// rt_global_get_{int,float,bool,ptr}(var_id: i32) -> value
+pub static RT_GLOBAL_GET_INT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_global_get_int", &[PI32], Some(RI64), false);
+pub static RT_GLOBAL_GET_FLOAT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_global_get_float", &[PI32], Some(RF64), false);
+pub static RT_GLOBAL_GET_BOOL: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_global_get_bool", &[PI32], Some(RI8), false);
+pub static RT_GLOBAL_GET_PTR: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_global_get_ptr", &[PI32], Some(RI64), true);
+// rt_global_set_{int,float,bool,ptr}(var_id: i32, value) -> void
+pub static RT_GLOBAL_SET_INT: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_global_set_int", &[PI32, PI64]);
+pub static RT_GLOBAL_SET_FLOAT: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_global_set_float", &[PI32, PF64]);
+pub static RT_GLOBAL_SET_BOOL: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_global_set_bool", &[PI32, PI8]);
+pub static RT_GLOBAL_SET_PTR: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_global_set_ptr", &[PI32, PI64]);
+
+// ===== Class attribute storage =====
+// rt_class_attr_get_{int,float,bool,ptr}(class_id: i8, attr_idx: i32) -> value
+pub static RT_CLASS_ATTR_GET_INT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_class_attr_get_int", &[PI8, PI32], Some(RI64), false);
+pub static RT_CLASS_ATTR_GET_FLOAT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_class_attr_get_float", &[PI8, PI32], Some(RF64), false);
+pub static RT_CLASS_ATTR_GET_BOOL: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_class_attr_get_bool", &[PI8, PI32], Some(RI8), false);
+pub static RT_CLASS_ATTR_GET_PTR: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_class_attr_get_ptr", &[PI8, PI32], Some(RI64), true);
+// rt_class_attr_set_{int,float,bool,ptr}(class_id: i8, attr_idx: i32, value) -> void
+pub static RT_CLASS_ATTR_SET_INT: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_class_attr_set_int", &[PI8, PI32, PI64]);
+pub static RT_CLASS_ATTR_SET_FLOAT: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_class_attr_set_float", &[PI8, PI32, PF64]);
+pub static RT_CLASS_ATTR_SET_BOOL: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_class_attr_set_bool", &[PI8, PI32, PI8]);
+pub static RT_CLASS_ATTR_SET_PTR: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_class_attr_set_ptr", &[PI8, PI32, PI64]);
+
+// ===== Cell storage (nonlocal variables) =====
+// rt_make_cell_{int,float,bool,ptr}(value) -> *mut Obj
+pub static RT_MAKE_CELL_INT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_make_cell_int", &[PI64], Some(RI64), true);
+pub static RT_MAKE_CELL_FLOAT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_make_cell_float", &[PF64], Some(RI64), true);
+pub static RT_MAKE_CELL_BOOL: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_make_cell_bool", &[PI8], Some(RI64), true);
+pub static RT_MAKE_CELL_PTR: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_make_cell_ptr", &[PI64], Some(RI64), true);
+// rt_cell_get_{int,float,bool,ptr}(cell: *mut Obj) -> value
+pub static RT_CELL_GET_INT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_cell_get_int");
+pub static RT_CELL_GET_FLOAT: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_cell_get_float", &[PI64], Some(RF64), false);
+pub static RT_CELL_GET_BOOL: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_cell_get_bool");
+pub static RT_CELL_GET_PTR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_cell_get_ptr");
+// rt_cell_set_{int,float,bool,ptr}(cell: *mut Obj, value) -> void
+pub static RT_CELL_SET_INT: RuntimeFuncDef = RuntimeFuncDef::void("rt_cell_set_int", &[PI64, PI64]);
+pub static RT_CELL_SET_FLOAT: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_cell_set_float", &[PI64, PF64]);
+pub static RT_CELL_SET_BOOL: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_cell_set_bool", &[PI64, PI8]);
+pub static RT_CELL_SET_PTR: RuntimeFuncDef = RuntimeFuncDef::void("rt_cell_set_ptr", &[PI64, PI64]);
+
+// ===== Instance operations =====
+/// rt_make_instance(class_id: i8, field_count: i64) -> *mut Obj
+pub static RT_MAKE_INSTANCE: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_make_instance", &[PI8, PI64], Some(RI64), true);
+/// rt_instance_get_field(inst: *mut Obj, offset: i64) -> i64
+pub static RT_INSTANCE_GET_FIELD: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_binary("rt_instance_get_field");
+/// rt_instance_set_field(inst: *mut Obj, offset: i64, value: i64) -> void
+pub static RT_INSTANCE_SET_FIELD: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_instance_set_field", &[PI64, PI64, PI64]);
+/// rt_get_type_tag(obj: *mut Obj) -> i64
+pub static RT_GET_TYPE_TAG: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_get_type_tag");
+/// rt_isinstance_class(obj: *mut Obj, class_id: i64) -> i8
+pub static RT_ISINSTANCE_CLASS: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_isinstance_class", &[PI64, PI64], Some(RI8), false);
+/// rt_isinstance_class_inherited(obj: *mut Obj, target_class_id: i64) -> i8
+pub static RT_ISINSTANCE_CLASS_INHERITED: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_isinstance_class_inherited",
+    &[PI64, PI64],
+    Some(RI8),
+    false,
+);
+/// rt_register_class(class_id: i8, parent_class_id: i8) -> void
+pub static RT_REGISTER_CLASS: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_register_class", &[PI8, PI8]);
+/// rt_register_class_fields(class_id: i8, heap_field_mask: i64) -> void
+pub static RT_REGISTER_CLASS_FIELDS: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_register_class_fields", &[PI8, PI64]);
+/// rt_register_class_field_count(class_id: i8, field_count: i64) -> void
+pub static RT_REGISTER_CLASS_FIELD_COUNT: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_register_class_field_count", &[PI8, PI64]);
+/// rt_register_method_name(class_id: i64, name_hash: i64, slot: i64) -> void
+pub static RT_REGISTER_METHOD_NAME: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_register_method_name", &[PI64, PI64, PI64]);
+/// rt_object_new(class_id: i8) -> *mut Obj
+pub static RT_OBJECT_NEW: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_object_new", &[PI8], Some(RI64), false);
+/// rt_register_del_func(class_id: i8, func_ptr: i64) -> void
+pub static RT_REGISTER_DEL_FUNC: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_register_del_func", &[PI8, PI64]);
+/// rt_register_copy_func(class_id: i8, func_ptr: i64) -> void
+pub static RT_REGISTER_COPY_FUNC: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_register_copy_func", &[PI8, PI64]);
+/// rt_register_deepcopy_func(class_id: i8, func_ptr: i64) -> void
+pub static RT_REGISTER_DEEPCOPY_FUNC: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_register_deepcopy_func", &[PI8, PI64]);
+/// rt_issubclass(child_tag: i64, parent_tag: i64) -> i8
+pub static RT_ISSUBCLASS: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_issubclass", &[PI64, PI64], Some(RI8), false);

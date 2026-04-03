@@ -54,10 +54,7 @@ impl<'a> Lowering<'a> {
             }
         };
 
-        let iter_func = mir::RuntimeFunc::MakeIterator {
-            source,
-            direction: mir::IterDirection::Reversed,
-        };
+        let iter_func = mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Reversed));
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
@@ -116,10 +113,9 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::MakeIterator {
-                source: mir::IterSourceKind::Range,
-                direction: mir::IterDirection::Reversed,
-            },
+            func: mir::RuntimeFunc::Call(
+                mir::IterSourceKind::Range.iterator_def(mir::IterDirection::Reversed),
+            ),
             args: vec![start_operand, stop_operand, step_operand],
         });
 
@@ -201,10 +197,7 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::Sorted {
-                    source,
-                    has_key: true,
-                },
+                func: mir::RuntimeFunc::Call(source.sorted_def(true)),
                 args: vec![
                     arg_operand,
                     sort_kwargs.reverse,
@@ -229,10 +222,7 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::Sorted {
-                    source,
-                    has_key: false,
-                },
+                func: mir::RuntimeFunc::Call(source.sorted_def(false)),
                 args,
             });
         }
@@ -289,10 +279,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::Sorted {
-                source: mir::SortableKind::Range,
-                has_key: false,
-            },
+            func: mir::RuntimeFunc::Call(mir::SortableKind::Range.sorted_def(false)),
             args: vec![start_operand, stop_operand, step_operand, reverse_operand],
         });
 

@@ -4,16 +4,6 @@
 //! including print functions, string operations, list operations, tuple
 //! operations, dictionary operations, and type conversions.
 
-mod cells;
-mod class_attrs;
-mod compare;
-mod conversions;
-mod generator;
-mod globals;
-mod instance;
-mod iterator;
-mod math;
-mod minmax;
 mod print;
 mod stdlib;
 mod string;
@@ -34,71 +24,14 @@ pub fn compile_runtime_call(
     ctx: &mut CodegenContext,
 ) -> Result<()> {
     match func {
-        // Print operations
-        mir::RuntimeFunc::AssertFail
-        | mir::RuntimeFunc::AssertFailObj
-        | mir::RuntimeFunc::PrintValue(_)
-        | mir::RuntimeFunc::PrintNewline
-        | mir::RuntimeFunc::PrintSep
-        | mir::RuntimeFunc::Input
-        | mir::RuntimeFunc::PrintSetStderr
-        | mir::RuntimeFunc::PrintSetStdout
-        | mir::RuntimeFunc::PrintFlush => {
+        // Print operations (only special cases that embed constants in binary)
+        mir::RuntimeFunc::AssertFail | mir::RuntimeFunc::PrintValue(_) => {
             print::compile_print_call(builder, dest, func, args, ctx)?;
             Ok(())
         }
 
-        // String operations
-        mir::RuntimeFunc::MakeStr
-        | mir::RuntimeFunc::StrData
-        | mir::RuntimeFunc::StrLen
-        | mir::RuntimeFunc::StrLenInt
-        | mir::RuntimeFunc::StrConcat
-        | mir::RuntimeFunc::StrSlice
-        | mir::RuntimeFunc::StrSliceStep
-        | mir::RuntimeFunc::StrGetChar
-        | mir::RuntimeFunc::StrSubscript
-        | mir::RuntimeFunc::StrMul
-        | mir::RuntimeFunc::StrUpper
-        | mir::RuntimeFunc::StrLower
-        | mir::RuntimeFunc::StrStrip
-        | mir::RuntimeFunc::StrStartsWith
-        | mir::RuntimeFunc::StrEndsWith
-        | mir::RuntimeFunc::StrSearch(_)
-        | mir::RuntimeFunc::StrReplace
-        // New string methods
-        | mir::RuntimeFunc::StrCount
-        | mir::RuntimeFunc::StrSplit
-        | mir::RuntimeFunc::StrJoin
-        | mir::RuntimeFunc::StrLstrip
-        | mir::RuntimeFunc::StrRstrip
-        | mir::RuntimeFunc::StrTitle
-        | mir::RuntimeFunc::StrCapitalize
-        | mir::RuntimeFunc::StrSwapcase
-        | mir::RuntimeFunc::StrCenter
-        | mir::RuntimeFunc::StrLjust
-        | mir::RuntimeFunc::StrRjust
-        | mir::RuntimeFunc::StrZfill
-        | mir::RuntimeFunc::StrIsDigit
-        | mir::RuntimeFunc::StrIsAlpha
-        | mir::RuntimeFunc::StrIsAlnum
-        | mir::RuntimeFunc::StrIsSpace
-        | mir::RuntimeFunc::StrIsUpper
-        | mir::RuntimeFunc::StrIsLower
-        | mir::RuntimeFunc::StrRemovePrefix
-        | mir::RuntimeFunc::StrRemoveSuffix
-        | mir::RuntimeFunc::StrSplitLines
-        | mir::RuntimeFunc::StrPartition
-        | mir::RuntimeFunc::StrRpartition
-        | mir::RuntimeFunc::StrExpandTabs
-        | mir::RuntimeFunc::StrRsplit
-        | mir::RuntimeFunc::StrIsAscii
-        | mir::RuntimeFunc::StrEncode
-        // StringBuilder for efficient string concatenation
-        | mir::RuntimeFunc::MakeStringBuilder
-        | mir::RuntimeFunc::StringBuilderAppend
-        | mir::RuntimeFunc::StringBuilderToStr
-        | mir::RuntimeFunc::MakeBytes => {
+        // String operations (only special cases that embed constants in binary)
+        mir::RuntimeFunc::MakeStr | mir::RuntimeFunc::MakeBytes => {
             string::compile_string_call(builder, dest, func, args, ctx)?;
             Ok(())
         }
@@ -107,142 +40,10 @@ pub fn compile_runtime_call(
 
         // Boxing/Unboxing: migrated to RuntimeFunc::Call (handled by generic handler)
 
-        // Type conversion operations
-        mir::RuntimeFunc::Convert { .. }
-        | mir::RuntimeFunc::StrContains
-        | mir::RuntimeFunc::IntToBin
-        | mir::RuntimeFunc::IntToHex
-        | mir::RuntimeFunc::IntToOct
-        | mir::RuntimeFunc::IntFmtBin
-        | mir::RuntimeFunc::IntFmtHex
-        | mir::RuntimeFunc::IntFmtHexUpper
-        | mir::RuntimeFunc::IntFmtOct
-        | mir::RuntimeFunc::IntFmtGrouped
-        | mir::RuntimeFunc::FloatFmtGrouped
-        | mir::RuntimeFunc::ToStringRepr(_, _)
-        | mir::RuntimeFunc::TypeName
-        | mir::RuntimeFunc::TypeNameExtract
-        | mir::RuntimeFunc::ExcClassName
-        | mir::RuntimeFunc::FormatValue
-        | mir::RuntimeFunc::StrToIntWithBase => {
-            conversions::compile_conversion_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
+        // Type conversions, math, formatting: migrated to RuntimeFunc::Call (handled by generic handler)
 
-        // Math operations
-        mir::RuntimeFunc::PowFloat
-        | mir::RuntimeFunc::PowInt
-        | mir::RuntimeFunc::RoundToInt
-        | mir::RuntimeFunc::RoundToDigits
-        | mir::RuntimeFunc::IntToChr
-        | mir::RuntimeFunc::ChrToInt => {
-            math::compile_math_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
-
-        // Instance (class) operations
-        mir::RuntimeFunc::MakeInstance
-        | mir::RuntimeFunc::InstanceGetField
-        | mir::RuntimeFunc::InstanceSetField
-        | mir::RuntimeFunc::GetTypeTag
-        | mir::RuntimeFunc::IsinstanceClass
-        | mir::RuntimeFunc::IsinstanceClassInherited
-        | mir::RuntimeFunc::RegisterClass
-        | mir::RuntimeFunc::RegisterClassFields
-        | mir::RuntimeFunc::RegisterClassFieldCount
-        | mir::RuntimeFunc::ObjectNew
-        | mir::RuntimeFunc::RegisterDelFunc
-        | mir::RuntimeFunc::RegisterCopyFunc
-        | mir::RuntimeFunc::RegisterDeepCopyFunc
-        | mir::RuntimeFunc::RegisterMethodName
-        | mir::RuntimeFunc::IsSubclass => {
-            instance::compile_instance_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
-
-        // Hash + Id: migrated to RuntimeFunc::Call (handled by generic handler)
-
-        // Iterator operations
-        mir::RuntimeFunc::MakeIterator { .. }
-        | mir::RuntimeFunc::IterNext
-        | mir::RuntimeFunc::IterNextNoExc
-        | mir::RuntimeFunc::IterIsExhausted
-        | mir::RuntimeFunc::IterEnumerate
-        | mir::RuntimeFunc::Sorted { .. }
-        | mir::RuntimeFunc::ZipNew
-        | mir::RuntimeFunc::ZipNext
-        | mir::RuntimeFunc::IterZip
-        | mir::RuntimeFunc::MapNew
-        | mir::RuntimeFunc::FilterNew
-        | mir::RuntimeFunc::ReduceNew
-        | mir::RuntimeFunc::ChainNew
-        | mir::RuntimeFunc::ISliceNew
-        | mir::RuntimeFunc::Zip3New
-        | mir::RuntimeFunc::ZipNNew => {
-            iterator::compile_iterator_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
-
-        // Set ops: migrated to RuntimeFunc::Call (handled by generic handler)
-
-        // Container min/max operations (unified)
-        mir::RuntimeFunc::ContainerMinMax {
-            container,
-            op,
-            elem,
-        } => {
-            minmax::compile_container_minmax(builder, dest, *container, *op, *elem, args, ctx)?;
-            Ok(())
-        }
-
-        // Comparison operations (unified)
-        mir::RuntimeFunc::Compare { kind, op } => {
-            compare::compile_compare_call(builder, dest, *kind, *op, args, ctx)?;
-            Ok(())
-        }
-
-        // Bytes: migrated to RuntimeFunc::Call (handled by generic handler)
-
-        // Object ops: migrated to RuntimeFunc::Call (handled by generic handler)
-
-        // Global variable operations
-        mir::RuntimeFunc::GlobalGet(_) | mir::RuntimeFunc::GlobalSet(_) => {
-            globals::compile_global_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
-
-        // Class attribute operations
-        mir::RuntimeFunc::ClassAttrGet(_) | mir::RuntimeFunc::ClassAttrSet(_) => {
-            class_attrs::compile_class_attr_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
-
-        // Cell operations (for nonlocal variables)
-        mir::RuntimeFunc::MakeCell(_)
-        | mir::RuntimeFunc::CellGet(_)
-        | mir::RuntimeFunc::CellSet(_) => {
-            cells::compile_cell_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
-
-        // Generator operations
-        mir::RuntimeFunc::MakeGenerator
-        | mir::RuntimeFunc::GeneratorGetState
-        | mir::RuntimeFunc::GeneratorSetState
-        | mir::RuntimeFunc::GeneratorGetLocal
-        | mir::RuntimeFunc::GeneratorSetLocal
-        | mir::RuntimeFunc::GeneratorGetLocalPtr
-        | mir::RuntimeFunc::GeneratorSetLocalPtr
-        | mir::RuntimeFunc::GeneratorSetLocalType
-        | mir::RuntimeFunc::GeneratorSetExhausted
-        | mir::RuntimeFunc::GeneratorIsExhausted
-        | mir::RuntimeFunc::GeneratorSend
-        | mir::RuntimeFunc::GeneratorGetSentValue
-        | mir::RuntimeFunc::GeneratorClose
-        | mir::RuntimeFunc::GeneratorIsClosing => {
-            generator::compile_generator_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
+        // Instance, Global, ClassAttr, Cell ops: migrated to RuntimeFunc::Call (handled by generic handler)
+        // Iterator, Generator, Hash, Id, Set, Compare, ContainerMinMax, Bytes, Object ops: same
 
         // Standard library operations (sys, os, re, json)
         // StdlibCall/StdlibAttrGet - unified handlers using definitions (Single Source of Truth)

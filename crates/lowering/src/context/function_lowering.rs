@@ -393,7 +393,7 @@ impl<'a> Lowering<'a> {
                 let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::GlobalSet(ValueKind::Ptr),
+                    func: mir::RuntimeFunc::Call(ValueKind::Ptr.global_set_def()),
                     args: vec![
                         mir::Operand::Constant(mir::Constant::Int(slot as i64)),
                         default_operand,

@@ -114,7 +114,9 @@ impl<'a> Lowering<'a> {
                     // String concatenation (2 operands - use simple concat)
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::StrConcat,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_STR_CONCAT,
+                        ),
                         args: vec![left_op, right_op],
                     });
                     return Ok(mir::Operand::Local(result_local));
@@ -123,7 +125,9 @@ impl<'a> Lowering<'a> {
                     // String multiplication: "abc" * 3
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::StrMul,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_STR_MUL,
+                        ),
                         args: vec![left_op, right_op],
                     });
                     return Ok(mir::Operand::Local(result_local));
@@ -486,10 +490,9 @@ impl<'a> Lowering<'a> {
                 hir::CmpOp::Eq => {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Obj,
-                            op: mir::ComparisonOp::Eq,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Eq),
+                        ),
                         args: vec![boxed_left, boxed_right],
                     });
                 }
@@ -498,10 +501,9 @@ impl<'a> Lowering<'a> {
                     let eq_local = self.alloc_and_add_local(Type::Bool, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: eq_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Obj,
-                            op: mir::ComparisonOp::Eq,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Eq),
+                        ),
                         args: vec![boxed_left, boxed_right],
                     });
                     self.emit_instruction(mir::InstructionKind::UnOp {
@@ -513,40 +515,36 @@ impl<'a> Lowering<'a> {
                 hir::CmpOp::Lt => {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Obj,
-                            op: mir::ComparisonOp::Lt,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Lt),
+                        ),
                         args: vec![boxed_left, boxed_right],
                     });
                 }
                 hir::CmpOp::LtE => {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Obj,
-                            op: mir::ComparisonOp::Lte,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Lte),
+                        ),
                         args: vec![boxed_left, boxed_right],
                     });
                 }
                 hir::CmpOp::Gt => {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Obj,
-                            op: mir::ComparisonOp::Gt,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Gt),
+                        ),
                         args: vec![boxed_left, boxed_right],
                     });
                 }
                 hir::CmpOp::GtE => {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Obj,
-                            op: mir::ComparisonOp::Gte,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Gte),
+                        ),
                         args: vec![boxed_left, boxed_right],
                     });
                 }
@@ -592,10 +590,9 @@ impl<'a> Lowering<'a> {
                 hir::CmpOp::Eq => {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Str,
-                            op: mir::ComparisonOp::Eq,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Str.runtime_func_def(mir::ComparisonOp::Eq),
+                        ),
                         args: vec![left_op, right_op],
                     });
                 }
@@ -604,10 +601,9 @@ impl<'a> Lowering<'a> {
                     let eq_local = self.alloc_and_add_local(Type::Bool, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: eq_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Str,
-                            op: mir::ComparisonOp::Eq,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Str.runtime_func_def(mir::ComparisonOp::Eq),
+                        ),
                         args: vec![left_op, right_op],
                     });
                     self.emit_instruction(mir::InstructionKind::UnOp {
@@ -620,7 +616,9 @@ impl<'a> Lowering<'a> {
                     // String substring check: left in right (needle in haystack)
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::StrContains,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_STR_CONTAINS,
+                        ),
                         args: vec![left_op, right_op],
                     });
                 }
@@ -629,7 +627,9 @@ impl<'a> Lowering<'a> {
                     let contains_local = self.alloc_and_add_local(Type::Bool, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: contains_local,
-                        func: mir::RuntimeFunc::StrContains,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_STR_CONTAINS,
+                        ),
                         args: vec![left_op, right_op],
                     });
                     self.emit_instruction(mir::InstructionKind::UnOp {
@@ -650,10 +650,9 @@ impl<'a> Lowering<'a> {
                     };
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Obj,
-                            op: cmp_op,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Obj.runtime_func_def(cmp_op),
+                        ),
                         args: vec![left_op, right_op],
                     });
                 }
@@ -664,10 +663,9 @@ impl<'a> Lowering<'a> {
                 hir::CmpOp::Eq => {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Bytes,
-                            op: mir::ComparisonOp::Eq,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Bytes.runtime_func_def(mir::ComparisonOp::Eq),
+                        ),
                         args: vec![left_op, right_op],
                     });
                 }
@@ -676,10 +674,9 @@ impl<'a> Lowering<'a> {
                     let eq_local = self.alloc_and_add_local(Type::Bool, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: eq_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Bytes,
-                            op: mir::ComparisonOp::Eq,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Bytes.runtime_func_def(mir::ComparisonOp::Eq),
+                        ),
                         args: vec![left_op, right_op],
                     });
                     self.emit_instruction(mir::InstructionKind::UnOp {
@@ -700,10 +697,9 @@ impl<'a> Lowering<'a> {
                     };
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Obj,
-                            op: cmp_op,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Obj.runtime_func_def(cmp_op),
+                        ),
                         args: vec![left_op, right_op],
                     });
                 }
@@ -836,10 +832,8 @@ impl<'a> Lowering<'a> {
                     _ => mir::CompareKind::ListInt, // Default to int comparison
                 };
 
-                let eq_func = mir::RuntimeFunc::Compare {
-                    kind: compare_kind,
-                    op: mir::ComparisonOp::Eq,
-                };
+                let eq_func =
+                    mir::RuntimeFunc::Call(compare_kind.runtime_func_def(mir::ComparisonOp::Eq));
 
                 if is_not_eq {
                     // NotEq: compute eq and negate
@@ -870,13 +864,13 @@ impl<'a> Lowering<'a> {
                     hir::CmpOp::GtE => mir::ComparisonOp::Gte,
                     _ => unreachable!("Already handled Eq/NotEq above"),
                 };
+                let op_tag = mir::Operand::Constant(mir::Constant::Int(compare_op.to_tag() as i64));
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::Compare {
-                        kind: mir::CompareKind::List,
-                        op: compare_op,
-                    },
-                    args: vec![left_op, right_op],
+                    func: mir::RuntimeFunc::Call(
+                        mir::CompareKind::List.runtime_func_def(compare_op),
+                    ),
+                    args: vec![left_op, right_op, op_tag],
                 });
             }
         } else if let Type::Tuple(_) = &left_type {
@@ -891,10 +885,9 @@ impl<'a> Lowering<'a> {
                     let eq_local = self.alloc_and_add_local(Type::Bool, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: eq_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Tuple,
-                            op: mir::ComparisonOp::Eq,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Tuple.runtime_func_def(mir::ComparisonOp::Eq),
+                        ),
                         args: vec![left_op, right_op],
                     });
                     self.emit_instruction(mir::InstructionKind::UnOp {
@@ -905,10 +898,9 @@ impl<'a> Lowering<'a> {
                 } else {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Compare {
-                            kind: mir::CompareKind::Tuple,
-                            op: mir::ComparisonOp::Eq,
-                        },
+                        func: mir::RuntimeFunc::Call(
+                            mir::CompareKind::Tuple.runtime_func_def(mir::ComparisonOp::Eq),
+                        ),
                         args: vec![left_op, right_op],
                     });
                 }
@@ -922,13 +914,13 @@ impl<'a> Lowering<'a> {
                     _ => unreachable!("Already handled Eq/NotEq above"),
                 };
 
+                let op_tag = mir::Operand::Constant(mir::Constant::Int(compare_op.to_tag() as i64));
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::Compare {
-                        kind: mir::CompareKind::Tuple,
-                        op: compare_op,
-                    },
-                    args: vec![left_op, right_op],
+                    func: mir::RuntimeFunc::Call(
+                        mir::CompareKind::Tuple.runtime_func_def(compare_op),
+                    ),
+                    args: vec![left_op, right_op, op_tag],
                 });
             }
         } else if let Type::Class { class_id, .. } = &left_type {
@@ -1005,10 +997,9 @@ impl<'a> Lowering<'a> {
                 let eq_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: eq_local,
-                    func: mir::RuntimeFunc::Compare {
-                        kind: mir::CompareKind::Obj,
-                        op: mir::ComparisonOp::Eq,
-                    },
+                    func: mir::RuntimeFunc::Call(
+                        mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Eq),
+                    ),
                     args: vec![boxed_left, boxed_right],
                 });
                 self.emit_instruction(mir::InstructionKind::UnOp {
@@ -1027,10 +1018,9 @@ impl<'a> Lowering<'a> {
                 };
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::Compare {
-                        kind: mir::CompareKind::Obj,
-                        op: compare_op,
-                    },
+                    func: mir::RuntimeFunc::Call(
+                        mir::CompareKind::Obj.runtime_func_def(compare_op),
+                    ),
                     args: vec![boxed_left, boxed_right],
                 });
             }
@@ -1422,7 +1412,9 @@ impl<'a> Lowering<'a> {
         let builder_local = self.alloc_and_add_local(Type::Str, mir_func); // Using Str type for GC root tracking
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: builder_local,
-            func: mir::RuntimeFunc::MakeStringBuilder,
+            func: mir::RuntimeFunc::Call(
+                &pyaot_core_defs::runtime_func_def::RT_MAKE_STRING_BUILDER,
+            ),
             args: vec![mir::Operand::Constant(mir::Constant::Int(
                 estimated_capacity,
             ))],
@@ -1436,7 +1428,9 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::StringBuilderAppend,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_STRING_BUILDER_APPEND,
+                ),
                 args: vec![mir::Operand::Local(builder_local), str_op],
             });
         }
@@ -1445,7 +1439,9 @@ impl<'a> Lowering<'a> {
         let result_local = self.alloc_and_add_local(Type::Str, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::StringBuilderToStr,
+            func: mir::RuntimeFunc::Call(
+                &pyaot_core_defs::runtime_func_def::RT_STRING_BUILDER_TO_STR,
+            ),
             args: vec![mir::Operand::Local(builder_local)],
         });
 
