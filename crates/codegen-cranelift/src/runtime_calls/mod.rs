@@ -4,28 +4,19 @@
 //! including print functions, string operations, list operations, tuple
 //! operations, dictionary operations, and type conversions.
 
-mod boxing;
-mod bytes;
 mod cells;
 mod class_attrs;
 mod compare;
 mod conversions;
-mod dict;
-mod file;
 mod generator;
 mod globals;
-mod hash;
 mod instance;
 mod iterator;
-mod list;
 mod math;
 mod minmax;
-mod object;
 mod print;
-mod set;
 mod stdlib;
 mod string;
-mod tuple;
 
 use cranelift_frontend::FunctionBuilder;
 use pyaot_diagnostics::Result;
@@ -106,112 +97,15 @@ pub fn compile_runtime_call(
         // StringBuilder for efficient string concatenation
         | mir::RuntimeFunc::MakeStringBuilder
         | mir::RuntimeFunc::StringBuilderAppend
-        | mir::RuntimeFunc::StringBuilderToStr => {
+        | mir::RuntimeFunc::StringBuilderToStr
+        | mir::RuntimeFunc::MakeBytes => {
             string::compile_string_call(builder, dest, func, args, ctx)?;
             Ok(())
         }
 
-        // List operations
-        mir::RuntimeFunc::MakeList
-        | mir::RuntimeFunc::ListPush
-        | mir::RuntimeFunc::ListSet
-        | mir::RuntimeFunc::ListGet
-        | mir::RuntimeFunc::ListGetTyped(_)
-        | mir::RuntimeFunc::ListLen
-        | mir::RuntimeFunc::ListSlice
-        | mir::RuntimeFunc::ListSliceStep
-        | mir::RuntimeFunc::ListAppend
-        | mir::RuntimeFunc::ListSetElemTag
-        | mir::RuntimeFunc::ListPop
-        | mir::RuntimeFunc::ListInsert
-        | mir::RuntimeFunc::ListRemove
-        | mir::RuntimeFunc::ListClear
-        | mir::RuntimeFunc::ListIndex
-        | mir::RuntimeFunc::ListCount
-        | mir::RuntimeFunc::ListCopy
-        | mir::RuntimeFunc::ListReverse
-        | mir::RuntimeFunc::ListExtend
-        | mir::RuntimeFunc::ListSort
-        | mir::RuntimeFunc::ListSortWithKey
-        | mir::RuntimeFunc::ListFromTuple
-        | mir::RuntimeFunc::ListFromStr
-        | mir::RuntimeFunc::ListFromRange
-        | mir::RuntimeFunc::ListFromIter
-        | mir::RuntimeFunc::ListFromSet
-        | mir::RuntimeFunc::ListFromDict
-        | mir::RuntimeFunc::ListTailToTuple
-        | mir::RuntimeFunc::ListTailToTupleFloat
-        | mir::RuntimeFunc::ListTailToTupleBool
-        | mir::RuntimeFunc::ListSliceAssign
-        | mir::RuntimeFunc::ListConcat => {
-            list::compile_list_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
+        // List, Tuple, Dict: migrated to RuntimeFunc::Call (handled by generic handler)
 
-        // Tuple operations
-        mir::RuntimeFunc::MakeTuple
-        | mir::RuntimeFunc::TupleSet
-        | mir::RuntimeFunc::TupleGet
-        | mir::RuntimeFunc::TupleLen
-        | mir::RuntimeFunc::TupleSlice
-        | mir::RuntimeFunc::TupleSliceStep
-        | mir::RuntimeFunc::TupleSliceToList
-        | mir::RuntimeFunc::TupleGetTyped(_)
-        | mir::RuntimeFunc::TupleFromList
-        | mir::RuntimeFunc::TupleFromStr
-        | mir::RuntimeFunc::TupleFromRange
-        | mir::RuntimeFunc::TupleFromIter
-        | mir::RuntimeFunc::TupleFromSet
-        | mir::RuntimeFunc::TupleFromDict
-        | mir::RuntimeFunc::TupleConcat
-        | mir::RuntimeFunc::TupleIndex
-        | mir::RuntimeFunc::TupleCount
-        | mir::RuntimeFunc::TupleSetHeapMask
-        | mir::RuntimeFunc::CallWithTupleArgs => {
-            tuple::compile_tuple_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
-
-        // Dict operations
-        mir::RuntimeFunc::MakeDict
-        | mir::RuntimeFunc::DictSet
-        | mir::RuntimeFunc::DictGet
-        | mir::RuntimeFunc::DictLen
-        | mir::RuntimeFunc::DictContains
-        | mir::RuntimeFunc::DictGetDefault
-        | mir::RuntimeFunc::DictPop
-        | mir::RuntimeFunc::DictClear
-        | mir::RuntimeFunc::DictCopy
-        | mir::RuntimeFunc::DictKeys
-        | mir::RuntimeFunc::DictValues
-        | mir::RuntimeFunc::DictItems
-        | mir::RuntimeFunc::DictUpdate
-        | mir::RuntimeFunc::DictFromPairs
-        | mir::RuntimeFunc::DictSetDefault
-        | mir::RuntimeFunc::DictPopItem
-        | mir::RuntimeFunc::DictFromKeys
-        | mir::RuntimeFunc::DictMerge
-        | mir::RuntimeFunc::MakeDefaultDict
-        | mir::RuntimeFunc::DefaultDictGet
-        | mir::RuntimeFunc::MakeCounterFromIter
-        | mir::RuntimeFunc::MakeCounterEmpty
-        | mir::RuntimeFunc::MakeDeque
-        | mir::RuntimeFunc::MakeDequeFromIter => {
-            dict::compile_dict_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
-
-        // Boxing/Unboxing operations
-        mir::RuntimeFunc::BoxInt
-        | mir::RuntimeFunc::BoxBool
-        | mir::RuntimeFunc::BoxFloat
-        | mir::RuntimeFunc::BoxNone
-        | mir::RuntimeFunc::UnboxFloat
-        | mir::RuntimeFunc::UnboxInt
-        | mir::RuntimeFunc::UnboxBool => {
-            boxing::compile_boxing_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
+        // Boxing/Unboxing: migrated to RuntimeFunc::Call (handled by generic handler)
 
         // Type conversion operations
         mir::RuntimeFunc::Convert { .. }
@@ -266,15 +160,7 @@ pub fn compile_runtime_call(
             Ok(())
         }
 
-        // Hash operations
-        mir::RuntimeFunc::HashInt
-        | mir::RuntimeFunc::HashStr
-        | mir::RuntimeFunc::HashBool
-        | mir::RuntimeFunc::HashTuple
-        | mir::RuntimeFunc::IdObj => {
-            hash::compile_hash_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
+        // Hash + Id: migrated to RuntimeFunc::Call (handled by generic handler)
 
         // Iterator operations
         mir::RuntimeFunc::MakeIterator { .. }
@@ -297,31 +183,7 @@ pub fn compile_runtime_call(
             Ok(())
         }
 
-        // Set operations
-        mir::RuntimeFunc::MakeSet
-        | mir::RuntimeFunc::SetAdd
-        | mir::RuntimeFunc::SetContains
-        | mir::RuntimeFunc::SetRemove
-        | mir::RuntimeFunc::SetDiscard
-        | mir::RuntimeFunc::SetLen
-        | mir::RuntimeFunc::SetClear
-        | mir::RuntimeFunc::SetCopy
-        | mir::RuntimeFunc::SetToList
-        | mir::RuntimeFunc::SetUnion
-        | mir::RuntimeFunc::SetIntersection
-        | mir::RuntimeFunc::SetDifference
-        | mir::RuntimeFunc::SetSymmetricDifference
-        | mir::RuntimeFunc::SetIssubset
-        | mir::RuntimeFunc::SetIssuperset
-        | mir::RuntimeFunc::SetIsdisjoint
-        | mir::RuntimeFunc::SetPop
-        | mir::RuntimeFunc::SetUpdate
-        | mir::RuntimeFunc::SetIntersectionUpdate
-        | mir::RuntimeFunc::SetDifferenceUpdate
-        | mir::RuntimeFunc::SetSymmetricDifferenceUpdate => {
-            set::compile_set_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
+        // Set ops: migrated to RuntimeFunc::Call (handled by generic handler)
 
         // Container min/max operations (unified)
         mir::RuntimeFunc::ContainerMinMax {
@@ -339,53 +201,9 @@ pub fn compile_runtime_call(
             Ok(())
         }
 
-        // Bytes operations
-        mir::RuntimeFunc::MakeBytes
-        | mir::RuntimeFunc::MakeBytesZero
-        | mir::RuntimeFunc::MakeBytesFromList
-        | mir::RuntimeFunc::MakeBytesFromStr
-        | mir::RuntimeFunc::BytesGet
-        | mir::RuntimeFunc::BytesLen
-        | mir::RuntimeFunc::BytesSlice
-        | mir::RuntimeFunc::BytesSliceStep
-        | mir::RuntimeFunc::BytesDecode
-        | mir::RuntimeFunc::BytesStartsWith
-        | mir::RuntimeFunc::BytesEndsWith
-        | mir::RuntimeFunc::BytesSearch(_)
-        | mir::RuntimeFunc::BytesCount
-        | mir::RuntimeFunc::BytesReplace
-        | mir::RuntimeFunc::BytesSplit
-        | mir::RuntimeFunc::BytesRsplit
-        | mir::RuntimeFunc::BytesJoin
-        | mir::RuntimeFunc::BytesStrip
-        | mir::RuntimeFunc::BytesLstrip
-        | mir::RuntimeFunc::BytesRstrip
-        | mir::RuntimeFunc::BytesUpper
-        | mir::RuntimeFunc::BytesLower
-        | mir::RuntimeFunc::BytesConcat
-        | mir::RuntimeFunc::BytesRepeat
-        | mir::RuntimeFunc::BytesFromHex
-        | mir::RuntimeFunc::BytesContains => {
-            bytes::compile_bytes_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
+        // Bytes: migrated to RuntimeFunc::Call (handled by generic handler)
 
-        // Object operations (Union type dispatch)
-        mir::RuntimeFunc::IsTruthy
-        | mir::RuntimeFunc::ObjContains
-        | mir::RuntimeFunc::ObjToStr
-        | mir::RuntimeFunc::ObjDefaultRepr
-        | mir::RuntimeFunc::ObjAdd
-        | mir::RuntimeFunc::ObjSub
-        | mir::RuntimeFunc::ObjMul
-        | mir::RuntimeFunc::ObjDiv
-        | mir::RuntimeFunc::ObjFloorDiv
-        | mir::RuntimeFunc::ObjMod
-        | mir::RuntimeFunc::ObjPow
-        | mir::RuntimeFunc::AnyGetItem => {
-            object::compile_object_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
+        // Object ops: migrated to RuntimeFunc::Call (handled by generic handler)
 
         // Global variable operations
         mir::RuntimeFunc::GlobalGet(_) | mir::RuntimeFunc::GlobalSet(_) => {
@@ -437,22 +255,7 @@ pub fn compile_runtime_call(
             Ok(())
         }
 
-        // File I/O operations
-        mir::RuntimeFunc::FileOpen
-        | mir::RuntimeFunc::FileRead
-        | mir::RuntimeFunc::FileReadN
-        | mir::RuntimeFunc::FileReadline
-        | mir::RuntimeFunc::FileReadlines
-        | mir::RuntimeFunc::FileWrite
-        | mir::RuntimeFunc::FileClose
-        | mir::RuntimeFunc::FileFlush
-        | mir::RuntimeFunc::FileEnter
-        | mir::RuntimeFunc::FileExit
-        | mir::RuntimeFunc::FileIsClosed
-        | mir::RuntimeFunc::FileName => {
-            file::compile_file_call(builder, dest, func, args, ctx)?;
-            Ok(())
-        }
+        // File I/O: migrated to RuntimeFunc::Call (handled by generic handler)
 
         // Exception-related operations
         mir::RuntimeFunc::ExcIsinstanceClass
@@ -460,6 +263,12 @@ pub fn compile_runtime_call(
         | mir::RuntimeFunc::ExcRegisterClassName
         | mir::RuntimeFunc::ExcInstanceStr => {
             compile_exception_call(builder, dest, func, args, ctx)?;
+            Ok(())
+        }
+
+        // Descriptor-based call (generic handler)
+        mir::RuntimeFunc::Call(def) => {
+            compile_runtime_func_def(builder, dest, def, args, ctx)?;
             Ok(())
         }
 
@@ -473,11 +282,121 @@ pub fn compile_runtime_call(
     }
 }
 
-use crate::utils::{create_raw_string_data, declare_runtime_function, load_operand};
+use crate::gc::update_gc_root_if_needed;
+use crate::utils::{
+    create_raw_string_data, declare_runtime_function, load_operand, load_operand_as,
+};
 use cranelift_codegen::ir::types as cltypes;
-use cranelift_codegen::ir::{AbiParam, InstBuilder};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags};
 use cranelift_codegen::isa::CallConv;
 use cranelift_module::Module;
+use pyaot_core_defs::runtime_func_def::{ParamType, ReturnType};
+use pyaot_core_defs::RuntimeFuncDef;
+
+/// Convert a descriptor ParamType to a Cranelift type.
+fn param_type_to_cltype(pt: ParamType) -> cltypes::Type {
+    match pt {
+        ParamType::I64 => cltypes::I64,
+        ParamType::F64 => cltypes::F64,
+        ParamType::I8 => cltypes::I8,
+        ParamType::I32 => cltypes::I32,
+    }
+}
+
+/// Convert a descriptor ReturnType to a Cranelift type.
+fn return_type_to_cltype(rt: ReturnType) -> cltypes::Type {
+    match rt {
+        ReturnType::I64 => cltypes::I64,
+        ReturnType::F64 => cltypes::F64,
+        ReturnType::I8 => cltypes::I8,
+        ReturnType::I32 => cltypes::I32,
+    }
+}
+
+/// Generic handler: compile any `RuntimeFunc::Call(&RuntimeFuncDef)`.
+///
+/// Builds the Cranelift signature from the descriptor, loads args with
+/// automatic type coercion, emits the call, stores the result, and
+/// optionally registers the result as a GC root.
+fn compile_runtime_func_def(
+    builder: &mut FunctionBuilder,
+    dest: LocalId,
+    def: &RuntimeFuncDef,
+    args: &[Operand],
+    ctx: &mut CodegenContext,
+) -> Result<()> {
+    // Build Cranelift signature from descriptor
+    let mut sig = ctx.module.make_signature();
+    sig.call_conv = CallConv::SystemV;
+
+    for &pt in def.params {
+        sig.params.push(AbiParam::new(param_type_to_cltype(pt)));
+    }
+    if let Some(rt) = def.returns {
+        sig.returns.push(AbiParam::new(return_type_to_cltype(rt)));
+    }
+
+    // Declare external function and get a reference for this function
+    let func_id = declare_runtime_function(ctx.module, def.symbol, &sig)?;
+    let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+
+    // Load arguments with type coercion to match expected parameter types
+    let arg_vals: Vec<_> = args
+        .iter()
+        .zip(def.params.iter())
+        .map(|(arg, &pt)| load_operand_as(builder, arg, ctx.var_map, param_type_to_cltype(pt)))
+        .collect();
+
+    let call_inst = builder.ins().call(func_ref, &arg_vals);
+
+    // Handle return value
+    let dest_var = *ctx
+        .var_map
+        .get(&dest)
+        .expect("internal error: local not in var_map - codegen bug");
+
+    if def.returns.is_some() {
+        let result = builder.inst_results(call_inst)[0];
+        let result_type = builder.func.dfg.value_type(result);
+
+        // Coerce the result to match the dest variable's declared type.
+        // Dest variables can be I64 (int/ptr), I8 (bool), or F64 (float).
+        let dest_val = builder.use_var(dest_var);
+        let dest_type = builder.func.dfg.value_type(dest_val);
+
+        let result_coerced = if result_type == dest_type {
+            result
+        } else {
+            match (result_type, dest_type) {
+                (cltypes::I8, cltypes::I64) | (cltypes::I32, cltypes::I64) => {
+                    builder.ins().uextend(cltypes::I64, result)
+                }
+                (cltypes::I64, cltypes::I8) => builder.ins().ireduce(cltypes::I8, result),
+                (cltypes::I64, cltypes::I32) => builder.ins().ireduce(cltypes::I32, result),
+                (cltypes::F64, cltypes::I64) => {
+                    builder.ins().bitcast(cltypes::I64, MemFlags::new(), result)
+                }
+                (cltypes::I64, cltypes::F64) => {
+                    builder.ins().bitcast(cltypes::F64, MemFlags::new(), result)
+                }
+                _ => result,
+            }
+        };
+
+        builder.def_var(dest_var, result_coerced);
+
+        if def.gc_roots_result {
+            update_gc_root_if_needed(builder, &dest, result_coerced, ctx.gc_frame_data);
+        }
+    } else {
+        // Void function: leave dest variable unchanged.
+        // MIR uses the same dest local for the call instruction even when
+        // the function has no return value (e.g., TupleSet writes in-place
+        // to a tuple that is already stored in the dest local).
+    }
+
+    Ok(())
+}
 
 /// Compile exception-related runtime calls
 fn compile_exception_call(

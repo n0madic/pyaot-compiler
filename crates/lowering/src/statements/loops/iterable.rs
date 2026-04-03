@@ -53,7 +53,7 @@ impl<'a> Lowering<'a> {
             let lines_local = self.alloc_and_add_local(Type::List(Box::new(Type::Str)), mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: lines_local,
-                func: mir::RuntimeFunc::FileReadlines,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READLINES),
                 args: vec![mir::Operand::Local(file_local)],
             });
 
@@ -64,7 +64,7 @@ impl<'a> Lowering<'a> {
             let len_local = self.alloc_and_add_local(Type::Int, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: len_local,
-                func: mir::RuntimeFunc::ListLen,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                 args: vec![mir::Operand::Local(iter_local)],
             });
 
@@ -113,7 +113,7 @@ impl<'a> Lowering<'a> {
             let target_local = self.get_or_create_local(target, Type::Str, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: target_local,
-                func: mir::RuntimeFunc::ListGet,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
                 args: vec![
                     mir::Operand::Local(iter_local),
                     mir::Operand::Local(idx_local),
@@ -189,7 +189,7 @@ impl<'a> Lowering<'a> {
             let key_elem_tag = Self::elem_tag_for_type(&elem_type);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: keys_local,
-                func: mir::RuntimeFunc::DictKeys,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
                 args: vec![
                     mir::Operand::Local(iter_local),
                     mir::Operand::Constant(mir::Constant::Int(key_elem_tag)),
@@ -198,7 +198,7 @@ impl<'a> Lowering<'a> {
             // Get length from the keys list
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: len_local,
-                func: mir::RuntimeFunc::ListLen,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                 args: vec![mir::Operand::Local(keys_local)],
             });
             (keys_local, Some(keys_local))
@@ -208,23 +208,29 @@ impl<'a> Lowering<'a> {
                 self.alloc_and_add_local(Type::List(Box::new(elem_type.clone())), mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: list_local,
-                func: mir::RuntimeFunc::SetToList,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_TO_LIST),
                 args: vec![mir::Operand::Local(iter_local)],
             });
             // Get length from the converted list
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: len_local,
-                func: mir::RuntimeFunc::ListLen,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                 args: vec![mir::Operand::Local(list_local)],
             });
             (list_local, Some(list_local))
         } else {
             // Get length directly from the iterable
             let len_func = match iterable_kind {
-                IterableKind::List => mir::RuntimeFunc::ListLen,
-                IterableKind::Tuple => mir::RuntimeFunc::TupleLen,
+                IterableKind::List => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN)
+                }
+                IterableKind::Tuple => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN)
+                }
                 IterableKind::Str => mir::RuntimeFunc::StrLenInt,
-                IterableKind::Bytes => mir::RuntimeFunc::BytesLen,
+                IterableKind::Bytes => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_LEN)
+                }
                 IterableKind::Dict
                 | IterableKind::Set
                 | IterableKind::Iterator
@@ -302,8 +308,10 @@ impl<'a> Lowering<'a> {
                 // Use specialized list get for Int (raw i64), otherwise generic
                 // Bool and Float are boxed in lists, so use ListGet
                 match &elem_type {
-                    Type::Int => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Int),
-                    _ => mir::RuntimeFunc::ListGet, // Bool, Float, etc. are boxed
+                    Type::Int => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_INT)
+                    }
+                    _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET), // Bool, Float, etc. are boxed
                 }
             }
             IterableKind::Dict | IterableKind::Set => {
@@ -311,15 +319,23 @@ impl<'a> Lowering<'a> {
                 // depends on the element type: ELEM_RAW_INT for Int, ELEM_HEAP_OBJ
                 // for everything else. Use specialized get functions accordingly.
                 match &elem_type {
-                    Type::Int => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Int),
-                    Type::Float => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Float),
-                    Type::Bool => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Bool),
-                    _ => mir::RuntimeFunc::ListGet,
+                    Type::Int => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_INT)
+                    }
+                    Type::Float => mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_LIST_GET_FLOAT,
+                    ),
+                    Type::Bool => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_BOOL)
+                    }
+                    _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
                 }
             }
             IterableKind::Tuple => Self::tuple_get_func(&elem_type),
             IterableKind::Str => mir::RuntimeFunc::StrGetChar,
-            IterableKind::Bytes => mir::RuntimeFunc::BytesGet,
+            IterableKind::Bytes => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_GET)
+            }
             IterableKind::Iterator | IterableKind::File => {
                 unreachable!("Iterator and File handled separately")
             }

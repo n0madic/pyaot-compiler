@@ -534,16 +534,24 @@ impl<'a> Lowering<'a> {
 
         // Get length check function
         let len_func = match subject_type {
-            Type::List(_) => mir::RuntimeFunc::ListLen,
-            Type::Tuple(_) => mir::RuntimeFunc::TupleLen,
-            _ => mir::RuntimeFunc::ListLen,
+            Type::List(_) => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN)
+            }
+            Type::Tuple(_) => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN)
+            }
+            _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
         };
 
         // Get element access function
         let get_func = match subject_type {
-            Type::List(_) => mir::RuntimeFunc::ListGet,
-            Type::Tuple(_) => mir::RuntimeFunc::TupleGet,
-            _ => mir::RuntimeFunc::ListGet,
+            Type::List(_) => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
+            }
+            Type::Tuple(_) => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
+            }
+            _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
         };
 
         // Check length
@@ -688,9 +696,15 @@ impl<'a> Lowering<'a> {
 
                     // Create slice for starred variable
                     let slice_func = match subject_type {
-                        Type::List(_) => mir::RuntimeFunc::ListSlice,
-                        Type::Tuple(_) => mir::RuntimeFunc::TupleSliceToList,
-                        _ => mir::RuntimeFunc::ListSlice,
+                        Type::List(_) => mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_LIST_SLICE,
+                        ),
+                        Type::Tuple(_) => mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_TUPLE_SLICE_TO_LIST,
+                        ),
+                        _ => mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_LIST_SLICE,
+                        ),
                     };
 
                     let star_elem_type = Type::List(Box::new(elem_type.clone()));
@@ -825,7 +839,7 @@ impl<'a> Lowering<'a> {
             let contains_local = self.alloc_and_add_local(Type::Bool, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: contains_local,
-                func: mir::RuntimeFunc::DictContains,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_CONTAINS),
                 args: vec![ctx.subject.clone(), key_operand.clone()],
             });
 
@@ -861,7 +875,7 @@ impl<'a> Lowering<'a> {
                 let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: boxed_local,
-                    func: mir::RuntimeFunc::DictGet,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_GET),
                     args: vec![ctx.subject.clone(), key_operand],
                 });
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -872,7 +886,7 @@ impl<'a> Lowering<'a> {
             } else {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: value_local,
-                    func: mir::RuntimeFunc::DictGet,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_GET),
                     args: vec![ctx.subject.clone(), key_operand],
                 });
             }
@@ -919,7 +933,7 @@ impl<'a> Lowering<'a> {
             let rest_local = self.alloc_and_add_local(ctx.subject_type.clone(), mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: rest_local,
-                func: mir::RuntimeFunc::DictCopy,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_COPY),
                 args: vec![ctx.subject.clone()],
             });
 
@@ -930,7 +944,7 @@ impl<'a> Lowering<'a> {
                 let dummy = self.alloc_and_add_local(Type::HeapAny, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy,
-                    func: mir::RuntimeFunc::DictPop,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
                     args: vec![mir::Operand::Local(rest_local), key_operand],
                 });
             }

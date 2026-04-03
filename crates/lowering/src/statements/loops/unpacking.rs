@@ -81,10 +81,16 @@ impl<'a> Lowering<'a> {
         let len_local = self.alloc_and_add_local(Type::Int, mir_func);
 
         let len_func = match kind {
-            IterableKind::List => mir::RuntimeFunc::ListLen,
-            IterableKind::Tuple => mir::RuntimeFunc::TupleLen,
+            IterableKind::List => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN)
+            }
+            IterableKind::Tuple => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN)
+            }
             IterableKind::Str => mir::RuntimeFunc::StrLenInt,
-            IterableKind::Bytes => mir::RuntimeFunc::BytesLen,
+            IterableKind::Bytes => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_LEN)
+            }
             // Dict/Set/Iterator/File are routed through the iterator protocol path
             IterableKind::Dict
             | IterableKind::Set
@@ -152,10 +158,16 @@ impl<'a> Lowering<'a> {
         self.push_block(body_bb);
 
         let get_func = match kind {
-            IterableKind::List => mir::RuntimeFunc::ListGet,
-            IterableKind::Tuple => mir::RuntimeFunc::TupleGet,
+            IterableKind::List => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
+            }
+            IterableKind::Tuple => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
+            }
             IterableKind::Str => mir::RuntimeFunc::StrGetChar,
-            IterableKind::Bytes => mir::RuntimeFunc::BytesGet,
+            IterableKind::Bytes => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_GET)
+            }
             IterableKind::Dict
             | IterableKind::Set
             | IterableKind::Iterator

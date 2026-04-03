@@ -55,7 +55,7 @@ impl<'a> Lowering<'a> {
         // Call rt_file_open(filename, mode, encoding)
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result,
-            func: mir::RuntimeFunc::FileOpen,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_OPEN),
             args: vec![filename_op, mode_op, encoding_op],
         });
 

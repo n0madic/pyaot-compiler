@@ -340,7 +340,7 @@ impl<'a> Lowering<'a> {
             let key_elem_tag = Self::elem_tag_for_type(&elem_type);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: keys_local,
-                func: mir::RuntimeFunc::DictKeys,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
                 args: vec![
                     mir::Operand::Local(iter_local),
                     mir::Operand::Constant(mir::Constant::Int(key_elem_tag)),
@@ -348,7 +348,7 @@ impl<'a> Lowering<'a> {
             });
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: len_local,
-                func: mir::RuntimeFunc::ListLen,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                 args: vec![mir::Operand::Local(keys_local)],
             });
             (keys_local, true)
@@ -357,21 +357,27 @@ impl<'a> Lowering<'a> {
                 self.alloc_and_add_local(Type::List(Box::new(elem_type.clone())), mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: list_local,
-                func: mir::RuntimeFunc::SetToList,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_TO_LIST),
                 args: vec![mir::Operand::Local(iter_local)],
             });
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: len_local,
-                func: mir::RuntimeFunc::ListLen,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                 args: vec![mir::Operand::Local(list_local)],
             });
             (list_local, true)
         } else {
             let len_func = match iterable_kind {
-                IterableKind::List => mir::RuntimeFunc::ListLen,
-                IterableKind::Tuple => mir::RuntimeFunc::TupleLen,
+                IterableKind::List => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN)
+                }
+                IterableKind::Tuple => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN)
+                }
                 IterableKind::Str => mir::RuntimeFunc::StrLenInt,
-                IterableKind::Bytes => mir::RuntimeFunc::BytesLen,
+                IterableKind::Bytes => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_LEN)
+                }
                 // Dict and Set are handled by the two if-branches above this else block.
                 // Iterator and File never reach this function: get_iterable_info() returns
                 // None for those kinds, so lower_for_enumerate_optimized routes them to
@@ -446,14 +452,24 @@ impl<'a> Lowering<'a> {
         // storage transparently (ListGetTyped).
         let get_func = match iterable_kind {
             IterableKind::List | IterableKind::Dict | IterableKind::Set => match &elem_type {
-                Type::Int => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Int),
-                Type::Float => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Float),
-                Type::Bool => mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Bool),
-                _ => mir::RuntimeFunc::ListGet,
+                Type::Int => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_INT)
+                }
+                Type::Float => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_FLOAT)
+                }
+                Type::Bool => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_BOOL)
+                }
+                _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
             },
-            IterableKind::Tuple => mir::RuntimeFunc::TupleGet,
+            IterableKind::Tuple => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
+            }
             IterableKind::Str => mir::RuntimeFunc::StrGetChar,
-            IterableKind::Bytes => mir::RuntimeFunc::BytesGet,
+            IterableKind::Bytes => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_GET)
+            }
             IterableKind::Iterator | IterableKind::File => unreachable!(),
         };
 
@@ -614,7 +630,7 @@ impl<'a> Lowering<'a> {
         let boxed_counter = self.alloc_and_add_local(Type::Any, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: boxed_counter,
-            func: mir::RuntimeFunc::TupleGet,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
             args: vec![
                 mir::Operand::Local(next_local),
                 mir::Operand::Constant(mir::Constant::Int(0)),
@@ -622,14 +638,14 @@ impl<'a> Lowering<'a> {
         });
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: counter_local,
-            func: mir::RuntimeFunc::UnboxInt,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_INT),
             args: vec![mir::Operand::Local(boxed_counter)],
         });
 
         // Unpack elem (index 1)
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: elem_local,
-            func: mir::RuntimeFunc::TupleGet,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
             args: vec![
                 mir::Operand::Local(next_local),
                 mir::Operand::Constant(mir::Constant::Int(1)),

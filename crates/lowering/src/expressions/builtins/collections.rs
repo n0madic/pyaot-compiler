@@ -36,21 +36,21 @@ impl<'a> Lowering<'a> {
             Type::List(_) => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::ListLen,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                     args: vec![arg_operand],
                 });
             }
             Type::Tuple(_) => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::TupleLen,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN),
                     args: vec![arg_operand],
                 });
             }
             Type::Dict(_, _) | Type::DefaultDict(_, _) => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::DictLen,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_LEN),
                     args: vec![arg_operand],
                 });
             }
@@ -67,21 +67,21 @@ impl<'a> Lowering<'a> {
                 // Counter is a dict, use DictLen
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::DictLen,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_LEN),
                     args: vec![arg_operand],
                 });
             }
             Type::Set(_) => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::SetLen,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_LEN),
                     args: vec![arg_operand],
                 });
             }
             Type::Bytes => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::BytesLen,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_LEN),
                     args: vec![arg_operand],
                 });
             }
@@ -141,7 +141,7 @@ impl<'a> Lowering<'a> {
             // set() - create empty set
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::MakeSet,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_SET),
                 args: vec![mir::Operand::Constant(mir::Constant::Int(8))],
             });
             return Ok(mir::Operand::Local(result_local));
@@ -164,7 +164,7 @@ impl<'a> Lowering<'a> {
         // Create the set with estimated capacity
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::MakeSet,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_SET),
             args: vec![mir::Operand::Constant(mir::Constant::Int(8))],
         });
 
@@ -258,7 +258,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: dummy_local,
-            func: mir::RuntimeFunc::SetAdd,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_ADD),
             args: vec![mir::Operand::Local(result_local), boxed_elem],
         });
 
@@ -290,7 +290,7 @@ impl<'a> Lowering<'a> {
             // list() - create empty list
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::MakeList,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
                 args: vec![
                     mir::Operand::Constant(mir::Constant::Int(0)),
                     mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
@@ -330,28 +330,36 @@ impl<'a> Lowering<'a> {
             Type::Tuple(_) => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::ListFromTuple,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_TUPLE,
+                    ),
                     args: vec![source_operand],
                 });
             }
             Type::Str => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::ListFromStr,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_STR,
+                    ),
                     args: vec![source_operand],
                 });
             }
             Type::Set(_) => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::ListFromSet,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_SET,
+                    ),
                     args: vec![source_operand],
                 });
             }
             Type::Dict(_, _) => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::ListFromDict,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_DICT,
+                    ),
                     args: vec![source_operand],
                 });
             }
@@ -359,7 +367,7 @@ impl<'a> Lowering<'a> {
                 // list(list) -> shallow copy
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::ListCopy,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_COPY),
                     args: vec![source_operand],
                 });
             }
@@ -369,7 +377,9 @@ impl<'a> Lowering<'a> {
                 // transparently handles unboxing from ELEM_HEAP_OBJ storage.
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::ListFromIter,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_ITER,
+                    ),
                     args: vec![
                         source_operand,
                         mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
@@ -380,7 +390,9 @@ impl<'a> Lowering<'a> {
                 // Fallback: try as iterator (assume heap objects)
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::ListFromIter,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_ITER,
+                    ),
                     args: vec![
                         source_operand,
                         mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
@@ -434,7 +446,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::ListFromRange,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_RANGE),
             args: vec![start, stop, step],
         });
 
@@ -455,7 +467,7 @@ impl<'a> Lowering<'a> {
             // tuple() - create empty tuple
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::MakeTuple,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
                 args: vec![
                     mir::Operand::Constant(mir::Constant::Int(0)),
                     mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
@@ -485,28 +497,36 @@ impl<'a> Lowering<'a> {
             Type::List(_) => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::TupleFromList,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_LIST,
+                    ),
                     args: vec![source_operand],
                 });
             }
             Type::Str => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::TupleFromStr,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_STR,
+                    ),
                     args: vec![source_operand],
                 });
             }
             Type::Set(_) => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::TupleFromSet,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_SET,
+                    ),
                     args: vec![source_operand],
                 });
             }
             Type::Dict(_, _) => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::TupleFromDict,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_DICT,
+                    ),
                     args: vec![source_operand],
                 });
             }
@@ -520,7 +540,9 @@ impl<'a> Lowering<'a> {
             Type::Iterator(_) => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::TupleFromIter,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_ITER,
+                    ),
                     args: vec![source_operand],
                 });
             }
@@ -528,7 +550,9 @@ impl<'a> Lowering<'a> {
                 // Fallback: try as iterator
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::TupleFromIter,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_ITER,
+                    ),
                     args: vec![source_operand],
                 });
             }
@@ -579,7 +603,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::TupleFromRange,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_RANGE),
             args: vec![start, stop, step],
         });
 
@@ -609,7 +633,7 @@ impl<'a> Lowering<'a> {
         // Start by creating an empty dict
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::MakeDict,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DICT),
             args: vec![mir::Operand::Constant(mir::Constant::Int(8))],
         });
 
@@ -627,7 +651,9 @@ impl<'a> Lowering<'a> {
                 Type::List(_) => {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::DictFromPairs,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_DICT_FROM_PAIRS,
+                        ),
                         args: vec![source_operand],
                     });
                 }
@@ -635,7 +661,9 @@ impl<'a> Lowering<'a> {
                     // dict(other_dict) -> copy
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::DictCopy,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_DICT_COPY,
+                        ),
                         args: vec![source_operand],
                     });
                 }
@@ -643,7 +671,9 @@ impl<'a> Lowering<'a> {
                     // Try treating as iterable of pairs
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::DictFromPairs,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_DICT_FROM_PAIRS,
+                        ),
                         args: vec![source_operand],
                     });
                 }
@@ -671,7 +701,7 @@ impl<'a> Lowering<'a> {
             // Set the key-value pair
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::DictSet,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
                 args: vec![
                     mir::Operand::Local(result_local),
                     mir::Operand::Local(key_local),
@@ -735,7 +765,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::MakeDefaultDict,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DEFAULT_DICT),
             args: vec![
                 mir::Operand::Constant(mir::Constant::Int(8)), // capacity
                 mir::Operand::Constant(mir::Constant::Int(factory_tag)),
@@ -759,7 +789,9 @@ impl<'a> Lowering<'a> {
             // Counter() — empty counter
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::MakeCounterEmpty,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_MAKE_COUNTER_EMPTY,
+                ),
                 args: vec![],
             });
         } else {
@@ -796,7 +828,9 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::MakeCounterFromIter,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_MAKE_COUNTER_FROM_ITER,
+                ),
                 args: vec![iter_operand],
             });
         }
@@ -834,7 +868,7 @@ impl<'a> Lowering<'a> {
             // deque() or deque(maxlen=N) — empty deque
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::MakeDeque,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DEQUE),
                 args: vec![maxlen],
             });
         } else {
@@ -869,7 +903,9 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::MakeDequeFromIter,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_MAKE_DEQUE_FROM_ITER,
+                ),
                 args: vec![iter_operand, maxlen],
             });
         }

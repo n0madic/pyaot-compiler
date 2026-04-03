@@ -133,9 +133,15 @@ impl<'a> Lowering<'a> {
 
                 // Emit unbox operation based on narrowed type
                 let unbox_func = match narrowed_type {
-                    Type::Int => mir::RuntimeFunc::UnboxInt,
-                    Type::Float => mir::RuntimeFunc::UnboxFloat,
-                    Type::Bool => mir::RuntimeFunc::UnboxBool,
+                    Type::Int => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_INT)
+                    }
+                    Type::Float => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT)
+                    }
+                    Type::Bool => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL)
+                    }
                     _ => unreachable!(), // Already checked in needs_unbox condition
                 };
 

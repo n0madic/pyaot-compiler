@@ -32,7 +32,9 @@ impl<'a> Lowering<'a> {
 
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::FileIsClosed,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_FILE_IS_CLOSED,
+                        ),
                         args: vec![obj_operand],
                     });
 
@@ -43,7 +45,9 @@ impl<'a> Lowering<'a> {
 
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::FileName,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_FILE_NAME,
+                        ),
                         args: vec![obj_operand],
                     });
 

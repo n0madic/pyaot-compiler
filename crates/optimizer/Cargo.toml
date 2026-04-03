@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+pyaot-core-defs = { path = "../core-defs" }
 pyaot-mir = { path = "../mir" }
 pyaot-utils = { path = "../utils" }
 pyaot-types = { path = "../types" }

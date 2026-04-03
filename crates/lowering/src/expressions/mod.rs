@@ -430,7 +430,7 @@ impl<'a> Lowering<'a> {
             let captures_tuple = self.alloc_and_add_local(Type::Any, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: captures_tuple,
-                func: mir::RuntimeFunc::MakeTuple,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
                 args: vec![
                     mir::Operand::Constant(mir::Constant::Int(captures.len() as i64)),
                     mir::Operand::Constant(mir::Constant::Int(capture_elem_tag)),
@@ -446,7 +446,7 @@ impl<'a> Lowering<'a> {
             for (i, capture_op) in capture_operands.into_iter().enumerate() {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::TupleSet,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                     args: vec![
                         mir::Operand::Local(captures_tuple),
                         mir::Operand::Constant(mir::Constant::Int(i as i64)),
@@ -460,7 +460,7 @@ impl<'a> Lowering<'a> {
             let result_local = self.alloc_and_add_local(Type::Any, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::MakeTuple,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
                 args: vec![
                     mir::Operand::Constant(mir::Constant::Int(2)),
                     mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
@@ -475,7 +475,7 @@ impl<'a> Lowering<'a> {
             // Set func_ptr at index 0
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::TupleSet,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                 args: vec![
                     mir::Operand::Local(result_local),
                     mir::Operand::Constant(mir::Constant::Int(0)),
@@ -486,7 +486,7 @@ impl<'a> Lowering<'a> {
             // Set captures_tuple at index 1
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::TupleSet,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                 args: vec![
                     mir::Operand::Local(result_local),
                     mir::Operand::Constant(mir::Constant::Int(1)),

@@ -65,7 +65,7 @@ impl<'a> Lowering<'a> {
         let iters_list_local = self.alloc_and_add_local(Type::List(Box::new(Type::Any)), mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: iters_list_local,
-            func: mir::RuntimeFunc::MakeList,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
             args: vec![
                 mir::Operand::Constant(mir::Constant::Int(num_iters)),
                 mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
@@ -130,7 +130,7 @@ impl<'a> Lowering<'a> {
             // Add iterator to list using push (increments list length)
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: iter_local, // unused dest
-                func: mir::RuntimeFunc::ListPush,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_PUSH),
                 args: vec![
                     mir::Operand::Local(iters_list_local),
                     mir::Operand::Local(iter_local),

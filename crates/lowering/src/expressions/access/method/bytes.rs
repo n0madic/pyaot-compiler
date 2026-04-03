@@ -1,5 +1,6 @@
 //! Bytes method lowering
 
+use pyaot_core_defs::runtime_func_def::*;
 use pyaot_diagnostics::Result;
 use pyaot_mir as mir;
 use pyaot_types::Type;
@@ -40,8 +41,27 @@ impl<'a> Lowering<'a> {
                 let result_local = self.alloc_and_add_local(Type::Str, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::BytesDecode,
+                    func: mir::RuntimeFunc::Call(&RT_BYTES_DECODE),
                     args: vec![obj_operand, encoding_arg],
+                });
+                return Ok(mir::Operand::Local(result_local));
+            }
+            "index" | "rindex" => {
+                // index/rindex use unified rt_bytes_search with op_tag
+                let op_tag: i64 = if method_name == "index" { 2 } else { 3 };
+                let result_local = self.alloc_and_add_local(Type::Int, mir_func);
+                let def = if method_name == "index" {
+                    &RT_BYTES_INDEX
+                } else {
+                    &RT_BYTES_RINDEX
+                };
+                let mut all_args = vec![obj_operand];
+                all_args.extend(arg_operands);
+                all_args.push(mir::Operand::Constant(mir::Constant::Int(op_tag)));
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::Call(def),
+                    args: all_args,
                 });
                 return Ok(mir::Operand::Local(result_local));
             }
@@ -50,31 +70,17 @@ impl<'a> Lowering<'a> {
 
         // Simple methods that just need (obj, args...) -> result
         let (result_ty, runtime_func): (Type, mir::RuntimeFunc) = match method_name {
-            "startswith" => (Type::Bool, mir::RuntimeFunc::BytesStartsWith),
-            "endswith" => (Type::Bool, mir::RuntimeFunc::BytesEndsWith),
-            "find" => (
-                Type::Int,
-                mir::RuntimeFunc::BytesSearch(mir::SearchOp::Find),
-            ),
-            "rfind" => (
-                Type::Int,
-                mir::RuntimeFunc::BytesSearch(mir::SearchOp::Rfind),
-            ),
-            "index" => (
-                Type::Int,
-                mir::RuntimeFunc::BytesSearch(mir::SearchOp::Index),
-            ),
-            "rindex" => (
-                Type::Int,
-                mir::RuntimeFunc::BytesSearch(mir::SearchOp::Rindex),
-            ),
-            "count" => (Type::Int, mir::RuntimeFunc::BytesCount),
-            "replace" => (Type::Bytes, mir::RuntimeFunc::BytesReplace),
-            "strip" => (Type::Bytes, mir::RuntimeFunc::BytesStrip),
-            "lstrip" => (Type::Bytes, mir::RuntimeFunc::BytesLstrip),
-            "rstrip" => (Type::Bytes, mir::RuntimeFunc::BytesRstrip),
-            "upper" => (Type::Bytes, mir::RuntimeFunc::BytesUpper),
-            "lower" => (Type::Bytes, mir::RuntimeFunc::BytesLower),
+            "startswith" => (Type::Bool, mir::RuntimeFunc::Call(&RT_BYTES_STARTS_WITH)),
+            "endswith" => (Type::Bool, mir::RuntimeFunc::Call(&RT_BYTES_ENDS_WITH)),
+            "find" => (Type::Int, mir::RuntimeFunc::Call(&RT_BYTES_FIND)),
+            "rfind" => (Type::Int, mir::RuntimeFunc::Call(&RT_BYTES_RFIND)),
+            "count" => (Type::Int, mir::RuntimeFunc::Call(&RT_BYTES_COUNT)),
+            "replace" => (Type::Bytes, mir::RuntimeFunc::Call(&RT_BYTES_REPLACE)),
+            "strip" => (Type::Bytes, mir::RuntimeFunc::Call(&RT_BYTES_STRIP)),
+            "lstrip" => (Type::Bytes, mir::RuntimeFunc::Call(&RT_BYTES_LSTRIP)),
+            "rstrip" => (Type::Bytes, mir::RuntimeFunc::Call(&RT_BYTES_RSTRIP)),
+            "upper" => (Type::Bytes, mir::RuntimeFunc::Call(&RT_BYTES_UPPER)),
+            "lower" => (Type::Bytes, mir::RuntimeFunc::Call(&RT_BYTES_LOWER)),
             _ => {
                 // Unknown method
                 return Ok(mir::Operand::Constant(mir::Constant::None));
@@ -105,8 +111,8 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         let runtime_func = match method_name {
-            "split" => mir::RuntimeFunc::BytesSplit,
-            "rsplit" => mir::RuntimeFunc::BytesRsplit,
+            "split" => mir::RuntimeFunc::Call(&RT_BYTES_SPLIT),
+            "rsplit" => mir::RuntimeFunc::Call(&RT_BYTES_RSPLIT),
             _ => unreachable!(),
         };
         self.lower_split_variant_impl(
@@ -128,7 +134,7 @@ impl<'a> Lowering<'a> {
         self.lower_join_impl(
             obj_operand,
             arg_operands,
-            mir::RuntimeFunc::BytesJoin,
+            mir::RuntimeFunc::Call(&RT_BYTES_JOIN),
             Type::Bytes,
             mir_func,
         )
@@ -148,7 +154,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::BytesFromHex,
+            func: mir::RuntimeFunc::Call(&RT_BYTES_FROM_HEX),
             args: vec![arg_operands[0].clone()],
         });
 

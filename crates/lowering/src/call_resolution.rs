@@ -174,7 +174,7 @@ impl<'a> Lowering<'a> {
         let len_local = self.alloc_and_add_local(Type::Int, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: len_local,
-            func: mir::RuntimeFunc::ListLen,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
             args: vec![list_operand.clone()],
         });
 
@@ -251,9 +251,13 @@ impl<'a> Lowering<'a> {
 
         // Build varargs tuple from remaining elements
         let tail_to_tuple_func = match elem_type {
-            Type::Float => mir::RuntimeFunc::ListTailToTupleFloat,
-            Type::Bool => mir::RuntimeFunc::ListTailToTupleBool,
-            _ => mir::RuntimeFunc::ListTailToTuple,
+            Type::Float => mir::RuntimeFunc::Call(
+                &pyaot_core_defs::runtime_func_def::RT_LIST_TAIL_TO_TUPLE_FLOAT,
+            ),
+            Type::Bool => mir::RuntimeFunc::Call(
+                &pyaot_core_defs::runtime_func_def::RT_LIST_TAIL_TO_TUPLE_BOOL,
+            ),
+            _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_TAIL_TO_TUPLE),
         };
 
         let varargs_tuple_local =
@@ -332,15 +336,21 @@ impl<'a> Lowering<'a> {
     ) -> LocalId {
         let (get_func, needs_unbox) = match elem_type {
             Type::Int => (
-                mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Int),
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_INT),
                 false,
             ),
             Type::Float => (
-                mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Float),
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_FLOAT),
                 false,
             ),
-            Type::Bool => (mir::RuntimeFunc::ListGet, true),
-            _ => (mir::RuntimeFunc::ListGet, false),
+            Type::Bool => (
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+                true,
+            ),
+            _ => (
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+                false,
+            ),
         };
 
         if needs_unbox {
@@ -357,7 +367,7 @@ impl<'a> Lowering<'a> {
             let elem_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: elem_local,
-                func: mir::RuntimeFunc::UnboxBool,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL),
                 args: vec![mir::Operand::Local(boxed_local)],
             });
             elem_local
@@ -770,7 +780,9 @@ impl<'a> Lowering<'a> {
                     );
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: dummy_local,
-                        func: mir::RuntimeFunc::DictSet,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_DICT_SET,
+                        ),
                         args: vec![
                             mir::Operand::Local(remaining_dict),
                             mir::Operand::Local(key_local),
@@ -830,7 +842,7 @@ impl<'a> Lowering<'a> {
             );
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: remaining_dict,
-                func: mir::RuntimeFunc::DictCopy,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_COPY),
                 args: vec![mir::Operand::Local(dict_local)],
             });
 
@@ -839,7 +851,7 @@ impl<'a> Lowering<'a> {
                 let dummy = self.alloc_and_add_local(Type::HeapAny, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy,
-                    func: mir::RuntimeFunc::DictPop,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
                     args: vec![
                         mir::Operand::Local(remaining_dict),
                         mir::Operand::Local(*key_local),
@@ -905,7 +917,7 @@ impl<'a> Lowering<'a> {
         let contains_local = self.alloc_and_add_local(Type::Bool, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: contains_local,
-            func: mir::RuntimeFunc::DictContains,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_CONTAINS),
             args: vec![
                 mir::Operand::Local(dict_local),
                 mir::Operand::Local(key_local),
@@ -941,7 +953,7 @@ impl<'a> Lowering<'a> {
         let dict_value = self.alloc_and_add_local(dict_value_type, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: dict_value,
-            func: mir::RuntimeFunc::DictGet,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_GET),
             args: vec![
                 mir::Operand::Local(dict_local),
                 mir::Operand::Local(key_local),

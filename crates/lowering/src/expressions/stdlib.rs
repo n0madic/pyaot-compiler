@@ -182,7 +182,7 @@ impl<'a> Lowering<'a> {
         let capacity = args.len() as i64;
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: list_local,
-            func: mir::RuntimeFunc::MakeList,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
             args: vec![
                 mir::Operand::Constant(mir::Constant::Int(capacity)),
                 mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
@@ -203,7 +203,7 @@ impl<'a> Lowering<'a> {
             let void_local = self.alloc_and_add_local(Type::None, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: void_local,
-                func: mir::RuntimeFunc::ListPush,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_PUSH),
                 args: vec![mir::Operand::Local(list_local), pushed_operand],
             });
         }

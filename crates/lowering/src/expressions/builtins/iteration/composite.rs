@@ -23,7 +23,7 @@ impl<'a> Lowering<'a> {
             // Create empty tuple iterator
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::MakeList,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
                 args: vec![mir::Operand::Constant(mir::Constant::Int(0))],
             });
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -86,7 +86,7 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: iter_list_local,
-                func: mir::RuntimeFunc::MakeList,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
                 args: vec![mir::Operand::Constant(mir::Constant::Int(count))],
             });
 
@@ -95,7 +95,7 @@ impl<'a> Lowering<'a> {
                 let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::ListSet,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SET),
                     args: vec![
                         mir::Operand::Local(iter_list_local),
                         mir::Operand::Constant(mir::Constant::Int(i as i64)),
@@ -452,7 +452,7 @@ impl<'a> Lowering<'a> {
         let tuple_local = self.alloc_and_add_local(Type::Tuple(vec![Type::Any; count]), mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: tuple_local,
-            func: mir::RuntimeFunc::MakeTuple,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
             args: vec![
                 mir::Operand::Constant(mir::Constant::Int(count as i64)),
                 mir::Operand::Constant(mir::Constant::Int(capture_elem_tag)),
@@ -470,7 +470,7 @@ impl<'a> Lowering<'a> {
         for (i, capture_operand) in capture_operands.into_iter().enumerate() {
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: tuple_local,
-                func: mir::RuntimeFunc::TupleSet,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                 args: vec![
                     mir::Operand::Local(tuple_local),
                     mir::Operand::Constant(mir::Constant::Int(i as i64)),

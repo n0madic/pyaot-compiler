@@ -333,7 +333,9 @@ impl<'a> Lowering<'a> {
                 block.instructions.push(mir::Instruction {
                     kind: mir::InstructionKind::RuntimeCall {
                         dest: list_local,
-                        func: mir::RuntimeFunc::MakeList,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_MAKE_LIST,
+                        ),
                         args: vec![
                             mir::Operand::Constant(mir::Constant::Int(elements.len() as i64)),
                             mir::Operand::Constant(mir::Constant::Int(1)), // ELEM_RAW_INT
@@ -354,7 +356,9 @@ impl<'a> Lowering<'a> {
                     block.instructions.push(mir::Instruction {
                         kind: mir::InstructionKind::RuntimeCall {
                             dest: dummy,
-                            func: mir::RuntimeFunc::ListPush,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_LIST_PUSH,
+                            ),
                             args: vec![mir::Operand::Local(list_local), elem_op],
                         },
                         span: None,

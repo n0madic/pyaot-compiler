@@ -76,7 +76,9 @@ impl<'a> Lowering<'a> {
                         });
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
-                            func: mir::RuntimeFunc::ListGet,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_LIST_GET,
+                            ),
                             args: vec![obj_operand, index_operand],
                         });
                         // Unbox to bool
@@ -88,7 +90,9 @@ impl<'a> Lowering<'a> {
                         });
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: result_local,
-                            func: mir::RuntimeFunc::UnboxBool,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL,
+                            ),
                             args: vec![mir::Operand::Local(boxed_local)],
                         });
                     }
@@ -103,7 +107,9 @@ impl<'a> Lowering<'a> {
                         });
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
-                            func: mir::RuntimeFunc::ListGet,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_LIST_GET,
+                            ),
                             args: vec![obj_operand, index_operand],
                         });
                         // Unbox to float
@@ -115,7 +121,9 @@ impl<'a> Lowering<'a> {
                         });
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: result_local,
-                            func: mir::RuntimeFunc::UnboxFloat,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
+                            ),
                             args: vec![mir::Operand::Local(boxed_local)],
                         });
                     }
@@ -130,7 +138,9 @@ impl<'a> Lowering<'a> {
                         });
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: result_local,
-                            func: mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Int),
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_LIST_GET_INT,
+                            ),
                             args: vec![obj_operand, index_operand],
                         });
                     }
@@ -150,7 +160,9 @@ impl<'a> Lowering<'a> {
                         });
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: result_local,
-                            func: mir::RuntimeFunc::ListGet,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_LIST_GET,
+                            ),
                             args: vec![obj_operand, index_operand],
                         });
                     }
@@ -203,7 +215,7 @@ impl<'a> Lowering<'a> {
                     Self::tuple_get_func(&elem_ty)
                 } else {
                     // ELEM_RAW_INT storage - all elements are raw i64
-                    mir::RuntimeFunc::TupleGet
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
                 };
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -233,7 +245,9 @@ impl<'a> Lowering<'a> {
                     let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: boxed_local,
-                        func: mir::RuntimeFunc::DictGet,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_DICT_GET,
+                        ),
                         args: vec![obj_operand, boxed_key],
                     });
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -245,7 +259,9 @@ impl<'a> Lowering<'a> {
                     // Heap types can be returned directly
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::DictGet,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_DICT_GET,
+                        ),
                         args: vec![obj_operand, boxed_key],
                     });
                 }
@@ -268,7 +284,9 @@ impl<'a> Lowering<'a> {
                     let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: boxed_local,
-                        func: mir::RuntimeFunc::DefaultDictGet,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_DEFAULT_DICT_GET,
+                        ),
                         args: vec![obj_operand, boxed_key],
                     });
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -279,7 +297,9 @@ impl<'a> Lowering<'a> {
                 } else {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::DefaultDictGet,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_DEFAULT_DICT_GET,
+                        ),
                         args: vec![obj_operand, boxed_key],
                     });
                 }
@@ -294,7 +314,7 @@ impl<'a> Lowering<'a> {
                 });
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::BytesGet,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_GET),
                     args: vec![obj_operand, index_operand],
                 });
             }
@@ -342,7 +362,9 @@ impl<'a> Lowering<'a> {
                 });
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::AnyGetItem,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_ANY_GETITEM,
+                    ),
                     args: vec![obj_operand, index_operand],
                 });
             }

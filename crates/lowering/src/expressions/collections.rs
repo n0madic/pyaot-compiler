@@ -49,7 +49,7 @@ impl<'a> Lowering<'a> {
         let capacity = elements.len() as i64;
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::MakeList,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
             args: vec![
                 mir::Operand::Constant(mir::Constant::Int(capacity)),
                 mir::Operand::Constant(mir::Constant::Int(elem_tag)),
@@ -72,7 +72,7 @@ impl<'a> Lowering<'a> {
                 let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: boxed_local,
-                    func: mir::RuntimeFunc::BoxFloat,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
                     args: vec![elem_operand],
                 });
                 mir::Operand::Local(boxed_local)
@@ -81,7 +81,7 @@ impl<'a> Lowering<'a> {
                 let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: boxed_local,
-                    func: mir::RuntimeFunc::BoxBool,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
                     args: vec![elem_operand],
                 });
                 mir::Operand::Local(boxed_local)
@@ -95,7 +95,7 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::ListPush,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_PUSH),
                 args: vec![mir::Operand::Local(result_local), push_operand],
             });
         }
@@ -133,7 +133,7 @@ impl<'a> Lowering<'a> {
         let size = elements.len() as i64;
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::MakeTuple,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
             args: vec![
                 mir::Operand::Constant(mir::Constant::Int(size)),
                 mir::Operand::Constant(mir::Constant::Int(elem_tag)),
@@ -157,7 +157,9 @@ impl<'a> Lowering<'a> {
                         let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
-                            func: mir::RuntimeFunc::BoxInt,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_BOX_INT,
+                            ),
                             args: vec![elem_operand],
                         });
                         mir::Operand::Local(boxed_local)
@@ -166,7 +168,9 @@ impl<'a> Lowering<'a> {
                         let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
-                            func: mir::RuntimeFunc::BoxBool,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_BOX_BOOL,
+                            ),
                             args: vec![elem_operand],
                         });
                         mir::Operand::Local(boxed_local)
@@ -175,7 +179,9 @@ impl<'a> Lowering<'a> {
                         let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
-                            func: mir::RuntimeFunc::BoxFloat,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT,
+                            ),
                             args: vec![elem_operand],
                         });
                         mir::Operand::Local(boxed_local)
@@ -188,7 +194,7 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::TupleSet,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                 args: vec![
                     mir::Operand::Local(result_local),
                     mir::Operand::Constant(mir::Constant::Int(i as i64)),
@@ -227,7 +233,7 @@ impl<'a> Lowering<'a> {
         let capacity = pairs.len().max(8) as i64;
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::MakeDict,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DICT),
             args: vec![mir::Operand::Constant(mir::Constant::Int(capacity))],
         });
 
@@ -253,7 +259,7 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::DictSet,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
                 args: vec![mir::Operand::Local(result_local), boxed_key, boxed_value],
             });
         }
@@ -288,7 +294,7 @@ impl<'a> Lowering<'a> {
         let capacity = elements.len().max(8) as i64;
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::MakeSet,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_SET),
             args: vec![mir::Operand::Constant(mir::Constant::Int(capacity))],
         });
 
@@ -306,7 +312,7 @@ impl<'a> Lowering<'a> {
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::SetAdd,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_ADD),
                 args: vec![mir::Operand::Local(result_local), boxed_elem],
             });
         }

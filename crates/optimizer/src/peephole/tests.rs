@@ -368,12 +368,12 @@ fn test_box_unbox_elimination() {
     let instructions = vec![
         InstructionKind::RuntimeCall {
             dest: LocalId::from(1u32),
-            func: RuntimeFunc::BoxInt,
+            func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_INT),
             args: vec![Operand::Local(LocalId::from(0u32))],
         },
         InstructionKind::RuntimeCall {
             dest: LocalId::from(2u32),
-            func: RuntimeFunc::UnboxInt,
+            func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_INT),
             args: vec![Operand::Local(LocalId::from(1u32))],
         },
     ];

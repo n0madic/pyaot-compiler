@@ -173,28 +173,26 @@ impl<'a> Lowering<'a> {
 
         let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
+        use pyaot_core_defs::runtime_func_def::*;
         match arg_type {
             Type::Int => {
-                // hash(int) -> call rt_hash_int
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::HashInt,
+                    func: mir::RuntimeFunc::Call(&RT_HASH_INT),
                     args: vec![arg_operand],
                 });
             }
             Type::Str => {
-                // hash(str) -> call rt_hash_str
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::HashStr,
+                    func: mir::RuntimeFunc::Call(&RT_HASH_STR),
                     args: vec![arg_operand],
                 });
             }
             Type::Bool => {
-                // hash(bool) -> call rt_hash_bool
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::HashBool,
+                    func: mir::RuntimeFunc::Call(&RT_HASH_BOOL),
                     args: vec![arg_operand],
                 });
             }
@@ -206,10 +204,9 @@ impl<'a> Lowering<'a> {
                 });
             }
             Type::Tuple(_) => {
-                // Tuples are hashable - call rt_hash_tuple
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::HashTuple,
+                    func: mir::RuntimeFunc::Call(&RT_HASH_TUPLE),
                     args: vec![arg_operand],
                 });
             }
@@ -345,7 +342,7 @@ impl<'a> Lowering<'a> {
             Type::Str | Type::List(_) | Type::Dict(_, _) | Type::Tuple(_) | Type::Class { .. } => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::IdObj,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ID_OBJ),
                     args: vec![arg_operand],
                 });
             }
@@ -353,7 +350,7 @@ impl<'a> Lowering<'a> {
                 // For any other type, try to use as pointer
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::IdObj,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ID_OBJ),
                     args: vec![arg_operand],
                 });
             }
@@ -393,7 +390,9 @@ impl<'a> Lowering<'a> {
                 else {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::ObjDefaultRepr,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_OBJ_DEFAULT_REPR,
+                        ),
                         args: vec![arg_operand],
                     });
                     return Ok(mir::Operand::Local(result_local));

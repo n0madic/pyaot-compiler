@@ -21,14 +21,14 @@ impl<'a> Lowering<'a> {
                 obj_operand,
                 arg_operands,
                 arg_types,
-                mir::RuntimeFunc::TupleIndex,
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_INDEX),
                 mir_func,
             ),
             "count" => self.lower_tuple_search(
                 obj_operand,
                 arg_operands,
                 arg_types,
-                mir::RuntimeFunc::TupleCount,
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_COUNT),
                 mir_func,
             ),
             _ => {

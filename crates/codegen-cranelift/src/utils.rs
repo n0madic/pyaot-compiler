@@ -111,6 +111,10 @@ pub fn load_operand_as(
         (cltypes::I8, cltypes::I64) => builder.ins().uextend(cltypes::I64, val),
         // i64 to i8 - reduce
         (cltypes::I64, cltypes::I8) => builder.ins().ireduce(cltypes::I8, val),
+        // i64 to i32 - reduce (for var_id, generator index/state)
+        (cltypes::I64, cltypes::I32) => builder.ins().ireduce(cltypes::I32, val),
+        // i32 to i64 - unsigned extend
+        (cltypes::I32, cltypes::I64) => builder.ins().uextend(cltypes::I64, val),
         // f64 to i64 - bitcast (for storing floats in generic list/dict slots)
         (cltypes::F64, cltypes::I64) => builder.ins().bitcast(cltypes::I64, MemFlags::new(), val),
         // i64 to f64 - bitcast (for loading floats from generic list/dict slots)

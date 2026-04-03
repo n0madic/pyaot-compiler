@@ -78,6 +78,9 @@ pub fn compile_string_call(
             builder.def_var(dest_var, result_val);
             update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
         }
+        mir::RuntimeFunc::MakeBytes => {
+            compile_make_bytes(builder, dest, args, ctx)?;
+        }
         mir::RuntimeFunc::StrData => {
             compile_unary_runtime_call(
                 builder,
@@ -687,5 +690,39 @@ fn compile_str_search(
         .expect("internal error: dest local not in var_map - codegen bug");
     builder.def_var(dest_var, result_val);
     update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
+    Ok(())
+}
+
+/// Compile MakeBytes: embed bytes constant in binary and call rt_make_bytes(ptr, len)
+fn compile_make_bytes(
+    builder: &mut FunctionBuilder,
+    dest: LocalId,
+    args: &[Operand],
+    ctx: &mut CodegenContext,
+) -> Result<()> {
+    if let Operand::Constant(mir::Constant::Bytes(data)) = &args[0] {
+        let mut sig = ctx.module.make_signature();
+        sig.call_conv = CallConv::SystemV;
+        sig.params.push(AbiParam::new(cltypes::I64)); // data pointer
+        sig.params.push(AbiParam::new(cltypes::I64)); // length
+        sig.returns.push(AbiParam::new(cltypes::I64)); // result pointer
+
+        let func_id = declare_runtime_function(ctx.module, "rt_make_bytes", &sig)?;
+        let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+
+        let data_id = crate::utils::create_raw_bytes_data(ctx.module, data);
+        let gv = ctx.module.declare_data_in_func(data_id, builder.func);
+        let data_ptr = builder.ins().global_value(cltypes::I64, gv);
+        let len_val = builder.ins().iconst(cltypes::I64, data.len() as i64);
+
+        let call_inst = builder.ins().call(func_ref, &[data_ptr, len_val]);
+        let result_val = get_call_result(builder, call_inst);
+        let dest_var = *ctx
+            .var_map
+            .get(&dest)
+            .expect("internal error: local not in var_map - codegen bug");
+        builder.def_var(dest_var, result_val);
+        update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
+    }
     Ok(())
 }

@@ -66,7 +66,9 @@ impl<'a> Lowering<'a> {
                     self.emit_dict_call_and_unbox(
                         result_local,
                         unbox_func,
-                        mir::RuntimeFunc::DictGetDefault,
+                        mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_DICT_GET_DEFAULT,
+                        ),
                         vec![obj_operand, boxed_key, boxed_default],
                         mir_func,
                     );
@@ -81,7 +83,9 @@ impl<'a> Lowering<'a> {
                     self.emit_dict_call_and_unbox(
                         result_local,
                         unbox_func,
-                        mir::RuntimeFunc::DictGetDefault,
+                        mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_DICT_GET_DEFAULT,
+                        ),
                         vec![
                             obj_operand,
                             boxed_key,
@@ -102,7 +106,7 @@ impl<'a> Lowering<'a> {
                 self.emit_dict_call_and_unbox(
                     result_local,
                     unbox_func,
-                    mir::RuntimeFunc::DictPop,
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
                     vec![obj_operand, boxed_key],
                     mir_func,
                 );
@@ -115,7 +119,7 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::DictClear,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_CLEAR),
                     args: vec![obj_operand],
                 });
 
@@ -128,7 +132,7 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::DictCopy,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_COPY),
                     args: vec![obj_operand],
                 });
 
@@ -141,7 +145,7 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::DictKeys,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
                     args: vec![
                         obj_operand,
                         mir::Operand::Constant(mir::Constant::Int(key_elem_tag)),
@@ -157,7 +161,9 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::DictValues,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_DICT_VALUES,
+                    ),
                     args: vec![
                         obj_operand,
                         mir::Operand::Constant(mir::Constant::Int(value_elem_tag)),
@@ -174,7 +180,7 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::DictItems,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_ITEMS),
                     args: vec![obj_operand],
                 });
 
@@ -187,7 +193,9 @@ impl<'a> Lowering<'a> {
                 let other_arg = crate::first_arg_or_none(arg_operands);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::DictUpdate,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_DICT_UPDATE,
+                    ),
                     args: vec![obj_operand, other_arg],
                 });
 
@@ -212,7 +220,7 @@ impl<'a> Lowering<'a> {
                 self.emit_dict_call_and_unbox(
                     result_local,
                     unbox_func,
-                    mir::RuntimeFunc::DictSetDefault,
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET_DEFAULT),
                     vec![obj_operand, boxed_key, boxed_default],
                     mir_func,
                 );
@@ -260,7 +268,9 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::DictFromKeys,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_DICT_FROM_KEYS,
+                    ),
                     args: vec![keys_arg, boxed_value],
                 });
 

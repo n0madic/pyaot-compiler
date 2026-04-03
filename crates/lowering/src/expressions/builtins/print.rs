@@ -125,14 +125,18 @@ impl<'a> Lowering<'a> {
                     } else {
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: str_local,
-                            func: mir::RuntimeFunc::ObjDefaultRepr,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_OBJ_DEFAULT_REPR,
+                            ),
                             args: vec![arg_operand],
                         });
                     }
                 } else {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: str_local,
-                        func: mir::RuntimeFunc::ObjDefaultRepr,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_OBJ_DEFAULT_REPR,
+                        ),
                         args: vec![arg_operand],
                     });
                 }

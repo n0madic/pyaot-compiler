@@ -19,34 +19,36 @@ impl<'a> Lowering<'a> {
                 let elem = elem.as_ref();
                 match elem {
                     Type::Bool => (
-                        mir::RuntimeFunc::ListLen,
-                        mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Bool),
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
+                        mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_LIST_GET_BOOL,
+                        ),
                         Type::Bool,
                         mir::Constant::Bool(false),
                     ),
                     Type::Int => (
-                        mir::RuntimeFunc::ListLen,
-                        mir::RuntimeFunc::ListGetTyped(mir::GetElementKind::Int),
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_INT),
                         Type::Int,
                         mir::Constant::Int(0),
                     ),
                     _ => (
-                        mir::RuntimeFunc::ListLen,
-                        mir::RuntimeFunc::ListGet,
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
                         Type::Int,
                         mir::Constant::Int(0),
                     ),
                 }
             }
             Type::Tuple(_) => (
-                mir::RuntimeFunc::TupleLen,
-                mir::RuntimeFunc::TupleGet,
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN),
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
                 Type::Int,
                 mir::Constant::Int(0),
             ),
             _ => (
-                mir::RuntimeFunc::ListLen,
-                mir::RuntimeFunc::ListGet,
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
                 Type::Int,
                 mir::Constant::Int(0),
             ),

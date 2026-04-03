@@ -139,7 +139,9 @@ impl<'a> Lowering<'a> {
                     // Bytes concatenation
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::BytesConcat,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_BYTES_CONCAT,
+                        ),
                         args: vec![left_op, right_op],
                     });
                     return Ok(mir::Operand::Local(result_local));
@@ -148,7 +150,9 @@ impl<'a> Lowering<'a> {
                     // Bytes repetition: b"abc" * 3
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::BytesRepeat,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_BYTES_REPEAT,
+                        ),
                         args: vec![left_op, right_op],
                     });
                     return Ok(mir::Operand::Local(result_local));
@@ -163,7 +167,9 @@ impl<'a> Lowering<'a> {
                 let list_result = self.alloc_and_add_local(Type::List(elem_ty.clone()), mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: list_result,
-                    func: mir::RuntimeFunc::ListConcat,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_LIST_CONCAT,
+                    ),
                     args: vec![left_op, right_op],
                 });
                 return Ok(mir::Operand::Local(list_result));
@@ -177,7 +183,7 @@ impl<'a> Lowering<'a> {
                     .alloc_and_add_local(Type::Dict(key_ty.clone(), value_ty.clone()), mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dict_result,
-                    func: mir::RuntimeFunc::DictMerge,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_MERGE),
                     args: vec![left_op, right_op],
                 });
                 return Ok(mir::Operand::Local(dict_result));
@@ -187,10 +193,18 @@ impl<'a> Lowering<'a> {
         // Check for set operations (|, &, -, ^)
         if let Type::Set(elem_ty) = &left_ty {
             let set_func = match op {
-                hir::BinOp::BitOr => Some(mir::RuntimeFunc::SetUnion),
-                hir::BinOp::BitAnd => Some(mir::RuntimeFunc::SetIntersection),
-                hir::BinOp::Sub => Some(mir::RuntimeFunc::SetDifference),
-                hir::BinOp::BitXor => Some(mir::RuntimeFunc::SetSymmetricDifference),
+                hir::BinOp::BitOr => Some(mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_SET_UNION,
+                )),
+                hir::BinOp::BitAnd => Some(mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_SET_INTERSECTION,
+                )),
+                hir::BinOp::Sub => Some(mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_SET_DIFFERENCE,
+                )),
+                hir::BinOp::BitXor => Some(mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_SET_SYMMETRIC_DIFFERENCE,
+                )),
                 _ => None,
             };
             if let Some(runtime_func) = set_func {
@@ -280,13 +294,27 @@ impl<'a> Lowering<'a> {
         // Union arithmetic: operands are already boxed pointers — use runtime dispatch
         if left_is_union || right_is_union {
             let obj_func = match op {
-                hir::BinOp::Add => Some(mir::RuntimeFunc::ObjAdd),
-                hir::BinOp::Sub => Some(mir::RuntimeFunc::ObjSub),
-                hir::BinOp::Mul => Some(mir::RuntimeFunc::ObjMul),
-                hir::BinOp::Div => Some(mir::RuntimeFunc::ObjDiv),
-                hir::BinOp::FloorDiv => Some(mir::RuntimeFunc::ObjFloorDiv),
-                hir::BinOp::Mod => Some(mir::RuntimeFunc::ObjMod),
-                hir::BinOp::Pow => Some(mir::RuntimeFunc::ObjPow),
+                hir::BinOp::Add => Some(mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_OBJ_ADD,
+                )),
+                hir::BinOp::Sub => Some(mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_OBJ_SUB,
+                )),
+                hir::BinOp::Mul => Some(mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_OBJ_MUL,
+                )),
+                hir::BinOp::Div => Some(mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_OBJ_DIV,
+                )),
+                hir::BinOp::FloorDiv => Some(mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_OBJ_FLOORDIV,
+                )),
+                hir::BinOp::Mod => Some(mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_OBJ_MOD,
+                )),
+                hir::BinOp::Pow => Some(mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_OBJ_POW,
+                )),
                 _ => None, // Bitwise ops not supported on Union (yet)
             };
 
@@ -527,7 +555,9 @@ impl<'a> Lowering<'a> {
                     // Note: boxed_right is the container, boxed_left is the element
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::ObjContains,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_OBJ_CONTAINS,
+                        ),
                         args: vec![boxed_right, boxed_left], // (container, element)
                     });
                 }
@@ -536,7 +566,9 @@ impl<'a> Lowering<'a> {
                     let contains_local = self.alloc_and_add_local(Type::Bool, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: contains_local,
-                        func: mir::RuntimeFunc::ObjContains,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_OBJ_CONTAINS,
+                        ),
                         args: vec![boxed_right, boxed_left], // (container, element)
                     });
                     self.emit_instruction(mir::InstructionKind::UnOp {
@@ -688,7 +720,9 @@ impl<'a> Lowering<'a> {
                     let boxed_key = self.box_primitive_if_needed(left_op, &left_type, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::DictContains,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_DICT_CONTAINS,
+                        ),
                         args: vec![right_op, boxed_key], // (dict, key)
                     });
                 }
@@ -698,7 +732,9 @@ impl<'a> Lowering<'a> {
                     let boxed_elem = self.box_primitive_if_needed(left_op, &left_type, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::SetContains,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_SET_CONTAINS,
+                        ),
                         args: vec![right_op, boxed_elem], // (set, elem)
                     });
                 }
@@ -707,7 +743,9 @@ impl<'a> Lowering<'a> {
                     let idx_local = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: idx_local,
-                        func: mir::RuntimeFunc::ListIndex,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_LIST_INDEX,
+                        ),
                         args: vec![right_op, left_op], // (list, value)
                     });
                     // result = idx >= 0
@@ -723,7 +761,9 @@ impl<'a> Lowering<'a> {
                     let boxed_elem = self.box_primitive_if_needed(left_op, &left_type, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::ObjContains,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_OBJ_CONTAINS,
+                        ),
                         args: vec![right_op, boxed_elem], // (tuple, elem)
                     });
                 }

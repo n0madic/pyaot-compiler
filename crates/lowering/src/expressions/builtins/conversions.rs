@@ -37,7 +37,7 @@ impl<'a> Lowering<'a> {
         if arg_type.is_union() {
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::ObjToStr,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_OBJ_TO_STR),
                 args: vec![arg_operand],
             });
         } else {
@@ -128,7 +128,9 @@ impl<'a> Lowering<'a> {
                         else {
                             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                                 dest: result_local,
-                                func: mir::RuntimeFunc::ObjDefaultRepr,
+                                func: mir::RuntimeFunc::Call(
+                                    &pyaot_core_defs::runtime_func_def::RT_OBJ_DEFAULT_REPR,
+                                ),
                                 args: vec![arg_operand],
                             });
                         }
@@ -136,7 +138,9 @@ impl<'a> Lowering<'a> {
                         // Class not found - use default repr
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: result_local,
-                            func: mir::RuntimeFunc::ObjDefaultRepr,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_OBJ_DEFAULT_REPR,
+                            ),
                             args: vec![arg_operand],
                         });
                     }
@@ -146,7 +150,9 @@ impl<'a> Lowering<'a> {
                     // use runtime dispatch which reads the type tag from the object header
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::ObjToStr,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_OBJ_TO_STR,
+                        ),
                         args: vec![arg_operand],
                     });
                 }
@@ -391,7 +397,7 @@ impl<'a> Lowering<'a> {
             }
             Type::List(_) => {
                 self.emit_collection_bool_via_len(
-                    mir::RuntimeFunc::ListLen,
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                     arg_operand,
                     result_local,
                     mir_func,
@@ -399,7 +405,7 @@ impl<'a> Lowering<'a> {
             }
             Type::Tuple(_) => {
                 self.emit_collection_bool_via_len(
-                    mir::RuntimeFunc::TupleLen,
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN),
                     arg_operand,
                     result_local,
                     mir_func,
@@ -407,7 +413,7 @@ impl<'a> Lowering<'a> {
             }
             Type::Dict(_, _) => {
                 self.emit_collection_bool_via_len(
-                    mir::RuntimeFunc::DictLen,
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_LEN),
                     arg_operand,
                     result_local,
                     mir_func,
@@ -478,7 +484,9 @@ impl<'a> Lowering<'a> {
             // bytes() with no args returns empty bytes
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
-                func: mir::RuntimeFunc::MakeBytesZero,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_MAKE_BYTES_ZERO,
+                ),
                 args: vec![mir::Operand::Constant(mir::Constant::Int(0))],
             });
             return Ok(mir::Operand::Local(result_local));
@@ -493,7 +501,9 @@ impl<'a> Lowering<'a> {
                 // bytes(n) -> create bytes of n zeros
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::MakeBytesZero,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_MAKE_BYTES_ZERO,
+                    ),
                     args: vec![arg_operand],
                 });
             }
@@ -501,7 +511,9 @@ impl<'a> Lowering<'a> {
                 // bytes([65, 66, 67]) -> create bytes from list of integers
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::MakeBytesFromList,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_MAKE_BYTES_FROM_LIST,
+                    ),
                     args: vec![arg_operand],
                 });
             }
@@ -510,7 +522,9 @@ impl<'a> Lowering<'a> {
                 // For simplicity, we assume UTF-8 encoding
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::MakeBytesFromStr,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_MAKE_BYTES_FROM_STR,
+                    ),
                     args: vec![arg_operand],
                 });
             }
@@ -525,7 +539,9 @@ impl<'a> Lowering<'a> {
                 // Fallback: return empty bytes
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::MakeBytesZero,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_MAKE_BYTES_ZERO,
+                    ),
                     args: vec![mir::Operand::Constant(mir::Constant::Int(0))],
                 });
             }

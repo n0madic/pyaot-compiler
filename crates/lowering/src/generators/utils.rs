@@ -110,7 +110,9 @@ impl<'a> Lowering<'a> {
                                     block.instructions.push(mir::Instruction {
                                         kind: mir::InstructionKind::RuntimeCall {
                                             dest: boxed_local,
-                                            func: mir::RuntimeFunc::BoxFloat,
+                                            func: mir::RuntimeFunc::Call(
+                                                &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT,
+                                            ),
                                             args: vec![mir::Operand::Local(raw_local)],
                                         },
                                         span: None,

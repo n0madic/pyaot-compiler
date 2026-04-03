@@ -179,7 +179,7 @@ impl<'a> Lowering<'a> {
             Type::Bytes => {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 self.emit_collection_bool_via_len(
-                    mir::RuntimeFunc::BytesLen,
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_LEN),
                     operand,
                     result_local,
                     mir_func,
@@ -189,10 +189,18 @@ impl<'a> Lowering<'a> {
             Type::List(_) | Type::Dict(_, _) | Type::Tuple(_) | Type::Set(_) => {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 let runtime_func = match operand_type {
-                    Type::List(_) => mir::RuntimeFunc::ListLen,
-                    Type::Tuple(_) => mir::RuntimeFunc::TupleLen,
-                    Type::Dict(_, _) => mir::RuntimeFunc::DictLen,
-                    Type::Set(_) => mir::RuntimeFunc::SetLen,
+                    Type::List(_) => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN)
+                    }
+                    Type::Tuple(_) => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN)
+                    }
+                    Type::Dict(_, _) => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_LEN)
+                    }
+                    Type::Set(_) => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_LEN)
+                    }
                     _ => unreachable!(),
                 };
                 self.emit_collection_bool_via_len(runtime_func, operand, result_local, mir_func);
@@ -203,7 +211,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::IsTruthy,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_IS_TRUTHY),
                     args: vec![operand],
                 });
                 mir::Operand::Local(result_local)
@@ -338,7 +346,7 @@ impl<'a> Lowering<'a> {
             Type::Bytes => {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 self.emit_collection_bool_via_len_in_block(
-                    mir::RuntimeFunc::BytesLen,
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_LEN),
                     operand,
                     result_local,
                     mir_func,
@@ -349,10 +357,18 @@ impl<'a> Lowering<'a> {
             Type::List(_) | Type::Dict(_, _) | Type::Tuple(_) | Type::Set(_) => {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 let runtime_func = match operand_type {
-                    Type::List(_) => mir::RuntimeFunc::ListLen,
-                    Type::Tuple(_) => mir::RuntimeFunc::TupleLen,
-                    Type::Dict(_, _) => mir::RuntimeFunc::DictLen,
-                    Type::Set(_) => mir::RuntimeFunc::SetLen,
+                    Type::List(_) => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN)
+                    }
+                    Type::Tuple(_) => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN)
+                    }
+                    Type::Dict(_, _) => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_LEN)
+                    }
+                    Type::Set(_) => {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_LEN)
+                    }
                     _ => unreachable!(),
                 };
                 self.emit_collection_bool_via_len_in_block(
@@ -369,7 +385,9 @@ impl<'a> Lowering<'a> {
                 block.instructions.push(mir::Instruction {
                     kind: mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::IsTruthy,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_IS_TRUTHY,
+                        ),
                         args: vec![operand],
                     },
                     span: None,
@@ -646,10 +664,16 @@ impl<'a> Lowering<'a> {
     /// Primitive types (Int, Float, Bool) use specialized getters that handle unboxing.
     pub(crate) fn tuple_get_func(elem_type: &Type) -> mir::RuntimeFunc {
         match elem_type {
-            Type::Int => mir::RuntimeFunc::TupleGetTyped(mir::GetElementKind::Int),
-            Type::Float => mir::RuntimeFunc::TupleGetTyped(mir::GetElementKind::Float),
-            Type::Bool => mir::RuntimeFunc::TupleGetTyped(mir::GetElementKind::Bool),
-            _ => mir::RuntimeFunc::TupleGet,
+            Type::Int => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET_INT)
+            }
+            Type::Float => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET_FLOAT)
+            }
+            Type::Bool => {
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET_BOOL)
+            }
+            _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
         }
     }
 

@@ -24,14 +24,18 @@ impl<'a> Lowering<'a> {
                     // .read() - read all
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::FileRead,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_FILE_READ,
+                        ),
                         args: vec![obj_operand],
                     });
                 } else {
                     // .read(n) - read n bytes
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::FileReadN,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_FILE_READ_N,
+                        ),
                         args: vec![obj_operand, arg_operands[0].clone()],
                     });
                 }
@@ -44,7 +48,9 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::FileReadline,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_FILE_READLINE,
+                    ),
                     args: vec![obj_operand],
                 });
 
@@ -57,7 +63,9 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::FileReadlines,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_FILE_READLINES,
+                    ),
                     args: vec![obj_operand],
                 });
 
@@ -71,7 +79,7 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::FileWrite,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_WRITE),
                     args: vec![obj_operand, data_arg],
                 });
 
@@ -83,7 +91,7 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::FileClose,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_CLOSE),
                     args: vec![obj_operand],
                 });
 
@@ -95,7 +103,7 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::FileFlush,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_FLUSH),
                     args: vec![obj_operand],
                 });
 
@@ -107,7 +115,7 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::FileEnter,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_ENTER),
                     args: vec![obj_operand],
                 });
 
@@ -119,7 +127,7 @@ impl<'a> Lowering<'a> {
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
-                    func: mir::RuntimeFunc::FileExit,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_EXIT),
                     args: vec![obj_operand],
                 });
 

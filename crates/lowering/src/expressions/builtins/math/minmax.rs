@@ -266,7 +266,9 @@ impl<'a> Lowering<'a> {
                         let unboxed_local = self.alloc_and_add_local(Type::Int, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: unboxed_local,
-                            func: mir::RuntimeFunc::UnboxInt,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_UNBOX_INT,
+                            ),
                             args: vec![mir::Operand::Local(heap_result_local)],
                         });
                         return Ok(mir::Operand::Local(unboxed_local));
@@ -274,7 +276,9 @@ impl<'a> Lowering<'a> {
                         let unboxed_local = self.alloc_and_add_local(Type::Float, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: unboxed_local,
-                            func: mir::RuntimeFunc::UnboxFloat,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
+                            ),
                             args: vec![mir::Operand::Local(heap_result_local)],
                         });
                         return Ok(mir::Operand::Local(unboxed_local));
@@ -344,7 +348,9 @@ impl<'a> Lowering<'a> {
                     // always uses ELEM_HEAP_OBJ storage). Unbox to get the raw f64 value.
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
-                        func: mir::RuntimeFunc::UnboxFloat,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
+                        ),
                         args: vec![mir::Operand::Local(first_local)],
                     });
                 } else {
@@ -397,7 +403,9 @@ impl<'a> Lowering<'a> {
                     let float_local = self.alloc_and_add_local(Type::Float, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: float_local,
-                        func: mir::RuntimeFunc::UnboxFloat,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
+                        ),
                         args: vec![mir::Operand::Local(next_local)],
                     });
                     mir::Operand::Local(float_local)

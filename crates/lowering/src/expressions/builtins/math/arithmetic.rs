@@ -330,7 +330,7 @@ impl<'a> Lowering<'a> {
         let len_local = self.alloc_and_add_local(Type::Int, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: len_local,
-            func: mir::RuntimeFunc::ListLen,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
             args: vec![iterable_operand.clone()],
         });
 
@@ -385,7 +385,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: item_local,
-            func: mir::RuntimeFunc::ListGet,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
             args: vec![iterable_operand.clone(), mir::Operand::Local(counter_local)],
         });
 
@@ -394,7 +394,7 @@ impl<'a> Lowering<'a> {
             let unboxed_local = self.alloc_and_add_local(Type::Float, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: unboxed_local,
-                func: mir::RuntimeFunc::UnboxFloat,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT),
                 args: vec![mir::Operand::Local(item_local)],
             });
             mir::Operand::Local(unboxed_local)
@@ -502,7 +502,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::MakeTuple,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
             args: vec![
                 mir::Operand::Constant(mir::Constant::Int(2)),
                 mir::Operand::Constant(mir::Constant::Int(elem_tag)),
@@ -514,7 +514,7 @@ impl<'a> Lowering<'a> {
             let boxed = self.alloc_and_add_local(Type::HeapAny, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: boxed,
-                func: mir::RuntimeFunc::BoxFloat,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
                 args: vec![mir::Operand::Local(quot_local)],
             });
             mir::Operand::Local(boxed)
@@ -526,7 +526,7 @@ impl<'a> Lowering<'a> {
             let boxed = self.alloc_and_add_local(Type::HeapAny, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: boxed,
-                func: mir::RuntimeFunc::BoxFloat,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
                 args: vec![mir::Operand::Local(rem_local)],
             });
             mir::Operand::Local(boxed)
@@ -537,7 +537,7 @@ impl<'a> Lowering<'a> {
         // Set tuple elements
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::TupleSet,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
             args: vec![
                 mir::Operand::Local(result_local),
                 mir::Operand::Constant(mir::Constant::Int(0)),
@@ -547,7 +547,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::TupleSet,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
             args: vec![
                 mir::Operand::Local(result_local),
                 mir::Operand::Constant(mir::Constant::Int(1)),

@@ -158,11 +158,13 @@ fn match_pair_pattern(
 
 /// Check if a box/unbox RuntimeFunc pair cancel out.
 fn is_matching_box_unbox(box_func: &RuntimeFunc, unbox_func: &RuntimeFunc) -> bool {
+    use pyaot_core_defs::runtime_func_def::*;
     matches!(
         (box_func, unbox_func),
-        (RuntimeFunc::BoxInt, RuntimeFunc::UnboxInt)
-            | (RuntimeFunc::BoxFloat, RuntimeFunc::UnboxFloat)
-            | (RuntimeFunc::BoxBool, RuntimeFunc::UnboxBool)
+        (RuntimeFunc::Call(b), RuntimeFunc::Call(u))
+            if (std::ptr::eq(*b, &RT_BOX_INT) && std::ptr::eq(*u, &RT_UNBOX_INT))
+            || (std::ptr::eq(*b, &RT_BOX_FLOAT) && std::ptr::eq(*u, &RT_UNBOX_FLOAT))
+            || (std::ptr::eq(*b, &RT_BOX_BOOL) && std::ptr::eq(*u, &RT_UNBOX_BOOL))
     )
 }
 

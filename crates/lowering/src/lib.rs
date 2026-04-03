@@ -39,7 +39,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
         let boxed_local = self.alloc_gc_local(result_ty, mir_func);
-        let args = if matches!(runtime_func, mir::RuntimeFunc::BoxNone) {
+        let args = if matches!(runtime_func, mir::RuntimeFunc::Call(def) if def.params.is_empty()) {
             vec![]
         } else {
             vec![operand]
@@ -67,21 +67,30 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
         match ty {
-            Type::Int => {
-                self.emit_box_primitive(operand, Type::HeapAny, mir::RuntimeFunc::BoxInt, mir_func)
-            }
-            Type::Bool => {
-                self.emit_box_primitive(operand, Type::HeapAny, mir::RuntimeFunc::BoxBool, mir_func)
-            }
+            Type::Int => self.emit_box_primitive(
+                operand,
+                Type::HeapAny,
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_INT),
+                mir_func,
+            ),
+            Type::Bool => self.emit_box_primitive(
+                operand,
+                Type::HeapAny,
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
+                mir_func,
+            ),
             Type::Float => self.emit_box_primitive(
                 operand,
                 Type::HeapAny,
-                mir::RuntimeFunc::BoxFloat,
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
                 mir_func,
             ),
-            Type::None => {
-                self.emit_box_primitive(operand, Type::HeapAny, mir::RuntimeFunc::BoxNone, mir_func)
-            }
+            Type::None => self.emit_box_primitive(
+                operand,
+                Type::HeapAny,
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_NONE),
+                mir_func,
+            ),
             // All heap types are already object pointers — no boxing needed
             _ => operand,
         }
@@ -91,9 +100,15 @@ impl<'a> Lowering<'a> {
     /// Returns `None` for heap types that don't need unboxing.
     fn unbox_func_for_type(ty: &Type) -> Option<mir::RuntimeFunc> {
         match ty {
-            Type::Int => Some(mir::RuntimeFunc::UnboxInt),
-            Type::Float => Some(mir::RuntimeFunc::UnboxFloat),
-            Type::Bool => Some(mir::RuntimeFunc::UnboxBool),
+            Type::Int => Some(mir::RuntimeFunc::Call(
+                &pyaot_core_defs::runtime_func_def::RT_UNBOX_INT,
+            )),
+            Type::Float => Some(mir::RuntimeFunc::Call(
+                &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
+            )),
+            Type::Bool => Some(mir::RuntimeFunc::Call(
+                &pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL,
+            )),
             _ => None,
         }
     }
@@ -359,7 +374,7 @@ impl<'a> Lowering<'a> {
         // Emit: MakeTuple(size, elem_tag)
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: tuple_local,
-            func: mir::RuntimeFunc::MakeTuple,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
             args: vec![
                 mir::Operand::Constant(mir::Constant::Int(operands.len() as i64)),
                 mir::Operand::Constant(mir::Constant::Int(elem_tag)),
@@ -383,7 +398,7 @@ impl<'a> Lowering<'a> {
                 self.alloc_and_add_local(Type::Tuple(vec![elem_type.clone()]), mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::TupleSet,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                 args: vec![
                     mir::Operand::Local(tuple_local),
                     mir::Operand::Constant(mir::Constant::Int(i as i64)),
@@ -412,7 +427,9 @@ impl<'a> Lowering<'a> {
         let dummy = self.alloc_and_add_local(Type::None, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: dummy,
-            func: mir::RuntimeFunc::TupleSetHeapMask,
+            func: mir::RuntimeFunc::Call(
+                &pyaot_core_defs::runtime_func_def::RT_TUPLE_SET_HEAP_MASK,
+            ),
             args: vec![
                 mir::Operand::Local(tuple_local),
                 mir::Operand::Constant(mir::Constant::Int(mask as i64)),
@@ -437,7 +454,7 @@ impl<'a> Lowering<'a> {
 
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: result_local,
-            func: mir::RuntimeFunc::TupleConcat,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_CONCAT),
             args: vec![
                 mir::Operand::Local(prefix_tuple),
                 mir::Operand::Local(list_tail_tuple),
@@ -461,7 +478,7 @@ impl<'a> Lowering<'a> {
         // Emit: MakeDict(capacity)
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: dict_local,
-            func: mir::RuntimeFunc::MakeDict,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DICT),
             args: vec![mir::Operand::Constant(mir::Constant::Int(0))],
         });
 
@@ -481,7 +498,7 @@ impl<'a> Lowering<'a> {
             );
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: dummy_local,
-                func: mir::RuntimeFunc::DictSet,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
                 args: vec![
                     mir::Operand::Local(dict_local),
                     mir::Operand::Local(key_local),

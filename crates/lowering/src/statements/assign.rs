@@ -43,7 +43,9 @@ impl<'a> Lowering<'a> {
                         let dummy = self.alloc_and_add_local(Type::None, mir_func);
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: dummy,
-                            func: mir::RuntimeFunc::DictUpdate,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_DICT_UPDATE,
+                            ),
                             args: vec![dict_operand, right_operand],
                         });
                         return Ok(());
@@ -148,7 +150,9 @@ impl<'a> Lowering<'a> {
                     let captures_tuple = self.alloc_and_add_local(Type::Any, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: captures_tuple,
-                        func: mir::RuntimeFunc::MakeTuple,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE,
+                        ),
                         args: vec![
                             mir::Operand::Constant(mir::Constant::Int(captures.len() as i64)),
                             mir::Operand::Constant(mir::Constant::Int(capture_elem_tag)),
@@ -164,7 +168,9 @@ impl<'a> Lowering<'a> {
                     for (i, capture_op) in capture_operands.iter().enumerate() {
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: void_local,
-                            func: mir::RuntimeFunc::TupleSet,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_TUPLE_SET,
+                            ),
                             args: vec![
                                 mir::Operand::Local(captures_tuple),
                                 mir::Operand::Constant(mir::Constant::Int(i as i64)),
@@ -177,7 +183,9 @@ impl<'a> Lowering<'a> {
                     // heap_field_mask: bit 0 = 0 (func_ptr is raw), bit 1 = 1 (captures_tuple is heap)
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: dest_local,
-                        func: mir::RuntimeFunc::MakeTuple,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE,
+                        ),
                         args: vec![
                             mir::Operand::Constant(mir::Constant::Int(2)),
                             mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
@@ -193,7 +201,9 @@ impl<'a> Lowering<'a> {
                     // Store func_ptr at index 0
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: void_local,
-                        func: mir::RuntimeFunc::TupleSet,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_TUPLE_SET,
+                        ),
                         args: vec![
                             mir::Operand::Local(dest_local),
                             mir::Operand::Constant(mir::Constant::Int(0)),
@@ -204,7 +214,9 @@ impl<'a> Lowering<'a> {
                     // Store captures_tuple at index 1
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: void_local,
-                        func: mir::RuntimeFunc::TupleSet,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_TUPLE_SET,
+                        ),
                         args: vec![
                             mir::Operand::Local(dest_local),
                             mir::Operand::Constant(mir::Constant::Int(1)),
@@ -404,8 +416,14 @@ impl<'a> Lowering<'a> {
         // Determine the slice function based on source type
         // For starred unpacking, we always produce a list, so tuples use TupleSliceToList
         let (is_tuple, slice_func) = match &value_type {
-            Type::List(_) => (false, mir::RuntimeFunc::ListSlice),
-            _ => (true, mir::RuntimeFunc::TupleSliceToList),
+            Type::List(_) => (
+                false,
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SLICE),
+            ),
+            _ => (
+                true,
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SLICE_TO_LIST),
+            ),
         };
 
         // Helper to determine element type
@@ -453,7 +471,7 @@ impl<'a> Lowering<'a> {
             let get_func = if is_tuple {
                 Self::tuple_get_func(&elem_type)
             } else {
-                mir::RuntimeFunc::ListGet
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
             };
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -521,7 +539,7 @@ impl<'a> Lowering<'a> {
             let get_func = if is_tuple {
                 Self::tuple_get_func(&elem_type)
             } else {
-                mir::RuntimeFunc::ListGet
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
             };
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -635,7 +653,7 @@ impl<'a> Lowering<'a> {
                     self.box_primitive_if_needed(value_operand, &value_type, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::DictSet,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
                     args: vec![obj_operand, boxed_key, boxed_value],
                 });
             }
@@ -652,7 +670,7 @@ impl<'a> Lowering<'a> {
                 let boxed_value = self.box_primitive_if_needed(value_operand, box_type, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::DictSet,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
                     args: vec![obj_operand, boxed_key, boxed_value],
                 });
             }
@@ -663,7 +681,9 @@ impl<'a> Lowering<'a> {
                     let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: boxed_local,
-                        func: mir::RuntimeFunc::BoxFloat,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT,
+                        ),
                         args: vec![value_operand],
                     });
                     mir::Operand::Local(boxed_local)
@@ -671,7 +691,9 @@ impl<'a> Lowering<'a> {
                     let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: boxed_local,
-                        func: mir::RuntimeFunc::BoxBool,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_BOX_BOOL,
+                        ),
                         args: vec![value_operand],
                     });
                     mir::Operand::Local(boxed_local)
@@ -680,7 +702,7 @@ impl<'a> Lowering<'a> {
                 };
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::ListSet,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SET),
                     args: vec![obj_operand, index_operand, store_operand],
                 });
             }
@@ -733,7 +755,7 @@ impl<'a> Lowering<'a> {
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::DictPop,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
                     args: vec![obj_operand, boxed_key],
                 });
             }
@@ -741,7 +763,7 @@ impl<'a> Lowering<'a> {
                 // del list[index] → rt_list_pop(list, index) and discard result
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
-                    func: mir::RuntimeFunc::ListPop,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_POP),
                     args: vec![obj_operand, index_operand],
                 });
             }
@@ -934,7 +956,7 @@ impl<'a> Lowering<'a> {
                     let get_func = if is_tuple {
                         Self::tuple_get_func(&elem_type)
                     } else {
-                        mir::RuntimeFunc::ListGet
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
                     };
 
                     self.insert_var_type(*var_id, elem_type.clone());
@@ -959,9 +981,9 @@ impl<'a> Lowering<'a> {
                     // Extract nested tuple first into a temp
                     let nested_temp = self.alloc_and_add_local(elem_type.clone(), mir_func);
                     let get_func = if is_tuple {
-                        mir::RuntimeFunc::TupleGet
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
                     } else {
-                        mir::RuntimeFunc::ListGet
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
                     };
 
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
