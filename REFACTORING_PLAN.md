@@ -31,7 +31,7 @@ Complete catalog of discovered architectural issues, tagged for cross-referencin
 | ID | Problem | Severity | Location | LOC Impact |
 |----|---------|----------|----------|------------|
 | P1 | RuntimeFunc enum explosion (~316 variants → ~15 special + Call(&def)) | ✅ DONE | `mir/src/runtime_func.rs` | ~800→~120 |
-| P2 | MIR depends on stdlib-defs (layering violation) | HIGH | `mir/src/runtime_func.rs:7` | ~30 |
+| P2 | MIR depends on stdlib-defs (layering violation) | ✅ DONE | `mir/src/runtime_func.rs` | 0 (removed) |
 | P3 | Codegen dispatch monster (603 cases → ~60, 19 sub-modules deleted) | ✅ DONE | `codegen-cranelift/src/runtime_calls/mod.rs` | ~560→~60 |
 | P4 | Codegen signature boilerplate (all helpers deleted, generic handler) | ✅ DONE | `codegen-cranelift/src/runtime_calls/*.rs` | ~6,352→~400 |
 | P5 | Runtime FFI explosion (246 extern "C" functions) | HIGH | `runtime/src/` | ~33,000 |
@@ -76,10 +76,10 @@ Phase 1 (Runtime)               │      Phase 6 (Integration)
   P6  Type dispatch ─────┘      │
          │                      │
          ▼                      │
-Phase 2 (KEYSTONE) ◄────────────┘  ✅ ~95% DONE (P2 remains)
+Phase 2 (KEYSTONE) ◄────────────┘  ✅ COMPLETE
   P1  RuntimeFunc descriptors ──(~300/~300 migrated ✅)
-  P2  Decouple MIR/stdlib ──(not started)
-  P3  Codegen dispatch ─────(19/19 variant modules deleted ✅)
+  P2  Decouple MIR/stdlib ──(MIR depends only on core-defs ✅)
+  P3  Codegen dispatch ─────(20/20 variant modules deleted ✅)
   P4  Codegen signatures ───(300+ auto-generated, runtime_helpers.rs deleted ✅)
   P24 Span in MIR instructions ──(pre-existing ✅)
          │
@@ -423,7 +423,7 @@ fn repr_with_brackets(obj: *mut Obj, open: &str, close: &str, format_kind: u8) -
 
 **Depends on:** Phase 1 (stable, reduced FFI surface to build descriptors on)
 
-**Status:** ✅ **Complete (except 2.4).** 2.1, 2.2, 2.3 fully done. 2.4 (MIR/stdlib decoupling) not started. 2.5 was pre-existing.
+**Status:** ✅ **COMPLETE.** All substeps done: 2.1, 2.2, 2.3, 2.4 fully implemented. 2.5 was pre-existing.
 
 ### 2.1 — Design RuntimeFuncDef Descriptor System ✅ DONE
 
@@ -527,17 +527,18 @@ The generic handler:
 - ~4,700 lines deleted from codegen; ~220 one-liner static defs added to core-defs
 - Lookup functions (`ValueKind::global_get_def()`, `IterSourceKind::iterator_def()`, etc.) in `mir/src/kinds.rs` map parameterized variants to static defs
 
-### 2.4 — Decouple MIR from stdlib-defs (P2)
+### 2.4 — Decouple MIR from stdlib-defs (P2) ✅ DONE
 
-**Status:** Not started. MIR still imports `pyaot_stdlib_defs` for `StdlibCall`, `StdlibAttrGet`, `ObjectFieldGet`, `ObjectMethodCall` variants.
+Added `codegen: RuntimeFuncDef` field to `StdlibFunctionDef`, `StdlibAttrDef`, `StdlibMethodDef`, and `ObjectFieldDef`. Each of the ~190 stdlib definitions now carries its own codegen descriptor, populated at the definition site with correct param/return types.
 
-**Migration plan** (unchanged):
-1. Add `RuntimeFuncDef` field or conversion to `StdlibFunctionDef` / `StdlibMethodDef` / etc.
-2. Lowering resolves stdlib calls to `RuntimeFunc::Call(stdlib_def.as_runtime_func_def())`
-3. Remove `StdlibCall`, `StdlibAttrGet`, `ObjectFieldGet`, `ObjectMethodCall` variants
-4. Remove `use pyaot_stdlib_defs` from MIR's Cargo.toml
+Lowering emits `RuntimeFunc::Call(&func_def.codegen)` instead of the 4 removed variants. The generic `compile_runtime_func_def` handler processes all of them.
 
-**Result:** MIR depends only on `core-defs` (true leaf crate) — clean layering.
+**Removed:**
+- `StdlibCall`, `StdlibAttrGet`, `ObjectFieldGet`, `ObjectMethodCall` variants from `RuntimeFunc`
+- `pyaot-stdlib-defs` dependency from both MIR and codegen-cranelift
+- `crates/codegen-cranelift/src/runtime_calls/stdlib.rs` (266 lines)
+
+**Result:** MIR depends only on `core-defs` (true leaf crate) — clean layering achieved.
 
 ### 2.5 — Add Spans to MIR Instructions (P24) ✅ PRE-EXISTING
 
