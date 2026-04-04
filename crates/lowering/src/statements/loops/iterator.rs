@@ -74,24 +74,20 @@ impl<'a> Lowering<'a> {
         self.push_block(header_bb);
 
         // Call next() on the iterator (using no-exception variant for for-loops)
-        let next_local = self.alloc_and_add_local(Type::Int, mir_func); // Raw value from generator
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: next_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
-            args: vec![mir::Operand::Local(iter_local)],
-        });
+        let next_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
+            vec![mir::Operand::Local(iter_local)],
+            Type::Int, // Raw value from generator
+            mir_func,
+        );
 
         // Check if generator is exhausted
-        let exhausted_local = self.alloc_and_add_local(Type::Bool, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: exhausted_local,
-            func: mir::RuntimeFunc::Call(
-                &pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED,
-            ),
-            args: vec![mir::Operand::Local(iter_local)],
-        });
+        let exhausted_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED),
+            vec![mir::Operand::Local(iter_local)],
+            Type::Bool,
+            mir_func,
+        );
 
         // Branch: if exhausted goto exit/else, else goto body
         self.current_block_mut().terminator = mir::Terminator::Branch {

@@ -186,15 +186,15 @@ impl<'a> Lowering<'a> {
         };
 
         // Get the tuple/list element at current index
-        let elem_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: elem_local,
-            func: get_func,
-            args: vec![
+        let elem_local = self.emit_runtime_call(
+            get_func,
+            vec![
                 mir::Operand::Local(iter_local),
                 mir::Operand::Local(idx_local),
             ],
-        });
+            elem_type.clone(),
+            mir_func,
+        );
 
         // Unpack with starred support: extract before_star, starred, after_star
         self.lower_starred_unpack_from_value(
@@ -317,21 +317,19 @@ impl<'a> Lowering<'a> {
         // Header: call next(), check exhausted
         self.push_block(header_bb);
 
-        let next_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: next_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
-            args: vec![mir::Operand::Local(iter_local)],
-        });
+        let next_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
+            vec![mir::Operand::Local(iter_local)],
+            elem_type.clone(),
+            mir_func,
+        );
 
-        let exhausted_local = self.alloc_and_add_local(Type::Bool, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: exhausted_local,
-            func: mir::RuntimeFunc::Call(
-                &pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED,
-            ),
-            args: vec![mir::Operand::Local(iter_local)],
-        });
+        let exhausted_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED),
+            vec![mir::Operand::Local(iter_local)],
+            Type::Bool,
+            mir_func,
+        );
 
         self.current_block_mut().terminator = mir::Terminator::Branch {
             cond: mir::Operand::Local(exhausted_local),
