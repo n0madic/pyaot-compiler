@@ -19,12 +19,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) {
         if let Some(unbox_func) = unbox_func {
-            let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: boxed_local,
-                func: call_func,
-                args,
-            });
+            let boxed_local = self.emit_runtime_call(call_func, args, Type::HeapAny, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
                 func: unbox_func,

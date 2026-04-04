@@ -28,28 +28,24 @@ impl<'a> Lowering<'a> {
             let attr_name = self.resolve(attr);
             match attr_name {
                 "closed" => {
-                    let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
+                    let result_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_FILE_IS_CLOSED,
                         ),
-                        args: vec![obj_operand],
-                    });
+                        vec![obj_operand],
+                        Type::Bool,
+                        mir_func,
+                    );
 
                     return Ok(mir::Operand::Local(result_local));
                 }
                 "name" => {
-                    let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_FILE_NAME,
-                        ),
-                        args: vec![obj_operand],
-                    });
+                    let result_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_NAME),
+                        vec![obj_operand],
+                        Type::Str,
+                        mir_func,
+                    );
 
                     return Ok(mir::Operand::Local(result_local));
                 }
@@ -66,13 +62,12 @@ impl<'a> Lowering<'a> {
             let attr_name = self.resolve(attr);
             if let Some(field_def) = lookup_object_field(*type_tag, attr_name) {
                 let result_type = typespec_to_type(&field_def.field_type);
-                let result_local = self.alloc_and_add_local(result_type, mir_func);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&field_def.codegen),
-                    args: vec![obj_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&field_def.codegen),
+                    vec![obj_operand],
+                    result_type,
+                    mir_func,
+                );
 
                 return Ok(mir::Operand::Local(result_local));
             } else {
@@ -85,42 +80,38 @@ impl<'a> Lowering<'a> {
         // type() returns a string like "<class 'int'>", and __name__ extracts "int"
         let attr_name = self.resolve(attr);
         if attr_name == "__name__" && matches!(obj_type, Type::Str) {
-            let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: result_local,
-                func: mir::RuntimeFunc::Call(
-                    &pyaot_core_defs::runtime_func_def::RT_TYPE_NAME_EXTRACT,
-                ),
-                args: vec![obj_operand],
-            });
+            let result_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TYPE_NAME_EXTRACT),
+                vec![obj_operand],
+                Type::Str,
+                mir_func,
+            );
             return Ok(mir::Operand::Local(result_local));
         }
 
         // Handle built-in exception attributes (.args, __class__)
         if matches!(&obj_type, Type::BuiltinException(_)) {
             if attr_name == "args" {
-                let result_local = self.alloc_and_add_local(Type::Tuple(vec![Type::Str]), mir_func);
                 // .args is field 0 on built-in exception instances
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(
                         &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
                     ),
-                    args: vec![obj_operand, mir::Operand::Constant(mir::Constant::Int(0))],
-                });
+                    vec![obj_operand, mir::Operand::Constant(mir::Constant::Int(0))],
+                    Type::Tuple(vec![Type::Str]),
+                    mir_func,
+                );
                 return Ok(mir::Operand::Local(result_local));
             }
             if attr_name == "__class__" {
                 // Return a type proxy string like "<class 'ValueError'>"
                 // This allows chaining: e.__class__.__name__ -> "ValueError"
-                let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_EXC_CLASS_NAME,
-                    ),
-                    args: vec![obj_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_EXC_CLASS_NAME),
+                    vec![obj_operand],
+                    Type::Str,
+                    mir_func,
+                );
                 return Ok(mir::Operand::Local(result_local));
             }
             // Other built-in exception attributes not supported yet
@@ -133,14 +124,14 @@ impl<'a> Lowering<'a> {
             if let Some(class_info) = self.get_class_info(class_id).cloned() {
                 // 0. Handle __class__ on exception class instances
                 if attr_name == "__class__" && class_info.is_exception_class {
-                    let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
+                    let result_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_EXC_CLASS_NAME,
                         ),
-                        args: vec![obj_operand],
-                    });
+                        vec![obj_operand],
+                        Type::Str,
+                        mir_func,
+                    );
                     return Ok(mir::Operand::Local(result_local));
                 }
 
@@ -173,19 +164,17 @@ impl<'a> Lowering<'a> {
                         .cloned()
                         .unwrap_or(Type::Any);
 
-                    let result_local = self.alloc_and_add_local(field_type.clone(), mir_func);
-
-                    // Get the field value from instance
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
+                    let result_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
                         ),
-                        args: vec![
+                        vec![
                             obj_operand,
                             mir::Operand::Constant(mir::Constant::Int(offset as i64)),
                         ],
-                    });
+                        field_type.clone(),
+                        mir_func,
+                    );
 
                     return Ok(mir::Operand::Local(result_local));
                 }
@@ -195,17 +184,17 @@ impl<'a> Lowering<'a> {
                     class_info.class_attr_offsets.get(&attr),
                     class_info.class_attr_types.get(&attr).cloned(),
                 ) {
-                    let result_local = self.alloc_and_add_local(attr_type.clone(), mir_func);
                     let get_func = self.get_class_attr_get_func(&attr_type);
                     let effective_class_id = self.get_effective_class_id(owning_class_id);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: get_func,
-                        args: vec![
+                    let result_local = self.emit_runtime_call(
+                        get_func,
+                        vec![
                             mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                             mir::Operand::Constant(mir::Constant::Int(attr_offset as i64)),
                         ],
-                    });
+                        attr_type.clone(),
+                        mir_func,
+                    );
                     return Ok(mir::Operand::Local(result_local));
                 }
             }
@@ -220,19 +209,17 @@ impl<'a> Lowering<'a> {
                         .cloned()
                         .unwrap_or(Type::Any);
 
-                    let result_local = self.alloc_and_add_local(field_type.clone(), mir_func);
-
-                    // Get the field value from instance
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
+                    let result_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
                         ),
-                        args: vec![
+                        vec![
                             obj_operand,
                             mir::Operand::Constant(mir::Constant::Int(offset as i64)),
                         ],
-                    });
+                        field_type.clone(),
+                        mir_func,
+                    );
 
                     return Ok(mir::Operand::Local(result_local));
                 }

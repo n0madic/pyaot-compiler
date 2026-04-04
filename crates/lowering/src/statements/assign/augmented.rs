@@ -87,24 +87,20 @@ impl<'a> Lowering<'a> {
                 // list[index] = value
                 // Box float/bool values before storing (lists use ELEM_HEAP_OBJ for these types)
                 let store_operand = if **elem_ty == Type::Float {
-                    let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: boxed_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT,
-                        ),
-                        args: vec![value_operand],
-                    });
+                    let boxed_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
+                        vec![value_operand],
+                        Type::HeapAny,
+                        mir_func,
+                    );
                     mir::Operand::Local(boxed_local)
                 } else if **elem_ty == Type::Bool {
-                    let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: boxed_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_BOX_BOOL,
-                        ),
-                        args: vec![value_operand],
-                    });
+                    let boxed_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
+                        vec![value_operand],
+                        Type::HeapAny,
+                        mir_func,
+                    );
                     mir::Operand::Local(boxed_local)
                 } else {
                     value_operand
@@ -236,21 +232,19 @@ impl<'a> Lowering<'a> {
 
                 // 2. Regular field assignment
                 if let Some(&offset) = class_info.field_offsets.get(&field) {
-                    // Create a dummy local for void return
-                    let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-
                     // Set the field value
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: dummy_local,
-                        func: mir::RuntimeFunc::Call(
+                    self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD,
                         ),
-                        args: vec![
+                        vec![
                             obj_operand,
                             mir::Operand::Constant(mir::Constant::Int(offset as i64)),
                             value_operand,
                         ],
-                    });
+                        Type::None,
+                        mir_func,
+                    );
                     return Ok(());
                 }
 
@@ -259,18 +253,18 @@ impl<'a> Lowering<'a> {
                     class_info.class_attr_offsets.get(&field),
                     class_info.class_attr_types.get(&field).cloned(),
                 ) {
-                    let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
                     let set_func = self.get_class_attr_set_func(&attr_type);
                     let effective_class_id = self.get_effective_class_id(owning_class_id);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: dummy_local,
-                        func: set_func,
-                        args: vec![
+                    self.emit_runtime_call(
+                        set_func,
+                        vec![
                             mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                             mir::Operand::Constant(mir::Constant::Int(attr_offset as i64)),
                             value_operand,
                         ],
-                    });
+                        Type::None,
+                        mir_func,
+                    );
                     return Ok(());
                 }
             }
@@ -298,24 +292,22 @@ impl<'a> Lowering<'a> {
                 class_info.class_attr_offsets.get(&attr),
                 class_info.class_attr_types.get(&attr).cloned(),
             ) {
-                // Create a dummy local for void return
-                let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-
                 // Get the appropriate runtime function based on type
                 let set_func = self.get_class_attr_set_func(&attr_type);
 
                 // Emit runtime call: rt_class_attr_set_*(owning_class_id, attr_idx, value)
                 // Use the owning_class_id, not the accessed class_id, to handle inheritance
                 let effective_class_id = self.get_effective_class_id(owning_class_id);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: set_func,
-                    args: vec![
+                self.emit_runtime_call(
+                    set_func,
+                    vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                         mir::Operand::Constant(mir::Constant::Int(attr_offset as i64)),
                         value_operand,
                     ],
-                });
+                    Type::None,
+                    mir_func,
+                );
             }
         }
 
