@@ -24,8 +24,8 @@ impl<'a> Lowering<'a> {
         // Infer result type from operand types
         let left_expr = &hir_module.exprs[left];
         let right_expr = &hir_module.exprs[right];
-        let left_type = self.get_expr_type(left_expr, hir_module);
-        let right_type = self.get_expr_type(right_expr, hir_module);
+        let left_type = self.get_type_of_expr_id(left, hir_module);
+        let right_type = self.get_type_of_expr_id(right, hir_module);
 
         // Determine result type based on operator
         let result_type = match op {
@@ -177,8 +177,8 @@ impl<'a> Lowering<'a> {
         // Get the result type from branch types
         let then_expr = &hir_module.exprs[then_val];
         let else_expr = &hir_module.exprs[else_val];
-        let then_ty = self.get_expr_type(then_expr, hir_module);
-        let else_ty = self.get_expr_type(else_expr, hir_module);
+        let then_ty = self.get_type_of_expr_id(then_val, hir_module);
+        let else_ty = self.get_type_of_expr_id(else_val, hir_module);
 
         let types_differ = then_ty != else_ty;
         let result_ty = if types_differ {
@@ -192,7 +192,7 @@ impl<'a> Lowering<'a> {
 
         // Evaluate condition and convert to bool if needed
         let cond_expr = &hir_module.exprs[cond];
-        let cond_type = self.get_expr_type(cond_expr, hir_module);
+        let cond_type = self.get_type_of_expr_id(cond, hir_module);
         let cond_op = self.lower_expr(cond_expr, hir_module, mir_func)?;
         let final_cond_op = if matches!(cond_type, Type::Bool) {
             cond_op

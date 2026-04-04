@@ -23,8 +23,8 @@ impl<'a> Lowering<'a> {
         let right_op = self.lower_expr(right_expr, hir_module, mir_func)?;
 
         // Get types for comparison detection
-        let left_type = self.get_expr_type(left_expr, hir_module);
-        let right_type = self.get_expr_type(right_expr, hir_module);
+        let left_type = self.get_type_of_expr_id(left, hir_module);
+        let right_type = self.get_type_of_expr_id(right, hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 

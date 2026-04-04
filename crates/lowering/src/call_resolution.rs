@@ -122,7 +122,7 @@ impl<'a> Lowering<'a> {
         all_positional: &mut Vec<mir::Operand>,
     ) -> Result<()> {
         let tuple_expr = &hir_module.exprs[expr_id];
-        let tuple_type = self.get_expr_type(tuple_expr, hir_module);
+        let tuple_type = self.get_type_of_expr_id(expr_id, hir_module);
         let tuple_operand = self.lower_expr(tuple_expr, hir_module, mir_func)?;
 
         if let Type::Tuple(elem_types) = tuple_type {
@@ -159,7 +159,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<Vec<mir::Operand>> {
         let list_expr = &hir_module.exprs[expr_id];
-        let list_type = self.get_expr_type(list_expr, hir_module);
+        let list_type = self.get_type_of_expr_id(expr_id, hir_module);
         let list_operand = self.lower_expr(list_expr, hir_module, mir_func)?;
 
         let Type::List(elem_type) = list_type else {

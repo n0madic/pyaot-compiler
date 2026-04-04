@@ -44,7 +44,7 @@ impl<'a> Lowering<'a> {
                         }
                         _ => {
                             // Runtime unpacking: check if it's a tuple or list variable
-                            let arg_type = self.get_expr_type(arg_expr, hir_module);
+                            let arg_type = self.get_type_of_expr_id(*expr_id, hir_module);
                             match &arg_type {
                                 Type::Tuple(_) => {
                                     // Mark for runtime tuple unpacking
@@ -103,7 +103,7 @@ impl<'a> Lowering<'a> {
                 }
                 _ => {
                     // Runtime **kwargs unpacking: lower the dict and pass to resolve_call_args
-                    let dict_type = self.get_expr_type(kwargs_expr, hir_module);
+                    let dict_type = self.get_type_of_expr_id(*kwargs_expr_id, hir_module);
                     let dict_operand = self.lower_expr(kwargs_expr, hir_module, mir_func)?;
 
                     // Get the value type from dict type
