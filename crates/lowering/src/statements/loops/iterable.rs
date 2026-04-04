@@ -25,7 +25,7 @@ impl<'a> Lowering<'a> {
     pub(super) fn lower_for_iterable(
         &mut self,
         target: VarId,
-        iter_expr: &hir::Expr,
+        iter_id: hir::ExprId,
         iterable_kind: IterableKind,
         elem_type: Type,
         body: &[hir::StmtId],
@@ -33,10 +33,12 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
+        let iter_expr = &hir_module.exprs[iter_id];
+
         // For generators/iterators, use iterator protocol instead of indexed access
         if iterable_kind == IterableKind::Iterator {
             return self.lower_for_iterator(
-                target, iter_expr, elem_type, body, else_block, hir_module, mir_func,
+                target, iter_id, elem_type, body, else_block, hir_module, mir_func,
             );
         }
 
@@ -170,7 +172,7 @@ impl<'a> Lowering<'a> {
 
         // 1. Lower the iterator expression and store in a temp local
         let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
-        let iter_type = self.get_expr_type(iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {

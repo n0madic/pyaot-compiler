@@ -195,7 +195,7 @@ impl<'a> Lowering<'a> {
 
         // Header block: evaluate condition and branch
         self.push_block(header_bb);
-        let cond_type = self.get_expr_type(cond_expr, hir_module);
+        let cond_type = self.get_type_of_expr_id(cond, hir_module);
         let cond_operand = self.lower_expr(cond_expr, hir_module, mir_func)?;
 
         // If the condition is a Union type (or other heap type), we need to emit

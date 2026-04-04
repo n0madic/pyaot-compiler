@@ -257,15 +257,16 @@ impl<'a> Lowering<'a> {
         before_star: &[VarId],
         starred: Option<VarId>,
         after_star: &[VarId],
-        iter_expr: &hir::Expr,
+        iter_id: hir::ExprId,
         elem_type: Type,
         body: &[hir::StmtId],
         else_block: &[hir::StmtId],
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
+        let iter_expr = &hir_module.exprs[iter_id];
         let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
-        let iter_type = self.get_expr_type(iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {

@@ -41,7 +41,12 @@ impl<'a> Lowering<'a> {
         result
     }
 
-    /// Get the effective type of an expression.
+    /// Get the effective type of an expression (uncached).
+    ///
+    /// Prefer `get_type_of_expr_id` when the `ExprId` is available —
+    /// it uses the `expr_types` cache. This method exists only for callers
+    /// that receive `&hir::Expr` without an ExprId (e.g., the current
+    /// expression being lowered in `lower_expr`).
     pub(crate) fn get_expr_type(&mut self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
         self.compute_expr_type(expr, hir_module)
     }

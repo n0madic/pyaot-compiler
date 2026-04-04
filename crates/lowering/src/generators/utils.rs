@@ -417,10 +417,10 @@ impl<'a> Lowering<'a> {
                                 if *vid == loop_var_id {
                                     loop_var_ty.cloned().unwrap_or(Type::Any)
                                 } else {
-                                    self.get_expr_type(operand_expr, hir_module)
+                                    self.get_type_of_expr_id(*operand, hir_module)
                                 }
                             } else {
-                                self.get_expr_type(operand_expr, hir_module)
+                                self.get_type_of_expr_id(*operand, hir_module)
                             };
                             // Generator values are always raw i64; Any-typed
                             // operands must use Int truthiness (not IsTruthy
@@ -659,7 +659,7 @@ impl<'a> Lowering<'a> {
                     }
                     hir::UnOp::Not => {
                         let operand_type = {
-                            let ty = self.get_expr_type(operand_expr, hir_module);
+                            let ty = self.get_type_of_expr_id(*operand, hir_module);
                             // Same as yield path: generators pass values as raw
                             // i64, so Any must use Int truthiness.
                             if matches!(ty, Type::Any) {

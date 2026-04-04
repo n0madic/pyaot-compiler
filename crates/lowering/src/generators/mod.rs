@@ -156,8 +156,7 @@ impl<'a> Lowering<'a> {
         // Try to detect the for-loop generator pattern
         if let Some(for_gen) = detect_for_loop_generator(&func.body, hir_module) {
             // First compute the iterable element type; we need it for attribute resolution.
-            let iter_expr = &hir_module.exprs[for_gen.iter_expr];
-            let iter_type = self.get_expr_type(iter_expr, hir_module);
+            let iter_type = self.get_type_of_expr_id(for_gen.iter_expr, hir_module);
             let elem_ty = get_iterable_info(&iter_type).map(|(_kind, ty)| ty);
 
             if let Some(yield_eid) = for_gen.yield_expr {
@@ -166,7 +165,7 @@ impl<'a> Lowering<'a> {
                 // Fast path: try direct type inference from the expression.
                 // Works when `v` is already registered in var_types (e.g. simple `yield v`
                 // where the loop variable has a known type annotation on the for-stmt).
-                let yield_ty = self.get_expr_type(yield_expr, hir_module);
+                let yield_ty = self.get_type_of_expr_id(yield_eid, hir_module);
                 if yield_ty != Type::Any {
                     return yield_ty;
                 }

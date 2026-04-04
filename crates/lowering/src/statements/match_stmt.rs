@@ -42,7 +42,7 @@ impl<'a> Lowering<'a> {
         // Evaluate subject once and store in a temporary local
         let subject_expr = &hir_module.exprs[subject];
         let subject_operand = self.lower_expr(subject_expr, hir_module, mir_func)?;
-        let subject_type = self.get_expr_type(subject_expr, hir_module);
+        let subject_type = self.get_type_of_expr_id(subject, hir_module);
 
         // Store subject in a local to avoid re-evaluation
         let subject_local = self.alloc_and_add_local(subject_type.clone(), mir_func);

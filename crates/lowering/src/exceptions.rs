@@ -238,9 +238,9 @@ impl<'a> Lowering<'a> {
                                     hir::CallArg::Regular(id) => id,
                                     hir::CallArg::Starred(id) => id,
                                 };
-                                let arg_expr = &hir_module.exprs[*arg_id];
-                                let arg_type = self.get_expr_type(arg_expr, hir_module);
+                                let arg_type = self.get_type_of_expr_id(*arg_id, hir_module);
                                 if arg_type == Type::Str {
+                                    let arg_expr = &hir_module.exprs[*arg_id];
                                     Some(self.lower_expr(arg_expr, hir_module, mir_func)?)
                                 } else {
                                     None

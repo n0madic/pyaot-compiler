@@ -67,7 +67,7 @@ impl<'a> Lowering<'a> {
 
             if let Some((kind, elem_type)) = get_iterable_info(&iter_type) {
                 self.lower_for_iterable(
-                    target, iter_expr, kind, elem_type, body, else_block, hir_module, mir_func,
+                    target, iter, kind, elem_type, body, else_block, hir_module, mir_func,
                 )?;
             } else {
                 return Err(pyaot_diagnostics::CompilerError::type_error(
@@ -131,12 +131,11 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
-        let iter_expr = &hir_module.exprs[iter];
         self.lower_for_unpack_starred(
             before_star,
             starred.copied(),
             after_star,
-            iter_expr,
+            iter,
             body,
             else_block,
             hir_module,

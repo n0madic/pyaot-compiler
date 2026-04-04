@@ -538,8 +538,7 @@ impl<'a> Lowering<'a> {
                     if !self.has_closure_capture_types(func_id) {
                         let mut capture_types = Vec::new();
                         for capture_id in captures {
-                            let capture_expr = &hir_module.exprs[*capture_id];
-                            let capture_type = self.get_expr_type(capture_expr, hir_module);
+                            let capture_type = self.get_type_of_expr_id(*capture_id, hir_module);
                             capture_types.push(capture_type);
                         }
                         self.insert_closure_capture_types(*func_id, capture_types);
