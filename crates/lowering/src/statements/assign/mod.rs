@@ -47,7 +47,7 @@ impl<'a> Lowering<'a> {
                         let right_expr = &hir_module.exprs[*right];
                         let right_operand = self.lower_expr(right_expr, hir_module, mir_func)?;
 
-                        let dummy = self.emit_runtime_call(
+                        let _dummy = self.emit_runtime_call(
                             mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_DICT_UPDATE,
                             ),

@@ -34,17 +34,18 @@ impl<'a> Lowering<'a> {
                 let actual_value_ty = arg_types.first();
                 if *elem_ty == Type::Any {
                     if let Some(Type::Int) = actual_value_ty {
-                        let dummy = self.alloc_and_add_local(Type::None, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: dummy,
-                            func: mir::RuntimeFunc::Call(
+                        let dummy = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_LIST_SET_ELEM_TAG,
                             ),
-                            args: vec![
+                            vec![
                                 obj_operand.clone(),
                                 mir::Operand::Constant(mir::Constant::Int(1)), // ELEM_RAW_INT
                             ],
-                        });
+                            Type::None,
+                            mir_func,
+                        );
+                        let _ = dummy;
                     }
                 }
 

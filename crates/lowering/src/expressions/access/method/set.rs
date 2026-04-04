@@ -262,14 +262,12 @@ impl<'a> Lowering<'a> {
                     }
                     _ => {
                         // Heap types (Str, Tuple, etc.) — no unboxing needed
-                        let result_local = self.alloc_and_add_local(elem_ty.clone(), mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: result_local,
-                            func: mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_SET_POP,
-                            ),
-                            args: vec![obj_operand],
-                        });
+                        let result_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_POP),
+                            vec![obj_operand],
+                            elem_ty.clone(),
+                            mir_func,
+                        );
                         Ok(mir::Operand::Local(result_local))
                     }
                 }

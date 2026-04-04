@@ -40,68 +40,58 @@ impl<'a> Lowering<'a> {
             }
             "readline" => {
                 // .readline() - read single line
-                let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_FILE_READLINE,
-                    ),
-                    args: vec![obj_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READLINE),
+                    vec![obj_operand],
+                    Type::Str,
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }
             "readlines" => {
                 // .readlines() - read all lines as list
-                let result_local =
-                    self.alloc_and_add_local(Type::List(Box::new(Type::Str)), mir_func);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_FILE_READLINES,
-                    ),
-                    args: vec![obj_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READLINES),
+                    vec![obj_operand],
+                    Type::List(Box::new(Type::Str)),
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }
             "write" => {
                 // .write(data) - write data to file, returns bytes written
-                let result_local = self.alloc_and_add_local(Type::Int, mir_func);
-
                 let data_arg = crate::first_arg_or_none(arg_operands);
 
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_WRITE),
-                    args: vec![obj_operand, data_arg],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_WRITE),
+                    vec![obj_operand, data_arg],
+                    Type::Int,
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }
             "close" => {
                 // .close() - close the file
-                let result_local = self.alloc_and_add_local(Type::None, mir_func);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_CLOSE),
-                    args: vec![obj_operand],
-                });
+                self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_CLOSE),
+                    vec![obj_operand],
+                    Type::None,
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Constant(mir::Constant::None))
             }
             "flush" => {
                 // .flush() - flush the file buffer
-                let result_local = self.alloc_and_add_local(Type::None, mir_func);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_FLUSH),
-                    args: vec![obj_operand],
-                });
+                self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_FLUSH),
+                    vec![obj_operand],
+                    Type::None,
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Constant(mir::Constant::None))
             }
