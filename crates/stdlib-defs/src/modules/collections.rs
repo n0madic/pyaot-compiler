@@ -28,7 +28,7 @@ static ORDERED_DICT_NEW: StdlibFunctionDef = StdlibFunctionDef {
     )],
     return_type: TypeSpec::Dict(&TypeSpec::Any, &TypeSpec::Any),
     min_args: 0,
-    max_args: 0,
+    max_args: 1,
     hints: LoweringHints::NO_AUTO_BOX,
     codegen: RuntimeFuncDef::new("rt_make_dict", &[P_I64], Some(R_I64), false),
 };

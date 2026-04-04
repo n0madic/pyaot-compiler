@@ -21,7 +21,7 @@ pub enum FuncOrBuiltin {
 impl<'a> Lowering<'a> {
     /// Get the current ambient source span, falling back to a dummy span.
     /// Safe to call in any expression-lowering context because `lower_expr()`
-    /// always sets `self.current_span = Some(expr.span)` before dispatching.
+    /// always sets `self.codegen.current_span = Some(expr.span)` before dispatching.
     pub(crate) fn call_span(&self) -> pyaot_utils::Span {
         self.codegen
             .current_span
