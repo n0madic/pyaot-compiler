@@ -221,7 +221,7 @@ impl<'a> Lowering<'a> {
                 // Python truthiness rules: __bool__ takes priority over __len__.
                 // If neither is defined, instances are always truthy (Python default).
                 if let Some(class_info) = self.get_class_info(class_id).cloned() {
-                    if let Some(bool_func_id) = class_info.bool_func {
+                    if let Some(bool_func_id) = class_info.get_dunder_func("__bool__") {
                         // __bool__ defined: call it and use the result directly
                         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                         self.emit_instruction(mir::InstructionKind::CallDirect {
@@ -230,7 +230,7 @@ impl<'a> Lowering<'a> {
                             args: vec![operand],
                         });
                         return mir::Operand::Local(result_local);
-                    } else if let Some(len_func_id) = class_info.len_func {
+                    } else if let Some(len_func_id) = class_info.get_dunder_func("__len__") {
                         // __len__ defined but no __bool__: truthy when len != 0
                         let len_local = self.alloc_and_add_local(Type::Int, mir_func);
                         self.emit_instruction(mir::InstructionKind::CallDirect {
@@ -396,7 +396,7 @@ impl<'a> Lowering<'a> {
             }
             Type::Class { class_id, .. } => {
                 if let Some(class_info) = self.get_class_info(class_id).cloned() {
-                    if let Some(bool_func_id) = class_info.bool_func {
+                    if let Some(bool_func_id) = class_info.get_dunder_func("__bool__") {
                         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                         block.instructions.push(mir::Instruction {
                             kind: mir::InstructionKind::CallDirect {
@@ -407,7 +407,7 @@ impl<'a> Lowering<'a> {
                             span: None,
                         });
                         return mir::Operand::Local(result_local);
-                    } else if let Some(len_func_id) = class_info.len_func {
+                    } else if let Some(len_func_id) = class_info.get_dunder_func("__len__") {
                         let len_local = self.alloc_and_add_local(Type::Int, mir_func);
                         block.instructions.push(mir::Instruction {
                             kind: mir::InstructionKind::CallDirect {

@@ -45,10 +45,10 @@ impl<'a> Lowering<'a> {
                     .get_class_info(class_id)
                     .expect("class info must exist for class iterator");
                 let iter_func = class_info
-                    .iter_func
+                    .get_dunder_func("__iter__")
                     .expect("class must have __iter__ for class iterator loop");
                 let next_func = class_info
-                    .next_func
+                    .get_dunder_func("__next__")
                     .expect("class must have __next__ for class iterator loop");
                 (*class_id, iter_func, next_func)
             }

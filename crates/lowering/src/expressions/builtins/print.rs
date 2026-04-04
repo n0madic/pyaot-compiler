@@ -104,13 +104,13 @@ impl<'a> Lowering<'a> {
             else if let Type::Class { class_id, .. } = &arg_type {
                 let str_local = self.alloc_and_add_local(Type::Str, mir_func);
                 if let Some(class_info) = self.get_class_info(class_id) {
-                    if let Some(str_func) = class_info.str_func {
+                    if let Some(str_func) = class_info.get_dunder_func("__str__") {
                         self.emit_instruction(mir::InstructionKind::CallDirect {
                             dest: str_local,
                             func: str_func,
                             args: vec![arg_operand],
                         });
-                    } else if let Some(repr_func) = class_info.repr_func {
+                    } else if let Some(repr_func) = class_info.get_dunder_func("__repr__") {
                         self.emit_instruction(mir::InstructionKind::CallDirect {
                             dest: str_local,
                             func: repr_func,

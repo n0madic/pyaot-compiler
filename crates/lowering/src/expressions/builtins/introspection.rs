@@ -256,7 +256,7 @@ impl<'a> Lowering<'a> {
             Type::Class { class_id, .. } => {
                 // Check for __hash__ method
                 if let Some(class_info) = self.get_class_info(&class_id) {
-                    if let Some(hash_func) = class_info.hash_func {
+                    if let Some(hash_func) = class_info.get_dunder_func("__hash__") {
                         // Call __hash__ method
                         self.emit_instruction(mir::InstructionKind::CallDirect {
                             dest: result_local,
@@ -382,7 +382,7 @@ impl<'a> Lowering<'a> {
         if let Type::Class { class_id, .. } = &arg_type {
             if let Some(class_info) = self.get_class_info(class_id) {
                 // Try __repr__ method
-                if let Some(repr_func) = class_info.repr_func {
+                if let Some(repr_func) = class_info.get_dunder_func("__repr__") {
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,
                         func: repr_func,
@@ -702,7 +702,7 @@ impl<'a> Lowering<'a> {
         if let Type::Class { class_id, .. } = &value_type {
             if let Some(format_func_id) = self
                 .get_class_info(class_id)
-                .and_then(|info| info.format_func)
+                .and_then(|info| info.get_dunder_func("__format__"))
             {
                 let spec_operand = if args.len() > 1 {
                     let spec_expr = &hir_module.exprs[args[1]];

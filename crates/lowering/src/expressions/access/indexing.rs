@@ -29,7 +29,7 @@ impl<'a> Lowering<'a> {
         if let Type::Class { class_id, .. } = &index_type {
             if let Some(func_id) = self
                 .get_class_info(class_id)
-                .and_then(|info| info.index_func)
+                .and_then(|info| info.get_dunder_func("__index__"))
             {
                 let int_local = self.alloc_and_add_local(Type::Int, mir_func);
                 self.emit_instruction(mir::InstructionKind::CallDirect {
@@ -324,7 +324,7 @@ impl<'a> Lowering<'a> {
                 // Class with __getitem__ dunder
                 let getitem_func = self
                     .get_class_info(class_id)
-                    .and_then(|info| info.getitem_func);
+                    .and_then(|info| info.get_dunder_func("__getitem__"));
 
                 if let Some(func_id) = getitem_func {
                     let return_ty = self

@@ -101,7 +101,7 @@ impl<'a> Lowering<'a> {
                     // Check for __str__ or __repr__ methods
                     if let Some(class_info) = self.get_class_info(&class_id) {
                         // Try __str__ first
-                        if let Some(str_func) = class_info.str_func {
+                        if let Some(str_func) = class_info.get_dunder_func("__str__") {
                             self.emit_instruction(mir::InstructionKind::CallDirect {
                                 dest: result_local,
                                 func: str_func,
@@ -109,7 +109,7 @@ impl<'a> Lowering<'a> {
                             });
                         }
                         // Fallback to __repr__ if __str__ not defined
-                        else if let Some(repr_func) = class_info.repr_func {
+                        else if let Some(repr_func) = class_info.get_dunder_func("__repr__") {
                             self.emit_instruction(mir::InstructionKind::CallDirect {
                                 dest: result_local,
                                 func: repr_func,
@@ -231,7 +231,7 @@ impl<'a> Lowering<'a> {
             }
             Type::Class { class_id, .. } => {
                 // int(obj) -> call __int__ dunder if defined
-                if let Some(int_func) = self.get_class_info(&class_id).and_then(|ci| ci.int_func) {
+                if let Some(int_func) = self.get_class_info(&class_id).and_then(|ci| ci.get_dunder_func("__int__")) {
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,
                         func: int_func,
@@ -316,7 +316,7 @@ impl<'a> Lowering<'a> {
             Type::Class { class_id, .. } => {
                 // float(obj) -> call __float__ dunder if defined
                 if let Some(float_func) =
-                    self.get_class_info(&class_id).and_then(|ci| ci.float_func)
+                    self.get_class_info(&class_id).and_then(|ci| ci.get_dunder_func("__float__"))
                 {
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,
@@ -430,7 +430,7 @@ impl<'a> Lowering<'a> {
             }
             Type::Class { class_id, .. } => {
                 // bool(obj) -> call __bool__ dunder, fall back to __len__, default True
-                if let Some(bool_func) = self.get_class_info(&class_id).and_then(|ci| ci.bool_func)
+                if let Some(bool_func) = self.get_class_info(&class_id).and_then(|ci| ci.get_dunder_func("__bool__"))
                 {
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,
@@ -438,7 +438,7 @@ impl<'a> Lowering<'a> {
                         args: vec![arg_operand],
                     });
                 } else if let Some(len_func) =
-                    self.get_class_info(&class_id).and_then(|ci| ci.len_func)
+                    self.get_class_info(&class_id).and_then(|ci| ci.get_dunder_func("__len__"))
                 {
                     // Python: __len__() != 0 used for truthiness if __bool__ not defined
                     let len_local = self.alloc_and_add_local(Type::Int, mir_func);

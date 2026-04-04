@@ -39,7 +39,7 @@ impl<'a> Lowering<'a> {
         if let Type::Class { class_id, .. } = &arg_type {
             let iter_func = self
                 .get_class_info(class_id)
-                .and_then(|info| info.iter_func);
+                .and_then(|info| info.get_dunder_func("__iter__"));
             if let Some(func_id) = iter_func {
                 let result_local = self.alloc_and_add_local(arg_type.clone(), mir_func);
                 self.emit_instruction(mir::InstructionKind::CallDirect {
@@ -176,7 +176,7 @@ impl<'a> Lowering<'a> {
         if let Type::Class { class_id, .. } = &arg_type {
             let next_func = self
                 .get_class_info(class_id)
-                .and_then(|info| info.next_func);
+                .and_then(|info| info.get_dunder_func("__next__"));
             if let Some(func_id) = next_func {
                 let return_ty = self
                     .get_func_return_type(&func_id)

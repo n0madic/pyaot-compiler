@@ -99,4 +99,22 @@ impl<'a> Lowering<'a> {
             .instructions
             .push(mir::Instruction { kind, span });
     }
+
+    /// Emit a runtime call: allocates a result local, emits the RuntimeCall instruction,
+    /// and returns the LocalId of the result.
+    ///
+    /// This consolidates the common pattern of:
+    ///   let dest = self.alloc_and_add_local(result_type, mir_func);
+    ///   self.emit_instruction(RuntimeCall { dest, func, args });
+    pub(crate) fn emit_runtime_call(
+        &mut self,
+        func: mir::RuntimeFunc,
+        args: Vec<mir::Operand>,
+        result_type: Type,
+        mir_func: &mut mir::Function,
+    ) -> LocalId {
+        let dest = self.alloc_and_add_local(result_type, mir_func);
+        self.emit_instruction(mir::InstructionKind::RuntimeCall { dest, func, args });
+        dest
+    }
 }

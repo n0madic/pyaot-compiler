@@ -144,7 +144,7 @@ impl<'a> Lowering<'a> {
             {
                 if let Some(call_func_id) = self
                     .get_class_info(class_id)
-                    .and_then(|info| info.call_func)
+                    .and_then(|info| info.get_dunder_func("__call__"))
                 {
                     if let Some(return_type) = self.get_func_return_type(&call_func_id) {
                         return Some(return_type.clone());
@@ -234,7 +234,7 @@ impl<'a> Lowering<'a> {
             if let Type::Class { class_id, .. } = &arg_types[0] {
                 if self
                     .get_class_info(class_id)
-                    .and_then(|info| info.iter_func)
+                    .and_then(|info| info.get_dunder_func("__iter__"))
                     .is_some()
                 {
                     return Some(arg_types[0].clone());
@@ -245,7 +245,7 @@ impl<'a> Lowering<'a> {
             if let Type::Class { class_id, .. } = &arg_types[0] {
                 if let Some(ret) = self
                     .get_class_info(class_id)
-                    .and_then(|info| info.next_func)
+                    .and_then(|info| info.get_dunder_func("__next__"))
                     .and_then(|func_id| self.get_func_return_type(&func_id).cloned())
                 {
                     return Some(ret);
@@ -339,7 +339,7 @@ impl<'a> Lowering<'a> {
         if let Type::Class { class_id, .. } = obj_ty {
             if let Some(ty) = self
                 .get_class_info(class_id)
-                .and_then(|info| info.getitem_func)
+                .and_then(|info| info.get_dunder_func("__getitem__"))
                 .and_then(|func_id| self.get_func_return_type(&func_id).cloned())
             {
                 return Some(ty);

@@ -66,6 +66,67 @@ pub struct CrossModuleClassInfo {
     pub total_field_count: usize,
 }
 
+/// All recognized dunder method names (excluding __init__ which is handled separately).
+/// Used by `set_dunder_func` to validate whether a method name is a tracked dunder.
+const KNOWN_DUNDERS: &[&str] = &[
+    "__str__",
+    "__repr__",
+    "__eq__",
+    "__ne__",
+    "__lt__",
+    "__le__",
+    "__gt__",
+    "__ge__",
+    "__hash__",
+    "__len__",
+    "__add__",
+    "__sub__",
+    "__mul__",
+    "__truediv__",
+    "__floordiv__",
+    "__mod__",
+    "__pow__",
+    "__radd__",
+    "__rsub__",
+    "__rmul__",
+    "__rtruediv__",
+    "__rfloordiv__",
+    "__rmod__",
+    "__rpow__",
+    "__and__",
+    "__or__",
+    "__xor__",
+    "__lshift__",
+    "__rshift__",
+    "__rand__",
+    "__ror__",
+    "__rxor__",
+    "__rlshift__",
+    "__rrshift__",
+    "__matmul__",
+    "__rmatmul__",
+    "__neg__",
+    "__pos__",
+    "__abs__",
+    "__invert__",
+    "__bool__",
+    "__int__",
+    "__float__",
+    "__getitem__",
+    "__setitem__",
+    "__delitem__",
+    "__contains__",
+    "__iter__",
+    "__next__",
+    "__call__",
+    "__index__",
+    "__format__",
+    "__del__",
+    "__new__",
+    "__copy__",
+    "__deepcopy__",
+];
+
 /// Class information for lowering (compiled from HIR ClassDef)
 ///
 /// Contains field layout, method mapping, and vtable information for virtual dispatch.
@@ -81,76 +142,8 @@ pub struct LoweredClassInfo {
     pub method_funcs: IndexMap<InternedString, FuncId>,
     /// The __init__ method FuncId if present
     pub init_func: Option<FuncId>,
-    /// Dunder method tracking
-    pub str_func: Option<FuncId>, // __str__ method
-    pub repr_func: Option<FuncId>, // __repr__ method
-    pub eq_func: Option<FuncId>,   // __eq__ method
-    pub ne_func: Option<FuncId>,   // __ne__ method
-    pub lt_func: Option<FuncId>,   // __lt__ method
-    pub le_func: Option<FuncId>,   // __le__ method
-    pub gt_func: Option<FuncId>,   // __gt__ method
-    pub ge_func: Option<FuncId>,   // __ge__ method
-    pub hash_func: Option<FuncId>, // __hash__ method
-    pub len_func: Option<FuncId>,  // __len__ method
-    /// Arithmetic dunders
-    pub add_func: Option<FuncId>, // __add__ method
-    pub sub_func: Option<FuncId>,  // __sub__ method
-    pub mul_func: Option<FuncId>,  // __mul__ method
-    pub truediv_func: Option<FuncId>, // __truediv__ method
-    pub floordiv_func: Option<FuncId>, // __floordiv__ method
-    pub mod_func: Option<FuncId>,  // __mod__ method
-    pub pow_func: Option<FuncId>,  // __pow__ method
-    /// Reverse arithmetic dunders
-    pub radd_func: Option<FuncId>, // __radd__ method
-    pub rsub_func: Option<FuncId>, // __rsub__ method
-    pub rmul_func: Option<FuncId>, // __rmul__ method
-    pub rtruediv_func: Option<FuncId>, // __rtruediv__ method
-    pub rfloordiv_func: Option<FuncId>, // __rfloordiv__ method
-    pub rmod_func: Option<FuncId>, // __rmod__ method
-    pub rpow_func: Option<FuncId>, // __rpow__ method
-    /// Bitwise dunders
-    pub and_func: Option<FuncId>, // __and__ method
-    pub or_func: Option<FuncId>,   // __or__ method
-    pub xor_func: Option<FuncId>,  // __xor__ method
-    pub lshift_func: Option<FuncId>, // __lshift__ method
-    pub rshift_func: Option<FuncId>, // __rshift__ method
-    /// Reverse bitwise dunders
-    pub rand_func: Option<FuncId>, // __rand__ method
-    pub ror_func: Option<FuncId>,  // __ror__ method
-    pub rxor_func: Option<FuncId>, // __rxor__ method
-    pub rlshift_func: Option<FuncId>, // __rlshift__ method
-    pub rrshift_func: Option<FuncId>, // __rrshift__ method
-    /// Matmul dunders
-    pub matmul_func: Option<FuncId>, // __matmul__ method
-    pub rmatmul_func: Option<FuncId>, // __rmatmul__ method
-    /// Unary dunders
-    pub neg_func: Option<FuncId>, // __neg__ method
-    pub pos_func: Option<FuncId>,  // __pos__ method
-    pub abs_func: Option<FuncId>,  // __abs__ method
-    pub invert_func: Option<FuncId>, // __invert__ method
-    pub bool_func: Option<FuncId>, // __bool__ method
-    /// Conversion dunders
-    pub int_func: Option<FuncId>, // __int__ method
-    pub float_func: Option<FuncId>, // __float__ method
-    /// Container dunders
-    pub getitem_func: Option<FuncId>, // __getitem__ method
-    pub setitem_func: Option<FuncId>, // __setitem__ method
-    pub delitem_func: Option<FuncId>, // __delitem__ method
-    pub contains_func: Option<FuncId>, // __contains__ method
-    /// Iterator protocol dunders
-    pub iter_func: Option<FuncId>, // __iter__ method
-    pub next_func: Option<FuncId>, // __next__ method
-    /// Callable dunder
-    pub call_func: Option<FuncId>, // __call__ method
-    /// Index dunder
-    pub index_func: Option<FuncId>, // __index__ method
-    /// Format dunder
-    pub format_func: Option<FuncId>, // __format__ method
-    /// Lifecycle dunders
-    pub del_func: Option<FuncId>, // __del__ method
-    pub new_func: Option<FuncId>,  // __new__ method
-    pub copy_func: Option<FuncId>, // __copy__ method
-    pub deepcopy_func: Option<FuncId>, // __deepcopy__ method
+    /// Dunder methods — unified storage keyed by dunder name (e.g., "__str__", "__eq__")
+    pub dunder_methods: IndexMap<&'static str, FuncId>,
     /// Base class ID for single inheritance (None if no parent)
     pub base_class: Option<ClassId>,
     /// Total field count including inherited fields
@@ -179,68 +172,10 @@ pub struct LoweredClassInfo {
 }
 
 impl LoweredClassInfo {
-    /// Look up a dunder method by name from the dedicated fields.
+    /// Look up a dunder method by name.
     /// Returns `None` for non-dunder names or dunders not defined on this class.
     pub fn get_dunder_func(&self, name: &str) -> Option<FuncId> {
-        match name {
-            "__str__" => self.str_func,
-            "__repr__" => self.repr_func,
-            "__eq__" => self.eq_func,
-            "__ne__" => self.ne_func,
-            "__lt__" => self.lt_func,
-            "__le__" => self.le_func,
-            "__gt__" => self.gt_func,
-            "__ge__" => self.ge_func,
-            "__hash__" => self.hash_func,
-            "__len__" => self.len_func,
-            "__add__" => self.add_func,
-            "__sub__" => self.sub_func,
-            "__mul__" => self.mul_func,
-            "__truediv__" => self.truediv_func,
-            "__floordiv__" => self.floordiv_func,
-            "__mod__" => self.mod_func,
-            "__pow__" => self.pow_func,
-            "__radd__" => self.radd_func,
-            "__rsub__" => self.rsub_func,
-            "__rmul__" => self.rmul_func,
-            "__rtruediv__" => self.rtruediv_func,
-            "__rfloordiv__" => self.rfloordiv_func,
-            "__rmod__" => self.rmod_func,
-            "__rpow__" => self.rpow_func,
-            "__and__" => self.and_func,
-            "__or__" => self.or_func,
-            "__xor__" => self.xor_func,
-            "__lshift__" => self.lshift_func,
-            "__rshift__" => self.rshift_func,
-            "__rand__" => self.rand_func,
-            "__ror__" => self.ror_func,
-            "__rxor__" => self.rxor_func,
-            "__rlshift__" => self.rlshift_func,
-            "__rrshift__" => self.rrshift_func,
-            "__matmul__" => self.matmul_func,
-            "__rmatmul__" => self.rmatmul_func,
-            "__neg__" => self.neg_func,
-            "__pos__" => self.pos_func,
-            "__abs__" => self.abs_func,
-            "__invert__" => self.invert_func,
-            "__bool__" => self.bool_func,
-            "__int__" => self.int_func,
-            "__float__" => self.float_func,
-            "__getitem__" => self.getitem_func,
-            "__setitem__" => self.setitem_func,
-            "__delitem__" => self.delitem_func,
-            "__contains__" => self.contains_func,
-            "__iter__" => self.iter_func,
-            "__next__" => self.next_func,
-            "__call__" => self.call_func,
-            "__index__" => self.index_func,
-            "__format__" => self.format_func,
-            "__del__" => self.del_func,
-            "__new__" => self.new_func,
-            "__copy__" => self.copy_func,
-            "__deepcopy__" => self.deepcopy_func,
-            _ => None,
-        }
+        self.dunder_methods.get(name).copied()
     }
 
     /// Set a dunder method by name. Returns `true` if the name was recognized as a
@@ -249,232 +184,11 @@ impl LoweredClassInfo {
     /// Note: `__init__` is intentionally excluded — it is handled separately via
     /// `class_def.init_method` and stored in `init_func` by the caller.
     pub fn set_dunder_func(&mut self, name: &str, func_id: FuncId) -> bool {
-        match name {
-            "__str__" => {
-                self.str_func = Some(func_id);
-                true
-            }
-            "__repr__" => {
-                self.repr_func = Some(func_id);
-                true
-            }
-            "__eq__" => {
-                self.eq_func = Some(func_id);
-                true
-            }
-            "__ne__" => {
-                self.ne_func = Some(func_id);
-                true
-            }
-            "__lt__" => {
-                self.lt_func = Some(func_id);
-                true
-            }
-            "__le__" => {
-                self.le_func = Some(func_id);
-                true
-            }
-            "__gt__" => {
-                self.gt_func = Some(func_id);
-                true
-            }
-            "__ge__" => {
-                self.ge_func = Some(func_id);
-                true
-            }
-            "__hash__" => {
-                self.hash_func = Some(func_id);
-                true
-            }
-            "__len__" => {
-                self.len_func = Some(func_id);
-                true
-            }
-            "__add__" => {
-                self.add_func = Some(func_id);
-                true
-            }
-            "__sub__" => {
-                self.sub_func = Some(func_id);
-                true
-            }
-            "__mul__" => {
-                self.mul_func = Some(func_id);
-                true
-            }
-            "__truediv__" => {
-                self.truediv_func = Some(func_id);
-                true
-            }
-            "__floordiv__" => {
-                self.floordiv_func = Some(func_id);
-                true
-            }
-            "__mod__" => {
-                self.mod_func = Some(func_id);
-                true
-            }
-            "__pow__" => {
-                self.pow_func = Some(func_id);
-                true
-            }
-            "__radd__" => {
-                self.radd_func = Some(func_id);
-                true
-            }
-            "__rsub__" => {
-                self.rsub_func = Some(func_id);
-                true
-            }
-            "__rmul__" => {
-                self.rmul_func = Some(func_id);
-                true
-            }
-            "__rtruediv__" => {
-                self.rtruediv_func = Some(func_id);
-                true
-            }
-            "__rfloordiv__" => {
-                self.rfloordiv_func = Some(func_id);
-                true
-            }
-            "__rmod__" => {
-                self.rmod_func = Some(func_id);
-                true
-            }
-            "__rpow__" => {
-                self.rpow_func = Some(func_id);
-                true
-            }
-            "__and__" => {
-                self.and_func = Some(func_id);
-                true
-            }
-            "__or__" => {
-                self.or_func = Some(func_id);
-                true
-            }
-            "__xor__" => {
-                self.xor_func = Some(func_id);
-                true
-            }
-            "__lshift__" => {
-                self.lshift_func = Some(func_id);
-                true
-            }
-            "__rshift__" => {
-                self.rshift_func = Some(func_id);
-                true
-            }
-            "__rand__" => {
-                self.rand_func = Some(func_id);
-                true
-            }
-            "__ror__" => {
-                self.ror_func = Some(func_id);
-                true
-            }
-            "__rxor__" => {
-                self.rxor_func = Some(func_id);
-                true
-            }
-            "__rlshift__" => {
-                self.rlshift_func = Some(func_id);
-                true
-            }
-            "__rrshift__" => {
-                self.rrshift_func = Some(func_id);
-                true
-            }
-            "__matmul__" => {
-                self.matmul_func = Some(func_id);
-                true
-            }
-            "__rmatmul__" => {
-                self.rmatmul_func = Some(func_id);
-                true
-            }
-            "__neg__" => {
-                self.neg_func = Some(func_id);
-                true
-            }
-            "__pos__" => {
-                self.pos_func = Some(func_id);
-                true
-            }
-            "__abs__" => {
-                self.abs_func = Some(func_id);
-                true
-            }
-            "__invert__" => {
-                self.invert_func = Some(func_id);
-                true
-            }
-            "__bool__" => {
-                self.bool_func = Some(func_id);
-                true
-            }
-            "__int__" => {
-                self.int_func = Some(func_id);
-                true
-            }
-            "__float__" => {
-                self.float_func = Some(func_id);
-                true
-            }
-            "__getitem__" => {
-                self.getitem_func = Some(func_id);
-                true
-            }
-            "__setitem__" => {
-                self.setitem_func = Some(func_id);
-                true
-            }
-            "__delitem__" => {
-                self.delitem_func = Some(func_id);
-                true
-            }
-            "__contains__" => {
-                self.contains_func = Some(func_id);
-                true
-            }
-            "__iter__" => {
-                self.iter_func = Some(func_id);
-                true
-            }
-            "__next__" => {
-                self.next_func = Some(func_id);
-                true
-            }
-            "__call__" => {
-                self.call_func = Some(func_id);
-                true
-            }
-            "__index__" => {
-                self.index_func = Some(func_id);
-                true
-            }
-            "__format__" => {
-                self.format_func = Some(func_id);
-                true
-            }
-            "__del__" => {
-                self.del_func = Some(func_id);
-                true
-            }
-            "__new__" => {
-                self.new_func = Some(func_id);
-                true
-            }
-            "__copy__" => {
-                self.copy_func = Some(func_id);
-                true
-            }
-            "__deepcopy__" => {
-                self.deepcopy_func = Some(func_id);
-                true
-            }
-            _ => false,
+        if let Some(&static_name) = KNOWN_DUNDERS.iter().find(|&&n| n == name) {
+            self.dunder_methods.insert(static_name, func_id);
+            true
+        } else {
+            false
         }
     }
 }

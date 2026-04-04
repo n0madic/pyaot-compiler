@@ -710,7 +710,7 @@ impl<'a> Lowering<'a> {
                 // Class with __setitem__ dunder
                 let setitem_func = self
                     .get_class_info(&class_id)
-                    .and_then(|info| info.setitem_func);
+                    .and_then(|info| info.get_dunder_func("__setitem__"));
 
                 if let Some(func_id) = setitem_func {
                     self.emit_instruction(mir::InstructionKind::CallDirect {
@@ -771,7 +771,7 @@ impl<'a> Lowering<'a> {
                 // Class with __delitem__ dunder
                 let delitem_func = self
                     .get_class_info(&class_id)
-                    .and_then(|info| info.delitem_func);
+                    .and_then(|info| info.get_dunder_func("__delitem__"));
 
                 if let Some(func_id) = delitem_func {
                     self.emit_instruction(mir::InstructionKind::CallDirect {

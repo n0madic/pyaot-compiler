@@ -56,7 +56,7 @@ impl<'a> Lowering<'a> {
             if let Type::Class { class_id, .. } = &iter_type {
                 let has_iter = self
                     .get_class_info(class_id)
-                    .and_then(|info| info.iter_func)
+                    .and_then(|info| info.get_dunder_func("__iter__"))
                     .is_some();
                 if has_iter {
                     return self.lower_for_class_iterator(

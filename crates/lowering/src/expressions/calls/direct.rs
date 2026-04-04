@@ -291,7 +291,7 @@ impl<'a> Lowering<'a> {
             {
                 if let Some(call_func_id) = self
                     .get_class_info(class_id)
-                    .and_then(|info| info.call_func)
+                    .and_then(|info| info.get_dunder_func("__call__"))
                 {
                     let obj_op = self.lower_expr(func_expr, hir_module, mir_func)?;
                     let mut call_args = vec![obj_op];

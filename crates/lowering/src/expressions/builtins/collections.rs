@@ -90,7 +90,7 @@ impl<'a> Lowering<'a> {
             Type::Class { class_id, .. } => {
                 // Check for __len__ method
                 if let Some(class_info) = self.get_class_info(&class_id) {
-                    if let Some(len_func) = class_info.len_func {
+                    if let Some(len_func) = class_info.get_dunder_func("__len__") {
                         // Call __len__ method
                         self.emit_instruction(mir::InstructionKind::CallDirect {
                             dest: result_local,

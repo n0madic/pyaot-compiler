@@ -88,7 +88,7 @@ impl<'a> Lowering<'a> {
             }
             Type::Class { class_id, .. } => {
                 // abs(obj) -> call __abs__ dunder if defined
-                if let Some(abs_func) = self.get_class_info(&class_id).and_then(|ci| ci.abs_func) {
+                if let Some(abs_func) = self.get_class_info(&class_id).and_then(|ci| ci.get_dunder_func("__abs__")) {
                     let result_local = self.alloc_and_add_local(arg_type.clone(), mir_func);
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,

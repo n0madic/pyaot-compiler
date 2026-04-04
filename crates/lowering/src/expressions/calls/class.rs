@@ -43,7 +43,7 @@ impl<'a> Lowering<'a> {
             // Use offset-adjusted class_id for local classes
             let effective_class_id = self.get_effective_class_id(class_id);
 
-            if let Some(new_func_id) = info.new_func {
+            if let Some(new_func_id) = info.get_dunder_func("__new__") {
                 // __new__ path: call __new__(cls, *args) which returns an instance,
                 // then call __init__ on the result.
                 // __new__ receives cls (class_id as int) as first arg.

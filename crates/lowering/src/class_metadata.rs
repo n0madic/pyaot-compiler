@@ -89,62 +89,7 @@ impl<'a> Lowering<'a> {
                         field_types: IndexMap::new(),
                         method_funcs: IndexMap::new(),
                         init_func: None,
-                        str_func: None,
-                        repr_func: None,
-                        eq_func: None,
-                        ne_func: None,
-                        lt_func: None,
-                        le_func: None,
-                        gt_func: None,
-                        ge_func: None,
-                        hash_func: None,
-                        len_func: None,
-                        add_func: None,
-                        sub_func: None,
-                        mul_func: None,
-                        truediv_func: None,
-                        floordiv_func: None,
-                        mod_func: None,
-                        pow_func: None,
-                        radd_func: None,
-                        rsub_func: None,
-                        rmul_func: None,
-                        rtruediv_func: None,
-                        rfloordiv_func: None,
-                        rmod_func: None,
-                        rpow_func: None,
-                        and_func: None,
-                        or_func: None,
-                        xor_func: None,
-                        lshift_func: None,
-                        rshift_func: None,
-                        rand_func: None,
-                        ror_func: None,
-                        rxor_func: None,
-                        rlshift_func: None,
-                        rrshift_func: None,
-                        matmul_func: None,
-                        rmatmul_func: None,
-                        neg_func: None,
-                        pos_func: None,
-                        abs_func: None,
-                        invert_func: None,
-                        bool_func: None,
-                        int_func: None,
-                        float_func: None,
-                        getitem_func: None,
-                        setitem_func: None,
-                        delitem_func: None,
-                        contains_func: None,
-                        iter_func: None,
-                        next_func: None,
-                        call_func: None,
-                        index_func: None,
-                        format_func: None,
-                        del_func: None,
-                        new_func: None,
-                        copy_func: None,
-                        deepcopy_func: None,
+                        dunder_methods: IndexMap::new(),
                         base_class: None,
                         total_field_count: 0,
                         own_field_offset: 0,
@@ -420,7 +365,7 @@ impl<'a> Lowering<'a> {
                 .get_class_info(class_id)
                 .map(|ci| {
                     let mut regs = Vec::new();
-                    if let Some(f) = ci.del_func {
+                    if let Some(f) = ci.get_dunder_func("__del__") {
                         regs.push((
                             f,
                             mir::RuntimeFunc::Call(
@@ -428,7 +373,7 @@ impl<'a> Lowering<'a> {
                             ),
                         ));
                     }
-                    if let Some(f) = ci.copy_func {
+                    if let Some(f) = ci.get_dunder_func("__copy__") {
                         regs.push((
                             f,
                             mir::RuntimeFunc::Call(
@@ -436,7 +381,7 @@ impl<'a> Lowering<'a> {
                             ),
                         ));
                     }
-                    if let Some(f) = ci.deepcopy_func {
+                    if let Some(f) = ci.get_dunder_func("__deepcopy__") {
                         regs.push((
                             f,
                             mir::RuntimeFunc::Call(
