@@ -39,12 +39,12 @@ Complete catalog of discovered architectural issues, tagged for cross-referencin
 | P7 | Runtime god-files (8 files >500 lines each) | MEDIUM | `runtime/src/{dict,set,tuple,bytes,...}.rs` | ~9,000 |
 | P8 | Runtime mixed exception raising (3 strategies) | MEDIUM | Throughout `runtime/src/` | ~300 |
 | P9 | Runtime duplicated hash table (dict vs set) | MEDIUM | `runtime/src/{dict,set,hash_table_utils}.rs` | ~400 |
-| P10 | Lowering god-object (45+ fields) | HIGH | `lowering/src/context/mod.rs:161-280` | ~600 |
-| P11 | Dunder methods hardcoding (139 strings, 48 fields) | HIGH | `lowering/src/context/mod.rs:84-460` | ~500 |
-| P12 | Lowering runtime call boilerplate (588x pattern) | MEDIUM | Throughout `lowering/src/` | ~3,000 |
-| P13 | Lowering type dispatch duplication (11+ match sites) | MEDIUM | Throughout `lowering/src/` | ~800 |
-| P14 | Type planning intertwined with lowering | HIGH | `lowering/src/type_planning/` | ~3,000 |
-| P15 | Generator lowering tightly coupled | MEDIUM | `lowering/src/generators/` (3,584 lines) | ~3,584 |
+| P10 | Lowering god-object (45+ fields → 6 sub-structs) | ✅ DONE | `lowering/src/context/mod.rs` | ~600 |
+| P11 | Dunder methods hardcoding (48 fields → IndexMap) | ✅ DONE | `lowering/src/context/mod.rs` | ~500 |
+| P12 | Lowering runtime call boilerplate (229 sites migrated to emit_runtime_call) | ✅ DONE | Throughout `lowering/src/` | ~3,000 |
+| P13 | Lowering type dispatch (8 functions in type_dispatch.rs) | ✅ DONE | `lowering/src/type_dispatch.rs` | ~800 |
+| P14 | Type planning separated (136 cached queries, TypeEnvironment read-only) | ✅ DONE | `lowering/src/type_planning/` | ~3,000 |
+| P15 | Generator decoupled (GeneratorContext struct, 7 free functions) | ✅ DONE | `lowering/src/generators/` | ~3,584 |
 | P16 | Frontend god-file expressions.rs (1,675 LOC) | MEDIUM | `frontend-python/src/ast_to_hir/expressions.rs` | ~1,675 |
 | P17 | Frontend AstToHir struct (27 fields) | MEDIUM | `frontend-python/src/ast_to_hir/mod.rs:70-126` | ~500 |
 | P18 | Dual type systems without validation | MEDIUM | Frontend `types.rs` vs lowering `type_planning/` | ~400 |
@@ -55,7 +55,7 @@ Complete catalog of discovered architectural issues, tagged for cross-referencin
 | P23 | Optimizer inconsistent fixpoint iteration | LOW | Various optimizer passes | ~50 |
 | P24 | Span loss through pipeline | MEDIUM | Lowering (desugaring), optimizer | ~200 |
 | P25 | Inconsistent error hierarchy | MEDIUM | `diagnostics/src/lib.rs:29-99` | ~100 |
-| P26 | Lowering god-files (8+ files >800 lines) | MEDIUM | `lowering/src/expressions/operators.rs`, etc. | ~8,000 |
+| P26 | Lowering god-files split (5 files → 17 modules) | ✅ DONE | `lowering/src/{operators,match_stmt,assign,call_resolution,type_planning}/` | ~8,000 |
 | P27 | Codegen instructions.rs god-file (1,143 LOC) | LOW | `codegen-cranelift/src/instructions.rs` | ~1,143 |
 | P28 | Cross-module class info uses String instead of InternedString | LOW | `lowering/src/context/mod.rs:208-232` | ~50 |
 
@@ -84,14 +84,14 @@ Phase 2 (KEYSTONE) ◄────────────┘  ✅ COMPLETE
   P24 Span in MIR instructions ──(pre-existing ✅)
          │
          ▼
-Phase 3 (Lowering)
-  P11 Dunder → HashMap
-  P10 Decompose god-object
-  P14 Separate type planning
-  P15 Decouple generators
-  P12 emit_runtime_call helper ─(simplified by Phase 2)
-  P13 Centralized type dispatch ─(simplified by Phase 2)
-  P26 Split god-files
+Phase 3 (Lowering) ✅ COMPLETE
+  P11 Dunder → IndexMap ✅
+  P10 Decompose god-object (6 sub-structs) ✅
+  P14 Separate type planning (cache-first queries) ✅
+  P15 Decouple generators (GeneratorContext) ✅
+  P12 emit_runtime_call (229 sites migrated) ✅
+  P13 Centralized type dispatch (type_dispatch.rs) ✅
+  P26 Split god-files (5→17 modules) ✅
          │
          ▼
 Phase 4 (Frontend & Codegen)
@@ -546,15 +546,22 @@ Already implemented before this refactoring — `Instruction` has `pub span: Opt
 
 ---
 
-## Phase 3: Lowering Architecture
+## Phase 3: Lowering Architecture ✅ COMPLETE
 
 **Goal:** Decompose the 32K-line lowering crate's god-objects and eliminate duplicated patterns, leveraging Phase 2's simplified RuntimeFunc.
 
 **Depends on:** Phase 2 (RuntimeFunc descriptors, MIR spans)
 
-**Duration estimate:** Large. Many interconnected changes, but each substep is independently testable.
+**Status:** All 7 sub-phases implemented. Key metrics:
+- Lowering god-object: 40+ fields → 6 focused sub-structs (`ClosureState`, `ModuleState`, `ClassRegistry`, `CodeGenState`, `SymbolTable`, `TypeEnvironment`)
+- Dunder methods: 48 `Option<FuncId>` → 1 `IndexMap<&'static str, FuncId>` + `KNOWN_DUNDERS` array
+- Type queries: 136 cache-first via `get_type_of_expr_id`, only 4 uncached (where ExprId unavailable)
+- Generators: `GeneratorContext` struct with 6 impl blocks, 7 free functions for pure HIR analysis, only 1 `impl Lowering` (entry point)
+- Runtime call boilerplate: 229 sites migrated to `emit_runtime_call` helper
+- Type dispatch: `type_dispatch.rs` with 8 centralized dispatch functions + `TruthinessStrategy` enum
+- God-files: 5 files (operators, match_stmt, assign, call_resolution, pre_scan) split into 17 focused modules
 
-### 3.1 — Dunder Methods: Fields → HashMap (P11)
+### 3.1 — Dunder Methods: Fields → HashMap (P11) ✅ DONE
 
 **Problem:** `LoweredClassInfo` has 48 separate fields for dunder methods (`str_func`, `repr_func`, `eq_func`, ...) plus 120+ lines of hardcoded match statements in `get_dunder_func()` and `set_dunder_func()`.
 
@@ -607,7 +614,7 @@ impl LoweredClassInfo {
 
 **Net effect:** ~500 lines deleted, adding new dunder support is just a single intern + insert.
 
-### 3.2 — Decompose Lowering God-Object (P10)
+### 3.2 — Decompose Lowering God-Object (P10) ✅ DONE
 
 **Problem:** `Lowering` struct has 45+ fields mixing 6 concerns: variable tracking, type inference, code generation state, class metadata, closure state, and cross-module data.
 
@@ -692,7 +699,7 @@ pub struct ModuleState {
 
 **Interplay with P14:** The `TypeEnvironment` extraction directly enables separating type planning (Phase 3.3).
 
-### 3.3 — Separate Type Planning Phase (P14)
+### 3.3 — Separate Type Planning Phase (P14) ✅ DONE
 
 **Problem:** Type inference and MIR lowering are intertwined — `expr_types` cache lives on `Lowering`, type planning calls pre-scan which inspects MIR results. Circular dependency.
 
@@ -740,12 +747,14 @@ pub struct Lowerer<'a> {
 **Key constraint:** TypePlanner must not depend on MIR — it works only with HIR and Type. This breaks the circular dependency.
 
 **Migration:**
-1. Extract `type_planning/` into standalone module with own state
-2. Run type planning first, producing `TypeEnvironment`
-3. Pass `TypeEnvironment` as read-only to `Lowerer`
-4. Remove all `compute_expr_type` calls during lowering — replaced by `self.types.get(expr_id)`
+1. Extract `type_planning/` into standalone module with own state ✅
+2. Run type planning first, producing `TypeEnvironment` ✅
+3. `var_types`/`narrowed_union_vars` moved from `TypeEnvironment` to `SymbolTable` — TypeEnvironment now read-only after planning ✅
+4. 136 type queries routed through cache-first `get_type_of_expr_id`; only 4 uncached calls remain (where ExprId unavailable in `lower_list/tuple/dict/set`) ✅
 
-### 3.4 — Decouple Generator Lowering (P15)
+**Note:** Full `TypePlanner` struct not created — `var_types` evolves during lowering (assignments update it), making full pre-computation impractical without dataflow analysis. The cache-first approach achieves the same decoupling goal pragmatically.
+
+### 3.4 — Decouple Generator Lowering (P15) ✅ DONE
 
 **Problem:** `generators/` (3,584 lines, 5 files) is tightly coupled to main lowering via shared context.
 
@@ -763,9 +772,15 @@ The desugarer transforms generator functions into state-machine classes before l
 3. Yield points become state transitions
 4. Lowerer handles the result as a normal class — no special generator logic needed
 
-**This eliminates:** 3,584 lines of interleaved generator + lowering code, replaced by ~1,500 lines of focused desugaring.
+**Actual implementation:** Instead of full HIR→HIR desugaring (high risk, requires new HIR nodes), created `GeneratorContext` struct that decouples generator MIR construction from the full `Lowering` context:
+- `GeneratorContext` bundles only: interner, class_registry, symbols, modules, types, next_local_id
+- 6 `impl GeneratorContext` blocks (creator, resume, while_loop, for_loop, utils, mod)
+- 7 free functions for pure HIR analysis (detect_*, collect_*, hir_binop_to_mir)
+- Only 1 `impl Lowering` remains (entry point: lower_generator_function, lower_yield_expr, infer_generator_yield_type)
 
-### 3.5 — Lowering Helper: emit_runtime_call (P12)
+**Note:** Full HIR→HIR GeneratorDesugarer deferred — requires new HIR node types for state machines and complete rewrite of ~3,500 lines. The `GeneratorContext` approach achieves the decoupling goal with much lower risk.
+
+### 3.5 — Lowering Helper: emit_runtime_call (P12) ✅ DONE
 
 **Problem:** 588x occurrences of alloc-local + emit-instruction boilerplate.
 
@@ -797,9 +812,9 @@ impl Lowerer<'_> {
 }
 ```
 
-**Impact:** 588 occurrences of 4-6 lines reduced to 1 line each.
+**Result:** 229 call sites migrated to `emit_runtime_call` across 40+ files. Remaining `alloc_and_add_local` calls use non-RuntimeCall instructions (Copy, BinOp, CallDirect) or have custom gc_root handling.
 
-### 3.6 — Centralized Type-to-Operation Mapping (P13)
+### 3.6 — Centralized Type-to-Operation Mapping (P13) ✅ DONE
 
 **Problem:** 11+ `match ty { Type::Int => ..., Type::Float => ..., ... }` scattered across lowering for selecting runtime functions.
 
@@ -834,19 +849,27 @@ fn type_category(ty: &Type) -> TypeCategory { ... }
 static BINOP_TABLE: LazyLock<HashMap<(BinOp, TypeCategory, TypeCategory), &RuntimeFuncDef>> = ...;
 ```
 
-**Impact:** 11+ match sites replaced by table lookups. Adding new type support = adding rows to tables.
+**Actual implementation:** Created `type_dispatch.rs` with function-based dispatch (not `LazyLock` tables — match arms compile to jump tables with identical performance):
+- `select_print_func(ty)` — print dispatch
+- `select_len_func(ty)` — len dispatch
+- `type_to_conversion_kind(ty)` — Type → ConversionTypeKind
+- `type_to_iter_source(ty)` — container → IterSourceKind
+- `select_truthiness(ty)` → `TruthinessStrategy` enum (7 variants)
+- `select_slicing_func(ty)` / `select_slicing_step_func(ty)` — slicing dispatch
 
-### 3.7 — Split Lowering God-Files (P26)
+`select_binop`/`select_method` not added — binop dispatch is 2D (left×right×op), method dispatch uses per-type submodules. Both are already structurally separated and don't benefit from centralization.
+
+### 3.7 — Split Lowering God-Files (P26) ✅ DONE
 
 After Phases 3.1-3.6 simplify the code, split remaining large files:
 
-| File | Lines | Split Into |
-|------|-------|-----------|
-| `operators.rs` (1,414) | → `binary_ops.rs`, `unary_ops.rs`, `comparison.rs`, `logical_ops.rs` |
-| `match_stmt.rs` (1,199) | → `match_patterns.rs`, `match_guards.rs`, `match_control_flow.rs` |
-| `pre_scan.rs` (1,014) | → Absorbed into TypePlanner (Phase 3.3) |
-| `assign.rs` (991) | → `simple_assign.rs`, `tuple_unpack.rs`, `augmented_assign.rs` |
-| `call_resolution.rs` (987) | → `arg_binding.rs`, `default_params.rs`, `varargs.rs` |
+| File | Lines | Split Into | Status |
+|------|-------|-----------|--------|
+| `operators.rs` (1,414) | → `operators/{binary_ops,comparison,unary_ops,logical_ops}.rs` | ✅ DONE |
+| `match_stmt.rs` (1,217) | → `match_stmt/{mod,patterns,binding}.rs` | ✅ DONE |
+| `pre_scan.rs` (1,014) | → `type_planning/{container_refine,closure_scan,lambda_inference}.rs` | ✅ DONE |
+| `assign.rs` (1,015) | → `assign/{mod,unpack,augmented}.rs` | ✅ DONE |
+| `call_resolution.rs` (1,005) | → `call_resolution/{mod,arg_binding,default_params,varargs}.rs` | ✅ DONE |
 
 ---
 
