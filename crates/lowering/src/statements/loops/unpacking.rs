@@ -15,7 +15,7 @@ impl<'a> Lowering<'a> {
     pub(super) fn lower_for_unpack_general(
         &mut self,
         targets: &[VarId],
-        iter_expr: &hir::Expr,
+        iter_id: hir::ExprId,
         body: &[hir::StmtId],
         else_block: &[hir::StmtId],
         hir_module: &hir::Module,
@@ -27,12 +27,13 @@ impl<'a> Lowering<'a> {
             builtin: hir::Builtin::Zip,
             args: zip_args,
             ..
-        } = &iter_expr.kind
+        } = &hir_module.exprs[iter_id].kind
         {
-            let elem_types = self.compute_zip_element_types(zip_args, hir_module);
+            let zip_args = zip_args.clone();
+            let elem_types = self.compute_zip_element_types(&zip_args, hir_module);
             return self.lower_for_unpack_iterator(
                 targets,
-                iter_expr,
+                iter_id,
                 Type::Tuple(elem_types),
                 body,
                 else_block,
@@ -41,13 +42,13 @@ impl<'a> Lowering<'a> {
             );
         }
 
-        let iter_type = self.get_expr_type(iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
 
         let Some((kind, elem_type)) = get_iterable_info(&iter_type) else {
             // Fallback for unknown types: use iterator protocol
             return self.lower_for_unpack_iterator(
                 targets,
-                iter_expr,
+                iter_id,
                 Type::Any,
                 body,
                 else_block,
@@ -59,7 +60,7 @@ impl<'a> Lowering<'a> {
         // For iterators, use iterator protocol
         if kind == IterableKind::Iterator {
             return self.lower_for_unpack_iterator(
-                targets, iter_expr, elem_type, body, else_block, hir_module, mir_func,
+                targets, iter_id, elem_type, body, else_block, hir_module, mir_func,
             );
         }
 
@@ -69,6 +70,7 @@ impl<'a> Lowering<'a> {
             _ => vec![Type::Any; targets.len()],
         };
 
+        let iter_expr = &hir_module.exprs[iter_id];
         let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
@@ -253,15 +255,16 @@ impl<'a> Lowering<'a> {
     pub(super) fn lower_for_unpack_iterator(
         &mut self,
         targets: &[VarId],
-        iter_expr: &hir::Expr,
+        iter_id: hir::ExprId,
         elem_type: Type,
         body: &[hir::StmtId],
         else_block: &[hir::StmtId],
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
+        let iter_expr = &hir_module.exprs[iter_id];
         let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
-        let iter_type = self.get_expr_type(iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {
@@ -387,7 +390,7 @@ impl<'a> Lowering<'a> {
                 elem_types.push(Type::Int);
                 continue;
             }
-            let arg_type = self.get_expr_type(arg_expr, hir_module);
+            let arg_type = self.get_type_of_expr_id(*arg_id, hir_module);
             let elem_type =
                 crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
             elem_types.push(elem_type);

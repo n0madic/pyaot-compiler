@@ -72,13 +72,13 @@ impl<'a> Lowering<'a> {
         }
 
         // General iterable path: use indexed iteration with counter
-        let iter_type = self.get_expr_type(inner_iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(enum_args[0], hir_module);
         if let Some((kind, elem_type)) = get_iterable_info(&iter_type) {
             self.lower_for_enumerate_iterable(
                 counter_var,
                 elem_var,
                 start_operand,
-                inner_iter_expr,
+                enum_args[0],
                 kind,
                 elem_type,
                 body,
@@ -92,7 +92,7 @@ impl<'a> Lowering<'a> {
                 counter_var,
                 elem_var,
                 start_operand,
-                inner_iter_expr,
+                enum_args[0],
                 Type::Any,
                 body,
                 else_block,
@@ -297,7 +297,7 @@ impl<'a> Lowering<'a> {
         counter_var: VarId,
         elem_var: VarId,
         start_operand: mir::Operand,
-        iter_expr: &hir::Expr,
+        iter_id: hir::ExprId,
         iterable_kind: IterableKind,
         elem_type: Type,
         body: &[hir::StmtId],
@@ -311,7 +311,7 @@ impl<'a> Lowering<'a> {
                 counter_var,
                 elem_var,
                 start_operand,
-                iter_expr,
+                iter_id,
                 elem_type,
                 body,
                 else_block,
@@ -321,8 +321,9 @@ impl<'a> Lowering<'a> {
         }
 
         // Lower the iterator expression
+        let iter_expr = &hir_module.exprs[iter_id];
         let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
-        let iter_type = self.get_expr_type(iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {
@@ -548,7 +549,7 @@ impl<'a> Lowering<'a> {
         counter_var: VarId,
         elem_var: VarId,
         start_operand: mir::Operand,
-        iter_expr: &hir::Expr,
+        iter_id: hir::ExprId,
         elem_type: Type,
         body: &[hir::StmtId],
         else_block: &[hir::StmtId],
@@ -556,8 +557,9 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<()> {
         // Create iterator from the expression
+        let iter_expr = &hir_module.exprs[iter_id];
         let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
-        let iter_type = self.get_expr_type(iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {

@@ -29,7 +29,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Str, mir_func);
 
@@ -155,7 +155,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
@@ -252,7 +252,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Float, mir_func);
 
@@ -339,7 +339,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
@@ -482,7 +482,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         match arg_type {
             Type::Int => {

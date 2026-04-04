@@ -55,7 +55,7 @@ impl<'a> Lowering<'a> {
         if args.len() == 1 {
             // Single argument - check if it's an iterable (list, tuple, set, or range)
             let arg_expr = &hir_module.exprs[args[0]];
-            let arg_type = self.get_expr_type(arg_expr, hir_module);
+            let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
             // Check if it's a range() call - handle specially
             if let hir::ExprKind::BuiltinCall {
@@ -465,8 +465,7 @@ impl<'a> Lowering<'a> {
         // Determine result type (float if any arg is float)
         let mut is_float = false;
         for &arg_id in args {
-            let arg_expr = &hir_module.exprs[arg_id];
-            if self.get_expr_type(arg_expr, hir_module) == Type::Float {
+            if self.get_type_of_expr_id(arg_id, hir_module) == Type::Float {
                 is_float = true;
                 break;
             }
@@ -479,7 +478,7 @@ impl<'a> Lowering<'a> {
         for &arg_id in args {
             let arg_expr = &hir_module.exprs[arg_id];
             let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-            let arg_type = self.get_expr_type(arg_expr, hir_module);
+            let arg_type = self.get_type_of_expr_id(arg_id, hir_module);
 
             let final_operand = if is_float {
                 self.promote_to_float_if_needed(mir_func, arg_operand, &arg_type)

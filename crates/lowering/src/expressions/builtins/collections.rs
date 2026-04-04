@@ -633,7 +633,7 @@ impl<'a> Lowering<'a> {
         for kwarg in kwargs {
             let value_expr = &hir_module.exprs[kwarg.value];
             let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
-            let value_type = self.get_expr_type(value_expr, hir_module);
+            let value_type = self.get_type_of_expr_id(kwarg.value, hir_module);
 
             // Create string key - use the interned string directly
             let key_local = self.alloc_and_add_local(Type::Str, mir_func);
@@ -746,7 +746,7 @@ impl<'a> Lowering<'a> {
         } else {
             // Counter(iterable) — count elements
             let iter_expr = &hir_module.exprs[args[0]];
-            let iter_type = self.get_expr_type(iter_expr, hir_module);
+            let iter_type = self.get_type_of_expr_id(args[0], hir_module);
 
             // Create iterator from the argument
             let iter_operand = if matches!(iter_type, Type::Iterator(_)) {
@@ -822,7 +822,7 @@ impl<'a> Lowering<'a> {
         } else {
             // deque(iterable, maxlen?) — from iterator
             let iter_expr = &hir_module.exprs[args[0]];
-            let iter_type = self.get_expr_type(iter_expr, hir_module);
+            let iter_type = self.get_type_of_expr_id(args[0], hir_module);
 
             let iter_operand = if matches!(iter_type, Type::Iterator(_)) {
                 self.lower_expr(iter_expr, hir_module, mir_func)?

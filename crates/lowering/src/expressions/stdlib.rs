@@ -129,8 +129,8 @@ impl<'a> Lowering<'a> {
         for (i, param) in params.iter().enumerate() {
             let operand = if i < args.len() {
                 // Argument provided - lower it
+                let arg_type = self.get_type_of_expr_id(args[i], hir_module);
                 let arg_expr = &hir_module.exprs[args[i]];
-                let arg_type = self.get_expr_type(arg_expr, hir_module);
                 let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
 
                 // Auto-box if enabled and parameter is Any
@@ -192,8 +192,8 @@ impl<'a> Lowering<'a> {
         // Add each argument to the list, boxing primitives as required since the list
         // uses ELEM_HEAP_OBJ storage (float, bool, and None are stored as heap objects).
         for arg_id in args {
+            let arg_type = self.get_type_of_expr_id(*arg_id, hir_module);
             let arg_expr = &hir_module.exprs[*arg_id];
-            let arg_type = self.get_expr_type(arg_expr, hir_module);
             let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
 
             // Box the argument when it is a primitive that requires heap representation
@@ -252,7 +252,7 @@ impl<'a> Lowering<'a> {
                 // Auto-box primitives for Any parameters so the runtime
                 // receives valid *mut Obj pointers (not raw i64/f64 values)
                 if matches!(param.ty, pyaot_stdlib_defs::TypeSpec::Any) {
-                    let arg_type = self.get_expr_type(arg_expr, hir_module);
+                    let arg_type = self.get_type_of_expr_id(args[i], hir_module);
                     self.box_primitive_if_needed(op, &arg_type, mir_func)
                 } else {
                     op

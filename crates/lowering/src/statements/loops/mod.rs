@@ -50,7 +50,7 @@ impl<'a> Lowering<'a> {
             self.lower_for_range(target, args, body, else_block, hir_module, mir_func)?;
         } else {
             // Handle iterables (list, tuple, dict, str, set, bytes)
-            let iter_type = self.get_expr_type(iter_expr, hir_module);
+            let iter_type = self.get_type_of_expr_id(iter, hir_module);
 
             // Check for class with __iter__/__next__ (iterator protocol)
             if let Type::Class { class_id, .. } = &iter_type {
@@ -114,7 +114,7 @@ impl<'a> Lowering<'a> {
         }
 
         // General tuple unpack: for a, b in list_of_tuples
-        self.lower_for_unpack_general(targets, iter_expr, body, else_block, hir_module, mir_func)
+        self.lower_for_unpack_general(targets, iter, body, else_block, hir_module, mir_func)
     }
 
     /// Lower a for loop with starred unpacking: for first, *rest, last in items

@@ -87,7 +87,7 @@ impl<'a> Lowering<'a> {
                 mir::Operand::Local(boxed_local)
             } else if matches!(elem_type, Type::Union(_)) {
                 // Box primitives for Union element types
-                let actual_elem_type = self.get_expr_type(elem_expr, hir_module);
+                let actual_elem_type = self.get_type_of_expr_id(*elem_id, hir_module);
                 self.box_primitive_if_needed(elem_operand, &actual_elem_type, mir_func)
             } else {
                 elem_operand
@@ -151,7 +151,7 @@ impl<'a> Lowering<'a> {
             // Box primitive values when elem_tag is ELEM_HEAP_OBJ
             let final_operand = if elem_tag == 0 {
                 // ELEM_HEAP_OBJ - need to box primitives
-                let elem_type = self.get_expr_type(elem_expr, hir_module);
+                let elem_type = self.get_type_of_expr_id(*elem_id, hir_module);
                 match elem_type {
                     Type::Int => {
                         let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
@@ -242,8 +242,8 @@ impl<'a> Lowering<'a> {
 
         // Insert each key-value pair
         for (key_id, value_id) in pairs {
+            let key_type = self.get_type_of_expr_id(*key_id, hir_module);
             let key_expr = &hir_module.exprs[*key_id];
-            let key_type = self.get_expr_type(key_expr, hir_module);
             let key_operand = self.lower_expr(key_expr, hir_module, mir_func)?;
 
             // Box non-heap keys (int, bool) so dict can use them as object pointers
@@ -251,7 +251,7 @@ impl<'a> Lowering<'a> {
 
             let value_expr = &hir_module.exprs[*value_id];
             let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
-            let actual_value_type = self.get_expr_type(value_expr, hir_module);
+            let actual_value_type = self.get_type_of_expr_id(*value_id, hir_module);
 
             // Box primitive values (all dict values must be heap pointers for GC)
             let boxed_value =
@@ -303,8 +303,8 @@ impl<'a> Lowering<'a> {
 
         // Add each element
         for elem_id in elements {
+            let elem_type = self.get_type_of_expr_id(*elem_id, hir_module);
             let elem_expr = &hir_module.exprs[*elem_id];
-            let elem_type = self.get_expr_type(elem_expr, hir_module);
             let elem_operand = self.lower_expr(elem_expr, hir_module, mir_func)?;
 
             // Box non-heap elements (int, bool) so set can use them as object pointers
