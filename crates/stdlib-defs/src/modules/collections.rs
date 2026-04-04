@@ -17,15 +17,20 @@ use pyaot_core_defs::RuntimeFuncDef;
 // popitem(last=True/False). The constructor maps to rt_make_dict.
 
 /// OrderedDict() constructor -- creates an empty ordered dict (same as dict)
+/// The capacity parameter maps to rt_make_dict(capacity); default 0 = use default size.
 static ORDERED_DICT_NEW: StdlibFunctionDef = StdlibFunctionDef {
     name: "OrderedDict",
     runtime_name: "rt_make_dict",
-    params: &[],
+    params: &[ParamDef::optional_with_default(
+        "capacity",
+        TypeSpec::Int,
+        ConstValue::Int(0),
+    )],
     return_type: TypeSpec::Dict(&TypeSpec::Any, &TypeSpec::Any),
     min_args: 0,
     max_args: 0,
     hints: LoweringHints::NO_AUTO_BOX,
-    codegen: RuntimeFuncDef::new("rt_make_dict", &[], Some(R_I64), false),
+    codegen: RuntimeFuncDef::new("rt_make_dict", &[P_I64], Some(R_I64), false),
 };
 
 /// OrderedDict.move_to_end(key, last=True)
