@@ -168,14 +168,12 @@ impl<'a> Lowering<'a> {
         // Check for list concatenation (+)
         if let Type::List(elem_ty) = &left_ty {
             if matches!(op, hir::BinOp::Add) {
-                let list_result = self.alloc_and_add_local(Type::List(elem_ty.clone()), mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: list_result,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_LIST_CONCAT,
-                    ),
-                    args: vec![left_op, right_op],
-                });
+                let list_result = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_CONCAT),
+                    vec![left_op, right_op],
+                    Type::List(elem_ty.clone()),
+                    mir_func,
+                );
                 return Ok(mir::Operand::Local(list_result));
             }
         }
@@ -183,13 +181,12 @@ impl<'a> Lowering<'a> {
         // Check for dict merge operation (|)
         if let Type::Dict(key_ty, value_ty) = &left_ty {
             if matches!(op, hir::BinOp::BitOr) {
-                let dict_result = self
-                    .alloc_and_add_local(Type::Dict(key_ty.clone(), value_ty.clone()), mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dict_result,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_MERGE),
-                    args: vec![left_op, right_op],
-                });
+                let dict_result = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_MERGE),
+                    vec![left_op, right_op],
+                    Type::Dict(key_ty.clone(), value_ty.clone()),
+                    mir_func,
+                );
                 return Ok(mir::Operand::Local(dict_result));
             }
         }
@@ -212,12 +209,12 @@ impl<'a> Lowering<'a> {
                 _ => None,
             };
             if let Some(runtime_func) = set_func {
-                let set_result = self.alloc_and_add_local(Type::Set(elem_ty.clone()), mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: set_result,
-                    func: runtime_func,
-                    args: vec![left_op, right_op],
-                });
+                let set_result = self.emit_runtime_call(
+                    runtime_func,
+                    vec![left_op, right_op],
+                    Type::Set(elem_ty.clone()),
+                    mir_func,
+                );
                 return Ok(mir::Operand::Local(set_result));
             }
         }
@@ -332,13 +329,12 @@ impl<'a> Lowering<'a> {
                     self.box_primitive_if_needed(right_op, &right_ty, mir_func)
                 };
                 // Result is Union (boxed pointer)
-                let union_result =
-                    self.alloc_and_add_local(Type::Union(vec![Type::Int, Type::Float]), mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: union_result,
-                    func: rt_func,
-                    args: vec![boxed_left, boxed_right],
-                });
+                let union_result = self.emit_runtime_call(
+                    rt_func,
+                    vec![boxed_left, boxed_right],
+                    Type::Union(vec![Type::Int, Type::Float]),
+                    mir_func,
+                );
                 return Ok(mir::Operand::Local(union_result));
             }
         }
@@ -402,17 +398,15 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // Create StringBuilder with estimated capacity
-        let builder_local = self.alloc_and_add_local(Type::Str, mir_func); // Using Str type for GC root tracking
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: builder_local,
-            func: mir::RuntimeFunc::Call(
-                &pyaot_core_defs::runtime_func_def::RT_MAKE_STRING_BUILDER,
-            ),
-            args: vec![mir::Operand::Constant(mir::Constant::Int(
+        // Create StringBuilder with estimated capacity (Using Str type for GC root tracking)
+        let builder_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_STRING_BUILDER),
+            vec![mir::Operand::Constant(mir::Constant::Int(
                 estimated_capacity,
             ))],
-        });
+            Type::Str,
+            mir_func,
+        );
 
         // Append each string to the builder
         let dummy_local = self.alloc_and_add_local(Type::Int, mir_func); // For void call result
@@ -430,14 +424,12 @@ impl<'a> Lowering<'a> {
         }
 
         // Finalize and return the result string
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(
-                &pyaot_core_defs::runtime_func_def::RT_STRING_BUILDER_TO_STR,
-            ),
-            args: vec![mir::Operand::Local(builder_local)],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STRING_BUILDER_TO_STR),
+            vec![mir::Operand::Local(builder_local)],
+            Type::Str,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

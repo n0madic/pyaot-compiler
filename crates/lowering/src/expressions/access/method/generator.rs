@@ -19,8 +19,6 @@ impl<'a> Lowering<'a> {
         match method_name {
             "send" => {
                 // g.send(value) -> yielded value
-                let result_local = self.alloc_and_add_local(elem_ty.clone(), mir_func);
-
                 // Get value to send (default to 0/None if not provided)
                 let value_operand = if !arg_operands.is_empty() {
                     arg_operands[0].clone()
@@ -28,27 +26,23 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Constant(mir::Constant::Int(0))
                 };
 
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_GENERATOR_SEND,
-                    ),
-                    args: vec![obj_operand, value_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GENERATOR_SEND),
+                    vec![obj_operand, value_operand],
+                    elem_ty.clone(),
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }
             "close" => {
                 // g.close() -> None
-                let result_local = self.alloc_and_add_local(Type::None, mir_func);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_GENERATOR_CLOSE,
-                    ),
-                    args: vec![obj_operand],
-                });
+                self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GENERATOR_CLOSE),
+                    vec![obj_operand],
+                    Type::None,
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Constant(mir::Constant::None))
             }

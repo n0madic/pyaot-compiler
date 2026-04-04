@@ -52,23 +52,23 @@ impl<'a> Lowering<'a> {
             });
 
             // Call FileReadlines to get list[str]
-            let lines_local = self.alloc_and_add_local(Type::List(Box::new(Type::Str)), mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: lines_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READLINES),
-                args: vec![mir::Operand::Local(file_local)],
-            });
+            let lines_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READLINES),
+                vec![mir::Operand::Local(file_local)],
+                Type::List(Box::new(Type::Str)),
+                mir_func,
+            );
 
             // Create a synthetic expression-like wrapper so we can reuse list iteration.
             // We directly emit the indexed loop over lines_local here instead of recursing,
             // since we already have the lowered operand.
             let iter_local = lines_local;
-            let len_local = self.alloc_and_add_local(Type::Int, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: len_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
-                args: vec![mir::Operand::Local(iter_local)],
-            });
+            let len_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
+                vec![mir::Operand::Local(iter_local)],
+                Type::Int,
+                mir_func,
+            );
 
             let idx_local = self.alloc_and_add_local(Type::Int, mir_func);
             self.emit_instruction(mir::InstructionKind::Copy {

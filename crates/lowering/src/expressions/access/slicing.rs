@@ -42,31 +42,31 @@ impl<'a> Lowering<'a> {
             mir::Operand::Constant(mir::Constant::Int(i64::MAX))
         };
 
-        let result_local = self.alloc_and_add_local(obj_type.clone(), mir_func);
-
-        if let Some(step_id) = step {
+        let result_local = if let Some(step_id) = step {
             // Slice with step: look up the step-variant function
             let Some(func_def) = select_slicing_step_func(&obj_type) else {
                 return Ok(mir::Operand::Constant(mir::Constant::None));
             };
             let step_expr = &hir_module.exprs[*step_id];
             let step_operand = self.lower_expr(step_expr, hir_module, mir_func)?;
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: result_local,
-                func: mir::RuntimeFunc::Call(func_def),
-                args: vec![obj_operand, start_operand, end_operand, step_operand],
-            });
+            self.emit_runtime_call(
+                mir::RuntimeFunc::Call(func_def),
+                vec![obj_operand, start_operand, end_operand, step_operand],
+                obj_type.clone(),
+                mir_func,
+            )
         } else {
             // Simple slice without step: look up the plain function
             let Some(func_def) = select_slicing_func(&obj_type) else {
                 return Ok(mir::Operand::Constant(mir::Constant::None));
             };
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: result_local,
-                func: mir::RuntimeFunc::Call(func_def),
-                args: vec![obj_operand, start_operand, end_operand],
-            });
-        }
+            self.emit_runtime_call(
+                mir::RuntimeFunc::Call(func_def),
+                vec![obj_operand, start_operand, end_operand],
+                obj_type.clone(),
+                mir_func,
+            )
+        };
 
         Ok(mir::Operand::Local(result_local))
     }

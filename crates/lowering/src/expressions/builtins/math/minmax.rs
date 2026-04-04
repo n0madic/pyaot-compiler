@@ -405,14 +405,12 @@ impl<'a> Lowering<'a> {
                 // to get a raw f64 for comparison (list[float] uses ELEM_HEAP_OBJ storage,
                 // so the iterator returns a pointer to a boxed float, not raw float bits).
                 let item_operand = if is_float_iter {
-                    let float_local = self.alloc_and_add_local(Type::Float, mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: float_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
-                        ),
-                        args: vec![mir::Operand::Local(next_local)],
-                    });
+                    let float_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT),
+                        vec![mir::Operand::Local(next_local)],
+                        Type::Float,
+                        mir_func,
+                    );
                     mir::Operand::Local(float_local)
                 } else {
                     mir::Operand::Local(next_local)

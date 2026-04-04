@@ -129,15 +129,14 @@ impl<'a> Lowering<'a> {
             self.parse_range_args(range_args, hir_module, mir_func)?;
 
         // Create result local with Iterator[int] type
-        let result_local = self.alloc_and_add_local(Type::Iterator(Box::new(Type::Int)), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(
                 mir::IterSourceKind::Range.iterator_def(mir::IterDirection::Forward),
             ),
-            args: vec![start_operand, stop_operand, step_operand],
-        });
+            vec![start_operand, stop_operand, step_operand],
+            Type::Iterator(Box::new(Type::Int)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -186,13 +185,12 @@ impl<'a> Lowering<'a> {
         };
 
         // Create result local with element type
-        let result_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT),
-            args: vec![arg_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT),
+            vec![arg_operand],
+            elem_type,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

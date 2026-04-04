@@ -37,16 +37,12 @@ impl<'a> Lowering<'a> {
         };
 
         // Create result local with Iterator type wrapping (Int, elem_type) tuples
-        let result_local = self.alloc_and_add_local(
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_ENUMERATE),
+            vec![inner_iter, start_operand],
             Type::Iterator(Box::new(Type::Tuple(vec![Type::Int, elem_type]))),
             mir_func,
         );
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_ENUMERATE),
-            args: vec![inner_iter, start_operand],
-        });
 
         Ok(mir::Operand::Local(result_local))
     }

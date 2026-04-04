@@ -561,15 +561,15 @@ impl<'a> Lowering<'a> {
         // Extract all captures
         let mut call_args = Vec::with_capacity(current + user_args.len());
         for i in 0..current {
-            let cap_local = self.alloc_and_add_local(Type::Any, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: cap_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
-                args: vec![
+            let cap_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+                vec![
                     mir::Operand::Local(captures_tuple),
                     mir::Operand::Constant(mir::Constant::Int(i as i64)),
                 ],
-            });
+                Type::Any,
+                mir_func,
+            );
             call_args.push(mir::Operand::Local(cap_local));
         }
         call_args.extend(user_args.iter().cloned());

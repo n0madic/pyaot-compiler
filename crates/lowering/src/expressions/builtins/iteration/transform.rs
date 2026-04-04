@@ -38,9 +38,6 @@ impl<'a> Lowering<'a> {
         // Determine element type from container type
         let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
 
-        // Create result local with Iterator type
-        let result_local = self.alloc_and_add_local(Type::Iterator(Box::new(elem_type)), mir_func);
-
         // Select appropriate iterator source kind based on container type
         let source = match &arg_type {
             Type::List(_) => mir::IterSourceKind::List,
@@ -56,11 +53,13 @@ impl<'a> Lowering<'a> {
 
         let iter_func = mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Reversed));
 
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: iter_func,
-            args: vec![arg_operand],
-        });
+        // Create result local with Iterator type
+        let result_local = self.emit_runtime_call(
+            iter_func,
+            vec![arg_operand],
+            Type::Iterator(Box::new(elem_type)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -109,15 +108,14 @@ impl<'a> Lowering<'a> {
         };
 
         // Create result local with Iterator[int] type
-        let result_local = self.alloc_and_add_local(Type::Iterator(Box::new(Type::Int)), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(
                 mir::IterSourceKind::Range.iterator_def(mir::IterDirection::Reversed),
             ),
-            args: vec![start_operand, stop_operand, step_operand],
-        });
+            vec![start_operand, stop_operand, step_operand],
+            Type::Iterator(Box::new(Type::Int)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -275,13 +273,12 @@ impl<'a> Lowering<'a> {
         };
 
         // Create result local with List[int] type
-        let result_local = self.alloc_and_add_local(Type::List(Box::new(Type::Int)), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(mir::SortableKind::Range.sorted_def(false)),
-            args: vec![start_operand, stop_operand, step_operand, reverse_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(mir::SortableKind::Range.sorted_def(false)),
+            vec![start_operand, stop_operand, step_operand, reverse_operand],
+            Type::List(Box::new(Type::Int)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

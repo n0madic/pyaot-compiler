@@ -31,8 +31,6 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        let result_local = self.alloc_and_add_local(list_type.clone(), mir_func);
-
         // Determine elem_tag based on element type
         let elem_type = match &list_type {
             Type::List(elem_ty) => (**elem_ty).clone(),
@@ -47,14 +45,15 @@ impl<'a> Lowering<'a> {
 
         // Create list with capacity and elem_tag
         let capacity = elements.len() as i64;
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
-            args: vec![
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
+            vec![
                 mir::Operand::Constant(mir::Constant::Int(capacity)),
                 mir::Operand::Constant(mir::Constant::Int(elem_tag)),
             ],
-        });
+            list_type.clone(),
+            mir_func,
+        );
 
         // Create a dummy local for void returns
         let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
@@ -69,21 +68,21 @@ impl<'a> Lowering<'a> {
             // - Union element types need boxing for primitive values
             // - Bool elements: box for heap lists, extend to i64 for raw bool lists
             let push_operand = if elem_type == Type::Float {
-                let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: boxed_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
-                    args: vec![elem_operand],
-                });
+                let boxed_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
+                    vec![elem_operand],
+                    Type::HeapAny,
+                    mir_func,
+                );
                 mir::Operand::Local(boxed_local)
             } else if elem_type == Type::Bool {
                 // ELEM_HEAP_OBJ: box bools
-                let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: boxed_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
-                    args: vec![elem_operand],
-                });
+                let boxed_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
+                    vec![elem_operand],
+                    Type::HeapAny,
+                    mir_func,
+                );
                 mir::Operand::Local(boxed_local)
             } else if matches!(elem_type, Type::Union(_)) {
                 // Box primitives for Union element types
@@ -154,36 +153,32 @@ impl<'a> Lowering<'a> {
                 let elem_type = self.get_type_of_expr_id(*elem_id, hir_module);
                 match elem_type {
                     Type::Int => {
-                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_BOX_INT,
-                            ),
-                            args: vec![elem_operand],
-                        });
+                        let boxed_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_INT),
+                            vec![elem_operand],
+                            Type::HeapAny,
+                            mir_func,
+                        );
                         mir::Operand::Local(boxed_local)
                     }
                     Type::Bool => {
-                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_BOX_BOOL,
-                            ),
-                            args: vec![elem_operand],
-                        });
+                        let boxed_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
+                            vec![elem_operand],
+                            Type::HeapAny,
+                            mir_func,
+                        );
                         mir::Operand::Local(boxed_local)
                     }
                     Type::Float => {
-                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::Call(
+                        let boxed_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT,
                             ),
-                            args: vec![elem_operand],
-                        });
+                            vec![elem_operand],
+                            Type::HeapAny,
+                            mir_func,
+                        );
                         mir::Operand::Local(boxed_local)
                     }
                     _ => elem_operand, // Already a heap object
