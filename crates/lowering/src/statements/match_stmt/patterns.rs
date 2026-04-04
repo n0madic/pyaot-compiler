@@ -359,12 +359,8 @@ impl<'a> Lowering<'a> {
         };
 
         // Check length
-        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: len_local,
-            func: len_func,
-            args: vec![subject.clone()],
-        });
+        let len_local =
+            self.emit_runtime_call(len_func, vec![subject.clone()], Type::Int, mir_func);
 
         // Without star: exact length match
         // With star: minimum length check
@@ -442,12 +438,12 @@ impl<'a> Lowering<'a> {
                 value: mir::Constant::Int(i as i64),
             });
 
-            let elem_local = self.alloc_and_add_local(idx_elem_type.clone(), mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: elem_local,
-                func: get_func,
-                args: vec![subject.clone(), mir::Operand::Local(idx_local)],
-            });
+            let elem_local = self.emit_runtime_call(
+                get_func,
+                vec![subject.clone(), mir::Operand::Local(idx_local)],
+                idx_elem_type.clone(),
+                mir_func,
+            );
 
             // Check pattern against element
             let (elem_cond, elem_bindings) = self.generate_pattern_check(
@@ -512,16 +508,16 @@ impl<'a> Lowering<'a> {
                     };
 
                     let star_elem_type = Type::List(Box::new(elem_type.clone()));
-                    let slice_local = self.alloc_and_add_local(star_elem_type.clone(), mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: slice_local,
-                        func: slice_func,
-                        args: vec![
+                    let slice_local = self.emit_runtime_call(
+                        slice_func,
+                        vec![
                             subject.clone(),
                             mir::Operand::Local(start_local),
                             mir::Operand::Local(end_local),
                         ],
-                    });
+                        star_elem_type.clone(),
+                        mir_func,
+                    );
 
                     bindings.push((*var_id, mir::Operand::Local(slice_local), star_elem_type));
                 }
@@ -562,12 +558,12 @@ impl<'a> Lowering<'a> {
                         right: mir::Operand::Local(one_local),
                     });
 
-                    let elem_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: elem_local,
-                        func: get_func,
-                        args: vec![subject.clone(), mir::Operand::Local(final_idx_local)],
-                    });
+                    let elem_local = self.emit_runtime_call(
+                        get_func,
+                        vec![subject.clone(), mir::Operand::Local(final_idx_local)],
+                        elem_type.clone(),
+                        mir_func,
+                    );
 
                     // Check pattern against element
                     let (elem_cond, elem_bindings) = self.generate_pattern_check(
@@ -640,12 +636,12 @@ impl<'a> Lowering<'a> {
             let key_operand = self.lower_expr(key_expr, ctx.hir_module, mir_func)?;
 
             // Check if key exists using DictContains
-            let contains_local = self.alloc_and_add_local(Type::Bool, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: contains_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_CONTAINS),
-                args: vec![ctx.subject.clone(), key_operand.clone()],
-            });
+            let contains_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_CONTAINS),
+                vec![ctx.subject.clone(), key_operand.clone()],
+                Type::Bool,
+                mir_func,
+            );
 
             // Pre-allocate combined_local and initialize to current result_cond.
             // This ensures the value is valid on both true and false paths.
@@ -676,12 +672,12 @@ impl<'a> Lowering<'a> {
 
             let value_local = self.alloc_and_add_local(value_type.clone(), mir_func);
             if let Some(unbox_func) = unbox_func {
-                let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: boxed_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_GET),
-                    args: vec![ctx.subject.clone(), key_operand],
-                });
+                let boxed_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_GET),
+                    vec![ctx.subject.clone(), key_operand],
+                    Type::HeapAny,
+                    mir_func,
+                );
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: value_local,
                     func: unbox_func,
@@ -734,23 +730,23 @@ impl<'a> Lowering<'a> {
         // **rest binds a copy of the subject dict with matched keys removed.
         if let Some(rest_var) = rest {
             // Copy the subject dict
-            let rest_local = self.alloc_and_add_local(ctx.subject_type.clone(), mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: rest_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_COPY),
-                args: vec![ctx.subject.clone()],
-            });
+            let rest_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_COPY),
+                vec![ctx.subject.clone()],
+                ctx.subject_type.clone(),
+                mir_func,
+            );
 
             // Pop each matched key from the copy
             for key_expr_id in keys {
                 let key_expr = &ctx.hir_module.exprs[*key_expr_id];
                 let key_operand = self.lower_expr(key_expr, ctx.hir_module, mir_func)?;
-                let dummy = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
-                    args: vec![mir::Operand::Local(rest_local), key_operand],
-                });
+                self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
+                    vec![mir::Operand::Local(rest_local), key_operand],
+                    Type::HeapAny,
+                    mir_func,
+                );
             }
 
             bindings.push((
