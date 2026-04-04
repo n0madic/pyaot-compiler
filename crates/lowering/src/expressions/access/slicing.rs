@@ -3,9 +3,9 @@
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
-use pyaot_types::Type;
 
 use crate::context::Lowering;
+use crate::type_dispatch::{select_slicing_func, select_slicing_step_func};
 
 impl<'a> Lowering<'a> {
     /// Lower a slice expression: obj[start:end:step]
@@ -44,102 +44,28 @@ impl<'a> Lowering<'a> {
 
         let result_local = self.alloc_and_add_local(obj_type.clone(), mir_func);
 
-        match obj_type {
-            Type::Str => {
-                if let Some(step_id) = step {
-                    // Slice with step
-                    let step_expr = &hir_module.exprs[*step_id];
-                    let step_operand = self.lower_expr(step_expr, hir_module, mir_func)?;
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_STR_SLICE_STEP,
-                        ),
-                        args: vec![obj_operand, start_operand, end_operand, step_operand],
-                    });
-                } else {
-                    // Simple slice without step
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_STR_SLICE,
-                        ),
-                        args: vec![obj_operand, start_operand, end_operand],
-                    });
-                }
-            }
-            Type::List(_) => {
-                if let Some(step_id) = step {
-                    // Slice with step
-                    let step_expr = &hir_module.exprs[*step_id];
-                    let step_operand = self.lower_expr(step_expr, hir_module, mir_func)?;
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_LIST_SLICE_STEP,
-                        ),
-                        args: vec![obj_operand, start_operand, end_operand, step_operand],
-                    });
-                } else {
-                    // Simple slice without step
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_LIST_SLICE,
-                        ),
-                        args: vec![obj_operand, start_operand, end_operand],
-                    });
-                }
-            }
-            Type::Tuple(_) => {
-                if let Some(step_id) = step {
-                    // Slice with step
-                    let step_expr = &hir_module.exprs[*step_id];
-                    let step_operand = self.lower_expr(step_expr, hir_module, mir_func)?;
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_TUPLE_SLICE_STEP,
-                        ),
-                        args: vec![obj_operand, start_operand, end_operand, step_operand],
-                    });
-                } else {
-                    // Simple slice without step
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_TUPLE_SLICE,
-                        ),
-                        args: vec![obj_operand, start_operand, end_operand],
-                    });
-                }
-            }
-            Type::Bytes => {
-                if let Some(step_id) = step {
-                    // Slice with step
-                    let step_expr = &hir_module.exprs[*step_id];
-                    let step_operand = self.lower_expr(step_expr, hir_module, mir_func)?;
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_BYTES_SLICE_STEP,
-                        ),
-                        args: vec![obj_operand, start_operand, end_operand, step_operand],
-                    });
-                } else {
-                    // Simple slice without step
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_BYTES_SLICE,
-                        ),
-                        args: vec![obj_operand, start_operand, end_operand],
-                    });
-                }
-            }
-            _ => {
+        if let Some(step_id) = step {
+            // Slice with step: look up the step-variant function
+            let Some(func_def) = select_slicing_step_func(&obj_type) else {
                 return Ok(mir::Operand::Constant(mir::Constant::None));
-            }
+            };
+            let step_expr = &hir_module.exprs[*step_id];
+            let step_operand = self.lower_expr(step_expr, hir_module, mir_func)?;
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(func_def),
+                args: vec![obj_operand, start_operand, end_operand, step_operand],
+            });
+        } else {
+            // Simple slice without step: look up the plain function
+            let Some(func_def) = select_slicing_func(&obj_type) else {
+                return Ok(mir::Operand::Constant(mir::Constant::None));
+            };
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(func_def),
+                args: vec![obj_operand, start_operand, end_operand],
+            });
         }
 
         Ok(mir::Operand::Local(result_local))

@@ -100,6 +100,34 @@ pub(crate) fn type_to_iter_source(ty: &Type) -> mir::IterSourceKind {
 }
 
 // =============================================================================
+// Slicing dispatch
+// =============================================================================
+
+/// Select the runtime function for simple slicing (no step) by object type.
+/// Returns `None` for types that need special handling or do not support slicing.
+pub(crate) fn select_slicing_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
+    match ty {
+        Type::Str => Some(&runtime_func_def::RT_STR_SLICE),
+        Type::List(_) => Some(&runtime_func_def::RT_LIST_SLICE),
+        Type::Tuple(_) => Some(&runtime_func_def::RT_TUPLE_SLICE),
+        Type::Bytes => Some(&runtime_func_def::RT_BYTES_SLICE),
+        _ => None,
+    }
+}
+
+/// Select the runtime function for step slicing (with step) by object type.
+/// Returns `None` for types that need special handling or do not support slicing.
+pub(crate) fn select_slicing_step_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
+    match ty {
+        Type::Str => Some(&runtime_func_def::RT_STR_SLICE_STEP),
+        Type::List(_) => Some(&runtime_func_def::RT_LIST_SLICE_STEP),
+        Type::Tuple(_) => Some(&runtime_func_def::RT_TUPLE_SLICE_STEP),
+        Type::Bytes => Some(&runtime_func_def::RT_BYTES_SLICE_STEP),
+        _ => None,
+    }
+}
+
+// =============================================================================
 // Truthiness strategy
 // =============================================================================
 
