@@ -13,10 +13,10 @@ use pyaot_types::Type;
 use pyaot_utils::{BlockId, LocalId, VarId};
 
 use super::for_loop::detect_for_loop_generator;
+use super::GeneratorContext;
 use super::GeneratorVar;
-use crate::context::Lowering;
 
-impl<'a> Lowering<'a> {
+impl<'a> GeneratorContext<'a> {
     /// Create the generator creator function
     /// This function creates a generator object and returns it
     pub(super) fn create_generator_creator(

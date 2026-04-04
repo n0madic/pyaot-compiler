@@ -15,10 +15,10 @@ use pyaot_utils::{BlockId, FuncId, VarId};
 use super::for_loop::detect_for_loop_generator;
 use super::utils::collect_yield_info;
 use super::while_loop::detect_while_loop_generator;
+use super::GeneratorContext;
 use super::GeneratorVar;
-use crate::context::Lowering;
 
-impl<'a> Lowering<'a> {
+impl<'a> GeneratorContext<'a> {
     /// Create the generator resume function
     /// This implements the state machine
     pub(super) fn create_generator_resume(

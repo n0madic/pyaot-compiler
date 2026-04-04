@@ -18,8 +18,8 @@ use pyaot_types::Type;
 use pyaot_utils::{BlockId, LocalId, VarId};
 
 use super::utils::{get_operand_for_expr, hir_binop_to_mir, lower_simple_stmt_for_generator};
+use super::GeneratorContext;
 use super::{GeneratorVar, WhileLoopGenerator, YieldSection};
-use crate::context::Lowering;
 
 /// Detect if the generator body follows the pattern:
 /// [init_stmts...] while cond: yield val; [update_stmts...]
@@ -97,7 +97,7 @@ pub(super) fn detect_while_loop_generator(
     })
 }
 
-impl<'a> Lowering<'a> {
+impl<'a> GeneratorContext<'a> {
     /// Create a resume function for a while-loop generator
     /// Structure:
     /// - State 0: execute init, check cond, goto first yield state or exhausted

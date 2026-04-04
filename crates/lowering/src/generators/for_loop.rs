@@ -22,8 +22,8 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, LocalId, VarId};
 
+use super::GeneratorContext;
 use super::{ForLoopGenerator, GeneratorVar};
-use crate::context::Lowering;
 use crate::utils::get_iterable_info;
 
 /// Detect a for-loop generator pattern:
@@ -116,7 +116,7 @@ pub(super) fn detect_for_loop_generator(
     })
 }
 
-impl<'a> Lowering<'a> {
+impl<'a> GeneratorContext<'a> {
     /// Create a resume function for a for-loop generator
     /// Structure:
     /// - State 0: Create iterator (from stored iterable), call next, yield or exhaust

@@ -11,8 +11,8 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::{LocalId, Span, VarId};
 
+use super::GeneratorContext;
 use super::YieldInfo;
-use crate::context::Lowering;
 
 /// Convert a HIR binary operator to a MIR binary operator.
 /// Returns an error for unsupported operators (e.g., MatMul outside class context).
@@ -260,7 +260,7 @@ pub(super) fn lower_simple_stmt_for_generator(
     Ok(())
 }
 
-impl<'a> Lowering<'a> {
+impl<'a> GeneratorContext<'a> {
     /// Compute a yield expression value for a generator.
     ///
     /// Handles simple vars, constants, unary/binary operations, and attribute

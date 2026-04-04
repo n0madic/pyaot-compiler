@@ -26,12 +26,240 @@ use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
-use pyaot_utils::VarId;
+use pyaot_utils::{ClassId, FuncId, InternedString, LocalId, StringInterner, VarId};
 
 use crate::context::Lowering;
+use crate::context::{ClassRegistry, LoweredClassInfo, ModuleState, SymbolTable, TypeEnvironment};
 use crate::utils::get_iterable_info;
 use for_loop::detect_for_loop_generator;
 use vars::collect_generator_vars;
+
+/// Decoupled context for generator MIR construction.
+/// Bundles the minimal state needed for building generator creator and resume functions,
+/// without depending on the full Lowering context.
+pub(crate) struct GeneratorContext<'a> {
+    pub(super) interner: &'a StringInterner,
+    pub(super) class_registry: &'a ClassRegistry,
+    pub(super) symbols: &'a SymbolTable,
+    pub(super) modules: &'a ModuleState,
+    pub(super) types: &'a TypeEnvironment,
+    pub(super) next_local_id: u32,
+}
+
+impl<'a> GeneratorContext<'a> {
+    /// Reset the local ID counter (called at start of each generator function)
+    pub(super) fn reset_local_id(&mut self) {
+        self.next_local_id = 0;
+    }
+
+    /// Allocate a new local ID
+    pub(super) fn alloc_local_id(&mut self) -> LocalId {
+        let id = LocalId::new(self.next_local_id);
+        self.next_local_id += 1;
+        id
+    }
+
+    /// Allocate a local and add it to the MIR function
+    pub(super) fn alloc_and_add_local(
+        &mut self,
+        ty: Type,
+        mir_func: &mut mir::Function,
+    ) -> LocalId {
+        let id = self.alloc_local_id();
+        mir_func.add_local(mir::Local {
+            id,
+            name: None,
+            ty: ty.clone(),
+            is_gc_root: ty.is_heap(),
+        });
+        id
+    }
+
+    /// Resolve an interned string
+    pub(super) fn resolve(&self, s: InternedString) -> &str {
+        self.interner.resolve(s)
+    }
+
+    /// Get variable type
+    pub(super) fn get_var_type(&self, var_id: &VarId) -> Option<&Type> {
+        self.symbols
+            .var_types
+            .get(var_id)
+            .or_else(|| self.types.refined_var_types.get(var_id))
+            .or_else(|| self.symbols.global_var_types.get(var_id))
+    }
+
+    /// Get class info
+    pub(super) fn get_class_info(&self, class_id: &ClassId) -> Option<&LoweredClassInfo> {
+        self.class_registry.class_info.get(class_id)
+    }
+
+    /// Check if a variable is global
+    pub(super) fn is_global(&self, var_id: &VarId) -> bool {
+        self.symbols.globals.contains(var_id)
+    }
+
+    /// Get effective variable ID with module offset
+    pub(super) fn get_effective_var_id(&self, var_id: VarId) -> i64 {
+        (var_id.0 + self.modules.var_id_offset) as i64
+    }
+
+    /// Get runtime function for global variable get
+    pub(super) fn get_global_get_func(&self, var_type: &Type) -> mir::RuntimeFunc {
+        mir::RuntimeFunc::Call(self.type_to_value_kind(var_type).global_get_def())
+    }
+
+    fn type_to_value_kind(&self, var_type: &Type) -> mir::ValueKind {
+        match var_type {
+            Type::Int => mir::ValueKind::Int,
+            Type::Float => mir::ValueKind::Float,
+            Type::Bool | Type::None => mir::ValueKind::Bool,
+            _ => mir::ValueKind::Ptr,
+        }
+    }
+
+    /// Get function return type
+    pub(super) fn get_func_return_type(&self, func_id: &FuncId) -> Option<&Type> {
+        self.types.func_return_types.get(func_id)
+    }
+
+    /// Get expression type from the cache, falling back to Any.
+    /// GeneratorContext does not have full type inference, so this is a simple lookup.
+    pub(super) fn get_type_of_expr_id(
+        &self,
+        expr_id: hir::ExprId,
+        _hir_module: &hir::Module,
+    ) -> Type {
+        self.types
+            .expr_types
+            .get(&expr_id)
+            .cloned()
+            .unwrap_or(Type::Any)
+    }
+
+    /// Convert an operand to a boolean, pushing instructions to an explicit block.
+    /// Simplified variant for generator lowering that handles the cases generators need.
+    pub(super) fn convert_to_bool_in_block(
+        &mut self,
+        operand: mir::Operand,
+        operand_type: &Type,
+        mir_func: &mut mir::Function,
+        block: &mut mir::BasicBlock,
+    ) -> mir::Operand {
+        use crate::type_dispatch::{select_truthiness, TruthinessStrategy};
+
+        match select_truthiness(operand_type) {
+            TruthinessStrategy::AlreadyBool => operand,
+            TruthinessStrategy::IntNotZero => {
+                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                let zero = mir::Operand::Constant(mir::Constant::Int(0));
+                block.instructions.push(mir::Instruction {
+                    kind: mir::InstructionKind::BinOp {
+                        dest: result_local,
+                        op: mir::BinOp::NotEq,
+                        left: operand,
+                        right: zero,
+                    },
+                    span: None,
+                });
+                mir::Operand::Local(result_local)
+            }
+            TruthinessStrategy::FloatNotZero => {
+                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                let zero = mir::Operand::Constant(mir::Constant::Float(0.0));
+                block.instructions.push(mir::Instruction {
+                    kind: mir::InstructionKind::BinOp {
+                        dest: result_local,
+                        op: mir::BinOp::NotEq,
+                        left: operand,
+                        right: zero,
+                    },
+                    span: None,
+                });
+                mir::Operand::Local(result_local)
+            }
+            TruthinessStrategy::LenBased(len_func) => {
+                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                let len_local = self.alloc_and_add_local(Type::Int, mir_func);
+                block.instructions.push(mir::Instruction {
+                    kind: mir::InstructionKind::RuntimeCall {
+                        dest: len_local,
+                        func: mir::RuntimeFunc::Call(len_func),
+                        args: vec![operand],
+                    },
+                    span: None,
+                });
+                let zero = mir::Operand::Constant(mir::Constant::Int(0));
+                block.instructions.push(mir::Instruction {
+                    kind: mir::InstructionKind::BinOp {
+                        dest: result_local,
+                        op: mir::BinOp::NotEq,
+                        left: mir::Operand::Local(len_local),
+                        right: zero,
+                    },
+                    span: None,
+                });
+                mir::Operand::Local(result_local)
+            }
+            TruthinessStrategy::AlwaysFalse => mir::Operand::Constant(mir::Constant::Bool(false)),
+            TruthinessStrategy::RuntimeIsTruthy => {
+                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                block.instructions.push(mir::Instruction {
+                    kind: mir::InstructionKind::RuntimeCall {
+                        dest: result_local,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_IS_TRUTHY,
+                        ),
+                        args: vec![operand],
+                    },
+                    span: None,
+                });
+                mir::Operand::Local(result_local)
+            }
+            TruthinessStrategy::ClassInstance => {
+                if let Type::Class { class_id, .. } = operand_type {
+                    if let Some(class_info) = self.get_class_info(class_id) {
+                        if let Some(bool_func_id) = class_info.get_dunder_func("__bool__") {
+                            let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                            block.instructions.push(mir::Instruction {
+                                kind: mir::InstructionKind::CallDirect {
+                                    dest: result_local,
+                                    func: bool_func_id,
+                                    args: vec![operand],
+                                },
+                                span: None,
+                            });
+                            return mir::Operand::Local(result_local);
+                        } else if let Some(len_func_id) = class_info.get_dunder_func("__len__") {
+                            let len_local = self.alloc_and_add_local(Type::Int, mir_func);
+                            block.instructions.push(mir::Instruction {
+                                kind: mir::InstructionKind::CallDirect {
+                                    dest: len_local,
+                                    func: len_func_id,
+                                    args: vec![operand],
+                                },
+                                span: None,
+                            });
+                            let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                            let zero = mir::Operand::Constant(mir::Constant::Int(0));
+                            block.instructions.push(mir::Instruction {
+                                kind: mir::InstructionKind::BinOp {
+                                    dest: result_local,
+                                    op: mir::BinOp::NotEq,
+                                    left: mir::Operand::Local(len_local),
+                                    right: zero,
+                                },
+                                span: None,
+                            });
+                            return mir::Operand::Local(result_local);
+                        }
+                    }
+                }
+                mir::Operand::Constant(mir::Constant::Bool(true))
+            }
+        }
+    }
+}
 
 /// Information about a while-loop generator pattern
 #[derive(Debug)]
@@ -224,12 +452,22 @@ impl<'a> Lowering<'a> {
         let return_type = Type::Iterator(Box::new(yield_elem_type));
         self.insert_func_return_type(func.id, return_type);
 
+        // Create a decoupled GeneratorContext for MIR construction
+        let mut gen_ctx = GeneratorContext {
+            interner: self.interner,
+            class_registry: &self.classes,
+            symbols: &self.symbols,
+            modules: &self.modules,
+            types: &self.types,
+            next_local_id: 0,
+        };
+
         // 1. Create the creator function (saves parameters to generator)
         let creator_func =
-            self.create_generator_creator(func, hir_module, &gen_vars, num_locals)?;
+            gen_ctx.create_generator_creator(func, hir_module, &gen_vars, num_locals)?;
 
         // 2. Create the resume function (implements state machine)
-        let resume_func = self.create_generator_resume(func, hir_module, &gen_vars)?;
+        let resume_func = gen_ctx.create_generator_resume(func, hir_module, &gen_vars)?;
 
         Ok((creator_func, resume_func))
     }
