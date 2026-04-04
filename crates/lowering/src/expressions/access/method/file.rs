@@ -97,25 +97,23 @@ impl<'a> Lowering<'a> {
             }
             "__enter__" => {
                 // Context manager enter - returns self
-                let result_local = self.alloc_and_add_local(Type::File, mir_func);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_ENTER),
-                    args: vec![obj_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_ENTER),
+                    vec![obj_operand],
+                    Type::File,
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }
             "__exit__" => {
                 // Context manager exit - closes file and returns False
-                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_EXIT),
-                    args: vec![obj_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_EXIT),
+                    vec![obj_operand],
+                    Type::Bool,
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }

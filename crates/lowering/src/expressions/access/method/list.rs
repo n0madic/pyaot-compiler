@@ -34,7 +34,7 @@ impl<'a> Lowering<'a> {
                 let actual_value_ty = arg_types.first();
                 if *elem_ty == Type::Any {
                     if let Some(Type::Int) = actual_value_ty {
-                        let dummy = self.emit_runtime_call(
+                        let _dummy = self.emit_runtime_call(
                             mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_LIST_SET_ELEM_TAG,
                             ),
@@ -45,7 +45,6 @@ impl<'a> Lowering<'a> {
                             Type::None,
                             mir_func,
                         );
-                        let _ = dummy;
                     }
                 }
 
@@ -53,25 +52,23 @@ impl<'a> Lowering<'a> {
                 // Bool and Float elements are stored as boxed objects (ELEM_HEAP_OBJ)
                 let push_operand = match &*elem_ty {
                     Type::Bool => {
-                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_BOX_BOOL,
-                            ),
-                            args: vec![value_operand],
-                        });
+                        let boxed_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
+                            vec![value_operand],
+                            Type::HeapAny,
+                            mir_func,
+                        );
                         mir::Operand::Local(boxed_local)
                     }
                     Type::Float => {
-                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::Call(
+                        let boxed_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT,
                             ),
-                            args: vec![value_operand],
-                        });
+                            vec![value_operand],
+                            Type::HeapAny,
+                            mir_func,
+                        );
                         mir::Operand::Local(boxed_local)
                     }
                     _ => value_operand,
