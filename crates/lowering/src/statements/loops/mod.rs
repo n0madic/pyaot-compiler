@@ -50,13 +50,13 @@ impl<'a> Lowering<'a> {
             self.lower_for_range(target, args, body, else_block, hir_module, mir_func)?;
         } else {
             // Handle iterables (list, tuple, dict, str, set, bytes)
-            let iter_type = self.get_expr_type(iter_expr, hir_module);
+            let iter_type = self.get_type_of_expr_id(iter, hir_module);
 
             // Check for class with __iter__/__next__ (iterator protocol)
             if let Type::Class { class_id, .. } = &iter_type {
                 let has_iter = self
                     .get_class_info(class_id)
-                    .and_then(|info| info.iter_func)
+                    .and_then(|info| info.get_dunder_func("__iter__"))
                     .is_some();
                 if has_iter {
                     return self.lower_for_class_iterator(
@@ -67,7 +67,7 @@ impl<'a> Lowering<'a> {
 
             if let Some((kind, elem_type)) = get_iterable_info(&iter_type) {
                 self.lower_for_iterable(
-                    target, iter_expr, kind, elem_type, body, else_block, hir_module, mir_func,
+                    target, iter, kind, elem_type, body, else_block, hir_module, mir_func,
                 )?;
             } else {
                 return Err(pyaot_diagnostics::CompilerError::type_error(
@@ -114,7 +114,7 @@ impl<'a> Lowering<'a> {
         }
 
         // General tuple unpack: for a, b in list_of_tuples
-        self.lower_for_unpack_general(targets, iter_expr, body, else_block, hir_module, mir_func)
+        self.lower_for_unpack_general(targets, iter, body, else_block, hir_module, mir_func)
     }
 
     /// Lower a for loop with starred unpacking: for first, *rest, last in items
@@ -131,12 +131,11 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
-        let iter_expr = &hir_module.exprs[iter];
         self.lower_for_unpack_starred(
             before_star,
             starred.copied(),
             after_star,
-            iter_expr,
+            iter,
             body,
             else_block,
             hir_module,

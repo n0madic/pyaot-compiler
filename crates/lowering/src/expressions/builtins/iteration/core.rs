@@ -33,13 +33,13 @@ impl<'a> Lowering<'a> {
         }
 
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         // Handle class with __iter__ dunder
         if let Type::Class { class_id, .. } = &arg_type {
             let iter_func = self
                 .get_class_info(class_id)
-                .and_then(|info| info.iter_func);
+                .and_then(|info| info.get_dunder_func("__iter__"));
             if let Some(func_id) = iter_func {
                 let result_local = self.alloc_and_add_local(arg_type.clone(), mir_func);
                 self.emit_instruction(mir::InstructionKind::CallDirect {
@@ -54,31 +54,18 @@ impl<'a> Lowering<'a> {
         // Determine element type from container type
         let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
 
-        // Create result local with Iterator type
-        let result_local = self.alloc_and_add_local(Type::Iterator(Box::new(elem_type)), mir_func);
-
         // Select appropriate iterator source kind based on container type
-        let source = match &arg_type {
-            Type::List(_) => mir::IterSourceKind::List,
-            Type::Tuple(_) => mir::IterSourceKind::Tuple,
-            Type::Dict(_, _) => mir::IterSourceKind::Dict,
-            Type::Set(_) => mir::IterSourceKind::Set,
-            Type::Str => mir::IterSourceKind::Str,
-            Type::Bytes => mir::IterSourceKind::Bytes,
-            Type::Iterator(_) => mir::IterSourceKind::Generator, // Generators are their own iterators
-            _ => {
-                // Unknown iterable type - fallback to list iterator
-                mir::IterSourceKind::List
-            }
-        };
+        let source = crate::type_dispatch::type_to_iter_source(&arg_type);
 
         let iter_func = mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Forward));
 
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: iter_func,
-            args: vec![arg_operand],
-        });
+        // Create result local with Iterator type
+        let result_local = self.emit_runtime_call(
+            iter_func,
+            vec![arg_operand],
+            Type::Iterator(Box::new(elem_type)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -142,15 +129,14 @@ impl<'a> Lowering<'a> {
             self.parse_range_args(range_args, hir_module, mir_func)?;
 
         // Create result local with Iterator[int] type
-        let result_local = self.alloc_and_add_local(Type::Iterator(Box::new(Type::Int)), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(
                 mir::IterSourceKind::Range.iterator_def(mir::IterDirection::Forward),
             ),
-            args: vec![start_operand, stop_operand, step_operand],
-        });
+            vec![start_operand, stop_operand, step_operand],
+            Type::Iterator(Box::new(Type::Int)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -170,13 +156,13 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         // Handle class with __next__ dunder
         if let Type::Class { class_id, .. } = &arg_type {
             let next_func = self
                 .get_class_info(class_id)
-                .and_then(|info| info.next_func);
+                .and_then(|info| info.get_dunder_func("__next__"));
             if let Some(func_id) = next_func {
                 let return_ty = self
                     .get_func_return_type(&func_id)
@@ -199,13 +185,12 @@ impl<'a> Lowering<'a> {
         };
 
         // Create result local with element type
-        let result_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT),
-            args: vec![arg_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT),
+            vec![arg_operand],
+            elem_type,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -228,7 +213,7 @@ impl<'a> Lowering<'a> {
             }
         );
 
-        let expr_type = self.get_expr_type(expr, hir_module);
+        let expr_type = self.get_type_of_expr_id(expr_id, hir_module);
         let elem_type = if is_range {
             Type::Int
         } else {
@@ -257,16 +242,7 @@ impl<'a> Lowering<'a> {
             }
         } else {
             let operand = self.lower_expr(expr, hir_module, mir_func)?;
-            let source = match &expr_type {
-                Type::List(_) => mir::IterSourceKind::List,
-                Type::Tuple(_) => mir::IterSourceKind::Tuple,
-                Type::Dict(_, _) => mir::IterSourceKind::Dict,
-                Type::Set(_) => mir::IterSourceKind::Set,
-                Type::Str => mir::IterSourceKind::Str,
-                Type::Bytes => mir::IterSourceKind::Bytes,
-                Type::Iterator(_) => mir::IterSourceKind::Generator,
-                _ => mir::IterSourceKind::List,
-            };
+            let source = crate::type_dispatch::type_to_iter_source(&expr_type);
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: iter_local,

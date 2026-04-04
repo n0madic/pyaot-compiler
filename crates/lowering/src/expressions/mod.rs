@@ -38,10 +38,10 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let prev = self.expected_type.take();
-        self.expected_type = expected;
+        let prev = self.codegen.expected_type.take();
+        self.codegen.expected_type = expected;
         let result = self.lower_expr(expr, hir_module, mir_func);
-        self.expected_type = prev;
+        self.codegen.expected_type = prev;
         result
     }
 
@@ -51,8 +51,8 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let prev_span = self.current_span;
-        self.current_span = Some(expr.span);
+        let prev_span = self.codegen.current_span;
+        self.codegen.current_span = Some(expr.span);
         let result = match &expr.kind {
             // Literals (literals.rs)
             hir::ExprKind::Int(val) => Ok(mir::Operand::Constant(mir::Constant::Int(*val))),
@@ -218,7 +218,7 @@ impl<'a> Lowering<'a> {
             // Standard library compile-time constant (math.pi, math.e)
             hir::ExprKind::StdlibConst(const_def) => self.lower_stdlib_const(const_def, mir_func),
         };
-        self.current_span = prev_span;
+        self.codegen.current_span = prev_span;
         result
     }
 

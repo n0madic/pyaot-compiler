@@ -63,7 +63,7 @@ impl<'a> Lowering<'a> {
                 ExpandedArg::RuntimeUnpackTuple(expr_id) => {
                     // Runtime tuple unpacking - extract each element
                     let tuple_expr = &hir_module.exprs[*expr_id];
-                    let tuple_type = self.get_expr_type(tuple_expr, hir_module);
+                    let tuple_type = self.get_type_of_expr_id(*expr_id, hir_module);
 
                     // Lower the tuple expression to get the operand
                     let tuple_operand = self.lower_expr(tuple_expr, hir_module, mir_func)?;

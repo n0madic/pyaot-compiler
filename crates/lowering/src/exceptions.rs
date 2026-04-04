@@ -238,9 +238,9 @@ impl<'a> Lowering<'a> {
                                     hir::CallArg::Regular(id) => id,
                                     hir::CallArg::Starred(id) => id,
                                 };
-                                let arg_expr = &hir_module.exprs[*arg_id];
-                                let arg_type = self.get_expr_type(arg_expr, hir_module);
+                                let arg_type = self.get_type_of_expr_id(*arg_id, hir_module);
                                 if arg_type == Type::Str {
+                                    let arg_expr = &hir_module.exprs[*arg_id];
                                     Some(self.lower_expr(arg_expr, hir_module, mir_func)?)
                                 } else {
                                     None
@@ -320,12 +320,12 @@ impl<'a> Lowering<'a> {
                 })
             }
             hir::ExprKind::Str(s) => {
-                let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::MakeStr,
-                    args: vec![mir::Operand::Constant(mir::Constant::Str(*s))],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::MakeStr,
+                    vec![mir::Operand::Constant(mir::Constant::Str(*s))],
+                    Type::Str,
+                    mir_func,
+                );
                 Ok(ExcInfo {
                     type_tag: 0,
                     message: Some(mir::Operand::Local(result_local)),

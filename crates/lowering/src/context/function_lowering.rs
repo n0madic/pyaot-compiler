@@ -15,7 +15,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
     ) -> Result<(mir::Module, CompilerWarnings)> {
         // Copy global variables set from HIR module
-        self.globals = hir_module.globals.clone();
+        self.symbols.globals = hir_module.globals.clone();
 
         // Pre-populate global variable types from module init function
         // This must happen before lowering any functions since they may reference globals
@@ -28,7 +28,7 @@ impl<'a> Lowering<'a> {
         for func_id in &hir_module.functions {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 let func_name = self.interner.resolve(func.name).to_string();
-                self.func_name_map.insert(func_name, *func_id);
+                self.symbols.func_name_map.insert(func_name, *func_id);
             }
         }
 
@@ -70,32 +70,33 @@ impl<'a> Lowering<'a> {
         func: &hir::Function,
         hir_module: &hir::Module,
     ) -> Result<mir::Function> {
-        self.var_to_local.clear();
-        self.var_types.clear();
-        self.var_to_func.clear();
-        self.var_to_closure.clear();
-        self.var_to_wrapper.clear();
-        self.dynamic_closure_vars.clear();
-        self.func_ptr_params.clear();
-        self.varargs_params.clear();
-        self.current_blocks.clear();
-        self.current_block_idx = 0;
-        self.next_block_id = 0;
-        self.next_local_id = 0;
-        self.cell_vars.clear();
-        self.nonlocal_cells.clear();
-        self.narrowed_union_vars.clear();
-        self.loop_stack.clear();
-        self.expected_type = None; // Reset for new function scope
-        self.pending_varargs_from_unpack = None;
-        self.pending_kwargs_from_unpack = None;
+        // Reset per-function state
+        self.symbols.var_to_local.clear();
+        self.symbols.var_types.clear();
+        self.symbols.var_to_func.clear();
+        self.closures.var_to_closure.clear();
+        self.closures.var_to_wrapper.clear();
+        self.closures.dynamic_closure_vars.clear();
+        self.closures.func_ptr_params.clear();
+        self.closures.varargs_params.clear();
+        self.codegen.current_blocks.clear();
+        self.codegen.current_block_idx = 0;
+        self.codegen.next_block_id = 0;
+        self.codegen.next_local_id = 0;
+        self.symbols.cell_vars.clear();
+        self.symbols.nonlocal_cells.clear();
+        self.symbols.narrowed_union_vars.clear();
+        self.codegen.loop_stack.clear();
+        self.codegen.expected_type = None;
+        self.codegen.pending_varargs_from_unpack = None;
+        self.codegen.pending_kwargs_from_unpack = None;
         // expr_types NOT cleared — ExprIds are unique per-module, so
         // memoized types from other functions remain valid.
 
         // Copy cell_vars and nonlocal_vars from HIR function
         // (nonlocal_vars will be mapped to cell locals during parameter processing)
         for var_id in func.cell_vars.iter().chain(func.nonlocal_vars.iter()) {
-            self.cell_vars.insert(*var_id);
+            self.symbols.cell_vars.insert(*var_id);
         }
 
         // Check if this function is a wrapper (closure returned by a decorator)
@@ -147,7 +148,7 @@ impl<'a> Lowering<'a> {
 
             // Track VarPositional params for runtime *args forwarding
             if hir_param.kind == hir::ParamKind::VarPositional {
-                self.varargs_params.insert(hir_param.var);
+                self.closures.varargs_params.insert(hir_param.var);
             }
 
             // For nonlocal parameters, the type is a cell pointer (heap object pointer)
@@ -210,7 +211,7 @@ impl<'a> Lowering<'a> {
         self.insert_func_return_type(func.id, return_type.clone());
 
         // Store the current function's return type for type inference during lowering
-        self.current_func_return_type = Some(return_type.clone());
+        self.symbols.current_func_return_type = Some(return_type.clone());
 
         let mut mir_func = mir::Function::new(func.id, func_name, params.clone(), return_type);
         mir_func.span = Some(func.span);
@@ -266,14 +267,14 @@ impl<'a> Lowering<'a> {
             });
 
             // Map this variable to its cell for later reads/writes
-            self.nonlocal_cells.insert(var_id, cell_local);
+            self.symbols.nonlocal_cells.insert(var_id, cell_local);
         }
 
         // For nonlocal_vars, the parameter is already a cell pointer
         // Map them to nonlocal_cells for later reads/writes
         for &var_id in &func.nonlocal_vars {
             if let Some(local_id) = self.get_var_local(&var_id) {
-                self.nonlocal_cells.insert(var_id, local_id);
+                self.symbols.nonlocal_cells.insert(var_id, local_id);
             }
         }
 
@@ -304,12 +305,12 @@ impl<'a> Lowering<'a> {
                     // For string return types, we need to return a valid string pointer.
                     // Create an empty string via runtime call.
                     let empty_str = self.interner.intern("");
-                    let str_local = self.alloc_and_add_local(Type::Str, &mut mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: str_local,
-                        func: mir::RuntimeFunc::MakeStr,
-                        args: vec![mir::Operand::Constant(mir::Constant::Str(empty_str))],
-                    });
+                    let str_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::MakeStr,
+                        vec![mir::Operand::Constant(mir::Constant::Str(empty_str))],
+                        Type::Str,
+                        &mut mir_func,
+                    );
                     mir::Operand::Local(str_local)
                 }
                 _ => mir::Operand::Constant(mir::Constant::None),
@@ -317,7 +318,7 @@ impl<'a> Lowering<'a> {
             self.current_block_mut().terminator = mir::Terminator::Return(Some(default_return));
         }
 
-        for block in self.current_blocks.drain(..) {
+        for block in self.codegen.current_blocks.drain(..) {
             mir_func.blocks.insert(block.id, block);
         }
 
@@ -337,13 +338,15 @@ impl<'a> Lowering<'a> {
                         let default_expr = &hir_module.exprs[default_id];
                         if is_mutable_default_expr(default_expr) {
                             // Allocate a global slot for this mutable default
-                            let slot = self.next_default_slot;
-                            self.next_default_slot += 1;
+                            let slot = self.symbols.next_default_slot;
+                            self.symbols.next_default_slot += 1;
                             assert!(
-                                self.next_default_slot > slot,
+                                self.symbols.next_default_slot > slot,
                                 "next_default_slot overflow: mutable default slot counter wrapped"
                             );
-                            self.default_value_slots.insert((*func_id, param_idx), slot);
+                            self.symbols
+                                .default_value_slots
+                                .insert((*func_id, param_idx), slot);
                         }
                     }
                 }
@@ -362,6 +365,7 @@ impl<'a> Lowering<'a> {
         // Collect all defaults that need initialization
         // We need to clone the keys to avoid borrow issues
         let slots_to_init: Vec<((pyaot_utils::FuncId, usize), u32)> = self
+            .symbols
             .default_value_slots
             .iter()
             .map(|(k, v)| (*k, *v))
@@ -390,15 +394,15 @@ impl<'a> Lowering<'a> {
                 )?;
 
                 // Store in global slot - mutable defaults are always heap types (ptr)
-                let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(ValueKind::Ptr.global_set_def()),
-                    args: vec![
+                self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(ValueKind::Ptr.global_set_def()),
+                    vec![
                         mir::Operand::Constant(mir::Constant::Int(slot as i64)),
                         default_operand,
                     ],
-                });
+                    Type::None,
+                    mir_func,
+                );
             }
         }
 
@@ -428,10 +432,12 @@ impl<'a> Lowering<'a> {
             {
                 // Only process if target is a global variable with an explicit type hint.
                 // Variables without type hints will get their types from lowering.
-                if self.globals.contains(target) {
+                if self.symbols.globals.contains(target) {
                     if let Some(var_type) = type_hint {
                         // Store in global_var_types for persistence across function boundaries
-                        self.global_var_types.insert(*target, var_type.clone());
+                        self.symbols
+                            .global_var_types
+                            .insert(*target, var_type.clone());
                     }
                 }
             }
@@ -477,7 +483,7 @@ impl<'a> Lowering<'a> {
                             // 1. The factory must be called first with its arguments
                             // 2. The result (a closure/decorator) must then be applied to the function
                             // Mark as global for runtime evaluation
-                            self.globals.insert(*target);
+                            self.symbols.globals.insert(*target);
                             // Register any wrapper functions that might be involved
                             self.register_all_wrappers_in_chain(expr, hir_module);
                             continue;
@@ -520,7 +526,7 @@ impl<'a> Lowering<'a> {
                             {
                                 // Mark the target as a global so that when it's called,
                                 // we load from global storage and do an indirect call
-                                self.globals.insert(*target);
+                                self.symbols.globals.insert(*target);
                                 continue;
                             }
 

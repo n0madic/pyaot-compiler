@@ -44,7 +44,7 @@ impl<'a> Lowering<'a> {
                         }
                         _ => {
                             // Runtime unpacking: check if it's a tuple or list variable
-                            let arg_type = self.get_expr_type(arg_expr, hir_module);
+                            let arg_type = self.get_type_of_expr_id(*expr_id, hir_module);
                             match &arg_type {
                                 Type::Tuple(_) => {
                                     // Mark for runtime tuple unpacking
@@ -103,7 +103,7 @@ impl<'a> Lowering<'a> {
                 }
                 _ => {
                     // Runtime **kwargs unpacking: lower the dict and pass to resolve_call_args
-                    let dict_type = self.get_expr_type(kwargs_expr, hir_module);
+                    let dict_type = self.get_type_of_expr_id(*kwargs_expr_id, hir_module);
                     let dict_operand = self.lower_expr(kwargs_expr, hir_module, mir_func)?;
 
                     // Get the value type from dict type
@@ -291,7 +291,7 @@ impl<'a> Lowering<'a> {
             {
                 if let Some(call_func_id) = self
                     .get_class_info(class_id)
-                    .and_then(|info| info.call_func)
+                    .and_then(|info| info.get_dunder_func("__call__"))
                 {
                     let obj_op = self.lower_expr(func_expr, hir_module, mir_func)?;
                     let mut call_args = vec![obj_op];
@@ -315,13 +315,13 @@ impl<'a> Lowering<'a> {
             // (e.g., from chained decorators or decorator factories), load it and do an indirect call
             if self.is_global(var_id) {
                 // Load the closure tuple/function pointer from the global
-                let closure_local = self.alloc_and_add_local(Type::Any, mir_func);
                 let effective_var_id = self.get_effective_var_id(*var_id);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: closure_local,
-                    func: mir::RuntimeFunc::Call(mir::ValueKind::Ptr.global_get_def()),
-                    args: vec![mir::Operand::Constant(mir::Constant::Int(effective_var_id))],
-                });
+                let closure_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(mir::ValueKind::Ptr.global_get_def()),
+                    vec![mir::Operand::Constant(mir::Constant::Int(effective_var_id))],
+                    Type::Any,
+                    mir_func,
+                );
 
                 // Lower the user arguments
                 let user_arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
@@ -338,7 +338,7 @@ impl<'a> Lowering<'a> {
 
             // Check if variable holds a dynamically returned closure (e.g., f = factory())
             // These need emit_closure_call to extract func_ptr and captures from the tuple
-            if self.dynamic_closure_vars.contains(var_id) {
+            if self.closures.dynamic_closure_vars.contains(var_id) {
                 if let Some(local_id) = self.get_var_local(var_id) {
                     let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
                     let result_ty = expr.ty.clone().unwrap_or(Type::Any);
@@ -354,6 +354,7 @@ impl<'a> Lowering<'a> {
             if let Some(local_id) = self.get_var_local(var_id) {
                 let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
                 let result_ty = self
+                    .symbols
                     .current_func_return_type
                     .clone()
                     .or_else(|| expr.ty.clone())
@@ -476,12 +477,12 @@ impl<'a> Lowering<'a> {
             let result_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
 
             // Get the type tag of the inner result
-            let type_tag_local = self.alloc_and_add_local(Type::Int, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: type_tag_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
-                args: vec![inner_result.clone()],
-            });
+            let type_tag_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
+                vec![inner_result.clone()],
+                Type::Int,
+                mir_func,
+            );
 
             // Compare with tuple tag
             let is_tuple_local = self.alloc_and_add_local(Type::Bool, mir_func);

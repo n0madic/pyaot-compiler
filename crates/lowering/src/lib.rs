@@ -11,6 +11,7 @@ mod generators;
 mod narrowing;
 mod runtime_selector;
 mod statements;
+mod type_dispatch;
 mod type_planning;
 mod utils;
 
@@ -123,12 +124,8 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
         if let Some(unbox_func) = Self::unbox_func_for_type(target_type) {
-            let unboxed_local = self.alloc_and_add_local(target_type.clone(), mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: unboxed_local,
-                func: unbox_func,
-                args: vec![operand],
-            });
+            let unboxed_local =
+                self.emit_runtime_call(unbox_func, vec![operand], target_type.clone(), mir_func);
             mir::Operand::Local(unboxed_local)
         } else {
             operand
@@ -394,17 +391,16 @@ impl<'a> Lowering<'a> {
                 op.clone() // ELEM_RAW_INT, already i64
             };
 
-            let dummy_local =
-                self.alloc_and_add_local(Type::Tuple(vec![elem_type.clone()]), mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
-                args: vec![
+            self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
+                vec![
                     mir::Operand::Local(tuple_local),
                     mir::Operand::Constant(mir::Constant::Int(i as i64)),
                     final_operand,
                 ],
-            });
+                Type::Tuple(vec![elem_type.clone()]),
+                mir_func,
+            );
         }
 
         tuple_local
@@ -424,17 +420,15 @@ impl<'a> Lowering<'a> {
                 mask |= 1u64 << i;
             }
         }
-        let dummy = self.alloc_and_add_local(Type::None, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: dummy,
-            func: mir::RuntimeFunc::Call(
-                &pyaot_core_defs::runtime_func_def::RT_TUPLE_SET_HEAP_MASK,
-            ),
-            args: vec![
+        self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET_HEAP_MASK),
+            vec![
                 mir::Operand::Local(tuple_local),
                 mir::Operand::Constant(mir::Constant::Int(mask as i64)),
             ],
-        });
+            Type::None,
+            mir_func,
+        );
     }
 
     /// Create a combined varargs tuple from extra positional operands + pre-built list tail tuple
@@ -485,26 +479,22 @@ impl<'a> Lowering<'a> {
         // Emit: DictSet for each key-value pair
         for (key_name, value_op) in keywords {
             // key_name is already an InternedString, so we can use it directly
-            let key_local = self.alloc_gc_local(Type::Str, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: key_local,
-                func: mir::RuntimeFunc::MakeStr,
-                args: vec![mir::Operand::Constant(mir::Constant::Str(*key_name))],
-            });
-
-            let dummy_local = self.alloc_and_add_local(
-                Type::Dict(Box::new(Type::Str), Box::new(Type::Any)),
+            let key_local = self.emit_runtime_call(
+                mir::RuntimeFunc::MakeStr,
+                vec![mir::Operand::Constant(mir::Constant::Str(*key_name))],
+                Type::Str,
                 mir_func,
             );
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
-                args: vec![
+            self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
+                vec![
                     mir::Operand::Local(dict_local),
                     mir::Operand::Local(key_local),
                     value_op.clone(),
                 ],
-            });
+                Type::Dict(Box::new(Type::Str), Box::new(Type::Any)),
+                mir_func,
+            );
         }
 
         dict_local

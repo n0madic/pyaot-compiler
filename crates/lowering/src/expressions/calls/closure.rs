@@ -194,12 +194,12 @@ impl<'a> Lowering<'a> {
         // We check the type tag and dispatch accordingly.
 
         // Get the type tag
-        let type_tag_local = self.alloc_and_add_local(Type::Int, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: type_tag_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
-            args: vec![mir::Operand::Local(func_local)],
-        });
+        let type_tag_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
+            vec![mir::Operand::Local(func_local)],
+            Type::Int,
+            mir_func,
+        );
 
         // Compare with tuple tag
         let is_tuple_local = self.alloc_and_add_local(Type::Bool, mir_func);
@@ -280,7 +280,7 @@ impl<'a> Lowering<'a> {
         if let ExpandedArg::RuntimeUnpackTuple(expr_id) = &args[0] {
             let expr = &hir_module.exprs[*expr_id];
             if let hir::ExprKind::Var(var_id) = &expr.kind {
-                if self.varargs_params.contains(var_id) {
+                if self.closures.varargs_params.contains(var_id) {
                     // This is func(*args) where args is a VarPositional param
                     let tuple_operand = self.lower_expr(expr, hir_module, mir_func)?;
                     let tuple_local = match tuple_operand {
@@ -313,12 +313,12 @@ impl<'a> Lowering<'a> {
         let result_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
 
         // Check if func is a closure (tuple) or raw function pointer
-        let type_tag_local = self.alloc_and_add_local(Type::Int, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: type_tag_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
-            args: vec![mir::Operand::Local(func_local)],
-        });
+        let type_tag_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
+            vec![mir::Operand::Local(func_local)],
+            Type::Int,
+            mir_func,
+        );
 
         let is_tuple_local = self.alloc_and_add_local(Type::Bool, mir_func);
         self.emit_instruction(mir::InstructionKind::BinOp {
@@ -345,50 +345,48 @@ impl<'a> Lowering<'a> {
         self.push_block(closure_bb);
         {
             // Extract func_ptr from closure tuple index 0
-            let real_func = self.alloc_and_add_local(Type::Any, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: real_func,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
-                args: vec![
+            let real_func = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+                vec![
                     mir::Operand::Local(func_local),
                     mir::Operand::Constant(mir::Constant::Int(0)),
                 ],
-            });
+                Type::Any,
+                mir_func,
+            );
 
             // Extract captures tuple from closure tuple index 1
-            let captures_tuple = self.alloc_and_add_local(Type::Any, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: captures_tuple,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
-                args: vec![
+            let captures_tuple = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+                vec![
                     mir::Operand::Local(func_local),
                     mir::Operand::Constant(mir::Constant::Int(1)),
                 ],
-            });
+                Type::Any,
+                mir_func,
+            );
 
             // Concatenate captures + args into a single tuple
-            let combined = self.alloc_and_add_local(Type::Any, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: combined,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_CONCAT),
-                args: vec![
+            let combined = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_CONCAT),
+                vec![
                     mir::Operand::Local(captures_tuple),
                     mir::Operand::Local(args_tuple_local),
                 ],
-            });
+                Type::Any,
+                mir_func,
+            );
 
             // Call via trampoline with combined args
-            let closure_result = self.alloc_and_add_local(result_ty.clone(), mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: closure_result,
-                func: mir::RuntimeFunc::Call(
-                    &pyaot_core_defs::runtime_func_def::RT_CALL_WITH_TUPLE_ARGS,
-                ),
-                args: vec![
+            let closure_result = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CALL_WITH_TUPLE_ARGS),
+                vec![
                     mir::Operand::Local(real_func),
                     mir::Operand::Local(combined),
                 ],
-            });
+                result_ty.clone(),
+                mir_func,
+            );
 
             self.emit_instruction(mir::InstructionKind::Copy {
                 dest: result_local,
@@ -400,17 +398,15 @@ impl<'a> Lowering<'a> {
         // === Direct case: call via trampoline with args tuple ===
         self.push_block(direct_bb);
         {
-            let direct_result = self.alloc_and_add_local(result_ty, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: direct_result,
-                func: mir::RuntimeFunc::Call(
-                    &pyaot_core_defs::runtime_func_def::RT_CALL_WITH_TUPLE_ARGS,
-                ),
-                args: vec![
+            let direct_result = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CALL_WITH_TUPLE_ARGS),
+                vec![
                     mir::Operand::Local(func_local),
                     mir::Operand::Local(args_tuple_local),
                 ],
-            });
+                result_ty,
+                mir_func,
+            );
 
             self.emit_instruction(mir::InstructionKind::Copy {
                 dest: result_local,
@@ -450,34 +446,34 @@ impl<'a> Lowering<'a> {
         let result_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
 
         // Extract func_ptr from index 0
-        let func_ptr_local = self.alloc_and_add_local(Type::Any, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: func_ptr_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
-            args: vec![
+        let func_ptr_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+            vec![
                 mir::Operand::Local(closure_local),
                 mir::Operand::Constant(mir::Constant::Int(0)),
             ],
-        });
+            Type::Any,
+            mir_func,
+        );
 
         // Extract captures tuple from index 1
-        let captures_tuple = self.alloc_and_add_local(Type::Any, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: captures_tuple,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
-            args: vec![
+        let captures_tuple = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+            vec![
                 mir::Operand::Local(closure_local),
                 mir::Operand::Constant(mir::Constant::Int(1)),
             ],
-        });
+            Type::Any,
+            mir_func,
+        );
 
         // Get the number of captures
-        let n_captures_local = self.alloc_and_add_local(Type::Int, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: n_captures_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN),
-            args: vec![mir::Operand::Local(captures_tuple)],
-        });
+        let n_captures_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN),
+            vec![mir::Operand::Local(captures_tuple)],
+            Type::Int,
+            mir_func,
+        );
 
         // Create merge block for all branches
         let merge_bb = self.new_block();
@@ -565,15 +561,15 @@ impl<'a> Lowering<'a> {
         // Extract all captures
         let mut call_args = Vec::with_capacity(current + user_args.len());
         for i in 0..current {
-            let cap_local = self.alloc_and_add_local(Type::Any, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: cap_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
-                args: vec![
+            let cap_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+                vec![
                     mir::Operand::Local(captures_tuple),
                     mir::Operand::Constant(mir::Constant::Int(i as i64)),
                 ],
-            });
+                Type::Any,
+                mir_func,
+            );
             call_args.push(mir::Operand::Local(cap_local));
         }
         call_args.extend(user_args.iter().cloned());

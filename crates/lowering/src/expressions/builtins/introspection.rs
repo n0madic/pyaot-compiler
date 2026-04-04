@@ -25,7 +25,7 @@ impl<'a> Lowering<'a> {
         let type_expr = &hir_module.exprs[args[1]];
 
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        let obj_type = self.get_expr_type(obj_expr, hir_module);
+        let obj_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
@@ -81,15 +81,14 @@ impl<'a> Lowering<'a> {
                     // Runtime check via type tag
                     if let Some(type_tag) = self.get_type_tag_for_isinstance_check(check_type) {
                         // Get type tag at runtime and compare
-                        let tag_local = self.alloc_and_add_local(Type::Int, mir_func);
-
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: tag_local,
-                            func: mir::RuntimeFunc::Call(
+                        let tag_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG,
                             ),
-                            args: vec![obj_operand],
-                        });
+                            vec![obj_operand],
+                            Type::Int,
+                            mir_func,
+                        );
 
                         // Compare with expected type tag
                         self.emit_instruction(mir::InstructionKind::BinOp {
@@ -173,7 +172,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
@@ -256,7 +255,7 @@ impl<'a> Lowering<'a> {
             Type::Class { class_id, .. } => {
                 // Check for __hash__ method
                 if let Some(class_info) = self.get_class_info(&class_id) {
-                    if let Some(hash_func) = class_info.hash_func {
+                    if let Some(hash_func) = class_info.get_dunder_func("__hash__") {
                         // Call __hash__ method
                         self.emit_instruction(mir::InstructionKind::CallDirect {
                             dest: result_local,
@@ -303,7 +302,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
@@ -374,7 +373,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Str, mir_func);
 
@@ -382,7 +381,7 @@ impl<'a> Lowering<'a> {
         if let Type::Class { class_id, .. } = &arg_type {
             if let Some(class_info) = self.get_class_info(class_id) {
                 // Try __repr__ method
-                if let Some(repr_func) = class_info.repr_func {
+                if let Some(repr_func) = class_info.get_dunder_func("__repr__") {
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,
                         func: repr_func,
@@ -442,7 +441,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Str, mir_func);
 
@@ -489,7 +488,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         // type() returns a type object, represented internally as a string containing
         // the full type representation "<class 'typename'>".
@@ -544,7 +543,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let _arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
@@ -570,7 +569,7 @@ impl<'a> Lowering<'a> {
 
         let obj_expr = &hir_module.exprs[args[0]];
         let _obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        let obj_type = self.get_expr_type(obj_expr, hir_module);
+        let obj_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
@@ -621,7 +620,7 @@ impl<'a> Lowering<'a> {
 
         let obj_expr = &hir_module.exprs[args[0]];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        let obj_type = self.get_expr_type(obj_expr, hir_module);
+        let obj_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let name_expr = &hir_module.exprs[args[1]];
 
@@ -696,13 +695,13 @@ impl<'a> Lowering<'a> {
 
         let value_expr = &hir_module.exprs[args[0]];
         let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
-        let value_type = self.get_expr_type(value_expr, hir_module);
+        let value_type = self.get_type_of_expr_id(args[0], hir_module);
 
         // Check for class with __format__ dunder — call it directly instead of runtime dispatch
         if let Type::Class { class_id, .. } = &value_type {
             if let Some(format_func_id) = self
                 .get_class_info(class_id)
-                .and_then(|info| info.format_func)
+                .and_then(|info| info.get_dunder_func("__format__"))
             {
                 let spec_operand = if args.len() > 1 {
                     let spec_expr = &hir_module.exprs[args[1]];
@@ -734,13 +733,12 @@ impl<'a> Lowering<'a> {
             mir::Operand::Constant(mir::Constant::Int(0))
         };
 
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FORMAT_VALUE),
-            args: vec![boxed_value, spec_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FORMAT_VALUE),
+            vec![boxed_value, spec_operand],
+            Type::Str,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -758,12 +756,12 @@ impl<'a> Lowering<'a> {
         let cls_operand = self.lower_expr(cls_expr, hir_module, mir_func)?;
 
         // Result type is Any (instance pointer) since we don't know the class statically here
-        let result_local = self.alloc_and_add_local(Type::Any, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_OBJECT_NEW),
-            args: vec![cls_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_OBJECT_NEW),
+            vec![cls_operand],
+            Type::Any,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -779,7 +777,7 @@ impl<'a> Lowering<'a> {
 
         let obj_expr = &hir_module.exprs[args[0]];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        let obj_type = self.get_expr_type(obj_expr, hir_module);
+        let obj_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let name_expr = &hir_module.exprs[args[1]];
         let value_expr = &hir_module.exprs[args[2]];
@@ -795,19 +793,18 @@ impl<'a> Lowering<'a> {
                     // Use lookup to find the interned string
                     if let Some(attr_interned) = self.lookup_interned(&attr_str) {
                         if let Some(&offset) = class_info.field_offsets.get(&attr_interned) {
-                            let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-
-                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                                dest: dummy_local,
-                                func: mir::RuntimeFunc::Call(
+                            let _dummy_local = self.emit_runtime_call(
+                                mir::RuntimeFunc::Call(
                                     &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD,
                                 ),
-                                args: vec![
+                                vec![
                                     obj_operand,
                                     mir::Operand::Constant(mir::Constant::Int(offset as i64)),
                                     value_operand,
                                 ],
-                            });
+                                Type::None,
+                                mir_func,
+                            );
 
                             return Ok(mir::Operand::Constant(mir::Constant::None));
                         }

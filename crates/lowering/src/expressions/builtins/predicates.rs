@@ -68,7 +68,7 @@ impl<'a> Lowering<'a> {
 
         let iterable_expr = &hir_module.exprs[args[0]];
         let iterable_operand = self.lower_expr(iterable_expr, hir_module, mir_func)?;
-        let iterable_type = self.get_expr_type(iterable_expr, hir_module);
+        let iterable_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let (len_func, get_func, item_type, zero_const) = self.predicate_iter_info(&iterable_type);
 
@@ -81,13 +81,12 @@ impl<'a> Lowering<'a> {
         });
 
         // Get length
-        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: len_local,
-            func: len_func,
-            args: vec![iterable_operand.clone()],
-        });
+        let len_local = self.emit_runtime_call(
+            len_func,
+            vec![iterable_operand.clone()],
+            Type::Int,
+            mir_func,
+        );
 
         // Create loop counter
         let counter_local = self.alloc_and_add_local(Type::Int, mir_func);
@@ -131,13 +130,12 @@ impl<'a> Lowering<'a> {
         self.push_block(loop_body);
 
         // Get item using the type-appropriate getter
-        let item_local = self.alloc_and_add_local(item_type.clone(), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: item_local,
-            func: get_func,
-            args: vec![iterable_operand.clone(), mir::Operand::Local(counter_local)],
-        });
+        let item_local = self.emit_runtime_call(
+            get_func,
+            vec![iterable_operand.clone(), mir::Operand::Local(counter_local)],
+            item_type.clone(),
+            mir_func,
+        );
 
         // Convert to bool: compare item != zero_const (works for both i8 and i64)
         let item_bool = self.alloc_and_add_local(Type::Bool, mir_func);
@@ -209,7 +207,7 @@ impl<'a> Lowering<'a> {
 
         let iterable_expr = &hir_module.exprs[args[0]];
         let iterable_operand = self.lower_expr(iterable_expr, hir_module, mir_func)?;
-        let iterable_type = self.get_expr_type(iterable_expr, hir_module);
+        let iterable_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let (len_func, get_func, item_type, zero_const) = self.predicate_iter_info(&iterable_type);
 
@@ -222,13 +220,12 @@ impl<'a> Lowering<'a> {
         });
 
         // Get length
-        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: len_local,
-            func: len_func,
-            args: vec![iterable_operand.clone()],
-        });
+        let len_local = self.emit_runtime_call(
+            len_func,
+            vec![iterable_operand.clone()],
+            Type::Int,
+            mir_func,
+        );
 
         // Create loop counter
         let counter_local = self.alloc_and_add_local(Type::Int, mir_func);
@@ -272,13 +269,12 @@ impl<'a> Lowering<'a> {
         self.push_block(loop_body);
 
         // Get item using the type-appropriate getter
-        let item_local = self.alloc_and_add_local(item_type.clone(), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: item_local,
-            func: get_func,
-            args: vec![iterable_operand.clone(), mir::Operand::Local(counter_local)],
-        });
+        let item_local = self.emit_runtime_call(
+            get_func,
+            vec![iterable_operand.clone(), mir::Operand::Local(counter_local)],
+            item_type.clone(),
+            mir_func,
+        );
 
         // Convert to bool: compare item != zero_const (works for both i8 and i64)
         let item_bool = self.alloc_and_add_local(Type::Bool, mir_func);

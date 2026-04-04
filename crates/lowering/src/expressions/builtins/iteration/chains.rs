@@ -20,8 +20,7 @@ impl<'a> Lowering<'a> {
             return Ok(mir::Operand::Constant(mir::Constant::None));
         }
 
-        let arg_expr = &hir_module.exprs[args[0]];
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         // Determine element type from container type
         let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
@@ -38,16 +37,12 @@ impl<'a> Lowering<'a> {
         };
 
         // Create result local with Iterator type wrapping (Int, elem_type) tuples
-        let result_local = self.alloc_and_add_local(
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_ENUMERATE),
+            vec![inner_iter, start_operand],
             Type::Iterator(Box::new(Type::Tuple(vec![Type::Int, elem_type]))),
             mir_func,
         );
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_ENUMERATE),
-            args: vec![inner_iter, start_operand],
-        });
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -75,7 +70,7 @@ impl<'a> Lowering<'a> {
         // Create iterators for each argument and add to list
         for arg_id in args.iter() {
             let arg_expr = &hir_module.exprs[*arg_id];
-            let arg_type = self.get_expr_type(arg_expr, hir_module);
+            let arg_type = self.get_type_of_expr_id(*arg_id, hir_module);
 
             // Check if this is a range() call
             let is_range = matches!(
@@ -172,7 +167,7 @@ impl<'a> Lowering<'a> {
 
         // Get the iterable and create an iterator
         let iter_expr = &hir_module.exprs[args[0]];
-        let iter_type = self.get_expr_type(iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let is_range = matches!(
             &iter_expr.kind,

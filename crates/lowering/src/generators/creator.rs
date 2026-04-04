@@ -12,10 +12,11 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, LocalId, VarId};
 
+use super::for_loop::detect_for_loop_generator;
+use super::GeneratorContext;
 use super::GeneratorVar;
-use crate::context::Lowering;
 
-impl<'a> Lowering<'a> {
+impl<'a> GeneratorContext<'a> {
     /// Create the generator creator function
     /// This function creates a generator object and returns it
     pub(super) fn create_generator_creator(
@@ -171,7 +172,7 @@ impl<'a> Lowering<'a> {
         }
 
         // For for-loop generators, we need to initialize the iterator
-        if let Some(for_gen) = self.detect_for_loop_generator(&func.body, hir_module) {
+        if let Some(for_gen) = detect_for_loop_generator(&func.body, hir_module) {
             // Allocate local for iterator
             let iter_local =
                 self.alloc_and_add_local(Type::Iterator(Box::new(Type::Any)), &mut mir_func);
@@ -395,14 +396,7 @@ impl<'a> Lowering<'a> {
                         .get_var_type(var_id)
                         .cloned()
                         .unwrap_or(Type::List(Box::new(Type::Any)));
-                    let iter_source = match &var_type {
-                        Type::List(_) => mir::IterSourceKind::List,
-                        Type::Tuple(_) => mir::IterSourceKind::Tuple,
-                        Type::Dict(_, _) => mir::IterSourceKind::Dict,
-                        Type::Set(_) => mir::IterSourceKind::Set,
-                        Type::Str => mir::IterSourceKind::Str,
-                        _ => mir::IterSourceKind::List,
-                    };
+                    let iter_source = crate::type_dispatch::type_to_iter_source(&var_type);
                     block.instructions.push(mir::Instruction {
                         kind: mir::InstructionKind::RuntimeCall {
                             dest: dest_local,
@@ -436,14 +430,7 @@ impl<'a> Lowering<'a> {
                     });
 
                     // Create iterator from the fetched global variable
-                    let iter_source = match &var_type {
-                        Type::List(_) => mir::IterSourceKind::List,
-                        Type::Tuple(_) => mir::IterSourceKind::Tuple,
-                        Type::Dict(_, _) => mir::IterSourceKind::Dict,
-                        Type::Set(_) => mir::IterSourceKind::Set,
-                        Type::Str => mir::IterSourceKind::Str,
-                        _ => mir::IterSourceKind::List,
-                    };
+                    let iter_source = crate::type_dispatch::type_to_iter_source(&var_type);
                     block.instructions.push(mir::Instruction {
                         kind: mir::InstructionKind::RuntimeCall {
                             dest: dest_local,

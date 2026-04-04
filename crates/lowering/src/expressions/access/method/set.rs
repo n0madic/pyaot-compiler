@@ -71,26 +71,23 @@ impl<'a> Lowering<'a> {
             }
             "clear" => {
                 // .clear() - removes all elements
-                let result_local = self.alloc_and_add_local(Type::None, mir_func);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_CLEAR),
-                    args: vec![obj_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_CLEAR),
+                    vec![obj_operand],
+                    Type::None,
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }
             "copy" => {
                 // .copy() - shallow copy, preserving the source set's element type
-                let result_local =
-                    self.alloc_and_add_local(Type::Set(Box::new(elem_ty.clone())), mir_func);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_COPY),
-                    args: vec![obj_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_COPY),
+                    vec![obj_operand],
+                    Type::Set(Box::new(elem_ty.clone())),
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }
@@ -213,72 +210,64 @@ impl<'a> Lowering<'a> {
                 // SetPop returns a boxed *mut Obj; unbox based on element type
                 match elem_ty {
                     Type::Bool => {
-                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_SET_POP,
-                            ),
-                            args: vec![obj_operand],
-                        });
-                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: result_local,
-                            func: mir::RuntimeFunc::Call(
+                        let boxed_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_POP),
+                            vec![obj_operand],
+                            Type::HeapAny,
+                            mir_func,
+                        );
+                        let result_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL,
                             ),
-                            args: vec![mir::Operand::Local(boxed_local)],
-                        });
+                            vec![mir::Operand::Local(boxed_local)],
+                            Type::Bool,
+                            mir_func,
+                        );
                         Ok(mir::Operand::Local(result_local))
                     }
                     Type::Float => {
-                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_SET_POP,
-                            ),
-                            args: vec![obj_operand],
-                        });
-                        let result_local = self.alloc_and_add_local(Type::Float, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: result_local,
-                            func: mir::RuntimeFunc::Call(
+                        let boxed_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_POP),
+                            vec![obj_operand],
+                            Type::HeapAny,
+                            mir_func,
+                        );
+                        let result_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
                             ),
-                            args: vec![mir::Operand::Local(boxed_local)],
-                        });
+                            vec![mir::Operand::Local(boxed_local)],
+                            Type::Float,
+                            mir_func,
+                        );
                         Ok(mir::Operand::Local(result_local))
                     }
                     Type::Int => {
-                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_SET_POP,
-                            ),
-                            args: vec![obj_operand],
-                        });
-                        let result_local = self.alloc_and_add_local(Type::Int, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: result_local,
-                            func: mir::RuntimeFunc::Call(
+                        let boxed_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_POP),
+                            vec![obj_operand],
+                            Type::HeapAny,
+                            mir_func,
+                        );
+                        let result_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_UNBOX_INT,
                             ),
-                            args: vec![mir::Operand::Local(boxed_local)],
-                        });
+                            vec![mir::Operand::Local(boxed_local)],
+                            Type::Int,
+                            mir_func,
+                        );
                         Ok(mir::Operand::Local(result_local))
                     }
                     _ => {
                         // Heap types (Str, Tuple, etc.) — no unboxing needed
-                        let result_local = self.alloc_and_add_local(elem_ty.clone(), mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: result_local,
-                            func: mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_SET_POP,
-                            ),
-                            args: vec![obj_operand],
-                        });
+                        let result_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_POP),
+                            vec![obj_operand],
+                            elem_ty.clone(),
+                            mir_func,
+                        );
                         Ok(mir::Operand::Local(result_local))
                     }
                 }

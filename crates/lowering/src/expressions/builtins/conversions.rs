@@ -17,19 +17,19 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         if args.is_empty() {
             // str() with no args returns empty string ""
-            let result_local = self.alloc_and_add_local(Type::Str, mir_func);
             let empty = self.intern("");
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: result_local,
-                func: mir::RuntimeFunc::MakeStr,
-                args: vec![mir::Operand::Constant(mir::Constant::Str(empty))],
-            });
+            let result_local = self.emit_runtime_call(
+                mir::RuntimeFunc::MakeStr,
+                vec![mir::Operand::Constant(mir::Constant::Str(empty))],
+                Type::Str,
+                mir_func,
+            );
             return Ok(mir::Operand::Local(result_local));
         }
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Str, mir_func);
 
@@ -40,55 +40,34 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_OBJ_TO_STR),
                 args: vec![arg_operand],
             });
+        } else if let Some(conv_kind) = crate::type_dispatch::type_to_conversion_kind(&arg_type) {
+            if conv_kind == mir::ConversionTypeKind::Str {
+                // str(str) -> returns the same string (copy for now)
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: result_local,
+                    src: arg_operand,
+                });
+            } else if conv_kind == mir::ConversionTypeKind::None {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
+                        conv_kind,
+                        mir::ConversionTypeKind::Str,
+                    )),
+                    args: vec![],
+                });
+            } else {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
+                        conv_kind,
+                        mir::ConversionTypeKind::Str,
+                    )),
+                    args: vec![arg_operand],
+                });
+            }
         } else {
             match arg_type {
-                Type::Str => {
-                    // str(str) -> returns the same string (copy for now)
-                    self.emit_instruction(mir::InstructionKind::Copy {
-                        dest: result_local,
-                        src: arg_operand,
-                    });
-                }
-                Type::Int => {
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
-                            mir::ConversionTypeKind::Int,
-                            mir::ConversionTypeKind::Str,
-                        )),
-                        args: vec![arg_operand],
-                    });
-                }
-                Type::Float => {
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
-                            mir::ConversionTypeKind::Float,
-                            mir::ConversionTypeKind::Str,
-                        )),
-                        args: vec![arg_operand],
-                    });
-                }
-                Type::Bool => {
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
-                            mir::ConversionTypeKind::Bool,
-                            mir::ConversionTypeKind::Str,
-                        )),
-                        args: vec![arg_operand],
-                    });
-                }
-                Type::None => {
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
-                            mir::ConversionTypeKind::None,
-                            mir::ConversionTypeKind::Str,
-                        )),
-                        args: vec![],
-                    });
-                }
                 Type::BuiltinException(_) => {
                     // str(exception) returns the message from .args tuple
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -101,7 +80,7 @@ impl<'a> Lowering<'a> {
                     // Check for __str__ or __repr__ methods
                     if let Some(class_info) = self.get_class_info(&class_id) {
                         // Try __str__ first
-                        if let Some(str_func) = class_info.str_func {
+                        if let Some(str_func) = class_info.get_dunder_func("__str__") {
                             self.emit_instruction(mir::InstructionKind::CallDirect {
                                 dest: result_local,
                                 func: str_func,
@@ -109,7 +88,7 @@ impl<'a> Lowering<'a> {
                             });
                         }
                         // Fallback to __repr__ if __str__ not defined
-                        else if let Some(repr_func) = class_info.repr_func {
+                        else if let Some(repr_func) = class_info.get_dunder_func("__repr__") {
                             self.emit_instruction(mir::InstructionKind::CallDirect {
                                 dest: result_local,
                                 func: repr_func,
@@ -176,7 +155,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
@@ -231,7 +210,10 @@ impl<'a> Lowering<'a> {
             }
             Type::Class { class_id, .. } => {
                 // int(obj) -> call __int__ dunder if defined
-                if let Some(int_func) = self.get_class_info(&class_id).and_then(|ci| ci.int_func) {
+                if let Some(int_func) = self
+                    .get_class_info(&class_id)
+                    .and_then(|ci| ci.get_dunder_func("__int__"))
+                {
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,
                         func: int_func,
@@ -270,7 +252,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Float, mir_func);
 
@@ -315,8 +297,9 @@ impl<'a> Lowering<'a> {
             }
             Type::Class { class_id, .. } => {
                 // float(obj) -> call __float__ dunder if defined
-                if let Some(float_func) =
-                    self.get_class_info(&class_id).and_then(|ci| ci.float_func)
+                if let Some(float_func) = self
+                    .get_class_info(&class_id)
+                    .and_then(|ci| ci.get_dunder_func("__float__"))
                 {
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,
@@ -356,7 +339,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
@@ -430,15 +413,18 @@ impl<'a> Lowering<'a> {
             }
             Type::Class { class_id, .. } => {
                 // bool(obj) -> call __bool__ dunder, fall back to __len__, default True
-                if let Some(bool_func) = self.get_class_info(&class_id).and_then(|ci| ci.bool_func)
+                if let Some(bool_func) = self
+                    .get_class_info(&class_id)
+                    .and_then(|ci| ci.get_dunder_func("__bool__"))
                 {
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,
                         func: bool_func,
                         args: vec![arg_operand],
                     });
-                } else if let Some(len_func) =
-                    self.get_class_info(&class_id).and_then(|ci| ci.len_func)
+                } else if let Some(len_func) = self
+                    .get_class_info(&class_id)
+                    .and_then(|ci| ci.get_dunder_func("__len__"))
                 {
                     // Python: __len__() != 0 used for truthiness if __bool__ not defined
                     let len_local = self.alloc_and_add_local(Type::Int, mir_func);
@@ -496,7 +482,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         match arg_type {
             Type::Int => {
@@ -564,13 +550,12 @@ impl<'a> Lowering<'a> {
         let i_expr = &hir_module.exprs[args[0]];
         let i_operand = self.lower_expr(i_expr, hir_module, mir_func)?;
 
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_CHR),
-            args: vec![i_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_CHR),
+            vec![i_operand],
+            Type::Str,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -587,13 +572,12 @@ impl<'a> Lowering<'a> {
         let s_expr = &hir_module.exprs[args[0]];
         let s_operand = self.lower_expr(s_expr, hir_module, mir_func)?;
 
-        let result_local = self.alloc_and_add_local(Type::Int, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CHR_TO_INT),
-            args: vec![s_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CHR_TO_INT),
+            vec![s_operand],
+            Type::Int,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

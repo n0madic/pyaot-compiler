@@ -18,18 +18,18 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         let obj_expr = &hir_module.exprs[obj];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        // Use get_expr_type for proper type inference
-        let obj_type = self.get_expr_type(obj_expr, hir_module);
+        // Use get_type_of_expr_id for proper type inference
+        let obj_type = self.get_type_of_expr_id(obj, hir_module);
 
         let index_expr = &hir_module.exprs[index];
         let mut index_operand = self.lower_expr(index_expr, hir_module, mir_func)?;
 
         // If index is a class with __index__, call it to convert to int
-        let index_type = self.get_expr_type(index_expr, hir_module);
+        let index_type = self.get_type_of_expr_id(index, hir_module);
         if let Type::Class { class_id, .. } = &index_type {
             if let Some(func_id) = self
                 .get_class_info(class_id)
-                .and_then(|info| info.index_func)
+                .and_then(|info| info.get_dunder_func("__index__"))
             {
                 let int_local = self.alloc_and_add_local(Type::Int, mir_func);
                 self.emit_instruction(mir::InstructionKind::CallDirect {
@@ -236,7 +236,7 @@ impl<'a> Lowering<'a> {
                     is_gc_root: value_ty.is_heap(),
                 });
                 // Box key if needed (int/bool keys need boxing)
-                let index_type = self.get_expr_type(index_expr, hir_module);
+                let index_type = self.get_type_of_expr_id(index, hir_module);
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
 
                 // Check if value type needs unboxing
@@ -244,14 +244,12 @@ impl<'a> Lowering<'a> {
 
                 if let Some(unbox_func) = unbox_func {
                     // Get returns a boxed pointer, need to unbox
-                    let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: boxed_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_DICT_GET,
-                        ),
-                        args: vec![obj_operand, boxed_key],
-                    });
+                    let boxed_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_GET),
+                        vec![obj_operand, boxed_key],
+                        Type::HeapAny,
+                        mir_func,
+                    );
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: unbox_func,
@@ -277,20 +275,20 @@ impl<'a> Lowering<'a> {
                     ty: (**value_ty).clone(),
                     is_gc_root: value_ty.is_heap(),
                 });
-                let index_type = self.get_expr_type(index_expr, hir_module);
+                let index_type = self.get_type_of_expr_id(index, hir_module);
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
 
                 let unbox_func = Self::unbox_func_for_type(value_ty.as_ref());
 
                 if let Some(unbox_func) = unbox_func {
-                    let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: boxed_local,
-                        func: mir::RuntimeFunc::Call(
+                    let boxed_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_DEFAULT_DICT_GET,
                         ),
-                        args: vec![obj_operand, boxed_key],
-                    });
+                        vec![obj_operand, boxed_key],
+                        Type::HeapAny,
+                        mir_func,
+                    );
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: unbox_func,
@@ -308,23 +306,19 @@ impl<'a> Lowering<'a> {
             }
             Type::Bytes => {
                 // Bytes indexing returns an integer (0-255)
-                mir_func.add_local(mir::Local {
-                    id: result_local,
-                    name: None,
-                    ty: Type::Int,
-                    is_gc_root: false,
-                });
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_GET),
-                    args: vec![obj_operand, index_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_GET),
+                    vec![obj_operand, index_operand],
+                    Type::Int,
+                    mir_func,
+                );
+                return Ok(mir::Operand::Local(result_local));
             }
             Type::Class { class_id, .. } => {
                 // Class with __getitem__ dunder
                 let getitem_func = self
                     .get_class_info(class_id)
-                    .and_then(|info| info.getitem_func);
+                    .and_then(|info| info.get_dunder_func("__getitem__"));
 
                 if let Some(func_id) = getitem_func {
                     let return_ty = self

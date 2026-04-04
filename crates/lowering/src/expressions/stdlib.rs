@@ -29,14 +29,12 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         let result_type = typespec_to_type(&attr_def.ty);
-        let result_local = self.alloc_and_add_local(result_type, mir_func);
-
-        // Emit generic StdlibAttrGet - codegen will use attr_def.runtime_getter
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&attr_def.codegen),
-            args: vec![],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&attr_def.codegen),
+            vec![],
+            result_type,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -103,13 +101,12 @@ impl<'a> Lowering<'a> {
         }
 
         let result_type = typespec_to_type(&func_def.return_type);
-        let result_local = self.alloc_and_add_local(result_type, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&func_def.codegen),
-            args: mir_args,
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&func_def.codegen),
+            mir_args,
+            result_type,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -129,8 +126,8 @@ impl<'a> Lowering<'a> {
         for (i, param) in params.iter().enumerate() {
             let operand = if i < args.len() {
                 // Argument provided - lower it
+                let arg_type = self.get_type_of_expr_id(args[i], hir_module);
                 let arg_expr = &hir_module.exprs[args[i]];
-                let arg_type = self.get_expr_type(arg_expr, hir_module);
                 let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
 
                 // Auto-box if enabled and parameter is Any
@@ -175,47 +172,45 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        // Create a list to hold the arguments
-        let list_local = self.alloc_and_add_local(Type::List(Box::new(Type::Str)), mir_func);
-
         // Allocate list (assuming string elements - heap objects)
         let capacity = args.len() as i64;
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: list_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
-            args: vec![
+        let list_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
+            vec![
                 mir::Operand::Constant(mir::Constant::Int(capacity)),
                 mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
             ],
-        });
+            Type::List(Box::new(Type::Str)),
+            mir_func,
+        );
 
         // Add each argument to the list, boxing primitives as required since the list
         // uses ELEM_HEAP_OBJ storage (float, bool, and None are stored as heap objects).
         for arg_id in args {
+            let arg_type = self.get_type_of_expr_id(*arg_id, hir_module);
             let arg_expr = &hir_module.exprs[*arg_id];
-            let arg_type = self.get_expr_type(arg_expr, hir_module);
             let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
 
             // Box the argument when it is a primitive that requires heap representation
             // (float → BoxFloat, bool → BoxBool, None → BoxNone)
             let pushed_operand = self.box_primitive_if_needed(arg_operand, &arg_type, mir_func);
 
-            let void_local = self.alloc_and_add_local(Type::None, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: void_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_PUSH),
-                args: vec![mir::Operand::Local(list_local), pushed_operand],
-            });
+            self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_PUSH),
+                vec![mir::Operand::Local(list_local), pushed_operand],
+                Type::None,
+                mir_func,
+            );
         }
 
         // Call the runtime function with the list
         let result_type = typespec_to_type(&func_def.return_type);
-        let result_local = self.alloc_and_add_local(result_type, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&func_def.codegen),
-            args: vec![mir::Operand::Local(list_local)],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&func_def.codegen),
+            vec![mir::Operand::Local(list_local)],
+            result_type,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -252,7 +247,7 @@ impl<'a> Lowering<'a> {
                 // Auto-box primitives for Any parameters so the runtime
                 // receives valid *mut Obj pointers (not raw i64/f64 values)
                 if matches!(param.ty, pyaot_stdlib_defs::TypeSpec::Any) {
-                    let arg_type = self.get_expr_type(arg_expr, hir_module);
+                    let arg_type = self.get_type_of_expr_id(args[i], hir_module);
                     self.box_primitive_if_needed(op, &arg_type, mir_func)
                 } else {
                     op
@@ -281,14 +276,12 @@ impl<'a> Lowering<'a> {
                 t
             }
         };
-        let result_local = self.alloc_and_add_local(result_type, mir_func);
-
-        // Emit the generic ObjectMethodCall
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&method_def.codegen),
-            args: mir_args,
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&method_def.codegen),
+            mir_args,
+            result_type,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

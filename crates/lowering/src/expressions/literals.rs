@@ -17,14 +17,12 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         // For string literals, we need to allocate them on the heap
         // so they can be used with string operations
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-        // Emit runtime call to make heap-allocated string
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::MakeStr,
-            args: vec![mir::Operand::Constant(mir::Constant::Str(s))],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::MakeStr,
+            vec![mir::Operand::Constant(mir::Constant::Str(s))],
+            Type::Str,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -36,14 +34,12 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         // For bytes literals, we need to allocate them on the heap
-        let result_local = self.alloc_and_add_local(Type::Bytes, mir_func);
-
-        // Emit runtime call to make heap-allocated bytes
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::MakeBytes,
-            args: vec![mir::Operand::Constant(mir::Constant::Bytes(data.to_vec()))],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::MakeBytes,
+            vec![mir::Operand::Constant(mir::Constant::Bytes(data.to_vec()))],
+            Type::Bytes,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -128,9 +124,6 @@ impl<'a> Lowering<'a> {
                 let original_ty = original_union_type.unwrap_or(Type::Any);
                 let boxed_local = self.get_or_create_local(var_id, original_ty, mir_func);
 
-                // Create a new local for the unboxed primitive value
-                let unboxed_local = self.alloc_and_add_local(narrowed_type.clone(), mir_func);
-
                 // Emit unbox operation based on narrowed type
                 let unbox_func = match narrowed_type {
                     Type::Int => {
@@ -145,11 +138,12 @@ impl<'a> Lowering<'a> {
                     _ => unreachable!(), // Already checked in needs_unbox condition
                 };
 
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: unboxed_local,
-                    func: unbox_func,
-                    args: vec![mir::Operand::Local(boxed_local)],
-                });
+                let unboxed_local = self.emit_runtime_call(
+                    unbox_func,
+                    vec![mir::Operand::Local(boxed_local)],
+                    narrowed_type.clone(),
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(unboxed_local))
             } else {

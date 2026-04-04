@@ -248,34 +248,37 @@ print("All urllib.parse tests passed!")
 # They will be skipped in the example test suite to avoid network dependencies
 # For manual testing, uncomment and run with a network connection
 
-# Test basic GET request
-response_get = urlopen("https://httpbin.org/get", None, 10.0)
-assert response_get.status == 200, f"Expected status 200, got {response_get.status}"
-assert "httpbin.org" in response_get.url, f"Expected httpbin.org in URL, got '{response_get.url}'"
-body_get = response_get.read()
-assert len(body_get) > 0, "Expected non-empty body"
-assert response_get.getcode() == 200, f"Expected getcode() 200, got {response_get.getcode()}"
-assert response_get.geturl() == response_get.url, "geturl() should match url field"
-
-# Test headers access
-headers_get = response_get.headers
-assert headers_get is not None, "headers should not be None"
-
-# Test POST request
-response_post = urlopen("https://httpbin.org/post", b"key=value", 10.0)
-assert response_post.status == 200, f"Expected status 200, got {response_post.status}"
-
-# Test HTTP error status
-# CPython raises HTTPError for 4xx/5xx; our runtime returns the response object.
-# Use try/except to handle both behaviors.
 try:
-    response_404 = urlopen("https://httpbin.org/status/404", None, 10.0)
-    # If we get here, runtime returned the response (compiled mode)
-    assert response_404.status == 404, f"Expected status 404, got {response_404.status}"
-except HTTPError:
-    # CPython raises HTTPError for 404
-    pass
+    # Test basic GET request
+    response_get = urlopen("https://httpbin.org/get", None, 10.0)
+    assert response_get.status == 200, f"Expected status 200, got {response_get.status}"
+    assert "httpbin.org" in response_get.url, f"Expected httpbin.org in URL, got '{response_get.url}'"
+    body_get = response_get.read()
+    assert len(body_get) > 0, "Expected non-empty body"
+    assert response_get.getcode() == 200, f"Expected getcode() 200, got {response_get.getcode()}"
+    assert response_get.geturl() == response_get.url, "geturl() should match url field"
 
-print("urllib.request tests passed!")
+    # Test headers access
+    headers_get = response_get.headers
+    assert headers_get is not None, "headers should not be None"
+
+    # Test POST request
+    response_post = urlopen("https://httpbin.org/post", b"key=value", 10.0)
+    assert response_post.status == 200, f"Expected status 200, got {response_post.status}"
+
+    # Test HTTP error status
+    # CPython raises HTTPError for 4xx/5xx; our runtime returns the response object.
+    # Use try/except to handle both behaviors.
+    try:
+        response_404 = urlopen("https://httpbin.org/status/404", None, 10.0)
+        # If we get here, runtime returned the response (compiled mode)
+        assert response_404.status == 404, f"Expected status 404, got {response_404.status}"
+    except HTTPError:
+        # CPython raises HTTPError for 404
+        pass
+
+    print("urllib.request tests passed!")
+except IOError:
+    print("urllib.request tests skipped (no network)")
 
 print("All urllib tests passed!")

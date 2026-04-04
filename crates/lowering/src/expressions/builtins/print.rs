@@ -73,10 +73,10 @@ impl<'a> Lowering<'a> {
         for (i, arg_id) in args.iter().enumerate() {
             let arg_expr = &hir_module.exprs[*arg_id];
             let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-            // Use get_expr_type for proper type inference, but also check the local's
+            // Use get_type_of_expr_id for proper type inference, but also check the local's
             // actual storage type — Union locals store boxed pointers even when inference
             // narrows the type to a primitive.
-            let mut arg_type = self.get_expr_type(arg_expr, hir_module);
+            let mut arg_type = self.get_type_of_expr_id(*arg_id, hir_module);
             if let mir::Operand::Local(id) = &arg_operand {
                 if let Some(local) = mir_func.locals.get(id) {
                     if local.ty.is_union() {
@@ -87,12 +87,12 @@ impl<'a> Lowering<'a> {
 
             // For exception instances, convert to string via rt_exc_instance_str, then print
             if matches!(&arg_type, Type::BuiltinException(_)) {
-                let str_local = self.alloc_and_add_local(Type::Str, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: str_local,
-                    func: mir::RuntimeFunc::ExcInstanceStr,
-                    args: vec![arg_operand],
-                });
+                let str_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::ExcInstanceStr,
+                    vec![arg_operand],
+                    Type::Str,
+                    mir_func,
+                );
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
                     func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
@@ -104,13 +104,13 @@ impl<'a> Lowering<'a> {
             else if let Type::Class { class_id, .. } = &arg_type {
                 let str_local = self.alloc_and_add_local(Type::Str, mir_func);
                 if let Some(class_info) = self.get_class_info(class_id) {
-                    if let Some(str_func) = class_info.str_func {
+                    if let Some(str_func) = class_info.get_dunder_func("__str__") {
                         self.emit_instruction(mir::InstructionKind::CallDirect {
                             dest: str_local,
                             func: str_func,
                             args: vec![arg_operand],
                         });
-                    } else if let Some(repr_func) = class_info.repr_func {
+                    } else if let Some(repr_func) = class_info.get_dunder_func("__repr__") {
                         self.emit_instruction(mir::InstructionKind::CallDirect {
                             dest: str_local,
                             func: repr_func,
@@ -155,34 +155,7 @@ impl<'a> Lowering<'a> {
                 });
             } else {
                 // Select descriptor based on type
-                let print_def = if arg_type.is_union() {
-                    // For Union types, use runtime dispatch
-                    &runtime_func_def::RT_PRINT_OBJ
-                } else {
-                    match &arg_type {
-                        Type::Int => &runtime_func_def::RT_PRINT_INT,
-                        Type::Float => &runtime_func_def::RT_PRINT_FLOAT,
-                        Type::Bool => &runtime_func_def::RT_PRINT_BOOL,
-                        Type::Str => &runtime_func_def::RT_PRINT_STR_OBJ,
-                        Type::Bytes => &runtime_func_def::RT_PRINT_BYTES_OBJ,
-                        // For heap types, use Obj for runtime dispatch
-                        Type::List(_)
-                        | Type::Tuple(_)
-                        | Type::Dict(_, _)
-                        | Type::DefaultDict(_, _)
-                        | Type::Set(_)
-                        | Type::Iterator(_)
-                        | Type::Union(_)
-                        | Type::RuntimeObject(_)
-                        | Type::File => &runtime_func_def::RT_PRINT_OBJ,
-                        // HeapAny: guaranteed *mut Obj — use runtime dispatch
-                        Type::HeapAny => &runtime_func_def::RT_PRINT_OBJ,
-                        // Any: ambiguous (could be raw i64) — print as Int
-                        Type::Any => &runtime_func_def::RT_PRINT_INT,
-                        // Compile-time-only types — should not appear at runtime
-                        _ => &runtime_func_def::RT_PRINT_INT,
-                    }
-                };
+                let print_def = crate::type_dispatch::select_print_func(&arg_type);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
@@ -272,13 +245,12 @@ impl<'a> Lowering<'a> {
             self.lower_expr(prompt_expr, hir_module, mir_func)?
         };
 
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&runtime_func_def::RT_INPUT),
-            args: vec![prompt_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&runtime_func_def::RT_INPUT),
+            vec![prompt_operand],
+            Type::Str,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

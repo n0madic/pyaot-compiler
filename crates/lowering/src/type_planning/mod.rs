@@ -6,9 +6,11 @@
 //! - `check`: top-down type validation + error reporting
 
 mod check;
+mod closure_scan;
+mod container_refine;
 pub(crate) mod helpers;
 pub(crate) mod infer;
-mod pre_scan;
+mod lambda_inference;
 
 use indexmap::IndexMap;
 use pyaot_hir as hir;
@@ -32,16 +34,21 @@ impl<'a> Lowering<'a> {
         expr_id: hir::ExprId,
         hir_module: &hir::Module,
     ) -> Type {
-        if let Some(cached) = self.expr_types.get(&expr_id).cloned() {
+        if let Some(cached) = self.types.expr_types.get(&expr_id).cloned() {
             return cached;
         }
         let expr = &hir_module.exprs[expr_id];
         let result = self.compute_expr_type(expr, hir_module);
-        self.expr_types.insert(expr_id, result.clone());
+        self.types.expr_types.insert(expr_id, result.clone());
         result
     }
 
-    /// Get the effective type of an expression.
+    /// Get the effective type of an expression (uncached).
+    ///
+    /// Prefer `get_type_of_expr_id` when the `ExprId` is available —
+    /// it uses the `expr_types` cache. This method exists only for callers
+    /// that receive `&hir::Expr` without an ExprId (e.g., the current
+    /// expression being lowered in `lower_expr`).
     pub(crate) fn get_expr_type(&mut self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
         self.compute_expr_type(expr, hir_module)
     }
@@ -66,7 +73,9 @@ impl<'a> Lowering<'a> {
         for func_id in &func_ids {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 if let Some(ref return_type) = func.return_type {
-                    self.func_return_types.insert(*func_id, return_type.clone());
+                    self.types
+                        .func_return_types
+                        .insert(*func_id, return_type.clone());
                 }
             }
         }
@@ -74,7 +83,7 @@ impl<'a> Lowering<'a> {
         // Pass 2: Infer return types for unannotated functions
         for func_id in &func_ids {
             // Skip functions already resolved in pass 1
-            if self.func_return_types.contains_key(func_id) {
+            if self.types.func_return_types.contains_key(func_id) {
                 continue;
             }
 
@@ -87,7 +96,7 @@ impl<'a> Lowering<'a> {
                 // Build param type map for this function
                 let mut param_types: IndexMap<VarId, Type> = IndexMap::new();
                 // Use lambda_param_type_hints if available (from map/filter/reduce pre-scan)
-                let hints = self.lambda_param_type_hints.get(func_id).cloned();
+                let hints = self.closures.lambda_param_type_hints.get(func_id).cloned();
                 for (i, param) in func.params.iter().enumerate() {
                     let ty = param.ty.clone().unwrap_or_else(|| {
                         hints
@@ -113,7 +122,7 @@ impl<'a> Lowering<'a> {
                     return_type
                 };
 
-                self.func_return_types.insert(*func_id, return_type);
+                self.types.func_return_types.insert(*func_id, return_type);
             }
         }
     }

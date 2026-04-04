@@ -9,14 +9,14 @@ use super::Lowering;
 impl<'a> Lowering<'a> {
     /// Allocate a new local variable ID
     pub(crate) fn alloc_local_id(&mut self) -> LocalId {
-        let id = LocalId::new(self.next_local_id);
-        self.next_local_id += 1;
+        let id = LocalId::new(self.codegen.next_local_id);
+        self.codegen.next_local_id += 1;
         id
     }
 
     /// Reset the local ID counter (used when starting a new function).
     pub(crate) fn reset_local_id(&mut self) {
-        self.next_local_id = 0;
+        self.codegen.next_local_id = 0;
     }
 
     /// Allocate a new local variable and add it to the function.
@@ -70,8 +70,8 @@ impl<'a> Lowering<'a> {
 
     /// Create a new basic block
     pub(crate) fn new_block(&mut self) -> mir::BasicBlock {
-        let id = BlockId::from(self.next_block_id);
-        self.next_block_id += 1;
+        let id = BlockId::from(self.codegen.next_block_id);
+        self.codegen.next_block_id += 1;
         mir::BasicBlock {
             id,
             instructions: Vec::new(),
@@ -81,22 +81,40 @@ impl<'a> Lowering<'a> {
 
     /// Get mutable reference to current basic block
     pub(crate) fn current_block_mut(&mut self) -> &mut mir::BasicBlock {
-        &mut self.current_blocks[self.current_block_idx]
+        &mut self.codegen.current_blocks[self.codegen.current_block_idx]
     }
 
     /// Check if current block already has a terminator
     pub(crate) fn current_block_has_terminator(&self) -> bool {
         !matches!(
-            self.current_blocks[self.current_block_idx].terminator,
+            self.codegen.current_blocks[self.codegen.current_block_idx].terminator,
             mir::Terminator::Unreachable
         )
     }
 
     /// Emit an instruction to the current basic block
     pub(crate) fn emit_instruction(&mut self, kind: mir::InstructionKind) {
-        let span = self.current_span;
+        let span = self.codegen.current_span;
         self.current_block_mut()
             .instructions
             .push(mir::Instruction { kind, span });
+    }
+
+    /// Emit a runtime call: allocates a result local, emits the RuntimeCall instruction,
+    /// and returns the LocalId of the result.
+    ///
+    /// This consolidates the common pattern of:
+    ///   let dest = self.alloc_and_add_local(result_type, mir_func);
+    ///   self.emit_instruction(RuntimeCall { dest, func, args });
+    pub(crate) fn emit_runtime_call(
+        &mut self,
+        func: mir::RuntimeFunc,
+        args: Vec<mir::Operand>,
+        result_type: Type,
+        mir_func: &mut mir::Function,
+    ) -> LocalId {
+        let dest = self.alloc_and_add_local(result_type, mir_func);
+        self.emit_instruction(mir::InstructionKind::RuntimeCall { dest, func, args });
+        dest
     }
 }

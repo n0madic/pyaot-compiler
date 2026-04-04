@@ -17,85 +17,87 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, LocalId, VarId};
 
+use super::utils::{get_operand_for_expr, hir_binop_to_mir, lower_simple_stmt_for_generator};
+use super::GeneratorContext;
 use super::{GeneratorVar, WhileLoopGenerator, YieldSection};
-use crate::context::Lowering;
 
-impl<'a> Lowering<'a> {
-    /// Detect if the generator body follows the pattern:
-    /// [init_stmts...] while cond: yield val; [update_stmts...]
-    pub(super) fn detect_while_loop_generator(
-        &self,
-        body: &[hir::StmtId],
-        hir_module: &hir::Module,
-    ) -> Option<WhileLoopGenerator> {
-        // Find the while loop
-        let mut init_stmts = Vec::new();
-        let mut while_stmt_idx = None;
+/// Detect if the generator body follows the pattern:
+/// [init_stmts...] while cond: yield val; [update_stmts...]
+///
+/// Pure HIR analysis — no Lowering state needed.
+pub(super) fn detect_while_loop_generator(
+    body: &[hir::StmtId],
+    hir_module: &hir::Module,
+) -> Option<WhileLoopGenerator> {
+    // Find the while loop
+    let mut init_stmts = Vec::new();
+    let mut while_stmt_idx = None;
 
-        for (i, stmt_id) in body.iter().enumerate() {
-            let stmt = &hir_module.stmts[*stmt_id];
-            if matches!(stmt.kind, hir::StmtKind::While { .. }) {
-                while_stmt_idx = Some(i);
-                break;
-            }
-            init_stmts.push(*stmt_id);
+    for (i, stmt_id) in body.iter().enumerate() {
+        let stmt = &hir_module.stmts[*stmt_id];
+        if matches!(stmt.kind, hir::StmtKind::While { .. }) {
+            while_stmt_idx = Some(i);
+            break;
         }
+        init_stmts.push(*stmt_id);
+    }
 
-        let while_idx = while_stmt_idx?;
-        let while_stmt_id = body[while_idx];
-        let while_stmt = &hir_module.stmts[while_stmt_id];
+    let while_idx = while_stmt_idx?;
+    let while_stmt_id = body[while_idx];
+    let while_stmt = &hir_module.stmts[while_stmt_id];
 
-        let (cond, while_body) = match &while_stmt.kind {
-            hir::StmtKind::While { cond, body, .. } => (*cond, body),
-            _ => return None,
-        };
+    let (cond, while_body) = match &while_stmt.kind {
+        hir::StmtKind::While { cond, body, .. } => (*cond, body),
+        _ => return None,
+    };
 
-        // Find all yields in while body and split into sections
-        let mut yield_sections = Vec::new();
-        let mut current_stmts = Vec::new();
+    // Find all yields in while body and split into sections
+    let mut yield_sections = Vec::new();
+    let mut current_stmts = Vec::new();
 
-        for stmt_id in while_body {
-            let stmt = &hir_module.stmts[*stmt_id];
-            match &stmt.kind {
-                hir::StmtKind::Expr(expr_id) => {
-                    let expr = &hir_module.exprs[*expr_id];
-                    if let hir::ExprKind::Yield(val) = &expr.kind {
-                        // Found a yield - save current section
-                        yield_sections.push(YieldSection {
-                            stmts_before: current_stmts.clone(),
-                            yield_expr: *val,
-                        });
-                        current_stmts.clear();
-                    } else {
-                        current_stmts.push(*stmt_id);
-                    }
-                }
-                _ => {
+    for stmt_id in while_body {
+        let stmt = &hir_module.stmts[*stmt_id];
+        match &stmt.kind {
+            hir::StmtKind::Expr(expr_id) => {
+                let expr = &hir_module.exprs[*expr_id];
+                if let hir::ExprKind::Yield(val) = &expr.kind {
+                    // Found a yield - save current section
+                    yield_sections.push(YieldSection {
+                        stmts_before: current_stmts.clone(),
+                        yield_expr: *val,
+                    });
+                    current_stmts.clear();
+                } else {
                     current_stmts.push(*stmt_id);
                 }
             }
+            _ => {
+                current_stmts.push(*stmt_id);
+            }
         }
-
-        // Statements after last yield become update section
-        let update_stmts = current_stmts;
-
-        if yield_sections.is_empty() {
-            return None;
-        }
-
-        // Make sure there's nothing after the while loop
-        if while_idx + 1 < body.len() {
-            return None;
-        }
-
-        Some(WhileLoopGenerator {
-            init_stmts,
-            cond,
-            yield_sections,
-            update_stmts,
-        })
     }
 
+    // Statements after last yield become update section
+    let update_stmts = current_stmts;
+
+    if yield_sections.is_empty() {
+        return None;
+    }
+
+    // Make sure there's nothing after the while loop
+    if while_idx + 1 < body.len() {
+        return None;
+    }
+
+    Some(WhileLoopGenerator {
+        init_stmts,
+        cond,
+        yield_sections,
+        update_stmts,
+    })
+}
+
+impl<'a> GeneratorContext<'a> {
     /// Create a resume function for a while-loop generator
     /// Structure:
     /// - State 0: execute init, check cond, goto first yield state or exhausted
@@ -315,7 +317,7 @@ impl<'a> Lowering<'a> {
 
         // Execute init statements
         for stmt_id in &while_gen.init_stmts {
-            self.lower_simple_stmt_for_generator(
+            lower_simple_stmt_for_generator(
                 *stmt_id,
                 hir_module,
                 &mut state0_block,
@@ -394,7 +396,7 @@ impl<'a> Lowering<'a> {
 
             // Execute statements before this yield
             for stmt_id in &section.stmts_before {
-                self.lower_simple_stmt_for_generator(
+                lower_simple_stmt_for_generator(
                     *stmt_id,
                     hir_module,
                     &mut yield_block,
@@ -431,29 +433,9 @@ impl<'a> Lowering<'a> {
                     hir::ExprKind::BinOp { left, op, right } => {
                         let left_expr = &hir_module.exprs[*left];
                         let right_expr = &hir_module.exprs[*right];
-                        let left_op = self.get_operand_for_expr(left_expr, &var_to_mir_local)?;
-                        let right_op = self.get_operand_for_expr(right_expr, &var_to_mir_local)?;
-                        let mir_op = match op {
-                            hir::BinOp::Add => mir::BinOp::Add,
-                            hir::BinOp::Sub => mir::BinOp::Sub,
-                            hir::BinOp::Mul => mir::BinOp::Mul,
-                            hir::BinOp::Div => mir::BinOp::Div,
-                            hir::BinOp::Mod => mir::BinOp::Mod,
-                            hir::BinOp::FloorDiv => mir::BinOp::FloorDiv,
-                            hir::BinOp::Pow => mir::BinOp::Pow,
-                            hir::BinOp::BitAnd => mir::BinOp::BitAnd,
-                            hir::BinOp::BitOr => mir::BinOp::BitOr,
-                            hir::BinOp::BitXor => mir::BinOp::BitXor,
-                            hir::BinOp::LShift => mir::BinOp::LShift,
-                            hir::BinOp::RShift => mir::BinOp::RShift,
-                            hir::BinOp::MatMul => {
-                                return Err(pyaot_diagnostics::CompilerError::type_error(
-                                    "@ operator is only supported on classes with __matmul__"
-                                        .to_string(),
-                                    yield_expr.span,
-                                ));
-                            }
-                        };
+                        let left_op = get_operand_for_expr(left_expr, &var_to_mir_local)?;
+                        let right_op = get_operand_for_expr(right_expr, &var_to_mir_local)?;
+                        let mir_op = hir_binop_to_mir(op, yield_expr.span)?;
                         yield_block.instructions.push(mir::Instruction {
                             kind: mir::InstructionKind::BinOp {
                                 dest: yield_value_local,
@@ -476,8 +458,8 @@ impl<'a> Lowering<'a> {
                         if let hir::ExprKind::Compare { left, op, right } = &cond_expr.kind {
                             let l_expr = &hir_module.exprs[*left];
                             let r_expr = &hir_module.exprs[*right];
-                            let l_op = self.get_operand_for_expr(l_expr, &var_to_mir_local)?;
-                            let r_op = self.get_operand_for_expr(r_expr, &var_to_mir_local)?;
+                            let l_op = get_operand_for_expr(l_expr, &var_to_mir_local)?;
+                            let r_op = get_operand_for_expr(r_expr, &var_to_mir_local)?;
                             let mir_cmp = match op {
                                 hir::CmpOp::Lt => mir::BinOp::Lt,
                                 hir::CmpOp::LtE => mir::BinOp::LtE,
@@ -534,7 +516,7 @@ impl<'a> Lowering<'a> {
 
                         // Then block: yield_value = then_val → Goto merge
                         let then_expr = &hir_module.exprs[*then_val];
-                        let then_op = self.get_operand_for_expr(then_expr, &var_to_mir_local)?;
+                        let then_op = get_operand_for_expr(then_expr, &var_to_mir_local)?;
                         let then_bb = mir::BasicBlock {
                             id: then_bb_id,
                             instructions: vec![mir::Instruction {
@@ -550,7 +532,7 @@ impl<'a> Lowering<'a> {
 
                         // Else block: yield_value = else_val → Goto merge
                         let else_expr = &hir_module.exprs[*else_val];
-                        let else_op = self.get_operand_for_expr(else_expr, &var_to_mir_local)?;
+                        let else_op = get_operand_for_expr(else_expr, &var_to_mir_local)?;
                         let else_bb = mir::BasicBlock {
                             id: else_bb_id,
                             instructions: vec![mir::Instruction {
@@ -672,7 +654,7 @@ impl<'a> Lowering<'a> {
 
         // Execute update statements (after last yield)
         for stmt_id in &while_gen.update_stmts {
-            self.lower_simple_stmt_for_generator(
+            lower_simple_stmt_for_generator(
                 *stmt_id,
                 hir_module,
                 &mut update_block,

@@ -9,12 +9,258 @@ use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
-use pyaot_utils::{LocalId, VarId};
+use pyaot_utils::{LocalId, Span, VarId};
 
+use super::GeneratorContext;
 use super::YieldInfo;
-use crate::context::Lowering;
 
-impl<'a> Lowering<'a> {
+/// Convert a HIR binary operator to a MIR binary operator.
+/// Returns an error for unsupported operators (e.g., MatMul outside class context).
+pub(super) fn hir_binop_to_mir(op: &hir::BinOp, span: Span) -> Result<mir::BinOp> {
+    match op {
+        hir::BinOp::Add => Ok(mir::BinOp::Add),
+        hir::BinOp::Sub => Ok(mir::BinOp::Sub),
+        hir::BinOp::Mul => Ok(mir::BinOp::Mul),
+        hir::BinOp::Div => Ok(mir::BinOp::Div),
+        hir::BinOp::Mod => Ok(mir::BinOp::Mod),
+        hir::BinOp::FloorDiv => Ok(mir::BinOp::FloorDiv),
+        hir::BinOp::Pow => Ok(mir::BinOp::Pow),
+        hir::BinOp::BitAnd => Ok(mir::BinOp::BitAnd),
+        hir::BinOp::BitOr => Ok(mir::BinOp::BitOr),
+        hir::BinOp::BitXor => Ok(mir::BinOp::BitXor),
+        hir::BinOp::LShift => Ok(mir::BinOp::LShift),
+        hir::BinOp::RShift => Ok(mir::BinOp::RShift),
+        hir::BinOp::MatMul => Err(pyaot_diagnostics::CompilerError::type_error(
+            "@ operator is only supported on classes with __matmul__".to_string(),
+            span,
+        )),
+    }
+}
+
+/// Get an operand for a simple expression (Int literal or Var reference).
+/// Pure HIR analysis — no Lowering state needed.
+pub(super) fn get_operand_for_expr(
+    expr: &hir::Expr,
+    var_to_mir_local: &HashMap<VarId, LocalId>,
+) -> Result<mir::Operand> {
+    match &expr.kind {
+        hir::ExprKind::Int(n) => Ok(mir::Operand::Constant(mir::Constant::Int(*n))),
+        hir::ExprKind::Var(var_id) => {
+            if let Some(&mir_local) = var_to_mir_local.get(var_id) {
+                Ok(mir::Operand::Local(mir_local))
+            } else {
+                Err(pyaot_diagnostics::CompilerError::codegen_error_at(
+                    "unresolved variable in generator operand expression",
+                    expr.span,
+                ))
+            }
+        }
+        other => Err(pyaot_diagnostics::CompilerError::codegen_error_at(
+            format!("unsupported expression in generator operand: {:?}", other),
+            expr.span,
+        )),
+    }
+}
+
+/// Collect yield information from the function body (in order).
+/// Returns YieldInfo for each yield, including assignment targets.
+/// Pure HIR analysis — no Lowering state needed.
+pub(super) fn collect_yield_info(body: &[hir::StmtId], hir_module: &hir::Module) -> Vec<YieldInfo> {
+    let mut yields = Vec::new();
+    for stmt_id in body {
+        collect_yields_from_stmt_with_target(*stmt_id, hir_module, &mut yields);
+    }
+    yields
+}
+
+fn collect_yields_from_stmt_with_target(
+    stmt_id: hir::StmtId,
+    hir_module: &hir::Module,
+    yields: &mut Vec<YieldInfo>,
+) {
+    let stmt = &hir_module.stmts[stmt_id];
+    match &stmt.kind {
+        hir::StmtKind::Expr(expr_id) => {
+            collect_yields_from_expr_with_target(*expr_id, None, hir_module, yields);
+        }
+        hir::StmtKind::Assign { target, value, .. } => {
+            // Check if the value is a yield expression
+            let value_expr = &hir_module.exprs[*value];
+            if matches!(value_expr.kind, hir::ExprKind::Yield(_)) {
+                // This is `target = yield value` - record the assignment target
+                collect_yields_from_expr_with_target(*value, Some(*target), hir_module, yields);
+            } else {
+                collect_yields_from_expr_with_target(*value, None, hir_module, yields);
+            }
+        }
+        hir::StmtKind::Return(Some(expr_id)) => {
+            collect_yields_from_expr_with_target(*expr_id, None, hir_module, yields);
+        }
+        hir::StmtKind::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
+            collect_yields_from_expr_with_target(*cond, None, hir_module, yields);
+            for s in then_block {
+                collect_yields_from_stmt_with_target(*s, hir_module, yields);
+            }
+            for s in else_block {
+                collect_yields_from_stmt_with_target(*s, hir_module, yields);
+            }
+        }
+        hir::StmtKind::While {
+            cond,
+            body,
+            else_block,
+        } => {
+            collect_yields_from_expr_with_target(*cond, None, hir_module, yields);
+            for s in body {
+                collect_yields_from_stmt_with_target(*s, hir_module, yields);
+            }
+            for s in else_block {
+                collect_yields_from_stmt_with_target(*s, hir_module, yields);
+            }
+        }
+        hir::StmtKind::For {
+            iter,
+            body,
+            else_block,
+            ..
+        }
+        | hir::StmtKind::ForUnpack {
+            iter,
+            body,
+            else_block,
+            ..
+        } => {
+            collect_yields_from_expr_with_target(*iter, None, hir_module, yields);
+            for s in body {
+                collect_yields_from_stmt_with_target(*s, hir_module, yields);
+            }
+            for s in else_block {
+                collect_yields_from_stmt_with_target(*s, hir_module, yields);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_yields_from_expr_with_target(
+    expr_id: hir::ExprId,
+    assignment_target: Option<VarId>,
+    hir_module: &hir::Module,
+    yields: &mut Vec<YieldInfo>,
+) {
+    let expr = &hir_module.exprs[expr_id];
+    match &expr.kind {
+        hir::ExprKind::Yield(value) => {
+            yields.push(YieldInfo {
+                yield_value: *value,
+                assignment_target,
+            });
+        }
+        hir::ExprKind::BinOp { left, right, .. } => {
+            collect_yields_from_expr_with_target(*left, None, hir_module, yields);
+            collect_yields_from_expr_with_target(*right, None, hir_module, yields);
+        }
+        hir::ExprKind::UnOp { operand, .. } => {
+            collect_yields_from_expr_with_target(*operand, None, hir_module, yields);
+        }
+        hir::ExprKind::Call { func, args, .. } => {
+            collect_yields_from_expr_with_target(*func, None, hir_module, yields);
+            for a in args {
+                let arg_id = match a {
+                    hir::CallArg::Regular(id) => id,
+                    hir::CallArg::Starred(id) => id,
+                };
+                collect_yields_from_expr_with_target(*arg_id, None, hir_module, yields);
+            }
+        }
+        hir::ExprKind::IfExpr {
+            cond,
+            then_val,
+            else_val,
+        } => {
+            collect_yields_from_expr_with_target(*cond, None, hir_module, yields);
+            collect_yields_from_expr_with_target(*then_val, None, hir_module, yields);
+            collect_yields_from_expr_with_target(*else_val, None, hir_module, yields);
+        }
+        _ => {}
+    }
+}
+
+/// Lower a simple statement in generator context.
+/// Handles: assignments with simple expressions, expression statements.
+/// Pure HIR/MIR construction — no Lowering state needed.
+pub(super) fn lower_simple_stmt_for_generator(
+    stmt_id: hir::StmtId,
+    hir_module: &hir::Module,
+    block: &mut mir::BasicBlock,
+    var_to_mir_local: &HashMap<VarId, LocalId>,
+) -> Result<()> {
+    let stmt = &hir_module.stmts[stmt_id];
+
+    match &stmt.kind {
+        hir::StmtKind::Assign { target, value, .. } => {
+            if let Some(&dest_mir_local) = var_to_mir_local.get(target) {
+                let value_expr = &hir_module.exprs[*value];
+                // Handle simple cases: int literal, variable reference, binary operations
+                match &value_expr.kind {
+                    hir::ExprKind::Int(n) => {
+                        block.instructions.push(mir::Instruction {
+                            kind: mir::InstructionKind::Copy {
+                                dest: dest_mir_local,
+                                src: mir::Operand::Constant(mir::Constant::Int(*n)),
+                            },
+                            span: None,
+                        });
+                    }
+                    hir::ExprKind::Var(src_var) => {
+                        if let Some(&src_mir_local) = var_to_mir_local.get(src_var) {
+                            block.instructions.push(mir::Instruction {
+                                kind: mir::InstructionKind::Copy {
+                                    dest: dest_mir_local,
+                                    src: mir::Operand::Local(src_mir_local),
+                                },
+                                span: None,
+                            });
+                        }
+                    }
+                    hir::ExprKind::BinOp { left, op, right } => {
+                        let left_expr = &hir_module.exprs[*left];
+                        let right_expr = &hir_module.exprs[*right];
+                        let left_op = get_operand_for_expr(left_expr, var_to_mir_local)?;
+                        let right_op = get_operand_for_expr(right_expr, var_to_mir_local)?;
+                        let mir_op = hir_binop_to_mir(op, value_expr.span)?;
+                        block.instructions.push(mir::Instruction {
+                            kind: mir::InstructionKind::BinOp {
+                                dest: dest_mir_local,
+                                op: mir_op,
+                                left: left_op,
+                                right: right_op,
+                            },
+                            span: None,
+                        });
+                    }
+                    _ => {
+                        // Unsupported expression type
+                    }
+                }
+            }
+        }
+        hir::StmtKind::Expr(_) => {
+            // Expression statements (non-yield) - currently no-op
+        }
+        _ => {
+            // Other statement types not supported in generator yield sections
+        }
+    }
+
+    Ok(())
+}
+
+impl<'a> GeneratorContext<'a> {
     /// Compute a yield expression value for a generator.
     ///
     /// Handles simple vars, constants, unary/binary operations, and attribute
@@ -171,10 +417,10 @@ impl<'a> Lowering<'a> {
                                 if *vid == loop_var_id {
                                     loop_var_ty.cloned().unwrap_or(Type::Any)
                                 } else {
-                                    self.get_expr_type(operand_expr, hir_module)
+                                    self.get_type_of_expr_id(*operand, hir_module)
                                 }
                             } else {
-                                self.get_expr_type(operand_expr, hir_module)
+                                self.get_type_of_expr_id(*operand, hir_module)
                             };
                             // Generator values are always raw i64; Any-typed
                             // operands must use Int truthiness (not IsTruthy
@@ -246,26 +492,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
                 // Convert HIR BinOp to MIR BinOp
-                let mir_op = match op {
-                    hir::BinOp::Add => mir::BinOp::Add,
-                    hir::BinOp::Sub => mir::BinOp::Sub,
-                    hir::BinOp::Mul => mir::BinOp::Mul,
-                    hir::BinOp::Div => mir::BinOp::Div,
-                    hir::BinOp::Mod => mir::BinOp::Mod,
-                    hir::BinOp::FloorDiv => mir::BinOp::FloorDiv,
-                    hir::BinOp::Pow => mir::BinOp::Pow,
-                    hir::BinOp::BitAnd => mir::BinOp::BitAnd,
-                    hir::BinOp::BitOr => mir::BinOp::BitOr,
-                    hir::BinOp::BitXor => mir::BinOp::BitXor,
-                    hir::BinOp::LShift => mir::BinOp::LShift,
-                    hir::BinOp::RShift => mir::BinOp::RShift,
-                    hir::BinOp::MatMul => {
-                        return Err(pyaot_diagnostics::CompilerError::type_error(
-                            "@ operator is only supported on classes with __matmul__".to_string(),
-                            expr.span,
-                        ));
-                    }
-                };
+                let mir_op = hir_binop_to_mir(op, expr.span)?;
 
                 // Emit the binary operation
                 block.instructions.push(mir::Instruction {
@@ -341,26 +568,7 @@ impl<'a> Lowering<'a> {
 
                 let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
-                let mir_op = match op {
-                    hir::BinOp::Add => mir::BinOp::Add,
-                    hir::BinOp::Sub => mir::BinOp::Sub,
-                    hir::BinOp::Mul => mir::BinOp::Mul,
-                    hir::BinOp::Div => mir::BinOp::Div,
-                    hir::BinOp::Mod => mir::BinOp::Mod,
-                    hir::BinOp::FloorDiv => mir::BinOp::FloorDiv,
-                    hir::BinOp::Pow => mir::BinOp::Pow,
-                    hir::BinOp::BitAnd => mir::BinOp::BitAnd,
-                    hir::BinOp::BitOr => mir::BinOp::BitOr,
-                    hir::BinOp::BitXor => mir::BinOp::BitXor,
-                    hir::BinOp::LShift => mir::BinOp::LShift,
-                    hir::BinOp::RShift => mir::BinOp::RShift,
-                    hir::BinOp::MatMul => {
-                        return Err(pyaot_diagnostics::CompilerError::type_error(
-                            "@ operator is only supported on classes with __matmul__".to_string(),
-                            expr.span,
-                        ));
-                    }
-                };
+                let mir_op = hir_binop_to_mir(op, expr.span)?;
 
                 block.instructions.push(mir::Instruction {
                     kind: mir::InstructionKind::BinOp {
@@ -451,7 +659,7 @@ impl<'a> Lowering<'a> {
                     }
                     hir::UnOp::Not => {
                         let operand_type = {
-                            let ty = self.get_expr_type(operand_expr, hir_module);
+                            let ty = self.get_type_of_expr_id(*operand, hir_module);
                             // Same as yield path: generators pass values as raw
                             // i64, so Any must use Int truthiness.
                             if matches!(ty, Type::Any) {
@@ -490,260 +698,6 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Helper to get an operand for an expression
-    pub(super) fn get_operand_for_expr(
-        &self,
-        expr: &hir::Expr,
-        var_to_mir_local: &HashMap<VarId, LocalId>,
-    ) -> Result<mir::Operand> {
-        match &expr.kind {
-            hir::ExprKind::Int(n) => Ok(mir::Operand::Constant(mir::Constant::Int(*n))),
-            hir::ExprKind::Var(var_id) => {
-                if let Some(&mir_local) = var_to_mir_local.get(var_id) {
-                    Ok(mir::Operand::Local(mir_local))
-                } else {
-                    Err(pyaot_diagnostics::CompilerError::codegen_error_at(
-                        "unresolved variable in generator operand expression",
-                        expr.span,
-                    ))
-                }
-            }
-            other => Err(pyaot_diagnostics::CompilerError::codegen_error_at(
-                format!("unsupported expression in generator operand: {:?}", other),
-                expr.span,
-            )),
-        }
-    }
-
-    /// Collect yield information from the function body (in order)
-    /// Returns YieldInfo for each yield, including assignment targets
-    pub(super) fn collect_yield_info(
-        &self,
-        body: &[hir::StmtId],
-        hir_module: &hir::Module,
-    ) -> Vec<YieldInfo> {
-        let mut yields = Vec::new();
-        for stmt_id in body {
-            self.collect_yields_from_stmt_with_target(*stmt_id, hir_module, &mut yields);
-        }
-        yields
-    }
-
-    fn collect_yields_from_stmt_with_target(
-        &self,
-        stmt_id: hir::StmtId,
-        hir_module: &hir::Module,
-        yields: &mut Vec<YieldInfo>,
-    ) {
-        let stmt = &hir_module.stmts[stmt_id];
-        match &stmt.kind {
-            hir::StmtKind::Expr(expr_id) => {
-                self.collect_yields_from_expr_with_target(*expr_id, None, hir_module, yields);
-            }
-            hir::StmtKind::Assign { target, value, .. } => {
-                // Check if the value is a yield expression
-                let value_expr = &hir_module.exprs[*value];
-                if matches!(value_expr.kind, hir::ExprKind::Yield(_)) {
-                    // This is `target = yield value` - record the assignment target
-                    self.collect_yields_from_expr_with_target(
-                        *value,
-                        Some(*target),
-                        hir_module,
-                        yields,
-                    );
-                } else {
-                    self.collect_yields_from_expr_with_target(*value, None, hir_module, yields);
-                }
-            }
-            hir::StmtKind::Return(Some(expr_id)) => {
-                self.collect_yields_from_expr_with_target(*expr_id, None, hir_module, yields);
-            }
-            hir::StmtKind::If {
-                cond,
-                then_block,
-                else_block,
-            } => {
-                self.collect_yields_from_expr_with_target(*cond, None, hir_module, yields);
-                for s in then_block {
-                    self.collect_yields_from_stmt_with_target(*s, hir_module, yields);
-                }
-                for s in else_block {
-                    self.collect_yields_from_stmt_with_target(*s, hir_module, yields);
-                }
-            }
-            hir::StmtKind::While {
-                cond,
-                body,
-                else_block,
-            } => {
-                self.collect_yields_from_expr_with_target(*cond, None, hir_module, yields);
-                for s in body {
-                    self.collect_yields_from_stmt_with_target(*s, hir_module, yields);
-                }
-                for s in else_block {
-                    self.collect_yields_from_stmt_with_target(*s, hir_module, yields);
-                }
-            }
-            hir::StmtKind::For {
-                iter,
-                body,
-                else_block,
-                ..
-            }
-            | hir::StmtKind::ForUnpack {
-                iter,
-                body,
-                else_block,
-                ..
-            } => {
-                self.collect_yields_from_expr_with_target(*iter, None, hir_module, yields);
-                for s in body {
-                    self.collect_yields_from_stmt_with_target(*s, hir_module, yields);
-                }
-                for s in else_block {
-                    self.collect_yields_from_stmt_with_target(*s, hir_module, yields);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn collect_yields_from_expr_with_target(
-        &self,
-        expr_id: hir::ExprId,
-        assignment_target: Option<VarId>,
-        hir_module: &hir::Module,
-        yields: &mut Vec<YieldInfo>,
-    ) {
-        let expr = &hir_module.exprs[expr_id];
-        match &expr.kind {
-            hir::ExprKind::Yield(value) => {
-                yields.push(YieldInfo {
-                    yield_value: *value,
-                    assignment_target,
-                });
-            }
-            hir::ExprKind::BinOp { left, right, .. } => {
-                self.collect_yields_from_expr_with_target(*left, None, hir_module, yields);
-                self.collect_yields_from_expr_with_target(*right, None, hir_module, yields);
-            }
-            hir::ExprKind::UnOp { operand, .. } => {
-                self.collect_yields_from_expr_with_target(*operand, None, hir_module, yields);
-            }
-            hir::ExprKind::Call { func, args, .. } => {
-                self.collect_yields_from_expr_with_target(*func, None, hir_module, yields);
-                for a in args {
-                    let arg_id = match a {
-                        hir::CallArg::Regular(id) => id,
-                        hir::CallArg::Starred(id) => id,
-                    };
-                    self.collect_yields_from_expr_with_target(*arg_id, None, hir_module, yields);
-                }
-            }
-            hir::ExprKind::IfExpr {
-                cond,
-                then_val,
-                else_val,
-            } => {
-                self.collect_yields_from_expr_with_target(*cond, None, hir_module, yields);
-                self.collect_yields_from_expr_with_target(*then_val, None, hir_module, yields);
-                self.collect_yields_from_expr_with_target(*else_val, None, hir_module, yields);
-            }
-            _ => {}
-        }
-    }
-
-    /// Lower a simple statement in generator context
-    /// Handles: assignments with simple expressions, expression statements
-    pub(super) fn lower_simple_stmt_for_generator(
-        &mut self,
-        stmt_id: hir::StmtId,
-        hir_module: &hir::Module,
-        block: &mut mir::BasicBlock,
-        var_to_mir_local: &HashMap<VarId, LocalId>,
-    ) -> Result<()> {
-        let stmt = &hir_module.stmts[stmt_id];
-
-        match &stmt.kind {
-            hir::StmtKind::Assign { target, value, .. } => {
-                if let Some(&dest_mir_local) = var_to_mir_local.get(target) {
-                    let value_expr = &hir_module.exprs[*value];
-                    // Handle simple cases: int literal, variable reference, binary operations
-                    match &value_expr.kind {
-                        hir::ExprKind::Int(n) => {
-                            block.instructions.push(mir::Instruction {
-                                kind: mir::InstructionKind::Copy {
-                                    dest: dest_mir_local,
-                                    src: mir::Operand::Constant(mir::Constant::Int(*n)),
-                                },
-                                span: None,
-                            });
-                        }
-                        hir::ExprKind::Var(src_var) => {
-                            if let Some(&src_mir_local) = var_to_mir_local.get(src_var) {
-                                block.instructions.push(mir::Instruction {
-                                    kind: mir::InstructionKind::Copy {
-                                        dest: dest_mir_local,
-                                        src: mir::Operand::Local(src_mir_local),
-                                    },
-                                    span: None,
-                                });
-                            }
-                        }
-                        hir::ExprKind::BinOp { left, op, right } => {
-                            let left_expr = &hir_module.exprs[*left];
-                            let right_expr = &hir_module.exprs[*right];
-                            let left_op = self.get_operand_for_expr(left_expr, var_to_mir_local)?;
-                            let right_op =
-                                self.get_operand_for_expr(right_expr, var_to_mir_local)?;
-                            let mir_op = match op {
-                                hir::BinOp::Add => mir::BinOp::Add,
-                                hir::BinOp::Sub => mir::BinOp::Sub,
-                                hir::BinOp::Mul => mir::BinOp::Mul,
-                                hir::BinOp::Div => mir::BinOp::Div,
-                                hir::BinOp::Mod => mir::BinOp::Mod,
-                                hir::BinOp::FloorDiv => mir::BinOp::FloorDiv,
-                                hir::BinOp::Pow => mir::BinOp::Pow,
-                                hir::BinOp::BitAnd => mir::BinOp::BitAnd,
-                                hir::BinOp::BitOr => mir::BinOp::BitOr,
-                                hir::BinOp::BitXor => mir::BinOp::BitXor,
-                                hir::BinOp::LShift => mir::BinOp::LShift,
-                                hir::BinOp::RShift => mir::BinOp::RShift,
-                                hir::BinOp::MatMul => {
-                                    return Err(pyaot_diagnostics::CompilerError::type_error(
-                                        "@ operator is only supported on classes with __matmul__"
-                                            .to_string(),
-                                        value_expr.span,
-                                    ));
-                                }
-                            };
-                            block.instructions.push(mir::Instruction {
-                                kind: mir::InstructionKind::BinOp {
-                                    dest: dest_mir_local,
-                                    op: mir_op,
-                                    left: left_op,
-                                    right: right_op,
-                                },
-                                span: None,
-                            });
-                        }
-                        _ => {
-                            // Unsupported expression type
-                        }
-                    }
-                }
-            }
-            hir::StmtKind::Expr(_) => {
-                // Expression statements (non-yield) - currently no-op
-            }
-            _ => {
-                // Other statement types not supported in generator yield sections
-            }
-        }
-
-        Ok(())
-    }
-
     /// Evaluate a while condition expression
     /// Returns the local containing the condition result
     pub(super) fn evaluate_while_condition(
@@ -762,8 +716,8 @@ impl<'a> Lowering<'a> {
             let left_expr = &hir_module.exprs[*left];
             let right_expr = &hir_module.exprs[*right];
 
-            let left_operand = self.get_operand_for_expr(left_expr, var_to_mir_local)?;
-            let right_operand = self.get_operand_for_expr(right_expr, var_to_mir_local)?;
+            let left_operand = get_operand_for_expr(left_expr, var_to_mir_local)?;
+            let right_operand = get_operand_for_expr(right_expr, var_to_mir_local)?;
 
             let mir_op = match op {
                 hir::CmpOp::Lt => mir::BinOp::Lt,

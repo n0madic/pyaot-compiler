@@ -72,13 +72,13 @@ impl<'a> Lowering<'a> {
         }
 
         // General iterable path: use indexed iteration with counter
-        let iter_type = self.get_expr_type(inner_iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(enum_args[0], hir_module);
         if let Some((kind, elem_type)) = get_iterable_info(&iter_type) {
             self.lower_for_enumerate_iterable(
                 counter_var,
                 elem_var,
                 start_operand,
-                inner_iter_expr,
+                enum_args[0],
                 kind,
                 elem_type,
                 body,
@@ -92,7 +92,7 @@ impl<'a> Lowering<'a> {
                 counter_var,
                 elem_var,
                 start_operand,
-                inner_iter_expr,
+                enum_args[0],
                 Type::Any,
                 body,
                 else_block,
@@ -297,7 +297,7 @@ impl<'a> Lowering<'a> {
         counter_var: VarId,
         elem_var: VarId,
         start_operand: mir::Operand,
-        iter_expr: &hir::Expr,
+        iter_id: hir::ExprId,
         iterable_kind: IterableKind,
         elem_type: Type,
         body: &[hir::StmtId],
@@ -311,7 +311,7 @@ impl<'a> Lowering<'a> {
                 counter_var,
                 elem_var,
                 start_operand,
-                iter_expr,
+                iter_id,
                 elem_type,
                 body,
                 else_block,
@@ -321,8 +321,9 @@ impl<'a> Lowering<'a> {
         }
 
         // Lower the iterator expression
+        let iter_expr = &hir_module.exprs[iter_id];
         let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
-        let iter_type = self.get_expr_type(iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {
@@ -353,13 +354,12 @@ impl<'a> Lowering<'a> {
             });
             (keys_local, true)
         } else if iterable_kind == IterableKind::Set {
-            let list_local =
-                self.alloc_and_add_local(Type::List(Box::new(elem_type.clone())), mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: list_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_TO_LIST),
-                args: vec![mir::Operand::Local(iter_local)],
-            });
+            let list_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_TO_LIST),
+                vec![mir::Operand::Local(iter_local)],
+                Type::List(Box::new(elem_type.clone())),
+                mir_func,
+            );
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: len_local,
                 func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
@@ -548,7 +548,7 @@ impl<'a> Lowering<'a> {
         counter_var: VarId,
         elem_var: VarId,
         start_operand: mir::Operand,
-        iter_expr: &hir::Expr,
+        iter_id: hir::ExprId,
         elem_type: Type,
         body: &[hir::StmtId],
         else_block: &[hir::StmtId],
@@ -556,8 +556,9 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<()> {
         // Create iterator from the expression
+        let iter_expr = &hir_module.exprs[iter_id];
         let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
-        let iter_type = self.get_expr_type(iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {
@@ -566,15 +567,12 @@ impl<'a> Lowering<'a> {
         });
 
         // Create enumerate iterator wrapping the inner iterator
-        let enum_iter_local = self.alloc_and_add_local(
+        let enum_iter_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_ENUMERATE),
+            vec![mir::Operand::Local(iter_local), start_operand],
             Type::Iterator(Box::new(Type::Tuple(vec![Type::Int, elem_type.clone()]))),
             mir_func,
         );
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: enum_iter_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_ENUMERATE),
-            args: vec![mir::Operand::Local(iter_local), start_operand],
-        });
 
         // Set up target variables
         self.insert_var_type(counter_var, Type::Int);
@@ -606,22 +604,19 @@ impl<'a> Lowering<'a> {
         self.push_block(header_bb);
 
         // next() returns a tuple (counter, elem) as a pointer
-        let next_local =
-            self.alloc_and_add_local(Type::Tuple(vec![Type::Int, elem_type.clone()]), mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: next_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
-            args: vec![mir::Operand::Local(enum_iter_local)],
-        });
+        let next_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
+            vec![mir::Operand::Local(enum_iter_local)],
+            Type::Tuple(vec![Type::Int, elem_type.clone()]),
+            mir_func,
+        );
 
-        let exhausted_local = self.alloc_and_add_local(Type::Bool, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: exhausted_local,
-            func: mir::RuntimeFunc::Call(
-                &pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED,
-            ),
-            args: vec![mir::Operand::Local(enum_iter_local)],
-        });
+        let exhausted_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED),
+            vec![mir::Operand::Local(enum_iter_local)],
+            Type::Bool,
+            mir_func,
+        );
 
         self.current_block_mut().terminator = mir::Terminator::Branch {
             cond: mir::Operand::Local(exhausted_local),
@@ -633,15 +628,15 @@ impl<'a> Lowering<'a> {
         self.push_block(body_bb);
 
         // Unpack counter (index 0) - unbox int from tuple element
-        let boxed_counter = self.alloc_and_add_local(Type::Any, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: boxed_counter,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
-            args: vec![
+        let boxed_counter = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+            vec![
                 mir::Operand::Local(next_local),
                 mir::Operand::Constant(mir::Constant::Int(0)),
             ],
-        });
+            Type::Any,
+            mir_func,
+        );
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: counter_local,
             func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_INT),

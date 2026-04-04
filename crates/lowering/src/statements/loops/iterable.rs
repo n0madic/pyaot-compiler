@@ -25,7 +25,7 @@ impl<'a> Lowering<'a> {
     pub(super) fn lower_for_iterable(
         &mut self,
         target: VarId,
-        iter_expr: &hir::Expr,
+        iter_id: hir::ExprId,
         iterable_kind: IterableKind,
         elem_type: Type,
         body: &[hir::StmtId],
@@ -33,10 +33,12 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
+        let iter_expr = &hir_module.exprs[iter_id];
+
         // For generators/iterators, use iterator protocol instead of indexed access
         if iterable_kind == IterableKind::Iterator {
             return self.lower_for_iterator(
-                target, iter_expr, elem_type, body, else_block, hir_module, mir_func,
+                target, iter_id, elem_type, body, else_block, hir_module, mir_func,
             );
         }
 
@@ -50,23 +52,23 @@ impl<'a> Lowering<'a> {
             });
 
             // Call FileReadlines to get list[str]
-            let lines_local = self.alloc_and_add_local(Type::List(Box::new(Type::Str)), mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: lines_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READLINES),
-                args: vec![mir::Operand::Local(file_local)],
-            });
+            let lines_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READLINES),
+                vec![mir::Operand::Local(file_local)],
+                Type::List(Box::new(Type::Str)),
+                mir_func,
+            );
 
             // Create a synthetic expression-like wrapper so we can reuse list iteration.
             // We directly emit the indexed loop over lines_local here instead of recursing,
             // since we already have the lowered operand.
             let iter_local = lines_local;
-            let len_local = self.alloc_and_add_local(Type::Int, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: len_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
-                args: vec![mir::Operand::Local(iter_local)],
-            });
+            let len_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
+                vec![mir::Operand::Local(iter_local)],
+                Type::Int,
+                mir_func,
+            );
 
             let idx_local = self.alloc_and_add_local(Type::Int, mir_func);
             self.emit_instruction(mir::InstructionKind::Copy {
@@ -121,17 +123,17 @@ impl<'a> Lowering<'a> {
             });
 
             if self.is_global(&target) {
-                let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-                let runtime_func = self.get_global_set_func(&Type::Str);
                 let effective_var_id = self.get_effective_var_id(target);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: runtime_func,
-                    args: vec![
+                let runtime_func = self.get_global_set_func(&Type::Str);
+                self.emit_runtime_call(
+                    runtime_func,
+                    vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_var_id)),
                         mir::Operand::Local(target_local),
                     ],
-                });
+                    Type::None,
+                    mir_func,
+                );
             }
 
             self.push_loop(increment_id, exit_id);
@@ -170,7 +172,7 @@ impl<'a> Lowering<'a> {
 
         // 1. Lower the iterator expression and store in a temp local
         let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
-        let iter_type = self.get_expr_type(iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {
@@ -204,13 +206,12 @@ impl<'a> Lowering<'a> {
             (keys_local, Some(keys_local))
         } else if iterable_kind == IterableKind::Set {
             // Convert set to list for iteration
-            let list_local =
-                self.alloc_and_add_local(Type::List(Box::new(elem_type.clone())), mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: list_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_TO_LIST),
-                args: vec![mir::Operand::Local(iter_local)],
-            });
+            let list_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_TO_LIST),
+                vec![mir::Operand::Local(iter_local)],
+                Type::List(Box::new(elem_type.clone())),
+                mir_func,
+            );
             // Get length from the converted list
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: len_local,

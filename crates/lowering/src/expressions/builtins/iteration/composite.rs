@@ -135,7 +135,7 @@ impl<'a> Lowering<'a> {
             }
         );
 
-        let first_type = self.get_expr_type(first_expr, hir_module);
+        let first_type = self.get_type_of_expr_id(args[0], hir_module);
         let first_elem_type = if first_is_range {
             Type::Int
         } else {
@@ -201,7 +201,7 @@ impl<'a> Lowering<'a> {
             }
         );
 
-        let second_type = self.get_expr_type(second_expr, hir_module);
+        let second_type = self.get_type_of_expr_id(args[1], hir_module);
         let second_elem_type = if second_is_range {
             Type::Int
         } else {
@@ -310,8 +310,7 @@ impl<'a> Lowering<'a> {
                     if !captures.is_empty() && !self.has_closure_capture_types(&func_id) {
                         let mut capture_types = Vec::new();
                         for capture_id in &captures {
-                            let capture_expr = &hir_module.exprs[*capture_id];
-                            let capture_type = self.get_expr_type(capture_expr, hir_module);
+                            let capture_type = self.get_type_of_expr_id(*capture_id, hir_module);
                             capture_types.push(capture_type);
                         }
                         self.insert_closure_capture_types(func_id, capture_types);
@@ -379,19 +378,17 @@ impl<'a> Lowering<'a> {
         let iter_args = &args[1..2];
         let inner_iter = self.lower_iter(iter_args, hir_module, mir_func)?;
 
-        let result_local =
-            self.alloc_and_add_local(Type::Iterator(Box::new(result_elem_type)), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAP_NEW),
-            args: vec![
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAP_NEW),
+            vec![
                 func_ptr_operand,
                 inner_iter,
                 captures_operand,
                 capture_count,
             ],
-        });
+            Type::Iterator(Box::new(result_elem_type)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -444,15 +441,15 @@ impl<'a> Lowering<'a> {
         let any_needs_gc = capture_op_types.iter().any(Type::is_heap);
         let capture_elem_tag: i64 = if any_needs_gc { 0 } else { 1 };
 
-        let tuple_local = self.alloc_and_add_local(Type::Tuple(vec![Type::Any; count]), mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: tuple_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
-            args: vec![
+        let tuple_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
+            vec![
                 mir::Operand::Constant(mir::Constant::Int(count as i64)),
                 mir::Operand::Constant(mir::Constant::Int(capture_elem_tag)),
             ],
-        });
+            Type::Tuple(vec![Type::Any; count]),
+            mir_func,
+        );
 
         // Set per-field heap_field_mask for mixed-type captures
         if capture_elem_tag == 0 {
@@ -521,8 +518,7 @@ impl<'a> Lowering<'a> {
                 if !captures.is_empty() && !self.has_closure_capture_types(&func_id) {
                     let mut capture_types = Vec::new();
                     for capture_id in &captures {
-                        let capture_expr = &hir_module.exprs[*capture_id];
-                        let capture_type = self.get_expr_type(capture_expr, hir_module);
+                        let capture_type = self.get_type_of_expr_id(*capture_id, hir_module);
                         capture_types.push(capture_type);
                     }
                     self.insert_closure_capture_types(func_id, capture_types);
@@ -589,12 +585,9 @@ impl<'a> Lowering<'a> {
         let result_type = reduce_func_id
             .and_then(|fid| self.get_func_return_type(&fid).cloned())
             .unwrap_or(Type::Any);
-        let result_local = self.alloc_and_add_local(result_type, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_REDUCE),
-            args: vec![
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_REDUCE),
+            vec![
                 func_ptr_operand,
                 inner_iter,
                 initial_operand,
@@ -602,7 +595,9 @@ impl<'a> Lowering<'a> {
                 captures_operand,
                 capture_count,
             ],
-        });
+            result_type,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -654,8 +649,7 @@ impl<'a> Lowering<'a> {
                     if !captures.is_empty() && !self.has_closure_capture_types(&func_id) {
                         let mut capture_types = Vec::new();
                         for capture_id in &captures {
-                            let capture_expr = &hir_module.exprs[*capture_id];
-                            let capture_type = self.get_expr_type(capture_expr, hir_module);
+                            let capture_type = self.get_type_of_expr_id(*capture_id, hir_module);
                             capture_types.push(capture_type);
                         }
                         self.insert_closure_capture_types(func_id, capture_types);
@@ -709,8 +703,7 @@ impl<'a> Lowering<'a> {
         let inner_iter = self.lower_iter(iter_args, hir_module, mir_func)?;
 
         // Element type is same as input iterator
-        let iterable_expr = &hir_module.exprs[args[1]];
-        let iterable_type = self.get_expr_type(iterable_expr, hir_module);
+        let iterable_type = self.get_type_of_expr_id(args[1], hir_module);
         let elem_type =
             crate::type_planning::infer::extract_iterable_first_element_type(&iterable_type);
 
@@ -724,19 +717,18 @@ impl<'a> Lowering<'a> {
             _ => 0,         // ELEM_HEAP_OBJ (Bool, Float, Str, etc. - all boxed)
         };
 
-        let result_local = self.alloc_and_add_local(Type::Iterator(Box::new(elem_type)), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILTER_NEW),
-            args: vec![
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILTER_NEW),
+            vec![
                 func_ptr_operand,
                 inner_iter,
                 mir::Operand::Constant(mir::Constant::Int(elem_tag)),
                 captures_operand,
                 capture_count,
             ],
-        });
+            Type::Iterator(Box::new(elem_type)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

@@ -21,103 +21,52 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_expr_type(arg_expr, hir_module);
+        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
-        match arg_type {
-            Type::Str => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_STR_LEN_INT,
-                    ),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::List(_) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::Tuple(_) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::Dict(_, _) | Type::DefaultDict(_, _) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_LEN),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::RuntimeObject(TypeTagKind::Deque) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_stdlib_defs::modules::collections::DEQUE_LEN.codegen,
-                    ),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::RuntimeObject(TypeTagKind::Counter) => {
-                // Counter is a dict, use DictLen
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_LEN),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::Set(_) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_LEN),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::Bytes => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_LEN),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::Class { class_id, .. } => {
-                // Check for __len__ method
-                if let Some(class_info) = self.get_class_info(&class_id) {
-                    if let Some(len_func) = class_info.len_func {
-                        // Call __len__ method
-                        self.emit_instruction(mir::InstructionKind::CallDirect {
-                            dest: result_local,
-                            func: len_func,
-                            args: vec![arg_operand],
-                        });
-                    } else {
-                        // No __len__ - raise TypeError
-                        let type_name = self.intern("object of type 'instance' has no len()");
-                        self.current_block_mut().terminator = mir::Terminator::Raise {
-                            exc_type: 5, // TypeError
-                            message: Some(mir::Operand::Constant(mir::Constant::Str(type_name))),
-                            cause: None,
-                            suppress_context: false,
-                        };
-                        // Create unreachable block for dead code
-                        let unreachable_bb = self.new_block();
-                        self.push_block(unreachable_bb);
+        if let Some(len_func) = crate::type_dispatch::select_len_func(&arg_type) {
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(len_func),
+                args: vec![arg_operand],
+            });
+        } else {
+            match arg_type {
+                Type::Class { class_id, .. } => {
+                    // Check for __len__ method
+                    if let Some(class_info) = self.get_class_info(&class_id) {
+                        if let Some(len_func) = class_info.get_dunder_func("__len__") {
+                            // Call __len__ method
+                            self.emit_instruction(mir::InstructionKind::CallDirect {
+                                dest: result_local,
+                                func: len_func,
+                                args: vec![arg_operand],
+                            });
+                        } else {
+                            // No __len__ - raise TypeError
+                            let type_name = self.intern("object of type 'instance' has no len()");
+                            self.current_block_mut().terminator = mir::Terminator::Raise {
+                                exc_type: 5, // TypeError
+                                message: Some(mir::Operand::Constant(mir::Constant::Str(
+                                    type_name,
+                                ))),
+                                cause: None,
+                                suppress_context: false,
+                            };
+                            // Create unreachable block for dead code
+                            let unreachable_bb = self.new_block();
+                            self.push_block(unreachable_bb);
+                        }
                     }
                 }
-            }
-            _ => {
-                // Fallback: return 0
-                self.emit_instruction(mir::InstructionKind::Const {
-                    dest: result_local,
-                    value: mir::Constant::Int(0),
-                });
+                _ => {
+                    // Fallback: return 0
+                    self.emit_instruction(mir::InstructionKind::Const {
+                        dest: result_local,
+                        value: mir::Constant::Int(0),
+                    });
+                }
             }
         }
 
@@ -132,7 +81,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         // Bidirectional: use expected_type for empty set() calls
-        let set_elem_type = if let Some(Type::Set(ref expected_elem)) = self.expected_type {
+        let set_elem_type = if let Some(Type::Set(ref expected_elem)) = self.codegen.expected_type {
             (**expected_elem).clone()
         } else {
             Type::Any
@@ -151,7 +100,7 @@ impl<'a> Lowering<'a> {
 
         // set(iterable) - create set from iterable
         let iter_expr = &hir_module.exprs[args[0]];
-        let iter_type = self.get_expr_type(iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(args[0], hir_module);
 
         // Determine element type
         let elem_type = match &iter_type {
@@ -188,14 +137,12 @@ impl<'a> Lowering<'a> {
         let iter_func = mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Forward));
 
         // Create iterator
-        let iter_local =
-            self.alloc_and_add_local(Type::Iterator(Box::new(elem_type.clone())), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: iter_local,
-            func: iter_func,
-            args: vec![source_operand],
-        });
+        let iter_local = self.emit_runtime_call(
+            iter_func,
+            vec![source_operand],
+            Type::Iterator(Box::new(elem_type.clone())),
+            mir_func,
+        );
 
         // Loop to add each element from iterator
         let loop_header = self.new_block();
@@ -278,7 +225,8 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         // Use expected_type from assignment context (e.g. `x: list[int] = list(...)`)
         // for precise element type. This enables ListGetTyped instead of generic ListGet.
-        let list_elem_type = if let Some(Type::List(ref expected_elem)) = self.expected_type {
+        let list_elem_type = if let Some(Type::List(ref expected_elem)) = self.codegen.expected_type
+        {
             (**expected_elem).clone()
         } else {
             Type::Any
@@ -300,7 +248,7 @@ impl<'a> Lowering<'a> {
 
         // list(iterable) - create list from iterable
         let iter_expr = &hir_module.exprs[args[0]];
-        let hir_type = self.get_expr_type(iter_expr, hir_module);
+        let hir_type = self.get_type_of_expr_id(args[0], hir_module);
 
         // Check for range() call - handle specially
         if let hir::ExprKind::BuiltinCall {
@@ -441,13 +389,12 @@ impl<'a> Lowering<'a> {
             }
         };
 
-        let result_local = self.alloc_and_add_local(Type::List(Box::new(Type::Int)), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_RANGE),
-            args: vec![start, stop, step],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_RANGE),
+            vec![start, stop, step],
+            Type::List(Box::new(Type::Int)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -477,7 +424,7 @@ impl<'a> Lowering<'a> {
 
         // tuple(iterable) - create tuple from iterable
         let iter_expr = &hir_module.exprs[args[0]];
-        let iter_type = self.get_expr_type(iter_expr, hir_module);
+        let iter_type = self.get_type_of_expr_id(args[0], hir_module);
 
         // Check for range() call - handle specially
         if let hir::ExprKind::BuiltinCall {
@@ -598,13 +545,12 @@ impl<'a> Lowering<'a> {
             }
         };
 
-        let result_local = self.alloc_and_add_local(Type::Tuple(vec![Type::Int]), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_RANGE),
-            args: vec![start, stop, step],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_RANGE),
+            vec![start, stop, step],
+            Type::Tuple(vec![Type::Int]),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -619,7 +565,7 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         // Bidirectional: use expected_type for empty dict() calls
         let (dict_key_type, dict_val_type) =
-            if let Some(Type::Dict(ref ek, ref ev)) = self.expected_type {
+            if let Some(Type::Dict(ref ek, ref ev)) = self.codegen.expected_type {
                 ((**ek).clone(), (**ev).clone())
             } else {
                 (Type::Any, Type::Any)
@@ -642,7 +588,7 @@ impl<'a> Lowering<'a> {
         // Process positional argument (iterable of pairs) if present
         if !args.is_empty() {
             let iter_expr = &hir_module.exprs[args[0]];
-            let iter_type = self.get_expr_type(iter_expr, hir_module);
+            let iter_type = self.get_type_of_expr_id(args[0], hir_module);
             let source_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
 
             // If it's a list of pairs, use DictFromPairs
@@ -683,16 +629,15 @@ impl<'a> Lowering<'a> {
         for kwarg in kwargs {
             let value_expr = &hir_module.exprs[kwarg.value];
             let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
-            let value_type = self.get_expr_type(value_expr, hir_module);
+            let value_type = self.get_type_of_expr_id(kwarg.value, hir_module);
 
             // Create string key - use the interned string directly
-            let key_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: key_local,
-                func: mir::RuntimeFunc::MakeStr,
-                args: vec![mir::Operand::Constant(mir::Constant::Str(kwarg.name))],
-            });
+            let key_local = self.emit_runtime_call(
+                mir::RuntimeFunc::MakeStr,
+                vec![mir::Operand::Constant(mir::Constant::Str(kwarg.name))],
+                Type::Str,
+                mir_func,
+            );
 
             // Box primitive values (all dict values must be heap pointers for GC)
             let boxed_value = self.box_primitive_if_needed(value_operand, &value_type, mir_func);
@@ -760,16 +705,15 @@ impl<'a> Lowering<'a> {
         } else {
             Type::DefaultDict(Box::new(Type::Any), Box::new(value_type))
         };
-        let result_local = self.alloc_and_add_local(result_type, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DEFAULT_DICT),
-            args: vec![
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DEFAULT_DICT),
+            vec![
                 mir::Operand::Constant(mir::Constant::Int(8)), // capacity
                 mir::Operand::Constant(mir::Constant::Int(factory_tag)),
             ],
-        });
+            result_type,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -796,7 +740,7 @@ impl<'a> Lowering<'a> {
         } else {
             // Counter(iterable) — count elements
             let iter_expr = &hir_module.exprs[args[0]];
-            let iter_type = self.get_expr_type(iter_expr, hir_module);
+            let iter_type = self.get_type_of_expr_id(args[0], hir_module);
 
             // Create iterator from the argument
             let iter_operand = if matches!(iter_type, Type::Iterator(_)) {
@@ -872,7 +816,7 @@ impl<'a> Lowering<'a> {
         } else {
             // deque(iterable, maxlen?) — from iterator
             let iter_expr = &hir_module.exprs[args[0]];
-            let iter_type = self.get_expr_type(iter_expr, hir_module);
+            let iter_type = self.get_type_of_expr_id(args[0], hir_module);
 
             let iter_operand = if matches!(iter_type, Type::Iterator(_)) {
                 self.lower_expr(iter_expr, hir_module, mir_func)?
