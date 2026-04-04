@@ -123,17 +123,17 @@ impl<'a> Lowering<'a> {
             });
 
             if self.is_global(&target) {
-                let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-                let runtime_func = self.get_global_set_func(&Type::Str);
                 let effective_var_id = self.get_effective_var_id(target);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: runtime_func,
-                    args: vec![
+                let runtime_func = self.get_global_set_func(&Type::Str);
+                self.emit_runtime_call(
+                    runtime_func,
+                    vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_var_id)),
                         mir::Operand::Local(target_local),
                     ],
-                });
+                    Type::None,
+                    mir_func,
+                );
             }
 
             self.push_loop(increment_id, exit_id);
@@ -206,13 +206,12 @@ impl<'a> Lowering<'a> {
             (keys_local, Some(keys_local))
         } else if iterable_kind == IterableKind::Set {
             // Convert set to list for iteration
-            let list_local =
-                self.alloc_and_add_local(Type::List(Box::new(elem_type.clone())), mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: list_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_TO_LIST),
-                args: vec![mir::Operand::Local(iter_local)],
-            });
+            let list_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_TO_LIST),
+                vec![mir::Operand::Local(iter_local)],
+                Type::List(Box::new(elem_type.clone())),
+                mir_func,
+            );
             // Get length from the converted list
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: len_local,
