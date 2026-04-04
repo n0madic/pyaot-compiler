@@ -40,55 +40,34 @@ impl<'a> Lowering<'a> {
                 func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_OBJ_TO_STR),
                 args: vec![arg_operand],
             });
+        } else if let Some(conv_kind) = crate::type_dispatch::type_to_conversion_kind(&arg_type) {
+            if conv_kind == mir::ConversionTypeKind::Str {
+                // str(str) -> returns the same string (copy for now)
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: result_local,
+                    src: arg_operand,
+                });
+            } else if conv_kind == mir::ConversionTypeKind::None {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
+                        conv_kind,
+                        mir::ConversionTypeKind::Str,
+                    )),
+                    args: vec![],
+                });
+            } else {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
+                        conv_kind,
+                        mir::ConversionTypeKind::Str,
+                    )),
+                    args: vec![arg_operand],
+                });
+            }
         } else {
             match arg_type {
-                Type::Str => {
-                    // str(str) -> returns the same string (copy for now)
-                    self.emit_instruction(mir::InstructionKind::Copy {
-                        dest: result_local,
-                        src: arg_operand,
-                    });
-                }
-                Type::Int => {
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
-                            mir::ConversionTypeKind::Int,
-                            mir::ConversionTypeKind::Str,
-                        )),
-                        args: vec![arg_operand],
-                    });
-                }
-                Type::Float => {
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
-                            mir::ConversionTypeKind::Float,
-                            mir::ConversionTypeKind::Str,
-                        )),
-                        args: vec![arg_operand],
-                    });
-                }
-                Type::Bool => {
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
-                            mir::ConversionTypeKind::Bool,
-                            mir::ConversionTypeKind::Str,
-                        )),
-                        args: vec![arg_operand],
-                    });
-                }
-                Type::None => {
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(mir::ConversionTypeKind::convert_def(
-                            mir::ConversionTypeKind::None,
-                            mir::ConversionTypeKind::Str,
-                        )),
-                        args: vec![],
-                    });
-                }
                 Type::BuiltinException(_) => {
                     // str(exception) returns the message from .args tuple
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
