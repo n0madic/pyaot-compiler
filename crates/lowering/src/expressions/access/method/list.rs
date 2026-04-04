@@ -275,27 +275,23 @@ impl<'a> Lowering<'a> {
             }
             "copy" => {
                 // .copy() - returns new list (shallow copy)
-                let result_local = self.alloc_and_add_local(Type::List(elem_ty.clone()), mir_func);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_COPY),
-                    args: vec![obj_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_COPY),
+                    vec![obj_operand],
+                    Type::List(elem_ty.clone()),
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }
             "reverse" => {
                 // .reverse() - mutates list in place, returns None
-                let result_local = self.alloc_and_add_local(Type::None, mir_func);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_LIST_REVERSE,
-                    ),
-                    args: vec![obj_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_REVERSE),
+                    vec![obj_operand],
+                    Type::None,
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }

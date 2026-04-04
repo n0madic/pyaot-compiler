@@ -219,15 +219,15 @@ impl<'a> Lowering<'a> {
         });
 
         // Check if dict contains key
-        let contains_local = self.alloc_and_add_local(Type::Bool, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: contains_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_CONTAINS),
-            args: vec![
+        let contains_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_CONTAINS),
+            vec![
                 mir::Operand::Local(dict_local),
                 mir::Operand::Local(key_local),
             ],
-        });
+            Type::Bool,
+            mir_func,
+        );
 
         // Create blocks
         let has_key_bb = self.new_block();
@@ -255,15 +255,15 @@ impl<'a> Lowering<'a> {
             Type::Int | Type::Float | Type::Bool => Type::HeapAny, // boxed pointer
             _ => param_type.clone(),                               // direct pointer
         };
-        let dict_value = self.alloc_and_add_local(dict_value_type, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: dict_value,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_GET),
-            args: vec![
+        let dict_value = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_GET),
+            vec![
                 mir::Operand::Local(dict_local),
                 mir::Operand::Local(key_local),
             ],
-        });
+            dict_value_type,
+            mir_func,
+        );
 
         let param_value = self.convert_dict_value_for_param(
             mir::Operand::Local(dict_value),
