@@ -344,7 +344,9 @@ impl<'a> Lowering<'a> {
                                 self.symbols.next_default_slot > slot,
                                 "next_default_slot overflow: mutable default slot counter wrapped"
                             );
-                            self.symbols.default_value_slots.insert((*func_id, param_idx), slot);
+                            self.symbols
+                                .default_value_slots
+                                .insert((*func_id, param_idx), slot);
                         }
                     }
                 }
@@ -363,7 +365,8 @@ impl<'a> Lowering<'a> {
         // Collect all defaults that need initialization
         // We need to clone the keys to avoid borrow issues
         let slots_to_init: Vec<((pyaot_utils::FuncId, usize), u32)> = self
-            .symbols.default_value_slots
+            .symbols
+            .default_value_slots
             .iter()
             .map(|(k, v)| (*k, *v))
             .collect();
@@ -432,7 +435,9 @@ impl<'a> Lowering<'a> {
                 if self.symbols.globals.contains(target) {
                     if let Some(var_type) = type_hint {
                         // Store in global_var_types for persistence across function boundaries
-                        self.symbols.global_var_types.insert(*target, var_type.clone());
+                        self.symbols
+                            .global_var_types
+                            .insert(*target, var_type.clone());
                     }
                 }
             }

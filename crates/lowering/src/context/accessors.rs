@@ -89,7 +89,9 @@ impl<'a> Lowering<'a> {
 impl<'a> Lowering<'a> {
     /// Push a loop context (continue_target, break_target) onto the stack.
     pub(crate) fn push_loop(&mut self, continue_target: BlockId, break_target: BlockId) {
-        self.codegen.loop_stack.push((continue_target, break_target));
+        self.codegen
+            .loop_stack
+            .push((continue_target, break_target));
     }
 
     /// Pop the current loop context.
@@ -317,7 +319,9 @@ impl<'a> Lowering<'a> {
 
     /// Track a narrowed Union variable with its original type.
     pub(crate) fn insert_narrowed_union(&mut self, var_id: VarId, original_type: Type) {
-        self.symbols.narrowed_union_vars.insert(var_id, original_type);
+        self.symbols
+            .narrowed_union_vars
+            .insert(var_id, original_type);
     }
 
     /// Remove a narrowed Union variable tracking.

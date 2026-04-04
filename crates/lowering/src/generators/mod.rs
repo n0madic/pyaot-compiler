@@ -30,6 +30,7 @@ use pyaot_utils::VarId;
 
 use crate::context::Lowering;
 use crate::utils::get_iterable_info;
+use for_loop::detect_for_loop_generator;
 use vars::collect_generator_vars;
 
 /// Information about a while-loop generator pattern
@@ -153,7 +154,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
     ) -> Type {
         // Try to detect the for-loop generator pattern
-        if let Some(for_gen) = self.detect_for_loop_generator(&func.body, hir_module) {
+        if let Some(for_gen) = detect_for_loop_generator(&func.body, hir_module) {
             // First compute the iterable element type; we need it for attribute resolution.
             let iter_expr = &hir_module.exprs[for_gen.iter_expr];
             let iter_type = self.get_expr_type(iter_expr, hir_module);

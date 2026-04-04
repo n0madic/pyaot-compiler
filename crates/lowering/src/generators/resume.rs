@@ -12,6 +12,9 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, FuncId, VarId};
 
+use super::for_loop::detect_for_loop_generator;
+use super::utils::collect_yield_info;
+use super::while_loop::detect_while_loop_generator;
 use super::GeneratorVar;
 use crate::context::Lowering;
 
@@ -70,7 +73,7 @@ impl<'a> Lowering<'a> {
 
         // Check if this is a while-loop generator pattern:
         // [init_stmts...] while cond: yield val; [update_stmts...]
-        if let Some(while_gen) = self.detect_while_loop_generator(&func.body, hir_module) {
+        if let Some(while_gen) = detect_while_loop_generator(&func.body, hir_module) {
             return self.create_while_loop_generator_resume(
                 func,
                 hir_module,
@@ -84,7 +87,7 @@ impl<'a> Lowering<'a> {
 
         // Check if this is a for-loop generator pattern:
         // for x in iterable: yield expr
-        if let Some(for_gen) = self.detect_for_loop_generator(&func.body, hir_module) {
+        if let Some(for_gen) = detect_for_loop_generator(&func.body, hir_module) {
             return self.create_for_loop_generator_resume(
                 func,
                 hir_module,
@@ -98,7 +101,7 @@ impl<'a> Lowering<'a> {
 
         // For non-while/for generators, use the existing sequential approach
         // Collect yield information from the function body (with assignment targets)
-        let yield_infos = self.collect_yield_info(&func.body, hir_module);
+        let yield_infos = collect_yield_info(&func.body, hir_module);
         let actual_yield_count = yield_infos.len();
 
         // Merge yield target variables into var_to_gen_local

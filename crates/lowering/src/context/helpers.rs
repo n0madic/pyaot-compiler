@@ -23,7 +23,9 @@ impl<'a> Lowering<'a> {
     /// Safe to call in any expression-lowering context because `lower_expr()`
     /// always sets `self.current_span = Some(expr.span)` before dispatching.
     pub(crate) fn call_span(&self) -> pyaot_utils::Span {
-        self.codegen.current_span.unwrap_or_else(pyaot_utils::Span::dummy)
+        self.codegen
+            .current_span
+            .unwrap_or_else(pyaot_utils::Span::dummy)
     }
 
     /// Get the effective (offset-adjusted) VarId for a global variable

@@ -354,7 +354,8 @@ impl<'a> Lowering<'a> {
             if let Some(local_id) = self.get_var_local(var_id) {
                 let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
                 let result_ty = self
-                    .symbols.current_func_return_type
+                    .symbols
+                    .current_func_return_type
                     .clone()
                     .or_else(|| expr.ty.clone())
                     .unwrap_or(Type::Any);

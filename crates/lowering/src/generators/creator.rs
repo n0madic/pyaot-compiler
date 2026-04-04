@@ -12,6 +12,7 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, LocalId, VarId};
 
+use super::for_loop::detect_for_loop_generator;
 use super::GeneratorVar;
 use crate::context::Lowering;
 
@@ -171,7 +172,7 @@ impl<'a> Lowering<'a> {
         }
 
         // For for-loop generators, we need to initialize the iterator
-        if let Some(for_gen) = self.detect_for_loop_generator(&func.body, hir_module) {
+        if let Some(for_gen) = detect_for_loop_generator(&func.body, hir_module) {
             // Allocate local for iterator
             let iter_local =
                 self.alloc_and_add_local(Type::Iterator(Box::new(Type::Any)), &mut mir_func);

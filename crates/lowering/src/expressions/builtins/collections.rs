@@ -278,7 +278,8 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         // Use expected_type from assignment context (e.g. `x: list[int] = list(...)`)
         // for precise element type. This enables ListGetTyped instead of generic ListGet.
-        let list_elem_type = if let Some(Type::List(ref expected_elem)) = self.codegen.expected_type {
+        let list_elem_type = if let Some(Type::List(ref expected_elem)) = self.codegen.expected_type
+        {
             (**expected_elem).clone()
         } else {
             Type::Any
