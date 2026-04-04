@@ -6,9 +6,11 @@
 //! - `check`: top-down type validation + error reporting
 
 mod check;
+mod closure_scan;
+mod container_refine;
 pub(crate) mod helpers;
 pub(crate) mod infer;
-mod pre_scan;
+mod lambda_inference;
 
 use indexmap::IndexMap;
 use pyaot_hir as hir;

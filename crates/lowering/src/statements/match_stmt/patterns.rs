@@ -1,217 +1,21 @@
-//! Match statement lowering from HIR to MIR
+//! Pattern check generation for match statement lowering.
 //!
-//! Desugars match statements into if/elif chains. Each match case is converted into
-//! a conditional check that tests whether the pattern matches, binds any captured
-//! variables, and executes the case body if the pattern matches.
+//! Contains `generate_pattern_check()`, `generate_sequence_pattern_check()`,
+//! `generate_mapping_pattern_check()`, and `generate_class_pattern_check()`.
 
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
-use pyaot_utils::VarId;
 
 use crate::context::Lowering;
 
-/// Result type for pattern check: (condition_operand, bindings)
-/// Bindings are (VarId, Operand, Type) tuples to be assigned
-type PatternCheckResult = (mir::Operand, Vec<(VarId, mir::Operand, Type)>);
-
-/// Context for pattern checking, grouping common parameters
-struct PatternContext<'a> {
-    subject: mir::Operand,
-    subject_type: &'a Type,
-    hir_module: &'a hir::Module,
-}
+use super::{PatternCheckResult, PatternContext};
 
 impl<'a> Lowering<'a> {
-    /// Lower a match statement by desugaring to if/elif chains.
-    ///
-    /// The subject is evaluated once and stored in a temporary. Each case is converted
-    /// into a conditional check: if the pattern matches, bind variables and execute body.
-    pub(crate) fn lower_match(
-        &mut self,
-        subject: hir::ExprId,
-        cases: &[hir::MatchCase],
-        hir_module: &hir::Module,
-        mir_func: &mut mir::Function,
-    ) -> Result<()> {
-        if cases.is_empty() {
-            return Ok(());
-        }
-
-        // Evaluate subject once and store in a temporary local
-        let subject_expr = &hir_module.exprs[subject];
-        let subject_operand = self.lower_expr(subject_expr, hir_module, mir_func)?;
-        let subject_type = self.get_type_of_expr_id(subject, hir_module);
-
-        // Store subject in a local to avoid re-evaluation
-        let subject_local = self.alloc_and_add_local(subject_type.clone(), mir_func);
-        self.emit_instruction(mir::InstructionKind::Copy {
-            dest: subject_local,
-            src: subject_operand,
-        });
-
-        // Create exit block for after all cases
-        let exit_bb = self.new_block();
-        let exit_id = exit_bb.id;
-
-        // Lower each case as a chained if/else
-        self.lower_match_cases(
-            cases,
-            mir::Operand::Local(subject_local),
-            &subject_type,
-            exit_id,
-            hir_module,
-            mir_func,
-        )?;
-
-        // Add exit block
-        self.push_block(exit_bb);
-
-        Ok(())
-    }
-
-    /// Lower a sequence of match cases as chained if/else statements
-    fn lower_match_cases(
-        &mut self,
-        cases: &[hir::MatchCase],
-        subject: mir::Operand,
-        subject_type: &Type,
-        exit_id: pyaot_utils::BlockId,
-        hir_module: &hir::Module,
-        mir_func: &mut mir::Function,
-    ) -> Result<()> {
-        if cases.is_empty() {
-            // No more cases - jump to exit
-            self.current_block_mut().terminator = mir::Terminator::Goto(exit_id);
-            return Ok(());
-        }
-
-        let case = &cases[0];
-        let remaining = &cases[1..];
-
-        // Check if this is a wildcard pattern (matches everything)
-        if self.is_wildcard_pattern(&case.pattern) && case.guard.is_none() {
-            // Wildcard always matches - execute body and exit
-            self.bind_pattern_variables(&case.pattern, subject.clone(), subject_type, mir_func)?;
-
-            for stmt_id in &case.body {
-                let stmt = &hir_module.stmts[*stmt_id];
-                self.lower_stmt(stmt, hir_module, mir_func)?;
-            }
-
-            if !self.current_block_has_terminator() {
-                self.current_block_mut().terminator = mir::Terminator::Goto(exit_id);
-            }
-            return Ok(());
-        }
-
-        // Generate pattern check condition
-        let (cond_operand, bindings) = self.generate_pattern_check(
-            &case.pattern,
-            subject.clone(),
-            subject_type,
-            hir_module,
-            mir_func,
-        )?;
-
-        // Create else block (next case) — shared by both guard and no-guard paths
-        let else_bb = self.new_block();
-        let else_id = else_bb.id;
-
-        if let Some(guard_expr_id) = case.guard {
-            // Two-stage branch: first check pattern, then emit bindings, then check guard.
-            // This ensures guard expressions can reference captured pattern variables.
-            let bindings_bb = self.new_block();
-            let bindings_id = bindings_bb.id;
-
-            // Stage 1: branch on pattern match → bindings block or next case
-            self.current_block_mut().terminator = mir::Terminator::Branch {
-                cond: cond_operand,
-                then_block: bindings_id,
-                else_block: else_id,
-            };
-
-            // Bindings block: emit bindings, then evaluate guard
-            self.push_block(bindings_bb);
-            for (var_id, value, ty) in &bindings {
-                let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
-                self.emit_instruction(mir::InstructionKind::Copy {
-                    dest: local,
-                    src: value.clone(),
-                });
-            }
-
-            // Evaluate guard (now pattern variables are bound)
-            let guard_expr = &hir_module.exprs[guard_expr_id];
-            let guard_operand = self.lower_expr(guard_expr, hir_module, mir_func)?;
-
-            // Stage 2: branch on guard → case body or next case
-            let body_bb = self.new_block();
-            let body_id = body_bb.id;
-            self.current_block_mut().terminator = mir::Terminator::Branch {
-                cond: guard_operand,
-                then_block: body_id,
-                else_block: else_id,
-            };
-
-            // Case body block
-            self.push_block(body_bb);
-        } else {
-            // No guard: single-stage branch with bindings in the then-block
-            let then_bb = self.new_block();
-            let then_id = then_bb.id;
-
-            self.current_block_mut().terminator = mir::Terminator::Branch {
-                cond: cond_operand,
-                then_block: then_id,
-                else_block: else_id,
-            };
-
-            self.push_block(then_bb);
-
-            // Apply bindings inside the then-block (only on match success)
-            for (var_id, value, ty) in &bindings {
-                let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
-                self.emit_instruction(mir::InstructionKind::Copy {
-                    dest: local,
-                    src: value.clone(),
-                });
-            }
-        }
-
-        // Execute case body (in whichever block we ended up in)
-        for stmt_id in &case.body {
-            let stmt = &hir_module.stmts[*stmt_id];
-            self.lower_stmt(stmt, hir_module, mir_func)?;
-        }
-
-        if !self.current_block_has_terminator() {
-            self.current_block_mut().terminator = mir::Terminator::Goto(exit_id);
-        }
-
-        // Else block: try next case
-        self.push_block(else_bb);
-
-        // Continue with remaining cases
-        self.lower_match_cases(
-            remaining,
-            subject,
-            subject_type,
-            exit_id,
-            hir_module,
-            mir_func,
-        )
-    }
-
-    /// Check if a pattern is a wildcard (matches everything)
-    fn is_wildcard_pattern(&self, pattern: &hir::Pattern) -> bool {
-        matches!(pattern, hir::Pattern::MatchAs { pattern: None, .. })
-    }
-
     /// Generate code to check if a pattern matches and collect variable bindings.
     /// Returns (condition_operand, bindings) where bindings are (VarId, Operand, Type).
-    fn generate_pattern_check(
+    pub(super) fn generate_pattern_check(
         &mut self,
         pattern: &hir::Pattern,
         subject: mir::Operand,
@@ -512,7 +316,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// Generate code to check a sequence pattern (list or tuple)
-    fn generate_sequence_pattern_check(
+    pub(super) fn generate_sequence_pattern_check(
         &mut self,
         patterns: &[hir::Pattern],
         subject: mir::Operand,
@@ -805,11 +609,11 @@ impl<'a> Lowering<'a> {
     }
 
     /// Generate code to check a mapping pattern (dict)
-    fn generate_mapping_pattern_check(
+    pub(super) fn generate_mapping_pattern_check(
         &mut self,
         keys: &[hir::ExprId],
         patterns: &[hir::Pattern],
-        rest: Option<&VarId>,
+        rest: Option<&pyaot_utils::VarId>,
         ctx: &PatternContext<'_>,
         mir_func: &mut mir::Function,
     ) -> Result<PatternCheckResult> {
@@ -963,7 +767,7 @@ impl<'a> Lowering<'a> {
     ///
     /// Uses short-circuit branching: field access only happens after isinstance passes.
     /// This prevents UB from reading fields of non-instance objects.
-    fn generate_class_pattern_check(
+    pub(super) fn generate_class_pattern_check(
         &mut self,
         cls_expr_id: hir::ExprId,
         patterns: &[hir::Pattern],
@@ -1119,99 +923,5 @@ impl<'a> Lowering<'a> {
         self.push_block(skip_bb);
 
         Ok((mir::Operand::Local(class_result_local), bindings))
-    }
-
-    /// Emit an equality check between two operands
-    fn emit_equality_check(
-        &mut self,
-        left: mir::Operand,
-        right: mir::Operand,
-        ty: &Type,
-        mir_func: &mut mir::Function,
-    ) -> Result<mir::Operand> {
-        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-
-        match ty {
-            Type::Str => {
-                // String comparison
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        mir::CompareKind::Str.runtime_func_def(mir::ComparisonOp::Eq),
-                    ),
-                    args: vec![left, right],
-                });
-            }
-            Type::Int | Type::Bool | Type::Float => {
-                // Primitive comparison
-                self.emit_instruction(mir::InstructionKind::BinOp {
-                    dest: result_local,
-                    op: mir::BinOp::Eq,
-                    left,
-                    right,
-                });
-            }
-            _ => {
-                // For other types, use object equality
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Eq),
-                    ),
-                    args: vec![left, right],
-                });
-            }
-        }
-
-        Ok(mir::Operand::Local(result_local))
-    }
-
-    /// Bind pattern variables to the subject (for wildcard/as patterns)
-    fn bind_pattern_variables(
-        &mut self,
-        pattern: &hir::Pattern,
-        subject: mir::Operand,
-        subject_type: &Type,
-        mir_func: &mut mir::Function,
-    ) -> Result<()> {
-        match pattern {
-            hir::Pattern::MatchAs { pattern, name } => {
-                // Recursively bind inner pattern
-                if let Some(inner) = pattern {
-                    self.bind_pattern_variables(inner, subject.clone(), subject_type, mir_func)?;
-                }
-
-                // Bind name to subject
-                if let Some(var_id) = name {
-                    let local = self.get_or_create_local_for_var(*var_id, mir_func, subject_type);
-                    self.emit_instruction(mir::InstructionKind::Copy {
-                        dest: local,
-                        src: subject,
-                    });
-                }
-            }
-            _ => {
-                // Other patterns don't need direct binding here
-                // (handled in generate_pattern_check)
-            }
-        }
-        Ok(())
-    }
-
-    /// Get or create a local for a variable
-    fn get_or_create_local_for_var(
-        &mut self,
-        var_id: VarId,
-        mir_func: &mut mir::Function,
-        ty: &Type,
-    ) -> pyaot_utils::LocalId {
-        if let Some(local) = self.get_var_local(&var_id) {
-            local
-        } else {
-            let local = self.alloc_and_add_local(ty.clone(), mir_func);
-            self.insert_var_local(var_id, local);
-            self.insert_var_type(var_id, ty.clone());
-            local
-        }
     }
 }
