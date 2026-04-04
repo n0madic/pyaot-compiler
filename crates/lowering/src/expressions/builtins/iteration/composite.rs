@@ -135,7 +135,7 @@ impl<'a> Lowering<'a> {
             }
         );
 
-        let first_type = self.get_expr_type(first_expr, hir_module);
+        let first_type = self.get_type_of_expr_id(args[0], hir_module);
         let first_elem_type = if first_is_range {
             Type::Int
         } else {
@@ -201,7 +201,7 @@ impl<'a> Lowering<'a> {
             }
         );
 
-        let second_type = self.get_expr_type(second_expr, hir_module);
+        let second_type = self.get_type_of_expr_id(args[1], hir_module);
         let second_elem_type = if second_is_range {
             Type::Int
         } else {
@@ -310,8 +310,7 @@ impl<'a> Lowering<'a> {
                     if !captures.is_empty() && !self.has_closure_capture_types(&func_id) {
                         let mut capture_types = Vec::new();
                         for capture_id in &captures {
-                            let capture_expr = &hir_module.exprs[*capture_id];
-                            let capture_type = self.get_expr_type(capture_expr, hir_module);
+                            let capture_type = self.get_type_of_expr_id(*capture_id, hir_module);
                             capture_types.push(capture_type);
                         }
                         self.insert_closure_capture_types(func_id, capture_types);
@@ -521,8 +520,7 @@ impl<'a> Lowering<'a> {
                 if !captures.is_empty() && !self.has_closure_capture_types(&func_id) {
                     let mut capture_types = Vec::new();
                     for capture_id in &captures {
-                        let capture_expr = &hir_module.exprs[*capture_id];
-                        let capture_type = self.get_expr_type(capture_expr, hir_module);
+                        let capture_type = self.get_type_of_expr_id(*capture_id, hir_module);
                         capture_types.push(capture_type);
                     }
                     self.insert_closure_capture_types(func_id, capture_types);
@@ -654,8 +652,7 @@ impl<'a> Lowering<'a> {
                     if !captures.is_empty() && !self.has_closure_capture_types(&func_id) {
                         let mut capture_types = Vec::new();
                         for capture_id in &captures {
-                            let capture_expr = &hir_module.exprs[*capture_id];
-                            let capture_type = self.get_expr_type(capture_expr, hir_module);
+                            let capture_type = self.get_type_of_expr_id(*capture_id, hir_module);
                             capture_types.push(capture_type);
                         }
                         self.insert_closure_capture_types(func_id, capture_types);
@@ -709,8 +706,7 @@ impl<'a> Lowering<'a> {
         let inner_iter = self.lower_iter(iter_args, hir_module, mir_func)?;
 
         // Element type is same as input iterator
-        let iterable_expr = &hir_module.exprs[args[1]];
-        let iterable_type = self.get_expr_type(iterable_expr, hir_module);
+        let iterable_type = self.get_type_of_expr_id(args[1], hir_module);
         let elem_type =
             crate::type_planning::infer::extract_iterable_first_element_type(&iterable_type);
 

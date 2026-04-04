@@ -68,7 +68,7 @@ impl<'a> Lowering<'a> {
 
         let iterable_expr = &hir_module.exprs[args[0]];
         let iterable_operand = self.lower_expr(iterable_expr, hir_module, mir_func)?;
-        let iterable_type = self.get_expr_type(iterable_expr, hir_module);
+        let iterable_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let (len_func, get_func, item_type, zero_const) = self.predicate_iter_info(&iterable_type);
 
@@ -209,7 +209,7 @@ impl<'a> Lowering<'a> {
 
         let iterable_expr = &hir_module.exprs[args[0]];
         let iterable_operand = self.lower_expr(iterable_expr, hir_module, mir_func)?;
-        let iterable_type = self.get_expr_type(iterable_expr, hir_module);
+        let iterable_type = self.get_type_of_expr_id(args[0], hir_module);
 
         let (len_func, get_func, item_type, zero_const) = self.predicate_iter_info(&iterable_type);
 

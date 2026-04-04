@@ -34,7 +34,7 @@ impl<'a> Lowering<'a> {
             let left_expr = &hir_module.exprs[*left];
             if let hir::ExprKind::Var(var_id) = &left_expr.kind {
                 if *var_id == target {
-                    let left_ty = self.get_expr_type(left_expr, hir_module);
+                    let left_ty = self.get_type_of_expr_id(*left, hir_module);
                     if matches!(left_ty, Type::Dict(_, _)) {
                         let dict_operand = self.lower_expr(left_expr, hir_module, mir_func)?;
                         let right_expr = &hir_module.exprs[*right];
@@ -68,8 +68,7 @@ impl<'a> Lowering<'a> {
                 // Track capture types for the lambda function
                 let mut capture_types = Vec::new();
                 for capture_id in captures {
-                    let capture_expr = &hir_module.exprs[*capture_id];
-                    let capture_type = self.get_expr_type(capture_expr, hir_module);
+                    let capture_type = self.get_type_of_expr_id(*capture_id, hir_module);
                     capture_types.push(capture_type);
                 }
                 self.insert_closure_capture_types(*func, capture_types.clone());
@@ -318,7 +317,7 @@ impl<'a> Lowering<'a> {
             // Check if variable already has a type (reassignment case)
             self.get_var_type(&target)
                 .cloned()
-                .unwrap_or_else(|| self.get_expr_type(expr, hir_module))
+                .unwrap_or_else(|| self.get_type_of_expr_id(value, hir_module))
         });
         // Track the variable type for later reference
         self.insert_var_type(target, var_type.clone());
@@ -333,7 +332,7 @@ impl<'a> Lowering<'a> {
 
         // Box primitives when assigning to Union type (or narrowed Union variable)
         let final_operand = if var_type.is_union() || original_union_type.is_some() {
-            let value_type = self.get_expr_type(expr, hir_module);
+            let value_type = self.get_type_of_expr_id(value, hir_module);
             self.box_primitive_if_needed(value_operand, &value_type, mir_func)
         } else {
             value_operand
@@ -408,7 +407,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<()> {
         let expr = &hir_module.exprs[value];
-        let value_type = self.get_expr_type(expr, hir_module);
+        let value_type = self.get_type_of_expr_id(value, hir_module);
 
         // Lower the RHS expression once
         let value_operand = self.lower_expr(expr, hir_module, mir_func)?;

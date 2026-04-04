@@ -103,7 +103,7 @@ impl<'a> Lowering<'a> {
         let narrowing = self.analyze_condition_for_narrowing(cond_expr, hir_module);
 
         // Get the condition expression type to check if we need truthiness conversion
-        let cond_type = self.get_expr_type(cond_expr, hir_module);
+        let cond_type = self.get_type_of_expr_id(cond, hir_module);
 
         // Lower the condition expression
         let cond_operand = self.lower_expr(cond_expr, hir_module, mir_func)?;
