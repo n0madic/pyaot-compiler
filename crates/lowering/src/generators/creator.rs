@@ -396,14 +396,7 @@ impl<'a> Lowering<'a> {
                         .get_var_type(var_id)
                         .cloned()
                         .unwrap_or(Type::List(Box::new(Type::Any)));
-                    let iter_source = match &var_type {
-                        Type::List(_) => mir::IterSourceKind::List,
-                        Type::Tuple(_) => mir::IterSourceKind::Tuple,
-                        Type::Dict(_, _) => mir::IterSourceKind::Dict,
-                        Type::Set(_) => mir::IterSourceKind::Set,
-                        Type::Str => mir::IterSourceKind::Str,
-                        _ => mir::IterSourceKind::List,
-                    };
+                    let iter_source = crate::type_dispatch::type_to_iter_source(&var_type);
                     block.instructions.push(mir::Instruction {
                         kind: mir::InstructionKind::RuntimeCall {
                             dest: dest_local,
@@ -437,14 +430,7 @@ impl<'a> Lowering<'a> {
                     });
 
                     // Create iterator from the fetched global variable
-                    let iter_source = match &var_type {
-                        Type::List(_) => mir::IterSourceKind::List,
-                        Type::Tuple(_) => mir::IterSourceKind::Tuple,
-                        Type::Dict(_, _) => mir::IterSourceKind::Dict,
-                        Type::Set(_) => mir::IterSourceKind::Set,
-                        Type::Str => mir::IterSourceKind::Str,
-                        _ => mir::IterSourceKind::List,
-                    };
+                    let iter_source = crate::type_dispatch::type_to_iter_source(&var_type);
                     block.instructions.push(mir::Instruction {
                         kind: mir::InstructionKind::RuntimeCall {
                             dest: dest_local,

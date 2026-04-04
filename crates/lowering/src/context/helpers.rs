@@ -123,13 +123,11 @@ impl<'a> Lowering<'a> {
         operand_type: &Type,
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
-        match operand_type {
-            Type::Bool => {
-                // Already a bool, return as-is
-                operand
-            }
-            Type::Int => {
-                // bool(int) -> False if 0, True otherwise
+        use crate::type_dispatch::{select_truthiness, TruthinessStrategy};
+
+        match select_truthiness(operand_type) {
+            TruthinessStrategy::AlreadyBool => operand,
+            TruthinessStrategy::IntNotZero => {
                 let result_local = self.alloc_local_id();
                 mir_func.add_local(mir::Local {
                     id: result_local,
@@ -146,8 +144,7 @@ impl<'a> Lowering<'a> {
                 });
                 mir::Operand::Local(result_local)
             }
-            Type::Float => {
-                // bool(float) -> False if 0.0, True otherwise
+            TruthinessStrategy::FloatNotZero => {
                 let result_local = self.alloc_local_id();
                 mir_func.add_local(mir::Local {
                     id: result_local,
@@ -164,52 +161,18 @@ impl<'a> Lowering<'a> {
                 });
                 mir::Operand::Local(result_local)
             }
-            Type::Str => {
+            TruthinessStrategy::LenBased(len_func) => {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 self.emit_collection_bool_via_len(
-                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_LEN_INT),
+                    mir::RuntimeFunc::Call(len_func),
                     operand,
                     result_local,
                     mir_func,
                 );
                 mir::Operand::Local(result_local)
             }
-            Type::None => {
-                // None is always falsy
-                mir::Operand::Constant(mir::Constant::Bool(false))
-            }
-            Type::Bytes => {
-                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                self.emit_collection_bool_via_len(
-                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_LEN),
-                    operand,
-                    result_local,
-                    mir_func,
-                );
-                mir::Operand::Local(result_local)
-            }
-            Type::List(_) | Type::Dict(_, _) | Type::Tuple(_) | Type::Set(_) => {
-                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                let runtime_func = match operand_type {
-                    Type::List(_) => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN)
-                    }
-                    Type::Tuple(_) => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN)
-                    }
-                    Type::Dict(_, _) => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_LEN)
-                    }
-                    Type::Set(_) => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_LEN)
-                    }
-                    _ => unreachable!(),
-                };
-                self.emit_collection_bool_via_len(runtime_func, operand, result_local, mir_func);
-                mir::Operand::Local(result_local)
-            }
-            Type::Union(_) | Type::Any => {
-                // For Union and Any types, use runtime truthiness dispatch
+            TruthinessStrategy::AlwaysFalse => mir::Operand::Constant(mir::Constant::Bool(false)),
+            TruthinessStrategy::RuntimeIsTruthy => {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -218,44 +181,40 @@ impl<'a> Lowering<'a> {
                 });
                 mir::Operand::Local(result_local)
             }
-            Type::Class { class_id, .. } => {
+            TruthinessStrategy::ClassInstance => {
                 // For class instances, check for __bool__ and __len__ dunders.
                 // Python truthiness rules: __bool__ takes priority over __len__.
                 // If neither is defined, instances are always truthy (Python default).
-                if let Some(class_info) = self.get_class_info(class_id).cloned() {
-                    if let Some(bool_func_id) = class_info.get_dunder_func("__bool__") {
-                        // __bool__ defined: call it and use the result directly
-                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                        self.emit_instruction(mir::InstructionKind::CallDirect {
-                            dest: result_local,
-                            func: bool_func_id,
-                            args: vec![operand],
-                        });
-                        return mir::Operand::Local(result_local);
-                    } else if let Some(len_func_id) = class_info.get_dunder_func("__len__") {
-                        // __len__ defined but no __bool__: truthy when len != 0
-                        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
-                        self.emit_instruction(mir::InstructionKind::CallDirect {
-                            dest: len_local,
-                            func: len_func_id,
-                            args: vec![operand],
-                        });
-                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                        let zero = mir::Operand::Constant(mir::Constant::Int(0));
-                        self.emit_instruction(mir::InstructionKind::BinOp {
-                            dest: result_local,
-                            op: mir::BinOp::NotEq,
-                            left: mir::Operand::Local(len_local),
-                            right: zero,
-                        });
-                        return mir::Operand::Local(result_local);
+                if let Type::Class { class_id, .. } = operand_type {
+                    if let Some(class_info) = self.get_class_info(class_id).cloned() {
+                        if let Some(bool_func_id) = class_info.get_dunder_func("__bool__") {
+                            let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                            self.emit_instruction(mir::InstructionKind::CallDirect {
+                                dest: result_local,
+                                func: bool_func_id,
+                                args: vec![operand],
+                            });
+                            return mir::Operand::Local(result_local);
+                        } else if let Some(len_func_id) = class_info.get_dunder_func("__len__") {
+                            let len_local = self.alloc_and_add_local(Type::Int, mir_func);
+                            self.emit_instruction(mir::InstructionKind::CallDirect {
+                                dest: len_local,
+                                func: len_func_id,
+                                args: vec![operand],
+                            });
+                            let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                            let zero = mir::Operand::Constant(mir::Constant::Int(0));
+                            self.emit_instruction(mir::InstructionKind::BinOp {
+                                dest: result_local,
+                                op: mir::BinOp::NotEq,
+                                left: mir::Operand::Local(len_local),
+                                right: zero,
+                            });
+                            return mir::Operand::Local(result_local);
+                        }
                     }
                 }
                 // No __bool__ or __len__: class instances are always truthy
-                mir::Operand::Constant(mir::Constant::Bool(true))
-            }
-            _ => {
-                // For other types (Iterator, etc.), assume truthy
                 mir::Operand::Constant(mir::Constant::Bool(true))
             }
         }
@@ -303,9 +262,11 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
         block: &mut mir::BasicBlock,
     ) -> mir::Operand {
-        match operand_type {
-            Type::Bool => operand,
-            Type::Int => {
+        use crate::type_dispatch::{select_truthiness, TruthinessStrategy};
+
+        match select_truthiness(operand_type) {
+            TruthinessStrategy::AlreadyBool => operand,
+            TruthinessStrategy::IntNotZero => {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 let zero = mir::Operand::Constant(mir::Constant::Int(0));
                 block.instructions.push(mir::Instruction {
@@ -319,7 +280,7 @@ impl<'a> Lowering<'a> {
                 });
                 mir::Operand::Local(result_local)
             }
-            Type::Float => {
+            TruthinessStrategy::FloatNotZero => {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 let zero = mir::Operand::Constant(mir::Constant::Float(0.0));
                 block.instructions.push(mir::Instruction {
@@ -333,10 +294,10 @@ impl<'a> Lowering<'a> {
                 });
                 mir::Operand::Local(result_local)
             }
-            Type::Str => {
+            TruthinessStrategy::LenBased(len_func) => {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 self.emit_collection_bool_via_len_in_block(
-                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_LEN_INT),
+                    mir::RuntimeFunc::Call(len_func),
                     operand,
                     result_local,
                     mir_func,
@@ -344,45 +305,8 @@ impl<'a> Lowering<'a> {
                 );
                 mir::Operand::Local(result_local)
             }
-            Type::None => mir::Operand::Constant(mir::Constant::Bool(false)),
-            Type::Bytes => {
-                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                self.emit_collection_bool_via_len_in_block(
-                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_LEN),
-                    operand,
-                    result_local,
-                    mir_func,
-                    block,
-                );
-                mir::Operand::Local(result_local)
-            }
-            Type::List(_) | Type::Dict(_, _) | Type::Tuple(_) | Type::Set(_) => {
-                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                let runtime_func = match operand_type {
-                    Type::List(_) => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN)
-                    }
-                    Type::Tuple(_) => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN)
-                    }
-                    Type::Dict(_, _) => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_LEN)
-                    }
-                    Type::Set(_) => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_LEN)
-                    }
-                    _ => unreachable!(),
-                };
-                self.emit_collection_bool_via_len_in_block(
-                    runtime_func,
-                    operand,
-                    result_local,
-                    mir_func,
-                    block,
-                );
-                mir::Operand::Local(result_local)
-            }
-            Type::Union(_) | Type::Any => {
+            TruthinessStrategy::AlwaysFalse => mir::Operand::Constant(mir::Constant::Bool(false)),
+            TruthinessStrategy::RuntimeIsTruthy => {
                 let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                 block.instructions.push(mir::Instruction {
                     kind: mir::InstructionKind::RuntimeCall {
@@ -396,46 +320,47 @@ impl<'a> Lowering<'a> {
                 });
                 mir::Operand::Local(result_local)
             }
-            Type::Class { class_id, .. } => {
-                if let Some(class_info) = self.get_class_info(class_id).cloned() {
-                    if let Some(bool_func_id) = class_info.get_dunder_func("__bool__") {
-                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                        block.instructions.push(mir::Instruction {
-                            kind: mir::InstructionKind::CallDirect {
-                                dest: result_local,
-                                func: bool_func_id,
-                                args: vec![operand],
-                            },
-                            span: None,
-                        });
-                        return mir::Operand::Local(result_local);
-                    } else if let Some(len_func_id) = class_info.get_dunder_func("__len__") {
-                        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
-                        block.instructions.push(mir::Instruction {
-                            kind: mir::InstructionKind::CallDirect {
-                                dest: len_local,
-                                func: len_func_id,
-                                args: vec![operand],
-                            },
-                            span: None,
-                        });
-                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                        let zero = mir::Operand::Constant(mir::Constant::Int(0));
-                        block.instructions.push(mir::Instruction {
-                            kind: mir::InstructionKind::BinOp {
-                                dest: result_local,
-                                op: mir::BinOp::NotEq,
-                                left: mir::Operand::Local(len_local),
-                                right: zero,
-                            },
-                            span: None,
-                        });
-                        return mir::Operand::Local(result_local);
+            TruthinessStrategy::ClassInstance => {
+                if let Type::Class { class_id, .. } = operand_type {
+                    if let Some(class_info) = self.get_class_info(class_id).cloned() {
+                        if let Some(bool_func_id) = class_info.get_dunder_func("__bool__") {
+                            let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                            block.instructions.push(mir::Instruction {
+                                kind: mir::InstructionKind::CallDirect {
+                                    dest: result_local,
+                                    func: bool_func_id,
+                                    args: vec![operand],
+                                },
+                                span: None,
+                            });
+                            return mir::Operand::Local(result_local);
+                        } else if let Some(len_func_id) = class_info.get_dunder_func("__len__") {
+                            let len_local = self.alloc_and_add_local(Type::Int, mir_func);
+                            block.instructions.push(mir::Instruction {
+                                kind: mir::InstructionKind::CallDirect {
+                                    dest: len_local,
+                                    func: len_func_id,
+                                    args: vec![operand],
+                                },
+                                span: None,
+                            });
+                            let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                            let zero = mir::Operand::Constant(mir::Constant::Int(0));
+                            block.instructions.push(mir::Instruction {
+                                kind: mir::InstructionKind::BinOp {
+                                    dest: result_local,
+                                    op: mir::BinOp::NotEq,
+                                    left: mir::Operand::Local(len_local),
+                                    right: zero,
+                                },
+                                span: None,
+                            });
+                            return mir::Operand::Local(result_local);
+                        }
                     }
                 }
                 mir::Operand::Constant(mir::Constant::Bool(true))
             }
-            _ => mir::Operand::Constant(mir::Constant::Bool(true)),
         }
     }
 

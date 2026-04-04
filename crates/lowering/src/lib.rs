@@ -11,6 +11,7 @@ mod generators;
 mod narrowing;
 mod runtime_selector;
 mod statements;
+mod type_dispatch;
 mod type_planning;
 mod utils;
 

@@ -25,99 +25,48 @@ impl<'a> Lowering<'a> {
 
         let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
-        match arg_type {
-            Type::Str => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_STR_LEN_INT,
-                    ),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::List(_) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::Tuple(_) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::Dict(_, _) | Type::DefaultDict(_, _) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_LEN),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::RuntimeObject(TypeTagKind::Deque) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_stdlib_defs::modules::collections::DEQUE_LEN.codegen,
-                    ),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::RuntimeObject(TypeTagKind::Counter) => {
-                // Counter is a dict, use DictLen
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_LEN),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::Set(_) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_LEN),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::Bytes => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_LEN),
-                    args: vec![arg_operand],
-                });
-            }
-            Type::Class { class_id, .. } => {
-                // Check for __len__ method
-                if let Some(class_info) = self.get_class_info(&class_id) {
-                    if let Some(len_func) = class_info.get_dunder_func("__len__") {
-                        // Call __len__ method
-                        self.emit_instruction(mir::InstructionKind::CallDirect {
-                            dest: result_local,
-                            func: len_func,
-                            args: vec![arg_operand],
-                        });
-                    } else {
-                        // No __len__ - raise TypeError
-                        let type_name = self.intern("object of type 'instance' has no len()");
-                        self.current_block_mut().terminator = mir::Terminator::Raise {
-                            exc_type: 5, // TypeError
-                            message: Some(mir::Operand::Constant(mir::Constant::Str(type_name))),
-                            cause: None,
-                            suppress_context: false,
-                        };
-                        // Create unreachable block for dead code
-                        let unreachable_bb = self.new_block();
-                        self.push_block(unreachable_bb);
+        if let Some(len_func) = crate::type_dispatch::select_len_func(&arg_type) {
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(len_func),
+                args: vec![arg_operand],
+            });
+        } else {
+            match arg_type {
+                Type::Class { class_id, .. } => {
+                    // Check for __len__ method
+                    if let Some(class_info) = self.get_class_info(&class_id) {
+                        if let Some(len_func) = class_info.get_dunder_func("__len__") {
+                            // Call __len__ method
+                            self.emit_instruction(mir::InstructionKind::CallDirect {
+                                dest: result_local,
+                                func: len_func,
+                                args: vec![arg_operand],
+                            });
+                        } else {
+                            // No __len__ - raise TypeError
+                            let type_name = self.intern("object of type 'instance' has no len()");
+                            self.current_block_mut().terminator = mir::Terminator::Raise {
+                                exc_type: 5, // TypeError
+                                message: Some(mir::Operand::Constant(mir::Constant::Str(
+                                    type_name,
+                                ))),
+                                cause: None,
+                                suppress_context: false,
+                            };
+                            // Create unreachable block for dead code
+                            let unreachable_bb = self.new_block();
+                            self.push_block(unreachable_bb);
+                        }
                     }
                 }
-            }
-            _ => {
-                // Fallback: return 0
-                self.emit_instruction(mir::InstructionKind::Const {
-                    dest: result_local,
-                    value: mir::Constant::Int(0),
-                });
+                _ => {
+                    // Fallback: return 0
+                    self.emit_instruction(mir::InstructionKind::Const {
+                        dest: result_local,
+                        value: mir::Constant::Int(0),
+                    });
+                }
             }
         }
 

@@ -58,19 +58,7 @@ impl<'a> Lowering<'a> {
         let result_local = self.alloc_and_add_local(Type::Iterator(Box::new(elem_type)), mir_func);
 
         // Select appropriate iterator source kind based on container type
-        let source = match &arg_type {
-            Type::List(_) => mir::IterSourceKind::List,
-            Type::Tuple(_) => mir::IterSourceKind::Tuple,
-            Type::Dict(_, _) => mir::IterSourceKind::Dict,
-            Type::Set(_) => mir::IterSourceKind::Set,
-            Type::Str => mir::IterSourceKind::Str,
-            Type::Bytes => mir::IterSourceKind::Bytes,
-            Type::Iterator(_) => mir::IterSourceKind::Generator, // Generators are their own iterators
-            _ => {
-                // Unknown iterable type - fallback to list iterator
-                mir::IterSourceKind::List
-            }
-        };
+        let source = crate::type_dispatch::type_to_iter_source(&arg_type);
 
         let iter_func = mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Forward));
 
@@ -257,16 +245,7 @@ impl<'a> Lowering<'a> {
             }
         } else {
             let operand = self.lower_expr(expr, hir_module, mir_func)?;
-            let source = match &expr_type {
-                Type::List(_) => mir::IterSourceKind::List,
-                Type::Tuple(_) => mir::IterSourceKind::Tuple,
-                Type::Dict(_, _) => mir::IterSourceKind::Dict,
-                Type::Set(_) => mir::IterSourceKind::Set,
-                Type::Str => mir::IterSourceKind::Str,
-                Type::Bytes => mir::IterSourceKind::Bytes,
-                Type::Iterator(_) => mir::IterSourceKind::Generator,
-                _ => mir::IterSourceKind::List,
-            };
+            let source = crate::type_dispatch::type_to_iter_source(&expr_type);
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: iter_local,

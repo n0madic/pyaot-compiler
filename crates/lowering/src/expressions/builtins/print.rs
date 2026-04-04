@@ -155,34 +155,7 @@ impl<'a> Lowering<'a> {
                 });
             } else {
                 // Select descriptor based on type
-                let print_def = if arg_type.is_union() {
-                    // For Union types, use runtime dispatch
-                    &runtime_func_def::RT_PRINT_OBJ
-                } else {
-                    match &arg_type {
-                        Type::Int => &runtime_func_def::RT_PRINT_INT,
-                        Type::Float => &runtime_func_def::RT_PRINT_FLOAT,
-                        Type::Bool => &runtime_func_def::RT_PRINT_BOOL,
-                        Type::Str => &runtime_func_def::RT_PRINT_STR_OBJ,
-                        Type::Bytes => &runtime_func_def::RT_PRINT_BYTES_OBJ,
-                        // For heap types, use Obj for runtime dispatch
-                        Type::List(_)
-                        | Type::Tuple(_)
-                        | Type::Dict(_, _)
-                        | Type::DefaultDict(_, _)
-                        | Type::Set(_)
-                        | Type::Iterator(_)
-                        | Type::Union(_)
-                        | Type::RuntimeObject(_)
-                        | Type::File => &runtime_func_def::RT_PRINT_OBJ,
-                        // HeapAny: guaranteed *mut Obj — use runtime dispatch
-                        Type::HeapAny => &runtime_func_def::RT_PRINT_OBJ,
-                        // Any: ambiguous (could be raw i64) — print as Int
-                        Type::Any => &runtime_func_def::RT_PRINT_INT,
-                        // Compile-time-only types — should not appear at runtime
-                        _ => &runtime_func_def::RT_PRINT_INT,
-                    }
-                };
+                let print_def = crate::type_dispatch::select_print_func(&arg_type);
 
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
