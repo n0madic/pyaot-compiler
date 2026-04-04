@@ -96,14 +96,11 @@ impl<'a> Lowering<'a> {
 
                     // Result type matches element type (for heap types, use heap object type)
                     let result_type = elem_type.as_ref().clone();
-                    let result_local = self.alloc_and_add_local(result_type, mir_func);
-
                     let is_min_operand =
                         mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(ContainerKind::List.minmax_with_key_def()),
-                        args: vec![
+                    let result_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(ContainerKind::List.minmax_with_key_def()),
+                        vec![
                             list_operand,
                             resolved.func_addr,
                             elem_tag_operand,
@@ -111,7 +108,9 @@ impl<'a> Lowering<'a> {
                             resolved.capture_count,
                             is_min_operand,
                         ],
-                    });
+                        result_type,
+                        mir_func,
+                    );
 
                     return Ok(mir::Operand::Local(result_local));
                 }
@@ -124,8 +123,6 @@ impl<'a> Lowering<'a> {
                 } else {
                     (Type::Int, ElementKind::Int)
                 };
-                let result_local = self.alloc_and_add_local(result_type, mir_func);
-
                 let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
                 let elem_kind_val: u8 = if matches!(elem_kind, ElementKind::Float) {
                     1
@@ -134,11 +131,12 @@ impl<'a> Lowering<'a> {
                 };
                 let elem_kind_operand =
                     mir::Operand::Constant(mir::Constant::Int(elem_kind_val as i64));
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(ContainerKind::List.minmax_def()),
-                    args: vec![list_operand, is_min_operand, elem_kind_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(ContainerKind::List.minmax_def()),
+                    vec![list_operand, is_min_operand, elem_kind_operand],
+                    result_type,
+                    mir_func,
+                );
 
                 return Ok(mir::Operand::Local(result_local));
             }
@@ -170,14 +168,11 @@ impl<'a> Lowering<'a> {
                     let elem_tag_operand = mir::Operand::Constant(mir::Constant::Int(elem_tag));
 
                     // Result type matches first element type (for heterogeneous tuples)
-                    let result_local = self.alloc_and_add_local(first_elem_type, mir_func);
-
                     let is_min_operand =
                         mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(ContainerKind::Tuple.minmax_with_key_def()),
-                        args: vec![
+                    let result_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(ContainerKind::Tuple.minmax_with_key_def()),
+                        vec![
                             tuple_operand,
                             resolved.func_addr,
                             elem_tag_operand,
@@ -185,7 +180,9 @@ impl<'a> Lowering<'a> {
                             resolved.capture_count,
                             is_min_operand,
                         ],
-                    });
+                        first_elem_type,
+                        mir_func,
+                    );
 
                     return Ok(mir::Operand::Local(result_local));
                 }
@@ -198,8 +195,6 @@ impl<'a> Lowering<'a> {
                 } else {
                     (Type::Int, ElementKind::Int)
                 };
-                let result_local = self.alloc_and_add_local(result_type, mir_func);
-
                 let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
                 let elem_kind_val: u8 = if matches!(elem_kind, ElementKind::Float) {
                     1
@@ -208,11 +203,12 @@ impl<'a> Lowering<'a> {
                 };
                 let elem_kind_operand =
                     mir::Operand::Constant(mir::Constant::Int(elem_kind_val as i64));
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(ContainerKind::Tuple.minmax_def()),
-                    args: vec![tuple_operand, is_min_operand, elem_kind_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(ContainerKind::Tuple.minmax_def()),
+                    vec![tuple_operand, is_min_operand, elem_kind_operand],
+                    result_type,
+                    mir_func,
+                );
 
                 return Ok(mir::Operand::Local(result_local));
             }
@@ -248,14 +244,11 @@ impl<'a> Lowering<'a> {
                         mir::Operand::Constant(mir::Constant::Int(needs_unbox));
 
                     // Runtime returns *mut Obj, need to unbox for primitives
-                    let heap_result_local = self.alloc_and_add_local(Type::Int, mir_func);
-
                     let is_min_operand =
                         mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: heap_result_local,
-                        func: mir::RuntimeFunc::Call(ContainerKind::Set.minmax_with_key_def()),
-                        args: vec![
+                    let heap_result_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(ContainerKind::Set.minmax_with_key_def()),
+                        vec![
                             set_operand,
                             resolved.func_addr,
                             needs_unbox_operand,
@@ -263,7 +256,9 @@ impl<'a> Lowering<'a> {
                             resolved.capture_count,
                             is_min_operand,
                         ],
-                    });
+                        Type::Int,
+                        mir_func,
+                    );
 
                     // Unbox the result if it's a primitive type
                     let elem_t = elem_type.as_ref();

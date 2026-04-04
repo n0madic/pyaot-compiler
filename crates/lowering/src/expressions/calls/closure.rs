@@ -194,12 +194,12 @@ impl<'a> Lowering<'a> {
         // We check the type tag and dispatch accordingly.
 
         // Get the type tag
-        let type_tag_local = self.alloc_and_add_local(Type::Int, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: type_tag_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
-            args: vec![mir::Operand::Local(func_local)],
-        });
+        let type_tag_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
+            vec![mir::Operand::Local(func_local)],
+            Type::Int,
+            mir_func,
+        );
 
         // Compare with tuple tag
         let is_tuple_local = self.alloc_and_add_local(Type::Bool, mir_func);
@@ -313,12 +313,12 @@ impl<'a> Lowering<'a> {
         let result_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
 
         // Check if func is a closure (tuple) or raw function pointer
-        let type_tag_local = self.alloc_and_add_local(Type::Int, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: type_tag_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
-            args: vec![mir::Operand::Local(func_local)],
-        });
+        let type_tag_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
+            vec![mir::Operand::Local(func_local)],
+            Type::Int,
+            mir_func,
+        );
 
         let is_tuple_local = self.alloc_and_add_local(Type::Bool, mir_func);
         self.emit_instruction(mir::InstructionKind::BinOp {
