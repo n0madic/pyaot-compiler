@@ -18,27 +18,23 @@ impl<'a> Lowering<'a> {
         match method_name {
             "read" => {
                 // .read() or .read(n) - read entire file or n bytes
-                let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-                if arg_operands.is_empty() {
+                let result_local = if arg_operands.is_empty() {
                     // .read() - read all
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_FILE_READ,
-                        ),
-                        args: vec![obj_operand],
-                    });
+                    self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READ),
+                        vec![obj_operand],
+                        Type::Str,
+                        mir_func,
+                    )
                 } else {
                     // .read(n) - read n bytes
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_FILE_READ_N,
-                        ),
-                        args: vec![obj_operand, arg_operands[0].clone()],
-                    });
-                }
+                    self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READ_N),
+                        vec![obj_operand, arg_operands[0].clone()],
+                        Type::Str,
+                        mir_func,
+                    )
+                };
 
                 Ok(mir::Operand::Local(result_local))
             }

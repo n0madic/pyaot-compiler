@@ -48,8 +48,6 @@ impl<'a> Lowering<'a> {
         func: mir::RuntimeFunc,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let result_local = self.alloc_and_add_local(Type::Int, mir_func);
-
         let value_arg = crate::first_arg_or_none(arg_operands);
         // Only box the value if it's a heap type; raw types (int, bool, float)
         // are stored unboxed in ELEM_RAW_INT tuples and must not be boxed.
@@ -60,11 +58,8 @@ impl<'a> Lowering<'a> {
             value_arg
         };
 
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func,
-            args: vec![obj_operand, search_value],
-        });
+        let result_local =
+            self.emit_runtime_call(func, vec![obj_operand, search_value], Type::Int, mir_func);
 
         Ok(mir::Operand::Local(result_local))
     }

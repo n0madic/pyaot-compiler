@@ -632,13 +632,12 @@ impl<'a> Lowering<'a> {
             let value_type = self.get_type_of_expr_id(kwarg.value, hir_module);
 
             // Create string key - use the interned string directly
-            let key_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: key_local,
-                func: mir::RuntimeFunc::MakeStr,
-                args: vec![mir::Operand::Constant(mir::Constant::Str(kwarg.name))],
-            });
+            let key_local = self.emit_runtime_call(
+                mir::RuntimeFunc::MakeStr,
+                vec![mir::Operand::Constant(mir::Constant::Str(kwarg.name))],
+                Type::Str,
+                mir_func,
+            );
 
             // Box primitive values (all dict values must be heap pointers for GC)
             let boxed_value = self.box_primitive_if_needed(value_operand, &value_type, mir_func);
@@ -706,16 +705,15 @@ impl<'a> Lowering<'a> {
         } else {
             Type::DefaultDict(Box::new(Type::Any), Box::new(value_type))
         };
-        let result_local = self.alloc_and_add_local(result_type, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DEFAULT_DICT),
-            args: vec![
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DEFAULT_DICT),
+            vec![
                 mir::Operand::Constant(mir::Constant::Int(8)), // capacity
                 mir::Operand::Constant(mir::Constant::Int(factory_tag)),
             ],
-        });
+            result_type,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

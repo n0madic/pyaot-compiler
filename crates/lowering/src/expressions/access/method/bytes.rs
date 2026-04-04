@@ -38,18 +38,17 @@ impl<'a> Lowering<'a> {
                     .first()
                     .cloned()
                     .unwrap_or(mir::Operand::Constant(mir::Constant::Int(0)));
-                let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&RT_BYTES_DECODE),
-                    args: vec![obj_operand, encoding_arg],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&RT_BYTES_DECODE),
+                    vec![obj_operand, encoding_arg],
+                    Type::Str,
+                    mir_func,
+                );
                 return Ok(mir::Operand::Local(result_local));
             }
             "index" | "rindex" => {
                 // index/rindex use unified rt_bytes_search with op_tag
                 let op_tag: i64 = if method_name == "index" { 2 } else { 3 };
-                let result_local = self.alloc_and_add_local(Type::Int, mir_func);
                 let def = if method_name == "index" {
                     &RT_BYTES_INDEX
                 } else {
@@ -58,11 +57,12 @@ impl<'a> Lowering<'a> {
                 let mut all_args = vec![obj_operand];
                 all_args.extend(arg_operands);
                 all_args.push(mir::Operand::Constant(mir::Constant::Int(op_tag)));
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(def),
-                    args: all_args,
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(def),
+                    all_args,
+                    Type::Int,
+                    mir_func,
+                );
                 return Ok(mir::Operand::Local(result_local));
             }
             _ => {}
@@ -87,17 +87,11 @@ impl<'a> Lowering<'a> {
             }
         };
 
-        let result_local = self.alloc_and_add_local(result_ty, mir_func);
-
         // Build args: obj first, then method args
         let mut all_args = vec![obj_operand];
         all_args.extend(arg_operands);
 
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: runtime_func,
-            args: all_args,
-        });
+        let result_local = self.emit_runtime_call(runtime_func, all_args, result_ty, mir_func);
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -150,13 +144,12 @@ impl<'a> Lowering<'a> {
             return Ok(mir::Operand::Constant(mir::Constant::None));
         }
 
-        let result_local = self.alloc_and_add_local(Type::Bytes, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&RT_BYTES_FROM_HEX),
-            args: vec![arg_operands[0].clone()],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&RT_BYTES_FROM_HEX),
+            vec![arg_operands[0].clone()],
+            Type::Bytes,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

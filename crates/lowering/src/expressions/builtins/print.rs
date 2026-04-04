@@ -87,12 +87,12 @@ impl<'a> Lowering<'a> {
 
             // For exception instances, convert to string via rt_exc_instance_str, then print
             if matches!(&arg_type, Type::BuiltinException(_)) {
-                let str_local = self.alloc_and_add_local(Type::Str, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: str_local,
-                    func: mir::RuntimeFunc::ExcInstanceStr,
-                    args: vec![arg_operand],
-                });
+                let str_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::ExcInstanceStr,
+                    vec![arg_operand],
+                    Type::Str,
+                    mir_func,
+                );
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: dummy_local,
                     func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
@@ -245,13 +245,12 @@ impl<'a> Lowering<'a> {
             self.lower_expr(prompt_expr, hir_module, mir_func)?
         };
 
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&runtime_func_def::RT_INPUT),
-            args: vec![prompt_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&runtime_func_def::RT_INPUT),
+            vec![prompt_operand],
+            Type::Str,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

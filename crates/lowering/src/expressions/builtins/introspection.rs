@@ -81,15 +81,14 @@ impl<'a> Lowering<'a> {
                     // Runtime check via type tag
                     if let Some(type_tag) = self.get_type_tag_for_isinstance_check(check_type) {
                         // Get type tag at runtime and compare
-                        let tag_local = self.alloc_and_add_local(Type::Int, mir_func);
-
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: tag_local,
-                            func: mir::RuntimeFunc::Call(
+                        let tag_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG,
                             ),
-                            args: vec![obj_operand],
-                        });
+                            vec![obj_operand],
+                            Type::Int,
+                            mir_func,
+                        );
 
                         // Compare with expected type tag
                         self.emit_instruction(mir::InstructionKind::BinOp {
@@ -734,13 +733,12 @@ impl<'a> Lowering<'a> {
             mir::Operand::Constant(mir::Constant::Int(0))
         };
 
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FORMAT_VALUE),
-            args: vec![boxed_value, spec_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FORMAT_VALUE),
+            vec![boxed_value, spec_operand],
+            Type::Str,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -758,12 +756,12 @@ impl<'a> Lowering<'a> {
         let cls_operand = self.lower_expr(cls_expr, hir_module, mir_func)?;
 
         // Result type is Any (instance pointer) since we don't know the class statically here
-        let result_local = self.alloc_and_add_local(Type::Any, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_OBJECT_NEW),
-            args: vec![cls_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_OBJECT_NEW),
+            vec![cls_operand],
+            Type::Any,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -795,19 +793,18 @@ impl<'a> Lowering<'a> {
                     // Use lookup to find the interned string
                     if let Some(attr_interned) = self.lookup_interned(&attr_str) {
                         if let Some(&offset) = class_info.field_offsets.get(&attr_interned) {
-                            let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-
-                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                                dest: dummy_local,
-                                func: mir::RuntimeFunc::Call(
+                            let _dummy_local = self.emit_runtime_call(
+                                mir::RuntimeFunc::Call(
                                     &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD,
                                 ),
-                                args: vec![
+                                vec![
                                     obj_operand,
                                     mir::Operand::Constant(mir::Constant::Int(offset as i64)),
                                     value_operand,
                                 ],
-                            });
+                                Type::None,
+                                mir_func,
+                            );
 
                             return Ok(mir::Operand::Constant(mir::Constant::None));
                         }
