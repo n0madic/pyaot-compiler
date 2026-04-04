@@ -17,13 +17,13 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         if args.is_empty() {
             // str() with no args returns empty string ""
-            let result_local = self.alloc_and_add_local(Type::Str, mir_func);
             let empty = self.intern("");
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: result_local,
-                func: mir::RuntimeFunc::MakeStr,
-                args: vec![mir::Operand::Constant(mir::Constant::Str(empty))],
-            });
+            let result_local = self.emit_runtime_call(
+                mir::RuntimeFunc::MakeStr,
+                vec![mir::Operand::Constant(mir::Constant::Str(empty))],
+                Type::Str,
+                mir_func,
+            );
             return Ok(mir::Operand::Local(result_local));
         }
 
@@ -550,13 +550,12 @@ impl<'a> Lowering<'a> {
         let i_expr = &hir_module.exprs[args[0]];
         let i_operand = self.lower_expr(i_expr, hir_module, mir_func)?;
 
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_CHR),
-            args: vec![i_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_CHR),
+            vec![i_operand],
+            Type::Str,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -573,13 +572,12 @@ impl<'a> Lowering<'a> {
         let s_expr = &hir_module.exprs[args[0]];
         let s_operand = self.lower_expr(s_expr, hir_module, mir_func)?;
 
-        let result_local = self.alloc_and_add_local(Type::Int, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CHR_TO_INT),
-            args: vec![s_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CHR_TO_INT),
+            vec![s_operand],
+            Type::Int,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

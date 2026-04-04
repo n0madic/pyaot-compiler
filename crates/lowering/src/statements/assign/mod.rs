@@ -47,14 +47,14 @@ impl<'a> Lowering<'a> {
                         let right_expr = &hir_module.exprs[*right];
                         let right_operand = self.lower_expr(right_expr, hir_module, mir_func)?;
 
-                        let dummy = self.alloc_and_add_local(Type::None, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: dummy,
-                            func: mir::RuntimeFunc::Call(
+                        let dummy = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_DICT_UPDATE,
                             ),
-                            args: vec![dict_operand, right_operand],
-                        });
+                            vec![dict_operand, right_operand],
+                            Type::None,
+                            mir_func,
+                        );
                         return Ok(());
                     }
                 }
@@ -153,17 +153,15 @@ impl<'a> Lowering<'a> {
                         .collect();
 
                     // Create inner captures tuple
-                    let captures_tuple = self.alloc_and_add_local(Type::Any, mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: captures_tuple,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE,
-                        ),
-                        args: vec![
+                    let captures_tuple = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
+                        vec![
                             mir::Operand::Constant(mir::Constant::Int(captures.len() as i64)),
                             mir::Operand::Constant(mir::Constant::Int(capture_elem_tag)),
                         ],
-                    });
+                        Type::Any,
+                        mir_func,
+                    );
 
                     // Set per-field heap_field_mask when tuple has mixed types (ELEM_HEAP_OBJ)
                     if capture_elem_tag == 0 {

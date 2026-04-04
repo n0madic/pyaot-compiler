@@ -131,17 +131,16 @@ impl<'a> Lowering<'a> {
             };
             let starred_type = Type::List(Box::new(starred_elem_type));
 
-            let temp_local = self.alloc_and_add_local(starred_type.clone(), mir_func);
-
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: temp_local,
-                func: slice_func,
-                args: vec![
+            let temp_local = self.emit_runtime_call(
+                slice_func,
+                vec![
                     value_operand.clone(),
                     mir::Operand::Constant(mir::Constant::Int(start_idx)),
                     mir::Operand::Constant(mir::Constant::Int(end_idx)),
                 ],
-            });
+                starred_type.clone(),
+                mir_func,
+            );
 
             temp_locals.push((temp_local, starred_type));
         }

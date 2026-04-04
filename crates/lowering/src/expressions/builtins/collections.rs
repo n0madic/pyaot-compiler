@@ -137,14 +137,12 @@ impl<'a> Lowering<'a> {
         let iter_func = mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Forward));
 
         // Create iterator
-        let iter_local =
-            self.alloc_and_add_local(Type::Iterator(Box::new(elem_type.clone())), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: iter_local,
-            func: iter_func,
-            args: vec![source_operand],
-        });
+        let iter_local = self.emit_runtime_call(
+            iter_func,
+            vec![source_operand],
+            Type::Iterator(Box::new(elem_type.clone())),
+            mir_func,
+        );
 
         // Loop to add each element from iterator
         let loop_header = self.new_block();
@@ -391,13 +389,12 @@ impl<'a> Lowering<'a> {
             }
         };
 
-        let result_local = self.alloc_and_add_local(Type::List(Box::new(Type::Int)), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_RANGE),
-            args: vec![start, stop, step],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_RANGE),
+            vec![start, stop, step],
+            Type::List(Box::new(Type::Int)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -548,13 +545,12 @@ impl<'a> Lowering<'a> {
             }
         };
 
-        let result_local = self.alloc_and_add_local(Type::Tuple(vec![Type::Int]), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_RANGE),
-            args: vec![start, stop, step],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_RANGE),
+            vec![start, stop, step],
+            Type::Tuple(vec![Type::Int]),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
