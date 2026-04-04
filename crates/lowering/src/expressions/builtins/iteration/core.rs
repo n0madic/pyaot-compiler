@@ -54,19 +54,18 @@ impl<'a> Lowering<'a> {
         // Determine element type from container type
         let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
 
-        // Create result local with Iterator type
-        let result_local = self.alloc_and_add_local(Type::Iterator(Box::new(elem_type)), mir_func);
-
         // Select appropriate iterator source kind based on container type
         let source = crate::type_dispatch::type_to_iter_source(&arg_type);
 
         let iter_func = mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Forward));
 
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: iter_func,
-            args: vec![arg_operand],
-        });
+        // Create result local with Iterator type
+        let result_local = self.emit_runtime_call(
+            iter_func,
+            vec![arg_operand],
+            Type::Iterator(Box::new(elem_type)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

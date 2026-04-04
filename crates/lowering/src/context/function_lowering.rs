@@ -305,12 +305,12 @@ impl<'a> Lowering<'a> {
                     // For string return types, we need to return a valid string pointer.
                     // Create an empty string via runtime call.
                     let empty_str = self.interner.intern("");
-                    let str_local = self.alloc_and_add_local(Type::Str, &mut mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: str_local,
-                        func: mir::RuntimeFunc::MakeStr,
-                        args: vec![mir::Operand::Constant(mir::Constant::Str(empty_str))],
-                    });
+                    let str_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::MakeStr,
+                        vec![mir::Operand::Constant(mir::Constant::Str(empty_str))],
+                        Type::Str,
+                        &mut mir_func,
+                    );
                     mir::Operand::Local(str_local)
                 }
                 _ => mir::Operand::Constant(mir::Constant::None),
@@ -394,15 +394,15 @@ impl<'a> Lowering<'a> {
                 )?;
 
                 // Store in global slot - mutable defaults are always heap types (ptr)
-                let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(ValueKind::Ptr.global_set_def()),
-                    args: vec![
+                self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(ValueKind::Ptr.global_set_def()),
+                    vec![
                         mir::Operand::Constant(mir::Constant::Int(slot as i64)),
                         default_operand,
                     ],
-                });
+                    Type::None,
+                    mir_func,
+                );
             }
         }
 

@@ -49,15 +49,13 @@ impl<'a> Lowering<'a> {
             enc_op.unwrap_or(mir::Operand::Constant(mir::Constant::Int(0)))
         };
 
-        // Create local for result
-        let result = self.alloc_and_add_local(Type::File, mir_func);
-
         // Call rt_file_open(filename, mode, encoding)
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_OPEN),
-            args: vec![filename_op, mode_op, encoding_op],
-        });
+        let result = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_OPEN),
+            vec![filename_op, mode_op, encoding_op],
+            Type::File,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result))
     }

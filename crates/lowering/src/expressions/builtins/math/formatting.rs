@@ -20,13 +20,12 @@ impl<'a> Lowering<'a> {
         let n_expr = &hir_module.exprs[args[0]];
         let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
 
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_BIN),
-            args: vec![n_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_BIN),
+            vec![n_operand],
+            Type::Str,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -43,13 +42,12 @@ impl<'a> Lowering<'a> {
         let n_expr = &hir_module.exprs[args[0]];
         let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
 
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_HEX),
-            args: vec![n_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_HEX),
+            vec![n_operand],
+            Type::Str,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -66,13 +64,12 @@ impl<'a> Lowering<'a> {
         let n_expr = &hir_module.exprs[args[0]];
         let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
 
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_OCT),
-            args: vec![n_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_OCT),
+            vec![n_operand],
+            Type::Str,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -90,13 +87,8 @@ impl<'a> Lowering<'a> {
         let n_expr = &hir_module.exprs[args[0]];
         let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
 
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: runtime_func,
-            args: vec![n_operand],
-        });
+        let result_local =
+            self.emit_runtime_call(runtime_func, vec![n_operand], Type::Str, mir_func);
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -116,13 +108,12 @@ impl<'a> Lowering<'a> {
         let sep_expr = &hir_module.exprs[args[1]];
         let sep_operand = self.lower_expr(sep_expr, hir_module, mir_func)?;
 
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_FMT_GROUPED),
-            args: vec![n_operand, sep_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_FMT_GROUPED),
+            vec![n_operand, sep_operand],
+            Type::Str,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -145,13 +136,12 @@ impl<'a> Lowering<'a> {
         let sep_expr = &hir_module.exprs[args[2]];
         let sep_operand = self.lower_expr(sep_expr, hir_module, mir_func)?;
 
-        let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FLOAT_FMT_GROUPED),
-            args: vec![f_operand, prec_operand, sep_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FLOAT_FMT_GROUPED),
+            vec![f_operand, prec_operand, sep_operand],
+            Type::Str,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

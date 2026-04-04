@@ -100,12 +100,7 @@ impl<'a> Lowering<'a> {
         result_local: pyaot_utils::LocalId,
         mir_func: &mut mir::Function,
     ) {
-        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: len_local,
-            func: len_func,
-            args: vec![operand],
-        });
+        let len_local = self.emit_runtime_call(len_func, vec![operand], Type::Int, mir_func);
         let zero = mir::Operand::Constant(mir::Constant::Int(0));
         self.emit_instruction(mir::InstructionKind::BinOp {
             dest: result_local,
@@ -173,12 +168,12 @@ impl<'a> Lowering<'a> {
             }
             TruthinessStrategy::AlwaysFalse => mir::Operand::Constant(mir::Constant::Bool(false)),
             TruthinessStrategy::RuntimeIsTruthy => {
-                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_IS_TRUTHY),
-                    args: vec![operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_IS_TRUTHY),
+                    vec![operand],
+                    Type::Bool,
+                    mir_func,
+                );
                 mir::Operand::Local(result_local)
             }
             TruthinessStrategy::ClassInstance => {
@@ -624,13 +619,12 @@ impl<'a> Lowering<'a> {
             .cloned()
             .unwrap_or(mir::Operand::Constant(mir::Constant::Int(-1)));
 
-        let result_local = self.alloc_and_add_local(Type::List(Box::new(elem_type)), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: runtime_func,
-            args: vec![obj_operand, sep_operand, maxsplit_operand],
-        });
+        let result_local = self.emit_runtime_call(
+            runtime_func,
+            vec![obj_operand, sep_operand, maxsplit_operand],
+            Type::List(Box::new(elem_type)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -648,13 +642,12 @@ impl<'a> Lowering<'a> {
             return Ok(mir::Operand::Constant(mir::Constant::None));
         }
 
-        let result_local = self.alloc_and_add_local(result_type, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: runtime_func,
-            args: vec![obj_operand, arg_operands[0].clone()],
-        });
+        let result_local = self.emit_runtime_call(
+            runtime_func,
+            vec![obj_operand, arg_operands[0].clone()],
+            result_type,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

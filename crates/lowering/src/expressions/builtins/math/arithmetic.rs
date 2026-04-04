@@ -139,12 +139,12 @@ impl<'a> Lowering<'a> {
         let exp_float = self.promote_to_float_if_needed(mir_func, exp_operand, &exp_type);
 
         // Create result local and emit runtime call
-        let result_local = self.alloc_and_add_local(Type::Float, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_POW_FLOAT),
-            args: vec![base_float, exp_float],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_POW_FLOAT),
+            vec![base_float, exp_float],
+            Type::Float,
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -163,13 +163,12 @@ impl<'a> Lowering<'a> {
 
         if args.len() == 1 {
             // round(x) -> int
-            let result_local = self.alloc_and_add_local(Type::Int, mir_func);
-
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: result_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ROUND_TO_INT),
-                args: vec![x_operand],
-            });
+            let result_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ROUND_TO_INT),
+                vec![x_operand],
+                Type::Int,
+                mir_func,
+            );
 
             Ok(mir::Operand::Local(result_local))
         } else {
@@ -177,15 +176,12 @@ impl<'a> Lowering<'a> {
             let ndigits_expr = &hir_module.exprs[args[1]];
             let ndigits_operand = self.lower_expr(ndigits_expr, hir_module, mir_func)?;
 
-            let result_local = self.alloc_and_add_local(Type::Float, mir_func);
-
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: result_local,
-                func: mir::RuntimeFunc::Call(
-                    &pyaot_core_defs::runtime_func_def::RT_ROUND_TO_DIGITS,
-                ),
-                args: vec![x_operand, ndigits_operand],
-            });
+            let result_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ROUND_TO_DIGITS),
+                vec![x_operand, ndigits_operand],
+                Type::Float,
+                mir_func,
+            );
 
             Ok(mir::Operand::Local(result_local))
         }
@@ -277,23 +273,21 @@ impl<'a> Lowering<'a> {
             // Header: call next(), check exhausted
             self.push_block(loop_header);
 
-            let next_local = self.alloc_and_add_local(Type::Int, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: next_local,
-                func: mir::RuntimeFunc::Call(
-                    &pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC,
-                ),
-                args: vec![mir::Operand::Local(iter_local)],
-            });
+            let next_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
+                vec![mir::Operand::Local(iter_local)],
+                Type::Int,
+                mir_func,
+            );
 
-            let exhausted_local = self.alloc_and_add_local(Type::Bool, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: exhausted_local,
-                func: mir::RuntimeFunc::Call(
+            let exhausted_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(
                     &pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED,
                 ),
-                args: vec![mir::Operand::Local(iter_local)],
-            });
+                vec![mir::Operand::Local(iter_local)],
+                Type::Bool,
+                mir_func,
+            );
 
             self.current_block_mut().terminator = mir::Terminator::Branch {
                 cond: mir::Operand::Local(exhausted_local),
@@ -335,12 +329,12 @@ impl<'a> Lowering<'a> {
         }
 
         // List path: indexed iteration via ListLen + ListGet
-        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: len_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
-            args: vec![iterable_operand.clone()],
-        });
+        let len_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
+            vec![iterable_operand.clone()],
+            Type::Int,
+            mir_func,
+        );
 
         // Create loop counter and initialize
         let counter_local = self.alloc_and_add_local(Type::Int, mir_func);
@@ -389,22 +383,21 @@ impl<'a> Lowering<'a> {
             element_type.clone()
         };
         // Note: For floats, we need special gc_root handling
-        let item_local = self.alloc_and_add_local(item_type, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: item_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
-            args: vec![iterable_operand.clone(), mir::Operand::Local(counter_local)],
-        });
+        let item_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+            vec![iterable_operand.clone(), mir::Operand::Local(counter_local)],
+            item_type,
+            mir_func,
+        );
 
         // Unbox float elements (ListGet returns boxed pointer for floats)
         let unboxed_item = if element_type == Type::Float {
-            let unboxed_local = self.alloc_and_add_local(Type::Float, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: unboxed_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT),
-                args: vec![mir::Operand::Local(item_local)],
-            });
+            let unboxed_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT),
+                vec![mir::Operand::Local(item_local)],
+                Type::Float,
+                mir_func,
+            );
             mir::Operand::Local(unboxed_local)
         } else {
             mir::Operand::Local(item_local)
@@ -499,44 +492,40 @@ impl<'a> Lowering<'a> {
             right: b_operand,
         });
 
+        // For int results use ELEM_RAW_INT (1), for float use ELEM_HEAP_OBJ (0)
+        let elem_tag: i64 = if is_float { 0 } else { 1 };
+
         // Create tuple (quot, rem)
-        let result_local = self.alloc_and_add_local(
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
+            vec![
+                mir::Operand::Constant(mir::Constant::Int(2)),
+                mir::Operand::Constant(mir::Constant::Int(elem_tag)),
+            ],
             Type::Tuple(vec![result_elem_ty.clone(), result_elem_ty.clone()]),
             mir_func,
         );
 
-        // For int results use ELEM_RAW_INT (1), for float use ELEM_HEAP_OBJ (0)
-        let elem_tag: i64 = if is_float { 0 } else { 1 };
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
-            args: vec![
-                mir::Operand::Constant(mir::Constant::Int(2)),
-                mir::Operand::Constant(mir::Constant::Int(elem_tag)),
-            ],
-        });
-
         // Box float results before storing in tuple
         let quot_operand = if is_float {
-            let boxed = self.alloc_and_add_local(Type::HeapAny, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: boxed,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
-                args: vec![mir::Operand::Local(quot_local)],
-            });
+            let boxed = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
+                vec![mir::Operand::Local(quot_local)],
+                Type::HeapAny,
+                mir_func,
+            );
             mir::Operand::Local(boxed)
         } else {
             mir::Operand::Local(quot_local)
         };
 
         let rem_operand = if is_float {
-            let boxed = self.alloc_and_add_local(Type::HeapAny, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: boxed,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
-                args: vec![mir::Operand::Local(rem_local)],
-            });
+            let boxed = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
+                vec![mir::Operand::Local(rem_local)],
+                Type::HeapAny,
+                mir_func,
+            );
             mir::Operand::Local(boxed)
         } else {
             mir::Operand::Local(rem_local)
