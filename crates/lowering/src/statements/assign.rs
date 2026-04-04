@@ -613,15 +613,15 @@ impl<'a> Lowering<'a> {
     ) -> Result<()> {
         let obj_expr = &hir_module.exprs[obj];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        let obj_type = self.get_expr_type(obj_expr, hir_module);
+        let obj_type = self.get_type_of_expr_id(obj, hir_module);
 
         let index_expr = &hir_module.exprs[index];
         let index_operand = self.lower_expr(index_expr, hir_module, mir_func)?;
-        let index_type = self.get_expr_type(index_expr, hir_module);
+        let index_type = self.get_type_of_expr_id(index, hir_module);
 
         let value_expr = &hir_module.exprs[value];
         let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
-        let value_type = self.get_expr_type(value_expr, hir_module);
+        let value_type = self.get_type_of_expr_id(value, hir_module);
 
         // Create a dummy local for void returns
         let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
@@ -738,11 +738,11 @@ impl<'a> Lowering<'a> {
     ) -> Result<()> {
         let obj_expr = &hir_module.exprs[obj];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        let obj_type = self.get_expr_type(obj_expr, hir_module);
+        let obj_type = self.get_type_of_expr_id(obj, hir_module);
 
         let index_expr = &hir_module.exprs[index];
         let index_operand = self.lower_expr(index_expr, hir_module, mir_func)?;
-        let index_type = self.get_expr_type(index_expr, hir_module);
+        let index_type = self.get_type_of_expr_id(index, hir_module);
 
         // Create a dummy local for the discarded return value
         // Use Type::Any (i64) since DictPop/ListPop return heap pointers
@@ -800,7 +800,7 @@ impl<'a> Lowering<'a> {
     ) -> Result<()> {
         let obj_expr = &hir_module.exprs[obj];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        let obj_type = self.get_expr_type(obj_expr, hir_module);
+        let obj_type = self.get_type_of_expr_id(obj, hir_module);
 
         let value_expr = &hir_module.exprs[value];
         let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
@@ -922,7 +922,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<()> {
         let expr = &hir_module.exprs[value];
-        let value_type = self.get_expr_type(expr, hir_module);
+        let value_type = self.get_type_of_expr_id(value, hir_module);
 
         // Lower the RHS expression once
         let value_operand = self.lower_expr(expr, hir_module, mir_func)?;

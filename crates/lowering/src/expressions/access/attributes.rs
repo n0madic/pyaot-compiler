@@ -21,7 +21,7 @@ impl<'a> Lowering<'a> {
         // Field access: obj.field
         let obj_expr = &hir_module.exprs[obj];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        let obj_type = self.get_expr_type(obj_expr, hir_module);
+        let obj_type = self.get_type_of_expr_id(obj, hir_module);
 
         // Handle file attributes
         if matches!(obj_type, Type::File) {

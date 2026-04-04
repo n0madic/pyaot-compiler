@@ -236,7 +236,7 @@ impl<'a> Lowering<'a> {
                     is_gc_root: value_ty.is_heap(),
                 });
                 // Box key if needed (int/bool keys need boxing)
-                let index_type = self.get_expr_type(index_expr, hir_module);
+                let index_type = self.get_type_of_expr_id(index, hir_module);
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
 
                 // Check if value type needs unboxing
@@ -277,7 +277,7 @@ impl<'a> Lowering<'a> {
                     ty: (**value_ty).clone(),
                     is_gc_root: value_ty.is_heap(),
                 });
-                let index_type = self.get_expr_type(index_expr, hir_module);
+                let index_type = self.get_type_of_expr_id(index, hir_module);
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
 
                 let unbox_func = Self::unbox_func_for_type(value_ty.as_ref());
