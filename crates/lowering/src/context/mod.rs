@@ -263,7 +263,7 @@ pub struct CodeGenState {
     pub pending_kwargs_from_unpack: Option<(LocalId, Type)>,
 }
 
-/// Variable names → local IDs, function references, global tracking
+/// Variable names → local IDs, function references, global tracking, per-function type state
 pub struct SymbolTable {
     /// Map variable to local ID within current function
     pub var_to_local: IndexMap<VarId, LocalId>,
@@ -275,6 +275,13 @@ pub struct SymbolTable {
     pub globals: IndexSet<VarId>,
     /// Types of global variables (preserved across function boundaries)
     pub global_var_types: IndexMap<VarId, Type>,
+    /// Track variable types for type inference (cleared per function).
+    /// Populated during lowering as assignments are processed.
+    /// Distinct from `TypeEnvironment::refined_var_types` (set during type planning).
+    pub var_types: IndexMap<VarId, Type>,
+    /// Track original types of narrowed Union variables (for unboxing during reads).
+    /// Cleared per function.
+    pub narrowed_union_vars: IndexMap<VarId, Type>,
     /// Variables that need to be wrapped in cells (used by inner functions via nonlocal)
     pub cell_vars: IndexSet<VarId>,
     /// Map nonlocal variables to their cell local
@@ -287,16 +294,18 @@ pub struct SymbolTable {
     pub current_func_return_type: Option<Type>,
 }
 
-/// Type tracking: variable types, expression cache, narrowing
+/// Type planning results: populated during type planning, read-only during lowering.
+///
+/// After `run_type_planning()` completes, this struct is only READ by lowering:
+/// - `expr_types`: memoized expression types (may gain new entries for Var expressions
+///    during lowering, since those depend on `symbols.var_types` which evolves)
+/// - `refined_var_types`: container type refinements from pre-scan
+/// - `func_return_types`: inferred function return types
 pub struct TypeEnvironment {
-    /// Track variable types for proper type inference (cleared per function)
-    pub var_types: IndexMap<VarId, Type>,
     /// Memoized expression types — persists across functions (ExprIds are unique per-module)
     pub expr_types: HashMap<hir::ExprId, Type>,
     /// Refined types for variables from empty container analysis (persists across functions)
     pub refined_var_types: IndexMap<VarId, Type>,
-    /// Track original types of narrowed Union variables (for unboxing during reads)
-    pub narrowed_union_vars: IndexMap<VarId, Type>,
     /// Track inferred return types for functions (especially lambdas)
     pub func_return_types: IndexMap<FuncId, Type>,
 }

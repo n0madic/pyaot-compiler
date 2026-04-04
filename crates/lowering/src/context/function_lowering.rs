@@ -72,7 +72,7 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Function> {
         // Reset per-function state
         self.symbols.var_to_local.clear();
-        self.types.var_types.clear();
+        self.symbols.var_types.clear();
         self.symbols.var_to_func.clear();
         self.closures.var_to_closure.clear();
         self.closures.var_to_wrapper.clear();
@@ -85,7 +85,7 @@ impl<'a> Lowering<'a> {
         self.codegen.next_local_id = 0;
         self.symbols.cell_vars.clear();
         self.symbols.nonlocal_cells.clear();
-        self.types.narrowed_union_vars.clear();
+        self.symbols.narrowed_union_vars.clear();
         self.codegen.loop_stack.clear();
         self.codegen.expected_type = None;
         self.codegen.pending_varargs_from_unpack = None;

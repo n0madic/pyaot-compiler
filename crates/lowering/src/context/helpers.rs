@@ -43,7 +43,7 @@ impl<'a> Lowering<'a> {
         if let hir::ExprKind::Var(var_id) = &expr.kind {
             // Check if this variable is tracked in narrowed_union_vars
             // This tracks variables narrowed from Union to Int/Float/Bool/Str/None
-            self.types.narrowed_union_vars.contains_key(var_id)
+            self.symbols.narrowed_union_vars.contains_key(var_id)
         } else {
             false
         }

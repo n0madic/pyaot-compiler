@@ -36,7 +36,7 @@ impl<'a> Lowering<'a> {
 }
 
 // =============================================================================
-// Variable Mapping (symbols.var_to_local, types.var_types)
+// Variable Mapping (symbols.var_to_local, symbols.var_types)
 // =============================================================================
 
 impl<'a> Lowering<'a> {
@@ -53,7 +53,7 @@ impl<'a> Lowering<'a> {
     /// Get the type for a variable, if tracked.
     /// Checks local var_types, refined types, then global_var_types.
     pub(crate) fn get_var_type(&self, var_id: &VarId) -> Option<&Type> {
-        self.types
+        self.symbols
             .var_types
             .get(var_id)
             .or_else(|| self.types.refined_var_types.get(var_id))
@@ -63,7 +63,7 @@ impl<'a> Lowering<'a> {
     /// Set the type for a variable.
     /// For global variables, also stores the type in global_var_types for persistence.
     pub(crate) fn insert_var_type(&mut self, var_id: VarId, ty: Type) {
-        self.types.var_types.insert(var_id, ty.clone());
+        self.symbols.var_types.insert(var_id, ty.clone());
         if self.symbols.globals.contains(&var_id) {
             self.symbols.global_var_types.insert(var_id, ty);
         }
@@ -306,23 +306,23 @@ impl<'a> Lowering<'a> {
 }
 
 // =============================================================================
-// Union Narrowing (types.narrowed_union_vars)
+// Union Narrowing (symbols.narrowed_union_vars)
 // =============================================================================
 
 impl<'a> Lowering<'a> {
     /// Get the original Union type for a narrowed variable.
     pub(crate) fn get_narrowed_union_type(&self, var_id: &VarId) -> Option<Type> {
-        self.types.narrowed_union_vars.get(var_id).cloned()
+        self.symbols.narrowed_union_vars.get(var_id).cloned()
     }
 
     /// Track a narrowed Union variable with its original type.
     pub(crate) fn insert_narrowed_union(&mut self, var_id: VarId, original_type: Type) {
-        self.types.narrowed_union_vars.insert(var_id, original_type);
+        self.symbols.narrowed_union_vars.insert(var_id, original_type);
     }
 
     /// Remove a narrowed Union variable tracking.
     pub(crate) fn remove_narrowed_union(&mut self, var_id: &VarId) {
-        self.types.narrowed_union_vars.shift_remove(var_id);
+        self.symbols.narrowed_union_vars.shift_remove(var_id);
     }
 }
 
