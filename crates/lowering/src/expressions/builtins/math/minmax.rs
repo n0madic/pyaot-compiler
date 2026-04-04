@@ -263,24 +263,24 @@ impl<'a> Lowering<'a> {
                     // Unbox the result if it's a primitive type
                     let elem_t = elem_type.as_ref();
                     if matches!(elem_t, Type::Int) {
-                        let unboxed_local = self.alloc_and_add_local(Type::Int, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: unboxed_local,
-                            func: mir::RuntimeFunc::Call(
+                        let unboxed_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_UNBOX_INT,
                             ),
-                            args: vec![mir::Operand::Local(heap_result_local)],
-                        });
+                            vec![mir::Operand::Local(heap_result_local)],
+                            Type::Int,
+                            mir_func,
+                        );
                         return Ok(mir::Operand::Local(unboxed_local));
                     } else if matches!(elem_t, Type::Float) {
-                        let unboxed_local = self.alloc_and_add_local(Type::Float, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: unboxed_local,
-                            func: mir::RuntimeFunc::Call(
+                        let unboxed_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
                             ),
-                            args: vec![mir::Operand::Local(heap_result_local)],
-                        });
+                            vec![mir::Operand::Local(heap_result_local)],
+                            Type::Float,
+                            mir_func,
+                        );
                         return Ok(mir::Operand::Local(unboxed_local));
                     } else {
                         // For heap types (str, etc.), return the pointer directly
@@ -296,8 +296,6 @@ impl<'a> Lowering<'a> {
                 } else {
                     (Type::Int, ElementKind::Int)
                 };
-                let result_local = self.alloc_and_add_local(result_type, mir_func);
-
                 let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
                 let elem_kind_val: u8 = if matches!(elem_kind, ElementKind::Float) {
                     1
@@ -306,11 +304,12 @@ impl<'a> Lowering<'a> {
                 };
                 let elem_kind_operand =
                     mir::Operand::Constant(mir::Constant::Int(elem_kind_val as i64));
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(ContainerKind::Set.minmax_def()),
-                    args: vec![set_operand, is_min_operand, elem_kind_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(ContainerKind::Set.minmax_def()),
+                    vec![set_operand, is_min_operand, elem_kind_operand],
+                    result_type,
+                    mir_func,
+                );
 
                 return Ok(mir::Operand::Local(result_local));
             }
@@ -339,14 +338,12 @@ impl<'a> Lowering<'a> {
                 // Get first element to initialize result.
                 // IterNextNoExc always returns a raw i64 (either an integer value or float
                 // bits). Allocate first_local as Int to match this return type.
-                let first_local = self.alloc_and_add_local(Type::Int, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: first_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC,
-                    ),
-                    args: vec![mir::Operand::Local(iter_local)],
-                });
+                let first_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
+                    vec![mir::Operand::Local(iter_local)],
+                    Type::Int,
+                    mir_func,
+                );
 
                 let result_local = self.alloc_and_add_local(iter_result_type.clone(), mir_func);
                 if is_float_iter {
@@ -379,23 +376,21 @@ impl<'a> Lowering<'a> {
                 // Header: call next(), check exhausted
                 self.push_block(loop_header);
                 // next_local receives the raw i64 from IterNextNoExc.
-                let next_local = self.alloc_and_add_local(Type::Int, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: next_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC,
-                    ),
-                    args: vec![mir::Operand::Local(iter_local)],
-                });
+                let next_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
+                    vec![mir::Operand::Local(iter_local)],
+                    Type::Int,
+                    mir_func,
+                );
 
-                let exhausted_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: exhausted_local,
-                    func: mir::RuntimeFunc::Call(
+                let exhausted_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(
                         &pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED,
                     ),
-                    args: vec![mir::Operand::Local(iter_local)],
-                });
+                    vec![mir::Operand::Local(iter_local)],
+                    Type::Bool,
+                    mir_func,
+                );
 
                 self.current_block_mut().terminator = mir::Terminator::Branch {
                     cond: mir::Operand::Local(exhausted_local),

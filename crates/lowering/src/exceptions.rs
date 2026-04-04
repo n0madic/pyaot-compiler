@@ -320,12 +320,12 @@ impl<'a> Lowering<'a> {
                 })
             }
             hir::ExprKind::Str(s) => {
-                let result_local = self.alloc_and_add_local(Type::Str, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::MakeStr,
-                    args: vec![mir::Operand::Constant(mir::Constant::Str(*s))],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::MakeStr,
+                    vec![mir::Operand::Constant(mir::Constant::Str(*s))],
+                    Type::Str,
+                    mir_func,
+                );
                 Ok(ExcInfo {
                     type_tag: 0,
                     message: Some(mir::Operand::Local(result_local)),
