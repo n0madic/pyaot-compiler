@@ -84,21 +84,16 @@ impl<'a> Lowering<'a> {
                         args: vec![mir::Operand::Constant(mir::Constant::Str(*key_name))],
                     });
 
-                    let dummy_local = self.alloc_and_add_local(
-                        Type::Dict(Box::new(Type::Str), Box::new(Type::Any)),
-                        mir_func,
-                    );
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: dummy_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_DICT_SET,
-                        ),
-                        args: vec![
+                    self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
+                        vec![
                             mir::Operand::Local(remaining_dict),
                             mir::Operand::Local(key_local),
                             value_op.clone(),
                         ],
-                    });
+                        Type::Dict(Box::new(Type::Str), Box::new(Type::Any)),
+                        mir_func,
+                    );
                 }
                 mir::Operand::Local(remaining_dict)
             }
@@ -158,15 +153,15 @@ impl<'a> Lowering<'a> {
 
             // Remove consumed keys
             for key_local in &consumed_keys {
-                let dummy = self.alloc_and_add_local(Type::HeapAny, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
-                    args: vec![
+                self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
+                    vec![
                         mir::Operand::Local(remaining_dict),
                         mir::Operand::Local(*key_local),
                     ],
-                });
+                    Type::HeapAny,
+                    mir_func,
+                );
             }
 
             self.set_pending_kwargs(remaining_dict, value_type);

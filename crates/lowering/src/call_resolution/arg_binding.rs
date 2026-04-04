@@ -78,16 +78,16 @@ impl<'a> Lowering<'a> {
 
         if let Type::Tuple(elem_types) = tuple_type {
             for (i, elem_type) in elem_types.iter().enumerate() {
-                let elem_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
                 let get_func = Self::tuple_get_func(elem_type);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: elem_local,
-                    func: get_func,
-                    args: vec![
+                let elem_local = self.emit_runtime_call(
+                    get_func,
+                    vec![
                         tuple_operand.clone(),
                         mir::Operand::Constant(mir::Constant::Int(i as i64)),
                     ],
-                });
+                    elem_type.clone(),
+                    mir_func,
+                );
                 all_positional.push(mir::Operand::Local(elem_local));
             }
         } else {
@@ -122,12 +122,12 @@ impl<'a> Lowering<'a> {
         let has_varargs = params.vararg.is_some();
 
         // Emit ListLen runtime call
-        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: len_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
-            args: vec![list_operand.clone()],
-        });
+        let len_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
+            vec![list_operand.clone()],
+            Type::Int,
+            mir_func,
+        );
 
         if has_varargs {
             self.lower_list_unpack_with_varargs(
@@ -305,33 +305,33 @@ impl<'a> Lowering<'a> {
         };
 
         if needs_unbox {
-            let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: boxed_local,
-                func: get_func,
-                args: vec![
+            let boxed_local = self.emit_runtime_call(
+                get_func,
+                vec![
                     list_operand.clone(),
                     mir::Operand::Constant(mir::Constant::Int(index as i64)),
                 ],
-            });
+                Type::HeapAny,
+                mir_func,
+            );
 
-            let elem_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: elem_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL),
-                args: vec![mir::Operand::Local(boxed_local)],
-            });
+            let elem_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL),
+                vec![mir::Operand::Local(boxed_local)],
+                elem_type.clone(),
+                mir_func,
+            );
             elem_local
         } else {
-            let elem_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: elem_local,
-                func: get_func,
-                args: vec![
+            let elem_local = self.emit_runtime_call(
+                get_func,
+                vec![
                     list_operand.clone(),
                     mir::Operand::Constant(mir::Constant::Int(index as i64)),
                 ],
-            });
+                elem_type.clone(),
+                mir_func,
+            );
             elem_local
         }
     }
