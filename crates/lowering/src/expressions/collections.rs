@@ -24,7 +24,7 @@ impl<'a> Lowering<'a> {
         if elements.is_empty() {
             if let Type::List(ref elem_ty) = list_type {
                 if **elem_ty == Type::Any {
-                    if let Some(Type::List(ref expected_elem)) = self.expected_type {
+                    if let Some(Type::List(ref expected_elem)) = self.codegen.expected_type {
                         list_type = Type::List(expected_elem.clone());
                     }
                 }
@@ -220,7 +220,7 @@ impl<'a> Lowering<'a> {
         if pairs.is_empty() {
             if let Type::Dict(ref key_ty, ref val_ty) = dict_type {
                 if **key_ty == Type::Any && **val_ty == Type::Any {
-                    if let Some(Type::Dict(ref ek, ref ev)) = self.expected_type {
+                    if let Some(Type::Dict(ref ek, ref ev)) = self.codegen.expected_type {
                         dict_type = Type::Dict(ek.clone(), ev.clone());
                     }
                 }
@@ -281,7 +281,7 @@ impl<'a> Lowering<'a> {
         if elements.is_empty() {
             if let Type::Set(ref elem_ty) = set_type {
                 if **elem_ty == Type::Any {
-                    if let Some(Type::Set(ref expected_elem)) = self.expected_type {
+                    if let Some(Type::Set(ref expected_elem)) = self.codegen.expected_type {
                         set_type = Type::Set(expected_elem.clone());
                     }
                 }

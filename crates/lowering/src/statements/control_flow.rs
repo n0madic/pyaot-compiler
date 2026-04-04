@@ -20,11 +20,11 @@ impl<'a> Lowering<'a> {
         let return_operand = if let Some(expr_id) = value_expr {
             let expr = &hir_module.exprs[*expr_id];
             // Type check: validate return value against function return type
-            if let Some(ref ret_ty) = self.current_func_return_type.clone() {
+            if let Some(ref ret_ty) = self.symbols.current_func_return_type.clone() {
                 self.check_expr_type(*expr_id, ret_ty, hir_module);
             }
             // Bidirectional: propagate function return type into expression
-            let expected = self.current_func_return_type.clone();
+            let expected = self.symbols.current_func_return_type.clone();
             let operand = self.lower_expr_expecting(expr, expected, hir_module, mir_func)?;
             Some(operand)
         } else {

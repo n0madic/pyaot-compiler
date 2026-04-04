@@ -280,7 +280,7 @@ impl<'a> Lowering<'a> {
         if let ExpandedArg::RuntimeUnpackTuple(expr_id) = &args[0] {
             let expr = &hir_module.exprs[*expr_id];
             if let hir::ExprKind::Var(var_id) = &expr.kind {
-                if self.varargs_params.contains(var_id) {
+                if self.closures.varargs_params.contains(var_id) {
                     // This is func(*args) where args is a VarPositional param
                     let tuple_operand = self.lower_expr(expr, hir_module, mir_func)?;
                     let tuple_local = match tuple_operand {

@@ -338,7 +338,7 @@ impl<'a> Lowering<'a> {
 
             // Check if variable holds a dynamically returned closure (e.g., f = factory())
             // These need emit_closure_call to extract func_ptr and captures from the tuple
-            if self.dynamic_closure_vars.contains(var_id) {
+            if self.closures.dynamic_closure_vars.contains(var_id) {
                 if let Some(local_id) = self.get_var_local(var_id) {
                     let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
                     let result_ty = expr.ty.clone().unwrap_or(Type::Any);
@@ -354,7 +354,7 @@ impl<'a> Lowering<'a> {
             if let Some(local_id) = self.get_var_local(var_id) {
                 let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
                 let result_ty = self
-                    .current_func_return_type
+                    .symbols.current_func_return_type
                     .clone()
                     .or_else(|| expr.ty.clone())
                     .unwrap_or(Type::Any);

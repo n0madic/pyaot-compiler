@@ -193,110 +193,142 @@ impl LoweredClassInfo {
     }
 }
 
-/// Main lowering context that transforms HIR to MIR
+// =============================================================================
+// Sub-structs: decompose Lowering god-object into focused contexts (Phase 3.2)
+// =============================================================================
+
+/// Closure and decorator tracking: captures, wrappers, dynamic vars
+pub struct ClosureState {
+    /// Track variables that hold closures (func_id, captures)
+    pub var_to_closure: IndexMap<VarId, (FuncId, Vec<hir::ExprId>)>,
+    /// Track variables that hold decorator wrapper closures (wrapper_func_id, original_func_id)
+    pub var_to_wrapper: IndexMap<VarId, (FuncId, FuncId)>,
+    /// Variables holding dynamically returned closures (need emit_closure_call dispatch)
+    pub dynamic_closure_vars: IndexSet<VarId>,
+    /// Captured variable types for closures (used during lambda lowering)
+    pub closure_capture_types: IndexMap<FuncId, Vec<Type>>,
+    /// Wrapper function IDs (closures returned by decorators)
+    pub wrapper_func_ids: IndexSet<FuncId>,
+    /// Variables that are function pointer parameters (for indirect calls)
+    pub func_ptr_params: IndexSet<VarId>,
+    /// VarPositional (*args) parameter VarIds for the current function
+    pub varargs_params: IndexSet<VarId>,
+    /// Caller-provided parameter type hints for lambdas
+    pub lambda_param_type_hints: IndexMap<FuncId, Vec<Type>>,
+}
+
+/// Cross-module imports, exports, and offsets
+pub struct ModuleState {
+    /// (module_name, var_name) → (VarId, Type) for cross-module variable access
+    pub module_var_exports: HashMap<(String, String), (VarId, Type)>,
+    /// (module_name, func_name) → return Type for cross-module function calls
+    pub module_func_exports: HashMap<(String, String), Type>,
+    /// (module_name, class_name) → (ClassId, class_name_string) for cross-module class instantiation
+    pub module_class_exports: HashMap<(String, String), (ClassId, String)>,
+    /// Cross-module class information for field/method access
+    pub cross_module_class_info: HashMap<ClassId, CrossModuleClassInfo>,
+    /// VarId offset for this module (to avoid collisions with other modules)
+    pub var_id_offset: u32,
+    /// ClassId offset for this module (to avoid collisions with other modules)
+    pub class_id_offset: u32,
+    /// Module-level variables that hold decorator wrapper closures (persists across function lowering)
+    pub module_var_wrappers: IndexMap<VarId, (FuncId, FuncId)>,
+    /// Module-level variables that hold function references (persists across function lowering)
+    pub module_var_funcs: IndexMap<VarId, FuncId>,
+}
+
+/// Class metadata: lowered class info, vtables, name mapping
+pub struct ClassRegistry {
+    /// Class information for field access and method calls
+    pub class_info: IndexMap<ClassId, LoweredClassInfo>,
+    /// Map from class name to ClassId for instantiation
+    pub class_name_map: IndexMap<String, ClassId>,
+}
+
+/// MIR construction: blocks, instructions, current position
+pub struct CodeGenState {
+    pub next_local_id: u32,
+    pub next_block_id: u32,
+    pub current_blocks: Vec<mir::BasicBlock>,
+    pub current_block_idx: usize,
+    /// Stack of loop contexts: (continue_target, break_target)
+    pub loop_stack: Vec<(BlockId, BlockId)>,
+    /// Current source span (set by lower_stmt/lower_expr, used by emit_instruction for debug info)
+    pub current_span: Option<Span>,
+    /// Expected type for the current expression (set by assignment context)
+    pub expected_type: Option<Type>,
+    /// Pre-built varargs tuple from list unpacking (used during resolve_call_args)
+    pub pending_varargs_from_unpack: Option<LocalId>,
+    /// Runtime kwargs dict from **kwargs unpacking
+    pub pending_kwargs_from_unpack: Option<(LocalId, Type)>,
+}
+
+/// Variable names → local IDs, function references, global tracking
+pub struct SymbolTable {
+    /// Map variable to local ID within current function
+    pub var_to_local: IndexMap<VarId, LocalId>,
+    /// Map variable to function reference
+    pub var_to_func: IndexMap<VarId, FuncId>,
+    /// Map from function name to FuncId for resolving calls
+    pub func_name_map: IndexMap<String, FuncId>,
+    /// Global variable VarIds
+    pub globals: IndexSet<VarId>,
+    /// Types of global variables (preserved across function boundaries)
+    pub global_var_types: IndexMap<VarId, Type>,
+    /// Variables that need to be wrapped in cells (used by inner functions via nonlocal)
+    pub cell_vars: IndexSet<VarId>,
+    /// Map nonlocal variables to their cell local
+    pub nonlocal_cells: IndexMap<VarId, LocalId>,
+    /// Storage for mutable default parameter values: (FuncId, param_index) → global slot ID
+    pub default_value_slots: IndexMap<(FuncId, usize), u32>,
+    /// Counter for allocating default value global slots
+    pub next_default_slot: u32,
+    /// Return type of the current function being lowered
+    pub current_func_return_type: Option<Type>,
+}
+
+/// Type tracking: variable types, expression cache, narrowing
+pub struct TypeEnvironment {
+    /// Track variable types for proper type inference (cleared per function)
+    pub var_types: IndexMap<VarId, Type>,
+    /// Memoized expression types — persists across functions (ExprIds are unique per-module)
+    pub expr_types: HashMap<hir::ExprId, Type>,
+    /// Refined types for variables from empty container analysis (persists across functions)
+    pub refined_var_types: IndexMap<VarId, Type>,
+    /// Track original types of narrowed Union variables (for unboxing during reads)
+    pub narrowed_union_vars: IndexMap<VarId, Type>,
+    /// Track inferred return types for functions (especially lambdas)
+    pub func_return_types: IndexMap<FuncId, Type>,
+}
+
+// =============================================================================
+// Main lowering context
+// =============================================================================
+
+/// Main lowering context that transforms HIR to MIR.
+///
+/// Decomposed into focused sub-structs for maintainability:
+/// - `closures`: Closure and decorator tracking
+/// - `modules`: Cross-module imports/exports
+/// - `classes`: Class metadata and vtables
+/// - `codegen`: MIR construction state
+/// - `symbols`: Variable/function name resolution
+/// - `types`: Type inference and expression type cache
 pub struct Lowering<'a> {
     pub(crate) interner: &'a mut StringInterner,
     pub(crate) mir_module: mir::Module,
-    pub(crate) next_local_id: u32,
-    pub(crate) next_block_id: u32,
-    pub(crate) var_to_local: IndexMap<VarId, LocalId>,
-    /// Track variable types for proper type inference
-    pub(crate) var_types: IndexMap<VarId, Type>,
-    pub(crate) current_blocks: Vec<mir::BasicBlock>,
-    pub(crate) current_block_idx: usize,
-    /// Map from function name to FuncId for resolving calls
-    pub(crate) func_name_map: IndexMap<String, FuncId>,
-    /// Stack of loop contexts: (continue_target, break_target)
-    pub(crate) loop_stack: Vec<(BlockId, BlockId)>,
-    /// Class information for field access and method calls
-    pub(crate) class_info: IndexMap<ClassId, LoweredClassInfo>,
-    /// Map from class name to ClassId for instantiation
-    pub(crate) class_name_map: IndexMap<String, ClassId>,
-    /// Track variables that hold function references (for lambda calls)
-    pub(crate) var_to_func: IndexMap<VarId, FuncId>,
-    /// Track variables that hold closures (func_id, captures)
-    pub(crate) var_to_closure: IndexMap<VarId, (FuncId, Vec<hir::ExprId>)>,
-    /// Track variables that hold decorator wrapper closures
-    /// Maps: variable -> (wrapper_func_id, original_func_id)
-    /// Used when a decorator returns a closure that wraps the original function
-    pub(crate) var_to_wrapper: IndexMap<VarId, (FuncId, FuncId)>,
-    /// Track variables that hold dynamically returned closures (e.g., f = middle() where middle returns a closure).
-    /// These need emit_closure_call dispatch since the closure structure is only known at runtime.
-    pub(crate) dynamic_closure_vars: IndexSet<VarId>,
-    /// Track variables that are function pointer parameters (for indirect calls)
-    /// Used in wrapper functions where the captured `func` parameter is called indirectly
-    pub(crate) func_ptr_params: IndexSet<VarId>,
-    /// Track wrapper function IDs (closures returned by decorators)
-    /// These functions have a function pointer as their first capture parameter
-    pub(crate) wrapper_func_ids: IndexSet<FuncId>,
-    /// Track VarPositional (*args) parameter VarIds for the current function.
-    /// Used to detect *args forwarding in indirect calls (e.g., func(*args) in decorator wrappers).
-    pub(crate) varargs_params: IndexSet<VarId>,
-    /// Return type of the current function being lowered
-    /// Used to infer the result type of indirect calls through func_ptr_params
-    pub(crate) current_func_return_type: Option<Type>,
-    /// Track inferred return types for functions (especially lambdas)
-    pub(crate) func_return_types: IndexMap<FuncId, Type>,
-    /// Track captured variable types for closures (used during lambda lowering)
-    pub(crate) closure_capture_types: IndexMap<FuncId, Vec<Type>>,
-    /// Caller-provided parameter type hints for lambdas (e.g., reduce passes element type for both params)
-    pub(crate) lambda_param_type_hints: IndexMap<FuncId, Vec<Type>>,
-    /// Track global variables (shared across all functions via runtime storage)
-    pub(crate) globals: IndexSet<VarId>,
-    /// Track types of global variables (preserved across function boundaries)
-    pub(crate) global_var_types: IndexMap<VarId, Type>,
-    /// Variables that need to be wrapped in cells (used by inner functions via nonlocal)
-    pub(crate) cell_vars: IndexSet<VarId>,
-    /// Map nonlocal variables to their cell local (for reading/writing through cells)
-    pub(crate) nonlocal_cells: IndexMap<VarId, LocalId>,
-    /// Expected type for the current expression being lowered (set by assignment context).
-    /// Used by empty list/dict/set literals to infer the correct elem_tag.
-    pub(crate) expected_type: Option<Type>,
-    /// Current source span (set by lower_stmt/lower_expr, used by emit_instruction for debug info)
-    pub(crate) current_span: Option<Span>,
-    /// Track original types of narrowed Union variables (for unboxing during reads)
-    /// Key: VarId, Value: Original Union type before narrowing
-    pub(crate) narrowed_union_vars: IndexMap<VarId, Type>,
-    /// Mapping from (module_name, var_name) to (VarId, Type) for cross-module variable access
-    pub(crate) module_var_exports: HashMap<(String, String), (VarId, Type)>,
-    /// Mapping from (module_name, func_name) to return Type for cross-module function calls
-    pub(crate) module_func_exports: HashMap<(String, String), Type>,
-    /// Mapping from (module_name, class_name) to (ClassId, class_name_string) for cross-module class instantiation
-    pub(crate) module_class_exports: HashMap<(String, String), (ClassId, String)>,
-    /// Cross-module class information (field_offsets, field_types, method_return_types) for field/method access
-    /// Uses String keys for field/method names to work across different interners
-    pub(crate) cross_module_class_info: HashMap<ClassId, CrossModuleClassInfo>,
-    /// VarId offset for this module (to avoid collisions with other modules)
-    pub(crate) var_id_offset: u32,
-    /// ClassId offset for this module (to avoid collisions with other modules)
-    pub(crate) class_id_offset: u32,
-    /// Pre-built varargs tuple from list unpacking (used during resolve_call_args)
-    pub(crate) pending_varargs_from_unpack: Option<LocalId>,
-    /// Runtime kwargs dict from **kwargs unpacking (used during resolve_call_args)
-    /// Contains (dict_operand, value_type) for extracting kwargs at runtime
-    pub(crate) pending_kwargs_from_unpack: Option<(LocalId, Type)>,
-    /// Refined types for variables from empty container analysis.
-    /// Persists across function lowerings (unlike var_types which is cleared per function).
-    /// Used to give empty lists/sets the correct elem_tag based on subsequent usage.
-    pub(crate) refined_var_types: IndexMap<VarId, Type>,
-    /// Memoized expression types — persists across functions (ExprIds are unique per-module).
-    /// Replaces the former RefCell<HashMap> expr_type_cache.
-    pub(crate) expr_types: HashMap<hir::ExprId, Type>,
-    /// Storage for mutable default parameter values.
-    /// Maps (FuncId, param_index) to global slot ID.
-    /// In Python, mutable defaults (list, dict, set, class instances) are evaluated once
-    /// at function definition time and shared across all calls.
-    pub(crate) default_value_slots: IndexMap<(FuncId, usize), u32>,
-    /// Counter for allocating default value global slots.
-    /// Uses a separate namespace (starting at high value) to avoid collision with regular globals.
-    pub(crate) next_default_slot: u32,
-    /// Warnings collected during lowering (dead code, etc.)
+    /// Closure and decorator tracking
+    pub(crate) closures: ClosureState,
+    /// Cross-module imports/exports
+    pub(crate) modules: ModuleState,
+    /// Class metadata and vtables
+    pub(crate) classes: ClassRegistry,
+    /// MIR construction state (blocks, locals, loops)
+    pub(crate) codegen: CodeGenState,
+    /// Variable/function name resolution
+    pub(crate) symbols: SymbolTable,
+    /// Type inference and expression type cache
+    pub(crate) types: TypeEnvironment,
+    /// Warnings collected during lowering
     pub(crate) warnings: CompilerWarnings,
-    /// Track module-level variables that hold decorator wrapper closures (persists across function lowering)
-    /// Maps: variable -> (wrapper_func_id, original_func_id)
-    /// Used when a module-level decorated function is called from other functions
-    pub(crate) module_var_wrappers: IndexMap<VarId, (FuncId, FuncId)>,
-    /// Track module-level variables that hold function references (persists across function lowering)
-    /// Used when a module-level function reference is called from other functions
-    pub(crate) module_var_funcs: IndexMap<VarId, FuncId>,
 }

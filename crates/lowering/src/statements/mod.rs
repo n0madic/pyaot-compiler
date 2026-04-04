@@ -28,7 +28,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
-        self.current_span = Some(stmt.span);
+        self.codegen.current_span = Some(stmt.span);
         match &stmt.kind {
             // Expression statement
             hir::StmtKind::Expr(expr_id) => {

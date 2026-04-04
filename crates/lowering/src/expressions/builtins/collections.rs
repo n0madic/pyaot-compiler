@@ -132,7 +132,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         // Bidirectional: use expected_type for empty set() calls
-        let set_elem_type = if let Some(Type::Set(ref expected_elem)) = self.expected_type {
+        let set_elem_type = if let Some(Type::Set(ref expected_elem)) = self.codegen.expected_type {
             (**expected_elem).clone()
         } else {
             Type::Any
@@ -278,7 +278,7 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         // Use expected_type from assignment context (e.g. `x: list[int] = list(...)`)
         // for precise element type. This enables ListGetTyped instead of generic ListGet.
-        let list_elem_type = if let Some(Type::List(ref expected_elem)) = self.expected_type {
+        let list_elem_type = if let Some(Type::List(ref expected_elem)) = self.codegen.expected_type {
             (**expected_elem).clone()
         } else {
             Type::Any
@@ -619,7 +619,7 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         // Bidirectional: use expected_type for empty dict() calls
         let (dict_key_type, dict_val_type) =
-            if let Some(Type::Dict(ref ek, ref ev)) = self.expected_type {
+            if let Some(Type::Dict(ref ek, ref ev)) = self.codegen.expected_type {
                 ((**ek).clone(), (**ev).clone())
             } else {
                 (Type::Any, Type::Any)

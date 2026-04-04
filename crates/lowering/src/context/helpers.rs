@@ -23,17 +23,17 @@ impl<'a> Lowering<'a> {
     /// Safe to call in any expression-lowering context because `lower_expr()`
     /// always sets `self.current_span = Some(expr.span)` before dispatching.
     pub(crate) fn call_span(&self) -> pyaot_utils::Span {
-        self.current_span.unwrap_or_else(pyaot_utils::Span::dummy)
+        self.codegen.current_span.unwrap_or_else(pyaot_utils::Span::dummy)
     }
 
     /// Get the effective (offset-adjusted) VarId for a global variable
     pub(crate) fn get_effective_var_id(&self, var_id: pyaot_utils::VarId) -> i64 {
-        (var_id.0 + self.var_id_offset) as i64
+        (var_id.0 + self.modules.var_id_offset) as i64
     }
 
     /// Get the effective (offset-adjusted) ClassId for a class
     pub(crate) fn get_effective_class_id(&self, class_id: pyaot_utils::ClassId) -> i64 {
-        (class_id.0 + self.class_id_offset) as i64
+        (class_id.0 + self.modules.class_id_offset) as i64
     }
 
     /// Check if an expression is a variable that was narrowed from a Union type.
@@ -43,7 +43,7 @@ impl<'a> Lowering<'a> {
         if let hir::ExprKind::Var(var_id) = &expr.kind {
             // Check if this variable is tracked in narrowed_union_vars
             // This tracks variables narrowed from Union to Int/Float/Bool/Str/None
-            self.narrowed_union_vars.contains_key(var_id)
+            self.types.narrowed_union_vars.contains_key(var_id)
         } else {
             false
         }
@@ -491,11 +491,11 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::Closure { func, captures } => Some((*func, captures.clone())),
             hir::ExprKind::Var(var_id) => {
                 // Check if this variable holds a function reference (no captures)
-                if let Some(func_id) = self.var_to_func.get(var_id) {
+                if let Some(func_id) = self.symbols.var_to_func.get(var_id) {
                     return Some((*func_id, Vec::new()));
                 }
                 // Check if it's a closure (with captures)
-                if let Some((func_id, captures)) = self.var_to_closure.get(var_id) {
+                if let Some((func_id, captures)) = self.closures.var_to_closure.get(var_id) {
                     return Some((*func_id, captures.clone()));
                 }
                 None

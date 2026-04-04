@@ -300,7 +300,7 @@ impl<'a> Lowering<'a> {
             {
                 if let Some(func_def) = hir_module.func_defs.get(&called_func_id) {
                     if self.find_returned_closure(func_def, hir_module).is_some() {
-                        self.dynamic_closure_vars.insert(target);
+                        self.closures.dynamic_closure_vars.insert(target);
                     }
                 }
             }
