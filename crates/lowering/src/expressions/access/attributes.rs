@@ -62,9 +62,13 @@ impl<'a> Lowering<'a> {
             let attr_name = self.resolve(attr);
             if let Some(field_def) = lookup_object_field(*type_tag, attr_name) {
                 let result_type = typespec_to_type(&field_def.field_type);
+                let mut args = vec![obj_operand];
+                if let Some(idx) = field_def.field_index {
+                    args.push(mir::Operand::Constant(mir::Constant::Int(idx)));
+                }
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&field_def.codegen),
-                    vec![obj_operand],
+                    args,
                     result_type,
                     mir_func,
                 );

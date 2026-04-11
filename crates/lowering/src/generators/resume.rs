@@ -58,6 +58,7 @@ impl<'a> GeneratorContext<'a> {
             resume_name,
             params.clone(),
             return_type.clone(),
+            self.source_span,
         );
 
         // Add parameters to locals

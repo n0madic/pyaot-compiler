@@ -19,7 +19,7 @@ pub use repr::{
     rt_repr_str,
 };
 
-pub use ascii::{rt_ascii_collection, rt_ascii_str};
+pub use ascii::{rt_ascii_bytes, rt_ascii_collection, rt_ascii_str};
 
 pub use type_cast::{
     rt_float_fmt_grouped, rt_int_fmt_bin, rt_int_fmt_grouped, rt_int_fmt_hex, rt_int_fmt_hex_upper,

@@ -213,8 +213,13 @@ impl<'a> Lowering<'a> {
         // Store the current function's return type for type inference during lowering
         self.symbols.current_func_return_type = Some(return_type.clone());
 
-        let mut mir_func = mir::Function::new(func.id, func_name, params.clone(), return_type);
-        mir_func.span = Some(func.span);
+        let mut mir_func = mir::Function::new(
+            func.id,
+            func_name,
+            params.clone(),
+            return_type,
+            Some(func.span),
+        );
 
         // Add parameters to locals
         for param in params {

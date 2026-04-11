@@ -64,7 +64,13 @@ fn copy_instr(dest: u32, src: u32) -> Instruction {
 
 #[test]
 fn test_unreachable_block_removed() {
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
 
     // Entry (block 0) → goto block 1. Block 2 is orphaned.
     let entry = func.blocks.get_mut(&bid(0)).unwrap();
@@ -99,7 +105,13 @@ fn test_unreachable_block_removed() {
 
 #[test]
 fn test_all_blocks_reachable_no_change() {
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
 
     let entry = func.blocks.get_mut(&bid(0)).unwrap();
     entry.terminator = Terminator::Branch {
@@ -132,7 +144,13 @@ fn test_all_blocks_reachable_no_change() {
 
 #[test]
 fn test_try_setjmp_both_successors_reachable() {
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
 
     let entry = func.blocks.get_mut(&bid(0)).unwrap();
     entry.terminator = Terminator::TrySetjmp {
@@ -167,7 +185,13 @@ fn test_try_setjmp_both_successors_reachable() {
 
 #[test]
 fn test_dead_const_removed() {
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     func.locals.insert(lid(0), local(0));
 
     let entry = func.blocks.get_mut(&bid(0)).unwrap();
@@ -182,7 +206,13 @@ fn test_dead_const_removed() {
 #[test]
 fn test_binop_kept_because_may_raise() {
     // BinOp can raise OverflowError/ZeroDivisionError, so it's not pure
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     func.locals.insert(lid(0), local(0));
     func.locals.insert(lid(1), local(1));
     func.locals.insert(lid(2), local(2));
@@ -199,7 +229,13 @@ fn test_binop_kept_because_may_raise() {
 
 #[test]
 fn test_used_instruction_kept() {
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     func.locals.insert(lid(0), local(0));
 
     let entry = func.blocks.get_mut(&bid(0)).unwrap();
@@ -213,7 +249,13 @@ fn test_used_instruction_kept() {
 
 #[test]
 fn test_side_effectful_call_kept_even_if_unused() {
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     func.locals.insert(lid(0), local(0));
     func.locals.insert(lid(1), local(1));
 
@@ -239,7 +281,13 @@ fn test_side_effectful_call_kept_even_if_unused() {
 
 #[test]
 fn test_gc_instructions_preserved() {
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     func.locals.insert(lid(0), local(0));
 
     let entry = func.blocks.get_mut(&bid(0)).unwrap();
@@ -262,7 +310,13 @@ fn test_gc_instructions_preserved() {
 
 #[test]
 fn test_exception_instructions_preserved() {
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     func.locals.insert(lid(0), local(0));
 
     let entry = func.blocks.get_mut(&bid(0)).unwrap();
@@ -280,7 +334,13 @@ fn test_exception_instructions_preserved() {
 #[test]
 fn test_dead_copy_removed() {
     // Simulates post-inlining pattern: Copy { dest: x, src: param } where x is never used
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     func.locals.insert(lid(0), local(0));
     func.locals.insert(lid(1), local(1));
 
@@ -301,7 +361,13 @@ fn test_dead_copy_removed() {
 
 #[test]
 fn test_unused_locals_cleaned() {
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     func.locals.insert(lid(0), local(0));
     func.locals.insert(lid(1), local(1)); // unused local
     func.locals.insert(lid(2), local(2)); // unused local
@@ -323,6 +389,7 @@ fn test_parameter_locals_kept() {
         "f".to_string(),
         vec![param.clone()],
         Type::Int,
+        None,
     );
     func.locals.insert(lid(0), param);
 
@@ -341,7 +408,7 @@ fn test_cascading_dead_code() {
     // x = 5; y = copy(x); z = copy(y); return const 0
     // z is unused → removed. Then y → removed. Then x → removed.
     let mut module = Module::new();
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::Int);
+    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::Int, None);
     func.locals.insert(lid(0), local(0));
     func.locals.insert(lid(1), local(1));
     func.locals.insert(lid(2), local(2));
@@ -364,7 +431,13 @@ fn test_cascading_dead_code() {
 #[test]
 fn test_unreachable_block_with_dead_instructions() {
     let mut module = Module::new();
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     func.locals.insert(lid(0), local(0));
     func.locals.insert(lid(1), local(1));
 
@@ -396,7 +469,7 @@ fn test_cross_block_liveness() {
     // Block 0: x = 42; goto block 1
     // Block 1: return x
     // x is used in block 1, so instruction in block 0 must be kept
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::Int);
+    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::Int, None);
     func.locals.insert(lid(0), local(0));
 
     let entry = func.blocks.get_mut(&bid(0)).unwrap();
@@ -418,7 +491,13 @@ fn test_cross_block_liveness() {
 
 #[test]
 fn test_runtime_call_kept_even_if_unused() {
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     func.locals.insert(lid(0), local(0));
 
     let entry = func.blocks.get_mut(&bid(0)).unwrap();
@@ -438,7 +517,13 @@ fn test_runtime_call_kept_even_if_unused() {
 
 #[test]
 fn test_gc_alloc_kept_even_if_unused() {
-    let mut func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let mut func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     func.locals.insert(lid(0), local(0));
 
     let entry = func.blocks.get_mut(&bid(0)).unwrap();
@@ -459,7 +544,13 @@ fn test_gc_alloc_kept_even_if_unused() {
 #[test]
 fn test_empty_function_no_panic() {
     let mut module = Module::new();
-    let func = Function::new(FuncId::from(0u32), "f".to_string(), vec![], Type::None);
+    let func = Function::new(
+        FuncId::from(0u32),
+        "f".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     module.add_function(func);
 
     // Should not panic on function with only entry block + Unreachable terminator

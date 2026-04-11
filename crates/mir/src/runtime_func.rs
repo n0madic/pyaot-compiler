@@ -109,10 +109,9 @@ pub enum RuntimeFunc {
     // See core-defs/src/runtime_func_def.rs
 
     // Comparison operations (Compare): migrated to RuntimeFunc::Call(&RuntimeFuncDef)
-    // See core-defs/src/runtime_func_def.rs: RT_CMP_LIST_INT_EQ, RT_CMP_LIST_FLOAT_EQ,
-    //   RT_CMP_LIST_STR_EQ, RT_CMP_LIST_EQ, RT_CMP_LIST_ORD, RT_CMP_TUPLE_EQ, RT_CMP_TUPLE_ORD,
-    //   RT_CMP_STR_EQ, RT_CMP_BYTES_EQ, RT_CMP_OBJ_EQ, RT_CMP_OBJ_LT, RT_CMP_OBJ_LTE,
-    //   RT_CMP_OBJ_GT, RT_CMP_OBJ_GTE
+    // See core-defs/src/runtime_func_def.rs: RT_CMP_LIST_EQ, RT_CMP_LIST_ORD,
+    //   RT_CMP_TUPLE_EQ, RT_CMP_TUPLE_ORD, RT_CMP_STR_EQ, RT_CMP_BYTES_EQ,
+    //   RT_CMP_OBJ_EQ, RT_CMP_OBJ_ORD
 
     // Object ops: migrated to RuntimeFunc::Call(&RuntimeFuncDef)
     // See core-defs/src/runtime_func_def.rs: RT_IS_TRUTHY, RT_OBJ_CONTAINS, RT_OBJ_TO_STR,

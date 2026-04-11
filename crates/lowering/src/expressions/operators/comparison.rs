@@ -440,35 +440,17 @@ impl<'a> Lowering<'a> {
                     operand: mir::Operand::Local(temp_local),
                 });
             }
-        } else if let Type::List(left_elem_type) = &left_type {
+        } else if let Type::List(_) = &left_type {
             // List comparison - use runtime function based on element type
             if matches!(op, hir::CmpOp::Eq | hir::CmpOp::NotEq)
                 && matches!(right_type, Type::List(_))
             {
                 let is_not_eq = matches!(op, hir::CmpOp::NotEq);
 
-                // Get element type from right side if left is Any
-                let right_elem_type = if let Type::List(rt) = &right_type {
-                    rt.as_ref()
-                } else {
-                    &Type::Any
-                };
-
-                // Choose runtime function based on element type (prefer non-Any type)
-                let elem_type = if matches!(left_elem_type.as_ref(), Type::Any) {
-                    right_elem_type
-                } else {
-                    left_elem_type.as_ref()
-                };
-
-                let compare_kind = match elem_type {
-                    Type::Float => mir::CompareKind::ListFloat,
-                    Type::Str => mir::CompareKind::ListStr,
-                    _ => mir::CompareKind::ListInt, // Default to int comparison
-                };
-
-                let eq_func =
-                    mir::RuntimeFunc::Call(compare_kind.runtime_func_def(mir::ComparisonOp::Eq));
+                // Unified list equality — runtime dispatches by elem_tag from ListObj
+                let eq_func = mir::RuntimeFunc::Call(
+                    mir::CompareKind::List.runtime_func_def(mir::ComparisonOp::Eq),
+                );
 
                 if is_not_eq {
                     // NotEq: compute eq and negate

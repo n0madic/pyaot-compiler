@@ -187,6 +187,10 @@ impl<'a> Lowering<'a> {
             _ => mir::SortableKind::List,
         };
 
+        // Container tag operand for generic dispatch
+        let container_tag_operand =
+            mir::Operand::Constant(mir::Constant::Int(source.to_tag() as i64));
+
         // If key function is provided, use the with_key variant
         if let Some(resolved) =
             self.emit_key_func_with_captures(sort_kwargs.key_func.as_ref(), hir_module, mir_func)?
@@ -203,25 +207,22 @@ impl<'a> Lowering<'a> {
                     elem_tag_operand,
                     resolved.captures,
                     resolved.capture_count,
+                    container_tag_operand,
                 ],
             });
         } else {
-            // No key function - use standard sorted
-            // Set/Dict sorted need elem_tag to produce correctly-typed result lists
-            let args = if matches!(source, mir::SortableKind::Set | mir::SortableKind::Dict) {
-                vec![
-                    arg_operand,
-                    sort_kwargs.reverse,
-                    mir::Operand::Constant(mir::Constant::Int(result_elem_tag)),
-                ]
-            } else {
-                vec![arg_operand, sort_kwargs.reverse]
-            };
+            // No key function - use generic rt_sorted(obj, reverse, elem_tag, container_tag)
+            let elem_tag_operand = mir::Operand::Constant(mir::Constant::Int(result_elem_tag));
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
                 func: mir::RuntimeFunc::Call(source.sorted_def(false)),
-                args,
+                args: vec![
+                    arg_operand,
+                    sort_kwargs.reverse,
+                    elem_tag_operand,
+                    container_tag_operand,
+                ],
             });
         }
 

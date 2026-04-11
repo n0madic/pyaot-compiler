@@ -150,11 +150,76 @@ unsafe fn stable_sort(data: *mut *mut Obj, len: usize, reverse: bool, elem_tag: 
     }
 }
 
-/// Create a sorted list from a list
-/// reverse: 0 for ascending, 1 for descending
-/// Returns: pointer to new ListObj
+/// Container tag constants for `rt_sorted` / `rt_sorted_with_key` dispatch.
+const CONTAINER_LIST: u8 = 0;
+const CONTAINER_TUPLE: u8 = 1;
+const CONTAINER_DICT: u8 = 2;
+const CONTAINER_SET: u8 = 3;
+const CONTAINER_STR: u8 = 4;
+
+/// Generic sorted: dispatches by `container_tag` to the appropriate implementation.
+///
+/// - `container_tag`: 0=list, 1=tuple, 2=dict, 3=set, 4=str
+/// - `elem_tag`: element storage type (used by dict/set to produce correctly-typed results)
+/// - `reverse`: 0 for ascending, 1 for descending
+///
+/// Returns pointer to new ListObj.
 #[no_mangle]
-pub extern "C" fn rt_sorted_list(list: *mut Obj, reverse: i64) -> *mut Obj {
+pub extern "C" fn rt_sorted(
+    obj: *mut Obj,
+    reverse: i64,
+    elem_tag: u8,
+    container_tag: u8,
+) -> *mut Obj {
+    match container_tag {
+        CONTAINER_LIST => sorted_list_impl(obj, reverse),
+        CONTAINER_TUPLE => sorted_tuple_impl(obj, reverse),
+        CONTAINER_DICT => sorted_dict_impl(obj, reverse, elem_tag),
+        CONTAINER_SET => sorted_set_impl(obj, reverse, elem_tag),
+        CONTAINER_STR => sorted_str_impl(obj, reverse),
+        _ => rt_make_list(0, ELEM_HEAP_OBJ),
+    }
+}
+
+/// Generic sorted with key function: dispatches by `container_tag`.
+///
+/// - `container_tag`: 0=list, 1=tuple, 2=dict, 3=set, 4=str
+/// - `elem_tag`: element storage type for key function boxing
+/// - `reverse`: 0 for ascending, 1 for descending
+/// - `key_fn`: function pointer for key extraction
+/// - `captures`: tuple of captured variables (null if no captures)
+/// - `capture_count`: number of captured variables
+///
+/// Returns pointer to new ListObj.
+#[no_mangle]
+pub extern "C" fn rt_sorted_with_key(
+    obj: *mut Obj,
+    reverse: i64,
+    key_fn: i64,
+    elem_tag: i64,
+    captures: *mut Obj,
+    capture_count: i64,
+    container_tag: u8,
+) -> *mut Obj {
+    match container_tag {
+        CONTAINER_LIST => {
+            sorted_list_with_key_impl(obj, reverse, key_fn, elem_tag, captures, capture_count)
+        }
+        CONTAINER_TUPLE => {
+            sorted_tuple_with_key_impl(obj, reverse, key_fn, elem_tag, captures, capture_count)
+        }
+        CONTAINER_DICT => sorted_dict_with_key_impl(obj, reverse, key_fn, captures, capture_count),
+        CONTAINER_SET => {
+            sorted_set_with_key_impl(obj, reverse, key_fn, elem_tag, captures, capture_count)
+        }
+        CONTAINER_STR => sorted_str_with_key_impl(obj, reverse, key_fn, captures, capture_count),
+        _ => rt_make_list(0, ELEM_HEAP_OBJ),
+    }
+}
+
+// ==================== No-key implementations ====================
+
+fn sorted_list_impl(list: *mut Obj, reverse: i64) -> *mut Obj {
     use crate::object::ListObj;
 
     if list.is_null() {
@@ -188,11 +253,7 @@ pub extern "C" fn rt_sorted_list(list: *mut Obj, reverse: i64) -> *mut Obj {
     }
 }
 
-/// Create a sorted list from a tuple
-/// reverse: 0 for ascending, 1 for descending
-/// Returns: pointer to new ListObj
-#[no_mangle]
-pub extern "C" fn rt_sorted_tuple(tuple: *mut Obj, reverse: i64) -> *mut Obj {
+fn sorted_tuple_impl(tuple: *mut Obj, reverse: i64) -> *mut Obj {
     use crate::object::{ListObj, TupleObj};
 
     if tuple.is_null() {
@@ -226,11 +287,7 @@ pub extern "C" fn rt_sorted_tuple(tuple: *mut Obj, reverse: i64) -> *mut Obj {
     }
 }
 
-/// Create a sorted list of keys from a dict
-/// reverse: 0 for ascending, 1 for descending
-/// Returns: pointer to new ListObj containing sorted keys
-#[no_mangle]
-pub extern "C" fn rt_sorted_dict(dict: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj {
+fn sorted_dict_impl(dict: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj {
     if dict.is_null() {
         return rt_make_list(0, elem_tag);
     }
@@ -238,7 +295,7 @@ pub extern "C" fn rt_sorted_dict(dict: *mut Obj, reverse: i64, elem_tag: u8) -> 
     // Get keys list with the target elem_tag (unboxes if ELEM_RAW_INT)
     let keys_list = rt_dict_keys(dict, elem_tag);
 
-    // Root keys_list before rt_sorted_list which allocates a new list
+    // Root keys_list before sorted_list_impl which allocates a new list
     let mut roots: [*mut Obj; 1] = [keys_list];
     let mut frame = ShadowFrame {
         prev: std::ptr::null_mut(),
@@ -246,16 +303,12 @@ pub extern "C" fn rt_sorted_dict(dict: *mut Obj, reverse: i64, elem_tag: u8) -> 
         roots: roots.as_mut_ptr(),
     };
     unsafe { gc_push(&mut frame) };
-    let result = rt_sorted_list(roots[0], reverse);
+    let result = sorted_list_impl(roots[0], reverse);
     gc_pop();
     result
 }
 
-/// Create a sorted list from a set
-/// reverse: 0 for ascending, 1 for descending
-/// Returns: pointer to new ListObj containing sorted elements
-#[no_mangle]
-pub extern "C" fn rt_sorted_set(set: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj {
+fn sorted_set_impl(set: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj {
     if set.is_null() {
         return rt_make_list(0, elem_tag);
     }
@@ -263,7 +316,7 @@ pub extern "C" fn rt_sorted_set(set: *mut Obj, reverse: i64, elem_tag: u8) -> *m
     // Convert set to list (always ELEM_HEAP_OBJ since set stores boxed elements)
     let list = crate::set::rt_set_to_list(set);
 
-    // Root list before rt_sorted_list which allocates a new list
+    // Root list before sorted_list_impl which allocates a new list
     let mut roots: [*mut Obj; 1] = [list];
     let mut frame = ShadowFrame {
         prev: std::ptr::null_mut(),
@@ -271,7 +324,7 @@ pub extern "C" fn rt_sorted_set(set: *mut Obj, reverse: i64, elem_tag: u8) -> *m
         roots: roots.as_mut_ptr(),
     };
     unsafe { gc_push(&mut frame) };
-    let sorted = rt_sorted_list(roots[0], reverse);
+    let sorted = sorted_list_impl(roots[0], reverse);
     gc_pop();
 
     // If caller wants ELEM_RAW_INT, unbox the sorted list
@@ -282,11 +335,7 @@ pub extern "C" fn rt_sorted_set(set: *mut Obj, reverse: i64, elem_tag: u8) -> *m
     sorted
 }
 
-/// Create a sorted list of single-char strings from a string
-/// reverse: 0 for ascending, 1 for descending
-/// Returns: pointer to new ListObj containing sorted char strings
-#[no_mangle]
-pub extern "C" fn rt_sorted_str(str_obj: *mut Obj, reverse: i64) -> *mut Obj {
+fn sorted_str_impl(str_obj: *mut Obj, reverse: i64) -> *mut Obj {
     use crate::object::{ListObj, StrObj};
     use crate::string::utf8_char_width;
 
@@ -308,7 +357,7 @@ pub extern "C" fn rt_sorted_str(str_obj: *mut Obj, reverse: i64) -> *mut Obj {
         let new_list = rt_make_list(byte_len as i64, ELEM_HEAP_OBJ);
 
         // Root both str_obj and new_list.
-        // rt_str_getchar → rt_make_str → gc_alloc may trigger GC on every call;
+        // rt_str_getchar -> rt_make_str -> gc_alloc may trigger GC on every call;
         // str_obj must survive so we can read the next character, and new_list
         // must survive to receive the new char string.
         let mut roots: [*mut Obj; 2] = [str_obj, new_list];
@@ -351,6 +400,40 @@ pub extern "C" fn rt_sorted_str(str_obj: *mut Obj, reverse: i64) -> *mut Obj {
 
         roots[1]
     }
+}
+
+// ==================== Thin wrappers for backward compatibility ====================
+// These are kept as `#[no_mangle] extern "C"` so that any already-compiled object
+// files that reference the old symbol names continue to link.
+
+/// Create a sorted list from a list (thin wrapper)
+#[no_mangle]
+pub extern "C" fn rt_sorted_list(list: *mut Obj, reverse: i64) -> *mut Obj {
+    sorted_list_impl(list, reverse)
+}
+
+/// Create a sorted list from a tuple (thin wrapper)
+#[no_mangle]
+pub extern "C" fn rt_sorted_tuple(tuple: *mut Obj, reverse: i64) -> *mut Obj {
+    sorted_tuple_impl(tuple, reverse)
+}
+
+/// Create a sorted list of keys from a dict (thin wrapper)
+#[no_mangle]
+pub extern "C" fn rt_sorted_dict(dict: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj {
+    sorted_dict_impl(dict, reverse, elem_tag)
+}
+
+/// Create a sorted list from a set (thin wrapper)
+#[no_mangle]
+pub extern "C" fn rt_sorted_set(set: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj {
+    sorted_set_impl(set, reverse, elem_tag)
+}
+
+/// Create a sorted list of single-char strings from a string (thin wrapper)
+#[no_mangle]
+pub extern "C" fn rt_sorted_str(str_obj: *mut Obj, reverse: i64) -> *mut Obj {
+    sorted_str_impl(str_obj, reverse)
 }
 
 /// Create a sorted list from a range
@@ -500,15 +583,9 @@ unsafe fn stable_sort_key_obj_pairs(pairs: &mut [(*mut Obj, *mut Obj)], reverse:
     });
 }
 
-/// Create a sorted list from a list with a key function
-/// key_fn: function pointer for key extraction
-/// reverse: 0 for ascending, 1 for descending
-/// elem_tag: element storage type (0=ELEM_HEAP_OBJ, 1=ELEM_RAW_INT, 2=ELEM_RAW_BOOL)
-/// captures: tuple of captured variables (null if no captures)
-/// capture_count: number of captured variables
-/// Returns: pointer to new ListObj
-#[no_mangle]
-pub extern "C" fn rt_sorted_list_with_key(
+// ==================== With-key implementations ====================
+
+fn sorted_list_with_key_impl(
     list: *mut Obj,
     reverse: i64,
     key_fn: i64,
@@ -588,9 +665,7 @@ pub extern "C" fn rt_sorted_list_with_key(
     }
 }
 
-/// Create a sorted list from a tuple with a key function
-#[no_mangle]
-pub extern "C" fn rt_sorted_tuple_with_key(
+fn sorted_tuple_with_key_impl(
     tuple: *mut Obj,
     reverse: i64,
     key_fn: i64,
@@ -668,9 +743,7 @@ pub extern "C" fn rt_sorted_tuple_with_key(
     }
 }
 
-/// Create a sorted list of keys from a dict with a key function
-#[no_mangle]
-pub extern "C" fn rt_sorted_dict_with_key(
+fn sorted_dict_with_key_impl(
     dict: *mut Obj,
     reverse: i64,
     key_fn: i64,
@@ -684,7 +757,7 @@ pub extern "C" fn rt_sorted_dict_with_key(
     // Get keys list first, then sort it with key
     let keys_list = rt_dict_keys(dict, ELEM_HEAP_OBJ);
 
-    // Root keys_list before rt_sorted_list_with_key which allocates
+    // Root keys_list before sorted_list_with_key_impl which allocates
     let mut roots: [*mut Obj; 1] = [keys_list];
     let mut frame = ShadowFrame {
         prev: std::ptr::null_mut(),
@@ -692,7 +765,7 @@ pub extern "C" fn rt_sorted_dict_with_key(
         roots: roots.as_mut_ptr(),
     };
     unsafe { gc_push(&mut frame) };
-    let result = rt_sorted_list_with_key(
+    let result = sorted_list_with_key_impl(
         roots[0],
         reverse,
         key_fn,
@@ -704,9 +777,7 @@ pub extern "C" fn rt_sorted_dict_with_key(
     result
 }
 
-/// Create a sorted list from a set with a key function
-#[no_mangle]
-pub extern "C" fn rt_sorted_set_with_key(
+fn sorted_set_with_key_impl(
     set: *mut Obj,
     reverse: i64,
     key_fn: i64,
@@ -721,7 +792,7 @@ pub extern "C" fn rt_sorted_set_with_key(
     // Convert set to list, then sort with key
     let list = crate::set::rt_set_to_list(set);
 
-    // Root list before rt_sorted_list_with_key which allocates
+    // Root list before sorted_list_with_key_impl which allocates
     let mut roots: [*mut Obj; 1] = [list];
     let mut frame = ShadowFrame {
         prev: std::ptr::null_mut(),
@@ -730,14 +801,12 @@ pub extern "C" fn rt_sorted_set_with_key(
     };
     unsafe { gc_push(&mut frame) };
     let result =
-        rt_sorted_list_with_key(roots[0], reverse, key_fn, elem_tag, captures, capture_count);
+        sorted_list_with_key_impl(roots[0], reverse, key_fn, elem_tag, captures, capture_count);
     gc_pop();
     result
 }
 
-/// Create a sorted list of single-char strings from a string with a key function
-#[no_mangle]
-pub extern "C" fn rt_sorted_str_with_key(
+fn sorted_str_with_key_impl(
     str_obj: *mut Obj,
     reverse: i64,
     key_fn: i64,
@@ -823,4 +892,69 @@ pub extern "C" fn rt_sorted_str_with_key(
 
         new_list
     }
+}
+
+// ==================== With-key thin wrappers ====================
+
+/// Sorted list with key (thin wrapper)
+#[no_mangle]
+pub extern "C" fn rt_sorted_list_with_key(
+    list: *mut Obj,
+    reverse: i64,
+    key_fn: i64,
+    elem_tag: i64,
+    captures: *mut Obj,
+    capture_count: i64,
+) -> *mut Obj {
+    sorted_list_with_key_impl(list, reverse, key_fn, elem_tag, captures, capture_count)
+}
+
+/// Sorted tuple with key (thin wrapper)
+#[no_mangle]
+pub extern "C" fn rt_sorted_tuple_with_key(
+    tuple: *mut Obj,
+    reverse: i64,
+    key_fn: i64,
+    elem_tag: i64,
+    captures: *mut Obj,
+    capture_count: i64,
+) -> *mut Obj {
+    sorted_tuple_with_key_impl(tuple, reverse, key_fn, elem_tag, captures, capture_count)
+}
+
+/// Sorted dict with key (thin wrapper)
+#[no_mangle]
+pub extern "C" fn rt_sorted_dict_with_key(
+    dict: *mut Obj,
+    reverse: i64,
+    key_fn: i64,
+    captures: *mut Obj,
+    capture_count: i64,
+) -> *mut Obj {
+    sorted_dict_with_key_impl(dict, reverse, key_fn, captures, capture_count)
+}
+
+/// Sorted set with key (thin wrapper)
+#[no_mangle]
+pub extern "C" fn rt_sorted_set_with_key(
+    set: *mut Obj,
+    reverse: i64,
+    key_fn: i64,
+    elem_tag: i64,
+    captures: *mut Obj,
+    capture_count: i64,
+) -> *mut Obj {
+    sorted_set_with_key_impl(set, reverse, key_fn, elem_tag, captures, capture_count)
+}
+
+/// Sorted str with key (thin wrapper)
+#[no_mangle]
+pub extern "C" fn rt_sorted_str_with_key(
+    str_obj: *mut Obj,
+    reverse: i64,
+    key_fn: i64,
+    captures: *mut Obj,
+    capture_count: i64,
+) -> *mut Obj {
+    sorted_str_with_key_impl(str_obj, reverse, key_fn, captures, capture_count)
 }

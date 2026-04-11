@@ -383,146 +383,68 @@ pub extern "C" fn rt_time_strptime(string: *mut Obj, format: *mut Obj) -> *mut O
 
 // ============= struct_time field getters =============
 
-/// Get tm_year field from struct_time
+/// Generic struct_time field accessor.
+/// field_index: 0=year, 1=mon, 2=mday, 3=hour, 4=min, 5=sec, 6=wday, 7=yday, 8=isdst
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_struct_time_get_field(t: *mut Obj, field_index: u8) -> i64 {
+    if t.is_null() {
+        return 0;
+    }
+    unsafe {
+        if (*t).header.type_tag != TypeTagKind::StructTime {
+            return 0;
+        }
+        let st = t as *const StructTimeObj;
+        match field_index {
+            0 => (*st).tm_year,
+            1 => (*st).tm_mon,
+            2 => (*st).tm_mday,
+            3 => (*st).tm_hour,
+            4 => (*st).tm_min,
+            5 => (*st).tm_sec,
+            6 => (*st).tm_wday,
+            7 => (*st).tm_yday,
+            8 => (*st).tm_isdst,
+            _ => 0,
+        }
+    }
+}
+
+/// Thin wrappers for backward compatibility (referenced by stdlib-defs method tables).
+#[no_mangle]
 pub extern "C" fn rt_struct_time_get_tm_year(t: *mut Obj) -> i64 {
-    if t.is_null() {
-        return 0;
-    }
-    unsafe {
-        if (*t).header.type_tag != TypeTagKind::StructTime {
-            return 0;
-        }
-        let st = t as *const StructTimeObj;
-        (*st).tm_year
-    }
+    rt_struct_time_get_field(t, 0)
 }
-
-/// Get tm_mon field from struct_time
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_struct_time_get_tm_mon(t: *mut Obj) -> i64 {
-    if t.is_null() {
-        return 0;
-    }
-    unsafe {
-        if (*t).header.type_tag != TypeTagKind::StructTime {
-            return 0;
-        }
-        let st = t as *const StructTimeObj;
-        (*st).tm_mon
-    }
+    rt_struct_time_get_field(t, 1)
 }
-
-/// Get tm_mday field from struct_time
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_struct_time_get_tm_mday(t: *mut Obj) -> i64 {
-    if t.is_null() {
-        return 0;
-    }
-    unsafe {
-        if (*t).header.type_tag != TypeTagKind::StructTime {
-            return 0;
-        }
-        let st = t as *const StructTimeObj;
-        (*st).tm_mday
-    }
+    rt_struct_time_get_field(t, 2)
 }
-
-/// Get tm_hour field from struct_time
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_struct_time_get_tm_hour(t: *mut Obj) -> i64 {
-    if t.is_null() {
-        return 0;
-    }
-    unsafe {
-        if (*t).header.type_tag != TypeTagKind::StructTime {
-            return 0;
-        }
-        let st = t as *const StructTimeObj;
-        (*st).tm_hour
-    }
+    rt_struct_time_get_field(t, 3)
 }
-
-/// Get tm_min field from struct_time
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_struct_time_get_tm_min(t: *mut Obj) -> i64 {
-    if t.is_null() {
-        return 0;
-    }
-    unsafe {
-        if (*t).header.type_tag != TypeTagKind::StructTime {
-            return 0;
-        }
-        let st = t as *const StructTimeObj;
-        (*st).tm_min
-    }
+    rt_struct_time_get_field(t, 4)
 }
-
-/// Get tm_sec field from struct_time
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_struct_time_get_tm_sec(t: *mut Obj) -> i64 {
-    if t.is_null() {
-        return 0;
-    }
-    unsafe {
-        if (*t).header.type_tag != TypeTagKind::StructTime {
-            return 0;
-        }
-        let st = t as *const StructTimeObj;
-        (*st).tm_sec
-    }
+    rt_struct_time_get_field(t, 5)
 }
-
-/// Get tm_wday field from struct_time
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_struct_time_get_tm_wday(t: *mut Obj) -> i64 {
-    if t.is_null() {
-        return 0;
-    }
-    unsafe {
-        if (*t).header.type_tag != TypeTagKind::StructTime {
-            return 0;
-        }
-        let st = t as *const StructTimeObj;
-        (*st).tm_wday
-    }
+    rt_struct_time_get_field(t, 6)
 }
-
-/// Get tm_yday field from struct_time
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_struct_time_get_tm_yday(t: *mut Obj) -> i64 {
-    if t.is_null() {
-        return 0;
-    }
-    unsafe {
-        if (*t).header.type_tag != TypeTagKind::StructTime {
-            return 0;
-        }
-        let st = t as *const StructTimeObj;
-        (*st).tm_yday
-    }
+    rt_struct_time_get_field(t, 7)
 }
-
-/// Get tm_isdst field from struct_time
 #[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_struct_time_get_tm_isdst(t: *mut Obj) -> i64 {
-    if t.is_null() {
-        return 0;
-    }
-    unsafe {
-        if (*t).header.type_tag != TypeTagKind::StructTime {
-            return 0;
-        }
-        let st = t as *const StructTimeObj;
-        (*st).tm_isdst
-    }
+    rt_struct_time_get_field(t, 8)
 }

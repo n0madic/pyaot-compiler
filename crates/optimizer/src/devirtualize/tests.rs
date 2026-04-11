@@ -73,6 +73,7 @@ fn make_module_with_vtable(
         "Foo$bar".to_string(),
         vec![make_local(100, callee_self_type)],
         Type::Int,
+        None,
     );
 
     let mut module = Module::new();
@@ -283,7 +284,13 @@ fn test_devirtualize_obj_in_params() {
 
 #[test]
 fn test_no_vtables_is_noop() {
-    let func = Function::new(FuncId::from(0u32), "test".to_string(), vec![], Type::None);
+    let func = Function::new(
+        FuncId::from(0u32),
+        "test".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     let mut module = Module::new();
     module.add_function(func);
 

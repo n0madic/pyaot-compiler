@@ -1,6 +1,7 @@
 //! List comparison operations (equality and ordering)
 
-use crate::object::{FloatObj, ListObj, Obj};
+use crate::hash_table_utils::eq_hashable_obj;
+use crate::object::{ListObj, Obj, ELEM_RAW_BOOL, ELEM_RAW_INT};
 use std::cmp::Ordering;
 
 /// Shared null-check and length comparison for list equality.
@@ -43,74 +44,60 @@ unsafe fn list_eq_precheck(
     Err((data_a, data_b, len))
 }
 
-/// Compare two lists for equality (integer elements)
-/// Returns 1 if equal, 0 if not equal
+/// Compare two lists for equality using the list's elem_tag to dispatch
+/// element comparison. Replaces rt_list_eq_int/float/str.
+/// Returns 1 if equal, 0 if not equal.
+#[no_mangle]
+pub extern "C" fn rt_list_eq(a: *mut Obj, b: *mut Obj) -> i8 {
+    unsafe {
+        let (data_a, data_b, len) = match list_eq_precheck(a, b) {
+            Ok(result) => return result,
+            Err(data) => data,
+        };
+
+        let elem_tag = (*(a as *mut ListObj)).elem_tag;
+
+        if elem_tag == ELEM_RAW_INT || elem_tag == ELEM_RAW_BOOL {
+            // Raw integer/bool elements — compare as i64
+            for i in 0..len {
+                let val_a = *data_a.add(i) as i64;
+                let val_b = *data_b.add(i) as i64;
+                if val_a != val_b {
+                    return 0;
+                }
+            }
+        } else {
+            // Heap objects — use eq_hashable_obj for proper value equality
+            // Handles floats (FloatObj), strings (StrObj), and any other heap type
+            for i in 0..len {
+                let obj_a = *data_a.add(i);
+                let obj_b = *data_b.add(i);
+                if !eq_hashable_obj(obj_a, obj_b) {
+                    return 0;
+                }
+            }
+        }
+
+        1
+    }
+}
+
+/// Compare two lists for equality (integer elements) — thin wrapper for backward compat
 #[no_mangle]
 pub extern "C" fn rt_list_eq_int(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        let (data_a, data_b, len) = match list_eq_precheck(a, b) {
-            Ok(result) => return result,
-            Err(data) => data,
-        };
-
-        for i in 0..len {
-            let val_a = *data_a.add(i) as i64;
-            let val_b = *data_b.add(i) as i64;
-            if val_a != val_b {
-                return 0;
-            }
-        }
-
-        1
-    }
+    rt_list_eq(a, b)
 }
 
-/// Compare two lists for equality (float elements)
-/// Returns 1 if equal, 0 if not equal
+/// Compare two lists for equality (float elements) — thin wrapper for backward compat
 #[no_mangle]
 pub extern "C" fn rt_list_eq_float(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        let (data_a, data_b, len) = match list_eq_precheck(a, b) {
-            Ok(result) => return result,
-            Err(data) => data,
-        };
-
-        // Compare elements (float elements are boxed FloatObj pointers)
-        for i in 0..len {
-            let obj_a = *data_a.add(i) as *mut FloatObj;
-            let obj_b = *data_b.add(i) as *mut FloatObj;
-            let val_a = (*obj_a).value;
-            let val_b = (*obj_b).value;
-            if val_a != val_b {
-                return 0;
-            }
-        }
-
-        1
-    }
+    rt_list_eq(a, b)
 }
 
-/// Compare two lists for equality (string elements)
-/// Returns 1 if equal, 0 if not equal
+/// Compare two lists for equality (string elements) — thin wrapper for backward compat
 #[no_mangle]
 pub extern "C" fn rt_list_eq_str(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        let (data_a, data_b, len) = match list_eq_precheck(a, b) {
-            Ok(result) => return result,
-            Err(data) => data,
-        };
-
-        // Compare elements (string elements are StrObj pointers)
-        for i in 0..len {
-            let str_a = *data_a.add(i);
-            let str_b = *data_b.add(i);
-            if crate::string::rt_str_eq(str_a, str_b) == 0 {
-                return 0;
-            }
-        }
-
-        1
-    }
+    rt_list_eq(a, b)
 }
 
 /// Lexicographic ordering comparison for two lists.

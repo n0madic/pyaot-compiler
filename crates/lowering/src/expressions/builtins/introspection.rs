@@ -409,9 +409,7 @@ impl<'a> Lowering<'a> {
             Type::Float => mir::ReprTargetKind::Float,
             Type::Bool => mir::ReprTargetKind::Bool,
             Type::None => mir::ReprTargetKind::None,
-            Type::Str => mir::ReprTargetKind::Str,
-            Type::Bytes => mir::ReprTargetKind::Bytes,
-            _ => mir::ReprTargetKind::Collection, // Runtime type-dispatched for containers and unknown types
+            _ => mir::ReprTargetKind::Collection, // Runtime type-dispatched for str, bytes, containers, and unknown types
         };
         let def = target_kind.runtime_func_def(mir::StringFormat::Repr);
         // For nullary repr (None), pass no args; for others, pass the operand
@@ -447,15 +445,14 @@ impl<'a> Lowering<'a> {
 
         // Select the appropriate target kind and format based on type
         // For types without non-ASCII chars (int, float, bool, None), we can use repr
-        // For strings and collections, we need special ascii handling
+        // For strings, bytes, and collections, we need special ascii handling
         let (target_kind, format) = match &arg_type {
             Type::Int => (mir::ReprTargetKind::Int, mir::StringFormat::Repr), // No non-ASCII possible
             Type::Float => (mir::ReprTargetKind::Float, mir::StringFormat::Repr), // No non-ASCII possible
             Type::Bool => (mir::ReprTargetKind::Bool, mir::StringFormat::Repr), // No non-ASCII possible
             Type::None => (mir::ReprTargetKind::None, mir::StringFormat::Repr), // No non-ASCII possible
-            Type::Str => (mir::ReprTargetKind::Str, mir::StringFormat::Ascii),
-            Type::Bytes => (mir::ReprTargetKind::Bytes, mir::StringFormat::Repr), // Bytes repr already escapes
-            _ => (mir::ReprTargetKind::Collection, mir::StringFormat::Ascii), // Runtime type-dispatched
+            Type::Bytes => (mir::ReprTargetKind::Collection, mir::StringFormat::Repr), // Bytes repr already escapes
+            _ => (mir::ReprTargetKind::Collection, mir::StringFormat::Ascii), // Runtime type-dispatched for str, containers, and unknown types
         };
         let def = target_kind.runtime_func_def(format);
         // For nullary (None), pass no args; for others, pass the operand

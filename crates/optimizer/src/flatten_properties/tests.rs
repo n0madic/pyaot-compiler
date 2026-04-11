@@ -357,7 +357,13 @@ fn test_skip_call_with_multiple_args() {
 
 #[test]
 fn test_no_trivial_getters_is_noop() {
-    let func = Function::new(FuncId::from(0u32), "test".to_string(), vec![], Type::None);
+    let func = Function::new(
+        FuncId::from(0u32),
+        "test".to_string(),
+        vec![],
+        Type::None,
+        None,
+    );
     let mut module = Module::new();
     module.add_function(func);
 

@@ -51,9 +51,13 @@ impl<'a> GeneratorContext<'a> {
         // Return type is a generator object (pointer)
         let return_type = Type::Iterator(Box::new(Type::Any)); // Generator is an iterator
 
-        let mut mir_func =
-            mir::Function::new(func.id, func_name.clone(), params.clone(), return_type);
-        mir_func.span = Some(func.span);
+        let mut mir_func = mir::Function::new(
+            func.id,
+            func_name.clone(),
+            params.clone(),
+            return_type,
+            Some(func.span),
+        );
 
         // Add parameters to locals
         for param in &params {

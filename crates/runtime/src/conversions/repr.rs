@@ -1,6 +1,6 @@
 //! repr() conversion functions for Python runtime
 
-use crate::object::{BytesObj, Obj, StrObj};
+use crate::object::Obj;
 use crate::string::rt_make_str;
 
 /// Escape a string for repr() output, matching CPython behavior.
@@ -134,37 +134,10 @@ pub extern "C" fn rt_repr_none() -> *mut Obj {
 
 /// repr(str) -> string (with quotes and proper escaping)
 ///
-/// Matches CPython repr() behavior:
-/// - ASCII printable (0x20-0x7E except \, '): literal
-/// - `\n`, `\r`, `\t`, `\\`, `\'`: named escapes
-/// - Control chars (0x00-0x1F, 0x7F-0x9F): `\xNN`
-/// - Non-printable U+0100..U+FFFF: `\uXXXX`
-/// - Non-printable U+10000+: `\UXXXXXXXX`
-/// - All other printable Unicode: literal
+/// Thin wrapper around `rt_repr_collection` which dispatches by type tag.
 #[no_mangle]
 pub extern "C" fn rt_repr_str(str_obj: *mut Obj) -> *mut Obj {
-    if str_obj.is_null() {
-        let s = "''";
-        let bytes = s.as_bytes();
-        return unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) };
-    }
-
-    unsafe {
-        let src = str_obj as *mut StrObj;
-        let len = (*src).len;
-        let data = (*src).data.as_ptr();
-        let bytes = std::slice::from_raw_parts(data, len);
-
-        let mut s = String::with_capacity(len + 2);
-        s.push('\'');
-        if let Ok(text) = std::str::from_utf8(bytes) {
-            repr_escape_into(&mut s, text);
-        }
-        s.push('\'');
-
-        let result_bytes = s.as_bytes();
-        rt_make_str(result_bytes.as_ptr(), result_bytes.len())
-    }
+    rt_repr_collection(str_obj)
 }
 
 /// repr() for collections (list, tuple, dict, set) and generic objects - runtime type-dispatched
@@ -177,32 +150,9 @@ pub extern "C" fn rt_repr_collection(obj: *mut Obj) -> *mut Obj {
 }
 
 /// repr(bytes) -> string
+///
+/// Thin wrapper around `rt_repr_collection` which dispatches by type tag.
 #[no_mangle]
 pub extern "C" fn rt_repr_bytes(bytes_obj: *mut Obj) -> *mut Obj {
-    if bytes_obj.is_null() {
-        let s = "b''";
-        let bytes = s.as_bytes();
-        return unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) };
-    }
-
-    unsafe {
-        let src = bytes_obj as *mut BytesObj;
-        let len = (*src).len;
-        let data = (*src).data.as_ptr();
-
-        let mut s = String::with_capacity(len + 3);
-        s.push_str("b'");
-        for i in 0..len {
-            let b = *data.add(i);
-            if (0x20..0x7f).contains(&b) && b != b'\'' && b != b'\\' {
-                s.push(b as char);
-            } else {
-                s.push_str(&format!("\\x{:02x}", b));
-            }
-        }
-        s.push('\'');
-
-        let result_bytes = s.as_bytes();
-        rt_make_str(result_bytes.as_ptr(), result_bytes.len())
-    }
+    rt_repr_collection(bytes_obj)
 }

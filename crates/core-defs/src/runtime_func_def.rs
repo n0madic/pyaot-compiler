@@ -356,8 +356,6 @@ pub static RT_DICT_UPDATE: RuntimeFuncDef = RuntimeFuncDef::void("rt_dict_update
 pub static RT_DICT_FROM_PAIRS: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_dict_from_pairs");
 /// rt_dict_setdefault(dict: *mut Obj, key: i64, default: i64) -> *mut Obj
 pub static RT_DICT_SET_DEFAULT: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_dict_setdefault");
-/// rt_dict_popitem(dict: *mut Obj) -> *mut Obj
-pub static RT_DICT_POP_ITEM: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_dict_popitem");
 /// rt_dict_fromkeys(keys: *mut Obj, value: *mut Obj) -> *mut Obj
 pub static RT_DICT_FROM_KEYS: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_dict_fromkeys");
 /// rt_dict_merge(a: *mut Obj, b: *mut Obj) -> *mut Obj
@@ -454,9 +452,6 @@ pub static RT_LIST_TAIL_TO_TUPLE_FLOAT: RuntimeFuncDef =
 /// rt_list_tail_to_tuple_bool(list: *mut Obj, start: i64) -> *mut Obj
 pub static RT_LIST_TAIL_TO_TUPLE_BOOL: RuntimeFuncDef =
     RuntimeFuncDef::ptr_binary("rt_list_tail_to_tuple_bool");
-/// rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, values: *mut Obj) -> void
-pub static RT_LIST_SLICE_ASSIGN: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_list_slice_assign", &[PI64, PI64, PI64, PI64]);
 /// rt_list_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj
 pub static RT_LIST_CONCAT: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_list_concat");
 
@@ -513,8 +508,6 @@ pub static RT_CALL_WITH_TUPLE_ARGS: RuntimeFuncDef =
 
 // ===== Bytes operations =====
 
-/// rt_make_bytes(data_ptr: i64, len: i64) -> *mut Obj
-pub static RT_MAKE_BYTES: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_make_bytes");
 /// rt_make_bytes_zero(len: i64) -> *mut Obj
 pub static RT_MAKE_BYTES_ZERO: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_make_bytes_zero");
 /// rt_make_bytes_from_list(list: *mut Obj) -> *mut Obj
@@ -577,18 +570,11 @@ pub static RT_BYTES_CONCAT: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_byte
 pub static RT_BYTES_REPEAT: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_bytes_repeat");
 /// rt_bytes_from_hex(hex_str: *mut Obj) -> *mut Obj
 pub static RT_BYTES_FROM_HEX: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_bytes_from_hex");
-/// rt_bytes_contains(bytes: *mut Obj, sub: *mut Obj) -> i8
-pub static RT_BYTES_CONTAINS: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_bytes_contains", &[PI64, PI64], Some(RI8), false);
-
 // ===== Math operations =====
 
 /// rt_pow_float(base: f64, exp: f64) -> f64
 pub static RT_POW_FLOAT: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_pow_float", &[PF64, PF64], Some(RF64), false);
-/// rt_pow_int(base: i64, exp: i64) -> i64
-pub static RT_POW_INT: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_pow_int", &[PI64, PI64], Some(RI64), false);
 /// rt_round_to_int(x: f64) -> i64
 pub static RT_ROUND_TO_INT: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_round_to_int", &[PF64], Some(RI64), false);
@@ -606,14 +592,9 @@ pub static RT_CHR_TO_INT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_chr_
 // Signature: (a: I64, b: I64, op_tag: I8) -> I8 for ordering variants with op_tag.
 // Signature: (a: I64, b: I64) -> I8 for Obj ordering (separate functions per op).
 
-/// rt_list_eq_int(a: *mut Obj, b: *mut Obj) -> i8
-pub static RT_CMP_LIST_INT_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_list_eq_int");
-/// rt_list_eq_float(a: *mut Obj, b: *mut Obj) -> i8
-pub static RT_CMP_LIST_FLOAT_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_list_eq_float");
-/// rt_list_eq_str(a: *mut Obj, b: *mut Obj) -> i8
-pub static RT_CMP_LIST_STR_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_list_eq_str");
-/// rt_list_eq_int(a: *mut Obj, b: *mut Obj) -> i8 (List Eq fallback)
-pub static RT_CMP_LIST_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_list_eq_int");
+/// rt_list_eq(a: *mut Obj, b: *mut Obj) -> i8
+/// Unified list equality — dispatches by elem_tag from the ListObj at runtime.
+pub static RT_CMP_LIST_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_list_eq");
 /// rt_list_cmp(a: *mut Obj, b: *mut Obj, op_tag: i8) -> i8
 pub static RT_CMP_LIST_ORD: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_list_cmp", &[PI64, PI64, PI8], Some(RI8), false);
@@ -760,11 +741,8 @@ pub static RT_REPR_BOOL: RuntimeFuncDef =
 /// rt_repr_none() -> *mut Obj
 pub static RT_REPR_NONE: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_repr_none", &[], Some(RI64), true);
-/// rt_repr_str(s: *mut Obj) -> *mut Obj
-pub static RT_REPR_STR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_repr_str");
-/// rt_repr_bytes(b: *mut Obj) -> *mut Obj
-pub static RT_REPR_BYTES: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_repr_bytes");
 /// rt_repr_collection(obj: *mut Obj) -> *mut Obj
+/// Handles all heap types: str, bytes, list, tuple, dict, set, and generic objects.
 pub static RT_REPR_COLLECTION: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_repr_collection");
 /// rt_ascii_int(value: i64) -> *mut Obj (same as repr for int)
 pub static RT_ASCII_INT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_ascii_int");
@@ -777,11 +755,8 @@ pub static RT_ASCII_BOOL: RuntimeFuncDef =
 /// rt_ascii_none() -> *mut Obj (same as repr for None)
 pub static RT_ASCII_NONE: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_ascii_none", &[], Some(RI64), true);
-/// rt_ascii_str(s: *mut Obj) -> *mut Obj
-pub static RT_ASCII_STR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_ascii_str");
-/// rt_ascii_bytes(b: *mut Obj) -> *mut Obj
-pub static RT_ASCII_BYTES: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_ascii_bytes");
 /// rt_ascii_collection(obj: *mut Obj) -> *mut Obj
+/// Handles all heap types: str, bytes, list, tuple, dict, set, and generic objects.
 pub static RT_ASCII_COLLECTION: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_ascii_collection");
 
 // ===== String operations =====
@@ -1033,6 +1008,18 @@ pub static RT_SORTED_DICT_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
     true,
 );
 
+// --- Sorted: generic dispatchers ---
+/// rt_sorted(obj, reverse, elem_tag, container_tag) -> *mut Obj
+pub static RT_SORTED: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_sorted", &[PI64, PI64, PI8, PI8], Some(RI64), true);
+/// rt_sorted_with_key(obj, reverse, key_fn, elem_tag, captures, capture_count, container_tag) -> *mut Obj
+pub static RT_SORTED_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_sorted_with_key",
+    &[PI64, PI64, PI64, PI64, PI64, PI64, PI8],
+    Some(RI64),
+    true,
+);
+
 // --- Zip operations ---
 /// rt_zip_new(iter1: *mut Obj, iter2: *mut Obj) -> *mut Obj
 pub static RT_ZIP_NEW: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_zip_new");
@@ -1227,3 +1214,10 @@ pub static RT_REGISTER_DEEPCOPY_FUNC: RuntimeFuncDef =
 /// rt_issubclass(child_tag: i64, parent_tag: i64) -> i8
 pub static RT_ISSUBCLASS: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_issubclass", &[PI64, PI64], Some(RI8), false);
+
+// ===== Struct_time field access =====
+
+/// rt_struct_time_get_field(t: *mut Obj, field_index: u8) -> i64
+/// Generic struct_time field accessor (0=year, 1=mon, 2=mday, 3=hour, 4=min, 5=sec, 6=wday, 7=yday, 8=isdst)
+pub static RT_STRUCT_TIME_GET_FIELD: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_struct_time_get_field", &[PI64, PI8], Some(RI64), false);

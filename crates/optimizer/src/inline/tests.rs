@@ -36,6 +36,7 @@ fn create_add_function(func_id: FuncId) -> Function {
         "add".to_string(),
         vec![param_a.clone(), param_b.clone()],
         Type::Int,
+        None,
     );
 
     func.locals.insert(result.id, result.clone());
@@ -77,7 +78,7 @@ fn create_caller_function(func_id: FuncId, add_func_id: FuncId) -> Function {
         is_gc_root: false,
     };
 
-    let mut func = Function::new(func_id, "caller".to_string(), vec![], Type::Int);
+    let mut func = Function::new(func_id, "caller".to_string(), vec![], Type::Int, None);
 
     func.locals.insert(x.id, x.clone());
     func.locals.insert(y.id, y.clone());
@@ -178,7 +179,13 @@ fn test_recursive_detection() {
         is_gc_root: false,
     };
 
-    let mut func = Function::new(fac_id, "fac".to_string(), vec![param_n.clone()], Type::Int);
+    let mut func = Function::new(
+        fac_id,
+        "fac".to_string(),
+        vec![param_n.clone()],
+        Type::Int,
+        None,
+    );
 
     // Simplified: just has a CallDirect to itself
     let result = Local {
@@ -268,7 +275,13 @@ fn test_no_inline_recursive() {
         is_gc_root: false,
     };
 
-    let mut fac_func = Function::new(fac_id, "fac".to_string(), vec![param_n.clone()], Type::Int);
+    let mut fac_func = Function::new(
+        fac_id,
+        "fac".to_string(),
+        vec![param_n.clone()],
+        Type::Int,
+        None,
+    );
     fac_func.locals.insert(result.id, result.clone());
 
     let entry = fac_func.blocks.get_mut(&fac_func.entry_block).unwrap();
@@ -296,7 +309,7 @@ fn test_no_inline_recursive() {
         is_gc_root: false,
     };
 
-    let mut caller_func = Function::new(caller_id, "caller".to_string(), vec![], Type::Int);
+    let mut caller_func = Function::new(caller_id, "caller".to_string(), vec![], Type::Int, None);
     caller_func.locals.insert(x.id, x.clone());
     caller_func.locals.insert(res.id, res.clone());
 
@@ -367,6 +380,7 @@ fn test_generator_not_inlined() {
         "gen$resume".to_string(), // Generator suffix
         vec![param.clone()],
         Type::Int,
+        None,
     );
     gen_func.locals.insert(result.id, result.clone());
 
@@ -394,7 +408,7 @@ fn test_generator_not_inlined() {
         is_gc_root: false,
     };
 
-    let mut caller_func = Function::new(caller_id, "caller".to_string(), vec![], Type::Int);
+    let mut caller_func = Function::new(caller_id, "caller".to_string(), vec![], Type::Int, None);
     caller_func.locals.insert(x.id, x.clone());
     caller_func.locals.insert(res.id, res.clone());
 
@@ -477,6 +491,7 @@ fn test_multi_block_callee_inlined() {
         "clamp_positive".to_string(),
         vec![param_a.clone()],
         Type::Int,
+        None,
     );
     callee.locals.insert(result.id, result.clone());
 
@@ -531,7 +546,7 @@ fn test_multi_block_callee_inlined() {
         is_gc_root: false,
     };
 
-    let mut caller_func = Function::new(caller_id, "caller".to_string(), vec![], Type::Int);
+    let mut caller_func = Function::new(caller_id, "caller".to_string(), vec![], Type::Int, None);
     caller_func.locals.insert(x.id, x.clone());
     caller_func.locals.insert(res.id, res.clone());
 
@@ -614,7 +629,7 @@ fn test_multiple_call_sites_in_same_function() {
         is_gc_root: false,
     };
 
-    let mut caller = Function::new(caller_id, "caller".to_string(), vec![], Type::Int);
+    let mut caller = Function::new(caller_id, "caller".to_string(), vec![], Type::Int, None);
     caller.locals.insert(x.id, x.clone());
     caller.locals.insert(y.id, y.clone());
     caller.locals.insert(r1.id, r1.clone());
@@ -700,7 +715,13 @@ fn test_transitive_inlining() {
         ty: Type::Int,
         is_gc_root: false,
     };
-    let mut func_a = Function::new(a_id, "a".to_string(), vec![a_param.clone()], Type::Int);
+    let mut func_a = Function::new(
+        a_id,
+        "a".to_string(),
+        vec![a_param.clone()],
+        Type::Int,
+        None,
+    );
     func_a.locals.insert(a_result.id, a_result.clone());
     let entry = func_a.blocks.get_mut(&func_a.entry_block).unwrap();
     entry.instructions = vec![Instruction {
@@ -727,7 +748,13 @@ fn test_transitive_inlining() {
         ty: Type::Int,
         is_gc_root: false,
     };
-    let mut func_b = Function::new(b_id, "b".to_string(), vec![b_param.clone()], Type::Int);
+    let mut func_b = Function::new(
+        b_id,
+        "b".to_string(),
+        vec![b_param.clone()],
+        Type::Int,
+        None,
+    );
     func_b.locals.insert(b_result.id, b_result.clone());
     let entry = func_b.blocks.get_mut(&func_b.entry_block).unwrap();
     entry.instructions = vec![Instruction {
@@ -753,7 +780,7 @@ fn test_transitive_inlining() {
         ty: Type::Int,
         is_gc_root: false,
     };
-    let mut func_c = Function::new(c_id, "c".to_string(), vec![], Type::Int);
+    let mut func_c = Function::new(c_id, "c".to_string(), vec![], Type::Int, None);
     func_c.locals.insert(c_x.id, c_x.clone());
     func_c.locals.insert(c_result.id, c_result.clone());
     let entry = func_c.blocks.get_mut(&func_c.entry_block).unwrap();
@@ -823,6 +850,7 @@ fn test_consider_decision_medium_function() {
         "medium".to_string(),
         vec![param.clone()],
         Type::Int,
+        None,
     );
 
     // Add 15 instructions (above always_inline_threshold=10, below max_inline_size=50)
@@ -886,6 +914,7 @@ fn test_gc_roots_excluded_from_always_inline() {
         "gc_func".to_string(),
         vec![param.clone()],
         Type::Str,
+        None,
     );
     func.locals.insert(result.id, result.clone());
 
@@ -936,7 +965,13 @@ fn test_max_iterations_limits_inlining() {
         ty: Type::Int,
         is_gc_root: false,
     };
-    let mut func_a = Function::new(a_id, "a".to_string(), vec![a_param.clone()], Type::Int);
+    let mut func_a = Function::new(
+        a_id,
+        "a".to_string(),
+        vec![a_param.clone()],
+        Type::Int,
+        None,
+    );
     func_a.locals.insert(a_result.id, a_result.clone());
     let entry = func_a.blocks.get_mut(&func_a.entry_block).unwrap();
     entry.instructions = vec![Instruction {
@@ -961,7 +996,13 @@ fn test_max_iterations_limits_inlining() {
         ty: Type::Int,
         is_gc_root: false,
     };
-    let mut func_b = Function::new(b_id, "b".to_string(), vec![b_param.clone()], Type::Int);
+    let mut func_b = Function::new(
+        b_id,
+        "b".to_string(),
+        vec![b_param.clone()],
+        Type::Int,
+        None,
+    );
     func_b.locals.insert(b_result.id, b_result.clone());
     let entry = func_b.blocks.get_mut(&func_b.entry_block).unwrap();
     entry.instructions = vec![Instruction {
@@ -987,7 +1028,7 @@ fn test_max_iterations_limits_inlining() {
         ty: Type::Int,
         is_gc_root: false,
     };
-    let mut func_c = Function::new(c_id, "c".to_string(), vec![], Type::Int);
+    let mut func_c = Function::new(c_id, "c".to_string(), vec![], Type::Int, None);
     func_c.locals.insert(c_x.id, c_x.clone());
     func_c.locals.insert(c_result.id, c_result.clone());
     let entry = func_c.blocks.get_mut(&func_c.entry_block).unwrap();

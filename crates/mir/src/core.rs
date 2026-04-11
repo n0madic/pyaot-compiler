@@ -82,7 +82,13 @@ impl Default for Module {
 }
 
 impl Function {
-    pub fn new(id: FuncId, name: String, params: Vec<Local>, return_type: Type) -> Self {
+    pub fn new(
+        id: FuncId,
+        name: String,
+        params: Vec<Local>,
+        return_type: Type,
+        span: Option<pyaot_utils::Span>,
+    ) -> Self {
         let entry_block = BlockId::from(0u32);
         let mut blocks = IndexMap::new();
         blocks.insert(
@@ -102,7 +108,7 @@ impl Function {
             locals: IndexMap::new(),
             blocks,
             entry_block,
-            span: None,
+            span,
         }
     }
 

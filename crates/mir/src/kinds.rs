@@ -346,29 +346,36 @@ impl SortableKind {
         matches!(self, SortableKind::Range)
     }
 
+    /// Numeric container tag for the generic `rt_sorted` / `rt_sorted_with_key` dispatch.
+    /// List=0, Tuple=1, Dict=2, Set=3, Str=4.
+    /// Range is not dispatched through the generic function.
+    pub fn to_tag(&self) -> u8 {
+        match self {
+            SortableKind::List => 0,
+            SortableKind::Tuple => 1,
+            SortableKind::Dict => 2,
+            SortableKind::Set => 3,
+            SortableKind::Str => 4,
+            SortableKind::Range => unreachable!("Range does not use generic sorted dispatch"),
+        }
+    }
+
     /// Get the static RuntimeFuncDef for sorted() on this source.
-    /// - `has_key=false`: returns the no-key variant (Range uses special 4-arg version,
-    ///   Set/Dict use 3-arg version with elem_tag, others use 2-arg version)
-    /// - `has_key=true`: returns the with-key variant (6-arg version)
+    /// - `has_key=false`: Range uses special 4-arg `rt_sorted_range`; others use generic
+    ///   `rt_sorted(obj, reverse, elem_tag, container_tag)`.
+    /// - `has_key=true`: uses generic `rt_sorted_with_key(obj, reverse, key_fn, elem_tag,
+    ///   captures, capture_count, container_tag)`.
     pub fn sorted_def(&self, has_key: bool) -> &'static pyaot_core_defs::RuntimeFuncDef {
         use pyaot_core_defs::runtime_func_def::*;
         if has_key {
             match self {
-                SortableKind::List => &RT_SORTED_LIST_WITH_KEY,
-                SortableKind::Tuple => &RT_SORTED_TUPLE_WITH_KEY,
-                SortableKind::Str => &RT_SORTED_STR_WITH_KEY,
-                SortableKind::Set => &RT_SORTED_SET_WITH_KEY,
-                SortableKind::Dict => &RT_SORTED_DICT_WITH_KEY,
                 SortableKind::Range => unreachable!("sorted() with key is not supported for Range"),
+                _ => &RT_SORTED_WITH_KEY,
             }
         } else {
             match self {
-                SortableKind::List => &RT_SORTED_LIST,
-                SortableKind::Tuple => &RT_SORTED_TUPLE,
-                SortableKind::Str => &RT_SORTED_STR,
-                SortableKind::Set => &RT_SORTED_SET,
-                SortableKind::Dict => &RT_SORTED_DICT,
                 SortableKind::Range => &RT_SORTED_RANGE,
+                _ => &RT_SORTED,
             }
         }
     }
@@ -417,16 +424,10 @@ impl ComparisonOp {
 /// Comparable target kind for comparison operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompareKind {
-    /// List equality comparison with integer elements
-    ListInt,
-    /// List equality comparison with float elements
-    ListFloat,
-    /// List equality comparison with string elements
-    ListStr,
+    /// List equality (dispatches by elem_tag at runtime) and ordering
+    List,
     /// Tuple comparison (supports all comparison ops)
     Tuple,
-    /// List ordering comparison (uses elem_tag for dispatch at runtime)
-    List,
     /// String equality comparison
     Str,
     /// Bytes equality comparison
@@ -440,9 +441,6 @@ impl CompareKind {
     pub fn runtime_func_def(&self, op: ComparisonOp) -> &'static pyaot_core_defs::RuntimeFuncDef {
         use pyaot_core_defs::runtime_func_def::*;
         match (self, op) {
-            (CompareKind::ListInt, _) => &RT_CMP_LIST_INT_EQ,
-            (CompareKind::ListFloat, _) => &RT_CMP_LIST_FLOAT_EQ,
-            (CompareKind::ListStr, _) => &RT_CMP_LIST_STR_EQ,
             (CompareKind::List, ComparisonOp::Eq) => &RT_CMP_LIST_EQ,
             (CompareKind::List, _) => &RT_CMP_LIST_ORD,
             (CompareKind::Str, _) => &RT_CMP_STR_EQ,
@@ -516,24 +514,18 @@ pub enum ReprTargetKind {
     Bool,
     /// None - no argument needed
     None,
-    /// String object pointer
-    Str,
-    /// Bytes object pointer
-    Bytes,
-    /// Collection (list, tuple, dict, set) or generic object - runtime type-dispatched
+    /// Collection, str, bytes, or generic object - runtime type-dispatched
     Collection,
 }
 
 impl ReprTargetKind {
-    /// Runtime function suffix: "int", "float", "bool", "none", "str", etc.
+    /// Runtime function suffix: "int", "float", "bool", "none", "collection"
     pub fn suffix(&self) -> &'static str {
         match self {
             ReprTargetKind::Int => "int",
             ReprTargetKind::Float => "float",
             ReprTargetKind::Bool => "bool",
             ReprTargetKind::None => "none",
-            ReprTargetKind::Str => "str",
-            ReprTargetKind::Bytes => "bytes",
             ReprTargetKind::Collection => "collection",
         }
     }
@@ -562,15 +554,11 @@ impl ReprTargetKind {
             (StringFormat::Repr, ReprTargetKind::Float) => &RT_REPR_FLOAT,
             (StringFormat::Repr, ReprTargetKind::Bool) => &RT_REPR_BOOL,
             (StringFormat::Repr, ReprTargetKind::None) => &RT_REPR_NONE,
-            (StringFormat::Repr, ReprTargetKind::Str) => &RT_REPR_STR,
-            (StringFormat::Repr, ReprTargetKind::Bytes) => &RT_REPR_BYTES,
             (StringFormat::Repr, ReprTargetKind::Collection) => &RT_REPR_COLLECTION,
             (StringFormat::Ascii, ReprTargetKind::Int) => &RT_ASCII_INT,
             (StringFormat::Ascii, ReprTargetKind::Float) => &RT_ASCII_FLOAT,
             (StringFormat::Ascii, ReprTargetKind::Bool) => &RT_ASCII_BOOL,
             (StringFormat::Ascii, ReprTargetKind::None) => &RT_ASCII_NONE,
-            (StringFormat::Ascii, ReprTargetKind::Str) => &RT_ASCII_STR,
-            (StringFormat::Ascii, ReprTargetKind::Bytes) => &RT_ASCII_BYTES,
             (StringFormat::Ascii, ReprTargetKind::Collection) => &RT_ASCII_COLLECTION,
         }
     }
@@ -602,11 +590,6 @@ impl ConversionTypeKind {
             ConversionTypeKind::None => "none",
             ConversionTypeKind::Str => "str",
         }
-    }
-
-    /// Build runtime function name for conversion: "rt_{from}_to_{to}"
-    pub fn runtime_func_name(from: ConversionTypeKind, to: ConversionTypeKind) -> String {
-        format!("rt_{}_to_{}", from.name(), to.name())
     }
 
     /// Get the static RuntimeFuncDef for this conversion (from, to) pair.
