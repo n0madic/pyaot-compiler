@@ -85,19 +85,18 @@ impl<'a> Lowering<'a> {
             let index_operand = mir::Operand::Constant(mir::Constant::Int(i as i64));
             let elem_type = get_elem_type(i);
 
-            let temp_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
-
             let get_func = if is_tuple {
                 crate::type_dispatch::tuple_get_func(&elem_type)
             } else {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
             };
 
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: temp_local,
-                func: get_func,
-                args: vec![value_operand.clone(), index_operand],
-            });
+            let temp_local = self.emit_runtime_call(
+                get_func,
+                vec![value_operand.clone(), index_operand],
+                elem_type.clone(),
+                mir_func,
+            );
 
             temp_locals.push((temp_local, elem_type));
         }
@@ -152,19 +151,18 @@ impl<'a> Lowering<'a> {
             let index_operand = mir::Operand::Constant(mir::Constant::Int(neg_index));
             let elem_type = get_elem_type_neg(neg_index);
 
-            let temp_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
-
             let get_func = if is_tuple {
                 crate::type_dispatch::tuple_get_func(&elem_type)
             } else {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
             };
 
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: temp_local,
-                func: get_func,
-                args: vec![value_operand.clone(), index_operand],
-            });
+            let temp_local = self.emit_runtime_call(
+                get_func,
+                vec![value_operand.clone(), index_operand],
+                elem_type.clone(),
+                mir_func,
+            );
 
             temp_locals.push((temp_local, elem_type));
         }
@@ -289,21 +287,21 @@ impl<'a> Lowering<'a> {
                 }
                 hir::UnpackTarget::Nested(nested_targets) => {
                     // Extract nested tuple first into a temp
-                    let nested_temp = self.alloc_and_add_local(elem_type.clone(), mir_func);
                     let get_func = if is_tuple {
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
                     } else {
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
                     };
 
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: nested_temp,
-                        func: get_func,
-                        args: vec![
+                    let nested_temp = self.emit_runtime_call(
+                        get_func,
+                        vec![
                             source_operand.clone(),
                             mir::Operand::Constant(mir::Constant::Int(i as i64)),
                         ],
-                    });
+                        elem_type.clone(),
+                        mir_func,
+                    );
 
                     // Recursively unpack nested targets
                     self.lower_nested_recursive(

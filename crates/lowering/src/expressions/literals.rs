@@ -60,24 +60,17 @@ impl<'a> Lowering<'a> {
                 .or_else(|| expr.ty.clone())
                 .unwrap_or(Type::Int); // Globals default to Int for backward compatibility
 
-            let result_local = self.alloc_local_id();
-            mir_func.add_local(mir::Local {
-                id: result_local,
-                name: None,
-                ty: var_type.clone(),
-                is_gc_root: var_type.is_heap(),
-            });
-
             // Determine the type-specific runtime function for global get
             let runtime_func = self.get_global_get_func(&var_type);
 
             // Emit type-specific GlobalGet runtime call with offset-adjusted VarId
             let effective_var_id = self.get_effective_var_id(var_id);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: result_local,
-                func: runtime_func,
-                args: vec![mir::Operand::Constant(mir::Constant::Int(effective_var_id))],
-            });
+            let result_local = self.emit_runtime_call(
+                runtime_func,
+                vec![mir::Operand::Constant(mir::Constant::Int(effective_var_id))],
+                var_type,
+                mir_func,
+            );
 
             Ok(mir::Operand::Local(result_local))
         } else if let Some(cell_local) = self.get_nonlocal_cell(&var_id) {
@@ -88,21 +81,14 @@ impl<'a> Lowering<'a> {
                 .or_else(|| expr.ty.clone())
                 .unwrap_or(Type::Int);
 
-            let result_local = self.alloc_local_id();
-            mir_func.add_local(mir::Local {
-                id: result_local,
-                name: None,
-                ty: var_type.clone(),
-                is_gc_root: var_type.is_heap(),
-            });
-
             // Emit cell get operation
             let get_func = self.get_cell_get_func(&var_type);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: result_local,
-                func: get_func,
-                args: vec![mir::Operand::Local(cell_local)],
-            });
+            let result_local = self.emit_runtime_call(
+                get_func,
+                vec![mir::Operand::Local(cell_local)],
+                var_type,
+                mir_func,
+            );
 
             Ok(mir::Operand::Local(result_local))
         } else {

@@ -24,8 +24,6 @@ impl<'a> Lowering<'a> {
         match method_name {
             "append" => {
                 // .append(value) - mutates list, returns None
-                let result_local = self.alloc_and_add_local(Type::None, mir_func);
-
                 let value_operand = crate::first_arg_or_none(arg_operands);
 
                 // When elem_ty is Any (e.g., `li = []` without annotation), the list was
@@ -74,13 +72,12 @@ impl<'a> Lowering<'a> {
                     _ => value_operand,
                 };
 
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_LIST_APPEND,
-                    ),
-                    args: vec![obj_operand, push_operand],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_APPEND),
+                    vec![obj_operand, push_operand],
+                    Type::None,
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }
@@ -145,8 +142,6 @@ impl<'a> Lowering<'a> {
             }
             "insert" => {
                 // .insert(index, value) - mutates list, returns None
-                let result_local = self.alloc_and_add_local(Type::None, mir_func);
-
                 // arg_operands[0] = index, arg_operands[1] = value
                 // Box the value if the element type requires it (Bool/Float stored as boxed)
                 let mut args_iter = arg_operands.into_iter();
@@ -181,20 +176,17 @@ impl<'a> Lowering<'a> {
                     _ => value_operand,
                 };
 
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_LIST_INSERT,
-                    ),
-                    args: vec![obj_operand, index_operand, boxed_value],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_INSERT),
+                    vec![obj_operand, index_operand, boxed_value],
+                    Type::None,
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }
             "remove" => {
                 // .remove(value) - mutates list, returns None (or 1/0 internally)
-                let result_local = self.alloc_and_add_local(Type::None, mir_func);
-
                 // Box the search value if the element type requires it (Bool/Float)
                 let value_operand = crate::first_arg_or_none(arg_operands);
 
@@ -222,13 +214,12 @@ impl<'a> Lowering<'a> {
                     _ => value_operand,
                 };
 
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_LIST_REMOVE,
-                    ),
-                    args: vec![obj_operand, boxed_value],
-                });
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_REMOVE),
+                    vec![obj_operand, boxed_value],
+                    Type::None,
+                    mir_func,
+                );
 
                 Ok(mir::Operand::Local(result_local))
             }
@@ -245,32 +236,26 @@ impl<'a> Lowering<'a> {
             }
             "index" => {
                 // .index(value) - returns int index or -1 if not found
-                let result_local = self.alloc_and_add_local(Type::Int, mir_func);
-
                 let mut all_args = vec![obj_operand];
                 all_args.extend(arg_operands);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_INDEX),
-                    args: all_args,
-                });
-
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_INDEX),
+                    all_args,
+                    Type::Int,
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(result_local))
             }
             "count" => {
                 // .count(value) - returns int count
-                let result_local = self.alloc_and_add_local(Type::Int, mir_func);
-
                 let mut all_args = vec![obj_operand];
                 all_args.extend(arg_operands);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_COUNT),
-                    args: all_args,
-                });
-
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_COUNT),
+                    all_args,
+                    Type::Int,
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(result_local))
             }
             "copy" => {
@@ -297,18 +282,13 @@ impl<'a> Lowering<'a> {
             }
             "extend" => {
                 // .extend(iterable) - mutates list, returns None
-                let result_local = self.alloc_and_add_local(Type::None, mir_func);
-
                 let other_arg = crate::first_arg_or_none(arg_operands);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_LIST_EXTEND,
-                    ),
-                    args: vec![obj_operand, other_arg],
-                });
-
+                let result_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_EXTEND),
+                    vec![obj_operand, other_arg],
+                    Type::None,
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(result_local))
             }
             "sort" => {

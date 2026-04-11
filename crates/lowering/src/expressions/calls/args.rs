@@ -72,18 +72,17 @@ impl<'a> Lowering<'a> {
                     if let Type::Tuple(elem_types) = tuple_type {
                         // Extract each element from the tuple
                         for (i, elem_type) in elem_types.iter().enumerate() {
-                            let elem_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
-
                             let get_func = crate::type_dispatch::tuple_get_func(elem_type);
 
-                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                                dest: elem_local,
-                                func: get_func,
-                                args: vec![
+                            let elem_local = self.emit_runtime_call(
+                                get_func,
+                                vec![
                                     tuple_operand.clone(),
                                     mir::Operand::Constant(mir::Constant::Int(i as i64)),
                                 ],
-                            });
+                                elem_type.clone(),
+                                mir_func,
+                            );
 
                             operands.push(mir::Operand::Local(elem_local));
                         }

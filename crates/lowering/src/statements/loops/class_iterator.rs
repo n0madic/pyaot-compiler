@@ -168,17 +168,17 @@ impl<'a> Lowering<'a> {
 
         // If target is a global variable, sync the global
         if self.is_global(&target) {
-            let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
             let runtime_func = self.get_global_set_func(&elem_type);
             let effective_var_id = self.get_effective_var_id(target);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: runtime_func,
-                args: vec![
+            self.emit_runtime_call(
+                runtime_func,
+                vec![
                     mir::Operand::Constant(mir::Constant::Int(effective_var_id)),
                     mir::Operand::Local(target_local),
                 ],
-            });
+                Type::None,
+                mir_func,
+            );
         }
 
         // Push loop context for break/continue
