@@ -5,8 +5,8 @@
 
 use std::cell::RefCell;
 
-use super::core::ExceptionObject;
 use super::core::ExceptionFrame;
+use super::core::ExceptionObject;
 
 /// Thread-local exception state
 pub(super) struct ExceptionState {
