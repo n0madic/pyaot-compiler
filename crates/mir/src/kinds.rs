@@ -479,9 +479,12 @@ impl CompareKind {
     }
 
     /// Whether this kind uses a generic cmp function with an op_tag parameter
-    /// for ordering operations (List and Tuple ordering).
+    /// for ordering operations (List, Tuple, and Obj ordering).
     pub fn needs_op_tag(&self) -> bool {
-        matches!(self, CompareKind::List | CompareKind::Tuple)
+        matches!(
+            self,
+            CompareKind::List | CompareKind::Tuple | CompareKind::Obj
+        )
     }
 
     /// Get the static RuntimeFuncDef for this comparison kind and operation.
@@ -498,10 +501,7 @@ impl CompareKind {
             (CompareKind::Tuple, ComparisonOp::Eq) => &RT_CMP_TUPLE_EQ,
             (CompareKind::Tuple, _) => &RT_CMP_TUPLE_ORD,
             (CompareKind::Obj, ComparisonOp::Eq) => &RT_CMP_OBJ_EQ,
-            (CompareKind::Obj, ComparisonOp::Lt) => &RT_CMP_OBJ_LT,
-            (CompareKind::Obj, ComparisonOp::Lte) => &RT_CMP_OBJ_LTE,
-            (CompareKind::Obj, ComparisonOp::Gt) => &RT_CMP_OBJ_GT,
-            (CompareKind::Obj, ComparisonOp::Gte) => &RT_CMP_OBJ_GTE,
+            (CompareKind::Obj, _) => &RT_CMP_OBJ_ORD,
         }
     }
 }

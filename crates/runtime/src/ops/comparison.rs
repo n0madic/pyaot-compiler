@@ -219,81 +219,30 @@ unsafe fn involves_nan(a: *mut Obj, b: *mut Obj) -> bool {
     false
 }
 
-/// Compare two heap objects for less-than with runtime type dispatch
-/// Returns 1 if a < b, 0 otherwise
-/// Used for Union types where the actual type is determined at runtime
+/// Compare two heap objects for ordering with runtime type dispatch.
+///
+/// `op_tag` encodes the comparison operator: 0=Lt, 1=Lte, 2=Gt, 3=Gte
+/// (matches `mir::ComparisonOp::to_tag()`).
+///
+/// Returns 1 if the comparison is true, 0 otherwise. NaN comparisons always
+/// return false (0) per Python semantics.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_lt(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        // NaN comparisons always return False in Python
-        if involves_nan(a, b) {
-            return 0;
-        }
-        if obj_cmp_ordering(a, b) == std::cmp::Ordering::Less {
-            1
-        } else {
-            0
-        }
-    }
-}
-
-/// Compare two heap objects for less-than-or-equal with runtime type dispatch
-/// Returns 1 if a <= b, 0 otherwise
-/// Used for Union types where the actual type is determined at runtime
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_lte(a: *mut Obj, b: *mut Obj) -> i8 {
+pub extern "C" fn rt_obj_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
     unsafe {
         // NaN comparisons always return False in Python
         if involves_nan(a, b) {
             return 0;
         }
         let ord = obj_cmp_ordering(a, b);
-        if ord == std::cmp::Ordering::Less || ord == std::cmp::Ordering::Equal {
-            1
-        } else {
-            0
-        }
-    }
-}
-
-/// Compare two heap objects for greater-than with runtime type dispatch
-/// Returns 1 if a > b, 0 otherwise
-/// Used for Union types where the actual type is determined at runtime
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_gt(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        // NaN comparisons always return False in Python
-        if involves_nan(a, b) {
-            return 0;
-        }
-        if obj_cmp_ordering(a, b) == std::cmp::Ordering::Greater {
-            1
-        } else {
-            0
-        }
-    }
-}
-
-/// Compare two heap objects for greater-than-or-equal with runtime type dispatch
-/// Returns 1 if a >= b, 0 otherwise
-/// Used for Union types where the actual type is determined at runtime
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_gte(a: *mut Obj, b: *mut Obj) -> i8 {
-    unsafe {
-        // NaN comparisons always return False in Python
-        if involves_nan(a, b) {
-            return 0;
-        }
-        let ord = obj_cmp_ordering(a, b);
-        if ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal {
-            1
-        } else {
-            0
-        }
+        let result = match op_tag {
+            0 => ord == std::cmp::Ordering::Less, // Lt
+            1 => ord == std::cmp::Ordering::Less || ord == std::cmp::Ordering::Equal, // Lte
+            2 => ord == std::cmp::Ordering::Greater, // Gt
+            3 => ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal, // Gte
+            _ => false,
+        };
+        result as i8
     }
 }
 

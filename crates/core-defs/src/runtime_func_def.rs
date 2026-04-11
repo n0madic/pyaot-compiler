@@ -630,14 +630,10 @@ pub static RT_CMP_STR_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_str_
 pub static RT_CMP_BYTES_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_bytes_eq");
 /// rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8
 pub static RT_CMP_OBJ_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_obj_eq");
-/// rt_obj_lt(a: *mut Obj, b: *mut Obj) -> i8
-pub static RT_CMP_OBJ_LT: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_obj_lt");
-/// rt_obj_lte(a: *mut Obj, b: *mut Obj) -> i8
-pub static RT_CMP_OBJ_LTE: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_obj_lte");
-/// rt_obj_gt(a: *mut Obj, b: *mut Obj) -> i8
-pub static RT_CMP_OBJ_GT: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_obj_gt");
-/// rt_obj_gte(a: *mut Obj, b: *mut Obj) -> i8
-pub static RT_CMP_OBJ_GTE: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_obj_gte");
+/// rt_obj_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8
+/// op_tag: 0=Lt, 1=Lte, 2=Gt, 3=Gte (matches ComparisonOp::to_tag())
+pub static RT_CMP_OBJ_ORD: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_obj_cmp", &[PI64, PI64, PI8], Some(RI8), false);
 
 // ===== Container min/max operations =====
 // ContainerMinMax { container, op, elem } → static defs.

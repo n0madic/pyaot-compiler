@@ -142,39 +142,51 @@ impl<'a> Lowering<'a> {
                     });
                 }
                 hir::CmpOp::Lt => {
+                    let op_tag = mir::Operand::Constant(mir::Constant::Int(
+                        mir::ComparisonOp::Lt.to_tag() as i64,
+                    ));
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: mir::RuntimeFunc::Call(
                             mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Lt),
                         ),
-                        args: vec![boxed_left, boxed_right],
+                        args: vec![boxed_left, boxed_right, op_tag],
                     });
                 }
                 hir::CmpOp::LtE => {
+                    let op_tag = mir::Operand::Constant(mir::Constant::Int(
+                        mir::ComparisonOp::Lte.to_tag() as i64,
+                    ));
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: mir::RuntimeFunc::Call(
                             mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Lte),
                         ),
-                        args: vec![boxed_left, boxed_right],
+                        args: vec![boxed_left, boxed_right, op_tag],
                     });
                 }
                 hir::CmpOp::Gt => {
+                    let op_tag = mir::Operand::Constant(mir::Constant::Int(
+                        mir::ComparisonOp::Gt.to_tag() as i64,
+                    ));
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: mir::RuntimeFunc::Call(
                             mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Gt),
                         ),
-                        args: vec![boxed_left, boxed_right],
+                        args: vec![boxed_left, boxed_right, op_tag],
                     });
                 }
                 hir::CmpOp::GtE => {
+                    let op_tag = mir::Operand::Constant(mir::Constant::Int(
+                        mir::ComparisonOp::Gte.to_tag() as i64,
+                    ));
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: mir::RuntimeFunc::Call(
                             mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Gte),
                         ),
-                        args: vec![boxed_left, boxed_right],
+                        args: vec![boxed_left, boxed_right, op_tag],
                     });
                 }
                 hir::CmpOp::In => {
