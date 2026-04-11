@@ -331,18 +331,18 @@ impl<'a> Lowering<'a> {
 }
 
 // =============================================================================
-// Function Return Types (types.func_return_types, symbols.current_func_return_type)
+// Function Return Types (func_return_types, symbols.current_func_return_type)
 // =============================================================================
 
 impl<'a> Lowering<'a> {
     /// Get the return type for a function.
     pub(crate) fn get_func_return_type(&self, func_id: &FuncId) -> Option<&Type> {
-        self.types.func_return_types.get(func_id)
+        self.func_return_types.inner.get(func_id)
     }
 
     /// Set the return type for a function.
     pub(crate) fn insert_func_return_type(&mut self, func_id: FuncId, ty: Type) {
-        self.types.func_return_types.insert(func_id, ty);
+        self.func_return_types.inner.insert(func_id, ty);
     }
 
     /// Get the current function's return type.

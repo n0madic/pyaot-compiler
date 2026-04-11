@@ -8,6 +8,8 @@ use pyaot_types::Type;
 use pyaot_utils::{ClassId, FuncId, StringInterner, VarId};
 use std::collections::HashMap;
 
+use super::FuncReturnTypes;
+
 use super::{
     ClassRegistry, ClosureState, CodeGenState, CrossModuleClassInfo, Lowering, ModuleState,
     SymbolTable, TypeEnvironment,
@@ -86,7 +88,9 @@ impl<'a> Lowering<'a> {
             types: TypeEnvironment {
                 expr_types: HashMap::with_capacity(256),
                 refined_var_types: IndexMap::with_capacity(16),
-                func_return_types: IndexMap::with_capacity(func_count),
+            },
+            func_return_types: FuncReturnTypes {
+                inner: IndexMap::with_capacity(func_count),
             },
             warnings: CompilerWarnings::new(),
         }

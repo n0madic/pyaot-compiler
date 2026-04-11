@@ -294,20 +294,29 @@ pub struct SymbolTable {
     pub current_func_return_type: Option<Type>,
 }
 
-/// Type planning results: populated during type planning, read-only during lowering.
+/// Type planning results: populated during type planning, **immutable during lowering**.
 ///
 /// After `run_type_planning()` completes, this struct is only READ by lowering:
-/// - `expr_types`: memoized expression types (may gain new entries for Var expressions
-///   during lowering, since those depend on `symbols.var_types` which evolves)
+/// - `expr_types`: memoized expression types
 /// - `refined_var_types`: container type refinements from pre-scan
-/// - `func_return_types`: inferred function return types
+///
+/// `func_return_types` was moved to `FuncReturnTypes` (separate mutable state)
+/// because it continues to evolve during lowering.
 pub struct TypeEnvironment {
     /// Memoized expression types — persists across functions (ExprIds are unique per-module)
     pub expr_types: HashMap<hir::ExprId, Type>,
     /// Refined types for variables from empty container analysis (persists across functions)
     pub refined_var_types: IndexMap<VarId, Type>,
-    /// Track inferred return types for functions (especially lambdas)
-    pub func_return_types: IndexMap<FuncId, Type>,
+}
+
+/// Mutable type state that evolves during both type planning and lowering.
+///
+/// Separated from `TypeEnvironment` to keep it immutable after planning.
+pub struct FuncReturnTypes {
+    /// Inferred return types for functions (especially lambdas).
+    /// Populated during type planning, extended during lowering when
+    /// actual return types are discovered.
+    pub inner: IndexMap<FuncId, Type>,
 }
 
 // =============================================================================
@@ -336,8 +345,10 @@ pub struct Lowering<'a> {
     pub(crate) codegen: CodeGenState,
     /// Variable/function name resolution
     pub(crate) symbols: SymbolTable,
-    /// Type inference and expression type cache
+    /// Type inference and expression type cache (immutable after type planning)
     pub(crate) types: TypeEnvironment,
+    /// Inferred function return types (mutable during lowering)
+    pub(crate) func_return_types: FuncReturnTypes,
     /// Warnings collected during lowering
     pub(crate) warnings: CompilerWarnings,
 }

@@ -75,8 +75,8 @@ impl<'a> Lowering<'a> {
         for func_id in &func_ids {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 if let Some(ref return_type) = func.return_type {
-                    self.types
-                        .func_return_types
+                    self.func_return_types
+                        .inner
                         .insert(*func_id, return_type.clone());
                 }
             }
@@ -85,7 +85,7 @@ impl<'a> Lowering<'a> {
         // Pass 2: Infer return types for unannotated functions
         for func_id in &func_ids {
             // Skip functions already resolved in pass 1
-            if self.types.func_return_types.contains_key(func_id) {
+            if self.func_return_types.inner.contains_key(func_id) {
                 continue;
             }
 
@@ -124,7 +124,7 @@ impl<'a> Lowering<'a> {
                     return_type
                 };
 
-                self.types.func_return_types.insert(*func_id, return_type);
+                self.func_return_types.inner.insert(*func_id, return_type);
             }
         }
     }
