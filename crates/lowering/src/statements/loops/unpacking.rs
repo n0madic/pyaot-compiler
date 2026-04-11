@@ -195,7 +195,7 @@ impl<'a> Lowering<'a> {
         for (i, &target_local) in target_locals.iter().enumerate() {
             let target_ty = target_types.get(i).cloned().unwrap_or(Type::Any);
 
-            let func = Self::tuple_get_func(&target_ty);
+            let func = crate::type_dispatch::tuple_get_func(&target_ty);
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: target_local,
@@ -333,7 +333,7 @@ impl<'a> Lowering<'a> {
         for (i, &target_local) in target_locals.iter().enumerate() {
             let target_ty = target_types.get(i).cloned().unwrap_or(Type::Any);
 
-            let func = Self::tuple_get_func(&target_ty);
+            let func = crate::type_dispatch::tuple_get_func(&target_ty);
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: target_local,

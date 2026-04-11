@@ -200,12 +200,11 @@ impl<'a> Lowering<'a> {
             }
 
             // Try cross-module class info (for classes from imported modules)
-            let attr_name = self.resolve(attr).to_string();
             if let Some(class_info) = self.get_cross_module_class_info(class_id) {
-                if let Some(&offset) = class_info.field_offsets.get(&attr_name) {
+                if let Some(&offset) = class_info.field_offsets.get(&attr) {
                     let field_type = class_info
                         .field_types
-                        .get(&attr_name)
+                        .get(&attr)
                         .cloned()
                         .unwrap_or(Type::Any);
 

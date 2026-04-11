@@ -132,7 +132,7 @@ impl<'a> Lowering<'a> {
             }
             "keys" => {
                 // .keys() - returns list of keys
-                let key_elem_tag = Self::elem_tag_for_type(&key_ty);
+                let key_elem_tag = crate::type_dispatch::elem_tag_for_type(&key_ty);
 
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
@@ -148,7 +148,7 @@ impl<'a> Lowering<'a> {
             }
             "values" => {
                 // .values() - returns list of values
-                let value_elem_tag = Self::elem_tag_for_type(&value_ty);
+                let value_elem_tag = crate::type_dispatch::elem_tag_for_type(&value_ty);
 
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_VALUES),

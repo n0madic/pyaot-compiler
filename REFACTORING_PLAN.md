@@ -53,11 +53,11 @@ Complete catalog of discovered architectural issues, tagged for cross-referencin
 | P21 | CodegenContext decomposed (13 fields → 3 sub-structs) | ✅ DONE | `codegen-cranelift/src/context.rs` | ~300→~80 |
 | P22 | Optimizer pass interface (OptimizationPass trait + PassManager) | ✅ DONE | `optimizer/src/pass.rs` | ~100 |
 | P23 | Optimizer consistent fixpoint iteration (PassManager-driven) | ✅ DONE | `optimizer/src/pass.rs`, all pass modules | ~50 |
-| P24 | Span loss through pipeline | MEDIUM | Lowering (desugaring), optimizer | ~200 |
+| P24 | Span loss through pipeline (100→1 span:None in production code) | ✅ DONE | Lowering (desugaring), optimizer | ~200 |
 | P25 | Inconsistent error hierarchy | MEDIUM | `diagnostics/src/lib.rs:29-99` | ~100 |
 | P26 | Lowering god-files split (5 files → 17 modules) | ✅ DONE | `lowering/src/{operators,match_stmt,assign,call_resolution,type_planning}/` | ~8,000 |
 | P27 | Codegen instructions.rs split (1,046 LOC → 3 modules) | ✅ DONE | `codegen-cranelift/src/instructions/` | ~1,046→~270 dispatch |
-| P28 | Cross-module class info uses String instead of InternedString | LOW | `lowering/src/context/mod.rs:208-232` | ~50 |
+| P28 | Cross-module class info uses InternedString (was String) | ✅ DONE | `lowering/src/context/mod.rs` | ~50 |
 
 ---
 
@@ -69,10 +69,10 @@ Phase 0 (Foundation)                    Phase 5 (Optimizer) ✅ COMPLETE
   P19 Layout constants ─────────┤         P23 Fixpoint iteration ✅
   P8  Unified exceptions ───────┤
                                 │
-Phase 1 (Runtime)               │      Phase 6 (Integration)
-  P7  Split god-files ──┐       │         P28 Cross-module interning
-  P9  Unify hash table ─┤       │         Pipeline span propagation
-  P5  Reduce FFI ────────┤      │         Unified type dispatch
+Phase 1 (Runtime)               │      Phase 6 (Integration) ✅ COMPLETE
+  P7  Split god-files ──┐       │         P28 Cross-module interning ✅
+  P9  Unify hash table ─┤       │         P24 Pipeline span propagation ✅
+  P5  Reduce FFI ────────┤      │         Unified type dispatch ✅
   P6  Type dispatch ─────┘      │
          │                      │
          ▼                      │
@@ -1125,44 +1125,45 @@ fn transform_instruction(old: &Instruction) -> Instruction {
 
 ---
 
-## Phase 6: Final Integration
+## Phase 6: Final Integration ✅ COMPLETE
 
 **Goal:** Address remaining cross-cutting concerns that benefit from all previous phases being complete.
 
 **Depends on:** All previous phases.
 
-### 6.1 — Cross-Module InternedString for Class Info (P28)
+### 6.1 — Cross-Module InternedString for Class Info (P28) ✅ DONE
 
 **Problem:** `CrossModuleClassInfo` uses `HashMap<String, ...>` instead of `HashMap<InternedString, ...>` because the interner is not shared across modules.
 
-**Solution:** After Phase 3.2 (Lowering decomposition), the interner is accessible from a centralized location. Pass it through module boundaries:
+**Solution:** Introduced `RawCrossModuleClassInfo` (String-keyed) in `mir_merger.rs` for the first pass, then re-intern keys into each module's interner before lowering. `CrossModuleClassInfo` now uses `IndexMap<InternedString, ...>`, matching `LoweredClassInfo`. Access sites no longer need `.to_string()` conversions.
 
 ```rust
 pub struct CrossModuleClassInfo {
-    pub field_offsets: IndexMap<InternedString, usize>,  // was String
-    pub field_types: IndexMap<InternedString, Type>,      // was String
-    pub method_return_types: IndexMap<InternedString, Type>, // was String
+    pub field_offsets: IndexMap<InternedString, usize>,  // was HashMap<String, usize>
+    pub field_types: IndexMap<InternedString, Type>,      // was HashMap<String, Type>
+    pub method_return_types: IndexMap<InternedString, Type>, // was HashMap<String, Type>
 }
 ```
 
-### 6.2 — Unified Type Dispatch Across All Crates
+### 6.2 — Unified Type Dispatch Across All Crates ✅ DONE
 
-After all phases, verify that type dispatch follows a consistent pattern everywhere:
+Verified and consolidated type dispatch across all crates:
 
-- **Runtime:** Vtable-based dispatch for common operations (print, repr, compare, hash)
-- **Lowering:** Table-driven selection via `type_dispatch.rs` (Phase 3.6)
-- **Codegen:** No type dispatch — all resolved at MIR level
+- **Runtime:** Vtable-based dispatch for common operations (print, repr, compare, hash) ✅
+- **Lowering:** Table-driven selection via `type_dispatch.rs` — now includes `elem_tag_for_type` and `tuple_get_func` (moved from `context/helpers.rs`) ✅
+- **Codegen:** No type dispatch — all resolved at MIR level (only `type_to_cranelift()` for Cranelift IR mapping) ✅
 
-No ad-hoc `match ty { ... }` should remain in codegen. In lowering, all type dispatch goes through the centralized tables. In runtime, only the vtable initialization needs type matching.
+### 6.3 — Pipeline Span Propagation Audit ✅ DONE
 
-### 6.3 — Pipeline Span Propagation Audit
+Eliminated ~100 `span: None` instances in production code (down to 1 — the `current_span` initializer):
 
-Walk through the entire pipeline and verify:
-1. Frontend: all HIR nodes have spans ✓ (already true)
-2. Lowering: all MIR instructions have spans (Phase 2.5 + 3.5)
-3. Optimizer: spans preserved (Phase 5.3)
-4. Codegen: spans used for debug info (Phase 2.5)
-5. Diagnostics: all errors carry spans (Phase 0.1)
+1. Frontend: all HIR nodes have spans ✅
+2. Lowering: all MIR instructions carry spans — generator state machine instructions now propagate `source_span` from the generator function definition ✅
+3. Optimizer: inlined instructions now carry the call site span ✅
+4. Codegen: spans used for debug info via `set_srcloc()` ✅
+5. Diagnostics: all errors carry spans ✅
+
+**Files changed:** `arg_binding.rs` (1), `inline/transform.rs` (2), `context/helpers.rs` (8), `generators/{mod,creator,resume,for_loop,while_loop,utils}.rs` (90)
 
 ---
 

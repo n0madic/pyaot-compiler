@@ -14,11 +14,6 @@ impl<'a> Lowering<'a> {
         id
     }
 
-    /// Reset the local ID counter (used when starting a new function).
-    pub(crate) fn reset_local_id(&mut self) {
-        self.codegen.next_local_id = 0;
-    }
-
     /// Allocate a new local variable and add it to the function.
     /// This is a helper to reduce boilerplate when creating locals.
     pub(crate) fn alloc_and_add_local(

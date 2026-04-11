@@ -223,7 +223,7 @@ impl<'a> GeneratorContext<'a> {
                 ),
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
-            span: None,
+            span: self.source_span,
         });
 
         entry_block.instructions.push(mir::Instruction {
@@ -234,7 +234,7 @@ impl<'a> GeneratorContext<'a> {
                 ),
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
-            span: None,
+            span: self.source_span,
         });
 
         entry_block.terminator = mir::Terminator::Branch {
@@ -265,7 +265,7 @@ impl<'a> GeneratorContext<'a> {
                     left: mir::Operand::Local(state_local),
                     right: mir::Operand::Constant(mir::Constant::Int(i as i64)),
                 },
-                span: None,
+                span: self.source_span,
             });
 
             let else_block = if i + 1 < state_targets.len() {
@@ -301,7 +301,7 @@ impl<'a> GeneratorContext<'a> {
                 ),
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
-            span: None,
+            span: self.source_span,
         });
 
         mark_exhausted_block.terminator =
@@ -328,7 +328,7 @@ impl<'a> GeneratorContext<'a> {
                     mir::Operand::Constant(mir::Constant::Int(0)),
                 ],
             },
-            span: None,
+            span: self.source_span,
         });
 
         state0_block.instructions.push(mir::Instruction {
@@ -342,7 +342,7 @@ impl<'a> GeneratorContext<'a> {
                     mir::Operand::Constant(mir::Constant::Int(1)),
                 ],
             },
-            span: None,
+            span: self.source_span,
         });
 
         state0_block.terminator = mir::Terminator::Goto(iter_next_block_id);
@@ -366,7 +366,7 @@ impl<'a> GeneratorContext<'a> {
                     mir::Operand::Constant(mir::Constant::Int(0)),
                 ],
             },
-            span: None,
+            span: self.source_span,
         });
 
         state1_block.terminator = mir::Terminator::Goto(iter_next_block_id);
@@ -387,7 +387,7 @@ impl<'a> GeneratorContext<'a> {
                 ),
                 args: vec![mir::Operand::Local(iter_local)],
             },
-            span: None,
+            span: self.source_span,
         });
 
         iter_next_block.instructions.push(mir::Instruction {
@@ -398,7 +398,7 @@ impl<'a> GeneratorContext<'a> {
                 ),
                 args: vec![mir::Operand::Local(iter_local)],
             },
-            span: None,
+            span: self.source_span,
         });
 
         iter_next_block.terminator = mir::Terminator::Goto(check_iter_done_block_id);
@@ -450,7 +450,7 @@ impl<'a> GeneratorContext<'a> {
                     dest: target_mir_local,
                     src: mir::Operand::Local(next_value_local),
                 },
-                span: None,
+                span: self.source_span,
             });
 
             if let Some(&gen_idx) = var_to_gen_local.get(&for_gen.target_var) {
@@ -466,7 +466,7 @@ impl<'a> GeneratorContext<'a> {
                             mir::Operand::Local(target_mir_local),
                         ],
                     },
-                    span: None,
+                    span: self.source_span,
                 });
             }
 
@@ -487,7 +487,7 @@ impl<'a> GeneratorContext<'a> {
                     dest: filter_cond_local,
                     src: filter_operand,
                 },
-                span: None,
+                span: self.source_span,
             });
 
             assign_block.terminator = mir::Terminator::Branch {
@@ -515,7 +515,7 @@ impl<'a> GeneratorContext<'a> {
                         mir::Operand::Local(iter_local),
                     ],
                 },
-                span: None,
+                span: self.source_span,
             });
 
             let yield_value_operand = if let Some(yield_expr_id) = for_gen.yield_expr {
@@ -549,7 +549,7 @@ impl<'a> GeneratorContext<'a> {
                     dest: target_mir_local,
                     src: mir::Operand::Local(next_value_local),
                 },
-                span: None,
+                span: self.source_span,
             });
 
             yield_block.instructions.push(mir::Instruction {
@@ -564,7 +564,7 @@ impl<'a> GeneratorContext<'a> {
                         mir::Operand::Local(iter_local),
                     ],
                 },
-                span: None,
+                span: self.source_span,
             });
 
             let yield_value_operand = if let Some(yield_expr_id) = for_gen.yield_expr {
@@ -613,7 +613,7 @@ impl<'a> GeneratorContext<'a> {
                         mir::Operand::Constant(mir::Constant::Int(next_state)),
                     ],
                 },
-                span: None,
+                span: self.source_span,
             });
 
             // Compute and return the yield value
@@ -642,7 +642,7 @@ impl<'a> GeneratorContext<'a> {
                                         )),
                                     ],
                                 },
-                                span: None,
+                                span: self.source_span,
                             });
                             mir::Operand::Local(var_local)
                         } else {

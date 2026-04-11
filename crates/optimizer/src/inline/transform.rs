@@ -155,11 +155,11 @@ fn perform_inline(
         None => return false,
     };
 
-    let (dest, args) = match &call_block.instructions.get(call_instr_idx) {
+    let (dest, args, call_span) = match &call_block.instructions.get(call_instr_idx) {
         Some(Instruction {
             kind: InstructionKind::CallDirect { dest, args, .. },
-            ..
-        }) => (*dest, args.clone()),
+            span,
+        }) => (*dest, args.clone(), *span),
         _ => return false,
     };
 
@@ -199,13 +199,13 @@ fn perform_inline(
         };
         caller.locals.insert(new_param_id, new_local);
 
-        // Create copy instruction: new_param = arg (synthetic, no span)
+        // Create copy instruction: new_param = arg (attributed to call site)
         param_copies.push(Instruction {
             kind: InstructionKind::Copy {
                 dest: new_param_id,
                 src: arg.clone(),
             },
-            span: None,
+            span: call_span,
         });
     }
 
@@ -231,13 +231,13 @@ fn perform_inline(
         // Replace Return terminators with Copy + Goto to continuation
         if let Terminator::Return(ret_val) = &remapped_block.terminator {
             if let Some(val) = ret_val {
-                // Copy return value to dest (synthetic, no span)
+                // Copy return value to dest (attributed to call site)
                 remapped_block.instructions.push(Instruction {
                     kind: InstructionKind::Copy {
                         dest,
                         src: val.clone(),
                     },
-                    span: None,
+                    span: call_span,
                 });
             }
             remapped_block.terminator = Terminator::Goto(continuation_block_id);

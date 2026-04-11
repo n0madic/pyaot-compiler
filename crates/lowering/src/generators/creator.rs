@@ -85,7 +85,7 @@ impl<'a> GeneratorContext<'a> {
                     mir::Operand::Constant(mir::Constant::Int(num_locals as i64)),
                 ],
             },
-            span: None,
+            span: self.source_span,
         });
 
         // Save all parameters to generator locals
@@ -109,7 +109,7 @@ impl<'a> GeneratorContext<'a> {
                                 mir::Operand::Local(param_local),
                             ],
                         },
-                        span: None,
+                        span: self.source_span,
                     });
                 }
             }
@@ -155,7 +155,7 @@ impl<'a> GeneratorContext<'a> {
                                         op,
                                     ],
                                 },
-                                span: None,
+                                span: self.source_span,
                             });
                         }
                     }
@@ -211,7 +211,7 @@ impl<'a> GeneratorContext<'a> {
                         iter_operand,
                     ],
                 },
-                span: None,
+                span: self.source_span,
             });
 
             // Mark slot 0 as a heap pointer so the GC traces the inner iterator.
@@ -229,7 +229,7 @@ impl<'a> GeneratorContext<'a> {
                         mir::Operand::Constant(mir::Constant::Int(3)), // LOCAL_TYPE_PTR
                     ],
                 },
-                span: None,
+                span: self.source_span,
             });
         }
 
@@ -296,7 +296,7 @@ impl<'a> GeneratorContext<'a> {
                                             effective_var_id,
                                         ))],
                                     },
-                                    span: None,
+                                    span: self.source_span,
                                 });
                                 mir::Operand::Local(global_local)
                             } else {
@@ -324,7 +324,7 @@ impl<'a> GeneratorContext<'a> {
                             func: fid,
                             args: arg_operands,
                         },
-                        span: None,
+                        span: self.source_span,
                     });
                 }
 
@@ -350,7 +350,7 @@ impl<'a> GeneratorContext<'a> {
                             mir::Operand::Constant(mir::Constant::Int(1)), // ELEM_RAW_INT
                         ],
                     },
-                    span: None,
+                    span: self.source_span,
                 });
 
                 // Add elements
@@ -370,7 +370,7 @@ impl<'a> GeneratorContext<'a> {
                             ),
                             args: vec![mir::Operand::Local(list_local), elem_op],
                         },
-                        span: None,
+                        span: self.source_span,
                     });
                 }
 
@@ -383,7 +383,7 @@ impl<'a> GeneratorContext<'a> {
                         ),
                         args: vec![mir::Operand::Local(list_local)],
                     },
-                    span: None,
+                    span: self.source_span,
                 });
 
                 Ok(mir::Operand::Local(dest_local))
@@ -405,7 +405,7 @@ impl<'a> GeneratorContext<'a> {
                             ),
                             args: vec![mir::Operand::Local(mir_local)],
                         },
-                        span: None,
+                        span: self.source_span,
                     });
                     Ok(mir::Operand::Local(dest_local))
                 } else if self.is_global(var_id) {
@@ -426,7 +426,7 @@ impl<'a> GeneratorContext<'a> {
                                 effective_var_id,
                             ))],
                         },
-                        span: None,
+                        span: self.source_span,
                     });
 
                     // Create iterator from the fetched global variable
@@ -439,7 +439,7 @@ impl<'a> GeneratorContext<'a> {
                             ),
                             args: vec![mir::Operand::Local(global_local)],
                         },
-                        span: None,
+                        span: self.source_span,
                     });
                     Ok(mir::Operand::Local(dest_local))
                 } else {

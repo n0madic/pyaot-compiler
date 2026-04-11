@@ -26,7 +26,7 @@ use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
-use pyaot_utils::{ClassId, FuncId, InternedString, LocalId, StringInterner, VarId};
+use pyaot_utils::{ClassId, InternedString, LocalId, StringInterner, VarId};
 
 use crate::context::Lowering;
 use crate::context::{ClassRegistry, LoweredClassInfo, ModuleState, SymbolTable, TypeEnvironment};
@@ -44,6 +44,8 @@ pub(crate) struct GeneratorContext<'a> {
     pub(super) modules: &'a ModuleState,
     pub(super) types: &'a TypeEnvironment,
     pub(super) next_local_id: u32,
+    /// Source span of the generator function definition (used for synthetic instructions)
+    pub(super) source_span: Option<pyaot_utils::Span>,
 }
 
 impl<'a> GeneratorContext<'a> {
@@ -118,11 +120,6 @@ impl<'a> GeneratorContext<'a> {
         }
     }
 
-    /// Get function return type
-    pub(super) fn get_func_return_type(&self, func_id: &FuncId) -> Option<&Type> {
-        self.types.func_return_types.get(func_id)
-    }
-
     /// Get expression type from the cache, falling back to Any.
     /// GeneratorContext does not have full type inference, so this is a simple lookup.
     pub(super) fn get_type_of_expr_id(
@@ -147,6 +144,7 @@ impl<'a> GeneratorContext<'a> {
         block: &mut mir::BasicBlock,
     ) -> mir::Operand {
         use crate::type_dispatch::{select_truthiness, TruthinessStrategy};
+        let span = self.source_span;
 
         match select_truthiness(operand_type) {
             TruthinessStrategy::AlreadyBool => operand,
@@ -160,7 +158,7 @@ impl<'a> GeneratorContext<'a> {
                         left: operand,
                         right: zero,
                     },
-                    span: None,
+                    span,
                 });
                 mir::Operand::Local(result_local)
             }
@@ -174,7 +172,7 @@ impl<'a> GeneratorContext<'a> {
                         left: operand,
                         right: zero,
                     },
-                    span: None,
+                    span,
                 });
                 mir::Operand::Local(result_local)
             }
@@ -187,7 +185,7 @@ impl<'a> GeneratorContext<'a> {
                         func: mir::RuntimeFunc::Call(len_func),
                         args: vec![operand],
                     },
-                    span: None,
+                    span,
                 });
                 let zero = mir::Operand::Constant(mir::Constant::Int(0));
                 block.instructions.push(mir::Instruction {
@@ -197,7 +195,7 @@ impl<'a> GeneratorContext<'a> {
                         left: mir::Operand::Local(len_local),
                         right: zero,
                     },
-                    span: None,
+                    span,
                 });
                 mir::Operand::Local(result_local)
             }
@@ -212,7 +210,7 @@ impl<'a> GeneratorContext<'a> {
                         ),
                         args: vec![operand],
                     },
-                    span: None,
+                    span,
                 });
                 mir::Operand::Local(result_local)
             }
@@ -227,7 +225,7 @@ impl<'a> GeneratorContext<'a> {
                                     func: bool_func_id,
                                     args: vec![operand],
                                 },
-                                span: None,
+                                span,
                             });
                             return mir::Operand::Local(result_local);
                         } else if let Some(len_func_id) = class_info.get_dunder_func("__len__") {
@@ -238,7 +236,7 @@ impl<'a> GeneratorContext<'a> {
                                     func: len_func_id,
                                     args: vec![operand],
                                 },
-                                span: None,
+                                span,
                             });
                             let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
                             let zero = mir::Operand::Constant(mir::Constant::Int(0));
@@ -249,7 +247,7 @@ impl<'a> GeneratorContext<'a> {
                                     left: mir::Operand::Local(len_local),
                                     right: zero,
                                 },
-                                span: None,
+                                span,
                             });
                             return mir::Operand::Local(result_local);
                         }
@@ -460,6 +458,7 @@ impl<'a> Lowering<'a> {
             modules: &self.modules,
             types: &self.types,
             next_local_id: 0,
+            source_span: Some(func.span),
         };
 
         // 1. Create the creator function (saves parameters to generator)

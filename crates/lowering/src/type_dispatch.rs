@@ -9,6 +9,43 @@ use pyaot_mir as mir;
 use pyaot_types::Type;
 
 // =============================================================================
+// Element tag dispatch
+// =============================================================================
+
+/// Determine the elem_tag for a given element type.
+/// Returns the constant value that corresponds to how the runtime stores elements:
+/// - 0 (ELEM_HEAP_OBJ): Elements are *mut Obj with valid headers
+/// - 1 (ELEM_RAW_INT): Elements are raw i64 values
+/// - 2 (ELEM_RAW_BOOL): Elements are raw i8 cast to pointer (currently not used in lists)
+///
+/// This is used when passing elem_tag to runtime functions that need to box
+/// raw elements before calling key functions (sorted, min, max with key=).
+pub(crate) fn elem_tag_for_type(elem_type: &Type) -> i64 {
+    match elem_type {
+        Type::Int => pyaot_core_defs::ELEM_RAW_INT as i64,
+        Type::Bool => pyaot_core_defs::ELEM_HEAP_OBJ as i64,
+        _ => pyaot_core_defs::ELEM_HEAP_OBJ as i64,
+    }
+}
+
+// =============================================================================
+// Tuple element access dispatch
+// =============================================================================
+
+/// Select the appropriate TupleGet runtime function for the given element type.
+/// Primitive types (Int, Float, Bool) use specialized getters that handle unboxing.
+pub(crate) fn tuple_get_func(elem_type: &Type) -> mir::RuntimeFunc {
+    match elem_type {
+        Type::Int => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET_INT),
+        Type::Float => {
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET_FLOAT)
+        }
+        Type::Bool => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET_BOOL),
+        _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+    }
+}
+
+// =============================================================================
 // Print dispatch
 // =============================================================================
 

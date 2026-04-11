@@ -53,15 +53,15 @@ pub struct SortKwargs {
 
 /// Cross-module class information for field and method access across module boundaries.
 ///
-/// Uses String keys for field/method names to work across different interners.
+/// Uses InternedString keys, re-interned into each module's interner during setup.
 #[derive(Debug, Clone, Default)]
 pub struct CrossModuleClassInfo {
     /// Map field name to its offset in the instance
-    pub field_offsets: HashMap<String, usize>,
+    pub field_offsets: IndexMap<InternedString, usize>,
     /// Map field name to its type
-    pub field_types: HashMap<String, Type>,
+    pub field_types: IndexMap<InternedString, Type>,
     /// Map method name to its return type
-    pub method_return_types: HashMap<String, Type>,
+    pub method_return_types: IndexMap<InternedString, Type>,
     /// Total field count including inherited fields (for instance allocation)
     pub total_field_count: usize,
 }
@@ -298,7 +298,7 @@ pub struct SymbolTable {
 ///
 /// After `run_type_planning()` completes, this struct is only READ by lowering:
 /// - `expr_types`: memoized expression types (may gain new entries for Var expressions
-///    during lowering, since those depend on `symbols.var_types` which evolves)
+///   during lowering, since those depend on `symbols.var_types` which evolves)
 /// - `refined_var_types`: container type refinements from pre-scan
 /// - `func_return_types`: inferred function return types
 pub struct TypeEnvironment {

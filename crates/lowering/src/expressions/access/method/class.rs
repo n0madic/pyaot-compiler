@@ -179,7 +179,7 @@ impl<'a> Lowering<'a> {
 
         // Try cross-module class method call
         // Find which module this class belongs to by searching module_class_exports
-        let method_name = self.resolve(method).to_string();
+        let method_name_str = self.resolve(method).to_string();
 
         // Collect the iterator to avoid holding immutable borrow while calling mutable methods
         let exports: Vec<_> = self.module_class_exports_iter().collect();
@@ -187,13 +187,15 @@ impl<'a> Lowering<'a> {
             if export_class_id == class_id {
                 // Found the class's source module
                 // Construct mangled method name: __module_{module}_{Class}${method}
-                let mangled_name =
-                    format!("__module_{}_{}${}", module_name, class_name, method_name);
+                let mangled_name = format!(
+                    "__module_{}_{}${}",
+                    module_name, class_name, method_name_str
+                );
 
                 // Look up method return type from cross-module class info
                 let return_type = self
                     .get_cross_module_class_info(class_id)
-                    .and_then(|info| info.method_return_types.get(&method_name))
+                    .and_then(|info| info.method_return_types.get(&method))
                     .cloned()
                     .unwrap_or(Type::Any); // Default to Any if not found (GC safety)
 

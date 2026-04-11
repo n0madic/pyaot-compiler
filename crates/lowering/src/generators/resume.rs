@@ -138,7 +138,7 @@ impl<'a> GeneratorContext<'a> {
                 ),
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
-            span: None,
+            span: self.source_span,
         });
 
         // Check if exhausted
@@ -152,7 +152,7 @@ impl<'a> GeneratorContext<'a> {
                 ),
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
-            span: None,
+            span: self.source_span,
         });
 
         // Exhausted block: return sentinel value (0) - runtime will handle StopIteration
@@ -207,7 +207,7 @@ impl<'a> GeneratorContext<'a> {
                     left: mir::Operand::Local(state_local),
                     right: mir::Operand::Constant(mir::Constant::Int(0)),
                 },
-                span: None,
+                span: self.source_span,
             });
             let else_block = if actual_yield_count > 1 {
                 let next_dispatch = BlockId::from(next_block_id);
@@ -246,7 +246,7 @@ impl<'a> GeneratorContext<'a> {
                         left: mir::Operand::Local(state_local),
                         right: mir::Operand::Constant(mir::Constant::Int(state_idx as i64)),
                     },
-                    span: None,
+                    span: self.source_span,
                 });
 
                 let next_else = if state_idx + 1 < actual_yield_count {
@@ -293,7 +293,7 @@ impl<'a> GeneratorContext<'a> {
                                 ),
                                 args: vec![mir::Operand::Local(gen_param_local)],
                             },
-                            span: None,
+                            span: self.source_span,
                         });
 
                         state_block.instructions.push(mir::Instruction {
@@ -310,7 +310,7 @@ impl<'a> GeneratorContext<'a> {
                                     mir::Operand::Local(sent_value_local),
                                 ],
                             },
-                            span: None,
+                            span: self.source_span,
                         });
                     }
                 }
@@ -351,7 +351,7 @@ impl<'a> GeneratorContext<'a> {
                         mir::Operand::Constant(mir::Constant::Int(next_state)),
                     ],
                 },
-                span: None,
+                span: self.source_span,
             });
 
             // Return the yielded value
@@ -376,7 +376,7 @@ impl<'a> GeneratorContext<'a> {
                 ),
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
-            span: None,
+            span: self.source_span,
         });
 
         // Return 0 (sentinel) - runtime will raise StopIteration
@@ -428,7 +428,7 @@ impl<'a> GeneratorContext<'a> {
                                 mir::Operand::Constant(mir::Constant::Int(gen_local_idx as i64)),
                             ],
                         },
-                        span: None,
+                        span: self.source_span,
                     });
                     Ok(mir::Operand::Local(var_local))
                 } else {
@@ -481,7 +481,7 @@ impl<'a> GeneratorContext<'a> {
                             left: l_op,
                             right: r_op,
                         },
-                        span: None,
+                        span: self.source_span,
                     });
                 } else if matches!(&cond_expr.kind, hir::ExprKind::Var(_)) {
                     let cond_op = self.eval_yield_value_for_resume(
@@ -499,7 +499,7 @@ impl<'a> GeneratorContext<'a> {
                             dest: cond_local,
                             src: cond_op,
                         },
-                        span: None,
+                        span: self.source_span,
                     });
                 } else if let hir::ExprKind::Bool(b) = &cond_expr.kind {
                     block.instructions.push(mir::Instruction {
@@ -507,7 +507,7 @@ impl<'a> GeneratorContext<'a> {
                             dest: cond_local,
                             src: mir::Operand::Constant(mir::Constant::Bool(*b)),
                         },
-                        span: None,
+                        span: self.source_span,
                     });
                 }
 
@@ -563,7 +563,7 @@ impl<'a> GeneratorContext<'a> {
                         dest: result_local,
                         src: then_op,
                     },
-                    span: None,
+                    span: self.source_span,
                 });
                 mir_func.blocks.insert(then_bb_id, then_bb);
 
@@ -589,7 +589,7 @@ impl<'a> GeneratorContext<'a> {
                         dest: result_local,
                         src: else_op,
                     },
-                    span: None,
+                    span: self.source_span,
                 });
                 mir_func.blocks.insert(else_bb_id, else_bb);
 

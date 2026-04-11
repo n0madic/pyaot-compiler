@@ -1,11 +1,22 @@
 //! MIR merging and ID remapping
 
-use crate::types::{CrossModuleClassInfo, ParsedModule};
+use crate::types::ParsedModule;
 use miette::{NamedSource, Report, Result};
 use pyaot_hir as hir;
+use pyaot_lowering::CrossModuleClassInfo;
 use pyaot_types::Type;
 use pyaot_utils::{ClassId, FuncId, InternedString, StringInterner, VarId};
 use std::collections::HashMap;
+
+/// String-based intermediate for cross-module class info.
+/// Built during the first pass (each module has its own interner),
+/// then converted to InternedString-based `CrossModuleClassInfo` per module.
+struct RawCrossModuleClassInfo {
+    field_offsets: HashMap<String, usize>,
+    field_types: HashMap<String, Type>,
+    method_return_types: HashMap<String, Type>,
+    total_field_count: usize,
+}
 
 pub struct MirMerger;
 
@@ -38,8 +49,9 @@ impl MirMerger {
         let mut module_func_exports: HashMap<(String, String), Type> = HashMap::new();
         // Module class exports: (module_name, class_name) -> (remapped ClassId, class_name as String)
         let mut module_class_exports: HashMap<(String, String), (ClassId, String)> = HashMap::new();
-        // Cross-module class field/method info: ClassId -> (field_offsets, field_types, method_return_types)
-        let mut cross_module_class_info: HashMap<ClassId, CrossModuleClassInfo> = HashMap::new();
+        // Cross-module class field/method info (string-keyed intermediate)
+        let mut raw_cross_module_class_info: HashMap<ClassId, RawCrossModuleClassInfo> =
+            HashMap::new();
 
         for module_name in sorted_modules {
             let parsed = parsed_modules
@@ -127,9 +139,9 @@ impl MirMerger {
                         }
                     }
                 }
-                cross_module_class_info.insert(
+                raw_cross_module_class_info.insert(
                     remapped_class_id,
-                    CrossModuleClassInfo {
+                    RawCrossModuleClassInfo {
                         field_offsets,
                         field_types,
                         method_return_types,
@@ -182,6 +194,39 @@ impl MirMerger {
                 Report::new(e).with_source_code(NamedSource::new(&source_name, source_code.clone()))
             })?;
 
+            // Re-intern cross-module class info keys into this module's interner
+            // (must be done before Lowering borrows the interner)
+            let interned_class_info: HashMap<ClassId, CrossModuleClassInfo> =
+                raw_cross_module_class_info
+                    .iter()
+                    .map(|(&class_id, raw)| {
+                        let field_offsets = raw
+                            .field_offsets
+                            .iter()
+                            .map(|(name, &offset)| (parsed.interner.intern(name), offset))
+                            .collect();
+                        let field_types = raw
+                            .field_types
+                            .iter()
+                            .map(|(name, ty)| (parsed.interner.intern(name), ty.clone()))
+                            .collect();
+                        let method_return_types = raw
+                            .method_return_types
+                            .iter()
+                            .map(|(name, ty)| (parsed.interner.intern(name), ty.clone()))
+                            .collect();
+                        (
+                            class_id,
+                            CrossModuleClassInfo {
+                                field_offsets,
+                                field_types,
+                                method_return_types,
+                                total_field_count: raw.total_field_count,
+                            },
+                        )
+                    })
+                    .collect();
+
             // Lower to MIR with module exports (type inference runs inside lower_module)
             let func_count = parsed.hir.functions.len();
             let class_count = parsed.hir.class_defs.len();
@@ -193,7 +238,7 @@ impl MirMerger {
             lowering.set_module_var_exports(module_var_exports.clone());
             lowering.set_module_func_exports(module_func_exports.clone());
             lowering.set_module_class_exports(module_class_exports.clone());
-            lowering.set_cross_module_class_info(cross_module_class_info.clone());
+            lowering.set_cross_module_class_info(interned_class_info);
             lowering.set_var_id_offset(this_var_offset);
             lowering.set_class_id_offset(this_class_offset);
 

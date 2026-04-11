@@ -148,7 +148,7 @@ impl<'a> GeneratorContext<'a> {
                 ),
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
-            span: None,
+            span: self.source_span,
         });
 
         // Check exhausted
@@ -160,7 +160,7 @@ impl<'a> GeneratorContext<'a> {
                 ),
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
-            span: None,
+            span: self.source_span,
         });
 
         // Exhausted block
@@ -206,7 +206,7 @@ impl<'a> GeneratorContext<'a> {
                 ),
                 args: vec![mir::Operand::Local(gen_param_local)],
             },
-            span: None,
+            span: self.source_span,
         });
         mark_exhausted_block.terminator =
             mir::Terminator::Return(Some(mir::Operand::Constant(mir::Constant::Int(0))));
@@ -265,7 +265,7 @@ impl<'a> GeneratorContext<'a> {
                     left: mir::Operand::Local(state_local),
                     right: mir::Operand::Constant(mir::Constant::Int(state_value)),
                 },
-                span: None,
+                span: self.source_span,
             });
 
             dispatch_block.terminator = mir::Terminator::Branch {
@@ -309,7 +309,7 @@ impl<'a> GeneratorContext<'a> {
                                 )),
                             ],
                         },
-                        span: None,
+                        span: self.source_span,
                     });
                 }
             }
@@ -351,7 +351,7 @@ impl<'a> GeneratorContext<'a> {
                             mir::Operand::Local(mir_local),
                         ],
                     },
-                    span: None,
+                    span: self.source_span,
                 });
             }
         }
@@ -389,7 +389,7 @@ impl<'a> GeneratorContext<'a> {
                                 )),
                             ],
                         },
-                        span: None,
+                        span: self.source_span,
                     });
                 }
             }
@@ -417,7 +417,7 @@ impl<'a> GeneratorContext<'a> {
                                     dest: yield_value_local,
                                     src: mir::Operand::Local(src_mir_local),
                                 },
-                                span: None,
+                                span: self.source_span,
                             });
                         }
                     }
@@ -427,7 +427,7 @@ impl<'a> GeneratorContext<'a> {
                                 dest: yield_value_local,
                                 src: mir::Operand::Constant(mir::Constant::Int(*n)),
                             },
-                            span: None,
+                            span: self.source_span,
                         });
                     }
                     hir::ExprKind::BinOp { left, op, right } => {
@@ -443,7 +443,7 @@ impl<'a> GeneratorContext<'a> {
                                 left: left_op,
                                 right: right_op,
                             },
-                            span: None,
+                            span: self.source_span,
                         });
                     }
                     hir::ExprKind::IfExpr {
@@ -476,7 +476,7 @@ impl<'a> GeneratorContext<'a> {
                                     left: l_op,
                                     right: r_op,
                                 },
-                                span: None,
+                                span: self.source_span,
                             });
                         } else if let hir::ExprKind::Var(var_id) = &cond_expr.kind {
                             if let Some(&mir_local) = var_to_mir_local.get(var_id) {
@@ -485,7 +485,7 @@ impl<'a> GeneratorContext<'a> {
                                         dest: cond_local,
                                         src: mir::Operand::Local(mir_local),
                                     },
-                                    span: None,
+                                    span: self.source_span,
                                 });
                             }
                         } else if let hir::ExprKind::Bool(b) = &cond_expr.kind {
@@ -494,7 +494,7 @@ impl<'a> GeneratorContext<'a> {
                                     dest: cond_local,
                                     src: mir::Operand::Constant(mir::Constant::Bool(*b)),
                                 },
-                                span: None,
+                                span: self.source_span,
                             });
                         }
 
@@ -524,7 +524,7 @@ impl<'a> GeneratorContext<'a> {
                                     dest: yield_value_local,
                                     src: then_op,
                                 },
-                                span: None,
+                                span: self.source_span,
                             }],
                             terminator: mir::Terminator::Goto(merge_bb_id),
                         };
@@ -540,7 +540,7 @@ impl<'a> GeneratorContext<'a> {
                                     dest: yield_value_local,
                                     src: else_op,
                                 },
-                                span: None,
+                                span: self.source_span,
                             }],
                             terminator: mir::Terminator::Goto(merge_bb_id),
                         };
@@ -560,7 +560,7 @@ impl<'a> GeneratorContext<'a> {
                                 dest: yield_value_local,
                                 src: mir::Operand::Constant(mir::Constant::Int(0)),
                             },
-                            span: None,
+                            span: self.source_span,
                         });
                     }
                 }
@@ -571,7 +571,7 @@ impl<'a> GeneratorContext<'a> {
                         dest: yield_value_local,
                         src: mir::Operand::Constant(mir::Constant::Int(0)),
                     },
-                    span: None,
+                    span: self.source_span,
                 });
             }
 
@@ -592,7 +592,7 @@ impl<'a> GeneratorContext<'a> {
                                 mir::Operand::Local(mir_local),
                             ],
                         },
-                        span: None,
+                        span: self.source_span,
                     });
                 }
             }
@@ -615,7 +615,7 @@ impl<'a> GeneratorContext<'a> {
                         mir::Operand::Constant(mir::Constant::Int(next_state)),
                     ],
                 },
-                span: None,
+                span: self.source_span,
             });
 
             // Return yield value
@@ -647,7 +647,7 @@ impl<'a> GeneratorContext<'a> {
                             )),
                         ],
                     },
-                    span: None,
+                    span: self.source_span,
                 });
             }
         }
@@ -688,7 +688,7 @@ impl<'a> GeneratorContext<'a> {
                             mir::Operand::Local(mir_local),
                         ],
                     },
-                    span: None,
+                    span: self.source_span,
                 });
             }
         }

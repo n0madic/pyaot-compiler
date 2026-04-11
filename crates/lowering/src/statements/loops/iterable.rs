@@ -188,7 +188,7 @@ impl<'a> Lowering<'a> {
             // Get dict keys as a list
             let keys_local =
                 self.alloc_and_add_local(Type::List(Box::new(elem_type.clone())), mir_func);
-            let key_elem_tag = Self::elem_tag_for_type(&elem_type);
+            let key_elem_tag = crate::type_dispatch::elem_tag_for_type(&elem_type);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: keys_local,
                 func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
@@ -334,7 +334,7 @@ impl<'a> Lowering<'a> {
                     _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
                 }
             }
-            IterableKind::Tuple => Self::tuple_get_func(&elem_type),
+            IterableKind::Tuple => crate::type_dispatch::tuple_get_func(&elem_type),
             IterableKind::Str => {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_GETCHAR)
             }

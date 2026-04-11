@@ -78,7 +78,7 @@ impl<'a> Lowering<'a> {
 
         if let Type::Tuple(elem_types) = tuple_type {
             for (i, elem_type) in elem_types.iter().enumerate() {
-                let get_func = Self::tuple_get_func(elem_type);
+                let get_func = crate::type_dispatch::tuple_get_func(elem_type);
                 let elem_local = self.emit_runtime_call(
                     get_func,
                     vec![
@@ -315,15 +315,14 @@ impl<'a> Lowering<'a> {
                 mir_func,
             );
 
-            let elem_local = self.emit_runtime_call(
+            self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL),
                 vec![mir::Operand::Local(boxed_local)],
                 elem_type.clone(),
                 mir_func,
-            );
-            elem_local
+            )
         } else {
-            let elem_local = self.emit_runtime_call(
+            self.emit_runtime_call(
                 get_func,
                 vec![
                     list_operand.clone(),
@@ -331,8 +330,7 @@ impl<'a> Lowering<'a> {
                 ],
                 elem_type.clone(),
                 mir_func,
-            );
-            elem_local
+            )
         }
     }
 
@@ -503,6 +501,7 @@ impl<'a> Lowering<'a> {
         // Emit the assertion fail instruction. AssertFail never returns,
         // but we need a dest local for the instruction format.
         let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
+        let span = self.codegen.current_span;
         self.current_block_mut()
             .instructions
             .push(mir::Instruction {
@@ -511,7 +510,7 @@ impl<'a> Lowering<'a> {
                     func: mir::RuntimeFunc::AssertFail,
                     args: vec![msg_operand],
                 },
-                span: None,
+                span,
             });
         self.current_block_mut().terminator = mir::Terminator::Unreachable;
     }

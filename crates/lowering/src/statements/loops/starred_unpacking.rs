@@ -397,7 +397,7 @@ impl<'a> Lowering<'a> {
             let target_ty = target_types.get(i).cloned().unwrap_or(Type::Any);
 
             let func = if is_tuple {
-                Self::tuple_get_func(&target_ty)
+                crate::type_dispatch::tuple_get_func(&target_ty)
             } else {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
             };
@@ -485,7 +485,7 @@ impl<'a> Lowering<'a> {
             let negative_idx = -((after_star.len() - i) as i64);
 
             let func = if is_tuple {
-                Self::tuple_get_func(&target_ty)
+                crate::type_dispatch::tuple_get_func(&target_ty)
             } else {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
             };

@@ -172,7 +172,7 @@ impl<'a> Lowering<'a> {
             .unwrap_or(0);
 
         // Compute elem_tag for Set/Dict sorted result before elem_type is moved
-        let result_elem_tag = Self::elem_tag_for_type(&elem_type);
+        let result_elem_tag = crate::type_dispatch::elem_tag_for_type(&elem_type);
 
         // Create result local with List type (sorted always returns a list)
         let result_local = self.alloc_and_add_local(Type::List(Box::new(elem_type)), mir_func);

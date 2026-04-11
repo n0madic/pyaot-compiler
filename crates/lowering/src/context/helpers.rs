@@ -215,150 +215,6 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Emit boolean truthiness check for a collection via its length,
-    /// pushing instructions to an explicit block (for generator lowering).
-    fn emit_collection_bool_via_len_in_block(
-        &mut self,
-        len_func: mir::RuntimeFunc,
-        operand: mir::Operand,
-        result_local: pyaot_utils::LocalId,
-        mir_func: &mut mir::Function,
-        block: &mut mir::BasicBlock,
-    ) {
-        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
-        block.instructions.push(mir::Instruction {
-            kind: mir::InstructionKind::RuntimeCall {
-                dest: len_local,
-                func: len_func,
-                args: vec![operand],
-            },
-            span: None,
-        });
-        let zero = mir::Operand::Constant(mir::Constant::Int(0));
-        block.instructions.push(mir::Instruction {
-            kind: mir::InstructionKind::BinOp {
-                dest: result_local,
-                op: mir::BinOp::NotEq,
-                left: mir::Operand::Local(len_local),
-                right: zero,
-            },
-            span: None,
-        });
-    }
-
-    /// Convert an operand to a boolean, pushing instructions to an explicit block.
-    /// This is the block-parameterized variant of `convert_to_bool` for use in
-    /// generator lowering where instructions must go to a local block rather than
-    /// `self.current_block_mut()`.
-    pub(crate) fn convert_to_bool_in_block(
-        &mut self,
-        operand: mir::Operand,
-        operand_type: &Type,
-        mir_func: &mut mir::Function,
-        block: &mut mir::BasicBlock,
-    ) -> mir::Operand {
-        use crate::type_dispatch::{select_truthiness, TruthinessStrategy};
-
-        match select_truthiness(operand_type) {
-            TruthinessStrategy::AlreadyBool => operand,
-            TruthinessStrategy::IntNotZero => {
-                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                let zero = mir::Operand::Constant(mir::Constant::Int(0));
-                block.instructions.push(mir::Instruction {
-                    kind: mir::InstructionKind::BinOp {
-                        dest: result_local,
-                        op: mir::BinOp::NotEq,
-                        left: operand,
-                        right: zero,
-                    },
-                    span: None,
-                });
-                mir::Operand::Local(result_local)
-            }
-            TruthinessStrategy::FloatNotZero => {
-                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                let zero = mir::Operand::Constant(mir::Constant::Float(0.0));
-                block.instructions.push(mir::Instruction {
-                    kind: mir::InstructionKind::BinOp {
-                        dest: result_local,
-                        op: mir::BinOp::NotEq,
-                        left: operand,
-                        right: zero,
-                    },
-                    span: None,
-                });
-                mir::Operand::Local(result_local)
-            }
-            TruthinessStrategy::LenBased(len_func) => {
-                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                self.emit_collection_bool_via_len_in_block(
-                    mir::RuntimeFunc::Call(len_func),
-                    operand,
-                    result_local,
-                    mir_func,
-                    block,
-                );
-                mir::Operand::Local(result_local)
-            }
-            TruthinessStrategy::AlwaysFalse => mir::Operand::Constant(mir::Constant::Bool(false)),
-            TruthinessStrategy::RuntimeIsTruthy => {
-                let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                block.instructions.push(mir::Instruction {
-                    kind: mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_IS_TRUTHY,
-                        ),
-                        args: vec![operand],
-                    },
-                    span: None,
-                });
-                mir::Operand::Local(result_local)
-            }
-            TruthinessStrategy::ClassInstance => {
-                if let Type::Class { class_id, .. } = operand_type {
-                    if let Some(class_info) = self.get_class_info(class_id).cloned() {
-                        if let Some(bool_func_id) = class_info.get_dunder_func("__bool__") {
-                            let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                            block.instructions.push(mir::Instruction {
-                                kind: mir::InstructionKind::CallDirect {
-                                    dest: result_local,
-                                    func: bool_func_id,
-                                    args: vec![operand],
-                                },
-                                span: None,
-                            });
-                            return mir::Operand::Local(result_local);
-                        } else if let Some(len_func_id) = class_info.get_dunder_func("__len__") {
-                            let len_local = self.alloc_and_add_local(Type::Int, mir_func);
-                            block.instructions.push(mir::Instruction {
-                                kind: mir::InstructionKind::CallDirect {
-                                    dest: len_local,
-                                    func: len_func_id,
-                                    args: vec![operand],
-                                },
-                                span: None,
-                            });
-                            let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                            let zero = mir::Operand::Constant(mir::Constant::Int(0));
-                            block.instructions.push(mir::Instruction {
-                                kind: mir::InstructionKind::BinOp {
-                                    dest: result_local,
-                                    op: mir::BinOp::NotEq,
-                                    left: mir::Operand::Local(len_local),
-                                    right: zero,
-                                },
-                                span: None,
-                            });
-                            return mir::Operand::Local(result_local);
-                        }
-                    }
-                }
-                mir::Operand::Constant(mir::Constant::Bool(true))
-            }
-        }
-    }
-
     /// Check if object type matches the isinstance check type (compile-time)
     pub(crate) fn types_match_isinstance(&self, obj_type: &Type, check_type: &Type) -> bool {
         match (obj_type, check_type) {
@@ -565,39 +421,6 @@ impl<'a> Lowering<'a> {
         }))
     }
 
-    /// Determine the elem_tag for a given element type.
-    /// Returns the constant value that corresponds to how the runtime stores elements:
-    /// - 0 (ELEM_HEAP_OBJ): Elements are *mut Obj with valid headers
-    /// - 1 (ELEM_RAW_INT): Elements are raw i64 values
-    /// - 2 (ELEM_RAW_BOOL): Elements are raw i8 cast to pointer (currently not used in lists)
-    ///
-    /// This is used when passing elem_tag to runtime functions that need to box
-    /// raw elements before calling key functions (sorted, min, max with key=).
-    pub(crate) fn elem_tag_for_type(elem_type: &Type) -> i64 {
-        match elem_type {
-            Type::Int => pyaot_core_defs::ELEM_RAW_INT as i64,
-            Type::Bool => pyaot_core_defs::ELEM_HEAP_OBJ as i64,
-            _ => pyaot_core_defs::ELEM_HEAP_OBJ as i64,
-        }
-    }
-
-    /// Select the appropriate TupleGet runtime function for the given element type.
-    /// Primitive types (Int, Float, Bool) use specialized getters that handle unboxing.
-    pub(crate) fn tuple_get_func(elem_type: &Type) -> mir::RuntimeFunc {
-        match elem_type {
-            Type::Int => {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET_INT)
-            }
-            Type::Float => {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET_FLOAT)
-            }
-            Type::Bool => {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET_BOOL)
-            }
-            _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
-        }
-    }
-
     /// Shared helper for split/rsplit methods (used by both str and bytes).
     pub(crate) fn lower_split_variant_impl(
         &mut self,
@@ -668,7 +491,7 @@ impl<'a> Lowering<'a> {
         match key_func {
             KeyFuncSource::Builtin(_) => {
                 // Builtin wrappers need boxing for raw element types
-                Self::elem_tag_for_type(elem_type)
+                crate::type_dispatch::elem_tag_for_type(elem_type)
             }
             KeyFuncSource::UserFunc(..) => {
                 // User functions work with raw values - no boxing needed
@@ -688,7 +511,7 @@ impl<'a> Lowering<'a> {
         match func_or_builtin {
             FuncOrBuiltin::Builtin(_) => {
                 // Builtin wrappers need boxing for raw element types
-                Self::elem_tag_for_type(elem_type)
+                crate::type_dispatch::elem_tag_for_type(elem_type)
             }
             FuncOrBuiltin::UserFunc(_, _) => {
                 // User functions work with raw values - no boxing needed

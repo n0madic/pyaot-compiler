@@ -200,6 +200,7 @@ pub(super) fn lower_simple_stmt_for_generator(
     var_to_mir_local: &HashMap<VarId, LocalId>,
 ) -> Result<()> {
     let stmt = &hir_module.stmts[stmt_id];
+    let span = Some(stmt.span);
 
     match &stmt.kind {
         hir::StmtKind::Assign { target, value, .. } => {
@@ -213,7 +214,7 @@ pub(super) fn lower_simple_stmt_for_generator(
                                 dest: dest_mir_local,
                                 src: mir::Operand::Constant(mir::Constant::Int(*n)),
                             },
-                            span: None,
+                            span,
                         });
                     }
                     hir::ExprKind::Var(src_var) => {
@@ -223,7 +224,7 @@ pub(super) fn lower_simple_stmt_for_generator(
                                     dest: dest_mir_local,
                                     src: mir::Operand::Local(src_mir_local),
                                 },
-                                span: None,
+                                span,
                             });
                         }
                     }
@@ -240,7 +241,7 @@ pub(super) fn lower_simple_stmt_for_generator(
                                 left: left_op,
                                 right: right_op,
                             },
-                            span: None,
+                            span,
                         });
                     }
                     _ => {
@@ -343,7 +344,7 @@ impl<'a> GeneratorContext<'a> {
                                             )),
                                         ],
                                     },
-                                    span: None,
+                                    span: self.source_span,
                                 });
 
                                 // For float fields: box the f64 into a heap FloatObj so the
@@ -361,7 +362,7 @@ impl<'a> GeneratorContext<'a> {
                                             ),
                                             args: vec![mir::Operand::Local(raw_local)],
                                         },
-                                        span: None,
+                                        span: self.source_span,
                                     });
                                     return Ok(mir::Operand::Local(boxed_local));
                                 }
@@ -400,7 +401,7 @@ impl<'a> GeneratorContext<'a> {
                                 left: mir::Operand::Constant(mir::Constant::Int(0)),
                                 right: operand_val,
                             },
-                            span: None,
+                            span: self.source_span,
                         });
                         Ok(mir::Operand::Local(result_local))
                     }
@@ -444,7 +445,7 @@ impl<'a> GeneratorContext<'a> {
                                 op: mir::UnOp::Not,
                                 operand: bool_operand,
                             },
-                            span: None,
+                            span: self.source_span,
                         });
                         // Generator resume functions return i64, so widen the
                         // bool (i8) to int (i64) to avoid a Cranelift type mismatch.
@@ -454,7 +455,7 @@ impl<'a> GeneratorContext<'a> {
                                 dest: int_local,
                                 src: mir::Operand::Local(not_local),
                             },
-                            span: None,
+                            span: self.source_span,
                         });
                         Ok(mir::Operand::Local(int_local))
                     }
@@ -502,7 +503,7 @@ impl<'a> GeneratorContext<'a> {
                         left: left_op,
                         right: right_op,
                     },
-                    span: None,
+                    span: self.source_span,
                 });
 
                 Ok(mir::Operand::Local(result_local))
@@ -577,7 +578,7 @@ impl<'a> GeneratorContext<'a> {
                         left: left_op,
                         right: right_op,
                     },
-                    span: None,
+                    span: self.source_span,
                 });
 
                 Ok(mir::Operand::Local(result_local))
@@ -626,7 +627,7 @@ impl<'a> GeneratorContext<'a> {
                         left: left_op,
                         right: right_op,
                     },
-                    span: None,
+                    span: self.source_span,
                 });
 
                 Ok(mir::Operand::Local(result_local))
@@ -653,7 +654,7 @@ impl<'a> GeneratorContext<'a> {
                                 left: mir::Operand::Constant(mir::Constant::Int(0)),
                                 right: operand_val,
                             },
-                            span: None,
+                            span: self.source_span,
                         });
                         Ok(mir::Operand::Local(result_local))
                     }
@@ -681,7 +682,7 @@ impl<'a> GeneratorContext<'a> {
                                 op: mir::UnOp::Not,
                                 operand: bool_operand,
                             },
-                            span: None,
+                            span: self.source_span,
                         });
                         Ok(mir::Operand::Local(result_local))
                     }
@@ -736,7 +737,7 @@ impl<'a> GeneratorContext<'a> {
                     left: left_operand,
                     right: right_operand,
                 },
-                span: None,
+                span: self.source_span,
             });
         } else if matches!(cond_expr.kind, hir::ExprKind::Bool(true)) {
             // while True: — always true
@@ -745,7 +746,7 @@ impl<'a> GeneratorContext<'a> {
                     dest: cond_result_local,
                     src: mir::Operand::Constant(mir::Constant::Bool(true)),
                 },
-                span: None,
+                span: self.source_span,
             });
         } else if let hir::ExprKind::Var(var_id) = &cond_expr.kind {
             // while some_var: — copy the variable's boolean value
@@ -755,7 +756,7 @@ impl<'a> GeneratorContext<'a> {
                         dest: cond_result_local,
                         src: mir::Operand::Local(mir_local),
                     },
-                    span: None,
+                    span: self.source_span,
                 });
             } else {
                 // Variable not in generator scope, default to true
@@ -764,7 +765,7 @@ impl<'a> GeneratorContext<'a> {
                         dest: cond_result_local,
                         src: mir::Operand::Constant(mir::Constant::Bool(true)),
                     },
-                    span: None,
+                    span: self.source_span,
                 });
             }
         } else {

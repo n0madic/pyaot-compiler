@@ -214,7 +214,7 @@ impl<'a> Lowering<'a> {
 
                 // Choose the appropriate getter based on element type and storage
                 let runtime_func = if uses_heap_obj {
-                    Self::tuple_get_func(&elem_ty)
+                    crate::type_dispatch::tuple_get_func(&elem_ty)
                 } else {
                     // ELEM_RAW_INT storage - all elements are raw i64
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)

@@ -4,9 +4,6 @@ use pyaot_hir as hir;
 use pyaot_utils::StringInterner;
 use std::path::PathBuf;
 
-// Re-export from lowering to avoid duplicate definitions
-pub use pyaot_lowering::CrossModuleClassInfo;
-
 /// Information about a parsed module
 pub struct ParsedModule {
     /// Filesystem path to the source file

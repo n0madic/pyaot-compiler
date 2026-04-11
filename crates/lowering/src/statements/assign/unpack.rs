@@ -88,7 +88,7 @@ impl<'a> Lowering<'a> {
             let temp_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
 
             let get_func = if is_tuple {
-                Self::tuple_get_func(&elem_type)
+                crate::type_dispatch::tuple_get_func(&elem_type)
             } else {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
             };
@@ -155,7 +155,7 @@ impl<'a> Lowering<'a> {
             let temp_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
 
             let get_func = if is_tuple {
-                Self::tuple_get_func(&elem_type)
+                crate::type_dispatch::tuple_get_func(&elem_type)
             } else {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
             };
@@ -264,7 +264,7 @@ impl<'a> Lowering<'a> {
                 hir::UnpackTarget::Var(var_id) => {
                     // Simple variable - extract and assign directly
                     let get_func = if is_tuple {
-                        Self::tuple_get_func(&elem_type)
+                        crate::type_dispatch::tuple_get_func(&elem_type)
                     } else {
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
                     };
