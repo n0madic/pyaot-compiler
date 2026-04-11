@@ -1928,24 +1928,24 @@ for x in simple_gen():
     - Default: `LOCAL_TYPE_RAW_INT` (safe - won't trace as pointer)
     - Only `LOCAL_TYPE_PTR` locals are traced during mark phase
     - Eliminates crash risk from treating large integers as heap pointers
-- **MIR** (`mir/lib.rs`):
-  - `MakeGenerator`, `GeneratorGetState`, `GeneratorSetState`
-  - `GeneratorGetLocal`, `GeneratorSetLocal`, `GeneratorGetLocalPtr`, `GeneratorSetLocalPtr`
-  - `GeneratorSetLocalType` - set type tag for precise GC tracking
-  - `GeneratorSetExhausted`, `GeneratorIsExhausted`
+- **HIR Intrinsics** (`hir/lib.rs`):
+  - `ExprKind::GeneratorIntrinsic(GeneratorIntrinsic)` — 11 variants mapping 1:1 to runtime functions
+  - Created only by the desugaring pass, never by the frontend
+- **Desugaring** (`lowering/src/generators/desugaring.rs`):
+  - `desugar_generators()` — HIR→HIR pass, runs inside `lower_module` before type planning
+  - Each generator function is split into creator (replaces original body) + resume (new function)
+  - Resume function uses HIR control flow (if/elif) + `GeneratorIntrinsic` expressions for state machine
+  - Three patterns: generic sequential, while-loop, for-loop (with filter + trailing yields)
+  - Yield value expressions are the **original HIR expressions** — full expression lowering handles them
 - **Lowering** (`lowering/src/generators/`):
-  - Directory module with focused submodules:
-    - `mod.rs` - Types (`GeneratorVar`, `YieldInfo`, `WhileLoopGenerator`, `ForLoopGenerator`), public API
-    - `vars.rs` - `collect_generator_vars()`, `collect_vars_from_stmt()` for variable collection
-    - `creator.rs` - `create_generator_creator()`, `lower_iter_expr_for_creator()` for creator function
-    - `resume.rs` - `create_generator_resume()` for generic state machine generation
-    - `while_loop.rs` - `detect_while_loop_generator()`, `create_while_loop_generator_resume()`
-    - `for_loop.rs` - `detect_for_loop_generator()`, `create_for_loop_generator_resume()`
-    - `utils.rs` - Helper functions for expression lowering in generators (truthiness, unary ops)
-  - `lower_generator_function()` - transforms generator to creator + resume functions
-  - Generator creator: allocates generator object with func_id, returns it
-  - Generator resume: complete state machine with state dispatch
-  - State blocks: one per yield, each yields value and transitions to next state
+  - `mod.rs` - Data types (`GeneratorVar`, `YieldInfo`, `WhileLoopGenerator`, `ForLoopGenerator`)
+  - `desugaring.rs` - HIR-level generator desugaring pass (main entry point)
+  - `vars.rs` - `collect_generator_vars()` for variable collection
+  - `while_loop.rs` - `detect_while_loop_generator()` pattern detection (detection-only)
+  - `for_loop.rs` - `detect_for_loop_generator()` pattern detection (detection-only)
+  - `utils.rs` - `collect_yield_info()` for yield point analysis
+- **Intrinsic Lowering** (`lowering/src/expressions/generator_intrinsics.rs`):
+  - Each `GeneratorIntrinsic` variant lowers to one `RuntimeCall` instruction
   - Exhaustion: final state marks generator exhausted and returns sentinel (0)
 - **Codegen** (`codegen-cranelift/src/lib.rs`):
   - `generate_generator_dispatcher()` - creates `__pyaot_generator_resume` function
@@ -1962,15 +1962,15 @@ for x in simple_gen():
   - `close()` - marks generator as exhausted via `rt_generator_close()`
   - `send(value)` - fully functional via `rt_generator_send()`, yield expressions return sent values
   - New exception types: `TypeError`, `RuntimeError`, `GeneratorExit`
-- **Sent value support** (`lowering/src/generators.rs`):
+- **Sent value support** (`lowering/src/generators/desugaring.rs`):
   - `YieldInfo` struct tracks yield points with assignment targets (`x = yield val`)
-  - State machine stores sent values in generator locals on resume
-  - Variables set by yields are loaded from generator locals when referenced
-- **While-loop generators** (`lowering/src/generators.rs`):
+  - Desugared resume function loads sent values via `GeneratorIntrinsic::GetSentValue`
+  - Variables set by yields are loaded from generator locals at the start of each state block
+- **While-loop generators** (`lowering/src/generators/desugaring.rs`):
   - `WhileLoopGenerator` struct detects `while cond: yield val; update` pattern
   - Parameters are saved to generator locals in creator function
-  - State machine: state 0 initializes, state 1 loops with update
-  - All variables persisted across yields
+  - Two-state design for single-yield loops (init + update), multi-state for multiple yields
+  - All variables persisted across yields via load/save in each state block
 
 - **`yield from` support** (`frontend-python/src/ast_to_hir/statements/mod.rs`, `lowering/src/generators/for_loop.rs`):
   - `yield from expr` is desugared to `for __v in expr: yield __v` in the frontend

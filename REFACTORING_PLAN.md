@@ -44,7 +44,7 @@ Complete catalog of discovered architectural issues, tagged for cross-referencin
 | P12 | Lowering runtime call boilerplate (229 sites migrated to emit_runtime_call) | ✅ DONE | Throughout `lowering/src/` | ~3,000 |
 | P13 | Lowering type dispatch (8 functions in type_dispatch.rs) | ✅ DONE | `lowering/src/type_dispatch.rs` | ~800 |
 | P14 | Type planning separated (136 cached queries, TypeEnvironment read-only) | ✅ DONE | `lowering/src/type_planning/` | ~3,000 |
-| P15 | Generator decoupled (GeneratorContext struct, 7 free functions) | ✅ DONE | `lowering/src/generators/` | ~3,584 |
+| P15 | Generator desugaring (HIR-level, replaces GeneratorContext) | ✅ DONE | `lowering/src/generators/desugaring.rs` | ~1,875 (was ~3,832) |
 | P16 | Frontend expressions.rs split (1,675 LOC → 6 files) | ✅ DONE | `frontend-python/src/ast_to_hir/expressions/` | ~1,675→~200 dispatch |
 | P17 | Frontend AstToHir struct (27 fields → 5 sub-structs) | ✅ DONE | `frontend-python/src/ast_to_hir/mod.rs` | ~500→~200 |
 | P18 | Type annotation validation (default params + class attrs) | ✅ DONE | `lowering/src/type_planning/validate.rs` | +110 |
@@ -88,7 +88,7 @@ Phase 3 (Lowering) ✅ COMPLETE
   P11 Dunder → IndexMap ✅
   P10 Decompose god-object (6 sub-structs) ✅
   P14 Separate type planning (cache-first queries) ✅
-  P15 Decouple generators (GeneratorContext) ✅
+  P15 Generator HIR desugaring (replaced GeneratorContext) ✅
   P12 emit_runtime_call (229 sites migrated) ✅
   P13 Centralized type dispatch (type_dispatch.rs) ✅
   P26 Split god-files (5→17 modules) ✅
@@ -562,7 +562,7 @@ Already implemented before this refactoring — `Instruction` has `pub span: Opt
 - Lowering god-object: 40+ fields → 6 focused sub-structs (`ClosureState`, `ModuleState`, `ClassRegistry`, `CodeGenState`, `SymbolTable`, `TypeEnvironment`)
 - Dunder methods: 48 `Option<FuncId>` → 1 `IndexMap<&'static str, FuncId>` + 56-entry `KNOWN_DUNDERS` array
 - Type queries: 136 cache-first via `get_type_of_expr_id`, only 4 uncached (where ExprId unavailable)
-- Generators: `GeneratorContext` struct with 6 impl blocks, 7 free functions for pure HIR analysis, only 1 `impl Lowering` (entry point)
+- Generators: HIR-level desugaring pass (`desugaring.rs`) transforms generators into regular functions before lowering; `GeneratorIntrinsic` HIR nodes map 1:1 to runtime functions
 - Runtime call boilerplate: 229 sites migrated to `emit_runtime_call` helper
 - Type dispatch: `type_dispatch.rs` with 8 centralized dispatch functions + `TruthinessStrategy` enum
 - God-files: 5 files (operators, match_stmt, assign, call_resolution, pre_scan) split into 17 focused modules
@@ -778,13 +778,12 @@ The desugarer transforms generator functions into state-machine classes before l
 3. Yield points become state transitions
 4. Lowerer handles the result as a normal class — no special generator logic needed
 
-**Actual implementation:** Instead of full HIR→HIR desugaring (high risk, requires new HIR nodes), created `GeneratorContext` struct that decouples generator MIR construction from the full `Lowering` context:
-- `GeneratorContext` bundles only: interner, class_registry, symbols, modules, types, next_local_id
-- 6 `impl GeneratorContext` blocks (creator, resume, while_loop, for_loop, utils, mod)
-- 7 free functions for pure HIR analysis (detect_*, collect_*, hir_binop_to_mir)
-- Only 1 `impl Lowering` remains (entry point: lower_generator_function, lower_yield_expr, infer_generator_yield_type)
-
-**Note:** Full HIR→HIR GeneratorDesugarer deferred — requires new HIR node types for state machines and complete rewrite of ~3,500 lines. The `GeneratorContext` approach achieves the decoupling goal with much lower risk.
+**Final implementation (REFACTORING_PLAN_V2 Phase 4):** Full HIR→HIR desugaring completed. `GeneratorContext` was replaced by `desugar_generators()` in `desugaring.rs`:
+- `GeneratorIntrinsic` enum added to HIR (11 variants mapping to RT_GENERATOR_* runtime functions)
+- Desugaring pass runs inside `lower_module` before type planning, transforms generators into creator + resume functions using HIR control flow + intrinsics
+- Yield value expressions reuse original HIR expressions — full expression lowering handles all types
+- Three patterns: generic sequential, while-loop, for-loop (with filter + trailing yields)
+- Net ~1,957 LOC reduction (old: ~3,832 → new: ~1,875)
 
 ### 3.5 — Lowering Helper: emit_runtime_call (P12) ✅ DONE
 

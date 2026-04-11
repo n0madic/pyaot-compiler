@@ -242,7 +242,7 @@ impl MirMerger {
             lowering.set_var_id_offset(this_var_offset);
             lowering.set_class_id_offset(this_class_offset);
 
-            let (module_mir, warnings) = lowering.lower_module(&parsed.hir).map_err(|e| {
+            let (module_mir, warnings) = lowering.lower_module(parsed.hir).map_err(|e| {
                 Report::new(e).with_source_code(NamedSource::new(&source_name, source_code.clone()))
             })?;
 

@@ -111,7 +111,7 @@ Native Executable
 | Nested functions | ✅ | |
 | nonlocal | ✅ | Cell-based storage |
 | global | ✅ | All types supported |
-| Generators | ✅ | `yield from` supported; yield with ternary conditions; `not` with truthiness in filter conditions; throw() not supported |
+| Generators | ✅ | HIR-level desugaring; `yield from`; ternary yields; filter conditions; `send()`/`close()`; throw() not supported |
 | Classes | ✅ | Single inheritance; class attrs accessible through instances |
 | `__init__` | ✅ | Fields from `self.field = value` auto-discovered |
 | `__str__`, `__repr__` | ✅ | Fallback to default repr for classes without dunder methods |

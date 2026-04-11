@@ -13,6 +13,7 @@ mod access;
 mod builtins; // Directory module with submodules: print, conversions, math, predicates, introspection, iteration, collections
 mod calls;
 mod collections;
+mod generator_intrinsics;
 mod literals;
 mod operators;
 mod stdlib;
@@ -182,10 +183,14 @@ impl<'a> Lowering<'a> {
                 self.lower_closure(*func, captures, hir_module, mir_func)
             }
 
-            // Yield expression (inside generator functions)
-            // This is handled specially during generator lowering
-            hir::ExprKind::Yield(value) => {
-                self.lower_yield_expr(value.as_ref().copied(), hir_module, mir_func)
+            // Yield expression — should have been desugared before lowering
+            hir::ExprKind::Yield(_) => Err(pyaot_diagnostics::CompilerError::codegen_error(
+                "yield expression should have been desugared before lowering".to_string(),
+            )),
+
+            // Generator intrinsic (post-desugaring)
+            hir::ExprKind::GeneratorIntrinsic(ref intrinsic) => {
+                self.lower_generator_intrinsic(intrinsic, hir_module, mir_func)
             }
 
             // Type reference (for isinstance)

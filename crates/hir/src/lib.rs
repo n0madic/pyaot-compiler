@@ -400,6 +400,40 @@ pub struct ExceptHandler {
     pub body: Vec<StmtId>,
 }
 
+/// Generator runtime intrinsics (only present after desugaring pass).
+/// Each variant maps 1:1 to an existing `RT_GENERATOR_*` runtime function.
+/// These are never created by the frontend — only by the generator desugaring
+/// pass in the lowering crate.
+#[derive(Debug, Clone)]
+pub enum GeneratorIntrinsic {
+    /// `rt_make_generator(func_id, num_locals) -> *mut Obj`
+    Create { func_id: u32, num_locals: u32 },
+    /// `rt_generator_get_state(gen) -> i64`
+    GetState(ExprId),
+    /// `rt_generator_set_state(gen, state) -> void` (returns dummy i64)
+    SetState { gen: ExprId, state: i64 },
+    /// `rt_generator_get_local(gen, idx) -> i64`
+    GetLocal { gen: ExprId, idx: u32 },
+    /// `rt_generator_set_local(gen, idx, value) -> void`
+    SetLocal {
+        gen: ExprId,
+        idx: u32,
+        value: ExprId,
+    },
+    /// `rt_generator_set_local_type(gen, idx, type_tag) -> void`
+    SetLocalType { gen: ExprId, idx: u32, type_tag: u8 },
+    /// `rt_generator_set_exhausted(gen) -> void`
+    SetExhausted(ExprId),
+    /// `rt_generator_is_exhausted(gen) -> bool`
+    IsExhausted(ExprId),
+    /// `rt_generator_get_sent_value(gen) -> i64`
+    GetSentValue(ExprId),
+    /// `rt_iter_next_no_exc(iter) -> i64`
+    IterNextNoExc(ExprId),
+    /// `rt_iter_is_exhausted(iter) -> bool`
+    IterIsExhausted(ExprId),
+}
+
 /// HIR Expression
 #[derive(Debug, Clone)]
 pub struct Expr {
@@ -585,6 +619,11 @@ pub enum ExprKind {
     /// Lowers to MIR ExcGetCurrent → rt_exc_get_current().
     /// Used by context manager desugaring to pass exception info to __exit__.
     ExcCurrentValue,
+
+    // ==================== Generator Intrinsics ====================
+    /// Generator runtime intrinsic (post-desugaring only).
+    /// Never created by the frontend — only by the generator desugaring pass.
+    GeneratorIntrinsic(GeneratorIntrinsic),
 }
 
 /// Binary operators

@@ -45,10 +45,10 @@ cargo fmt && cargo clippy --workspace  # Format and lint
 ## Architecture
 
 ```
-Python → AST → HIR → MIR → Cranelift → Object → Executable
+Python → AST → HIR → [generator desugaring] → MIR → Cranelift → Object → Executable
 ```
 
-Detailed structure in `.claude/rules/architecture.md`. Key APIs in `.claude/rules/api-reference.md`.
+Generator functions are desugared at HIR level (before lowering) into regular functions using `GeneratorIntrinsic` expressions. Detailed structure in `.claude/rules/architecture.md`. Key APIs in `.claude/rules/api-reference.md`.
 
 ## Error Handling Patterns
 

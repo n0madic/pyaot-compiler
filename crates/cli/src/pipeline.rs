@@ -36,7 +36,7 @@ pub fn compile_single_module(
     let class_count = parsed.hir.class_defs.len();
     let lowering =
         pyaot_lowering::Lowering::new_with_capacity(&mut parsed.interner, func_count, class_count);
-    let (mir_module, warnings) = lowering.lower_module(&parsed.hir).map_err(|e| {
+    let (mir_module, warnings) = lowering.lower_module(parsed.hir).map_err(|e| {
         Report::new(e).with_source_code(NamedSource::new(&source_name, source_code.clone()))
     })?;
 

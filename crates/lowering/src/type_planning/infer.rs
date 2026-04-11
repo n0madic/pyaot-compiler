@@ -495,6 +495,13 @@ impl<'a> Lowering<'a> {
                 }
                 Type::Any
             }
+            // Generator intrinsics have known return types
+            hir::ExprKind::GeneratorIntrinsic(intrinsic) => match intrinsic {
+                hir::GeneratorIntrinsic::Create { .. } => Type::Iterator(Box::new(Type::Any)),
+                hir::GeneratorIntrinsic::IsExhausted(_)
+                | hir::GeneratorIntrinsic::IterIsExhausted(_) => Type::Bool,
+                _ => Type::Int,
+            },
             _ => expr.ty.clone().unwrap_or(Type::Any),
         }
     }
@@ -696,6 +703,13 @@ impl<'a> Lowering<'a> {
                 }
                 Type::Any
             }
+            // Generator intrinsics have known return types
+            hir::ExprKind::GeneratorIntrinsic(intrinsic) => match intrinsic {
+                hir::GeneratorIntrinsic::Create { .. } => Type::Iterator(Box::new(Type::Any)),
+                hir::GeneratorIntrinsic::IsExhausted(_)
+                | hir::GeneratorIntrinsic::IterIsExhausted(_) => Type::Bool,
+                _ => Type::Int,
+            },
             _ => expr.ty.clone().unwrap_or(Type::Any),
         }
     }

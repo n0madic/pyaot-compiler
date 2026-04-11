@@ -12,17 +12,23 @@ impl<'a> Lowering<'a> {
     /// Returns the MIR module and any warnings collected during lowering.
     pub fn lower_module(
         mut self,
-        hir_module: &hir::Module,
+        mut hir_module: hir::Module,
     ) -> Result<(mir::Module, CompilerWarnings)> {
         // Copy global variables set from HIR module
         self.symbols.globals = hir_module.globals.clone();
 
         // Pre-populate global variable types from module init function
         // This must happen before lowering any functions since they may reference globals
-        self.scan_global_var_types(hir_module);
+        self.scan_global_var_types(&hir_module);
 
         // First pass: build class info
-        self.build_class_info(hir_module);
+        self.build_class_info(&hir_module);
+
+        // Desugar generator functions into regular functions at HIR level.
+        // Must run after build_class_info (needs class field info for yield type
+        // inference) and before function name map / type planning (so the desugared
+        // functions are visible to both).
+        self.desugar_generators(&mut hir_module)?;
 
         // Second pass: build function name map
         for func_id in &hir_module.functions {
@@ -35,25 +41,23 @@ impl<'a> Lowering<'a> {
         // Pass 2.5: scan for mutable default parameters and allocate global slots
         // In Python, mutable defaults (list, dict, set, class instances) are evaluated
         // once at function definition time and shared across all calls.
-        self.scan_mutable_defaults(hir_module);
+        self.scan_mutable_defaults(&hir_module);
 
         // Phase 1: Type Planning — pre-scan + compute types for all expressions
         // Fills type_map, closure_capture_types, lambda_param_type_hints, func_return_types
-        self.run_type_planning(hir_module);
+        self.run_type_planning(&hir_module);
 
         // Phase 2: Code Generation — lower functions using type_map
+        // After desugaring, no functions should have is_generator=true
         for func_id in &hir_module.functions {
             if let Some(func) = hir_module.func_defs.get(func_id) {
-                if func.is_generator {
-                    // Generator functions create two functions: creator and resume
-                    let (creator_func, resume_func) =
-                        self.lower_generator_function(func, hir_module)?;
-                    self.mir_module.add_function(creator_func);
-                    self.mir_module.add_function(resume_func);
-                } else {
-                    let mir_func = self.lower_function(func, hir_module)?;
-                    self.mir_module.add_function(mir_func);
-                }
+                debug_assert!(
+                    !func.is_generator,
+                    "generator function not desugared: {:?}",
+                    func.name
+                );
+                let mir_func = self.lower_function(func, &hir_module)?;
+                self.mir_module.add_function(mir_func);
             }
         }
 

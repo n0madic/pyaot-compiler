@@ -8,7 +8,7 @@
 | `frontend-python` | Python parsing → HIR | `ast_to_hir/` |
 | `hir` | High-level IR | `lib.rs` |
 | `types` | Type system | `lib.rs` |
-| `lowering` | HIR → MIR transformation | `context/`, `expressions/`, `statements/` |
+| `lowering` | HIR → MIR transformation | `context/`, `expressions/`, `statements/`, `generators/` |
 | `mir` | Mid-level IR (CFG) | `lib.rs` |
 | `optimizer` | MIR optimization passes | `pass.rs`, `devirtualize/`, `flatten_properties/`, `inline/`, `constfold/`, `peephole/`, `dce/` |
 | `codegen-cranelift` | Native code generation | `instructions.rs`, `runtime_calls/`, `debug_info.rs` |

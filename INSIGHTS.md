@@ -437,7 +437,7 @@ Additional DWARF entries:
 - `DW_TAG_formal_parameter` with `DW_AT_name` + `DW_AT_type` — parameter names come from `MIR Local.name` (set from `hir_param.name` during lowering)
 - Compiler-internal functions (`__pyaot_*`, `__module_*`) are filtered out of DWARF output
 
-Generator-created instructions (state machine, dispatch) use `span: None` since they are synthetic. The `Lowering.current_span` is `None` during generator lowering, so these instructions correctly get no debug location.
+Generator-created instructions (state machine, dispatch) use synthetic spans from the generator function definition. After HIR-level desugaring, the desugared functions are lowered as regular functions, and their instructions get the source span of the original generator function definition.
 
 ---
 
@@ -480,11 +480,11 @@ If DCE removes a "dead" `x = 10 // 0` because `x` is unused, the `ZeroDivisionEr
 
 ## Generator Truthiness and Bool Yield
 
-Generator expressions use `compute_yield_expr_for_generator` and `lower_simple_expr_for_generator` in `lowering/src/generators/utils.rs` — these are separate code paths from the normal expression lowering. The `not` operator in these paths uses `convert_to_bool_in_block` (a block-parameterized variant of `convert_to_bool` from `context/helpers.rs`) to dispatch on the operand type for correct truthiness: len-based checks for collections, `!= 0` for int/float.
+Since generators are desugared at HIR level (`lowering/src/generators/desugaring.rs`), yield value expressions are handled by the **full expression lowering engine** — no separate code paths needed. The desugared resume function's body contains the original HIR expressions, which are lowered with complete type dispatch including truthiness checks via `convert_to_bool`.
 
 **Key pitfalls** (all addressed):
-- Generator resume functions always return i64, so `Bool` yield values must be widened via `BoolToInt` before return, and `infer_generator_yield_type` normalizes `Bool` → `Int`.
-- `get_expr_type` returns `Any` for generator loop variables (not registered in `var_types` at inference time). Code must use `loop_var_ty` when available, and fall back to `Type::Int` (not `IsTruthy`) for `Any`-typed operands since generator values are raw i64.
+- Generator resume functions always return i64, so `Bool` yield values must be widened via `BoolToInt` before return, and `infer_generator_yield_type_for_desugar` normalizes `Bool` → `Int`.
+- The desugaring pass uses `expr.ty` from the frontend (not `get_type_of_expr_id`, which requires type planning that hasn't run yet) for yield type inference.
 
 ---
 
