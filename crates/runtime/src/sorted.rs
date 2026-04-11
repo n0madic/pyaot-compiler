@@ -402,40 +402,6 @@ fn sorted_str_impl(str_obj: *mut Obj, reverse: i64) -> *mut Obj {
     }
 }
 
-// ==================== Thin wrappers for backward compatibility ====================
-// These are kept as `#[no_mangle] extern "C"` so that any already-compiled object
-// files that reference the old symbol names continue to link.
-
-/// Create a sorted list from a list (thin wrapper)
-#[no_mangle]
-pub extern "C" fn rt_sorted_list(list: *mut Obj, reverse: i64) -> *mut Obj {
-    sorted_list_impl(list, reverse)
-}
-
-/// Create a sorted list from a tuple (thin wrapper)
-#[no_mangle]
-pub extern "C" fn rt_sorted_tuple(tuple: *mut Obj, reverse: i64) -> *mut Obj {
-    sorted_tuple_impl(tuple, reverse)
-}
-
-/// Create a sorted list of keys from a dict (thin wrapper)
-#[no_mangle]
-pub extern "C" fn rt_sorted_dict(dict: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj {
-    sorted_dict_impl(dict, reverse, elem_tag)
-}
-
-/// Create a sorted list from a set (thin wrapper)
-#[no_mangle]
-pub extern "C" fn rt_sorted_set(set: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj {
-    sorted_set_impl(set, reverse, elem_tag)
-}
-
-/// Create a sorted list of single-char strings from a string (thin wrapper)
-#[no_mangle]
-pub extern "C" fn rt_sorted_str(str_obj: *mut Obj, reverse: i64) -> *mut Obj {
-    sorted_str_impl(str_obj, reverse)
-}
-
 /// Create a sorted list from a range
 /// reverse: 0 for ascending, 1 for descending
 /// Returns: pointer to new ListObj containing sorted integers (as raw i64 values)
@@ -892,69 +858,4 @@ fn sorted_str_with_key_impl(
 
         new_list
     }
-}
-
-// ==================== With-key thin wrappers ====================
-
-/// Sorted list with key (thin wrapper)
-#[no_mangle]
-pub extern "C" fn rt_sorted_list_with_key(
-    list: *mut Obj,
-    reverse: i64,
-    key_fn: i64,
-    elem_tag: i64,
-    captures: *mut Obj,
-    capture_count: i64,
-) -> *mut Obj {
-    sorted_list_with_key_impl(list, reverse, key_fn, elem_tag, captures, capture_count)
-}
-
-/// Sorted tuple with key (thin wrapper)
-#[no_mangle]
-pub extern "C" fn rt_sorted_tuple_with_key(
-    tuple: *mut Obj,
-    reverse: i64,
-    key_fn: i64,
-    elem_tag: i64,
-    captures: *mut Obj,
-    capture_count: i64,
-) -> *mut Obj {
-    sorted_tuple_with_key_impl(tuple, reverse, key_fn, elem_tag, captures, capture_count)
-}
-
-/// Sorted dict with key (thin wrapper)
-#[no_mangle]
-pub extern "C" fn rt_sorted_dict_with_key(
-    dict: *mut Obj,
-    reverse: i64,
-    key_fn: i64,
-    captures: *mut Obj,
-    capture_count: i64,
-) -> *mut Obj {
-    sorted_dict_with_key_impl(dict, reverse, key_fn, captures, capture_count)
-}
-
-/// Sorted set with key (thin wrapper)
-#[no_mangle]
-pub extern "C" fn rt_sorted_set_with_key(
-    set: *mut Obj,
-    reverse: i64,
-    key_fn: i64,
-    elem_tag: i64,
-    captures: *mut Obj,
-    capture_count: i64,
-) -> *mut Obj {
-    sorted_set_with_key_impl(set, reverse, key_fn, elem_tag, captures, capture_count)
-}
-
-/// Sorted str with key (thin wrapper)
-#[no_mangle]
-pub extern "C" fn rt_sorted_str_with_key(
-    str_obj: *mut Obj,
-    reverse: i64,
-    key_fn: i64,
-    captures: *mut Obj,
-    capture_count: i64,
-) -> *mut Obj {
-    sorted_str_with_key_impl(str_obj, reverse, key_fn, captures, capture_count)
 }

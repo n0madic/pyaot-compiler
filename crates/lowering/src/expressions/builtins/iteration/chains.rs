@@ -162,6 +162,7 @@ impl<'a> Lowering<'a> {
         if args.len() < 2 || args.len() > 4 {
             return Err(CompilerError::codegen_error(
                 "islice() requires 2-4 arguments",
+                None,
             ));
         }
 

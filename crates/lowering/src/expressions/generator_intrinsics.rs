@@ -26,15 +26,15 @@ impl<'a> Lowering<'a> {
                 func_id,
                 num_locals,
             } => {
-                let dest = self.alloc_gc_local(Type::Iterator(Box::new(Type::Any)), mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest,
-                    func: mir::RuntimeFunc::Call(&RT_MAKE_GENERATOR),
-                    args: vec![
+                let dest = self.emit_runtime_call_gc(
+                    mir::RuntimeFunc::Call(&RT_MAKE_GENERATOR),
+                    vec![
                         mir::Operand::Constant(mir::Constant::Int(*func_id as i64)),
                         mir::Operand::Constant(mir::Constant::Int(*num_locals as i64)),
                     ],
-                });
+                    Type::Iterator(Box::new(Type::Any)),
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(dest))
             }
 

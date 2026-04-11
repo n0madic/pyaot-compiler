@@ -123,8 +123,6 @@ impl<'a> Lowering<'a> {
                         capture_operands.push(capture_operand);
                     }
 
-                    let void_local = self.alloc_and_add_local(Type::None, mir_func);
-
                     // Determine elem_tag for captures tuple based on actual types.
                     // Use ELEM_RAW_INT when no capture needs GC tracing.
                     // Cell variables are always heap pointers that need GC tracing.
@@ -170,17 +168,17 @@ impl<'a> Lowering<'a> {
 
                     // Store each capture in the inner tuple at index 0, 1, ...
                     for (i, capture_op) in capture_operands.iter().enumerate() {
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: void_local,
-                            func: mir::RuntimeFunc::Call(
+                        self.emit_runtime_call_void(
+                            mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_TUPLE_SET,
                             ),
-                            args: vec![
+                            vec![
                                 mir::Operand::Local(captures_tuple),
                                 mir::Operand::Constant(mir::Constant::Int(i as i64)),
                                 capture_op.clone(),
                             ],
-                        });
+                            mir_func,
+                        );
                     }
 
                     // Create outer tuple (func_ptr, captures_tuple) - always size 2
@@ -203,30 +201,26 @@ impl<'a> Lowering<'a> {
                     );
 
                     // Store func_ptr at index 0
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: void_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_TUPLE_SET,
-                        ),
-                        args: vec![
+                    self.emit_runtime_call_void(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
+                        vec![
                             mir::Operand::Local(dest_local),
                             mir::Operand::Constant(mir::Constant::Int(0)),
                             mir::Operand::Local(func_addr_local),
                         ],
-                    });
+                        mir_func,
+                    );
 
                     // Store captures_tuple at index 1
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: void_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_TUPLE_SET,
-                        ),
-                        args: vec![
+                    self.emit_runtime_call_void(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
+                        vec![
                             mir::Operand::Local(dest_local),
                             mir::Operand::Constant(mir::Constant::Int(1)),
                             mir::Operand::Local(captures_tuple),
                         ],
-                    });
+                        mir_func,
+                    );
                 }
                 return Ok(());
             }
@@ -353,37 +347,32 @@ impl<'a> Lowering<'a> {
                 src: final_operand.clone(),
             });
 
-            // Create a dummy local for the void return
-            let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-
             // Determine the type-specific runtime function for global set
             let runtime_func = self.get_global_set_func(&var_type);
 
             // Emit type-specific GlobalSet runtime call with offset-adjusted VarId
             let effective_var_id = self.get_effective_var_id(target);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: runtime_func,
-                args: vec![
+            self.emit_runtime_call_void(
+                runtime_func,
+                vec![
                     mir::Operand::Constant(mir::Constant::Int(effective_var_id)),
                     final_operand,
                 ],
-            });
+                mir_func,
+            );
         } else if let Some(cell_local) = self.get_nonlocal_cell(&target) {
             // Cell-wrapped variable (either cell_var or nonlocal_var): write through cell
             // Don't create a local for the variable - it lives in the cell
-            // Create a dummy local for the void return
-            let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
 
             // Determine the type-specific runtime function for cell set
             let set_func = self.get_cell_set_func(&var_type);
 
             // Emit cell set operation
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: set_func,
-                args: vec![mir::Operand::Local(cell_local), final_operand],
-            });
+            self.emit_runtime_call_void(
+                set_func,
+                vec![mir::Operand::Local(cell_local), final_operand],
+                mir_func,
+            );
         } else {
             // Local variable: standard copy
             let dest_local = self.get_or_create_local(target, var_type.clone(), mir_func);

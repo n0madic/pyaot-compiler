@@ -290,15 +290,10 @@ impl<'a> Lowering<'a> {
             self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
         } else {
             // Required param - emit assertion failure
-            let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
             let msg = format!("missing required keyword argument '{}'", param_name_str);
             let msg_str = self.intern(&msg);
             let msg_operand = mir::Operand::Constant(mir::Constant::Str(msg_str));
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::AssertFail,
-                args: vec![msg_operand],
-            });
+            self.emit_runtime_call_void(mir::RuntimeFunc::AssertFail, vec![msg_operand], mir_func);
             self.current_block_mut().terminator = mir::Terminator::Unreachable;
         }
 

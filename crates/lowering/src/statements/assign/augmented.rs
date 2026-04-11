@@ -33,9 +33,6 @@ impl<'a> Lowering<'a> {
         let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
         let value_type = self.get_type_of_expr_id(value, hir_module);
 
-        // Create a dummy local for void returns
-        let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-
         match obj_type {
             Type::Dict(ref key_ty, ref val_ty) => {
                 // Refine Dict(Any, Any) type based on actual key/value types
@@ -60,11 +57,11 @@ impl<'a> Lowering<'a> {
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
                 let boxed_value =
                     self.box_primitive_if_needed(value_operand, &value_type, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
-                    args: vec![obj_operand, boxed_key, boxed_value],
-                });
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
+                    vec![obj_operand, boxed_key, boxed_value],
+                    mir_func,
+                );
             }
             Type::DefaultDict(ref _key_ty, ref val_ty) => {
                 // defaultdict[key] = value — same as dict assignment, uses DictSet
@@ -77,11 +74,11 @@ impl<'a> Lowering<'a> {
                     &value_type
                 };
                 let boxed_value = self.box_primitive_if_needed(value_operand, box_type, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
-                    args: vec![obj_operand, boxed_key, boxed_value],
-                });
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
+                    vec![obj_operand, boxed_key, boxed_value],
+                    mir_func,
+                );
             }
             Type::List(ref elem_ty) => {
                 // list[index] = value
@@ -105,11 +102,11 @@ impl<'a> Lowering<'a> {
                 } else {
                     value_operand
                 };
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SET),
-                    args: vec![obj_operand, index_operand, store_operand],
-                });
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SET),
+                    vec![obj_operand, index_operand, store_operand],
+                    mir_func,
+                );
             }
             Type::Class { class_id, .. } => {
                 // Class with __setitem__ dunder
@@ -118,6 +115,7 @@ impl<'a> Lowering<'a> {
                     .and_then(|info| info.get_dunder_func("__setitem__"));
 
                 if let Some(func_id) = setitem_func {
+                    let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: dummy_local,
                         func: func_id,
@@ -150,27 +148,23 @@ impl<'a> Lowering<'a> {
         let index_operand = self.lower_expr(index_expr, hir_module, mir_func)?;
         let index_type = self.get_type_of_expr_id(index, hir_module);
 
-        // Create a dummy local for the discarded return value
-        // Use Type::Any (i64) since DictPop/ListPop return heap pointers
-        let dummy_local = self.alloc_and_add_local(Type::Any, mir_func);
-
         match obj_type {
             Type::Dict(_, _) | Type::DefaultDict(_, _) => {
                 // del dict[key] → rt_dict_pop(dict, key) and discard result
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
-                    args: vec![obj_operand, boxed_key],
-                });
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
+                    vec![obj_operand, boxed_key],
+                    mir_func,
+                );
             }
             Type::List(_) => {
                 // del list[index] → rt_list_pop(list, index) and discard result
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_POP),
-                    args: vec![obj_operand, index_operand],
-                });
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_POP),
+                    vec![obj_operand, index_operand],
+                    mir_func,
+                );
             }
             Type::Class { class_id, .. } => {
                 // Class with __delitem__ dunder
@@ -179,6 +173,7 @@ impl<'a> Lowering<'a> {
                     .and_then(|info| info.get_dunder_func("__delitem__"));
 
                 if let Some(func_id) = delitem_func {
+                    let dummy_local = self.alloc_and_add_local(Type::Any, mir_func);
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: dummy_local,
                         func: func_id,

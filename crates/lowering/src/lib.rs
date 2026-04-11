@@ -350,8 +350,6 @@ impl<'a> Lowering<'a> {
         operand_types: Option<&[Type]>,
         mir_func: &mut mir::Function,
     ) -> LocalId {
-        let tuple_local = self.alloc_gc_local(Type::Tuple(vec![elem_type.clone()]), mir_func);
-
         // Determine elem_tag based on element types.
         // Use ELEM_RAW_INT (1) when no element needs GC tracing,
         // ELEM_HEAP_OBJ (0) when any element is a heap type.
@@ -369,14 +367,15 @@ impl<'a> Lowering<'a> {
         };
 
         // Emit: MakeTuple(size, elem_tag)
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: tuple_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
-            args: vec![
+        let tuple_local = self.emit_runtime_call_gc(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
+            vec![
                 mir::Operand::Constant(mir::Constant::Int(operands.len() as i64)),
                 mir::Operand::Constant(mir::Constant::Int(elem_tag)),
             ],
-        });
+            Type::Tuple(vec![elem_type.clone()]),
+            mir_func,
+        );
 
         // Emit: TupleSet for each element
         for (i, op) in operands.iter().enumerate() {
@@ -444,16 +443,15 @@ impl<'a> Lowering<'a> {
         let prefix_tuple = self.create_tuple_from_operands(extra_positional, elem_type, mir_func);
 
         // Then, concatenate prefix_tuple + list_tail_tuple
-        let result_local = self.alloc_gc_local(Type::Tuple(vec![Type::Any]), mir_func);
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_CONCAT),
-            args: vec![
+        let result_local = self.emit_runtime_call_gc(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_CONCAT),
+            vec![
                 mir::Operand::Local(prefix_tuple),
                 mir::Operand::Local(list_tail_tuple),
             ],
-        });
+            Type::Tuple(vec![Type::Any]),
+            mir_func,
+        );
 
         result_local
     }
@@ -464,17 +462,13 @@ impl<'a> Lowering<'a> {
         keywords: &indexmap::IndexMap<pyaot_utils::InternedString, mir::Operand>,
         mir_func: &mut mir::Function,
     ) -> LocalId {
-        let dict_local = self.alloc_gc_local(
+        // Emit: MakeDict(capacity)
+        let dict_local = self.emit_runtime_call_gc(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DICT),
+            vec![mir::Operand::Constant(mir::Constant::Int(0))],
             Type::Dict(Box::new(Type::Str), Box::new(Type::Any)),
             mir_func,
         );
-
-        // Emit: MakeDict(capacity)
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: dict_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DICT),
-            args: vec![mir::Operand::Constant(mir::Constant::Int(0))],
-        });
 
         // Emit: DictSet for each key-value pair
         for (key_name, value_op) in keywords {

@@ -112,4 +112,36 @@ impl<'a> Lowering<'a> {
         self.emit_instruction(mir::InstructionKind::RuntimeCall { dest, func, args });
         dest
     }
+
+    /// Emit a void runtime call (no meaningful return value).
+    ///
+    /// Allocates a throwaway `Type::None` local as the required dest slot, then emits
+    /// the RuntimeCall. Use this for calls whose return value is never used (e.g. print,
+    /// gc_push/gc_pop, GC root registration).
+    pub(crate) fn emit_runtime_call_void(
+        &mut self,
+        func: mir::RuntimeFunc,
+        args: Vec<mir::Operand>,
+        mir_func: &mut mir::Function,
+    ) {
+        let dest = self.alloc_and_add_local(Type::None, mir_func);
+        self.emit_instruction(mir::InstructionKind::RuntimeCall { dest, func, args });
+    }
+
+    /// Emit a runtime call whose result is a GC-tracked heap object.
+    ///
+    /// Like `emit_runtime_call` but marks the result local as a GC root
+    /// (`is_gc_root: true`). Use for calls that allocate heap objects (strings,
+    /// lists, dicts, etc.) that must be kept alive across GC collection points.
+    pub(crate) fn emit_runtime_call_gc(
+        &mut self,
+        func: mir::RuntimeFunc,
+        args: Vec<mir::Operand>,
+        result_type: Type,
+        mir_func: &mut mir::Function,
+    ) -> LocalId {
+        let dest = self.alloc_gc_local(result_type, mir_func);
+        self.emit_instruction(mir::InstructionKind::RuntimeCall { dest, func, args });
+        dest
+    }
 }

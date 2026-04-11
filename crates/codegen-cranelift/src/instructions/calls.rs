@@ -32,10 +32,10 @@ pub(crate) fn compile_call_direct(
     let cl_func_id = match ctx.symbols.func_ids.get(func) {
         Some(id) => *id,
         None => {
-            return Err(pyaot_diagnostics::CompilerError::codegen_error(format!(
-                "Function ID {:?} not found in module",
-                func
-            )))
+            return Err(pyaot_diagnostics::CompilerError::codegen_error(
+                format!("Function ID {:?} not found in module", func),
+                None,
+            ))
         }
     };
 
@@ -134,10 +134,10 @@ pub(crate) fn compile_call_named(
     let cl_func_id = match ctx.symbols.func_name_ids.get(name) {
         Some(id) => *id,
         None => {
-            return Err(pyaot_diagnostics::CompilerError::codegen_error(format!(
-                "Function '{}' not found in module",
-                name
-            )))
+            return Err(pyaot_diagnostics::CompilerError::codegen_error(
+                format!("Function '{}' not found in module", name),
+                None,
+            ))
         }
     };
 
@@ -261,10 +261,10 @@ pub(crate) fn compile_call_virtual(
     let dest_local = match ctx.symbols.locals.get(dest) {
         Some(local) => local,
         None => {
-            return Err(pyaot_diagnostics::CompilerError::codegen_error(format!(
-                "Destination local {:?} not found for virtual call",
-                dest
-            )))
+            return Err(pyaot_diagnostics::CompilerError::codegen_error(
+                format!("Destination local {:?} not found for virtual call", dest),
+                None,
+            ))
         }
     };
     let return_type = crate::utils::type_to_cranelift(&dest_local.ty);
@@ -380,10 +380,10 @@ pub(crate) fn compile_func_addr(
     let cl_func_id = match ctx.symbols.func_ids.get(func) {
         Some(id) => *id,
         None => {
-            return Err(pyaot_diagnostics::CompilerError::codegen_error(format!(
-                "Function ID {:?} not found for address lookup",
-                func
-            )))
+            return Err(pyaot_diagnostics::CompilerError::codegen_error(
+                format!("Function ID {:?} not found for address lookup", func),
+                None,
+            ))
         }
     };
 

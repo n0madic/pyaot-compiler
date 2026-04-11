@@ -91,16 +91,15 @@ impl<'a> Lowering<'a> {
 
             // Push each iterator to the list
             for (i, iter_op) in iter_locals.iter().enumerate() {
-                let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SET),
-                    args: vec![
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SET),
+                    vec![
                         mir::Operand::Local(iter_list_local),
                         mir::Operand::Constant(mir::Constant::Int(i as i64)),
                         iter_op.clone(),
                     ],
-                });
+                    mir_func,
+                );
             }
 
             let result_local = self.alloc_local_id();
@@ -288,6 +287,7 @@ impl<'a> Lowering<'a> {
         if args.len() < 2 {
             return Err(CompilerError::codegen_error(
                 "map() requires at least 2 arguments",
+                None,
             ));
         }
 
@@ -296,9 +296,9 @@ impl<'a> Lowering<'a> {
         let func_or_builtin = self
             .extract_func_or_builtin(func_expr, hir_module)
             .ok_or_else(|| {
-                CompilerError::codegen_error_at(
+                CompilerError::codegen_error(
                     "map() first argument must be a function",
-                    func_expr.span,
+                    Some(func_expr.span),
                 )
             })?;
 
@@ -487,6 +487,7 @@ impl<'a> Lowering<'a> {
         if args.len() < 2 || args.len() > 3 {
             return Err(CompilerError::codegen_error(
                 "reduce() requires 2 or 3 arguments",
+                None,
             ));
         }
 
@@ -499,9 +500,9 @@ impl<'a> Lowering<'a> {
         let func_or_builtin = self
             .extract_func_or_builtin(func_expr, hir_module)
             .ok_or_else(|| {
-                CompilerError::codegen_error_at(
+                CompilerError::codegen_error(
                     "reduce() first argument must be a function",
-                    func_expr.span,
+                    Some(func_expr.span),
                 )
             })?;
 
@@ -617,6 +618,7 @@ impl<'a> Lowering<'a> {
         if args.len() < 2 {
             return Err(CompilerError::codegen_error(
                 "filter() requires at least 2 arguments",
+                None,
             ));
         }
 
@@ -637,9 +639,9 @@ impl<'a> Lowering<'a> {
             let func_or_builtin = self
                 .extract_func_or_builtin(func_expr, hir_module)
                 .ok_or_else(|| {
-                    CompilerError::codegen_error_at(
+                    CompilerError::codegen_error(
                         "filter() first argument must be a function or None",
-                        func_expr.span,
+                        Some(func_expr.span),
                     )
                 })?;
 

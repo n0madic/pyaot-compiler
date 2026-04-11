@@ -120,12 +120,12 @@ impl<'a> Lowering<'a> {
 
                     if let Some(slot) = stored_slot {
                         // Load the pre-evaluated default from global storage
-                        let default_local = self.alloc_gc_local(Type::Any, mir_func);
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: default_local,
-                            func: mir::RuntimeFunc::Call(ValueKind::Ptr.global_get_def()),
-                            args: vec![mir::Operand::Constant(mir::Constant::Int(slot as i64))],
-                        });
+                        let default_local = self.emit_runtime_call_gc(
+                            mir::RuntimeFunc::Call(ValueKind::Ptr.global_get_def()),
+                            vec![mir::Operand::Constant(mir::Constant::Int(slot as i64))],
+                            Type::Any,
+                            mir_func,
+                        );
                         resolved[i] = Some(mir::Operand::Local(default_local));
                     } else {
                         // Evaluate the default expression (immutable types or unknown func)

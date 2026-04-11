@@ -20,10 +20,10 @@ pub fn declare_runtime_function(
     module
         .declare_function(name, Linkage::Import, sig)
         .map_err(|e| {
-            CompilerError::codegen_error(format!(
-                "Failed to declare runtime function '{}': {}",
-                name, e
-            ))
+            CompilerError::codegen_error(
+                format!("Failed to declare runtime function '{}': {}", name, e),
+                None,
+            )
         })
 }
 

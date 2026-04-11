@@ -6,7 +6,6 @@ use pyaot_core_defs::runtime_func_def;
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
-use pyaot_types::Type;
 
 use crate::context::Lowering;
 
@@ -45,9 +44,6 @@ impl<'a> Lowering<'a> {
         // Fail block: call rt_assert_fail and unreachable
         self.push_block(fail_bb);
 
-        // Create a dummy local for the runtime call result (void)
-        let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-
         // Prepare message argument (null pointer if no message, string constant if present)
         // Note: We pass string literals directly as constants for efficiency.
         // The codegen will create a raw C string in the data section.
@@ -56,29 +52,25 @@ impl<'a> Lowering<'a> {
             // Check if message is a string literal - pass it directly as constant
             if let hir::ExprKind::Str(s) = &msg_expr.kind {
                 let msg_operand = mir::Operand::Constant(mir::Constant::Str(*s));
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::AssertFail,
-                    args: vec![msg_operand],
-                });
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::AssertFail,
+                    vec![msg_operand],
+                    mir_func,
+                );
             } else {
                 // For non-literal strings (f-strings, variables), lower the expression
                 // and pass the string object to AssertFailObj
                 let msg_operand = self.lower_expr(msg_expr, hir_module, mir_func)?;
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(&runtime_func_def::RT_ASSERT_FAIL_OBJ),
-                    args: vec![msg_operand],
-                });
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(&runtime_func_def::RT_ASSERT_FAIL_OBJ),
+                    vec![msg_operand],
+                    mir_func,
+                );
             }
         } else {
             // No message - pass null pointer
             let msg_operand = mir::Operand::Constant(mir::Constant::Int(0));
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::AssertFail,
-                args: vec![msg_operand],
-            });
+            self.emit_runtime_call_void(mir::RuntimeFunc::AssertFail, vec![msg_operand], mir_func);
         }
 
         // rt_assert_fail doesn't return, so mark as unreachable

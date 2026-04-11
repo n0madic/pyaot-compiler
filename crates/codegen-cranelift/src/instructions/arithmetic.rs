@@ -208,6 +208,7 @@ pub(crate) fn compile_binop(
                 // Fall through to integer operations which handle bool (i8)
                 return Err(pyaot_diagnostics::CompilerError::codegen_error(
                     "Boolean operations (and/or) cannot be applied to float operands".to_string(),
+                    None,
                 ));
             }
             // Bitwise operations are only valid for integers
@@ -220,6 +221,7 @@ pub(crate) fn compile_binop(
                 // This should be caught by type checking
                 return Err(pyaot_diagnostics::CompilerError::codegen_error(
                     "Bitwise operations cannot be applied to float operands".to_string(),
+                    None,
                 ));
             }
         }

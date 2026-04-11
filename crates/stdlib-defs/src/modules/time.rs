@@ -3,8 +3,8 @@
 //! Provides time-related functions.
 
 use crate::types::{
-    ConstValue, LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibMethodDef,
-    StdlibModuleDef, TypeSpec,
+    ConstValue, LoweringHints, ParamDef, StdlibClassDef, StdlibFunctionDef, StdlibModuleDef,
+    TypeSpec,
 };
 #[allow(unused_imports)]
 use pyaot_core_defs::runtime_func_def::{P_F64, P_I64, P_I8, R_F64, R_I64, R_I8};
@@ -154,121 +154,11 @@ pub static TIME_STRPTIME: StdlibFunctionDef = StdlibFunctionDef {
     codegen: RuntimeFuncDef::new("rt_time_strptime", &[P_I64, P_I64], Some(R_I64), false),
 };
 
-// ============= struct_time class methods =============
-
-/// struct_time.tm_year getter
-static STRUCT_TIME_TM_YEAR: StdlibMethodDef = StdlibMethodDef {
-    name: "tm_year",
-    runtime_name: "rt_struct_time_get_tm_year",
-    params: &[],
-    return_type: TypeSpec::Int,
-    min_args: 0,
-    max_args: 0,
-    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_year", &[P_I64], Some(R_I64), false),
-};
-
-/// struct_time.tm_mon getter
-static STRUCT_TIME_TM_MON: StdlibMethodDef = StdlibMethodDef {
-    name: "tm_mon",
-    runtime_name: "rt_struct_time_get_tm_mon",
-    params: &[],
-    return_type: TypeSpec::Int,
-    min_args: 0,
-    max_args: 0,
-    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_mon", &[P_I64], Some(R_I64), false),
-};
-
-/// struct_time.tm_mday getter
-static STRUCT_TIME_TM_MDAY: StdlibMethodDef = StdlibMethodDef {
-    name: "tm_mday",
-    runtime_name: "rt_struct_time_get_tm_mday",
-    params: &[],
-    return_type: TypeSpec::Int,
-    min_args: 0,
-    max_args: 0,
-    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_mday", &[P_I64], Some(R_I64), false),
-};
-
-/// struct_time.tm_hour getter
-static STRUCT_TIME_TM_HOUR: StdlibMethodDef = StdlibMethodDef {
-    name: "tm_hour",
-    runtime_name: "rt_struct_time_get_tm_hour",
-    params: &[],
-    return_type: TypeSpec::Int,
-    min_args: 0,
-    max_args: 0,
-    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_hour", &[P_I64], Some(R_I64), false),
-};
-
-/// struct_time.tm_min getter
-static STRUCT_TIME_TM_MIN: StdlibMethodDef = StdlibMethodDef {
-    name: "tm_min",
-    runtime_name: "rt_struct_time_get_tm_min",
-    params: &[],
-    return_type: TypeSpec::Int,
-    min_args: 0,
-    max_args: 0,
-    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_min", &[P_I64], Some(R_I64), false),
-};
-
-/// struct_time.tm_sec getter
-static STRUCT_TIME_TM_SEC: StdlibMethodDef = StdlibMethodDef {
-    name: "tm_sec",
-    runtime_name: "rt_struct_time_get_tm_sec",
-    params: &[],
-    return_type: TypeSpec::Int,
-    min_args: 0,
-    max_args: 0,
-    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_sec", &[P_I64], Some(R_I64), false),
-};
-
-/// struct_time.tm_wday getter
-static STRUCT_TIME_TM_WDAY: StdlibMethodDef = StdlibMethodDef {
-    name: "tm_wday",
-    runtime_name: "rt_struct_time_get_tm_wday",
-    params: &[],
-    return_type: TypeSpec::Int,
-    min_args: 0,
-    max_args: 0,
-    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_wday", &[P_I64], Some(R_I64), false),
-};
-
-/// struct_time.tm_yday getter
-static STRUCT_TIME_TM_YDAY: StdlibMethodDef = StdlibMethodDef {
-    name: "tm_yday",
-    runtime_name: "rt_struct_time_get_tm_yday",
-    params: &[],
-    return_type: TypeSpec::Int,
-    min_args: 0,
-    max_args: 0,
-    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_yday", &[P_I64], Some(R_I64), false),
-};
-
-/// struct_time.tm_isdst getter
-static STRUCT_TIME_TM_ISDST: StdlibMethodDef = StdlibMethodDef {
-    name: "tm_isdst",
-    runtime_name: "rt_struct_time_get_tm_isdst",
-    params: &[],
-    return_type: TypeSpec::Int,
-    min_args: 0,
-    max_args: 0,
-    codegen: RuntimeFuncDef::new("rt_struct_time_get_tm_isdst", &[P_I64], Some(R_I64), false),
-};
-
-/// struct_time class definition
+/// struct_time class definition.
+/// Fields are exposed via ObjectTypeDef in object_types.rs (uses rt_struct_time_get_field).
 pub static STRUCT_TIME_CLASS: StdlibClassDef = StdlibClassDef {
     name: "struct_time",
-    methods: &[
-        STRUCT_TIME_TM_YEAR,
-        STRUCT_TIME_TM_MON,
-        STRUCT_TIME_TM_MDAY,
-        STRUCT_TIME_TM_HOUR,
-        STRUCT_TIME_TM_MIN,
-        STRUCT_TIME_TM_SEC,
-        STRUCT_TIME_TM_WDAY,
-        STRUCT_TIME_TM_YDAY,
-        STRUCT_TIME_TM_ISDST,
-    ],
+    methods: &[],
     type_spec: Some(TypeSpec::StructTime),
 };
 

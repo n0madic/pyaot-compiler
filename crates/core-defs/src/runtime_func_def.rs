@@ -951,62 +951,9 @@ pub static RT_ITER_IS_EXHAUSTED: RuntimeFuncDef =
 /// rt_iter_enumerate(inner: *mut Obj, start: i64) -> *mut Obj
 pub static RT_ITER_ENUMERATE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_iter_enumerate");
 
-// --- Sorted: no key, no elem_tag (List, Tuple, Str) ---
-/// rt_sorted_list(container: *mut Obj, reverse: i64) -> *mut Obj
-pub static RT_SORTED_LIST: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_sorted_list");
-/// rt_sorted_tuple(container: *mut Obj, reverse: i64) -> *mut Obj
-pub static RT_SORTED_TUPLE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_sorted_tuple");
-/// rt_sorted_str(container: *mut Obj, reverse: i64) -> *mut Obj
-pub static RT_SORTED_STR: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_sorted_str");
-
-// --- Sorted: no key, with elem_tag (Set, Dict) ---
-/// rt_sorted_set(container: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj
-pub static RT_SORTED_SET: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_sorted_set", &[PI64, PI64, PI8], Some(RI64), true);
-/// rt_sorted_dict(container: *mut Obj, reverse: i64, elem_tag: u8) -> *mut Obj
-pub static RT_SORTED_DICT: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_sorted_dict", &[PI64, PI64, PI8], Some(RI64), true);
-
 // --- Sorted: range (special args) ---
 /// rt_sorted_range(start: i64, stop: i64, step: i64, reverse: i64) -> *mut Obj
 pub static RT_SORTED_RANGE: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_sorted_range");
-
-// --- Sorted: with key (container, reverse, key_fn, elem_tag, captures, capture_count) ---
-/// rt_sorted_list_with_key(container, reverse, key_fn, elem_tag, captures, capture_count) -> *mut Obj
-pub static RT_SORTED_LIST_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
-    "rt_sorted_list_with_key",
-    &[PI64, PI64, PI64, PI64, PI64, PI64],
-    Some(RI64),
-    true,
-);
-/// rt_sorted_tuple_with_key(container, reverse, key_fn, elem_tag, captures, capture_count) -> *mut Obj
-pub static RT_SORTED_TUPLE_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
-    "rt_sorted_tuple_with_key",
-    &[PI64, PI64, PI64, PI64, PI64, PI64],
-    Some(RI64),
-    true,
-);
-/// rt_sorted_str_with_key(container, reverse, key_fn, elem_tag, captures, capture_count) -> *mut Obj
-pub static RT_SORTED_STR_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
-    "rt_sorted_str_with_key",
-    &[PI64, PI64, PI64, PI64, PI64, PI64],
-    Some(RI64),
-    true,
-);
-/// rt_sorted_set_with_key(container, reverse, key_fn, elem_tag, captures, capture_count) -> *mut Obj
-pub static RT_SORTED_SET_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
-    "rt_sorted_set_with_key",
-    &[PI64, PI64, PI64, PI64, PI64, PI64],
-    Some(RI64),
-    true,
-);
-/// rt_sorted_dict_with_key(container, reverse, key_fn, elem_tag, captures, capture_count) -> *mut Obj
-pub static RT_SORTED_DICT_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
-    "rt_sorted_dict_with_key",
-    &[PI64, PI64, PI64, PI64, PI64, PI64],
-    Some(RI64),
-    true,
-);
 
 // --- Sorted: generic dispatchers ---
 /// rt_sorted(obj, reverse, elem_tag, container_tag) -> *mut Obj

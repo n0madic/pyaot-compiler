@@ -300,19 +300,11 @@ impl CompilerError {
         }
     }
 
-    /// Create a codegen error without source location
-    pub fn codegen_error(message: impl Into<String>) -> Self {
+    /// Create a codegen error, optionally with source location
+    pub fn codegen_error(message: impl Into<String>, span: Option<Span>) -> Self {
         Self::CodegenError {
             message: message.into(),
-            span: None,
-        }
-    }
-
-    /// Create a codegen error with source location
-    pub fn codegen_error_at(message: impl Into<String>, span: Span) -> Self {
-        Self::CodegenError {
-            message: message.into(),
-            span: Some(DiagnosticSpan(span).into()),
+            span: span.map(|s| DiagnosticSpan(s).into()),
         }
     }
 

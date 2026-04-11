@@ -211,16 +211,15 @@ impl<'a> Lowering<'a> {
             _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_TAIL_TO_TUPLE),
         };
 
-        let varargs_tuple_local =
-            self.alloc_gc_local(Type::Tuple(vec![elem_type.clone()]), mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: varargs_tuple_local,
-            func: tail_to_tuple_func,
-            args: vec![
+        let varargs_tuple_local = self.emit_runtime_call_gc(
+            tail_to_tuple_func,
+            vec![
                 list_operand.clone(),
                 mir::Operand::Constant(mir::Constant::Int(remaining_params as i64)),
             ],
-        });
+            Type::Tuple(vec![elem_type.clone()]),
+            mir_func,
+        );
 
         self.set_pending_varargs(varargs_tuple_local);
 
@@ -485,20 +484,7 @@ impl<'a> Lowering<'a> {
         let msg_str = self.intern(&msg);
         let msg_operand = mir::Operand::Constant(mir::Constant::Str(msg_str));
 
-        // Emit the assertion fail instruction. AssertFail never returns,
-        // but we need a dest local for the instruction format.
-        let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-        let span = self.codegen.current_span;
-        self.current_block_mut()
-            .instructions
-            .push(mir::Instruction {
-                kind: mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::AssertFail,
-                    args: vec![msg_operand],
-                },
-                span,
-            });
+        self.emit_runtime_call_void(mir::RuntimeFunc::AssertFail, vec![msg_operand], mir_func);
         self.current_block_mut().terminator = mir::Terminator::Unreachable;
     }
 }

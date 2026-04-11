@@ -36,8 +36,6 @@ impl<'a> Lowering<'a> {
                 }
                 "file" => {
                     // Check if value is sys.stderr (simplified: any file= triggers stderr output)
-                    // In a full implementation, we'd verify it's actually sys.stderr
-                    // For now, treat any file parameter as requesting stderr output
                     let expr = &hir_module.exprs[kwarg.value];
                     if let hir::ExprKind::Attribute { attr, .. } = &expr.kind {
                         let attr_name = self.resolve(*attr);
@@ -59,15 +57,13 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-
         // Set stderr if needed
         if use_stderr {
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_SET_STDERR),
-                args: vec![],
-            });
+            self.emit_runtime_call_void(
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_SET_STDERR),
+                vec![],
+                mir_func,
+            );
         }
 
         for (i, arg_id) in args.iter().enumerate() {
@@ -93,11 +89,11 @@ impl<'a> Lowering<'a> {
                     Type::Str,
                     mir_func,
                 );
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
-                    args: vec![mir::Operand::Local(str_local)],
-                });
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
+                    vec![mir::Operand::Local(str_local)],
+                    mir_func,
+                );
             }
             // For class instances, convert to string via __str__/__repr__ first,
             // then print the resulting string (matches CPython behavior)
@@ -141,45 +137,44 @@ impl<'a> Lowering<'a> {
                         args: vec![arg_operand],
                     });
                 }
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
-                    args: vec![mir::Operand::Local(str_local)],
-                });
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
+                    vec![mir::Operand::Local(str_local)],
+                    mir_func,
+                );
             } else if matches!(&arg_type, Type::None) {
                 // PrintValue(None) stays as special variant (no argument)
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::PrintValue(PrintKind::None),
-                    args: vec![],
-                });
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::PrintValue(PrintKind::None),
+                    vec![],
+                    mir_func,
+                );
             } else {
                 // Select descriptor based on type
                 let print_def = crate::type_dispatch::select_print_func(&arg_type);
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(print_def),
-                    args: vec![arg_operand],
-                });
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(print_def),
+                    vec![arg_operand],
+                    mir_func,
+                );
             }
 
             // Print separator between arguments (not after last)
             if i < args.len() - 1 {
                 if let Some(ref sep) = sep_operand {
                     // Custom separator - use StrObj for heap strings
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: dummy_local,
-                        func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
-                        args: vec![sep.clone()],
-                    });
+                    self.emit_runtime_call_void(
+                        mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
+                        vec![sep.clone()],
+                        mir_func,
+                    );
                 } else {
                     // Default separator (space)
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: dummy_local,
-                        func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_SEP),
-                        args: vec![],
-                    });
+                    self.emit_runtime_call_void(
+                        mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_SEP),
+                        vec![],
+                        mir_func,
+                    );
                 }
             }
         }
@@ -187,36 +182,36 @@ impl<'a> Lowering<'a> {
         // Print end string
         if let Some(ref end) = end_operand {
             // Custom end - use StrObj for heap strings
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
-                args: vec![end.clone()],
-            });
+            self.emit_runtime_call_void(
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_STR_OBJ),
+                vec![end.clone()],
+                mir_func,
+            );
         } else {
             // Default end (newline)
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_NEWLINE),
-                args: vec![],
-            });
+            self.emit_runtime_call_void(
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_NEWLINE),
+                vec![],
+                mir_func,
+            );
         }
 
         // Restore stdout if stderr was used
         if use_stderr {
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_SET_STDOUT),
-                args: vec![],
-            });
+            self.emit_runtime_call_void(
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_SET_STDOUT),
+                vec![],
+                mir_func,
+            );
         }
 
         // Flush if requested
         if need_flush {
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_FLUSH),
-                args: vec![],
-            });
+            self.emit_runtime_call_void(
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_PRINT_FLUSH),
+                vec![],
+                mir_func,
+            );
         }
 
         Ok(mir::Operand::Constant(mir::Constant::None))

@@ -155,23 +155,7 @@ pub(super) unsafe fn obj_to_ascii_string(obj: *mut Obj) -> String {
     }
 }
 
-/// ascii(str) -> string (with quotes and escaped non-ASCII)
-///
-/// Thin wrapper around `rt_ascii_collection` which dispatches by type tag.
-#[no_mangle]
-pub extern "C" fn rt_ascii_str(str_obj: *mut Obj) -> *mut Obj {
-    rt_ascii_collection(str_obj)
-}
-
-/// ascii(bytes) -> string
-///
-/// Thin wrapper around `rt_ascii_collection` which dispatches by type tag.
-#[no_mangle]
-pub extern "C" fn rt_ascii_bytes(bytes_obj: *mut Obj) -> *mut Obj {
-    rt_ascii_collection(bytes_obj)
-}
-
-/// ascii() for collections, str, bytes, and generic objects - runtime type-dispatched
+/// ascii() for collections (list, tuple, dict, set), str, bytes, and generic objects — runtime type-dispatched
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_ascii_collection(obj: *mut Obj) -> *mut Obj {

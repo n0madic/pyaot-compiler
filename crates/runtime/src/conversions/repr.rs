@@ -132,27 +132,11 @@ pub extern "C" fn rt_repr_none() -> *mut Obj {
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
 }
 
-/// repr(str) -> string (with quotes and proper escaping)
-///
-/// Thin wrapper around `rt_repr_collection` which dispatches by type tag.
-#[no_mangle]
-pub extern "C" fn rt_repr_str(str_obj: *mut Obj) -> *mut Obj {
-    rt_repr_collection(str_obj)
-}
-
-/// repr() for collections (list, tuple, dict, set) and generic objects - runtime type-dispatched
+/// repr() for collections (list, tuple, dict, set), str, bytes, and generic objects — runtime type-dispatched
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_repr_collection(obj: *mut Obj) -> *mut Obj {
     let s = unsafe { super::to_str::obj_to_repr_string(obj) };
     let bytes = s.as_bytes();
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
-}
-
-/// repr(bytes) -> string
-///
-/// Thin wrapper around `rt_repr_collection` which dispatches by type tag.
-#[no_mangle]
-pub extern "C" fn rt_repr_bytes(bytes_obj: *mut Obj) -> *mut Obj {
-    rt_repr_collection(bytes_obj)
 }

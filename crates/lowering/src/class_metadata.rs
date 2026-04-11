@@ -460,9 +460,6 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
-        // Allocate a dummy local for void returns
-        let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-
         // Initialize class attributes for each class
         for (class_id, class_def) in &hir_module.class_defs {
             if class_def.is_protocol {
@@ -490,15 +487,15 @@ impl<'a> Lowering<'a> {
                 let set_func = self.get_class_attr_set_func(&class_attr.ty);
 
                 // Emit runtime call: rt_class_attr_set_*(class_id, attr_idx, value)
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: set_func,
-                    args: vec![
+                self.emit_runtime_call_void(
+                    set_func,
+                    vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                         mir::Operand::Constant(mir::Constant::Int(attr_offset as i64)),
                         init_operand,
                     ],
-                });
+                    mir_func,
+                );
             }
         }
 

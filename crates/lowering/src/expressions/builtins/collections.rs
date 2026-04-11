@@ -119,9 +119,6 @@ impl<'a> Lowering<'a> {
             args: vec![mir::Operand::Constant(mir::Constant::Int(8))],
         });
 
-        // Dummy local for void returns
-        let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-
         // Create iterator over the source
         let source_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
 
@@ -202,11 +199,11 @@ impl<'a> Lowering<'a> {
         let boxed_elem =
             self.box_primitive_if_needed(mir::Operand::Local(elem_local), &elem_type, mir_func);
 
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: dummy_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_ADD),
-            args: vec![mir::Operand::Local(result_local), boxed_elem],
-        });
+        self.emit_runtime_call_void(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_ADD),
+            vec![mir::Operand::Local(result_local), boxed_elem],
+            mir_func,
+        );
 
         self.current_block_mut().terminator = mir::Terminator::Goto(loop_header_id);
 
@@ -691,9 +688,9 @@ impl<'a> Lowering<'a> {
                 }
                 _ => {
                     let factory_expr = &hir_module.exprs[args[0]];
-                    return Err(CompilerError::codegen_error_at(
+                    return Err(CompilerError::codegen_error(
                         "defaultdict factory must be a type name (int, str, list, etc.)",
-                        factory_expr.span,
+                        Some(factory_expr.span),
                     ));
                 }
             }

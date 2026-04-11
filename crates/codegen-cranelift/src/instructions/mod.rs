@@ -39,10 +39,13 @@ pub fn compile_instruction(
                 mir::Constant::Bool(b) => builder.ins().iconst(cltypes::I8, *b as i64),
                 mir::Constant::None => builder.ins().iconst(cltypes::I8, 0),
                 mir::Constant::Str(_) | mir::Constant::Bytes(_) => {
-                    return Err(pyaot_diagnostics::CompilerError::codegen_error(format!(
-                        "Const instruction with heap-allocated value {:?} — this should use a RuntimeCall",
-                        value
-                    )));
+                    return Err(pyaot_diagnostics::CompilerError::codegen_error(
+                        format!(
+                            "Const instruction with heap-allocated value {:?} — this should use a RuntimeCall",
+                            value
+                        ),
+                        None,
+                    ));
                 }
             };
             ctx.store_result(builder, dest, val);

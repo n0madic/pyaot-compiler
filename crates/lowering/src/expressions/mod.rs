@@ -186,6 +186,7 @@ impl<'a> Lowering<'a> {
             // Yield expression — should have been desugared before lowering
             hir::ExprKind::Yield(_) => Err(pyaot_diagnostics::CompilerError::codegen_error(
                 "yield expression should have been desugared before lowering".to_string(),
+                None,
             )),
 
             // Generator intrinsic (post-desugaring)
@@ -400,8 +401,6 @@ impl<'a> Lowering<'a> {
                 capture_operands.push(capture_op);
             }
 
-            let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
-
             // Determine capture tuple elem_tag based on actual capture types.
             // If no capture needs GC tracing (all ints/bools/floats), use ELEM_RAW_INT
             // so the GC doesn't try to trace raw values as heap pointers.
@@ -449,15 +448,15 @@ impl<'a> Lowering<'a> {
 
             // Set each capture in the inner tuple
             for (i, capture_op) in capture_operands.into_iter().enumerate() {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
-                    args: vec![
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
+                    vec![
                         mir::Operand::Local(captures_tuple),
                         mir::Operand::Constant(mir::Constant::Int(i as i64)),
                         capture_op,
                     ],
-                });
+                    mir_func,
+                );
             }
 
             // Create outer tuple (func_ptr, captures_tuple) - always size 2
@@ -478,26 +477,26 @@ impl<'a> Lowering<'a> {
             );
 
             // Set func_ptr at index 0
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
-                args: vec![
+            self.emit_runtime_call_void(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
+                vec![
                     mir::Operand::Local(result_local),
                     mir::Operand::Constant(mir::Constant::Int(0)),
                     mir::Operand::Local(func_ptr_local),
                 ],
-            });
+                mir_func,
+            );
 
             // Set captures_tuple at index 1
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
-                args: vec![
+            self.emit_runtime_call_void(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
+                vec![
                     mir::Operand::Local(result_local),
                     mir::Operand::Constant(mir::Constant::Int(1)),
                     mir::Operand::Local(captures_tuple),
                 ],
-            });
+                mir_func,
+            );
 
             Ok(mir::Operand::Local(result_local))
         }

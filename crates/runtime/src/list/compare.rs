@@ -82,24 +82,6 @@ pub extern "C" fn rt_list_eq(a: *mut Obj, b: *mut Obj) -> i8 {
     }
 }
 
-/// Compare two lists for equality (integer elements) — thin wrapper for backward compat
-#[no_mangle]
-pub extern "C" fn rt_list_eq_int(a: *mut Obj, b: *mut Obj) -> i8 {
-    rt_list_eq(a, b)
-}
-
-/// Compare two lists for equality (float elements) — thin wrapper for backward compat
-#[no_mangle]
-pub extern "C" fn rt_list_eq_float(a: *mut Obj, b: *mut Obj) -> i8 {
-    rt_list_eq(a, b)
-}
-
-/// Compare two lists for equality (string elements) — thin wrapper for backward compat
-#[no_mangle]
-pub extern "C" fn rt_list_eq_str(a: *mut Obj, b: *mut Obj) -> i8 {
-    rt_list_eq(a, b)
-}
-
 /// Lexicographic ordering comparison for two lists.
 /// Uses elem_tag from the ListObj to dispatch element comparison.
 unsafe fn list_cmp_ordering(a: *mut Obj, b: *mut Obj) -> Ordering {

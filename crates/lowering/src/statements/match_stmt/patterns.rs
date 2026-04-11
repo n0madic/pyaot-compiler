@@ -776,9 +776,9 @@ impl<'a> Lowering<'a> {
         // yet implemented.  Emit an error instead of silently ignoring sub-patterns.
         if !patterns.is_empty() {
             let cls_expr = &ctx.hir_module.exprs[cls_expr_id];
-            return Err(pyaot_diagnostics::CompilerError::codegen_error_at(
+            return Err(pyaot_diagnostics::CompilerError::codegen_error(
                 "positional class patterns are not yet supported (__match_args__ required)",
-                cls_expr.span,
+                Some(cls_expr.span),
             ));
         }
 
