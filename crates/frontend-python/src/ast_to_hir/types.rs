@@ -26,7 +26,7 @@ impl AstToHir {
                 let interned = self.interner.intern(&name.id);
 
                 // Check for type aliases
-                if let Some(aliased_type) = self.type_aliases.get(&interned).cloned() {
+                if let Some(aliased_type) = self.types.type_aliases.get(&interned).cloned() {
                     return Ok(aliased_type);
                 }
 
@@ -34,7 +34,7 @@ impl AstToHir {
                 // Constrained/bounded TypeVars resolve to their constraint type.
                 // Unconstrained TypeVars resolve to Type::Var(name) — a placeholder
                 // that signals "leave untyped for inference" in function parameters.
-                if let Some(tv_def) = self.typevar_defs.get(&interned).cloned() {
+                if let Some(tv_def) = self.types.typevar_defs.get(&interned).cloned() {
                     if let Some(bound) = &tv_def.bound {
                         return Ok(bound.clone());
                     } else if !tv_def.constraints.is_empty() {
@@ -45,7 +45,7 @@ impl AstToHir {
                 }
 
                 // Check for user-defined class names
-                if let Some(&class_id) = self.class_map.get(&interned) {
+                if let Some(&class_id) = self.symbols.class_map.get(&interned) {
                     return Ok(Type::Class {
                         class_id,
                         name: interned,
@@ -54,7 +54,7 @@ impl AstToHir {
 
                 // Check if it's a typing import that needs to be subscripted
                 // (but not TypeAlias/TypeVar/Protocol which are handled differently)
-                if self.typing_imports.contains(&interned) {
+                if self.types.typing_imports.contains(&interned) {
                     let name_str = name.id.as_str();
                     if name_str != "TypeAlias" && name_str != "TypeVar" && name_str != "Protocol" {
                         return Err(CompilerError::parse_error(
@@ -88,7 +88,7 @@ impl AstToHir {
                 if let py::Expr::Name(name) = &*sub.value {
                     // Check if this is a typing module import
                     let interned = self.interner.intern(&name.id);
-                    let is_typing_import = self.typing_imports.contains(&interned);
+                    let is_typing_import = self.types.typing_imports.contains(&interned);
 
                     let name_str = name.id.as_str();
                     match name_str {
@@ -273,7 +273,7 @@ impl AstToHir {
                 let name_str = self.interner.intern(&name.id);
 
                 // First check if it's a user-defined class
-                if let Some(&class_id) = self.class_map.get(&name_str) {
+                if let Some(&class_id) = self.symbols.class_map.get(&name_str) {
                     return Ok(self.module.exprs.alloc(Expr {
                         kind: ExprKind::ClassRef(class_id),
                         ty: None,

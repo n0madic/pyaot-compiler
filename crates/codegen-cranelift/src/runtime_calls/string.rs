@@ -13,7 +13,6 @@ use pyaot_mir::{self as mir, Operand};
 use pyaot_utils::LocalId;
 
 use crate::context::CodegenContext;
-use crate::gc::update_gc_root_if_needed;
 use crate::utils::{
     create_raw_string_data, declare_runtime_function, get_call_result, load_operand,
 };
@@ -47,8 +46,8 @@ pub fn compile_string_call(
                     let len_val = builder.ins().iconst(cltypes::I64, str_len as i64);
                     (data_ptr, len_val, true)
                 } else if args.len() >= 2 {
-                    let data_ptr = load_operand(builder, &args[0], ctx.var_map);
-                    let len = load_operand(builder, &args[1], ctx.var_map);
+                    let data_ptr = load_operand(builder, &args[0], ctx.symbols.var_map);
+                    let len = load_operand(builder, &args[1], ctx.symbols.var_map);
                     (data_ptr, len, false)
                 } else {
                     let zero = builder.ins().iconst(cltypes::I64, 0);
@@ -70,12 +69,7 @@ pub fn compile_string_call(
 
             let call_inst = builder.ins().call(func_ref, &[data_ptr, len]);
             let result_val = get_call_result(builder, call_inst);
-            let dest_var = *ctx
-                .var_map
-                .get(&dest)
-                .expect("internal error: local not in var_map - codegen bug");
-            builder.def_var(dest_var, result_val);
-            update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
+            ctx.store_result(builder, &dest, result_val);
         }
         mir::RuntimeFunc::MakeBytes => {
             compile_make_bytes(builder, dest, args, ctx)?;
@@ -109,12 +103,7 @@ fn compile_make_bytes(
 
         let call_inst = builder.ins().call(func_ref, &[data_ptr, len_val]);
         let result_val = get_call_result(builder, call_inst);
-        let dest_var = *ctx
-            .var_map
-            .get(&dest)
-            .expect("internal error: local not in var_map - codegen bug");
-        builder.def_var(dest_var, result_val);
-        update_gc_root_if_needed(builder, &dest, result_val, ctx.gc_frame_data);
+        ctx.store_result(builder, &dest, result_val);
     }
     Ok(())
 }

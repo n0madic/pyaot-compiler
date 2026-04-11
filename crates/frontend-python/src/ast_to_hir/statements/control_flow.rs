@@ -46,7 +46,7 @@ impl AstToHir {
         }
 
         // Restore condition's pending statements for parent to handle
-        self.pending_stmts = cond_pending;
+        self.scope.pending_stmts = cond_pending;
 
         Ok(self.module.stmts.alloc(Stmt {
             kind: StmtKind::If {
@@ -84,7 +84,7 @@ impl AstToHir {
         }
 
         // Restore condition's pending statements for parent to handle
-        self.pending_stmts = cond_pending;
+        self.scope.pending_stmts = cond_pending;
 
         Ok(self.module.stmts.alloc(Stmt {
             kind: StmtKind::While {
@@ -136,7 +136,7 @@ impl AstToHir {
         // Generate IndexDelete for each subscript target
         for target in targets.iter().take(targets.len().saturating_sub(1)) {
             let stmt = self.convert_delete_target(target, stmt_span)?;
-            self.pending_stmts.push(stmt);
+            self.scope.pending_stmts.push(stmt);
         }
 
         // Last target is returned directly

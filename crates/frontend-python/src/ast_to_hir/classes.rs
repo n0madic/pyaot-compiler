@@ -3,7 +3,7 @@ use indexmap::{IndexMap, IndexSet};
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::*;
 use pyaot_types::{exception_name_to_tag, Type};
-use pyaot_utils::{ClassId, FuncId, InternedString, Span};
+use pyaot_utils::{FuncId, InternedString, Span};
 use rustpython_parser::ast as py;
 use std::collections::HashSet;
 
@@ -83,19 +83,13 @@ impl AstToHir {
 
         Ok(result)
     }
-    pub(crate) fn alloc_class_id(&mut self) -> ClassId {
-        let id = ClassId::new(self.next_class_id);
-        self.next_class_id += 1;
-        id
-    }
-
     pub(crate) fn convert_class_def(&mut self, class_def: py::StmtClassDef) -> Result<()> {
         let class_span = Self::span_from(&class_def);
-        let class_id = self.alloc_class_id();
+        let class_id = self.ids.alloc_class();
         let class_name = self.interner.intern(&class_def.name);
 
         // Register class in class_map
-        self.class_map.insert(class_name, class_id);
+        self.symbols.class_map.insert(class_name, class_id);
 
         // Parse base class from bases (single inheritance only)
         // Also detect if this is an exception class or Protocol
@@ -111,7 +105,7 @@ impl AstToHir {
                 // Check if this is a Protocol class (from typing import Protocol)
                 if base_name_str == "Protocol" {
                     let proto_interned = self.interner.intern("Protocol");
-                    if self.typing_imports.contains(&proto_interned) {
+                    if self.types.typing_imports.contains(&proto_interned) {
                         is_protocol = true;
                         None // Protocol has no runtime parent
                     } else {
@@ -132,7 +126,7 @@ impl AstToHir {
                     None
                 } else {
                     let base_name = self.interner.intern(&name.id);
-                    if let Some(&base_id) = self.class_map.get(&base_name) {
+                    if let Some(&base_id) = self.symbols.class_map.get(&base_name) {
                         // Check if parent is an exception class
                         if let Some(parent_def) = self.module.class_defs.get(&base_id) {
                             if parent_def.is_exception_class {
@@ -163,8 +157,8 @@ impl AstToHir {
         };
 
         // Save current class context
-        let prev_class = self.current_class;
-        self.current_class = Some(class_id);
+        let prev_class = self.scope.current_class;
+        self.scope.current_class = Some(class_id);
 
         // Parse class body: collect fields, class attributes, and methods
         let mut fields = Vec::new();
@@ -282,8 +276,8 @@ impl AstToHir {
                         let var_name = self.interner.intern(&mangled_name);
 
                         // Create variable for decorated method
-                        let method_var_id = self.alloc_var_id();
-                        self.module_var_map.insert(var_name, method_var_id);
+                        let method_var_id = self.ids.alloc_var();
+                        self.symbols.module_var_map.insert(var_name, method_var_id);
 
                         // Start with FuncRef to the original method
                         let mut current_expr = self.module.exprs.alloc(Expr {
@@ -310,7 +304,7 @@ impl AstToHir {
                         self.module.module_init_stmts.push(assign_stmt);
 
                         // Remove from func_map so method calls go through var_map
-                        self.func_map.remove(&var_name);
+                        self.symbols.func_map.remove(&var_name);
                     }
 
                     // Track property getters/setters
@@ -352,7 +346,7 @@ impl AstToHir {
         }
 
         // Restore class context
-        self.current_class = prev_class;
+        self.scope.current_class = prev_class;
 
         // Build PropertyDef structures from collected getters/setters
         let mut properties = Vec::new();
@@ -462,7 +456,7 @@ impl AstToHir {
         decorators: &ParsedDecorators,
     ) -> Result<FuncId> {
         let method_span = Self::span_from(&func_def);
-        let func_id = self.alloc_func_id();
+        let func_id = self.ids.alloc_func();
         // Store the original method name for dunder method detection
         let original_method_name = func_def.name.to_string();
 
@@ -478,12 +472,12 @@ impl AstToHir {
 
         // Register function in func_map with the original method name for lookups
         // Note: Method calls use the class's method_funcs map, not func_map
-        self.func_map.insert(func_name, func_id);
+        self.symbols.func_map.insert(func_name, func_id);
 
         // Save outer var_map and create new scope
-        let outer_var_map = std::mem::take(&mut self.var_map);
-        let outer_is_generator = self.current_func_is_generator;
-        self.current_func_is_generator = false;
+        let outer_var_map = std::mem::take(&mut self.symbols.var_map);
+        let outer_is_generator = self.scope.current_func_is_generator;
+        self.scope.current_func_is_generator = false;
 
         // Calculate default values mapping
         let num_params = func_def.args.args.len();
@@ -495,8 +489,8 @@ impl AstToHir {
         let mut params = Vec::new();
         for (i, arg) in func_def.args.args.iter().enumerate() {
             let param_name = self.interner.intern(&arg.def.arg);
-            let param_id = self.alloc_var_id();
-            self.var_map.insert(param_name, param_id);
+            let param_id = self.ids.alloc_var();
+            self.symbols.var_map.insert(param_name, param_id);
 
             // Determine parameter type based on decorator and parameter name
             let param_type = if i == 0 {
@@ -525,7 +519,7 @@ impl AstToHir {
                     MethodKind::Instance => {
                         // Regular instance method: 'self' gets the class type
                         if arg.def.arg.as_str() == "self" {
-                            if let Some(current_class_id) = self.current_class {
+                            if let Some(current_class_id) = self.scope.current_class {
                                 let current_class_name = self
                                     .module
                                     .class_defs
@@ -555,7 +549,7 @@ impl AstToHir {
                     && Self::should_infer_second_param_as_self(&original_method_name)
                 {
                     // Infer as same type as self for dunder methods
-                    if let Some(current_class_id) = self.current_class {
+                    if let Some(current_class_id) = self.scope.current_class {
                         let current_class_name = self
                             .module
                             .class_defs
@@ -619,7 +613,7 @@ impl AstToHir {
             body_stmts.push(stmt_id);
         }
 
-        let method_is_generator = self.current_func_is_generator;
+        let method_is_generator = self.scope.current_func_is_generator;
 
         let function = Function {
             id: func_id,
@@ -639,8 +633,8 @@ impl AstToHir {
         self.module.func_defs.insert(func_id, function);
 
         // Restore outer scope
-        self.var_map = outer_var_map;
-        self.current_func_is_generator = outer_is_generator;
+        self.symbols.var_map = outer_var_map;
+        self.scope.current_func_is_generator = outer_is_generator;
 
         Ok(func_id)
     }

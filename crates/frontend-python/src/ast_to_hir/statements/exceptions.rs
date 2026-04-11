@@ -27,7 +27,7 @@ impl AstToHir {
                 } else {
                     // Check if it's a user-defined exception class
                     let class_name = self.interner.intern(&name.id);
-                    if let Some(&class_id) = self.class_map.get(&class_name) {
+                    if let Some(&class_id) = self.symbols.class_map.get(&class_name) {
                         if let Some(class_def) = self.module.class_defs.get(&class_id) {
                             if class_def.is_exception_class {
                                 return Type::Class {
@@ -87,11 +87,11 @@ impl AstToHir {
             // so the variable is available when expressions in the body reference it
             let name = if let Some(name_str) = &h.name {
                 let interned = self.interner.intern(name_str);
-                let var_id = if let Some(&id) = self.var_map.get(&interned) {
+                let var_id = if let Some(&id) = self.symbols.var_map.get(&interned) {
                     id
                 } else {
-                    let id = self.alloc_var_id();
-                    self.var_map.insert(interned, id);
+                    let id = self.ids.alloc_var();
+                    self.symbols.var_map.insert(interned, id);
                     id
                 };
                 Some(var_id)

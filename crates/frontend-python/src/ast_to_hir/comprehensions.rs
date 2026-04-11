@@ -39,16 +39,16 @@ impl AstToHir {
     pub(crate) fn desugar_list_comprehension(&mut self, comp: py::ExprListComp) -> Result<ExprId> {
         let comp_span = Self::span_from(&comp);
         // 1. Generate unique temp var name
-        let temp_name = format!("__comp_{}", self.next_comp_id);
-        self.next_comp_id += 1;
+        let temp_name = format!("__comp_{}", self.ids.next_comp_id);
+        self.ids.next_comp_id += 1;
 
         // 2. Save outer scope for scope isolation
-        let outer_var_map = self.var_map.clone();
+        let outer_var_map = self.symbols.var_map.clone();
 
         // 3. Create temp variable and register it
-        let temp_var_id = self.alloc_var_id();
+        let temp_var_id = self.ids.alloc_var();
         let temp_interned = self.interner.intern(&temp_name);
-        self.var_map.insert(temp_interned, temp_var_id);
+        self.symbols.var_map.insert(temp_interned, temp_var_id);
 
         // 4. Create empty list initialization: __comp_N: list[T] = []
         //    Try to infer element type from the comprehension to set the correct
@@ -79,12 +79,12 @@ impl AstToHir {
             self.generate_comprehension_loop(&comp.generators, 0, &action, comp_span)?;
 
         // 6. Add init statement and loop statements to pending_stmts
-        self.pending_stmts.push(init_stmt);
-        self.pending_stmts.extend(loop_stmts);
+        self.scope.pending_stmts.push(init_stmt);
+        self.scope.pending_stmts.extend(loop_stmts);
 
         // 7. Restore outer scope but keep temp var visible
-        self.var_map = outer_var_map;
-        self.var_map.insert(temp_interned, temp_var_id);
+        self.symbols.var_map = outer_var_map;
+        self.symbols.var_map.insert(temp_interned, temp_var_id);
 
         // 8. Return reference to temp variable
         Ok(self.module.exprs.alloc(Expr {
@@ -105,16 +105,16 @@ impl AstToHir {
         let comp_span = Self::span_from(&comp);
 
         // 1. Generate unique temp var name
-        let temp_name = format!("__comp_{}", self.next_comp_id);
-        self.next_comp_id += 1;
+        let temp_name = format!("__comp_{}", self.ids.next_comp_id);
+        self.ids.next_comp_id += 1;
 
         // 2. Save outer scope for scope isolation
-        let outer_var_map = self.var_map.clone();
+        let outer_var_map = self.symbols.var_map.clone();
 
         // 3. Create temp variable and register it
-        let temp_var_id = self.alloc_var_id();
+        let temp_var_id = self.ids.alloc_var();
         let temp_interned = self.interner.intern(&temp_name);
-        self.var_map.insert(temp_interned, temp_var_id);
+        self.symbols.var_map.insert(temp_interned, temp_var_id);
 
         // 4. Create empty dict initialization: __comp_N = {}
         let empty_dict = self.module.exprs.alloc(Expr {
@@ -141,12 +141,12 @@ impl AstToHir {
             self.generate_comprehension_loop(&comp.generators, 0, &action, comp_span)?;
 
         // 6. Add init statement and loop statements to pending_stmts
-        self.pending_stmts.push(init_stmt);
-        self.pending_stmts.extend(loop_stmts);
+        self.scope.pending_stmts.push(init_stmt);
+        self.scope.pending_stmts.extend(loop_stmts);
 
         // 7. Restore outer scope but keep temp var visible
-        self.var_map = outer_var_map;
-        self.var_map.insert(temp_interned, temp_var_id);
+        self.symbols.var_map = outer_var_map;
+        self.symbols.var_map.insert(temp_interned, temp_var_id);
 
         // 8. Return reference to temp variable
         Ok(self.module.exprs.alloc(Expr {
@@ -166,16 +166,16 @@ impl AstToHir {
         let comp_span = Self::span_from(&comp);
 
         // 1. Generate unique temp var name
-        let temp_name = format!("__comp_{}", self.next_comp_id);
-        self.next_comp_id += 1;
+        let temp_name = format!("__comp_{}", self.ids.next_comp_id);
+        self.ids.next_comp_id += 1;
 
         // 2. Save outer scope for scope isolation
-        let outer_var_map = self.var_map.clone();
+        let outer_var_map = self.symbols.var_map.clone();
 
         // 3. Create temp variable and register it
-        let temp_var_id = self.alloc_var_id();
+        let temp_var_id = self.ids.alloc_var();
         let temp_interned = self.interner.intern(&temp_name);
-        self.var_map.insert(temp_interned, temp_var_id);
+        self.symbols.var_map.insert(temp_interned, temp_var_id);
 
         // 4. Create empty set initialization: __comp_N = set()
         let empty_set = self.module.exprs.alloc(Expr {
@@ -205,12 +205,12 @@ impl AstToHir {
             self.generate_comprehension_loop(&comp.generators, 0, &action, comp_span)?;
 
         // 6. Add init statement and loop statements to pending_stmts
-        self.pending_stmts.push(init_stmt);
-        self.pending_stmts.extend(loop_stmts);
+        self.scope.pending_stmts.push(init_stmt);
+        self.scope.pending_stmts.extend(loop_stmts);
 
         // 7. Restore outer scope but keep temp var visible
-        self.var_map = outer_var_map;
-        self.var_map.insert(temp_interned, temp_var_id);
+        self.symbols.var_map = outer_var_map;
+        self.symbols.var_map.insert(temp_interned, temp_var_id);
 
         // 8. Return reference to temp variable
         Ok(self.module.exprs.alloc(Expr {
@@ -233,11 +233,11 @@ impl AstToHir {
         let genexp_span = Self::span_from(&genexp);
 
         // 1. Generate unique function name
-        let func_name = format!("__genexp_{}", self.next_comp_id);
-        self.next_comp_id += 1;
+        let func_name = format!("__genexp_{}", self.ids.next_comp_id);
+        self.ids.next_comp_id += 1;
 
         // 2. Save outer scope for scope isolation
-        let outer_var_map = self.var_map.clone();
+        let outer_var_map = self.symbols.var_map.clone();
 
         // 3. Generate the for-loop body with yield
         let action = ComprehensionAction::Yield { elt: &genexp.elt };
@@ -245,10 +245,10 @@ impl AstToHir {
             self.generate_comprehension_loop(&genexp.generators, 0, &action, genexp_span)?;
 
         // 4. Restore outer scope
-        self.var_map = outer_var_map;
+        self.symbols.var_map = outer_var_map;
 
         // 5. Create the generator function
-        let func_id = self.alloc_func_id();
+        let func_id = self.ids.alloc_func();
         let func_name_interned = self.interner.intern(&func_name);
 
         let gen_func = Function {
@@ -474,7 +474,7 @@ impl AstToHir {
                 // created fresh during comprehension desugaring).
                 let interned = self.interner.lookup(&name.id);
                 match interned {
-                    Some(s) => !self.var_map.contains_key(&s),
+                    Some(s) => !self.symbols.var_map.contains_key(&s),
                     None => true, // Name not yet interned = likely a new loop variable
                 }
             }

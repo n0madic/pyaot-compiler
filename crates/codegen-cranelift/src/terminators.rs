@@ -28,14 +28,14 @@ pub fn compile_terminator(
     match term {
         mir::Terminator::Return(val) => {
             // Pop traceback frame before returning (always — every function pushed one)
-            if let Some(stack_pop_id) = ctx.stack_pop_id {
+            if let Some(stack_pop_id) = ctx.gc.stack_pop_id {
                 let stack_pop_ref = ctx.module.declare_func_in_func(stack_pop_id, builder.func);
                 builder.ins().call(stack_pop_ref, &[]);
             }
 
             // Call gc_pop before returning if we have GC roots
-            if ctx.gc_frame_data.is_some() {
-                if let Some(gc_pop_id) = ctx.gc_pop_id {
+            if ctx.gc.frame_data.is_some() {
+                if let Some(gc_pop_id) = ctx.gc.gc_pop_id {
                     let gc_pop_ref = ctx.module.declare_func_in_func(gc_pop_id, builder.func);
                     builder.ins().call(gc_pop_ref, &[]);
                 }
@@ -62,7 +62,7 @@ pub fn compile_terminator(
                     let boxed_none = get_call_result(builder, call_inst);
                     builder.ins().return_(&[boxed_none]);
                 } else {
-                    let ret_val = load_operand(builder, operand, ctx.var_map);
+                    let ret_val = load_operand(builder, operand, ctx.symbols.var_map);
                     // Coerce the return value to the expected return type if needed
                     let expected_type = type_to_cranelift(ctx.return_type);
                     let val_type = builder.func.dfg.value_type(ret_val);
@@ -94,6 +94,7 @@ pub fn compile_terminator(
 
         mir::Terminator::Goto(target) => {
             let cl_block = *ctx
+                .symbols
                 .block_map
                 .get(target)
                 .expect("internal error: block not in block_map - codegen bug");
@@ -105,7 +106,7 @@ pub fn compile_terminator(
             then_block,
             else_block,
         } => {
-            let cond_val = load_operand(builder, cond, ctx.var_map);
+            let cond_val = load_operand(builder, cond, ctx.symbols.var_map);
             // Convert i8 bool to i1 for brif instruction
             let zero = builder.ins().iconst(cltypes::I8, 0);
             let cond_i1 = builder.ins().icmp(
@@ -114,10 +115,12 @@ pub fn compile_terminator(
                 zero,
             );
             let then_cl = *ctx
+                .symbols
                 .block_map
                 .get(then_block)
                 .expect("internal error: block not in block_map - codegen bug");
             let else_cl = *ctx
+                .symbols
                 .block_map
                 .get(else_block)
                 .expect("internal error: block not in block_map - codegen bug");

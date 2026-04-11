@@ -35,13 +35,13 @@ impl AstToHir {
                 // This avoids creating a trailing Expr(None) that would break
                 // generator pattern detection (which requires exactly 1 statement in body)
                 if let py::Expr::YieldFrom(yield_from) = *expr_stmt.value {
-                    self.current_func_is_generator = true;
+                    self.scope.current_func_is_generator = true;
 
                     // Convert the iterable expression
                     let iter_expr_id = self.convert_expr(*yield_from.value)?;
 
                     // Create a temp variable for the loop target
-                    let temp_var = self.alloc_var_id();
+                    let temp_var = self.ids.alloc_var();
 
                     // Create yield expression: yield __v
                     let var_ref = self.module.exprs.alloc(Expr {

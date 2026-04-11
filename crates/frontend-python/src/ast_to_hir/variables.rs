@@ -1,7 +1,7 @@
 use super::AstToHir;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::UnpackTarget;
-use pyaot_utils::{FuncId, InternedString, Span, VarId};
+use pyaot_utils::{InternedString, Span, VarId};
 use rustpython_parser::ast as py;
 use std::collections::HashSet;
 
@@ -10,11 +10,11 @@ impl AstToHir {
         match expr {
             py::Expr::Name(name) => {
                 let name_str = self.interner.intern(&name.id);
-                if let Some(&var_id) = self.var_map.get(&name_str) {
+                if let Some(&var_id) = self.symbols.var_map.get(&name_str) {
                     Ok(var_id)
                 } else {
-                    let var_id = self.alloc_var_id();
-                    self.var_map.insert(name_str, var_id);
+                    let var_id = self.ids.alloc_var();
+                    self.symbols.var_map.insert(name_str, var_id);
                     Ok(var_id)
                 }
             }
@@ -30,7 +30,7 @@ impl AstToHir {
     pub(crate) fn mark_var_initialized(&mut self, expr: &py::Expr) {
         if let py::Expr::Name(name) = expr {
             let name_str = self.interner.intern(&name.id);
-            self.initialized_vars.insert(name_str);
+            self.scope.initialized_vars.insert(name_str);
         }
     }
 
@@ -86,11 +86,11 @@ impl AstToHir {
                     match &*starred_expr.value {
                         py::Expr::Name(name) => {
                             let name_str = self.interner.intern(&name.id);
-                            let var_id = if let Some(&id) = self.var_map.get(&name_str) {
+                            let var_id = if let Some(&id) = self.symbols.var_map.get(&name_str) {
                                 id
                             } else {
-                                let id = self.alloc_var_id();
-                                self.var_map.insert(name_str, id);
+                                let id = self.ids.alloc_var();
+                                self.symbols.var_map.insert(name_str, id);
                                 id
                             };
                             starred = Some(var_id);
@@ -105,11 +105,11 @@ impl AstToHir {
                 }
                 py::Expr::Name(name) => {
                     let name_str = self.interner.intern(&name.id);
-                    let var_id = if let Some(&id) = self.var_map.get(&name_str) {
+                    let var_id = if let Some(&id) = self.symbols.var_map.get(&name_str) {
                         id
                     } else {
-                        let id = self.alloc_var_id();
-                        self.var_map.insert(name_str, id);
+                        let id = self.ids.alloc_var();
+                        self.symbols.var_map.insert(name_str, id);
                         id
                     };
                     if found_star {
@@ -151,11 +151,11 @@ impl AstToHir {
                 // Simple name - create a Var target
                 py::Expr::Name(name) => {
                     let name_str = self.interner.intern(&name.id);
-                    let var_id = if let Some(&id) = self.var_map.get(&name_str) {
+                    let var_id = if let Some(&id) = self.symbols.var_map.get(&name_str) {
                         id
                     } else {
-                        let id = self.alloc_var_id();
-                        self.var_map.insert(name_str, id);
+                        let id = self.ids.alloc_var();
+                        self.symbols.var_map.insert(name_str, id);
                         id
                     };
                     targets.push(UnpackTarget::Var(var_id));
@@ -179,18 +179,6 @@ impl AstToHir {
         }
 
         Ok(targets)
-    }
-
-    pub(crate) fn alloc_var_id(&mut self) -> VarId {
-        let id = VarId::new(self.next_var_id);
-        self.next_var_id += 1;
-        id
-    }
-
-    pub(crate) fn alloc_func_id(&mut self) -> FuncId {
-        let id = FuncId::new(self.next_func_id);
-        self.next_func_id += 1;
-        id
     }
 
     /// Scan a function body for `nonlocal` declarations and return the set of variable names.

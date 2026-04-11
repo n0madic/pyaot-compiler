@@ -25,7 +25,7 @@ impl AstToHir {
         let (global_propagation, captured_vars): (Vec<_>, Vec<_>) =
             all_free_vars.into_iter().partition(|name| {
                 // Check if this variable is in the module's globals set
-                if let Some(&var_id) = self.var_map.get(name) {
+                if let Some(&var_id) = self.symbols.var_map.get(name) {
                     self.module.globals.contains(&var_id)
                 } else {
                     false
@@ -49,23 +49,23 @@ impl AstToHir {
         }
 
         // 4. Generate unique function name
-        let lambda_name = format!("__lambda_{}", self.next_lambda_id);
-        self.next_lambda_id += 1;
-        let func_id = self.alloc_func_id();
+        let lambda_name = format!("__lambda_{}", self.ids.next_lambda_id);
+        self.ids.next_lambda_id += 1;
+        let func_id = self.ids.alloc_func();
         let func_name = self.interner.intern(&lambda_name);
 
         // 5. Save outer scope
-        let outer_var_map = std::mem::take(&mut self.var_map);
-        let outer_global_vars = std::mem::take(&mut self.global_vars);
+        let outer_var_map = std::mem::take(&mut self.symbols.var_map);
+        let outer_global_vars = std::mem::take(&mut self.scope.global_vars);
 
         // 5.5 Auto-propagate global variables to nested scope
         // These variables use global storage instead of being captured
         for name in &global_propagation {
             if let Some(&var_id) = outer_var_map.get(name) {
                 // Map the variable to the same module-level VarId
-                self.var_map.insert(*name, var_id);
+                self.symbols.var_map.insert(*name, var_id);
                 // Mark as global in this scope
-                self.global_vars.insert(*name);
+                self.scope.global_vars.insert(*name);
             }
         }
 
@@ -78,9 +78,9 @@ impl AstToHir {
                 "__capture_{}",
                 self.interner.resolve(*captured_name)
             ));
-            let param_id = self.alloc_var_id();
+            let param_id = self.ids.alloc_var();
             // Map original name to capture param so body references work
-            self.var_map.insert(*captured_name, param_id);
+            self.symbols.var_map.insert(*captured_name, param_id);
 
             params.push(Param {
                 name: capture_param_name,
@@ -95,8 +95,8 @@ impl AstToHir {
         // Add regular lambda parameters (with defaults from outer scope)
         for (i, arg) in lambda.args.args.iter().enumerate() {
             let param_name = self.interner.intern(&arg.def.arg);
-            let param_id = self.alloc_var_id();
-            self.var_map.insert(param_name, param_id);
+            let param_id = self.ids.alloc_var();
+            self.symbols.var_map.insert(param_name, param_id);
 
             params.push(Param {
                 name: param_name,
@@ -135,14 +135,15 @@ impl AstToHir {
         self.module.func_defs.insert(func_id, function);
 
         // 10. Restore scope
-        self.global_vars = outer_global_vars;
-        self.var_map = outer_var_map;
+        self.scope.global_vars = outer_global_vars;
+        self.symbols.var_map = outer_var_map;
 
         // 11. Create capture expressions (references to outer variables)
         let captures: Vec<ExprId> = captured_vars
             .iter()
             .map(|name| {
                 let var_id = self
+                    .symbols
                     .var_map
                     .get(name)
                     .expect("internal error: captured variable not in var_map");
@@ -365,7 +366,9 @@ impl AstToHir {
                 // If not a local param and exists in outer scope, it's a capture
                 if !local_params.contains(name.id.as_str()) {
                     if let Some(interned) = self.interner.lookup(&name.id) {
-                        if self.var_map.contains_key(&interned) && !free_vars.contains(&interned) {
+                        if self.symbols.var_map.contains_key(&interned)
+                            && !free_vars.contains(&interned)
+                        {
                             free_vars.push(interned);
                         }
                     }

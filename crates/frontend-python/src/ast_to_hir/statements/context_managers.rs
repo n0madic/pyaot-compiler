@@ -66,13 +66,13 @@ impl AstToHir {
 
         // Single context manager case
         let item = &with_stmt.items[0];
-        let ctx_id = self.next_ctx_id;
-        self.next_ctx_id += 1;
+        let ctx_id = self.ids.next_ctx_id;
+        self.ids.next_ctx_id += 1;
 
         // 1. __ctx_mgr = EXPR
         let ctx_mgr_name = self.interner.intern(&format!("__ctx_mgr_{}", ctx_id));
-        let ctx_mgr_var = self.alloc_var_id();
-        self.var_map.insert(ctx_mgr_name, ctx_mgr_var);
+        let ctx_mgr_var = self.ids.alloc_var();
+        self.symbols.var_map.insert(ctx_mgr_name, ctx_mgr_var);
 
         let context_expr = self.convert_expr(item.context_expr.clone())?;
         let ctx_mgr_assign = self.module.stmts.alloc(Stmt {
@@ -102,8 +102,8 @@ impl AstToHir {
         });
 
         let ctx_val_name = self.interner.intern(&format!("__ctx_val_{}", ctx_id));
-        let ctx_val_var = self.alloc_var_id();
-        self.var_map.insert(ctx_val_name, ctx_val_var);
+        let ctx_val_var = self.ids.alloc_var();
+        self.symbols.var_map.insert(ctx_val_name, ctx_val_var);
 
         let ctx_val_assign = self.module.stmts.alloc(Stmt {
             kind: StmtKind::Assign {
@@ -136,8 +136,10 @@ impl AstToHir {
 
         // 4. __ctx_had_exc = False
         let ctx_had_exc_name = self.interner.intern(&format!("__ctx_had_exc_{}", ctx_id));
-        let ctx_had_exc_var = self.alloc_var_id();
-        self.var_map.insert(ctx_had_exc_name, ctx_had_exc_var);
+        let ctx_had_exc_var = self.ids.alloc_var();
+        self.symbols
+            .var_map
+            .insert(ctx_had_exc_name, ctx_had_exc_var);
 
         let false_expr = self.module.exprs.alloc(Expr {
             kind: ExprKind::Bool(false),
@@ -155,8 +157,10 @@ impl AstToHir {
 
         // 5. __ctx_suppress variable (used in except handler)
         let ctx_suppress_name = self.interner.intern(&format!("__ctx_suppress_{}", ctx_id));
-        let ctx_suppress_var = self.alloc_var_id();
-        self.var_map.insert(ctx_suppress_name, ctx_suppress_var);
+        let ctx_suppress_var = self.ids.alloc_var();
+        self.symbols
+            .var_map
+            .insert(ctx_suppress_name, ctx_suppress_var);
 
         // 6. Convert body statements
         let mut body = Vec::new();
@@ -346,12 +350,12 @@ impl AstToHir {
 
         // 10. Build statement sequence: return first, add rest to pending
         // The pending_stmts mechanism injects statements before the returned one
-        self.pending_stmts.push(ctx_mgr_assign);
-        self.pending_stmts.push(ctx_val_assign);
+        self.scope.pending_stmts.push(ctx_mgr_assign);
+        self.scope.pending_stmts.push(ctx_val_assign);
         if let Some(assign) = target_assign {
-            self.pending_stmts.push(assign);
+            self.scope.pending_stmts.push(assign);
         }
-        self.pending_stmts.push(ctx_had_exc_init);
+        self.scope.pending_stmts.push(ctx_had_exc_init);
 
         Ok(try_stmt)
     }

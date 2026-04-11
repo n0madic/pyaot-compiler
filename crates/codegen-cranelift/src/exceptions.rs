@@ -38,6 +38,7 @@ pub fn compile_exc_push_frame(
 
     // Store the frame address in the local variable
     let var = *ctx
+        .symbols
         .var_map
         .get(frame_local)
         .expect("internal error: local not in var_map - codegen bug");
@@ -88,6 +89,7 @@ pub fn compile_exc_get_type(
     // Extend i32 to i64 for consistency with our local types
     let result_i64 = builder.ins().sextend(cltypes::I64, result);
     let var = *ctx
+        .symbols
         .var_map
         .get(dest)
         .expect("internal error: local not in var_map - codegen bug");
@@ -124,6 +126,7 @@ pub fn compile_exc_has_exception(
     let result = get_call_result(builder, call_inst);
 
     let var = *ctx
+        .symbols
         .var_map
         .get(dest)
         .expect("internal error: local not in var_map - codegen bug");
@@ -158,7 +161,8 @@ pub fn compile_try_setjmp(
 
     // Get frame pointer from local variable
     let frame_ptr = builder.use_var(
-        *ctx.var_map
+        *ctx.symbols
+            .var_map
             .get(frame_local)
             .expect("internal error: local not in var_map - codegen bug"),
     );
@@ -180,10 +184,12 @@ pub fn compile_try_setjmp(
             .icmp(cranelift_codegen::ir::condcodes::IntCC::Equal, result, zero);
 
     let try_body_cl = *ctx
+        .symbols
         .block_map
         .get(try_body)
         .expect("internal error: block not in block_map - codegen bug");
     let handler_cl = *ctx
+        .symbols
         .block_map
         .get(handler_entry)
         .expect("internal error: block not in block_map - codegen bug");
@@ -210,7 +216,7 @@ fn extract_message_operand(
             let len = builder.ins().iconst(cltypes::I64, str_len as i64);
             Ok((ptr, len))
         } else {
-            let str_obj = load_operand(builder, op, ctx.var_map);
+            let str_obj = load_operand(builder, op, ctx.symbols.var_map);
 
             let mut data_sig = ctx.module.make_signature();
             data_sig.call_conv = CallConv::SystemV;
@@ -342,7 +348,7 @@ pub fn compile_raise_instance(
     instance: &Operand,
     ctx: &mut CodegenContext,
 ) -> Result<()> {
-    let instance_val = load_operand(builder, instance, ctx.var_map);
+    let instance_val = load_operand(builder, instance, ctx.symbols.var_map);
 
     let mut sig = ctx.module.make_signature();
     sig.call_conv = CallConv::SystemV;
@@ -375,14 +381,8 @@ pub fn compile_exc_get_current(
     let call_inst = builder.ins().call(func_ref, &[]);
     let result = get_call_result(builder, call_inst);
 
-    let var = *ctx
-        .var_map
-        .get(dest)
-        .expect("internal error: local not in var_map - codegen bug");
-    builder.def_var(var, result);
-
-    // Update GC root if needed
-    crate::gc::update_gc_root_if_needed(builder, dest, result, ctx.gc_frame_data);
+    // Store result and update GC root if needed
+    ctx.store_result(builder, dest, result);
     Ok(())
 }
 
@@ -407,6 +407,7 @@ pub fn compile_exc_check_type(
     let result = get_call_result(builder, call_inst);
 
     let var = *ctx
+        .symbols
         .var_map
         .get(dest)
         .expect("internal error: local not in var_map - codegen bug");
@@ -436,6 +437,7 @@ pub fn compile_exc_check_class(
     let result = get_call_result(builder, call_inst);
 
     let var = *ctx
+        .symbols
         .var_map
         .get(dest)
         .expect("internal error: local not in var_map - codegen bug");
@@ -457,7 +459,7 @@ pub fn compile_raise_custom(
 
     if let Some(inst_operand) = instance {
         // Eager instance creation: pass pre-created instance to runtime
-        let instance_val = load_operand(builder, inst_operand, ctx.var_map);
+        let instance_val = load_operand(builder, inst_operand, ctx.symbols.var_map);
 
         let mut sig = ctx.module.make_signature();
         sig.call_conv = CallConv::SystemV;

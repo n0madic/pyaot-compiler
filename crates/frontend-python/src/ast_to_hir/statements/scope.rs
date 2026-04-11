@@ -17,20 +17,21 @@ impl AstToHir {
             let name_str = self.interner.intern(name.as_str());
 
             // Mark variable as global in current scope
-            self.global_vars.insert(name_str);
+            self.scope.global_vars.insert(name_str);
 
             // Ensure variable exists in module_var_map
-            if !self.module_var_map.contains_key(&name_str) {
-                let var_id = self.alloc_var_id();
-                self.module_var_map.insert(name_str, var_id);
+            if !self.symbols.module_var_map.contains_key(&name_str) {
+                let var_id = self.ids.alloc_var();
+                self.symbols.module_var_map.insert(name_str, var_id);
             }
 
             // Map name in var_map to module-level VarId
             let module_var_id = *self
+                .symbols
                 .module_var_map
                 .get(&name_str)
                 .expect("internal error: module variable not in module_var_map");
-            self.var_map.insert(name_str, module_var_id);
+            self.symbols.var_map.insert(name_str, module_var_id);
 
             // Add to module's globals set for lowering phase
             self.module.globals.insert(module_var_id);
@@ -53,20 +54,20 @@ impl AstToHir {
             let name_str = self.interner.intern(name.as_str());
 
             // Mark variable as nonlocal in current scope
-            self.nonlocal_vars.insert(name_str);
+            self.scope.nonlocal_vars.insert(name_str);
 
             // If the variable is already mapped (e.g., as a capture parameter in nested functions),
             // don't overwrite it - the capture parameter is the cell we should use
-            if self.var_map.contains_key(&name_str) {
+            if self.symbols.var_map.contains_key(&name_str) {
                 continue;
             }
 
             // Look up variable in enclosing scopes
             let mut found = false;
-            for scope in self.scope_stack.iter().rev() {
+            for scope in self.scope.scope_stack.iter().rev() {
                 if let Some(&var_id) = scope.get(&name_str) {
                     // Found in enclosing scope - use that VarId
-                    self.var_map.insert(name_str, var_id);
+                    self.symbols.var_map.insert(name_str, var_id);
                     found = true;
                     break;
                 }
@@ -74,8 +75,8 @@ impl AstToHir {
 
             if !found {
                 // If not found in scope stack, check module vars
-                if let Some(&var_id) = self.module_var_map.get(&name_str) {
-                    self.var_map.insert(name_str, var_id);
+                if let Some(&var_id) = self.symbols.module_var_map.get(&name_str) {
+                    self.symbols.var_map.insert(name_str, var_id);
                 }
                 // Note: Python would raise SyntaxError if var not in enclosing scope
                 // We silently ignore for simplicity - the lowering phase will handle it

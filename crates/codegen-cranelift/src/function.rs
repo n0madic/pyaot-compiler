@@ -185,23 +185,28 @@ pub fn define_function(
     // Codegen blocks
     {
         let mut codegen_ctx = CodegenContext {
-            var_map: &var_map,
-            locals: &func.locals,
+            symbols: crate::context::CodegenSymbols {
+                var_map: &var_map,
+                locals: &func.locals,
+                func_ids: compiler.func_ids,
+                func_name_ids: compiler.func_name_ids,
+                func_param_types: compiler.func_param_types,
+                block_map: &block_map,
+            },
+            gc: crate::context::GcState {
+                frame_data: &gc_frame_data,
+                gc_pop_id: compiler.gc_pop_id,
+                stack_pop_id: compiler.stack_pop_id,
+            },
             module: compiler.module,
-            func_ids: compiler.func_ids,
             interner: compiler.interner,
-            gc_frame_data: &gc_frame_data,
-            block_map: &block_map,
-            gc_pop_id: compiler.gc_pop_id,
-            stack_pop_id: compiler.stack_pop_id,
-            func_name_ids: compiler.func_name_ids,
-            func_param_types: compiler.func_param_types,
             return_type: &func.return_type,
             line_map: compiler.line_map,
         };
 
         for (block_id, block) in &func.blocks {
             let cl_block = *codegen_ctx
+                .symbols
                 .block_map
                 .get(block_id)
                 .expect("internal error: block not in block_map - codegen bug");

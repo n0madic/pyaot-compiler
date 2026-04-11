@@ -74,7 +74,6 @@ pub fn compile_runtime_call(
     }
 }
 
-use crate::gc::update_gc_root_if_needed;
 use crate::utils::{
     create_raw_string_data, declare_runtime_function, load_operand, load_operand_as,
 };
@@ -136,23 +135,25 @@ fn compile_runtime_func_def(
     let arg_vals: Vec<_> = args
         .iter()
         .zip(def.params.iter())
-        .map(|(arg, &pt)| load_operand_as(builder, arg, ctx.var_map, param_type_to_cltype(pt)))
+        .map(|(arg, &pt)| {
+            load_operand_as(builder, arg, ctx.symbols.var_map, param_type_to_cltype(pt))
+        })
         .collect();
 
     let call_inst = builder.ins().call(func_ref, &arg_vals);
 
     // Handle return value
-    let dest_var = *ctx
-        .var_map
-        .get(&dest)
-        .expect("internal error: local not in var_map - codegen bug");
-
     if def.returns.is_some() {
         let result = builder.inst_results(call_inst)[0];
         let result_type = builder.func.dfg.value_type(result);
 
         // Coerce the result to match the dest variable's declared type.
         // Dest variables can be I64 (int/ptr), I8 (bool), or F64 (float).
+        let dest_var = *ctx
+            .symbols
+            .var_map
+            .get(&dest)
+            .expect("internal error: local not in var_map - codegen bug");
         let dest_val = builder.use_var(dest_var);
         let dest_type = builder.func.dfg.value_type(dest_val);
 
@@ -175,11 +176,7 @@ fn compile_runtime_func_def(
             }
         };
 
-        builder.def_var(dest_var, result_coerced);
-
-        if def.gc_roots_result {
-            update_gc_root_if_needed(builder, &dest, result_coerced, ctx.gc_frame_data);
-        }
+        ctx.store_result(builder, &dest, result_coerced);
     } else {
         // Void function: leave dest variable unchanged.
         // MIR uses the same dest local for the call instruction even when
@@ -201,7 +198,7 @@ fn compile_exception_call(
     match func {
         mir::RuntimeFunc::ExcRegisterClassName => {
             // rt_exc_register_class_name(class_id: u8, name: *const u8, len: usize)
-            let class_id_val = load_operand(builder, &args[0], ctx.var_map);
+            let class_id_val = load_operand(builder, &args[0], ctx.symbols.var_map);
             let class_id_u8 = builder.ins().ireduce(cltypes::I8, class_id_val);
 
             // Get string data pointer and length
@@ -233,7 +230,7 @@ fn compile_exception_call(
         }
         mir::RuntimeFunc::ExcInstanceStr => {
             // rt_exc_instance_str(instance: *mut Obj) -> *mut Obj
-            let instance_val = load_operand(builder, &args[0], ctx.var_map);
+            let instance_val = load_operand(builder, &args[0], ctx.symbols.var_map);
 
             let mut sig = ctx.module.make_signature();
             sig.call_conv = CallConv::SystemV;
@@ -245,15 +242,8 @@ fn compile_exception_call(
             let call = builder.ins().call(func_ref, &[instance_val]);
             let result = builder.inst_results(call)[0];
 
-            // Store result in destination variable
-            let var = *ctx
-                .var_map
-                .get(&_dest)
-                .expect("internal error: local not in var_map");
-            builder.def_var(var, result);
-
-            // Update GC root if needed (result is a heap string)
-            crate::gc::update_gc_root_if_needed(builder, &_dest, result, ctx.gc_frame_data);
+            // Store result and update GC root if needed (result is a heap string)
+            ctx.store_result(builder, &_dest, result);
         }
         _ => unreachable!("Non-exception function passed to compile_exception_call"),
     }

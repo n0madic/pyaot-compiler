@@ -33,8 +33,8 @@ impl AstToHir {
         // - It was initialized in this scope, OR
         // - It is declared as nonlocal in this scope (chained nonlocal)
         for name in &nonlocal_in_nested {
-            let is_initialized = self.initialized_vars.contains(name);
-            let is_nonlocal_here = self.nonlocal_vars.contains(name);
+            let is_initialized = self.scope.initialized_vars.contains(name);
+            let is_nonlocal_here = self.scope.nonlocal_vars.contains(name);
             if !is_initialized && !is_nonlocal_here {
                 let name_str = self.interner.resolve(*name);
                 return Err(CompilerError::parse_error(
@@ -49,8 +49,8 @@ impl AstToHir {
 
         // Mark these variables as cell_vars in the current (outer) function
         for name in &nonlocal_in_nested {
-            if let Some(&var_id) = self.var_map.get(name) {
-                self.current_cell_vars.insert(var_id);
+            if let Some(&var_id) = self.symbols.var_map.get(name) {
+                self.scope.current_cell_vars.insert(var_id);
             }
         }
 
@@ -69,7 +69,7 @@ impl AstToHir {
         let (global_propagation, captured_vars): (Vec<_>, Vec<_>) =
             all_free_vars.into_iter().partition(|name| {
                 // Check if this variable is in the module's globals set
-                if let Some(&var_id) = self.var_map.get(name) {
+                if let Some(&var_id) = self.symbols.var_map.get(name) {
                     self.module.globals.contains(&var_id)
                 } else {
                     false
@@ -77,34 +77,34 @@ impl AstToHir {
             });
 
         // 3. Allocate func_id and register early (for recursive calls)
-        let func_id = self.alloc_func_id();
-        let nested_func_name = format!("__nested_{}_{}", func_def.name, self.next_lambda_id);
-        self.next_lambda_id += 1;
+        let func_id = self.ids.alloc_func();
+        let nested_func_name = format!("__nested_{}_{}", func_def.name, self.ids.next_lambda_id);
+        self.ids.next_lambda_id += 1;
         let internal_func_name = self.interner.intern(&nested_func_name);
 
         // Register the nested function under its original name in the outer scope's func_map
         let user_func_name = self.interner.intern(&func_def.name);
-        self.func_map.insert(user_func_name, func_id);
+        self.symbols.func_map.insert(user_func_name, func_id);
 
         // 4. Save outer scope (including cell_vars tracking)
-        let outer_var_map = std::mem::take(&mut self.var_map);
-        let outer_global_vars = std::mem::take(&mut self.global_vars);
-        let outer_cell_vars = std::mem::take(&mut self.current_cell_vars);
-        let outer_initialized_vars = std::mem::take(&mut self.initialized_vars);
-        let outer_is_generator = self.current_func_is_generator;
-        self.current_func_is_generator = false;
+        let outer_var_map = std::mem::take(&mut self.symbols.var_map);
+        let outer_global_vars = std::mem::take(&mut self.scope.global_vars);
+        let outer_cell_vars = std::mem::take(&mut self.scope.current_cell_vars);
+        let outer_initialized_vars = std::mem::take(&mut self.scope.initialized_vars);
+        let outer_is_generator = self.scope.current_func_is_generator;
+        self.scope.current_func_is_generator = false;
 
         // 4.25 Push outer scope onto scope_stack for nonlocal lookup
-        self.scope_stack.push(outer_var_map.clone());
+        self.scope.scope_stack.push(outer_var_map.clone());
 
         // 4.5 Auto-propagate global variables to nested scope
         // These variables use global storage instead of being captured
         for name in &global_propagation {
             if let Some(&var_id) = outer_var_map.get(name) {
                 // Map the variable to the same module-level VarId
-                self.var_map.insert(*name, var_id);
+                self.symbols.var_map.insert(*name, var_id);
                 // Mark as global in this scope
-                self.global_vars.insert(*name);
+                self.scope.global_vars.insert(*name);
             }
         }
 
@@ -117,9 +117,9 @@ impl AstToHir {
                 "__capture_{}",
                 self.interner.resolve(*captured_name)
             ));
-            let param_id = self.alloc_var_id();
+            let param_id = self.ids.alloc_var();
             // Map original name to capture param so body references work
-            self.var_map.insert(*captured_name, param_id);
+            self.symbols.var_map.insert(*captured_name, param_id);
 
             params.push(Param {
                 name: capture_param_name,
@@ -140,8 +140,8 @@ impl AstToHir {
 
         for (i, arg) in func_def.args.args.iter().enumerate() {
             let param_name = self.interner.intern(&arg.def.arg);
-            let param_id = self.alloc_var_id();
-            self.var_map.insert(param_name, param_id);
+            let param_id = self.ids.alloc_var();
+            self.symbols.var_map.insert(param_name, param_id);
 
             let param_type = if let Some(annotation) = &arg.def.annotation {
                 Some(self.convert_type_annotation(annotation)?)
@@ -193,14 +193,14 @@ impl AstToHir {
         // that correspond to nonlocal declarations)
         let mut nested_nonlocal_vars = std::collections::HashSet::new();
         for name in &nonlocal_in_nested {
-            if let Some(&param_var_id) = self.var_map.get(name) {
+            if let Some(&param_var_id) = self.symbols.var_map.get(name) {
                 nested_nonlocal_vars.insert(param_var_id);
             }
         }
 
         // Take the cell_vars collected during nested function body processing
-        let nested_cell_vars = std::mem::take(&mut self.current_cell_vars);
-        let nested_is_generator = self.current_func_is_generator;
+        let nested_cell_vars = std::mem::take(&mut self.scope.current_cell_vars);
+        let nested_is_generator = self.scope.current_func_is_generator;
 
         let function = Function {
             id: func_id,
@@ -219,17 +219,17 @@ impl AstToHir {
         self.module.func_defs.insert(func_id, function);
 
         // 9. Pop scope_stack and restore outer scope
-        self.scope_stack.pop();
-        self.global_vars = outer_global_vars;
-        self.var_map = outer_var_map;
-        self.current_cell_vars = outer_cell_vars;
-        self.initialized_vars = outer_initialized_vars;
-        self.current_func_is_generator = outer_is_generator;
+        self.scope.scope_stack.pop();
+        self.scope.global_vars = outer_global_vars;
+        self.symbols.var_map = outer_var_map;
+        self.scope.current_cell_vars = outer_cell_vars;
+        self.scope.initialized_vars = outer_initialized_vars;
+        self.scope.current_func_is_generator = outer_is_generator;
 
         // Also mark nonlocal variables as cell_vars in the outer scope
         for name in &nonlocal_in_nested {
-            if let Some(&var_id) = self.var_map.get(name) {
-                self.current_cell_vars.insert(var_id);
+            if let Some(&var_id) = self.symbols.var_map.get(name) {
+                self.scope.current_cell_vars.insert(var_id);
             }
         }
 
@@ -237,18 +237,19 @@ impl AstToHir {
         // go through var_map (which holds the closure with captures).
         // Keep in func_map only for non-capturing functions.
         if !captured_vars.is_empty() {
-            self.func_map.remove(&user_func_name);
+            self.symbols.func_map.remove(&user_func_name);
         }
 
         // 11. Create variable for the nested function in outer scope
-        let nested_var_id = self.alloc_var_id();
-        self.var_map.insert(user_func_name, nested_var_id);
+        let nested_var_id = self.ids.alloc_var();
+        self.symbols.var_map.insert(user_func_name, nested_var_id);
 
         // 12. Create capture expressions (references to outer variables)
         let captures: Vec<ExprId> = captured_vars
             .iter()
             .map(|name| {
                 let var_id = self
+                    .symbols
                     .var_map
                     .get(name)
                     .expect("internal error: captured variable not in var_map");

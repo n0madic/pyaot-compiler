@@ -99,11 +99,11 @@ impl AstToHir {
                 // Get or create variable for the name binding
                 let name = if let Some(ident) = ma.name {
                     let name_str = self.interner.intern(ident.as_str());
-                    let var_id = if let Some(&id) = self.var_map.get(&name_str) {
+                    let var_id = if let Some(&id) = self.symbols.var_map.get(&name_str) {
                         id
                     } else {
-                        let id = self.alloc_var_id();
-                        self.var_map.insert(name_str, id);
+                        let id = self.ids.alloc_var();
+                        self.symbols.var_map.insert(name_str, id);
                         id
                     };
                     Some(var_id)
@@ -128,11 +128,11 @@ impl AstToHir {
             py::Pattern::MatchStar(ms) => {
                 let name = if let Some(ident) = ms.name {
                     let name_str = self.interner.intern(ident.as_str());
-                    let var_id = if let Some(&id) = self.var_map.get(&name_str) {
+                    let var_id = if let Some(&id) = self.symbols.var_map.get(&name_str) {
                         id
                     } else {
-                        let id = self.alloc_var_id();
-                        self.var_map.insert(name_str, id);
+                        let id = self.ids.alloc_var();
+                        self.symbols.var_map.insert(name_str, id);
                         id
                     };
                     Some(var_id)
@@ -166,11 +166,11 @@ impl AstToHir {
                 // Handle rest binding (**rest)
                 let rest = if let Some(ident) = mm.rest {
                     let name_str = self.interner.intern(ident.as_str());
-                    let var_id = if let Some(&id) = self.var_map.get(&name_str) {
+                    let var_id = if let Some(&id) = self.symbols.var_map.get(&name_str) {
                         id
                     } else {
-                        let id = self.alloc_var_id();
-                        self.var_map.insert(name_str, id);
+                        let id = self.ids.alloc_var();
+                        self.symbols.var_map.insert(name_str, id);
                         id
                     };
                     Some(var_id)
@@ -232,9 +232,9 @@ impl AstToHir {
                 // Register the name binding
                 if let Some(ref ident) = ma.name {
                     let name_str = self.interner.intern(ident.as_str());
-                    if !self.var_map.contains_key(&name_str) {
-                        let var_id = self.alloc_var_id();
-                        self.var_map.insert(name_str, var_id);
+                    if !self.symbols.var_map.contains_key(&name_str) {
+                        let var_id = self.ids.alloc_var();
+                        self.symbols.var_map.insert(name_str, var_id);
                     }
                 }
             }
@@ -248,9 +248,9 @@ impl AstToHir {
             py::Pattern::MatchStar(ms) => {
                 if let Some(ref ident) = ms.name {
                     let name_str = self.interner.intern(ident.as_str());
-                    if !self.var_map.contains_key(&name_str) {
-                        let var_id = self.alloc_var_id();
-                        self.var_map.insert(name_str, var_id);
+                    if !self.symbols.var_map.contains_key(&name_str) {
+                        let var_id = self.ids.alloc_var();
+                        self.symbols.var_map.insert(name_str, var_id);
                     }
                 }
             }
@@ -269,9 +269,9 @@ impl AstToHir {
                 }
                 if let Some(ref ident) = mm.rest {
                     let name_str = self.interner.intern(ident.as_str());
-                    if !self.var_map.contains_key(&name_str) {
-                        let var_id = self.alloc_var_id();
-                        self.var_map.insert(name_str, var_id);
+                    if !self.symbols.var_map.contains_key(&name_str) {
+                        let var_id = self.ids.alloc_var();
+                        self.symbols.var_map.insert(name_str, var_id);
                     }
                 }
             }

@@ -46,7 +46,7 @@ impl AstToHir {
 
                 let else_block = self.convert_loop_else(for_stmt.orelse)?;
 
-                self.pending_stmts = iter_pending;
+                self.scope.pending_stmts = iter_pending;
 
                 Ok(self.module.stmts.alloc(Stmt {
                     kind: StmtKind::ForUnpackStarred {
@@ -78,7 +78,7 @@ impl AstToHir {
 
                 let else_block = self.convert_loop_else(for_stmt.orelse)?;
 
-                self.pending_stmts = iter_pending;
+                self.scope.pending_stmts = iter_pending;
 
                 Ok(self.module.stmts.alloc(Stmt {
                     kind: StmtKind::ForUnpack {
@@ -107,7 +107,7 @@ impl AstToHir {
             let else_block = self.convert_loop_else(for_stmt.orelse)?;
 
             // Restore iterable's pending statements for parent to handle
-            self.pending_stmts = iter_pending;
+            self.scope.pending_stmts = iter_pending;
 
             Ok(self.module.stmts.alloc(Stmt {
                 kind: StmtKind::For {

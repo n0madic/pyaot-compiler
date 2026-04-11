@@ -11,6 +11,7 @@ mod container_refine;
 pub(crate) mod helpers;
 pub(crate) mod infer;
 mod lambda_inference;
+mod validate;
 
 use indexmap::IndexMap;
 use pyaot_hir as hir;
@@ -26,6 +27,7 @@ impl<'a> Lowering<'a> {
         self.process_module_decorated_functions(hir_module);
         self.refine_empty_container_types(hir_module);
         self.infer_all_return_types(hir_module);
+        self.validate_type_annotations(hir_module);
     }
 
     /// Get the type of an expression by its ID (memoized).

@@ -45,18 +45,18 @@ Complete catalog of discovered architectural issues, tagged for cross-referencin
 | P13 | Lowering type dispatch (8 functions in type_dispatch.rs) | ✅ DONE | `lowering/src/type_dispatch.rs` | ~800 |
 | P14 | Type planning separated (136 cached queries, TypeEnvironment read-only) | ✅ DONE | `lowering/src/type_planning/` | ~3,000 |
 | P15 | Generator decoupled (GeneratorContext struct, 7 free functions) | ✅ DONE | `lowering/src/generators/` | ~3,584 |
-| P16 | Frontend god-file expressions.rs (1,675 LOC) | MEDIUM | `frontend-python/src/ast_to_hir/expressions.rs` | ~1,675 |
-| P17 | Frontend AstToHir struct (27 fields) | MEDIUM | `frontend-python/src/ast_to_hir/mod.rs:70-126` | ~500 |
-| P18 | Dual type systems without validation | MEDIUM | Frontend `types.rs` vs lowering `type_planning/` | ~400 |
+| P16 | Frontend expressions.rs split (1,675 LOC → 6 modules) | ✅ DONE | `frontend-python/src/ast_to_hir/expressions/` | ~1,675→~200 dispatch |
+| P17 | Frontend AstToHir struct (27 fields → 5 sub-structs) | ✅ DONE | `frontend-python/src/ast_to_hir/mod.rs` | ~500→~200 |
+| P18 | Type annotation validation (default params + class attrs) | ✅ DONE | `lowering/src/type_planning/validate.rs` | +110 |
 | P19 | Codegen hardcoded offsets (8+ magic numbers) | MEDIUM | `codegen-cranelift/src/{instructions,exceptions,gc}.rs` | ~50 |
-| P20 | Codegen scattered GC root management (15+ manual sites) | MEDIUM | Throughout `codegen-cranelift/src/` | ~200 |
-| P21 | CodegenContext god-object (13 fields) | LOW | `codegen-cranelift/src/context.rs:20-39` | ~300 |
+| P20 | Codegen GC root management (20 manual sites → 1 store_result) | ✅ DONE | `codegen-cranelift/src/context.rs` | ~200→~60 |
+| P21 | CodegenContext decomposed (13 fields → 3 sub-structs) | ✅ DONE | `codegen-cranelift/src/context.rs` | ~300→~80 |
 | P22 | Optimizer no pass interface | LOW | `optimizer/src/lib.rs` | ~100 |
 | P23 | Optimizer inconsistent fixpoint iteration | LOW | Various optimizer passes | ~50 |
 | P24 | Span loss through pipeline | MEDIUM | Lowering (desugaring), optimizer | ~200 |
 | P25 | Inconsistent error hierarchy | MEDIUM | `diagnostics/src/lib.rs:29-99` | ~100 |
 | P26 | Lowering god-files split (5 files → 17 modules) | ✅ DONE | `lowering/src/{operators,match_stmt,assign,call_resolution,type_planning}/` | ~8,000 |
-| P27 | Codegen instructions.rs god-file (1,143 LOC) | LOW | `codegen-cranelift/src/instructions.rs` | ~1,143 |
+| P27 | Codegen instructions.rs split (1,046 LOC → 3 modules) | ✅ DONE | `codegen-cranelift/src/instructions/` | ~1,046→~270 dispatch |
 | P28 | Cross-module class info uses String instead of InternedString | LOW | `lowering/src/context/mod.rs:208-232` | ~50 |
 
 ---
@@ -95,12 +95,12 @@ Phase 3 (Lowering) ✅ COMPLETE
          │
          ▼
 Phase 4 (Frontend & Codegen)
-  P17 Decompose AstToHir
-  P16 Split expressions.rs
-  P18 Type annotation validation
-  P21 Decompose CodegenContext
-  P20 Auto GC root management
-  P27 Split instructions.rs
+  P17 Decompose AstToHir ✅
+  P16 Split expressions.rs ✅
+  P18 Type annotation validation ✅
+  P21 Decompose CodegenContext ✅
+  P20 Auto GC root management ✅
+  P27 Split instructions.rs ✅
 ```
 
 **Critical path:** Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4
@@ -881,7 +881,7 @@ After Phases 3.1-3.6 simplify the code, split remaining large files:
 
 **Duration estimate:** Medium. Mechanical refactoring following established patterns.
 
-### 4.1 — Decompose AstToHir (P17)
+### 4.1 — Decompose AstToHir (P17) ✅ DONE
 
 **Problem:** 27 fields mixing ID allocation, symbol tables, scope tracking, import resolution.
 
@@ -913,7 +913,7 @@ impl IdAllocator {
 }
 ```
 
-### 4.2 — Split Frontend expressions.rs (P16)
+### 4.2 — Split Frontend expressions.rs (P16) ✅ DONE
 
 **Problem:** 1,675 LOC single `convert_expr()` method handles all 15+ expression types.
 
@@ -932,7 +932,7 @@ ast_to_hir/expressions/
 └── attributes.rs   # Attribute access, module.attr
 ```
 
-### 4.3 — Type Annotation Validation (P18)
+### 4.3 — Type Annotation Validation (P18) ✅ DONE
 
 **Problem:** Frontend converts type annotations → `Type`. Lowering infers types independently. No cross-validation.
 
@@ -958,7 +958,7 @@ fn validate_type_annotations(
 }
 ```
 
-### 4.4 — Auto GC Root Management in Codegen (P20)
+### 4.4 — Auto GC Root Management in Codegen (P20) ✅ DONE
 
 **Problem:** `update_gc_root_if_needed` called manually from 15+ sites. Missing a call = use-after-free.
 
@@ -992,7 +992,7 @@ impl CallBuilder<'_, '_> {
 }
 ```
 
-### 4.5 — Decompose CodegenContext & Split God-Files (P21, P27)
+### 4.5 — Decompose CodegenContext & Split God-Files (P21, P27) ✅ DONE
 
 **CodegenContext** decomposition:
 
@@ -1224,19 +1224,6 @@ Every phase must:
 ---
 
 ## Implementation Notes
-
-### Branching Strategy
-
-Each phase should be developed on a dedicated branch:
-- `refactor/phase-0-foundation`
-- `refactor/phase-1-runtime`
-- `refactor/phase-2-declarative-runtime-func`
-- `refactor/phase-3-lowering`
-- `refactor/phase-4-frontend-codegen`
-- `refactor/phase-5-optimizer`
-- `refactor/phase-6-integration`
-
-Merge each phase to master only when all tests pass and the phase is complete. Do not interleave phases on the same branch.
 
 ### Incremental Migration Pattern
 

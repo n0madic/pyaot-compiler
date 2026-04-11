@@ -20,7 +20,7 @@ impl AstToHir {
         if import_from.module.as_deref() == Some("typing") {
             for alias in &import_from.names {
                 let name = self.interner.intern(&alias.name);
-                self.typing_imports.insert(name);
+                self.types.typing_imports.insert(name);
             }
             // Return Pass statement (import is compile-time only)
             return Ok(self.module.stmts.alloc(Stmt {
@@ -45,18 +45,21 @@ impl AstToHir {
                     match item {
                         RegistryItem::Function(func_def) => {
                             // Store reference to definition (Single Source of Truth)
-                            self.stdlib_names
+                            self.imports
+                                .stdlib_names
                                 .insert(local_name, super::super::StdlibItem::Func(func_def));
                         }
                         RegistryItem::Attr(attr_def) => {
                             // Store reference to definition (Single Source of Truth)
-                            self.stdlib_names
+                            self.imports
+                                .stdlib_names
                                 .insert(local_name, super::super::StdlibItem::Attr(attr_def));
                         }
                         RegistryItem::Constant(const_def) => {
                             // Store reference to definition (Single Source of Truth)
                             // Constants are inlined at compile time
-                            self.stdlib_names
+                            self.imports
+                                .stdlib_names
                                 .insert(local_name, super::super::StdlibItem::Const(const_def));
                         }
                         RegistryItem::Class(_class_def) => {
@@ -113,7 +116,7 @@ impl AstToHir {
             ));
 
             // Record the imported name for expression resolution
-            self.imported_names.insert(
+            self.imports.imported_names.insert(
                 local_name,
                 super::super::ImportedName {
                     module: module_name.clone(),
@@ -164,7 +167,7 @@ impl AstToHir {
             let root_module = stdlib::get_root_module(&module_name);
             if stdlib::is_stdlib_module(root_module) {
                 // Record as stdlib import for expression handling
-                self.stdlib_imports.insert(local_name);
+                self.imports.stdlib_imports.insert(local_name);
             } else {
                 // Record the imported module for attribute access
                 // For `import pkg.sub`, we map `pkg` -> "pkg" (the root only)
@@ -172,13 +175,17 @@ impl AstToHir {
                 if module_name.contains('.') {
                     // For dotted imports, record the root package
                     let root = module_name.split('.').next().unwrap_or(&module_name);
-                    self.imported_modules.insert(local_name, root.to_string());
+                    self.imports
+                        .imported_modules
+                        .insert(local_name, root.to_string());
 
                     // Also record the full dotted path for chained access resolution
-                    self.dotted_imports
+                    self.imports
+                        .dotted_imports
                         .insert(module_name.clone(), module_name.clone());
                 } else {
-                    self.imported_modules
+                    self.imports
+                        .imported_modules
                         .insert(local_name, module_name.clone());
                 }
 

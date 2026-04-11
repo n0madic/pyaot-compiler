@@ -35,7 +35,7 @@ impl AstToHir {
             // Check if the base is a class name (class attribute assignment)
             if let py::Expr::Name(base_name) = &*attr.value {
                 let base_str = self.interner.intern(&base_name.id);
-                if let Some(&class_id) = self.class_map.get(&base_str) {
+                if let Some(&class_id) = self.symbols.class_map.get(&base_str) {
                     // This is a class attribute assignment: ClassName.attr = value
                     let attr_name = self.interner.intern(&attr.attr);
                     let value = self.convert_expr(*assign.value)?;
@@ -180,7 +180,7 @@ impl AstToHir {
         if let py::Expr::Name(ann_name) = &*ann_assign.annotation {
             if ann_name.id.as_str() == "TypeAlias" {
                 let interned = self.interner.intern(&ann_name.id);
-                if self.typing_imports.contains(&interned) {
+                if self.types.typing_imports.contains(&interned) {
                     if let Some(val) = &ann_assign.value {
                         let alias_name = if let py::Expr::Name(name) = &*ann_assign.target {
                             self.interner.intern(&name.id)
@@ -191,7 +191,7 @@ impl AstToHir {
                             ));
                         };
                         let aliased_type = self.convert_type_annotation(val)?;
-                        self.type_aliases.insert(alias_name, aliased_type);
+                        self.types.type_aliases.insert(alias_name, aliased_type);
                         return Ok(self.module.stmts.alloc(Stmt {
                             kind: StmtKind::Pass,
                             span: stmt_span,
@@ -256,7 +256,7 @@ impl AstToHir {
         if let py::Expr::Name(name) = target_ref {
             // Simple variable: x += 5 → x = x + 5
             let var_name = self.interner.intern(&name.id);
-            let target_var = if let Some(&id) = self.var_map.get(&var_name) {
+            let target_var = if let Some(&id) = self.symbols.var_map.get(&var_name) {
                 id
             } else {
                 return Err(CompilerError::parse_error(
@@ -301,7 +301,7 @@ impl AstToHir {
             // Check if this is a class attribute augmented assignment: ClassName.attr += 5
             if let py::Expr::Name(base_name) = &*attr.value {
                 let base_str = self.interner.intern(&base_name.id);
-                if let Some(&class_id) = self.class_map.get(&base_str) {
+                if let Some(&class_id) = self.symbols.class_map.get(&base_str) {
                     // This is a class attribute augmented assignment
                     let attr_name = self.interner.intern(&attr.attr);
 
@@ -449,7 +449,7 @@ impl AstToHir {
                 // Check for class attribute assignment: ClassName.attr = value
                 if let py::Expr::Name(base_name) = &*attr.value {
                     let base_str = self.interner.intern(&base_name.id);
-                    if let Some(&class_id) = self.class_map.get(&base_str) {
+                    if let Some(&class_id) = self.symbols.class_map.get(&base_str) {
                         let attr_name = self.interner.intern(&attr.attr);
                         return Ok(self.module.stmts.alloc(Stmt {
                             kind: StmtKind::ClassAttrAssign {
@@ -502,7 +502,7 @@ impl AstToHir {
     ) -> Result<StmtId> {
         // Evaluate value once and assign to a temporary variable
         let value = self.convert_expr(*assign.value)?;
-        let temp_var = self.alloc_var_id();
+        let temp_var = self.ids.alloc_var();
         let temp_assign = self.module.stmts.alloc(Stmt {
             kind: StmtKind::Assign {
                 target: temp_var,
@@ -511,7 +511,7 @@ impl AstToHir {
             },
             span: stmt_span,
         });
-        self.pending_stmts.push(temp_assign);
+        self.scope.pending_stmts.push(temp_assign);
 
         // Assign to each target right-to-left
         // Python: a = b = 42 → targets = [a, b], value = 42
@@ -525,7 +525,7 @@ impl AstToHir {
                 span: stmt_span,
             });
             let assign_stmt = self.assign_to_target(target, temp_ref, stmt_span)?;
-            self.pending_stmts.push(assign_stmt);
+            self.scope.pending_stmts.push(assign_stmt);
         }
 
         // First (leftmost) target is the returned statement

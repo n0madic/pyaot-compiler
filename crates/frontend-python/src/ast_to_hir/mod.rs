@@ -67,62 +67,166 @@ pub struct TypeVarDef {
     pub bound: Option<Type>,
 }
 
-pub struct AstToHir {
-    pub(crate) interner: StringInterner,
-    pub(crate) module: Module,
+/// Allocates unique IDs for variables, functions, classes, lambdas,
+/// comprehensions, and context managers.
+pub(crate) struct IdAllocator {
     pub(crate) next_var_id: u32,
     pub(crate) next_func_id: u32,
     pub(crate) next_class_id: u32,
     pub(crate) next_lambda_id: u32,
     pub(crate) next_comp_id: u32,
     pub(crate) next_ctx_id: u32,
+}
 
-    // Track variable names to IDs (current scope)
+impl IdAllocator {
+    fn new() -> Self {
+        Self {
+            next_var_id: 0,
+            next_func_id: 0,
+            // Start class IDs after built-in exception tags (0-28) to avoid
+            // collisions in the runtime vtable/class registry.
+            next_class_id: pyaot_types::BUILTIN_EXCEPTION_COUNT as u32,
+            next_lambda_id: 0,
+            next_comp_id: 0,
+            next_ctx_id: 0,
+        }
+    }
+
+    pub(crate) fn alloc_var(&mut self) -> VarId {
+        let id = VarId::new(self.next_var_id);
+        self.next_var_id += 1;
+        id
+    }
+
+    pub(crate) fn alloc_func(&mut self) -> FuncId {
+        let id = FuncId::new(self.next_func_id);
+        self.next_func_id += 1;
+        id
+    }
+
+    pub(crate) fn alloc_class(&mut self) -> ClassId {
+        let id = ClassId::new(self.next_class_id);
+        self.next_class_id += 1;
+        id
+    }
+}
+
+/// Maps names to their corresponding IDs in the current and module scopes.
+pub(crate) struct SymbolTable {
+    /// Variable names → IDs (current scope)
     pub(crate) var_map: HashMap<InternedString, VarId>,
-    // Track function names to IDs
+    /// Function names → IDs
     pub(crate) func_map: HashMap<InternedString, FuncId>,
-    // Track class names to IDs
+    /// Class names → IDs
     pub(crate) class_map: HashMap<InternedString, ClassId>,
-    // Track module-level variable names to IDs
+    /// Module-level variable names → IDs
     pub(crate) module_var_map: HashMap<InternedString, VarId>,
-    // Current class being processed (for method conversion)
+}
+
+impl SymbolTable {
+    fn new() -> Self {
+        Self {
+            var_map: HashMap::new(),
+            func_map: HashMap::new(),
+            class_map: HashMap::new(),
+            module_var_map: HashMap::new(),
+        }
+    }
+}
+
+/// Tracks scope-related state: scope stack, current class, global/nonlocal
+/// declarations, cell variables, initialization tracking, and generator flags.
+pub(crate) struct ScopeContext {
+    /// Current class being processed (for method conversion)
     pub(crate) current_class: Option<ClassId>,
-    // Pending statements from comprehension desugaring (to be injected before containing stmt)
-    pub(crate) pending_stmts: Vec<StmtId>,
-    // Track imported names from typing module (List, Dict, Optional, etc.)
-    pub(crate) typing_imports: HashSet<InternedString>,
-    // Type aliases: MyType: TypeAlias = int, or type MyType = int
-    pub(crate) type_aliases: HashMap<InternedString, Type>,
-    // TypeVar definitions: T = TypeVar('T', ...)
-    pub(crate) typevar_defs: HashMap<InternedString, TypeVarDef>,
-    // Track variables declared as global in the current function scope
+    /// Variables declared as global in the current function scope
     pub(crate) global_vars: HashSet<InternedString>,
-    // Track variables declared as nonlocal in the current function scope
+    /// Variables declared as nonlocal in the current function scope
     pub(crate) nonlocal_vars: HashSet<InternedString>,
-    // Stack of enclosing scopes' variable maps (for nonlocal lookup)
+    /// Stack of enclosing scopes' variable maps (for nonlocal lookup)
     pub(crate) scope_stack: Vec<HashMap<InternedString, VarId>>,
-    // Variables in the current function that need to be wrapped in cells
-    // (because they are used via nonlocal in an inner function)
+    /// Variables that need to be wrapped in cells (used via nonlocal in inner function)
     pub(crate) current_cell_vars: HashSet<VarId>,
-    // Variables that have been initialized (assigned) in the current scope
-    // Used to detect unbound nonlocal errors at compile time
+    /// Variables initialized (assigned) in the current scope — for unbound detection
     pub(crate) initialized_vars: HashSet<InternedString>,
-    // Track whether the current function contains yield (is a generator)
+    /// Whether the current function contains yield (is a generator)
     pub(crate) current_func_is_generator: bool,
-    // Track imported names: local name -> import info
-    pub(crate) imported_names: HashMap<InternedString, ImportedName>,
-    // Track imported modules: module alias -> module path
-    pub(crate) imported_modules: HashMap<InternedString, String>,
-    // Track variables explicitly assigned at module level (via Assign/AnnAssign)
-    // These should be treated as globals for cross-module access
+    /// Pending statements from comprehension desugaring
+    pub(crate) pending_stmts: Vec<StmtId>,
+    /// Variables explicitly assigned at module level (via Assign/AnnAssign)
     pub(crate) module_level_assignments: HashSet<VarId>,
-    // Track stdlib imports: "sys", "os", "re"
+}
+
+impl ScopeContext {
+    fn new() -> Self {
+        Self {
+            current_class: None,
+            global_vars: HashSet::new(),
+            nonlocal_vars: HashSet::new(),
+            scope_stack: Vec::new(),
+            current_cell_vars: HashSet::new(),
+            initialized_vars: HashSet::new(),
+            current_func_is_generator: false,
+            pending_stmts: Vec::new(),
+            module_level_assignments: HashSet::new(),
+        }
+    }
+}
+
+/// Tracks import-related state: imported names, modules, stdlib items.
+pub(crate) struct ImportResolver {
+    /// Imported names: local name → import info
+    pub(crate) imported_names: HashMap<InternedString, ImportedName>,
+    /// Imported modules: module alias → module path
+    pub(crate) imported_modules: HashMap<InternedString, String>,
+    /// Stdlib imports: "sys", "os", "re"
     pub(crate) stdlib_imports: HashSet<InternedString>,
-    // Track stdlib names from "from X import Y": local name -> stdlib item
+    /// Stdlib names from "from X import Y": local name → stdlib item
     pub(crate) stdlib_names: HashMap<InternedString, StdlibItem>,
-    // Track dotted imports: "pkg.submodule" -> "pkg.submodule"
-    // For resolving chained attribute access like pkg.sub.func()
+    /// Dotted imports: "pkg.submodule" → "pkg.submodule"
     pub(crate) dotted_imports: HashMap<String, String>,
+}
+
+impl ImportResolver {
+    fn new() -> Self {
+        Self {
+            imported_names: HashMap::new(),
+            imported_modules: HashMap::new(),
+            stdlib_imports: HashSet::new(),
+            stdlib_names: HashMap::new(),
+            dotted_imports: HashMap::new(),
+        }
+    }
+}
+
+/// Tracks type annotation state: typing imports, aliases, TypeVars.
+pub(crate) struct TypeContext {
+    /// Imported names from typing module (List, Dict, Optional, etc.)
+    pub(crate) typing_imports: HashSet<InternedString>,
+    /// Type aliases: MyType: TypeAlias = int, or type MyType = int
+    pub(crate) type_aliases: HashMap<InternedString, Type>,
+    /// TypeVar definitions: T = TypeVar('T', ...)
+    pub(crate) typevar_defs: HashMap<InternedString, TypeVarDef>,
+}
+
+impl TypeContext {
+    fn new() -> Self {
+        Self {
+            typing_imports: HashSet::new(),
+            type_aliases: HashMap::new(),
+            typevar_defs: HashMap::new(),
+        }
+    }
+}
+
+pub struct AstToHir {
+    pub(crate) interner: StringInterner,
+    pub(crate) module: Module,
+    pub(crate) ids: IdAllocator,
+    pub(crate) symbols: SymbolTable,
+    pub(crate) scope: ScopeContext,
+    pub(crate) imports: ImportResolver,
+    pub(crate) types: TypeContext,
 }
 
 impl AstToHir {
@@ -134,35 +238,11 @@ impl AstToHir {
         Self {
             interner,
             module,
-            next_var_id: 0,
-            next_func_id: 0,
-            // Start class IDs after built-in exception tags (0-28) to avoid
-            // collisions in the runtime vtable/class registry.
-            next_class_id: pyaot_types::BUILTIN_EXCEPTION_COUNT as u32,
-            next_lambda_id: 0,
-            next_comp_id: 0,
-            next_ctx_id: 0,
-            var_map: HashMap::new(),
-            func_map: HashMap::new(),
-            class_map: HashMap::new(),
-            module_var_map: HashMap::new(),
-            current_class: None,
-            pending_stmts: Vec::new(),
-            typing_imports: HashSet::new(),
-            type_aliases: HashMap::new(),
-            typevar_defs: HashMap::new(),
-            global_vars: HashSet::new(),
-            nonlocal_vars: HashSet::new(),
-            scope_stack: Vec::new(),
-            current_cell_vars: HashSet::new(),
-            initialized_vars: HashSet::new(),
-            current_func_is_generator: false,
-            imported_names: HashMap::new(),
-            imported_modules: HashMap::new(),
-            module_level_assignments: HashSet::new(),
-            stdlib_imports: HashSet::new(),
-            stdlib_names: HashMap::new(),
-            dotted_imports: HashMap::new(),
+            ids: IdAllocator::new(),
+            symbols: SymbolTable::new(),
+            scope: ScopeContext::new(),
+            imports: ImportResolver::new(),
+            types: TypeContext::new(),
         }
     }
 
@@ -209,9 +289,9 @@ impl AstToHir {
                 if let py::Stmt::Assign(ref assign) = stmt {
                     if self.is_typevar_assignment(assign) {
                         // Use module-level scope for type resolution
-                        std::mem::swap(&mut self.var_map, &mut self.module_var_map);
+                        std::mem::swap(&mut self.symbols.var_map, &mut self.symbols.module_var_map);
                         let result = self.handle_typevar_assignment(assign, stmt_span);
-                        std::mem::swap(&mut self.var_map, &mut self.module_var_map);
+                        std::mem::swap(&mut self.symbols.var_map, &mut self.symbols.module_var_map);
                         result?;
                         return Ok(());
                     }
@@ -219,7 +299,7 @@ impl AstToHir {
 
                 // Accept all other statements at module level (CPython semantics)
                 // Use module-level variable scope
-                std::mem::swap(&mut self.var_map, &mut self.module_var_map);
+                std::mem::swap(&mut self.symbols.var_map, &mut self.symbols.module_var_map);
 
                 // Check if this is an assignment statement - we need to track
                 // explicitly assigned variables for globals detection
@@ -250,15 +330,15 @@ impl AstToHir {
                 // Mark the target variable as a module-level assignment
                 if is_assignment {
                     if let Some(name) = target_name {
-                        if let Some(&var_id) = self.var_map.get(&name) {
-                            self.module_level_assignments.insert(var_id);
+                        if let Some(&var_id) = self.symbols.var_map.get(&name) {
+                            self.scope.module_level_assignments.insert(var_id);
                         }
                     }
                 }
 
                 // Inject any pending statements from comprehensions before this statement
                 let pending = self.take_pending_stmts();
-                std::mem::swap(&mut self.var_map, &mut self.module_var_map);
+                std::mem::swap(&mut self.symbols.var_map, &mut self.symbols.module_var_map);
                 self.module.module_init_stmts.extend(pending);
                 self.module.module_init_stmts.push(stmt_id);
             }
@@ -270,11 +350,11 @@ impl AstToHir {
         // Copy module-level variable map to the HIR module for cross-module access
         // Note: We only add explicitly assigned module-level variables to globals,
         // not loop target variables or other temporary variables.
-        for (name, var_id) in &self.module_var_map {
+        for (name, var_id) in &self.symbols.module_var_map {
             self.module.module_var_map.insert(*name, *var_id);
             // Only add to globals if it's in module_level_assignments
             // (i.e., it was explicitly assigned at module level via Assign/AnnAssign)
-            if self.module_level_assignments.contains(var_id) {
+            if self.scope.module_level_assignments.contains(var_id) {
                 self.module.globals.insert(*var_id);
             }
         }
@@ -283,7 +363,7 @@ impl AstToHir {
             return;
         }
 
-        let func_id = self.alloc_func_id();
+        let func_id = self.ids.alloc_func();
         let func_name = self.interner.intern("__pyaot_module_init__");
 
         let function = Function {
@@ -305,7 +385,7 @@ impl AstToHir {
     }
 
     pub(crate) fn take_pending_stmts(&mut self) -> Vec<StmtId> {
-        std::mem::take(&mut self.pending_stmts)
+        std::mem::take(&mut self.scope.pending_stmts)
     }
 
     /// Handle PEP 695 `type MyType = ...` statement
@@ -313,7 +393,7 @@ impl AstToHir {
         if let py::Expr::Name(name) = &*ta.name {
             let alias_name = self.interner.intern(&name.id);
             let aliased_type = self.convert_type_annotation(&ta.value)?;
-            self.type_aliases.insert(alias_name, aliased_type);
+            self.types.type_aliases.insert(alias_name, aliased_type);
             Ok(())
         } else {
             Err(CompilerError::parse_error(
@@ -336,6 +416,7 @@ impl AstToHir {
                 if func_name.id.as_str() == "TypeVar" {
                     // Check if TypeVar was imported from typing
                     return self
+                        .types
                         .typing_imports
                         .iter()
                         .any(|s| self.interner.resolve(*s) == "TypeVar");
@@ -359,7 +440,7 @@ impl AstToHir {
 
         if let py::Expr::Call(call) = &*assign.value {
             let tv_def = self.parse_typevar_call(call)?;
-            self.typevar_defs.insert(target_name, tv_def);
+            self.types.typevar_defs.insert(target_name, tv_def);
         }
         Ok(())
     }

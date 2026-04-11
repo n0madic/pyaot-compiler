@@ -46,7 +46,7 @@ pub fn compile_print_call(
                     let gv = ctx.module.declare_data_in_func(data_id, builder.func);
                     builder.ins().global_value(cltypes::I64, gv)
                 } else {
-                    load_operand(builder, &args[0], ctx.var_map)
+                    load_operand(builder, &args[0], ctx.symbols.var_map)
                 }
             } else {
                 builder.ins().iconst(cltypes::I64, 0)
@@ -97,7 +97,7 @@ fn compile_print_value(
                 let gv = ctx.module.declare_data_in_func(data_id, builder.func);
                 builder.ins().global_value(cltypes::I64, gv)
             } else {
-                load_operand(builder, &args[0], ctx.var_map)
+                load_operand(builder, &args[0], ctx.symbols.var_map)
             }
         } else {
             builder.ins().iconst(cltypes::I64, 0)
