@@ -34,8 +34,8 @@ pub use convert::{
     rt_list_tail_to_tuple_float,
 };
 pub use core::{
-    list_finalize, rt_list_get, rt_list_get_bool, rt_list_get_float, rt_list_get_int, rt_list_len,
-    rt_list_push, rt_list_set, rt_make_list,
+    list_finalize, rt_list_get, rt_list_get_typed, rt_list_len, rt_list_push, rt_list_set,
+    rt_make_list,
 };
 pub use minmax::{rt_list_minmax, rt_list_minmax_with_key};
 pub use mutation::{

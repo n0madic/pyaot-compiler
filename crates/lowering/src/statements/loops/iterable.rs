@@ -303,49 +303,6 @@ impl<'a> Lowering<'a> {
         self.insert_var_type(target, elem_type.clone());
         let target_local = self.get_or_create_local(target, elem_type.clone(), mir_func);
 
-        // Get element at current index
-        // Use specialized get functions for primitive types to avoid type mismatches
-        // Note: Lists store Int as raw i64 but Bool/Float are boxed (see collections.rs)
-        let get_func = match iterable_kind {
-            IterableKind::List => {
-                // Use specialized list get for Int (raw i64), otherwise generic
-                // Bool and Float are boxed in lists, so use ListGet
-                match &elem_type {
-                    Type::Int => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_INT)
-                    }
-                    _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET), // Bool, Float, etc. are boxed
-                }
-            }
-            IterableKind::Dict | IterableKind::Set => {
-                // After DictKeys/SetToList conversion, the result list's elem_tag
-                // depends on the element type: ELEM_RAW_INT for Int, ELEM_HEAP_OBJ
-                // for everything else. Use specialized get functions accordingly.
-                match &elem_type {
-                    Type::Int => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_INT)
-                    }
-                    Type::Float => mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_LIST_GET_FLOAT,
-                    ),
-                    Type::Bool => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_BOOL)
-                    }
-                    _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
-                }
-            }
-            IterableKind::Tuple => crate::type_dispatch::tuple_get_func(&elem_type),
-            IterableKind::Str => {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_GETCHAR)
-            }
-            IterableKind::Bytes => {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_GET)
-            }
-            IterableKind::Iterator | IterableKind::File => {
-                unreachable!("Iterator and File handled separately")
-            }
-        };
-
         // Use converted list for dict/set, otherwise use the original iter
         let iter_to_index = if converted_list_local.is_some() {
             actual_iter_local
@@ -353,16 +310,59 @@ impl<'a> Lowering<'a> {
             iter_local
         };
 
-        // Specialized get functions (ListGetTyped) handle
-        // both ELEM_RAW_INT and ELEM_HEAP_OBJ transparently, so no manual unboxing needed.
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: target_local,
-            func: get_func,
-            args: vec![
-                mir::Operand::Local(iter_to_index),
-                mir::Operand::Local(idx_local),
-            ],
-        });
+        // Get element at current index.
+        // Int/Float/Bool use rt_list_get_typed (single generic function with elem_kind tag).
+        // The codegen descriptor system handles return-type coercion (I64→F64, I64→I8).
+        // Heap types use the generic rt_list_get (returns *mut Obj).
+        let elem_kind_for_typed = match iterable_kind {
+            IterableKind::List => match &elem_type {
+                Type::Int => Some(mir::GetElementKind::Int),
+                // Bool and Float are boxed in regular lists, so use generic get + typed dispatch
+                _ => None,
+            },
+            IterableKind::Dict | IterableKind::Set => {
+                // After DictKeys/SetToList, elem_tag reflects actual storage
+                match &elem_type {
+                    Type::Int => Some(mir::GetElementKind::Int),
+                    Type::Float => Some(mir::GetElementKind::Float),
+                    Type::Bool => Some(mir::GetElementKind::Bool),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(kind) = elem_kind_for_typed {
+            let kind_tag = mir::Operand::Constant(mir::Constant::Int(kind.to_tag() as i64));
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: target_local,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_TYPED),
+                args: vec![
+                    mir::Operand::Local(iter_to_index),
+                    mir::Operand::Local(idx_local),
+                    kind_tag,
+                ],
+            });
+        } else {
+            let get_func = match iterable_kind {
+                IterableKind::Tuple => crate::type_dispatch::tuple_get_func(&elem_type),
+                IterableKind::Str => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_GETCHAR)
+                }
+                IterableKind::Bytes => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_GET)
+                }
+                _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+            };
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: target_local,
+                func: get_func,
+                args: vec![
+                    mir::Operand::Local(iter_to_index),
+                    mir::Operand::Local(idx_local),
+                ],
+            });
+        }
 
         // If target is a global variable, sync the global with the local at start of each iteration
         // This is necessary because the loop uses a local for efficiency, but code inside

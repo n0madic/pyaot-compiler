@@ -141,83 +141,68 @@ unsafe fn list_get_element(list: *mut Obj, index: i64) -> Option<*mut Obj> {
     Some(*data.add(idx as usize))
 }
 
-/// Get integer element from list, unboxing if necessary
-/// Handles both raw integer storage and boxed IntObj storage transparently
+/// Get a typed scalar element from a list, unboxing if necessary. Always returns i64.
+///
+/// `elem_kind` selects the element type:
+/// - 0 = Int:   returns raw i64 (unboxes IntObj when stored as ELEM_HEAP_OBJ)
+/// - 1 = Float: returns f64 bit-pattern as i64 (unboxes FloatObj when stored as ELEM_HEAP_OBJ)
+/// - 2 = Bool:  returns i8 zero-extended to i64 (unboxes BoolObj when stored as ELEM_HEAP_OBJ)
+///
+/// Replaces the three separate `rt_list_get_int`, `rt_list_get_float`, `rt_list_get_bool`
+/// functions. The caller (generated code) passes the statically-known elem_kind tag; the
+/// codegen descriptor system handles the I64→F64 bitcast for float destinations.
 #[no_mangle]
-pub extern "C" fn rt_list_get_int(list: *mut Obj, index: i64) -> i64 {
-    use crate::object::{IntObj, ELEM_HEAP_OBJ, ELEM_RAW_INT};
+pub extern "C" fn rt_list_get_typed(list: *mut Obj, index: i64, elem_kind: u8) -> i64 {
+    use crate::object::{BoolObj, FloatObj, IntObj, ELEM_HEAP_OBJ, ELEM_RAW_BOOL, ELEM_RAW_INT};
 
     unsafe {
         let elem = match list_get_element(list, index) {
             Some(e) => e,
             None => return 0,
         };
-        let elem_tag = (*(list as *mut ListObj)).elem_tag;
+        let stored_tag = (*(list as *mut ListObj)).elem_tag;
 
-        match elem_tag {
-            ELEM_RAW_INT => elem as i64,
-            ELEM_HEAP_OBJ => {
-                if elem.is_null() {
-                    return 0;
-                }
-                (*(elem as *mut IntObj)).value
-            }
-            _ => elem as i64,
-        }
-    }
-}
-
-/// Get float element from list, unboxing if necessary
-/// Handles both raw float storage (as bitcast i64) and boxed FloatObj storage
-#[no_mangle]
-pub extern "C" fn rt_list_get_float(list: *mut Obj, index: i64) -> f64 {
-    use crate::object::{FloatObj, ELEM_HEAP_OBJ};
-
-    unsafe {
-        let elem = match list_get_element(list, index) {
-            Some(e) => e,
-            None => return 0.0,
-        };
-        let elem_tag = (*(list as *mut ListObj)).elem_tag;
-
-        match elem_tag {
-            ELEM_HEAP_OBJ => {
-                if elem.is_null() {
-                    return 0.0;
-                }
-                (*(elem as *mut FloatObj)).value
-            }
-            _ => f64::from_bits(elem as u64),
-        }
-    }
-}
-
-/// Get bool element from list, unboxing if necessary
-/// Handles both raw bool storage (as i8 cast to pointer) and boxed BoolObj storage
-#[no_mangle]
-pub extern "C" fn rt_list_get_bool(list: *mut Obj, index: i64) -> i8 {
-    use crate::object::{BoolObj, ELEM_HEAP_OBJ, ELEM_RAW_BOOL};
-
-    unsafe {
-        let elem = match list_get_element(list, index) {
-            Some(e) => e,
-            None => return 0,
-        };
-        let elem_tag = (*(list as *mut ListObj)).elem_tag;
-
-        match elem_tag {
-            ELEM_RAW_BOOL => elem as i8,
-            ELEM_HEAP_OBJ => {
-                if elem.is_null() {
-                    return 0;
-                }
-                if (*(elem as *mut BoolObj)).value {
-                    1
-                } else {
-                    0
+        match elem_kind {
+            0 => {
+                // Int: raw i64 or unbox IntObj
+                match stored_tag {
+                    ELEM_RAW_INT => elem as i64,
+                    ELEM_HEAP_OBJ => {
+                        if elem.is_null() {
+                            return 0;
+                        }
+                        (*(elem as *mut IntObj)).value
+                    }
+                    _ => elem as i64,
                 }
             }
-            _ => elem as i8,
+            1 => {
+                // Float: unbox FloatObj or treat raw bits as f64
+                let f = match stored_tag {
+                    ELEM_HEAP_OBJ => {
+                        if elem.is_null() {
+                            return 0;
+                        }
+                        (*(elem as *mut FloatObj)).value
+                    }
+                    _ => f64::from_bits(elem as u64),
+                };
+                f.to_bits() as i64
+            }
+            _ => {
+                // Bool (elem_kind=2): raw i8 or unbox BoolObj
+                let b: i8 = match stored_tag {
+                    ELEM_RAW_BOOL => elem as i8,
+                    ELEM_HEAP_OBJ => {
+                        if elem.is_null() {
+                            return 0;
+                        }
+                        i8::from((*(elem as *mut BoolObj)).value)
+                    }
+                    _ => elem as i8,
+                };
+                b as i64
+            }
         }
     }
 }

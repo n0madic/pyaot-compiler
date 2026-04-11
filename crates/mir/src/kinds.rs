@@ -738,4 +738,14 @@ impl GetElementKind {
             GetElementKind::Bool => "_bool",
         }
     }
+
+    /// Numeric tag for passing to rt_list_get_typed.
+    /// Int=0, Float=1, Bool=2.
+    pub fn to_tag(&self) -> u8 {
+        match self {
+            GetElementKind::Int => 0,
+            GetElementKind::Float => 1,
+            GetElementKind::Bool => 2,
+        }
+    }
 }

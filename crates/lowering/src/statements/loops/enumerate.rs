@@ -449,42 +449,52 @@ impl<'a> Lowering<'a> {
         // Body: get element, set counter, execute body
         self.push_block(body_bb);
 
-        // After DictKeys/SetToList conversion, the result list's elem_tag depends on
-        // the element type. Use specialized get functions that handle both raw and boxed
-        // storage transparently (ListGetTyped).
-        let get_func = match iterable_kind {
+        // Get element: Int/Float/Bool from list-like sources use rt_list_get_typed.
+        // The codegen descriptor system coerces i64 return to the dest type.
+        let list_elem_kind = match iterable_kind {
             IterableKind::List | IterableKind::Dict | IterableKind::Set => match &elem_type {
-                Type::Int => {
-                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_INT)
-                }
-                Type::Float => {
-                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_FLOAT)
-                }
-                Type::Bool => {
-                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_BOOL)
-                }
-                _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+                Type::Int => Some(mir::GetElementKind::Int),
+                Type::Float => Some(mir::GetElementKind::Float),
+                Type::Bool => Some(mir::GetElementKind::Bool),
+                _ => None,
             },
-            IterableKind::Tuple => {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
-            }
-            IterableKind::Str => {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_GETCHAR)
-            }
-            IterableKind::Bytes => {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_GET)
-            }
-            IterableKind::Iterator | IterableKind::File => unreachable!(),
+            _ => None,
         };
 
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: elem_local,
-            func: get_func,
-            args: vec![
-                mir::Operand::Local(actual_iter_local),
-                mir::Operand::Local(idx_local),
-            ],
-        });
+        if let Some(kind) = list_elem_kind {
+            let kind_tag = mir::Operand::Constant(mir::Constant::Int(kind.to_tag() as i64));
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: elem_local,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_TYPED),
+                args: vec![
+                    mir::Operand::Local(actual_iter_local),
+                    mir::Operand::Local(idx_local),
+                    kind_tag,
+                ],
+            });
+        } else {
+            let get_func = match iterable_kind {
+                IterableKind::Tuple => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
+                }
+                IterableKind::Str => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_GETCHAR)
+                }
+                IterableKind::Bytes => {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BYTES_GET)
+                }
+                IterableKind::Iterator | IterableKind::File => unreachable!(),
+                _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+            };
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: elem_local,
+                func: get_func,
+                args: vec![
+                    mir::Operand::Local(actual_iter_local),
+                    mir::Operand::Local(idx_local),
+                ],
+            });
+        }
 
         self.push_loop(increment_id, exit_id);
 

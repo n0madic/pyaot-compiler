@@ -285,53 +285,40 @@ impl<'a> Lowering<'a> {
         elem_type: &Type,
         mir_func: &mut mir::Function,
     ) -> LocalId {
-        let (get_func, needs_unbox) = match elem_type {
-            Type::Int => (
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_INT),
-                false,
-            ),
-            Type::Float => (
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_FLOAT),
-                false,
-            ),
-            Type::Bool => (
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
-                true,
-            ),
-            _ => (
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
-                false,
-            ),
+        // Int/Float/Bool use rt_list_get_typed with a static elem_kind tag.
+        // The codegen descriptor system coerces the i64 return to the dest type
+        // (I64→F64 bitcast for float, I64→I8 ireduce for bool).
+        let typed_elem_kind = match elem_type {
+            Type::Int => Some(mir::GetElementKind::Int),
+            Type::Float => Some(mir::GetElementKind::Float),
+            Type::Bool => Some(mir::GetElementKind::Bool),
+            _ => None,
         };
 
-        if needs_unbox {
-            let boxed_local = self.emit_runtime_call(
-                get_func,
+        if let Some(kind) = typed_elem_kind {
+            let kind_tag = mir::Operand::Constant(mir::Constant::Int(kind.to_tag() as i64));
+            return self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_TYPED),
                 vec![
                     list_operand.clone(),
                     mir::Operand::Constant(mir::Constant::Int(index as i64)),
+                    kind_tag,
                 ],
-                Type::HeapAny,
+                elem_type.clone(),
                 mir_func,
             );
-
-            self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL),
-                vec![mir::Operand::Local(boxed_local)],
-                elem_type.clone(),
-                mir_func,
-            )
-        } else {
-            self.emit_runtime_call(
-                get_func,
-                vec![
-                    list_operand.clone(),
-                    mir::Operand::Constant(mir::Constant::Int(index as i64)),
-                ],
-                elem_type.clone(),
-                mir_func,
-            )
         }
+
+        // Heap types: rt_list_get returns *mut Obj
+        self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+            vec![
+                list_operand.clone(),
+                mir::Operand::Constant(mir::Constant::Int(index as i64)),
+            ],
+            elem_type.clone(),
+            mir_func,
+        )
     }
 
     /// Extract a list element with fallback to default value if out of bounds.

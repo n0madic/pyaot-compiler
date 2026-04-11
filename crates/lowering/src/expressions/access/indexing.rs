@@ -130,20 +130,22 @@ impl<'a> Lowering<'a> {
                         });
                     }
                     Type::Int => {
-                        // ListGetTyped(Int) transparently handles both ELEM_RAW_INT and
-                        // ELEM_HEAP_OBJ storage (unboxes IntObj when needed).
+                        // rt_list_get_typed(Int) handles both ELEM_RAW_INT and ELEM_HEAP_OBJ.
                         mir_func.add_local(mir::Local {
                             id: result_local,
                             name: None,
                             ty: Type::Int,
                             is_gc_root: false,
                         });
+                        let kind_tag = mir::Operand::Constant(mir::Constant::Int(
+                            mir::GetElementKind::Int.to_tag() as i64,
+                        ));
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: result_local,
                             func: mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_LIST_GET_INT,
+                                &pyaot_core_defs::runtime_func_def::RT_LIST_GET_TYPED,
                             ),
-                            args: vec![obj_operand, index_operand],
+                            args: vec![obj_operand, index_operand, kind_tag],
                         });
                     }
                     _ => {

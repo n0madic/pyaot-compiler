@@ -389,13 +389,11 @@ pub static RT_LIST_PUSH: RuntimeFuncDef = RuntimeFuncDef::void("rt_list_push", &
 pub static RT_LIST_SET: RuntimeFuncDef = RuntimeFuncDef::void("rt_list_set", &[PI64, PI64, PI64]);
 /// rt_list_get(list: *mut Obj, index: i64) -> *mut Obj
 pub static RT_LIST_GET: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_list_get");
-/// rt_list_get_int(list: *mut Obj, index: i64) -> i64
-pub static RT_LIST_GET_INT: RuntimeFuncDef = RuntimeFuncDef::binary_to_i64("rt_list_get_int");
-/// rt_list_get_float(list: *mut Obj, index: i64) -> f64
-pub static RT_LIST_GET_FLOAT: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_list_get_float", &[PI64, PI64], Some(RF64), false);
-/// rt_list_get_bool(list: *mut Obj, index: i64) -> i8
-pub static RT_LIST_GET_BOOL: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_list_get_bool");
+/// rt_list_get_typed(list: *mut Obj, index: i64, elem_kind: u8) -> i64
+/// elem_kind: 0=Int, 1=Float (result is f64 bits), 2=Bool (result is i8 as i64)
+/// The codegen descriptor system handles I64→F64 bitcast for float dest locals.
+pub static RT_LIST_GET_TYPED: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_list_get_typed", &[PI64, PI64, PI8], Some(RI64), false);
 /// rt_list_len(list: *mut Obj) -> i64
 pub static RT_LIST_LEN: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_list_len");
 /// rt_list_slice(list: *mut Obj, start: i64, stop: i64) -> *mut Obj

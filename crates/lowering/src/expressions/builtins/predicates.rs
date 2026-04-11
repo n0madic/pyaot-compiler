@@ -4,16 +4,25 @@ use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
+use pyaot_utils::ids::LocalId;
 
 use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
     /// Select the appropriate Len/Get functions and item type based on iterable type.
-    /// Returns (len_func, get_func, item_type, zero_constant).
+    /// Returns (len_func, get_func, elem_kind, item_type, zero_constant).
+    /// When elem_kind is Some, the get_func is RT_LIST_GET_TYPED and needs an extra
+    /// elem_kind tag argument; use make_get_args() to build the full args list.
     fn predicate_iter_info(
         &self,
         iterable_type: &Type,
-    ) -> (mir::RuntimeFunc, mir::RuntimeFunc, Type, mir::Constant) {
+    ) -> (
+        mir::RuntimeFunc,
+        mir::RuntimeFunc,
+        Option<mir::GetElementKind>,
+        Type,
+        mir::Constant,
+    ) {
         match iterable_type {
             Type::List(elem) => {
                 let elem = elem.as_ref();
@@ -21,20 +30,25 @@ impl<'a> Lowering<'a> {
                     Type::Bool => (
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                         mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_LIST_GET_BOOL,
+                            &pyaot_core_defs::runtime_func_def::RT_LIST_GET_TYPED,
                         ),
+                        Some(mir::GetElementKind::Bool),
                         Type::Bool,
                         mir::Constant::Bool(false),
                     ),
                     Type::Int => (
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_INT),
+                        mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_LIST_GET_TYPED,
+                        ),
+                        Some(mir::GetElementKind::Int),
                         Type::Int,
                         mir::Constant::Int(0),
                     ),
                     _ => (
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+                        None,
                         Type::Int,
                         mir::Constant::Int(0),
                     ),
@@ -43,16 +57,34 @@ impl<'a> Lowering<'a> {
             Type::Tuple(_) => (
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN),
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+                None,
                 Type::Int,
                 mir::Constant::Int(0),
             ),
             _ => (
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+                None,
                 Type::Int,
                 mir::Constant::Int(0),
             ),
         }
+    }
+
+    /// Build the args list for an element getter call, adding elem_kind tag for RT_LIST_GET_TYPED.
+    fn make_get_args(
+        &self,
+        iterable_operand: &mir::Operand,
+        counter_local: LocalId,
+        elem_kind: Option<mir::GetElementKind>,
+    ) -> Vec<mir::Operand> {
+        let mut args = vec![iterable_operand.clone(), mir::Operand::Local(counter_local)];
+        if let Some(kind) = elem_kind {
+            args.push(mir::Operand::Constant(mir::Constant::Int(
+                kind.to_tag() as i64
+            )));
+        }
+        args
     }
 
     /// Lower all(iterable) -> bool
@@ -70,7 +102,8 @@ impl<'a> Lowering<'a> {
         let iterable_operand = self.lower_expr(iterable_expr, hir_module, mir_func)?;
         let iterable_type = self.get_type_of_expr_id(args[0], hir_module);
 
-        let (len_func, get_func, item_type, zero_const) = self.predicate_iter_info(&iterable_type);
+        let (len_func, get_func, elem_kind, item_type, zero_const) =
+            self.predicate_iter_info(&iterable_type);
 
         // Create result (default True)
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
@@ -130,12 +163,8 @@ impl<'a> Lowering<'a> {
         self.push_block(loop_body);
 
         // Get item using the type-appropriate getter
-        let item_local = self.emit_runtime_call(
-            get_func,
-            vec![iterable_operand.clone(), mir::Operand::Local(counter_local)],
-            item_type.clone(),
-            mir_func,
-        );
+        let get_args = self.make_get_args(&iterable_operand, counter_local, elem_kind);
+        let item_local = self.emit_runtime_call(get_func, get_args, item_type.clone(), mir_func);
 
         // Convert to bool: compare item != zero_const (works for both i8 and i64)
         let item_bool = self.alloc_and_add_local(Type::Bool, mir_func);
@@ -209,7 +238,8 @@ impl<'a> Lowering<'a> {
         let iterable_operand = self.lower_expr(iterable_expr, hir_module, mir_func)?;
         let iterable_type = self.get_type_of_expr_id(args[0], hir_module);
 
-        let (len_func, get_func, item_type, zero_const) = self.predicate_iter_info(&iterable_type);
+        let (len_func, get_func, elem_kind, item_type, zero_const) =
+            self.predicate_iter_info(&iterable_type);
 
         // Create result (default False)
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
@@ -269,12 +299,8 @@ impl<'a> Lowering<'a> {
         self.push_block(loop_body);
 
         // Get item using the type-appropriate getter
-        let item_local = self.emit_runtime_call(
-            get_func,
-            vec![iterable_operand.clone(), mir::Operand::Local(counter_local)],
-            item_type.clone(),
-            mir_func,
-        );
+        let get_args = self.make_get_args(&iterable_operand, counter_local, elem_kind);
+        let item_local = self.emit_runtime_call(get_func, get_args, item_type.clone(), mir_func);
 
         // Convert to bool: compare item != zero_const (works for both i8 and i64)
         let item_bool = self.alloc_and_add_local(Type::Bool, mir_func);
