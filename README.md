@@ -34,7 +34,7 @@ This compiler follows a multi-stage compilation pipeline:
 4. **Type Inference** (`lowering/type_planning`): Bidirectional type inference and validation
 5. **Lowering** (`lowering`): HIR to MIR transformation
 6. **MIR** (`mir`): Mid-level IR with control flow graph (CFG)
-7. **Optimizer** (`optimizer`): MIR optimization passes (devirtualization, property flattening, inlining, constant folding & propagation, dead code elimination)
+7. **Optimizer** (`optimizer`): MIR optimization passes via `PassManager` pipeline (devirtualization, property flattening, inlining, constant folding & propagation, peephole simplification, dead code elimination)
 8. **Codegen** (`codegen-cranelift`): Code generation using Cranelift
 9. **Linking** (`linker`): Linking with runtime library
 10. **Runtime** (`runtime`): Runtime support with precise GC

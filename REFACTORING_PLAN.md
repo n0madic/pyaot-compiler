@@ -51,8 +51,8 @@ Complete catalog of discovered architectural issues, tagged for cross-referencin
 | P19 | Codegen hardcoded offsets (8+ magic numbers) | MEDIUM | `codegen-cranelift/src/{instructions,exceptions,gc}.rs` | ~50 |
 | P20 | Codegen GC root management (20 manual sites → 1 store_result) | ✅ DONE | `codegen-cranelift/src/context.rs` | ~200→~60 |
 | P21 | CodegenContext decomposed (13 fields → 3 sub-structs) | ✅ DONE | `codegen-cranelift/src/context.rs` | ~300→~80 |
-| P22 | Optimizer no pass interface | LOW | `optimizer/src/lib.rs` | ~100 |
-| P23 | Optimizer inconsistent fixpoint iteration | LOW | Various optimizer passes | ~50 |
+| P22 | Optimizer pass interface (OptimizationPass trait + PassManager) | ✅ DONE | `optimizer/src/pass.rs` | ~100 |
+| P23 | Optimizer consistent fixpoint iteration (PassManager-driven) | ✅ DONE | `optimizer/src/pass.rs`, all pass modules | ~50 |
 | P24 | Span loss through pipeline | MEDIUM | Lowering (desugaring), optimizer | ~200 |
 | P25 | Inconsistent error hierarchy | MEDIUM | `diagnostics/src/lib.rs:29-99` | ~100 |
 | P26 | Lowering god-files split (5 files → 17 modules) | ✅ DONE | `lowering/src/{operators,match_stmt,assign,call_resolution,type_planning}/` | ~8,000 |
@@ -64,9 +64,9 @@ Complete catalog of discovered architectural issues, tagged for cross-referencin
 ## Dependency Graph
 
 ```
-Phase 0 (Foundation)                    Phase 5 (Optimizer)
-  P25 Error hierarchy ──────────┐         P22 Pass interface
-  P19 Layout constants ─────────┤         P23 Fixpoint iteration
+Phase 0 (Foundation)                    Phase 5 (Optimizer) ✅ COMPLETE
+  P25 Error hierarchy ──────────┐         P22 Pass interface ✅
+  P19 Layout constants ─────────┤         P23 Fixpoint iteration ✅
   P8  Unified exceptions ───────┤
                                 │
 Phase 1 (Runtime)               │      Phase 6 (Integration)
@@ -1019,7 +1019,7 @@ codegen-cranelift/src/instructions/
 
 ---
 
-## Phase 5: Optimizer Evolution
+## Phase 5: Optimizer Evolution ✅ COMPLETE
 
 **Goal:** Introduce proper pass management infrastructure.
 
@@ -1029,7 +1029,7 @@ codegen-cranelift/src/instructions/
 
 **Duration estimate:** Small-medium.
 
-### 5.1 — Pass Trait Interface (P22)
+### 5.1 — Pass Trait Interface (P22) ✅
 
 ```rust
 // crates/optimizer/src/pass.rs
@@ -1066,7 +1066,7 @@ impl OptimizationPass for ConstantFolding {
 }
 ```
 
-### 5.2 — Pass Manager (P23)
+### 5.2 — Pass Manager (P23) ✅
 
 ```rust
 pub struct PassManager {
@@ -1109,7 +1109,7 @@ pub fn build_pass_pipeline(config: &OptimizeConfig) -> PassManager {
 }
 ```
 
-### 5.3 — Span Preservation in Optimizer
+### 5.3 — Span Preservation in Optimizer ✅
 
 **Rule:** Every pass that transforms instructions must preserve the span from the original instruction.
 

@@ -15,6 +15,8 @@ mod tests;
 use pyaot_mir::{InstructionKind, Module, Operand};
 use pyaot_utils::{FuncId, StringInterner};
 
+use crate::pass::OptimizationPass;
+
 use fold::{
     try_fold_binop, try_fold_bool_to_int, try_fold_float_abs, try_fold_float_to_int,
     try_fold_int_to_float, try_fold_unop,
@@ -23,9 +25,11 @@ use fold::{
 /// Maximum iterations to prevent pathological cases.
 const MAX_ITERATIONS: usize = 10;
 
-/// Run constant folding and propagation on all functions in the module.
-pub fn fold_constants(module: &mut Module, interner: &mut StringInterner) {
+/// Run one iteration of constant folding and propagation on all functions.
+/// Returns `true` if any changes were made.
+pub(crate) fn fold_constants_once(module: &mut Module, interner: &mut StringInterner) -> bool {
     let func_ids: Vec<FuncId> = module.functions.keys().copied().collect();
+    let mut changed = false;
 
     for func_id in func_ids {
         let func = match module.functions.get_mut(&func_id) {
@@ -33,23 +37,43 @@ pub fn fold_constants(module: &mut Module, interner: &mut StringInterner) {
             None => continue,
         };
 
-        for _ in 0..MAX_ITERATIONS {
-            let mut changed = false;
+        // Phase 1: Propagate known constants into operands
+        changed |= propagate::propagate_constants(func);
 
-            // Phase 1: Propagate known constants into operands
-            changed |= propagate::propagate_constants(func);
-
-            // Phase 2: Fold constant expressions in instructions
-            for block in func.blocks.values_mut() {
-                for inst in &mut block.instructions {
-                    changed |= try_fold_instruction(&mut inst.kind, interner);
-                }
-            }
-
-            if !changed {
-                break;
+        // Phase 2: Fold constant expressions in instructions
+        for block in func.blocks.values_mut() {
+            for inst in &mut block.instructions {
+                changed |= try_fold_instruction(&mut inst.kind, interner);
             }
         }
+    }
+
+    changed
+}
+
+/// Run constant folding and propagation on all functions in the module.
+pub fn fold_constants(module: &mut Module, interner: &mut StringInterner) {
+    for _ in 0..MAX_ITERATIONS {
+        if !fold_constants_once(module, interner) {
+            break;
+        }
+    }
+}
+
+/// Pass wrapper for constant folding and propagation.
+pub struct ConstantFoldPass;
+
+impl OptimizationPass for ConstantFoldPass {
+    fn name(&self) -> &str {
+        "constfold"
+    }
+
+    fn run_once(&mut self, module: &mut Module, interner: &mut StringInterner) -> bool {
+        fold_constants_once(module, interner)
+    }
+
+    fn max_iterations(&self) -> usize {
+        MAX_ITERATIONS
     }
 }
 

@@ -303,6 +303,8 @@ Uses generic `ObjectMethodCall` and `ObjectFieldGet` variants for automatic disp
 
 ### Optimizations
 
+All passes implement the `OptimizationPass` trait and are orchestrated by `PassManager` (`optimizer/src/pass.rs`). Fixpoint passes iterate automatically until stable; the pipeline is configured via `build_pass_pipeline()`.
+
 | Optimization | Status | CLI Flag | Description |
 |--------------|--------|----------|-------------|
 | Devirtualization | ✅ | `--devirtualize` | Replaces virtual method calls with direct calls when receiver type is statically known |

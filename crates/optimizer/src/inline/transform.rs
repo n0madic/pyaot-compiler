@@ -13,8 +13,10 @@ use super::analysis::{CallGraph, FunctionCost, InlineDecision};
 use super::remap::InlineRemapper;
 use super::InlineConfig;
 
-/// Perform inlining pass on the module
-pub fn inline_pass(module: &mut Module, config: &InlineConfig) {
+/// Perform inlining pass on the module. Returns `true` if any inlining was performed.
+pub fn inline_pass(module: &mut Module, config: &InlineConfig) -> bool {
+    let mut ever_inlined = false;
+
     // Perform multiple iterations to handle transitive inlining
     // Recompute call graph and costs each iteration since inlining changes function sizes
     for _iteration in 0..config.max_iterations {
@@ -47,7 +49,10 @@ pub fn inline_pass(module: &mut Module, config: &InlineConfig) {
         if !any_inlined {
             break;
         }
+        ever_inlined = true;
     }
+
+    ever_inlined
 }
 
 /// Maximum total instruction count for a caller before we stop inlining into it.

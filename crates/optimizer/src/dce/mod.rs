@@ -10,7 +10,28 @@ pub(crate) mod reachability;
 mod tests;
 
 use pyaot_mir::{InstructionKind, Module, Operand, Terminator};
-use pyaot_utils::{BlockId, FuncId, LocalId};
+use pyaot_utils::{BlockId, FuncId, LocalId, StringInterner};
+
+use crate::pass::OptimizationPass;
+
+/// Run one iteration of dead code elimination on all functions.
+/// Returns `true` if any changes were made.
+pub(crate) fn eliminate_dead_code_once(module: &mut Module) -> bool {
+    let func_ids: Vec<FuncId> = module.functions.keys().copied().collect();
+    let mut changed = false;
+
+    for func_id in func_ids {
+        let func = match module.functions.get_mut(&func_id) {
+            Some(f) => f,
+            None => continue,
+        };
+        changed |= reachability::eliminate_unreachable_blocks(func);
+        changed |= liveness::eliminate_dead_instructions(func);
+        changed |= liveness::eliminate_dead_locals(func);
+    }
+
+    changed
+}
 
 /// Perform dead code elimination on all functions in the module.
 pub fn eliminate_dead_code(module: &mut Module) {
@@ -32,6 +53,23 @@ pub fn eliminate_dead_code(module: &mut Module) {
                 break;
             }
         }
+    }
+}
+
+/// Pass wrapper for dead code elimination.
+pub struct DcePass;
+
+impl OptimizationPass for DcePass {
+    fn name(&self) -> &str {
+        "dce"
+    }
+
+    fn run_once(&mut self, module: &mut Module, _interner: &mut StringInterner) -> bool {
+        eliminate_dead_code_once(module)
+    }
+
+    fn max_iterations(&self) -> usize {
+        20
     }
 }
 

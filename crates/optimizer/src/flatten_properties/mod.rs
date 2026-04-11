@@ -12,7 +12,9 @@ use std::collections::HashMap;
 
 use pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD;
 use pyaot_mir::{Constant, InstructionKind, Module, Operand, RuntimeFunc, Terminator};
-use pyaot_utils::FuncId;
+use pyaot_utils::{FuncId, StringInterner};
+
+use crate::pass::OptimizationPass;
 
 /// Analyze a function to determine if it is a trivial getter.
 ///
@@ -74,7 +76,7 @@ fn analyze_trivial_getter(func: &pyaot_mir::Function) -> Option<i64> {
 ///
 /// Phase 1: Scan all functions to identify trivial getters.
 /// Phase 2: Replace `CallDirect` to trivial getters with inline `InstanceGetField`.
-pub fn flatten_property_getters(module: &mut Module) {
+pub fn flatten_property_getters(module: &mut Module) -> bool {
     // Phase 1: identify trivial getters
     let mut trivial_getters: HashMap<FuncId, i64> = HashMap::new();
     for (func_id, func) in &module.functions {
@@ -84,11 +86,12 @@ pub fn flatten_property_getters(module: &mut Module) {
     }
 
     if trivial_getters.is_empty() {
-        return;
+        return false;
     }
 
     // Phase 2: replace CallDirect to trivial getters with InstanceGetField
     let func_ids: Vec<FuncId> = module.functions.keys().copied().collect();
+    let mut changed = false;
 
     for func_id in func_ids {
         let func = module.functions.get_mut(&func_id).unwrap();
@@ -110,10 +113,30 @@ pub fn flatten_property_getters(module: &mut Module) {
                                 func: RuntimeFunc::Call(&RT_INSTANCE_GET_FIELD),
                                 args: vec![obj_operand, Operand::Constant(Constant::Int(offset))],
                             };
+                            changed = true;
                         }
                     }
                 }
             }
         }
+    }
+
+    changed
+}
+
+/// Pass wrapper for property flattening.
+pub struct FlattenPropertiesPass;
+
+impl OptimizationPass for FlattenPropertiesPass {
+    fn name(&self) -> &str {
+        "flatten-properties"
+    }
+
+    fn run_once(&mut self, module: &mut Module, _interner: &mut StringInterner) -> bool {
+        flatten_property_getters(module)
+    }
+
+    fn is_fixpoint(&self) -> bool {
+        false
     }
 }

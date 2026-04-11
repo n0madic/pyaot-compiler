@@ -11,7 +11,9 @@ use std::collections::HashMap;
 
 use pyaot_mir::{InstructionKind, Module, Operand};
 use pyaot_types::Type;
-use pyaot_utils::{ClassId, FuncId};
+use pyaot_utils::{ClassId, FuncId, StringInterner};
+
+use crate::pass::OptimizationPass;
 
 /// Build a lookup table from (class_id, vtable_slot) → concrete FuncId.
 fn build_vtable_map(module: &Module) -> HashMap<(ClassId, usize), FuncId> {
@@ -44,13 +46,14 @@ fn operand_class_id(operand: &Operand, func: &pyaot_mir::Function) -> Option<Cla
 /// For each `CallVirtual { dest, obj, slot, args }` where the receiver type is
 /// a concrete `Type::Class`, resolves the vtable slot to a `FuncId` and replaces
 /// the instruction with `CallDirect { dest, func, args: [obj] ++ args }`.
-pub fn devirtualize(module: &mut Module) {
+pub fn devirtualize(module: &mut Module) -> bool {
     let vtable_map = build_vtable_map(module);
     if vtable_map.is_empty() {
-        return;
+        return false;
     }
 
     let func_ids: Vec<FuncId> = module.functions.keys().copied().collect();
+    let mut changed = false;
 
     for func_id in func_ids {
         let func = &module.functions[&func_id];
@@ -74,6 +77,8 @@ pub fn devirtualize(module: &mut Module) {
             continue;
         }
 
+        changed = true;
+
         // Phase 2: apply replacements
         let func = module.functions.get_mut(&func_id).unwrap();
         for (block_id, idx, method_func_id, obj_operand) in replacements {
@@ -93,5 +98,24 @@ pub fn devirtualize(module: &mut Module) {
                 };
             }
         }
+    }
+
+    changed
+}
+
+/// Pass wrapper for devirtualization.
+pub struct DevirtualizePass;
+
+impl OptimizationPass for DevirtualizePass {
+    fn name(&self) -> &str {
+        "devirtualize"
+    }
+
+    fn run_once(&mut self, module: &mut Module, _interner: &mut StringInterner) -> bool {
+        devirtualize(module)
+    }
+
+    fn is_fixpoint(&self) -> bool {
+        false
     }
 }

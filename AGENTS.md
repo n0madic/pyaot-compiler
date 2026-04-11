@@ -59,7 +59,7 @@ The compiler is organized as a Rust workspace with the following key crates:
 - **`semantics/`** — Name resolution and scope analysis
 - **`lowering/`** — HIR to MIR transformation (includes `type_planning/` for type inference)
 - **`mir/`** — Mid-level IR with control flow graphs
-- **`optimizer/`** — MIR optimization passes (function inlining, dead code elimination)
+- **`optimizer/`** — MIR optimization passes via `PassManager` (devirtualization, property flattening, inlining, constant folding, peephole, DCE)
 - **`codegen-cranelift/`** — Native code generation
 - **`linker/`** — Linking with runtime library
 - **`runtime/`** — Runtime support and garbage collector

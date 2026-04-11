@@ -146,6 +146,40 @@ raise_runtime_error_owned(msg: String) -> ! // utils.rs
 - `raise_with_owned_message(exc_type, ptr, len, cap) -> !` — builds ExceptionObject, calls dispatch
 - `dispatch_existing_exception() -> !` — for reraise (exc already in current_exception)
 
+## Optimizer Pass Interface
+
+Passes implement the `OptimizationPass` trait and are orchestrated by `PassManager` (`optimizer/src/pass.rs`):
+
+```rust
+pub trait OptimizationPass {
+    fn name(&self) -> &str;
+    fn run_once(&mut self, module: &mut Module, interner: &mut StringInterner) -> bool;
+    fn max_iterations(&self) -> usize { 10 }
+    fn is_fixpoint(&self) -> bool { true }
+}
+```
+
+**Pass types:**
+
+| Pass | Struct | Fixpoint | Max Iter |
+|------|--------|----------|----------|
+| Devirtualize | `DevirtualizePass` | No | 1 |
+| Flatten Properties | `FlattenPropertiesPass` | No | 1 |
+| Inline | `InlinePass::new(threshold)` | No (internal) | 1 |
+| Constant Folding | `ConstantFoldPass` | Yes | 10 |
+| Peephole | `PeepholePass` | Yes | 10 |
+| DCE | `DcePass` | Yes | 20 |
+
+**Pipeline construction:**
+```rust
+let mut pm = build_pass_pipeline(&config);  // Configures based on OptimizeConfig flags
+pm.run(&mut module, &mut interner);         // Runs all enabled passes sequentially
+```
+
+**Adding a new pass:**
+1. Create struct implementing `OptimizationPass` in `optimizer/src/mypass/mod.rs`
+2. Register in `build_pass_pipeline()` in `optimizer/src/pass.rs`
+
 ## String Interning
 
 Runtime string pool for deduplication (strings < 256 bytes):

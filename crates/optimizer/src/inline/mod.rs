@@ -11,6 +11,9 @@ mod transform;
 mod tests;
 
 use pyaot_mir::Module;
+use pyaot_utils::StringInterner;
+
+use crate::pass::OptimizationPass;
 
 /// Configuration for inlining
 #[derive(Debug, Clone)]
@@ -43,12 +46,35 @@ impl InlineConfig {
     }
 }
 
-/// Perform function inlining on the MIR module
-///
-/// # Arguments
-/// * `module` - The MIR module to optimize
-/// * `threshold` - Maximum instruction count for inlining consideration
-pub fn inline_functions(module: &mut Module, threshold: usize) {
+/// Perform function inlining on the MIR module.
+/// Returns `true` if any inlining was performed.
+pub fn inline_functions(module: &mut Module, threshold: usize) -> bool {
     let config = InlineConfig::with_threshold(threshold);
-    transform::inline_pass(module, &config);
+    transform::inline_pass(module, &config)
+}
+
+/// Pass wrapper for function inlining.
+pub struct InlinePass {
+    threshold: usize,
+}
+
+impl InlinePass {
+    pub fn new(threshold: usize) -> Self {
+        Self { threshold }
+    }
+}
+
+impl OptimizationPass for InlinePass {
+    fn name(&self) -> &str {
+        "inline"
+    }
+
+    fn run_once(&mut self, module: &mut Module, _interner: &mut StringInterner) -> bool {
+        let config = InlineConfig::with_threshold(self.threshold);
+        transform::inline_pass(module, &config)
+    }
+
+    fn is_fixpoint(&self) -> bool {
+        false
+    }
 }

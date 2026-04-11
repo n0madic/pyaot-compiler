@@ -2,7 +2,11 @@
 //!
 //! Provides optimization passes for MIR before codegen.
 //! Implements devirtualization, property flattening, function inlining,
-//! constant folding & propagation, and dead code elimination.
+//! constant folding & propagation, peephole simplification, and dead code elimination.
+//!
+//! Each pass implements the `OptimizationPass` trait and is orchestrated
+//! by the `PassManager`, which handles fixpoint iteration for passes that
+//! require it.
 
 #![forbid(unsafe_code)]
 
@@ -11,10 +15,13 @@ pub mod dce;
 pub mod devirtualize;
 pub mod flatten_properties;
 pub mod inline;
+pub mod pass;
 pub mod peephole;
 
 use pyaot_mir::Module;
 use pyaot_utils::StringInterner;
+
+pub use pass::{build_pass_pipeline, OptimizationPass, PassManager};
 
 /// Configuration for optimization passes
 #[derive(Debug, Clone)]
@@ -60,24 +67,6 @@ pub fn optimize_module(
     config: &OptimizeConfig,
     interner: &mut StringInterner,
 ) {
-    if config.devirtualize {
-        devirtualize::devirtualize(module);
-    }
-    if config.flatten_properties {
-        flatten_properties::flatten_property_getters(module);
-    }
-    if config.inline {
-        inline::inline_functions(module, config.inline_threshold);
-    }
-    if config.constfold {
-        constfold::fold_constants(module, interner);
-    }
-    if config.constfold || config.inline {
-        // Peephole runs unconditionally when any optimization is active —
-        // it's lightweight and cleans up patterns from both constfold and inlining
-        peephole::run_peephole(module);
-    }
-    if config.dce {
-        dce::eliminate_dead_code(module);
-    }
+    let mut pm = build_pass_pipeline(config);
+    pm.run(module, interner);
 }
