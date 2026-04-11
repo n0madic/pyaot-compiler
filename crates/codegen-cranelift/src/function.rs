@@ -198,10 +198,12 @@ pub fn define_function(
                 gc_pop_id: compiler.gc_pop_id,
                 stack_pop_id: compiler.stack_pop_id,
             },
+            debug: crate::context::DebugContext {
+                return_type: &func.return_type,
+                line_map: compiler.line_map,
+            },
             module: compiler.module,
             interner: compiler.interner,
-            return_type: &func.return_type,
-            line_map: compiler.line_map,
         };
 
         for (block_id, block) in &func.blocks {
@@ -217,7 +219,7 @@ pub fn define_function(
             // Instructions
             for inst in &block.instructions {
                 // Set source location for debug info (byte offset for line+column)
-                if let (Some(span), Some(_)) = (inst.span, codegen_ctx.line_map) {
+                if let (Some(span), Some(_)) = (inst.span, codegen_ctx.debug.line_map) {
                     builder.set_srcloc(cranelift_codegen::ir::SourceLoc::new(span.start));
                 } else {
                     builder.set_srcloc(cranelift_codegen::ir::SourceLoc::default());

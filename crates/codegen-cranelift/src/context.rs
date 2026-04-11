@@ -45,16 +45,21 @@ pub struct GcState<'a> {
     pub stack_pop_id: Option<ClFuncId>,
 }
 
-/// Context for code generation, grouping commonly used parameters
-pub struct CodegenContext<'a> {
-    pub symbols: CodegenSymbols<'a>,
-    pub gc: GcState<'a>,
-    pub module: &'a mut ObjectModule,
-    pub interner: &'a StringInterner,
+/// Debug and type metadata for the function being compiled.
+pub struct DebugContext<'a> {
     /// The function's declared return type (needed for return terminator codegen)
     pub return_type: &'a Type,
     /// Line map for source-level debug info (None when --debug is not set)
     pub line_map: Option<&'a LineMap>,
+}
+
+/// Context for code generation, grouping commonly used parameters
+pub struct CodegenContext<'a> {
+    pub symbols: CodegenSymbols<'a>,
+    pub gc: GcState<'a>,
+    pub debug: DebugContext<'a>,
+    pub module: &'a mut ObjectModule,
+    pub interner: &'a StringInterner,
 }
 
 impl CodegenContext<'_> {

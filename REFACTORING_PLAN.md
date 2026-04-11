@@ -40,23 +40,23 @@ Complete catalog of discovered architectural issues, tagged for cross-referencin
 | P8 | Runtime mixed exception raising (3 strategies → raise_exc! macro) | ✅ DONE | Throughout `runtime/src/` | ~300 |
 | P9 | Runtime duplicated hash table (dict vs set) | ✅ DONE | `runtime/src/hash_table_utils.rs`, `dict/core.rs` | ~400 |
 | P10 | Lowering god-object (45+ fields → 6 sub-structs) | ✅ DONE | `lowering/src/context/mod.rs` | ~600 |
-| P11 | Dunder methods hardcoding (48 fields → IndexMap) | ✅ DONE | `lowering/src/context/mod.rs` | ~500 |
+| P11 | Dunder methods hardcoding (48 fields → IndexMap<&'static str, FuncId>, 56 tracked) | ✅ DONE | `lowering/src/context/mod.rs` | ~500 |
 | P12 | Lowering runtime call boilerplate (229 sites migrated to emit_runtime_call) | ✅ DONE | Throughout `lowering/src/` | ~3,000 |
 | P13 | Lowering type dispatch (8 functions in type_dispatch.rs) | ✅ DONE | `lowering/src/type_dispatch.rs` | ~800 |
 | P14 | Type planning separated (136 cached queries, TypeEnvironment read-only) | ✅ DONE | `lowering/src/type_planning/` | ~3,000 |
 | P15 | Generator decoupled (GeneratorContext struct, 7 free functions) | ✅ DONE | `lowering/src/generators/` | ~3,584 |
-| P16 | Frontend expressions.rs split (1,675 LOC → 6 modules) | ✅ DONE | `frontend-python/src/ast_to_hir/expressions/` | ~1,675→~200 dispatch |
+| P16 | Frontend expressions.rs split (1,675 LOC → 6 files) | ✅ DONE | `frontend-python/src/ast_to_hir/expressions/` | ~1,675→~200 dispatch |
 | P17 | Frontend AstToHir struct (27 fields → 5 sub-structs) | ✅ DONE | `frontend-python/src/ast_to_hir/mod.rs` | ~500→~200 |
 | P18 | Type annotation validation (default params + class attrs) | ✅ DONE | `lowering/src/type_planning/validate.rs` | +110 |
 | P19 | Codegen hardcoded offsets (8+ magic numbers → layout:: constants) | ✅ DONE | `core-defs/src/layout.rs`, `codegen-cranelift/src/` | ~50 |
 | P20 | Codegen GC root management (20 manual sites → 1 store_result) | ✅ DONE | `codegen-cranelift/src/context.rs` | ~200→~60 |
-| P21 | CodegenContext decomposed (13 fields → 3 sub-structs) | ✅ DONE | `codegen-cranelift/src/context.rs` | ~300→~80 |
+| P21 | CodegenContext decomposed (13 fields → 4 sub-structs: CodegenSymbols, GcState, DebugContext, CodegenContext) | ✅ DONE | `codegen-cranelift/src/context.rs` | ~300→~80 |
 | P22 | Optimizer pass interface (OptimizationPass trait + PassManager) | ✅ DONE | `optimizer/src/pass.rs` | ~100 |
 | P23 | Optimizer consistent fixpoint iteration (PassManager-driven) | ✅ DONE | `optimizer/src/pass.rs`, all pass modules | ~50 |
 | P24 | Span loss through pipeline (100→1 span:None in production code) | ✅ DONE | Lowering (desugaring), optimizer | ~200 |
 | P25 | Inconsistent error hierarchy (builder methods: type_error, codegen_error) | ✅ DONE | `diagnostics/src/lib.rs` | ~100 |
 | P26 | Lowering god-files split (5 files → 17 modules) | ✅ DONE | `lowering/src/{operators,match_stmt,assign,call_resolution,type_planning}/` | ~8,000 |
-| P27 | Codegen instructions.rs split (1,046 LOC → 3 modules) | ✅ DONE | `codegen-cranelift/src/instructions/` | ~1,046→~270 dispatch |
+| P27 | Codegen instructions.rs split (1,240 LOC → 5 files: mod, arithmetic, calls, copy, conversions) | ✅ DONE | `codegen-cranelift/src/instructions/` | ~1,240→~168 dispatch |
 | P28 | Cross-module class info uses InternedString (was String) | ✅ DONE | `lowering/src/context/mod.rs` | ~50 |
 
 ---
@@ -465,7 +465,7 @@ pub enum ReturnType { I64, F64, I8, I32 }
 
 ### 2.2 — Migrate RuntimeFunc to Descriptors ✅ DONE
 
-**~220 static `RuntimeFuncDef` definitions** created in `core-defs/src/runtime_func_def.rs`. All 19 variant codegen sub-modules deleted. `runtime_helpers.rs` (824 lines, 23 functions) deleted entirely.
+**~245 static `RuntimeFuncDef` definitions** created in `core-defs/src/runtime_func_def.rs`. All 19 variant codegen sub-modules deleted. `runtime_helpers.rs` (824 lines, 23 functions) deleted entirely.
 
 **Migration approach:** Direct replacement per category. Each category: add static defs → add lookup methods in `kinds.rs` → update lowering → remove enum variants → delete codegen module → run tests.
 
@@ -530,7 +530,7 @@ The generic handler:
 - `compile_runtime_call` match reduced from 470+ lines to ~60 lines
 - `runtime_helpers.rs` deleted (824 lines, 23 functions — all dead after migration)
 - `RuntimeFunc` enum: ~316 variants → ~15 special cases + `Call(&'static RuntimeFuncDef)`
-- ~4,700 lines deleted from codegen; ~220 one-liner static defs added to core-defs
+- ~4,700 lines deleted from codegen; ~245 one-liner static defs added to core-defs
 - Lookup functions (`ValueKind::global_get_def()`, `IterSourceKind::iterator_def()`, etc.) in `mir/src/kinds.rs` map parameterized variants to static defs
 
 ### 2.4 — Decouple MIR from stdlib-defs (P2) ✅ DONE
@@ -560,7 +560,7 @@ Already implemented before this refactoring — `Instruction` has `pub span: Opt
 
 **Status:** All 7 sub-phases implemented. Key metrics:
 - Lowering god-object: 40+ fields → 6 focused sub-structs (`ClosureState`, `ModuleState`, `ClassRegistry`, `CodeGenState`, `SymbolTable`, `TypeEnvironment`)
-- Dunder methods: 48 `Option<FuncId>` → 1 `IndexMap<&'static str, FuncId>` + `KNOWN_DUNDERS` array
+- Dunder methods: 48 `Option<FuncId>` → 1 `IndexMap<&'static str, FuncId>` + 56-entry `KNOWN_DUNDERS` array
 - Type queries: 136 cache-first via `get_type_of_expr_id`, only 4 uncached (where ExprId unavailable)
 - Generators: `GeneratorContext` struct with 6 impl blocks, 7 free functions for pure HIR analysis, only 1 `impl Lowering` (entry point)
 - Runtime call boilerplate: 229 sites migrated to `emit_runtime_call` helper
@@ -593,32 +593,32 @@ pub struct LoweredClassInfo {
     pub heap_field_mask: u64,
     pub method_funcs: IndexMap<InternedString, FuncId>,
     pub vtable_slots: IndexMap<InternedString, usize>,
-    /// Dunder methods — unified storage
-    pub dunder_methods: IndexMap<InternedString, FuncId>,
+    /// Dunder methods — unified storage (56 tracked via KNOWN_DUNDERS)
+    pub dunder_methods: IndexMap<&'static str, FuncId>,
     // ... remaining non-dunder fields
 }
 
 impl LoweredClassInfo {
-    pub fn get_dunder(&self, name: InternedString) -> Option<FuncId> {
-        self.dunder_methods.get(&name).copied()
+    pub fn get_dunder_func(&self, name: &str) -> Option<FuncId> {
+        self.dunder_methods.get(name).copied()
     }
 
-    pub fn set_dunder(&mut self, name: InternedString, func_id: FuncId) {
-        self.dunder_methods.insert(name, func_id);
+    pub fn set_dunder_func(&mut self, name: &str, func_id: FuncId) -> bool {
+        // Validates against KNOWN_DUNDERS, inserts &'static str key
     }
 }
 ```
 
-**Why IndexMap:** Preserves insertion order (important for vtable layout). Using `InternedString` keys avoids the 139 hardcoded string literals — interned once, compared by ID.
+**Why `&'static str`:** All 56 dunder names are compile-time constants defined in `KNOWN_DUNDERS`. Using `&'static str` keys avoids interning overhead while still enabling O(1) lookup. IndexMap preserves insertion order (important for vtable layout).
 
 **Migration:**
-1. Add `dunder_methods: IndexMap<InternedString, FuncId>` field
-2. Replace all `class_info.str_func` reads with `class_info.get_dunder(interner.intern("__str__"))`
-3. Replace all `set_dunder_func("__str__", id)` calls with `class_info.set_dunder(str_interned, id)`
+1. Add `dunder_methods: IndexMap<&'static str, FuncId>` field
+2. Replace all `class_info.str_func` reads with `class_info.get_dunder_func("__str__")`
+3. Replace all individual field assignments with `class_info.set_dunder_func("__str__", id)`
 4. Remove 48 individual fields
-5. Remove `get_dunder_func()` and `set_dunder_func()` match statements (120+ lines)
+5. Remove hardcoded match statements (120+ lines)
 
-**Net effect:** ~500 lines deleted, adding new dunder support is just a single intern + insert.
+**Net effect:** ~500 lines deleted, adding new dunder support is just adding a name to `KNOWN_DUNDERS`.
 
 ### 3.2 — Decompose Lowering God-Object (P10) ✅ DONE
 
@@ -927,16 +927,15 @@ impl IdAllocator {
 
 ```
 ast_to_hir/expressions/
-├── mod.rs          # Main dispatch: match expr.kind → delegate
-├── literals.rs     # Int, Float, Bool, Str, None, Bytes
+├── mod.rs          # Main dispatch: match expr.kind → delegate (includes literals, operators, subscript inline)
 ├── names.rs        # Name resolution (variables, functions, classes, imports)
-├── operators.rs    # BinOp, UnaryOp, BoolOp, Compare
 ├── calls.rs        # Function calls, method calls
 ├── containers.rs   # List, Dict, Set, Tuple literals
-├── comprehensions.rs # Moved from separate file, integrated
-├── subscript.rs    # Indexing, slicing
+├── comparisons.rs  # Comparison chains
 └── attributes.rs   # Attribute access, module.attr
 ```
+
+**Note:** `literals.rs` and `operators.rs` not extracted — literals are trivial (handled inline in dispatch), operators handled in the existing top-level `ast_to_hir/operators.rs` module.
 
 ### 4.3 — Type Annotation Validation (P18) ✅ DONE
 
@@ -1004,23 +1003,22 @@ impl CallBuilder<'_, '_> {
 
 ```rust
 pub struct CodegenContext<'a> {
-    pub symbols: &'a CodegenSymbols,  // var_map, func_ids, func_name_ids, func_param_types
+    pub symbols: CodegenSymbols<'a>,  // var_map, locals, func_ids, func_name_ids, func_param_types, block_map
+    pub gc: GcState<'a>,              // frame_data, gc_pop_id, stack_pop_id
+    pub debug: DebugContext<'a>,      // return_type, line_map
     pub module: &'a mut ObjectModule,
-    pub gc: &'a GcContext,            // gc_frame_data, gc_pop_id, stack_pop_id
-    pub debug: &'a DebugContext,      // line_map, return_type
     pub interner: &'a StringInterner,
 }
 ```
 
-**Split instructions.rs** (1,143 LOC):
+**Split instructions.rs** (1,240 LOC → 5 files):
 ```
 codegen-cranelift/src/instructions/
-├── mod.rs         # Main dispatch
-├── copy.rs        # Copy, type coercion
-├── arithmetic.rs  # BinOp, UnOp with Cranelift instructions
-├── control.rs     # Branches, jumps (moved from terminators.rs)
-├── calls.rs       # Call, CallVirtual, CallClosure
-└── memory.rs      # Load, Store, GC operations
+├── mod.rs          # Main dispatch (168 LOC)
+├── arithmetic.rs   # BinOp, UnOp, comparison helpers (402 LOC)
+├── calls.rs        # CallDirect, CallNamed, Call, CallVirtual, FuncAddr, BuiltinAddr (486 LOC)
+├── copy.rs         # Copy with type coercion (85 LOC)
+└── conversions.rs  # FloatToInt, BoolToInt, IntToFloat, FloatAbs, FloatBits, IntBitsToFloat (99 LOC)
 ```
 
 ---
@@ -1161,7 +1159,7 @@ Verified and consolidated type dispatch across all crates:
 
 ### 6.3 — Pipeline Span Propagation Audit ✅ DONE
 
-Eliminated ~100 `span: None` instances in production code (down to 1 — the `current_span` initializer):
+Eliminated ~100 `span: None` instances in production code (down to 4: `current_span` initializer in lowering, MIR Function default constructor, 2 in diagnostics error builders):
 
 1. Frontend: all HIR nodes have spans ✅
 2. Lowering: all MIR instructions carry spans — generator state machine instructions now propagate `source_span` from the generator function definition ✅
@@ -1209,16 +1207,19 @@ Every phase must:
 
 | Metric | Original | **Final (all phases done)** | Target | ✅ |
 |--------|----------|-----------------------------|--------|---|
-| RuntimeFunc variants | ~316 | **~15 special + Call(&def)** | ~25 | ✅ |
-| Static RuntimeFuncDef defs | 0 | **~220** | ~250 | ✅ |
+| RuntimeFunc variants | ~316 | **16 special + Call(&def)** | ~25 | ✅ |
+| Static RuntimeFuncDef defs | 0 | **~245** | ~250 | ✅ |
 | Codegen dispatch match lines | ~560 | **~60** | ~30 | ✅ |
-| Codegen sub-modules | 22 | **3** (mod, print, string) | ~3 | ✅ |
-| Runtime extern "C" functions | ~246 | **~520*** | ~160 | ⚠️ |
+| Codegen sub-modules (runtime_calls) | 22 | **3** (mod, print, string) | ~3 | ✅ |
+| Codegen instructions sub-modules | 1 | **5** (mod, arithmetic, calls, copy, conversions) | 5 | ✅ |
+| Runtime extern "C" functions | ~246 | **~624*** | ~160 | ⚠️ |
 | Lowering struct fields | 45+ | **6 sub-structs** | 6 | ✅ |
+| Codegen context sub-structs | 1 | **4** (CodegenSymbols, GcState, DebugContext, CodegenContext) | 4 | ✅ |
 | Files to touch for new runtime func | 5+ | **1-2** | 1-2 | ✅ |
-| Files >1000 LOC (non-test) | ~15 | **~3** | ~3 | ✅ |
-| Dunder method code (get/set) | ~500 lines | **~20 lines** | ~20 | ✅ |
+| Files >1000 LOC (non-test) | ~15 | **1** (runtime_func_def.rs: definitions) | ~3 | ✅ |
+| Dunder method code (get/set) | ~500 lines | **~20 lines** (56 dunders via KNOWN_DUNDERS) | ~20 | ✅ |
 | Codegen signature boilerplate | 152× | **0** | 0 | ✅ |
+| `span: None` in production code | ~100 | **4** (1 initializer, 1 MIR default, 2 diagnostics) | 1 | ⚠️ |
 
 *Runtime FFI count grew due to new stdlib features added during refactoring (json, regex, subprocess,
 urllib, hashlib, etc.), not regression. Consolidation did happen: 7 fns removed (rt_list_get_int/float/bool,
@@ -1228,7 +1229,7 @@ rt_obj_lt/lte/gt/gte), rt_list_cmp/rt_tuple_cmp/rt_set_minmax consolidated.
 
 - **New Python method support:** Define `RuntimeFuncDef` + implement `extern "C"` in runtime. Done.
 - **New Python type support:** Add `TypeTagKind` variant + add rows to dispatch tables. Done.
-- **New dunder method:** Intern the name + register in class lowering. No structural changes.
+- **New dunder method:** Add the name to `KNOWN_DUNDERS` + register in class lowering. No structural changes.
 - **New optimizer pass:** Implement `OptimizationPass` trait + register in pipeline. Done.
 - **Clear layering:** `core-defs` ← `types` ← `hir` ← `lowering` → `mir` → `codegen`. No backward deps.
 

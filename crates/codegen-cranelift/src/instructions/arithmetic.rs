@@ -1,7 +1,8 @@
-//! Arithmetic and comparison binary operations
+//! Arithmetic and comparison operations (BinOp, UnOp)
 //!
 //! Handles BinOp compilation including float operations, integer runtime calls,
 //! comparison operations, and boolean/bitwise operations.
+//! Also handles UnOp (Neg, Not, Invert).
 
 use cranelift_codegen::ir::types as cltypes;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, Value};
@@ -16,6 +17,43 @@ use crate::utils::{
     declare_runtime_function, get_call_result, is_float_operand, load_operand, load_operand_as,
     promote_to_float,
 };
+
+/// Compile a unary operation (Neg, Not, Invert)
+pub(crate) fn compile_unop(
+    builder: &mut FunctionBuilder,
+    dest: &pyaot_utils::LocalId,
+    op: &mir::UnOp,
+    operand: &Operand,
+    ctx: &mut CodegenContext,
+) {
+    let operand_val = load_operand(builder, operand, ctx.symbols.var_map);
+    let is_float = is_float_operand(operand, ctx.symbols.locals);
+    let result = match op {
+        mir::UnOp::Neg => {
+            if is_float {
+                builder.ins().fneg(operand_val)
+            } else {
+                builder.ins().ineg(operand_val)
+            }
+        }
+        mir::UnOp::Not => {
+            let val_type = builder.func.dfg.value_type(operand_val);
+            if val_type == cltypes::I8 {
+                let one = builder.ins().iconst(cltypes::I8, 1);
+                builder.ins().isub(one, operand_val)
+            } else {
+                let zero = builder.ins().iconst(cltypes::I64, 0);
+                builder.ins().icmp(
+                    cranelift_codegen::ir::condcodes::IntCC::Equal,
+                    operand_val,
+                    zero,
+                )
+            }
+        }
+        mir::UnOp::Invert => builder.ins().bnot(operand_val),
+    };
+    ctx.store_result(builder, dest, result);
+}
 
 /// Promote integer operands to matching types for comparison.
 /// When comparing i8 (bool) with i64 (int/any/ptr), promote both to i64.

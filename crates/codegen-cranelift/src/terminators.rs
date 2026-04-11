@@ -43,7 +43,7 @@ pub fn compile_terminator(
 
             // Only skip returning a value if the function's return type is exactly None.
             // For Union types containing None (e.g., Point | None), we still need to return a value.
-            if matches!(ctx.return_type, Type::None) {
+            if matches!(ctx.debug.return_type, Type::None) {
                 builder.ins().return_(&[]);
             } else if let Some(operand) = val {
                 // Check if we're returning a None constant for a non-None return type (e.g., Union)
@@ -64,7 +64,7 @@ pub fn compile_terminator(
                 } else {
                     let ret_val = load_operand(builder, operand, ctx.symbols.var_map);
                     // Coerce the return value to the expected return type if needed
-                    let expected_type = type_to_cranelift(ctx.return_type);
+                    let expected_type = type_to_cranelift(ctx.debug.return_type);
                     let val_type = builder.func.dfg.value_type(ret_val);
                     let coerced_val = if val_type != expected_type {
                         match (val_type, expected_type) {

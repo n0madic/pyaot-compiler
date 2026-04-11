@@ -436,57 +436,6 @@ pub enum CompareKind {
 }
 
 impl CompareKind {
-    /// Get the runtime function name for this comparison kind and operation.
-    /// Returns the full function name like "rt_list_eq_int", "rt_tuple_lt", "rt_obj_eq".
-    ///
-    /// # Panics (debug only)
-    /// Panics if an ordering op (Lt/Lte/Gt/Gte) is used with an Eq-only kind.
-    pub fn runtime_func_name(&self, op: ComparisonOp) -> &'static str {
-        debug_assert!(
-            self.supports_ordering() || matches!(op, ComparisonOp::Eq),
-            "CompareKind::{self:?} only supports Eq, but got {op:?}"
-        );
-        match (self, op) {
-            // List comparisons only support Eq
-            (CompareKind::ListInt, _) => "rt_list_eq_int",
-            (CompareKind::ListFloat, _) => "rt_list_eq_float",
-            (CompareKind::ListStr, _) => "rt_list_eq_str",
-            // List ordering uses generic rt_list_cmp with op_tag parameter
-            (CompareKind::List, ComparisonOp::Eq) => "rt_list_eq_int", // fallback; equality should use type-specific variants
-            (CompareKind::List, _) => "rt_list_cmp",
-            // String and bytes only support Eq
-            (CompareKind::Str, _) => "rt_str_eq",
-            (CompareKind::Bytes, _) => "rt_bytes_eq",
-            // Tuple: equality uses rt_tuple_eq, ordering uses generic rt_tuple_cmp
-            (CompareKind::Tuple, ComparisonOp::Eq) => "rt_tuple_eq",
-            (CompareKind::Tuple, _) => "rt_tuple_cmp",
-            // Object supports all comparison ops
-            (CompareKind::Obj, ComparisonOp::Eq) => "rt_obj_eq",
-            (CompareKind::Obj, ComparisonOp::Lt) => "rt_obj_lt",
-            (CompareKind::Obj, ComparisonOp::Lte) => "rt_obj_lte",
-            (CompareKind::Obj, ComparisonOp::Gt) => "rt_obj_gt",
-            (CompareKind::Obj, ComparisonOp::Gte) => "rt_obj_gte",
-        }
-    }
-
-    /// Whether this kind supports ordering comparisons (Lt, Lte, Gt, Gte).
-    /// Only Tuple and Obj support ordering; List/Str/Bytes only support Eq.
-    pub fn supports_ordering(&self) -> bool {
-        matches!(
-            self,
-            CompareKind::List | CompareKind::Tuple | CompareKind::Obj
-        )
-    }
-
-    /// Whether this kind uses a generic cmp function with an op_tag parameter
-    /// for ordering operations (List, Tuple, and Obj ordering).
-    pub fn needs_op_tag(&self) -> bool {
-        matches!(
-            self,
-            CompareKind::List | CompareKind::Tuple | CompareKind::Obj
-        )
-    }
-
     /// Get the static RuntimeFuncDef for this comparison kind and operation.
     pub fn runtime_func_def(&self, op: ComparisonOp) -> &'static pyaot_core_defs::RuntimeFuncDef {
         use pyaot_core_defs::runtime_func_def::*;
