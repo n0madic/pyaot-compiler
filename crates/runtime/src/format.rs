@@ -616,11 +616,7 @@ fn format_bool(value: bool, spec: &FormatSpec) -> Result<String, String> {
 
 /// Raise a ValueError with the given message
 unsafe fn raise_value_error(msg: &str) -> ! {
-    crate::exceptions::rt_exc_raise(
-        BuiltinExceptionKind::ValueError.tag(),
-        msg.as_ptr(),
-        msg.len(),
-    )
+    raise_exc!(BuiltinExceptionKind::ValueError, "{}", msg)
 }
 
 /// Format a value according to the format specification

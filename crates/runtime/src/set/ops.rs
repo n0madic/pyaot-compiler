@@ -85,8 +85,12 @@ pub extern "C" fn rt_set_contains(set: *mut Obj, elem: *mut Obj) -> i8 {
 #[no_mangle]
 pub extern "C" fn rt_set_remove(set: *mut Obj, elem: *mut Obj) {
     if set.is_null() || elem.is_null() {
-        let msg = b"set.remove() called with null";
-        unsafe { crate::exceptions::rt_exc_raise_key_error(msg.as_ptr(), msg.len()) }
+        unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::KeyError,
+                "set.remove() called with null"
+            );
+        }
     }
 
     unsafe {
@@ -101,8 +105,10 @@ pub extern "C" fn rt_set_remove(set: *mut Obj, elem: *mut Obj) {
             (*entry).elem = TOMBSTONE;
             (*set_obj).len -= 1;
         } else {
-            let msg = b"element not in set";
-            crate::exceptions::rt_exc_raise_key_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::KeyError,
+                "element not in set"
+            );
         }
     }
 }
@@ -203,8 +209,10 @@ pub extern "C" fn rt_set_copy(set: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_set_pop(set: *mut Obj) -> *mut Obj {
     if set.is_null() {
         unsafe {
-            let msg = b"pop from an empty set";
-            crate::exceptions::rt_exc_raise_key_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::KeyError,
+                "pop from an empty set"
+            );
         }
     }
 
@@ -226,8 +234,10 @@ pub extern "C" fn rt_set_pop(set: *mut Obj) -> *mut Obj {
         }
 
         // Set is empty
-        let msg = b"pop from an empty set";
-        crate::exceptions::rt_exc_raise_key_error(msg.as_ptr(), msg.len());
+        raise_exc!(
+            crate::exceptions::ExceptionType::KeyError,
+            "pop from an empty set"
+        );
     }
 }
 

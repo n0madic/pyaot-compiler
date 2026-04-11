@@ -250,10 +250,9 @@ pub unsafe extern "C" fn rt_random_random() -> f64 {
 #[no_mangle]
 pub unsafe extern "C" fn rt_random_randint(a: i64, b: i64) -> i64 {
     if a > b {
-        crate::exceptions::rt_exc_raise(
-            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-            b"empty range for randint()" as *const u8,
-            "empty range for randint()".len(),
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "empty range for randint()"
         );
     }
     // randint(a, b) = randrange(a, b+1) = a + randbelow(b - a + 1)
@@ -261,10 +260,9 @@ pub unsafe extern "C" fn rt_random_randint(a: i64, b: i64) -> i64 {
     let width = match (b as i128 - a as i128).checked_add(1) {
         Some(w) if w > 0 && w <= usize::MAX as i128 => w as usize,
         _ => {
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
-                b"randint range too large" as *const u8,
-                "randint range too large".len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::OverflowError,
+                "randint range too large"
             );
         }
     };
@@ -293,10 +291,9 @@ pub unsafe extern "C" fn rt_random_randrange(start: i64, stop: i64, step: i64) -
     };
 
     if actual_step == 0 {
-        crate::exceptions::rt_exc_raise(
-            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-            b"zero step for randrange()" as *const u8,
-            "zero step for randrange()".len(),
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "zero step for randrange()"
         );
     }
 
@@ -313,10 +310,9 @@ pub unsafe extern "C" fn rt_random_randrange(start: i64, stop: i64, step: i64) -
     };
 
     if n <= 0 {
-        crate::exceptions::rt_exc_raise(
-            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-            b"empty range for randrange()" as *const u8,
-            "empty range for randrange()".len(),
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "empty range for randrange()"
         );
     }
 
@@ -346,10 +342,9 @@ pub unsafe extern "C" fn rt_random_choices(
     let pop_elem_tag = (*pop_list).elem_tag;
 
     if pop_len == 0 {
-        crate::exceptions::rt_exc_raise(
-            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-            b"Cannot choose from an empty population" as *const u8,
-            "Cannot choose from an empty population".len(),
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "Cannot choose from an empty population"
         );
     }
 
@@ -423,10 +418,9 @@ pub unsafe extern "C" fn rt_random_choice(seq: *mut Obj) -> *mut Obj {
     let list = seq as *mut ListObj;
     let len = (*list).len;
     if len == 0 {
-        crate::exceptions::rt_exc_raise(
-            pyaot_core_defs::BuiltinExceptionKind::IndexError.tag(),
-            b"Cannot choose from an empty sequence" as *const u8,
-            "Cannot choose from an empty sequence".len(),
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::IndexError,
+            "Cannot choose from an empty sequence"
         );
     }
     // CPython: choice(seq) = seq[randbelow(len)]
@@ -469,10 +463,9 @@ pub unsafe extern "C" fn rt_random_sample(population: *mut Obj, k: i64) -> *mut 
     let k = k as usize;
 
     if k > len {
-        crate::exceptions::rt_exc_raise(
-            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-            b"Sample larger than population" as *const u8,
-            "Sample larger than population".len(),
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "Sample larger than population"
         );
     }
 

@@ -41,10 +41,9 @@ unsafe fn make_bytes_from_slice(data: &[u8]) -> *mut Obj {
 // Helper function to check if stream is closed
 unsafe fn check_closed(closed: bool) {
     if closed {
-        crate::exceptions::rt_exc_raise(
-            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-            b"I/O operation on closed file" as *const u8,
-            "I/O operation on closed file".len(),
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "I/O operation on closed file"
         );
     }
 }
@@ -57,10 +56,9 @@ unsafe fn ensure_capacity(buffer: &mut *mut u8, capacity: &mut usize, needed: us
             let layout = Layout::from_size_align_unchecked(new_capacity, 1);
             *buffer = alloc(layout);
             if (*buffer).is_null() {
-                crate::exceptions::rt_exc_raise(
-                    pyaot_core_defs::BuiltinExceptionKind::MemoryError.tag(),
-                    b"StringIO/BytesIO allocation failed" as *const u8,
-                    "StringIO/BytesIO allocation failed".len(),
+                raise_exc!(
+                    pyaot_core_defs::BuiltinExceptionKind::MemoryError,
+                    "StringIO/BytesIO allocation failed"
                 );
             }
         } else {
@@ -68,10 +66,9 @@ unsafe fn ensure_capacity(buffer: &mut *mut u8, capacity: &mut usize, needed: us
             let new_buf = realloc(*buffer, old_layout, new_capacity);
             if new_buf.is_null() {
                 // realloc failure leaves the old buffer intact; raise without leaking it
-                crate::exceptions::rt_exc_raise(
-                    pyaot_core_defs::BuiltinExceptionKind::MemoryError.tag(),
-                    b"StringIO/BytesIO reallocation failed" as *const u8,
-                    "StringIO/BytesIO reallocation failed".len(),
+                raise_exc!(
+                    pyaot_core_defs::BuiltinExceptionKind::MemoryError,
+                    "StringIO/BytesIO reallocation failed"
                 );
             }
             *buffer = new_buf;
@@ -99,11 +96,9 @@ pub unsafe extern "C" fn rt_stringio_new(initial: *mut Obj) -> *mut Obj {
     // If initial string provided, copy its content
     if !initial.is_null() {
         if (*initial).header.type_tag != TypeTagKind::Str {
-            let msg = b"TypeError: initial_value must be str";
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "initial_value must be str"
             );
         }
         let str_obj = initial as *const StrObj;
@@ -133,10 +128,9 @@ pub unsafe extern "C" fn rt_stringio_write(sio: *mut Obj, s: *mut Obj) -> i64 {
 
     // Calculate required capacity (write at current position) with overflow check
     let end_pos = (*sio_obj).position.checked_add(str_len).unwrap_or_else(|| {
-        crate::exceptions::rt_exc_raise(
-            pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
-            b"StringIO write position overflow" as *const u8,
-            "StringIO write position overflow".len(),
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::OverflowError,
+            "StringIO write position overflow"
         )
     });
     ensure_capacity(&mut (*sio_obj).buffer, &mut (*sio_obj).capacity, end_pos);
@@ -230,10 +224,9 @@ pub unsafe extern "C" fn rt_stringio_seek(sio: *mut Obj, pos: i64) -> i64 {
     check_closed((*sio_obj).closed);
 
     if pos < 0 {
-        crate::exceptions::rt_exc_raise(
-            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-            b"Negative seek position" as *const u8,
-            "Negative seek position".len(),
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "Negative seek position"
         );
     }
 
@@ -305,11 +298,9 @@ pub unsafe extern "C" fn rt_bytesio_new(initial: *mut Obj) -> *mut Obj {
     // If initial bytes provided, copy its content
     if !initial.is_null() {
         if (*initial).header.type_tag != TypeTagKind::Bytes {
-            let msg = b"TypeError: initial_bytes must be bytes";
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "initial_bytes must be bytes"
             );
         }
         let bytes_obj = initial as *const BytesObj;
@@ -342,10 +333,9 @@ pub unsafe extern "C" fn rt_bytesio_write(bio: *mut Obj, b: *mut Obj) -> i64 {
         .position
         .checked_add(bytes_len)
         .unwrap_or_else(|| {
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
-                b"BytesIO write position overflow" as *const u8,
-                "BytesIO write position overflow".len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::OverflowError,
+                "BytesIO write position overflow"
             )
         });
     ensure_capacity(&mut (*bio_obj).buffer, &mut (*bio_obj).capacity, end_pos);
@@ -414,10 +404,9 @@ pub unsafe extern "C" fn rt_bytesio_seek(bio: *mut Obj, pos: i64) -> i64 {
     check_closed((*bio_obj).closed);
 
     if pos < 0 {
-        crate::exceptions::rt_exc_raise(
-            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-            b"Negative seek position" as *const u8,
-            "Negative seek position".len(),
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "Negative seek position"
         );
     }
 

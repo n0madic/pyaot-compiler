@@ -1,6 +1,5 @@
 //! Conversions to string: rt_*_to_str variants and related helpers
 
-use crate::exceptions;
 use crate::object::{BoolObj, FloatObj, IntObj, Obj, TypeTagKind};
 
 /// Convert an integer to a string
@@ -47,9 +46,11 @@ pub extern "C" fn rt_str_to_int(str_obj: *mut Obj) -> i64 {
     use crate::object::StrObj;
 
     if str_obj.is_null() {
-        let msg = b"int() argument must be a string, not None";
         unsafe {
-            exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "int() argument must be a string, not None"
+            );
         }
     }
 
@@ -72,8 +73,10 @@ pub extern "C" fn rt_str_to_int(str_obj: *mut Obj) -> i64 {
                 }
             }
         } else {
-            let msg = b"int() argument contains invalid UTF-8";
-            exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "int() argument contains invalid UTF-8"
+            );
         }
     }
 }
@@ -86,9 +89,11 @@ pub extern "C" fn rt_str_to_float(str_obj: *mut Obj) -> f64 {
     use crate::object::StrObj;
 
     if str_obj.is_null() {
-        let msg = b"float() argument must be a string, not None";
         unsafe {
-            exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "float() argument must be a string, not None"
+            );
         }
     }
 
@@ -111,8 +116,10 @@ pub extern "C" fn rt_str_to_float(str_obj: *mut Obj) -> f64 {
                 }
             }
         } else {
-            let msg = b"float() argument contains invalid UTF-8";
-            exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "float() argument contains invalid UTF-8"
+            );
         }
     }
 }
@@ -123,20 +130,22 @@ pub extern "C" fn rt_str_to_float(str_obj: *mut Obj) -> f64 {
 #[no_mangle]
 pub extern "C" fn rt_int_to_chr(codepoint: i64) -> *mut Obj {
     if !(0..=0x10FFFF).contains(&codepoint) {
-        let msg = b"chr() arg not in range(0x110000)";
         unsafe {
-            exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "chr() arg not in range(0x110000)"
+            );
         }
     }
 
     let ch = match char::from_u32(codepoint as u32) {
         Some(c) => c,
-        None => {
-            let msg = b"chr() arg not in valid Unicode range";
-            unsafe {
-                exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
-            }
-        }
+        None => unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "chr() arg not in valid Unicode range"
+            );
+        },
     };
 
     let s = ch.to_string();
@@ -152,9 +161,11 @@ pub extern "C" fn rt_chr_to_int(str_obj: *mut Obj) -> i64 {
     use crate::object::StrObj;
 
     if str_obj.is_null() {
-        let msg = b"ord() expected string, not None";
         unsafe {
-            exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "ord() expected string, not None"
+            );
         }
     }
 
@@ -169,8 +180,10 @@ pub extern "C" fn rt_chr_to_int(str_obj: *mut Obj) -> i64 {
             let ch = match chars.next() {
                 Some(c) => c,
                 None => {
-                    let msg = b"ord() expected a character, but string is empty";
-                    exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+                    raise_exc!(
+                        crate::exceptions::ExceptionType::ValueError,
+                        "ord() expected a character, but string is empty"
+                    );
                 }
             };
 
@@ -184,8 +197,10 @@ pub extern "C" fn rt_chr_to_int(str_obj: *mut Obj) -> i64 {
 
             ch as i64
         } else {
-            let msg = b"ord() argument contains invalid UTF-8";
-            exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "ord() argument contains invalid UTF-8"
+            );
         }
     }
 }

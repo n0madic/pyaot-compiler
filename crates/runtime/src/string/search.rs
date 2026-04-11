@@ -463,8 +463,10 @@ pub extern "C" fn rt_str_search(str_obj: *mut Obj, sub: *mut Obj, op_tag: u8) ->
             };
             if r < 0 {
                 unsafe {
-                    let msg = b"substring not found";
-                    crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+                    raise_exc!(
+                        crate::exceptions::ExceptionType::ValueError,
+                        "substring not found"
+                    );
                 }
             }
             r

@@ -204,11 +204,9 @@ pub extern "C" fn rt_str_getchar(str_obj: *mut Obj, byte_index: i64) -> *mut Obj
 
         if byte_index < 0 || byte_index >= byte_len {
             // Index out of bounds - raise IndexError
-            let msg = b"string index out of range";
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::IndexError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                exceptions::ExceptionType::IndexError,
+                "string index out of range"
             );
         }
 
@@ -266,11 +264,9 @@ pub extern "C" fn rt_str_subscript(str_obj: *mut Obj, char_index: i64) -> *mut O
         match char_index_to_byte_offset(data, byte_len, char_index) {
             Some(byte_off) => rt_str_getchar(str_obj, byte_off as i64),
             None => {
-                let msg = b"string index out of range";
-                exceptions::rt_exc_raise(
-                    exceptions::ExceptionType::IndexError as u8,
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    exceptions::ExceptionType::IndexError,
+                    "string index out of range"
                 );
             }
         }

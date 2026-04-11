@@ -11,8 +11,10 @@ use crate::object::{Obj, TypeTagKind};
 pub extern "C" fn rt_tuple_index(tuple: *mut Obj, value: *mut Obj) -> i64 {
     if tuple.is_null() {
         unsafe {
-            let msg = b"tuple.index(x): x not in tuple";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "tuple.index(x): x not in tuple"
+            );
         }
     }
 
@@ -31,8 +33,10 @@ pub extern "C" fn rt_tuple_index(tuple: *mut Obj, value: *mut Obj) -> i64 {
         }
 
         // Not found - raise ValueError
-        let msg = b"tuple.index(x): x not in tuple";
-        crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+        raise_exc!(
+            crate::exceptions::ExceptionType::ValueError,
+            "tuple.index(x): x not in tuple"
+        );
     }
 }
 
@@ -75,12 +79,17 @@ pub extern "C" fn rt_tuple_minmax(tuple: *mut Obj, is_min: u8, elem_kind: u8) ->
     unsafe {
         let tuple_obj = tuple as *mut crate::object::TupleObj;
         if (*tuple_obj).len == 0 {
-            let msg = if is_min == 0 {
-                b"min() arg is an empty sequence" as &[u8]
+            if is_min == 0 {
+                raise_exc!(
+                    crate::exceptions::ExceptionType::ValueError,
+                    "min() arg is an empty sequence"
+                );
             } else {
-                b"max() arg is an empty sequence"
-            };
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+                raise_exc!(
+                    crate::exceptions::ExceptionType::ValueError,
+                    "max() arg is an empty sequence"
+                );
+            }
         }
         let data = (*tuple_obj).data.as_ptr() as *const usize;
         let len = (*tuple_obj).len;
@@ -137,12 +146,17 @@ unsafe fn find_tuple_extremum_with_key(
     let len = (*tuple_obj).len;
 
     if len == 0 {
-        let msg = if is_min {
-            b"min() arg is an empty sequence"
+        if is_min {
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "min() arg is an empty sequence"
+            );
         } else {
-            b"max() arg is an empty sequence"
-        };
-        crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "max() arg is an empty sequence"
+            );
+        }
     }
 
     let data = (*tuple_obj).data.as_ptr();

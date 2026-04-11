@@ -17,11 +17,7 @@ use std::path::{Component, Path, PathBuf};
 /// replacing bytes (which `to_string_lossy` does).
 fn path_to_utf8_str(path: &Path) -> &str {
     path.to_str().unwrap_or_else(|| unsafe {
-        crate::exceptions::rt_exc_raise(
-            BuiltinExceptionKind::ValueError.tag(),
-            b"path is not valid UTF-8".as_ptr(),
-            "path is not valid UTF-8".len(),
-        )
+        raise_exc!(BuiltinExceptionKind::ValueError, "path is not valid UTF-8")
     })
 }
 
@@ -132,11 +128,7 @@ pub extern "C" fn rt_os_path_join(parts: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_os_remove(path: *mut Obj) {
     unsafe {
         if path.is_null() {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.remove: path is None".as_ptr().cast(),
-                24,
-            );
+            raise_exc!(BuiltinExceptionKind::IOError, "os.remove: path is None");
         }
 
         if let Some(path_str) = crate::utils::extract_str_checked(path) {
@@ -177,11 +169,7 @@ pub extern "C" fn rt_os_remove(path: *mut Obj) {
                 },
             }
         } else {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.remove: invalid path".as_ptr().cast(),
-                22,
-            );
+            raise_exc!(BuiltinExceptionKind::IOError, "os.remove: invalid path");
         }
     }
 }
@@ -234,11 +222,7 @@ pub extern "C" fn rt_os_getcwd() -> *mut Obj {
 pub extern "C" fn rt_os_chdir(path: *mut Obj) {
     unsafe {
         if path.is_null() {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.chdir: path is None".as_ptr().cast(),
-                22,
-            );
+            raise_exc!(BuiltinExceptionKind::IOError, "os.chdir: path is None");
         }
 
         if let Some(path_str) = crate::utils::extract_str_checked(path) {
@@ -272,11 +256,7 @@ pub extern "C" fn rt_os_chdir(path: *mut Obj) {
                 },
             }
         } else {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.chdir: invalid path".as_ptr().cast(),
-                22,
-            );
+            raise_exc!(BuiltinExceptionKind::IOError, "os.chdir: invalid path");
         }
     }
 }
@@ -293,11 +273,7 @@ pub extern "C" fn rt_os_listdir(path: *mut Obj) -> *mut Obj {
         } else if let Some(s) = crate::utils::extract_str_checked(path) {
             s
         } else {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.listdir: invalid path".as_ptr().cast(),
-                24,
-            );
+            raise_exc!(BuiltinExceptionKind::IOError, "os.listdir: invalid path");
         };
 
         match fs::read_dir(&path_str) {
@@ -371,10 +347,9 @@ pub extern "C" fn rt_os_listdir(path: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_os_path_abspath(path: *mut Obj) -> *mut Obj {
     unsafe {
         if path.is_null() {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.path.abspath: path is None".as_ptr().cast(),
-                29,
+            raise_exc!(
+                BuiltinExceptionKind::IOError,
+                "os.path.abspath: path is None"
             );
         }
 
@@ -404,10 +379,9 @@ pub extern "C" fn rt_os_path_abspath(path: *mut Obj) -> *mut Obj {
             let result = path_to_utf8_str(&normalized);
             make_str_from_rust(result)
         } else {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.path.abspath: invalid path".as_ptr().cast(),
-                29,
+            raise_exc!(
+                BuiltinExceptionKind::IOError,
+                "os.path.abspath: invalid path"
             );
         }
     }
@@ -547,11 +521,7 @@ pub extern "C" fn rt_os_path_split(path: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_os_mkdir(path: *mut Obj) {
     unsafe {
         if path.is_null() {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.mkdir: path is None".as_ptr().cast(),
-                22,
-            );
+            raise_exc!(BuiltinExceptionKind::IOError, "os.mkdir: path is None");
         }
 
         if let Some(path_str) = crate::utils::extract_str_checked(path) {
@@ -592,11 +562,7 @@ pub extern "C" fn rt_os_mkdir(path: *mut Obj) {
                 },
             }
         } else {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.mkdir: invalid path".as_ptr().cast(),
-                22,
-            );
+            raise_exc!(BuiltinExceptionKind::IOError, "os.mkdir: invalid path");
         }
     }
 }
@@ -607,11 +573,7 @@ pub extern "C" fn rt_os_mkdir(path: *mut Obj) {
 pub extern "C" fn rt_os_makedirs(path: *mut Obj, exist_ok: i8) {
     unsafe {
         if path.is_null() {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.makedirs: path is None".as_ptr().cast(),
-                25,
-            );
+            raise_exc!(BuiltinExceptionKind::IOError, "os.makedirs: path is None");
         }
 
         if let Some(path_str) = crate::utils::extract_str_checked(path) {
@@ -655,11 +617,7 @@ pub extern "C" fn rt_os_makedirs(path: *mut Obj, exist_ok: i8) {
                 }
             }
         } else {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.makedirs: invalid path".as_ptr().cast(),
-                25,
-            );
+            raise_exc!(BuiltinExceptionKind::IOError, "os.makedirs: invalid path");
         }
     }
 }
@@ -670,11 +628,7 @@ pub extern "C" fn rt_os_makedirs(path: *mut Obj, exist_ok: i8) {
 pub extern "C" fn rt_os_rmdir(path: *mut Obj) {
     unsafe {
         if path.is_null() {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.rmdir: path is None".as_ptr().cast(),
-                22,
-            );
+            raise_exc!(BuiltinExceptionKind::IOError, "os.rmdir: path is None");
         }
 
         if let Some(path_str) = crate::utils::extract_str_checked(path) {
@@ -720,11 +674,7 @@ pub extern "C" fn rt_os_rmdir(path: *mut Obj) {
                 },
             }
         } else {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.rmdir: invalid path".as_ptr().cast(),
-                22,
-            );
+            raise_exc!(BuiltinExceptionKind::IOError, "os.rmdir: invalid path");
         }
     }
 }
@@ -737,22 +687,14 @@ pub extern "C" fn rt_os_rmdir(path: *mut Obj) {
 pub extern "C" fn rt_os_rename(src: *mut Obj, dst: *mut Obj) {
     unsafe {
         if src.is_null() || dst.is_null() {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.rename: path is None".as_ptr().cast(),
-                23,
-            );
+            raise_exc!(BuiltinExceptionKind::IOError, "os.rename: path is None");
         }
 
         let src_str = crate::utils::extract_str_checked(src);
         let dst_str = crate::utils::extract_str_checked(dst);
 
         if src_str.is_none() || dst_str.is_none() {
-            crate::exceptions::rt_exc_raise(
-                BuiltinExceptionKind::IOError.tag(),
-                c"os.rename: invalid path".as_ptr().cast(),
-                23,
-            );
+            raise_exc!(BuiltinExceptionKind::IOError, "os.rename: invalid path");
         }
 
         let src_str = src_str.expect("src_str is Some");

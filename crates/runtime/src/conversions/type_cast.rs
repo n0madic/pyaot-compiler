@@ -222,8 +222,10 @@ pub extern "C" fn rt_obj_default_repr(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64 {
     if s.is_null() {
         unsafe {
-            let msg = b"invalid literal for int()";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "invalid literal for int()"
+            );
         }
     }
 
@@ -260,20 +262,26 @@ pub extern "C" fn rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64 {
             };
 
             if !(2..=36).contains(&actual_base) {
-                let msg = b"int() base must be >= 2 and <= 36, or 0";
-                crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+                raise_exc!(
+                    crate::exceptions::ExceptionType::ValueError,
+                    "int() base must be >= 2 and <= 36, or 0"
+                );
             }
 
             match i64::from_str_radix(trimmed_str, actual_base) {
                 Ok(val) => val,
                 Err(_) => {
-                    let msg = b"invalid literal for int() with base";
-                    crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+                    raise_exc!(
+                        crate::exceptions::ExceptionType::ValueError,
+                        "invalid literal for int() with base"
+                    );
                 }
             }
         } else {
-            let msg = b"invalid literal for int()";
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "invalid literal for int()"
+            );
         }
     }
 }

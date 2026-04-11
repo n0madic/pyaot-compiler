@@ -3,7 +3,7 @@
 //! Double-ended queue implemented as a ring buffer.
 //! Supports O(1) append/appendleft/pop/popleft and optional maxlen.
 
-use crate::exceptions::{rt_exc_raise, ExceptionType};
+use crate::exceptions::ExceptionType;
 use crate::gc;
 use crate::object::{DequeObj, Obj, TypeTagKind, ELEM_HEAP_OBJ};
 
@@ -124,8 +124,7 @@ pub extern "C" fn rt_deque_pop(deque: *mut Obj) -> *mut Obj {
     unsafe {
         let d = deque as *mut DequeObj;
         if (*d).len == 0 {
-            let msg = b"IndexError: pop from an empty deque";
-            rt_exc_raise(ExceptionType::IndexError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::IndexError, "pop from an empty deque");
         }
         (*d).len -= 1;
         let idx = ((*d).head + (*d).len) % (*d).capacity;
@@ -139,8 +138,7 @@ pub extern "C" fn rt_deque_popleft(deque: *mut Obj) -> *mut Obj {
     unsafe {
         let d = deque as *mut DequeObj;
         if (*d).len == 0 {
-            let msg = b"IndexError: pop from an empty deque";
-            rt_exc_raise(ExceptionType::IndexError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::IndexError, "pop from an empty deque");
         }
         let elem = *(*d).data.add((*d).head);
         (*d).head = ((*d).head + 1) % (*d).capacity;
@@ -236,8 +234,7 @@ pub extern "C" fn rt_deque_get(deque: *mut Obj, index: i64) -> *mut Obj {
         let len = (*d).len as i64;
         let actual_idx = if index < 0 { len + index } else { index };
         if actual_idx < 0 || actual_idx >= len {
-            let msg = b"IndexError: deque index out of range";
-            rt_exc_raise(ExceptionType::IndexError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::IndexError, "deque index out of range");
         }
         let ring_idx = ((*d).head + actual_idx as usize) % (*d).capacity;
         *(*d).data.add(ring_idx)
@@ -252,8 +249,7 @@ pub extern "C" fn rt_deque_set(deque: *mut Obj, index: i64, value: *mut Obj) {
         let len = (*d).len as i64;
         let actual_idx = if index < 0 { len + index } else { index };
         if actual_idx < 0 || actual_idx >= len {
-            let msg = b"IndexError: deque index out of range";
-            rt_exc_raise(ExceptionType::IndexError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::IndexError, "deque index out of range");
         }
         let ring_idx = ((*d).head + actual_idx as usize) % (*d).capacity;
         *(*d).data.add(ring_idx) = value;

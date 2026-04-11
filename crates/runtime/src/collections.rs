@@ -3,7 +3,7 @@
 //! Provides runtime functions for OrderedDict.
 
 use crate::dict::{real_entries_capacity, rt_dict_set, set_real_entries_capacity};
-use crate::exceptions::{rt_exc_raise, ExceptionType};
+use crate::exceptions::ExceptionType;
 use crate::hash_table_utils::{eq_hashable_obj, hash_hashable_obj};
 use crate::object::{DictEntry, DictObj, Obj, ELEM_HEAP_OBJ};
 use crate::tuple::{rt_make_tuple, rt_tuple_set};
@@ -34,8 +34,7 @@ pub extern "C" fn rt_dict_move_to_end(dict: *mut Obj, key: *mut Obj, last: i64) 
         // Find the entry
         let entry_idx = lookup_entry_index(dict_obj, key, hash);
         if entry_idx < 0 {
-            let msg = b"KeyError: key not found in OrderedDict";
-            rt_exc_raise(ExceptionType::KeyError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::KeyError, "key not found in OrderedDict");
         }
 
         let entry_idx = entry_idx as usize;
@@ -64,9 +63,8 @@ pub extern "C" fn rt_dict_move_to_end(dict: *mut Obj, key: *mut Obj, last: i64) 
 #[no_mangle]
 pub extern "C" fn rt_dict_popitem_ordered(dict: *mut Obj, last: i64) -> *mut Obj {
     if dict.is_null() {
-        let msg = b"KeyError: 'popitem(): dictionary is empty'";
         unsafe {
-            rt_exc_raise(ExceptionType::KeyError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::KeyError, "popitem(): dictionary is empty");
         }
     }
 
@@ -74,8 +72,7 @@ pub extern "C" fn rt_dict_popitem_ordered(dict: *mut Obj, last: i64) -> *mut Obj
         let dict_obj = dict as *mut DictObj;
 
         if (*dict_obj).len == 0 {
-            let msg = b"KeyError: 'popitem(): dictionary is empty'";
-            rt_exc_raise(ExceptionType::KeyError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::KeyError, "popitem(): dictionary is empty");
         }
 
         if last != 0 {
@@ -238,8 +235,7 @@ unsafe fn pop_last_entry(dict: *mut DictObj) -> *mut Obj {
         }
     }
 
-    let msg = b"KeyError: 'popitem(): dictionary is empty'";
-    rt_exc_raise(ExceptionType::KeyError as u8, msg.as_ptr(), msg.len());
+    raise_exc!(ExceptionType::KeyError, "popitem(): dictionary is empty");
 }
 
 /// Pop the first (oldest) entry
@@ -252,8 +248,7 @@ unsafe fn pop_first_entry(dict: *mut DictObj) -> *mut Obj {
         }
     }
 
-    let msg = b"KeyError: 'popitem(): dictionary is empty'";
-    rt_exc_raise(ExceptionType::KeyError as u8, msg.as_ptr(), msg.len());
+    raise_exc!(ExceptionType::KeyError, "popitem(): dictionary is empty");
 }
 
 /// Remove entry at given index and return (key, value) tuple

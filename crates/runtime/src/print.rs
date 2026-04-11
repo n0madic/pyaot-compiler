@@ -109,11 +109,9 @@ pub extern "C" fn rt_input(prompt: *mut Obj) -> *mut Obj {
     if !prompt.is_null() {
         unsafe {
             if (*prompt).header.type_tag != TypeTagKind::Str {
-                let msg = b"TypeError: prompt must be a string";
-                crate::exceptions::rt_exc_raise(
-                    crate::exceptions::ExceptionType::TypeError as u8,
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    crate::exceptions::ExceptionType::TypeError,
+                    "prompt must be a string"
                 );
             }
             let str_obj = prompt as *mut StrObj;
@@ -134,10 +132,9 @@ pub extern "C" fn rt_input(prompt: *mut Obj) -> *mut Obj {
         Ok(0) => {
             // EOF — raise EOFError like CPython
             unsafe {
-                crate::exceptions::rt_exc_raise(
-                    crate::exceptions::ExceptionType::EOFError as u8,
-                    b"EOF when reading a line".as_ptr(),
-                    "EOF when reading a line".len(),
+                raise_exc!(
+                    crate::exceptions::ExceptionType::EOFError,
+                    "EOF when reading a line"
                 );
             }
         }

@@ -2,7 +2,7 @@
 
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
-use crate::exceptions::{rt_exc_raise, ExceptionType};
+use crate::exceptions::ExceptionType;
 use crate::gc;
 use crate::object::{ListObj, Obj, TypeTagKind};
 use std::alloc::{alloc_zeroed, realloc, Layout};
@@ -253,8 +253,10 @@ pub extern "C" fn rt_list_push(list: *mut Obj, value: *mut Obj) {
                 let new_data =
                     realloc(data as *mut u8, old_layout, new_layout.size()) as *mut *mut Obj;
                 if new_data.is_null() {
-                    let msg = b"MemoryError: cannot allocate memory for list";
-                    rt_exc_raise(ExceptionType::MemoryError as u8, msg.as_ptr(), msg.len());
+                    raise_exc!(
+                        ExceptionType::MemoryError,
+                        "cannot allocate memory for list"
+                    );
                 }
                 // Zero new elements
                 for i in capacity..new_capacity {

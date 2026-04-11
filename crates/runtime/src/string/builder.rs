@@ -45,11 +45,9 @@ pub extern "C" fn rt_make_string_builder(capacity_hint: i64) -> *mut Obj {
         let layout = Layout::array::<u8>(capacity).expect("StringBuilder capacity overflow");
         let ptr = alloc(layout);
         if ptr.is_null() {
-            let msg = b"MemoryError: cannot allocate StringBuilder buffer";
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::MemoryError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::MemoryError,
+                "cannot allocate StringBuilder buffer"
             );
         }
         ptr
@@ -105,11 +103,9 @@ pub extern "C" fn rt_string_builder_append(builder: *mut Obj, str_obj: *mut Obj)
 
             let new_data = realloc(old_data, old_layout, new_layout.size());
             if new_data.is_null() {
-                let msg = b"MemoryError: cannot reallocate StringBuilder buffer";
-                crate::exceptions::rt_exc_raise(
-                    pyaot_core_defs::BuiltinExceptionKind::MemoryError.tag(),
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    pyaot_core_defs::BuiltinExceptionKind::MemoryError,
+                    "cannot reallocate StringBuilder buffer"
                 );
             }
 

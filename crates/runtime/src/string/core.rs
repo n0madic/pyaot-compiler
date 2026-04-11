@@ -2,7 +2,7 @@
 
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
-use crate::exceptions::{rt_exc_raise, ExceptionType};
+use crate::exceptions::ExceptionType;
 use crate::gc;
 use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
 
@@ -21,8 +21,7 @@ pub unsafe fn rt_make_str_impl(data: *const u8, len: usize) -> *mut Obj {
         .checked_add(std::mem::size_of::<usize>())
         .and_then(|s| s.checked_add(len))
         .unwrap_or_else(|| {
-            let msg = b"MemoryError: string size overflow";
-            rt_exc_raise(ExceptionType::MemoryError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::MemoryError, "string size overflow");
         });
 
     // Round up to slab size class for small strings to benefit from
@@ -136,8 +135,10 @@ pub extern "C" fn rt_str_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         let total_len = match len_a.checked_add(len_b) {
             Some(l) => l,
             None => {
-                let msg = b"string concatenation result is too long";
-                rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+                raise_exc!(
+                    ExceptionType::OverflowError,
+                    "string concatenation result is too long"
+                );
             }
         };
 

@@ -364,14 +364,13 @@ pub extern "C" fn rt_dict_setdefault(dict: *mut Obj, key: *mut Obj, default: *mu
 /// Returns: pointer to 2-tuple (key, value)
 #[no_mangle]
 pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
-    use crate::exceptions::{rt_exc_raise, ExceptionType};
+    use crate::exceptions::ExceptionType;
     use crate::object::ELEM_HEAP_OBJ;
     use crate::tuple::{rt_make_tuple, rt_tuple_set};
 
     if dict.is_null() {
-        let msg = b"KeyError: 'popitem(): dictionary is empty'";
         unsafe {
-            rt_exc_raise(ExceptionType::KeyError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::KeyError, "popitem(): dictionary is empty");
         }
     }
 
@@ -380,8 +379,7 @@ pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
         let dict_obj = dict as *mut DictObj;
 
         if (*dict_obj).len == 0 {
-            let msg = b"KeyError: 'popitem(): dictionary is empty'";
-            rt_exc_raise(ExceptionType::KeyError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::KeyError, "popitem(): dictionary is empty");
         }
 
         // Scan entries backwards to find the last active entry (insertion order)
@@ -452,8 +450,7 @@ pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
         }
 
         // Should not reach here if len > 0
-        let msg = b"KeyError: 'popitem(): dictionary is empty'";
-        rt_exc_raise(ExceptionType::KeyError as u8, msg.as_ptr(), msg.len());
+        raise_exc!(ExceptionType::KeyError, "popitem(): dictionary is empty");
     }
 }
 

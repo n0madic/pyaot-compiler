@@ -3,7 +3,7 @@
 //! This module provides base64 encoding/decoding operations compatible with
 //! Python's base64 module, using the `base64` crate for the actual encoding.
 
-use crate::exceptions::{rt_exc_raise, ExceptionType};
+use crate::exceptions::ExceptionType;
 use crate::gc;
 use crate::object::{BytesObj, Obj, ObjHeader, StrObj, TypeTagKind};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE};
@@ -18,8 +18,7 @@ unsafe fn make_bytes_from_vec(data: Vec<u8>) -> *mut Obj {
         .checked_add(std::mem::size_of::<usize>())
         .and_then(|s| s.checked_add(len))
         .unwrap_or_else(|| {
-            let msg = b"MemoryError: bytes size overflow";
-            rt_exc_raise(ExceptionType::MemoryError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::MemoryError, "bytes size overflow");
         });
 
     // Allocate using GC
@@ -38,8 +37,7 @@ unsafe fn make_bytes_from_vec(data: Vec<u8>) -> *mut Obj {
 /// Helper function to get bytes slice from either StrObj or BytesObj
 unsafe fn get_bytes_slice(obj: *mut Obj) -> (&'static [u8], TypeTagKind) {
     if obj.is_null() {
-        let msg = b"TypeError: expected str or bytes";
-        rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+        raise_exc!(ExceptionType::TypeError, "expected str or bytes");
     }
 
     let header = &(*(obj as *const Obj)).header;
@@ -59,8 +57,7 @@ unsafe fn get_bytes_slice(obj: *mut Obj) -> (&'static [u8], TypeTagKind) {
             (std::slice::from_raw_parts(data, len), type_tag)
         }
         _ => {
-            let msg = b"TypeError: expected str or bytes";
-            rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::TypeError, "expected str or bytes");
         }
     }
 }
@@ -74,14 +71,12 @@ unsafe fn get_bytes_slice(obj: *mut Obj) -> (&'static [u8], TypeTagKind) {
 #[no_mangle]
 pub unsafe extern "C" fn rt_base64_b64encode(data: *mut Obj) -> *mut Obj {
     if data.is_null() {
-        let msg = b"TypeError: expected bytes";
-        rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+        raise_exc!(ExceptionType::TypeError, "expected bytes");
     }
 
     let header = &(*(data as *const Obj)).header;
     if header.type_tag != TypeTagKind::Bytes {
-        let msg = b"TypeError: expected bytes";
-        rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+        raise_exc!(ExceptionType::TypeError, "expected bytes");
     }
 
     let bytes_obj = data as *const BytesObj;
@@ -110,8 +105,7 @@ pub unsafe extern "C" fn rt_base64_b64decode(data: *mut Obj) -> *mut Obj {
     match STANDARD.decode(input_slice) {
         Ok(decoded) => make_bytes_from_vec(decoded),
         Err(_) => {
-            let msg = b"ValueError: invalid base64 data";
-            rt_exc_raise(ExceptionType::ValueError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::ValueError, "invalid base64 data");
         }
     }
 }
@@ -125,14 +119,12 @@ pub unsafe extern "C" fn rt_base64_b64decode(data: *mut Obj) -> *mut Obj {
 #[no_mangle]
 pub unsafe extern "C" fn rt_base64_urlsafe_b64encode(data: *mut Obj) -> *mut Obj {
     if data.is_null() {
-        let msg = b"TypeError: expected bytes";
-        rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+        raise_exc!(ExceptionType::TypeError, "expected bytes");
     }
 
     let header = &(*(data as *const Obj)).header;
     if header.type_tag != TypeTagKind::Bytes {
-        let msg = b"TypeError: expected bytes";
-        rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+        raise_exc!(ExceptionType::TypeError, "expected bytes");
     }
 
     let bytes_obj = data as *const BytesObj;
@@ -161,8 +153,7 @@ pub unsafe extern "C" fn rt_base64_urlsafe_b64decode(data: *mut Obj) -> *mut Obj
     match URL_SAFE.decode(input_slice) {
         Ok(decoded) => make_bytes_from_vec(decoded),
         Err(_) => {
-            let msg = b"ValueError: invalid base64 data";
-            rt_exc_raise(ExceptionType::ValueError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::ValueError, "invalid base64 data");
         }
     }
 }

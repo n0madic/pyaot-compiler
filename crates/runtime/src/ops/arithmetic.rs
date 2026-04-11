@@ -1,6 +1,5 @@
 //! Arithmetic operations for Python runtime (int, float, and boxed Union arithmetic)
 
-use crate::exceptions::rt_exc_raise;
 use crate::exceptions::ExceptionType;
 use crate::object::{FloatObj, IntObj, Obj, TypeTagKind};
 
@@ -11,13 +10,7 @@ use crate::object::{FloatObj, IntObj, Obj, TypeTagKind};
 pub extern "C" fn rt_add_int(a: i64, b: i64) -> i64 {
     match a.checked_add(b) {
         Some(value) => value,
-        None => unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::OverflowError as u8,
-                b"integer overflow".as_ptr(),
-                b"integer overflow".len(),
-            )
-        },
+        None => unsafe { raise_exc!(ExceptionType::OverflowError, "integer overflow") },
     }
 }
 
@@ -26,13 +19,7 @@ pub extern "C" fn rt_add_int(a: i64, b: i64) -> i64 {
 pub extern "C" fn rt_sub_int(a: i64, b: i64) -> i64 {
     match a.checked_sub(b) {
         Some(value) => value,
-        None => unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::OverflowError as u8,
-                b"integer overflow".as_ptr(),
-                b"integer overflow".len(),
-            )
-        },
+        None => unsafe { raise_exc!(ExceptionType::OverflowError, "integer overflow") },
     }
 }
 
@@ -41,13 +28,7 @@ pub extern "C" fn rt_sub_int(a: i64, b: i64) -> i64 {
 pub extern "C" fn rt_mul_int(a: i64, b: i64) -> i64 {
     match a.checked_mul(b) {
         Some(value) => value,
-        None => unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::OverflowError as u8,
-                b"integer overflow".as_ptr(),
-                b"integer overflow".len(),
-            )
-        },
+        None => unsafe { raise_exc!(ExceptionType::OverflowError, "integer overflow") },
     }
 }
 
@@ -55,22 +36,10 @@ pub extern "C" fn rt_mul_int(a: i64, b: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn rt_div_int(a: i64, b: i64) -> i64 {
     if b == 0 {
-        unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ZeroDivisionError as u8,
-                b"division by zero".as_ptr(),
-                b"division by zero".len(),
-            )
-        }
+        unsafe { raise_exc!(ExceptionType::ZeroDivisionError, "division by zero") }
     }
     if a == i64::MIN && b == -1 {
-        unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::OverflowError as u8,
-                b"integer overflow".as_ptr(),
-                b"integer overflow".len(),
-            )
-        }
+        unsafe { raise_exc!(ExceptionType::OverflowError, "integer overflow") }
     }
     // Python floor division: rounds toward negative infinity
     let d = a / b;
@@ -88,13 +57,7 @@ pub extern "C" fn rt_div_int(a: i64, b: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn rt_true_div_int(a: i64, b: i64) -> f64 {
     if b == 0 {
-        unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ZeroDivisionError as u8,
-                b"division by zero".as_ptr(),
-                b"division by zero".len(),
-            )
-        }
+        unsafe { raise_exc!(ExceptionType::ZeroDivisionError, "division by zero") }
     }
     (a as f64) / (b as f64)
 }
@@ -103,22 +66,10 @@ pub extern "C" fn rt_true_div_int(a: i64, b: i64) -> f64 {
 #[no_mangle]
 pub extern "C" fn rt_mod_int(a: i64, b: i64) -> i64 {
     if b == 0 {
-        unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ZeroDivisionError as u8,
-                b"integer modulo by zero".as_ptr(),
-                b"integer modulo by zero".len(),
-            )
-        }
+        unsafe { raise_exc!(ExceptionType::ZeroDivisionError, "integer modulo by zero") }
     }
     if a == i64::MIN && b == -1 {
-        unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::OverflowError as u8,
-                b"integer overflow".as_ptr(),
-                b"integer overflow".len(),
-            )
-        }
+        unsafe { raise_exc!(ExceptionType::OverflowError, "integer overflow") }
     }
     // Python modulo: result has same sign as divisor
     let r = a % b;
@@ -204,8 +155,7 @@ pub extern "C" fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             match vai.checked_add(vbi) {
                 Some(v) => crate::boxing::rt_box_int(v),
                 None => {
-                    let msg = b"integer overflow";
-                    rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+                    raise_exc!(ExceptionType::OverflowError, "integer overflow");
                 }
             }
         } else if (tag_a == TypeTagKind::Int || tag_a == TypeTagKind::Float)
@@ -232,8 +182,7 @@ pub extern "C" fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             match vai.checked_sub(vbi) {
                 Some(v) => crate::boxing::rt_box_int(v),
                 None => {
-                    let msg = b"integer overflow";
-                    rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+                    raise_exc!(ExceptionType::OverflowError, "integer overflow");
                 }
             }
         } else {
@@ -260,8 +209,7 @@ pub extern "C" fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             match vai.checked_mul(vbi) {
                 Some(v) => crate::boxing::rt_box_int(v),
                 None => {
-                    let msg = b"integer overflow";
-                    rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+                    raise_exc!(ExceptionType::OverflowError, "integer overflow");
                 }
             }
         } else {
@@ -276,12 +224,7 @@ pub extern "C" fn rt_obj_div(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
         let (va, vb, _, _, _) = extract_numeric_pair(a, b);
         if vb == 0.0 {
-            let msg = "division by zero";
-            rt_exc_raise(
-                ExceptionType::ZeroDivisionError as u8,
-                msg.as_ptr(),
-                msg.len(),
-            );
+            raise_exc!(ExceptionType::ZeroDivisionError, "division by zero");
         }
         crate::boxing::rt_box_float(va / vb) // Python 3: true division always float
     }
@@ -294,16 +237,13 @@ pub extern "C" fn rt_obj_floordiv(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
             if vbi == 0 {
-                let msg = "integer division or modulo by zero";
-                rt_exc_raise(
-                    ExceptionType::ZeroDivisionError as u8,
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    ExceptionType::ZeroDivisionError,
+                    "integer division or modulo by zero"
                 );
             }
             if vai == i64::MIN && vbi == -1 {
-                let msg = b"integer overflow";
-                rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+                raise_exc!(ExceptionType::OverflowError, "integer overflow");
             }
             let d = vai / vbi;
             let r = vai % vbi;
@@ -311,11 +251,9 @@ pub extern "C" fn rt_obj_floordiv(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             crate::boxing::rt_box_int(result)
         } else {
             if vb == 0.0 {
-                let msg = "integer division or modulo by zero";
-                rt_exc_raise(
-                    ExceptionType::ZeroDivisionError as u8,
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    ExceptionType::ZeroDivisionError,
+                    "integer division or modulo by zero"
                 );
             }
             crate::boxing::rt_box_float((va / vb).floor())
@@ -330,27 +268,22 @@ pub extern "C" fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
             if vbi == 0 {
-                let msg = "integer division or modulo by zero";
-                rt_exc_raise(
-                    ExceptionType::ZeroDivisionError as u8,
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    ExceptionType::ZeroDivisionError,
+                    "integer division or modulo by zero"
                 );
             }
             if vai == i64::MIN && vbi == -1 {
-                let msg = b"integer overflow";
-                rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+                raise_exc!(ExceptionType::OverflowError, "integer overflow");
             }
             let r = vai % vbi;
             let result = if r != 0 && (r ^ vbi) < 0 { r + vbi } else { r };
             crate::boxing::rt_box_int(result)
         } else {
             if vb == 0.0 {
-                let msg = "integer division or modulo by zero";
-                rt_exc_raise(
-                    ExceptionType::ZeroDivisionError as u8,
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    ExceptionType::ZeroDivisionError,
+                    "integer division or modulo by zero"
                 );
             }
             crate::boxing::rt_box_float(va % vb)
@@ -391,8 +324,7 @@ pub extern "C" fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
                 }
             }
             if overflow {
-                let msg = b"integer overflow";
-                rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len());
+                raise_exc!(ExceptionType::OverflowError, "integer overflow");
             }
             crate::boxing::rt_box_int(result)
         } else {

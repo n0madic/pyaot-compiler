@@ -15,12 +15,10 @@ pub extern "C" fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if a.is_null() || b.is_null() {
-        let msg = b"TypeError: unsupported operand type(s) for set operation";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "unsupported operand type(s) for set operation"
             )
         }
     }
@@ -65,12 +63,10 @@ pub extern "C" fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if a.is_null() || b.is_null() {
-        let msg = b"TypeError: unsupported operand type(s) for set operation";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "unsupported operand type(s) for set operation"
             )
         }
     }
@@ -120,12 +116,10 @@ pub extern "C" fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if a.is_null() || b.is_null() {
-        let msg = b"TypeError: unsupported operand type(s) for set operation";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "unsupported operand type(s) for set operation"
             )
         }
     }
@@ -175,12 +169,10 @@ pub extern "C" fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut 
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if a.is_null() || b.is_null() {
-        let msg = b"TypeError: unsupported operand type(s) for set operation";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "unsupported operand type(s) for set operation"
             )
         }
     }

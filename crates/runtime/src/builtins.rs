@@ -25,12 +25,8 @@ use crate::object::{BoolObj, BytesObj, FloatObj, IntObj, Obj, StrObj, TypeTagKin
 /// `msg` must point to valid UTF-8 bytes with length `len`. Both constraints
 /// are satisfied when passing a `b"..."` literal.
 #[inline(always)]
-unsafe fn raise_type_error(msg: &'static [u8]) -> ! {
-    crate::exceptions::rt_exc_raise(
-        pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-        msg.as_ptr(),
-        msg.len(),
-    )
+unsafe fn raise_type_error(msg: &'static str) -> ! {
+    raise_exc!(pyaot_core_defs::BuiltinExceptionKind::TypeError, "{}", msg)
 }
 
 /// len(obj) -> *mut Obj (boxed Int)
@@ -39,7 +35,7 @@ unsafe fn raise_type_error(msg: &'static [u8]) -> ! {
 pub extern "C" fn rt_builtin_len(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         // SAFETY: static byte string literal is valid for the duration of the call.
-        unsafe { raise_type_error(b"len() argument is None") };
+        unsafe { raise_type_error("len() argument is None") };
     }
     let len = unsafe {
         match (*obj).type_tag() {
@@ -49,7 +45,7 @@ pub extern "C" fn rt_builtin_len(obj: *mut Obj) -> *mut Obj {
             TypeTagKind::Tuple => crate::tuple::rt_tuple_len(obj),
             TypeTagKind::Set => crate::set::rt_set_len(obj),
             TypeTagKind::Bytes => crate::bytes::rt_bytes_len(obj),
-            _ => raise_type_error(b"object of this type has no len()"),
+            _ => raise_type_error("object of this type has no len()"),
         }
     };
     // Box the result
@@ -69,7 +65,7 @@ pub extern "C" fn rt_builtin_str(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         // SAFETY: static byte string literal.
-        unsafe { raise_type_error(b"int() argument is None") };
+        unsafe { raise_type_error("int() argument is None") };
     }
     let value = unsafe {
         match (*obj).type_tag() {
@@ -84,7 +80,7 @@ pub extern "C" fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
             }
             TypeTagKind::Str => crate::conversions::rt_str_to_int(obj),
             _ => raise_type_error(
-                b"int() argument must be a string, a bytes-like object or a real number",
+                "int() argument must be a string, a bytes-like object or a real number",
             ),
         }
     };
@@ -98,7 +94,7 @@ pub extern "C" fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_builtin_float(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         // SAFETY: static byte string literal.
-        unsafe { raise_type_error(b"float() argument is None") };
+        unsafe { raise_type_error("float() argument is None") };
     }
     let result: f64 = unsafe {
         match (*obj).type_tag() {
@@ -112,7 +108,7 @@ pub extern "C" fn rt_builtin_float(obj: *mut Obj) -> *mut Obj {
                 }
             }
             TypeTagKind::Str => crate::conversions::rt_str_to_float(obj),
-            _ => raise_type_error(b"float() argument must be a string or a real number"),
+            _ => raise_type_error("float() argument must be a string or a real number"),
         }
     };
     // Box the result
@@ -159,7 +155,7 @@ pub extern "C" fn rt_builtin_bool(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         // SAFETY: static byte string literal.
-        unsafe { raise_type_error(b"abs() argument is None") };
+        unsafe { raise_type_error("abs() argument is None") };
     }
     unsafe {
         match (*obj).type_tag() {
@@ -176,7 +172,7 @@ pub extern "C" fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
                 let value = if (*(obj as *mut BoolObj)).value { 1 } else { 0 };
                 boxing::rt_box_int(value)
             }
-            _ => raise_type_error(b"bad operand type for abs()"),
+            _ => raise_type_error("bad operand type for abs()"),
         }
     }
 }
@@ -214,7 +210,7 @@ pub extern "C" fn rt_builtin_hash(obj: *mut Obj) -> *mut Obj {
                 TypeTagKind::Str => crate::hash::rt_hash_str(obj),
                 TypeTagKind::Tuple => crate::hash::rt_hash_tuple(obj),
                 TypeTagKind::None => 0,
-                _ => raise_type_error(b"unhashable type"),
+                _ => raise_type_error("unhashable type"),
             }
         }
     };
@@ -237,12 +233,12 @@ pub extern "C" fn rt_builtin_ord(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_builtin_chr(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         // SAFETY: static byte string literal.
-        unsafe { raise_type_error(b"chr() argument is None") };
+        unsafe { raise_type_error("chr() argument is None") };
     }
     unsafe {
         let codepoint = match (*obj).type_tag() {
             TypeTagKind::Int => (*(obj as *mut IntObj)).value,
-            _ => raise_type_error(b"an integer is required for chr()"),
+            _ => raise_type_error("an integer is required for chr()"),
         };
         crate::conversions::rt_int_to_chr(codepoint)
     }
@@ -310,16 +306,12 @@ pub extern "C" fn rt_get_builtin_func_ptr(builtin_id: i64) -> i64 {
         8 => rt_builtin_chr as *const () as usize as i64,
         9 => rt_builtin_repr as *const () as usize as i64,
         10 => rt_builtin_type as *const () as usize as i64,
-        _ => {
-            // SAFETY: static byte string literal is valid for the duration of the call.
-            unsafe {
-                crate::exceptions::rt_exc_raise(
-                    pyaot_core_defs::BuiltinExceptionKind::RuntimeError.tag(),
-                    b"invalid builtin function ID".as_ptr(),
-                    b"invalid builtin function ID".len(),
-                )
-            }
-        }
+        _ => unsafe {
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::RuntimeError,
+                "invalid builtin function ID"
+            )
+        },
     }
 }
 

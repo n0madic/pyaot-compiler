@@ -262,11 +262,9 @@ pub extern "C" fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
         let fmt_c = match std::ffi::CString::new(format_str) {
             Ok(s) => s,
             Err(_) => {
-                let msg = b"ValueError: embedded null character";
-                crate::exceptions::rt_exc_raise(
-                    crate::exceptions::ExceptionType::ValueError as u8,
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    crate::exceptions::ExceptionType::ValueError,
+                    "embedded null character"
                 );
             }
         };
@@ -328,11 +326,9 @@ pub extern "C" fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
             }
             if buf_size >= MAX_STRFTIME_BUF {
                 // Output still doesn't fit after 1 MB — raise an error.
-                let msg = b"strftime: formatted string too long";
-                crate::exceptions::rt_exc_raise(
-                    pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    pyaot_core_defs::BuiltinExceptionKind::ValueError,
+                    "strftime: formatted string too long"
                 );
             }
             buf_size *= 2;
@@ -348,10 +344,9 @@ pub extern "C" fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_time_strptime(string: *mut Obj, format: *mut Obj) -> *mut Obj {
     if string.is_null() || format.is_null() {
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-                b"strptime: string and format must not be None" as *const u8,
-                "strptime: string and format must not be None".len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::ValueError,
+                "strptime: string and format must not be None"
             );
         }
     }

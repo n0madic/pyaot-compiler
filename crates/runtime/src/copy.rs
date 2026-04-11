@@ -148,27 +148,21 @@ pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
 
         // File, Generator, Iterator — raise TypeError (CPython does the same)
         TypeTagKind::File => {
-            let msg = b"TypeError: cannot copy file objects";
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "cannot copy file objects"
             );
         }
         TypeTagKind::Generator => {
-            let msg = b"TypeError: cannot copy generator objects";
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "cannot copy generator objects"
             );
         }
         TypeTagKind::Iterator => {
-            let msg = b"TypeError: cannot copy iterator objects";
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "cannot copy iterator objects"
             );
         }
 
@@ -476,11 +470,9 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
         | TypeTagKind::File
         | TypeTagKind::Generator
         | TypeTagKind::Hash => {
-            let msg = b"TypeError: cannot deepcopy this object";
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "cannot deepcopy this object"
             )
         }
 

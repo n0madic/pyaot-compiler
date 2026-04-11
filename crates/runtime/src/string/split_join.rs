@@ -78,11 +78,9 @@ pub extern "C" fn rt_str_split(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) 
             if sep_len == 0 {
                 // CPython raises ValueError for empty separator
                 gc_pop();
-                let msg = b"empty separator";
-                crate::exceptions::rt_exc_raise(
-                    pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    crate::exceptions::ExceptionType::ValueError,
+                    "empty separator"
                 );
             }
 
@@ -367,11 +365,9 @@ pub extern "C" fn rt_str_partition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
         let sep_data = (*sep_obj).data.as_ptr();
 
         if sep_len == 0 {
-            let msg = b"empty separator";
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::ValueError,
+                "empty separator"
             );
         }
 
@@ -476,11 +472,9 @@ pub extern "C" fn rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
         let sep_data = (*sep_obj).data.as_ptr();
 
         if sep_len == 0 {
-            let msg = b"empty separator";
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::ValueError,
+                "empty separator"
             );
         }
 
@@ -619,11 +613,9 @@ pub extern "C" fn rt_str_rsplit(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64)
             if sep_len == 0 {
                 // CPython raises ValueError for empty separator
                 gc_pop();
-                let msg = b"empty separator";
-                crate::exceptions::rt_exc_raise(
-                    pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    crate::exceptions::ExceptionType::ValueError,
+                    "empty separator"
                 );
             }
 

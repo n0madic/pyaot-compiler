@@ -1,6 +1,5 @@
 //! Bytes conversion operations: decode, fromhex
 
-use crate::exceptions;
 use crate::object::Obj;
 
 use super::core::{rt_make_bytes, rt_make_bytes_zero};
@@ -54,8 +53,10 @@ pub extern "C" fn rt_bytes_fromhex(hex_str: *mut Obj) -> *mut Obj {
         }
 
         if hex_chars.len() % 2 != 0 {
-            let msg = b"non-hexadecimal number found in fromhex() arg";
-            exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "non-hexadecimal number found in fromhex() arg"
+            );
         }
 
         let byte_count = hex_chars.len() / 2;
@@ -70,8 +71,10 @@ pub extern "C" fn rt_bytes_fromhex(hex_str: *mut Obj) -> *mut Obj {
                 b'a'..=b'f' => high - b'a' + 10,
                 b'A'..=b'F' => high - b'A' + 10,
                 _ => {
-                    let msg = b"non-hexadecimal number found in fromhex() arg";
-                    exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+                    raise_exc!(
+                        crate::exceptions::ExceptionType::ValueError,
+                        "non-hexadecimal number found in fromhex() arg"
+                    );
                 }
             };
 
@@ -80,8 +83,10 @@ pub extern "C" fn rt_bytes_fromhex(hex_str: *mut Obj) -> *mut Obj {
                 b'a'..=b'f' => low - b'a' + 10,
                 b'A'..=b'F' => low - b'A' + 10,
                 _ => {
-                    let msg = b"non-hexadecimal number found in fromhex() arg";
-                    exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+                    raise_exc!(
+                        crate::exceptions::ExceptionType::ValueError,
+                        "non-hexadecimal number found in fromhex() arg"
+                    );
                 }
             };
 

@@ -4,7 +4,7 @@ use super::core::rt_list_push;
 use super::timsort;
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
-use crate::exceptions::{rt_exc_raise, ExceptionType};
+use crate::exceptions::ExceptionType;
 use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind, ELEM_HEAP_OBJ, ELEM_RAW_INT};
 use std::alloc::{alloc_zeroed, realloc, Layout};
 
@@ -115,8 +115,10 @@ pub extern "C" fn rt_list_insert(list: *mut Obj, index: i64, value: *mut Obj) {
                 let new_data =
                     realloc(data as *mut u8, old_layout, new_layout.size()) as *mut *mut Obj;
                 if new_data.is_null() {
-                    let msg = b"MemoryError: cannot allocate memory for list";
-                    rt_exc_raise(ExceptionType::MemoryError as u8, msg.as_ptr(), msg.len());
+                    raise_exc!(
+                        ExceptionType::MemoryError,
+                        "cannot allocate memory for list"
+                    );
                 }
                 for i in capacity..new_capacity {
                     *new_data.add(i) = std::ptr::null_mut();
@@ -296,8 +298,7 @@ pub extern "C" fn rt_list_extend(list: *mut Obj, other: *mut Obj) {
             };
 
             if new_data.is_null() {
-                let msg = b"Failed to reallocate list";
-                rt_exc_raise(ExceptionType::MemoryError as u8, msg.as_ptr(), msg.len());
+                raise_exc!(ExceptionType::MemoryError, "Failed to reallocate list");
             }
 
             (*list_obj).data = new_data as *mut *mut Obj;

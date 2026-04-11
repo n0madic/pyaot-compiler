@@ -321,11 +321,9 @@ pub extern "C" fn rt_urlencode(params: *mut Obj) -> *mut Obj {
                 let key_str = str_obj_to_rust_string(key);
                 let value = (*entry).value;
                 if value.is_null() || (*value).header.type_tag != crate::object::TypeTagKind::Str {
-                    let msg = b"TypeError: urlencode values must be strings";
-                    crate::exceptions::rt_exc_raise(
-                        pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                        msg.as_ptr(),
-                        msg.len(),
+                    raise_exc!(
+                        pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                        "urlencode values must be strings"
                     );
                 }
                 let value_str = str_obj_to_rust_string(value);

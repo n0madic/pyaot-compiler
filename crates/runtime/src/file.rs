@@ -252,11 +252,9 @@ pub unsafe extern "C" fn rt_file_read(file: *mut Obj) -> *mut Obj {
     match limited.read_to_end(&mut buffer) {
         Ok(_) => {
             if buffer.len() as u64 > MAX_READ_ALL_SIZE {
-                let msg = b"read(): file too large; use read(n) for files over 1 GB";
-                crate::exceptions::rt_exc_raise(
-                    pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    pyaot_core_defs::BuiltinExceptionKind::ValueError,
+                    "read(): file too large; use read(n) for files over 1 GB"
                 );
             }
             if (*file_obj).binary {
@@ -309,11 +307,9 @@ pub unsafe extern "C" fn rt_file_read_n(file: *mut Obj, n: i64) -> *mut Obj {
     // Cap allocation to prevent OOM from absurd sizes
     const MAX_READ_SIZE: usize = 1 << 30; // 1 GB
     if n > MAX_READ_SIZE {
-        let msg = b"ValueError: read size too large";
-        crate::exceptions::rt_exc_raise(
-            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-            msg.as_ptr(),
-            msg.len(),
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "read size too large"
         );
     }
 
@@ -448,11 +444,9 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
         );
     }
     if raw.len() as u64 > MAX_READ_ALL_SIZE {
-        let msg = b"readlines(): file too large; use read(n) for files over 1 GB";
-        crate::exceptions::rt_exc_raise(
-            pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-            msg.as_ptr(),
-            msg.len(),
+        raise_exc!(
+            pyaot_core_defs::BuiltinExceptionKind::ValueError,
+            "readlines(): file too large; use read(n) for files over 1 GB"
         );
     }
 

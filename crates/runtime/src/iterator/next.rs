@@ -18,12 +18,10 @@ pub(crate) fn rt_iter_next_internal(iter_obj: *mut Obj, raise_on_exhausted: bool
 
     if iter_obj.is_null() {
         if raise_on_exhausted {
-            let msg = b"next() called on null iterator";
             unsafe {
-                exceptions::rt_exc_raise(
-                    exceptions::ExceptionType::StopIteration as u8,
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    exceptions::ExceptionType::StopIteration,
+                    "next() called on null iterator"
                 );
             }
         }
@@ -42,11 +40,7 @@ pub(crate) fn rt_iter_next_internal(iter_obj: *mut Obj, raise_on_exhausted: bool
 
         if (*iter).exhausted {
             if raise_on_exhausted {
-                exceptions::rt_exc_raise(
-                    exceptions::ExceptionType::StopIteration as u8,
-                    std::ptr::null(),
-                    0,
-                );
+                raise_exc!(exceptions::ExceptionType::StopIteration, "");
             }
             return EXHAUSTED_SENTINEL;
         }
@@ -72,11 +66,7 @@ pub(crate) fn rt_iter_next_internal(iter_obj: *mut Obj, raise_on_exhausted: bool
                 if out_of_bounds {
                     (*iter).exhausted = true;
                     if raise_on_exhausted {
-                        exceptions::rt_exc_raise(
-                            exceptions::ExceptionType::StopIteration as u8,
-                            std::ptr::null(),
-                            0,
-                        );
+                        raise_exc!(exceptions::ExceptionType::StopIteration, "");
                     }
                     return EXHAUSTED_SENTINEL;
                 }
@@ -132,11 +122,7 @@ unsafe fn iter_next_list(
     if out_of_bounds {
         (*iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -167,11 +153,7 @@ unsafe fn iter_next_tuple(
     if out_of_bounds {
         (*iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -202,11 +184,7 @@ unsafe fn iter_next_dict(
     if out_of_bounds {
         (*iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -238,11 +216,7 @@ unsafe fn iter_next_range(
     if exhausted {
         (*iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -275,11 +249,7 @@ unsafe fn iter_next_set(
 
     (*iter).exhausted = true;
     if raise_on_exhausted {
-        exceptions::rt_exc_raise(
-            exceptions::ExceptionType::StopIteration as u8,
-            std::ptr::null(),
-            0,
-        );
+        raise_exc!(exceptions::ExceptionType::StopIteration, "");
     }
     EXHAUSTED_SENTINEL
 }
@@ -301,11 +271,7 @@ unsafe fn iter_next_bytes(
     if out_of_bounds {
         (*iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -334,11 +300,7 @@ unsafe fn iter_next_enumerate(
     if elem == EXHAUSTED_SENTINEL {
         (*iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -397,11 +359,7 @@ unsafe fn iter_next_zip(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
 
     if (*zip_iter).exhausted {
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -411,11 +369,7 @@ unsafe fn iter_next_zip(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
     if item1 == EXHAUSTED_SENTINEL {
         (*zip_iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -424,11 +378,7 @@ unsafe fn iter_next_zip(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
     if item2 == EXHAUSTED_SENTINEL {
         (*zip_iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -484,11 +434,7 @@ unsafe fn iter_next_zip3(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
 
     if (*zip_iter).exhausted {
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -497,11 +443,7 @@ unsafe fn iter_next_zip3(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
     if item1 == EXHAUSTED_SENTINEL {
         (*zip_iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -510,11 +452,7 @@ unsafe fn iter_next_zip3(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
     if item2 == EXHAUSTED_SENTINEL {
         (*zip_iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -523,11 +461,7 @@ unsafe fn iter_next_zip3(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
     if item3 == EXHAUSTED_SENTINEL {
         (*zip_iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -594,11 +528,7 @@ unsafe fn iter_next_zipn(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
 
     if (*zip_iter).exhausted {
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -617,11 +547,7 @@ unsafe fn iter_next_zipn(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
         if item == EXHAUSTED_SENTINEL {
             (*zip_iter).exhausted = true;
             if raise_on_exhausted {
-                exceptions::rt_exc_raise(
-                    exceptions::ExceptionType::StopIteration as u8,
-                    std::ptr::null(),
-                    0,
-                );
+                raise_exc!(exceptions::ExceptionType::StopIteration, "");
             }
             return EXHAUSTED_SENTINEL;
         }
@@ -658,11 +584,7 @@ unsafe fn iter_next_map(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
 
     if (*map_iter).exhausted {
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -683,11 +605,7 @@ unsafe fn iter_next_map(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
     if inner_exhausted {
         (*map_iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -722,11 +640,7 @@ unsafe fn iter_next_filter(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut
 
     if (*filter_iter).exhausted {
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -749,11 +663,7 @@ unsafe fn iter_next_filter(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut
         if inner_exhausted {
             (*filter_iter).exhausted = true;
             if raise_on_exhausted {
-                exceptions::rt_exc_raise(
-                    exceptions::ExceptionType::StopIteration as u8,
-                    std::ptr::null(),
-                    0,
-                );
+                raise_exc!(exceptions::ExceptionType::StopIteration, "");
             }
             return EXHAUSTED_SENTINEL;
         }
@@ -800,11 +710,7 @@ unsafe fn iter_next_chain(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut 
 
     if (*chain_iter).exhausted {
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -830,11 +736,7 @@ unsafe fn iter_next_chain(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut 
     // All iterators exhausted
     (*chain_iter).exhausted = true;
     if raise_on_exhausted {
-        exceptions::rt_exc_raise(
-            exceptions::ExceptionType::StopIteration as u8,
-            std::ptr::null(),
-            0,
-        );
+        raise_exc!(exceptions::ExceptionType::StopIteration, "");
     }
     EXHAUSTED_SENTINEL
 }
@@ -848,11 +750,7 @@ unsafe fn iter_next_islice(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut
 
     if (*islice_iter).exhausted {
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -861,11 +759,7 @@ unsafe fn iter_next_islice(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut
     if (*islice_iter).stop >= 0 && (*islice_iter).next_yield >= (*islice_iter).stop {
         (*islice_iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }
@@ -876,11 +770,7 @@ unsafe fn iter_next_islice(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut
         if elem == EXHAUSTED_SENTINEL {
             (*islice_iter).exhausted = true;
             if raise_on_exhausted {
-                exceptions::rt_exc_raise(
-                    exceptions::ExceptionType::StopIteration as u8,
-                    std::ptr::null(),
-                    0,
-                );
+                raise_exc!(exceptions::ExceptionType::StopIteration, "");
             }
             return EXHAUSTED_SENTINEL;
         }
@@ -892,11 +782,7 @@ unsafe fn iter_next_islice(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut
     if elem == EXHAUSTED_SENTINEL {
         (*islice_iter).exhausted = true;
         if raise_on_exhausted {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::StopIteration as u8,
-                std::ptr::null(),
-                0,
-            );
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
         }
         return EXHAUSTED_SENTINEL;
     }

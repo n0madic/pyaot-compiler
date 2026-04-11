@@ -116,7 +116,7 @@ pub unsafe fn is_heap_obj(ptr: *mut Obj) -> bool {
 /// This function never returns (marked with `!`).
 #[inline(never)]
 pub unsafe fn raise_value_error(msg: &str) -> ! {
-    crate::exceptions::rt_exc_raise(ExceptionType::ValueError as u8, msg.as_ptr(), msg.len())
+    raise_exc!(ExceptionType::ValueError, "{}", msg)
 }
 
 /// Raise an IOError exception with the given message
@@ -125,7 +125,7 @@ pub unsafe fn raise_value_error(msg: &str) -> ! {
 /// This function never returns (marked with `!`).
 #[inline(never)]
 pub unsafe fn raise_io_error(msg: &str) -> ! {
-    crate::exceptions::rt_exc_raise(ExceptionType::IOError as u8, msg.as_ptr(), msg.len())
+    raise_exc!(ExceptionType::IOError, "{}", msg)
 }
 
 /// Format a float value the way CPython does (shortest repr that round-trips).
@@ -215,5 +215,5 @@ fn format_float_scientific(value: f64) -> String {
 /// This function never returns (marked with `!`).
 #[inline(never)]
 pub unsafe fn raise_runtime_error(msg: &str) -> ! {
-    crate::exceptions::rt_exc_raise(ExceptionType::RuntimeError as u8, msg.as_ptr(), msg.len())
+    raise_exc!(ExceptionType::RuntimeError, "{}", msg)
 }

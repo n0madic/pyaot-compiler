@@ -136,11 +136,9 @@ unsafe fn call_reduce_with_captures(
             func(c0, c1, c2, c3, c4, c5, c6, c7, acc, elem)
         }
         _ => {
-            let msg = b"reduce: unsupported capture count (max 8)";
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "reduce: unsupported capture count (max 8)"
             );
         }
     }
@@ -184,11 +182,9 @@ pub unsafe extern "C" fn rt_reduce(
         let inner_iter = iter as *mut IteratorObj;
         if (*inner_iter).exhausted {
             // Iterator is empty and no initial value
-            let msg = "reduce() of empty iterable with no initial value";
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "reduce() of empty iterable with no initial value"
             );
         }
         first_elem

@@ -34,10 +34,9 @@ pub extern "C" fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj
 
             // Iterate over characters (not bytes) for multi-byte safety
             let src_str = std::str::from_utf8(src_bytes).unwrap_or_else(|_| {
-                crate::exceptions::rt_exc_raise(
-                    pyaot_core_defs::BuiltinExceptionKind::ValueError.tag(),
-                    b"invalid UTF-8 in string" as *const u8,
-                    "invalid UTF-8 in string".len(),
+                raise_exc!(
+                    pyaot_core_defs::BuiltinExceptionKind::ValueError,
+                    "invalid UTF-8 in string"
                 )
             });
             for ch in src_str.chars() {
@@ -117,11 +116,9 @@ pub extern "C" fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj
             Some(v) => v,
             None => {
                 gc_pop();
-                let msg = b"OverflowError: replace result too large";
-                crate::exceptions::rt_exc_raise(
-                    pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    pyaot_core_defs::BuiltinExceptionKind::OverflowError,
+                    "replace result too large"
                 );
             }
         };
@@ -129,11 +126,9 @@ pub extern "C" fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj
             Some(v) => v,
             None => {
                 gc_pop();
-                let msg = b"OverflowError: replace result too large";
-                crate::exceptions::rt_exc_raise(
-                    pyaot_core_defs::BuiltinExceptionKind::OverflowError.tag(),
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    pyaot_core_defs::BuiltinExceptionKind::OverflowError,
+                    "replace result too large"
                 );
             }
         };
@@ -194,11 +189,9 @@ pub extern "C" fn rt_str_mul(str_obj: *mut Obj, count: i64) -> *mut Obj {
         let result_len = match len.checked_mul(count) {
             Some(l) => l,
             None => {
-                let msg = b"repeated string is too long";
-                crate::exceptions::rt_exc_raise(
-                    crate::exceptions::ExceptionType::OverflowError as u8,
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    crate::exceptions::ExceptionType::OverflowError,
+                    "repeated string is too long"
                 );
             }
         };

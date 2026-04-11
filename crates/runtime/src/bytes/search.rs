@@ -115,8 +115,10 @@ pub extern "C" fn rt_bytes_search(bytes: *mut Obj, sub: *mut Obj, op_tag: u8) ->
             };
             if r < 0 {
                 unsafe {
-                    let msg = b"subsection not found";
-                    crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+                    raise_exc!(
+                        crate::exceptions::ExceptionType::ValueError,
+                        "subsection not found"
+                    );
                 }
             }
             r

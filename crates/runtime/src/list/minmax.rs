@@ -15,12 +15,17 @@ pub extern "C" fn rt_list_minmax(list: *mut Obj, is_min: u8, elem_kind: u8) -> i
     unsafe {
         let list_obj = list as *mut ListObj;
         if (*list_obj).len == 0 {
-            let msg = if is_min == 0 {
-                b"min() arg is an empty sequence" as &[u8]
+            if is_min == 0 {
+                raise_exc!(
+                    crate::exceptions::ExceptionType::ValueError,
+                    "min() arg is an empty sequence"
+                );
             } else {
-                b"max() arg is an empty sequence"
-            };
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+                raise_exc!(
+                    crate::exceptions::ExceptionType::ValueError,
+                    "max() arg is an empty sequence"
+                );
+            }
         }
         let data = (*list_obj).data as *const usize;
         let len = (*list_obj).len;
@@ -85,12 +90,17 @@ unsafe fn find_extremum_with_key(
     let len = (*list_obj).len;
 
     if len == 0 {
-        let msg = if is_min {
-            b"min() arg is an empty sequence"
+        if is_min {
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "min() arg is an empty sequence"
+            );
         } else {
-            b"max() arg is an empty sequence"
-        };
-        crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "max() arg is an empty sequence"
+            );
+        }
     }
 
     let data = (*list_obj).data;

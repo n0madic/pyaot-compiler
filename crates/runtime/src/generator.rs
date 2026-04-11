@@ -2,7 +2,7 @@
 //!
 //! Provides runtime functions for generator objects (functions with yield).
 
-use crate::exceptions::{rt_exc_raise, ExceptionType};
+use crate::exceptions::ExceptionType;
 use crate::gc::gc_alloc;
 use crate::object::{GeneratorObj, Obj, TypeTagKind};
 use std::mem::size_of;
@@ -20,8 +20,10 @@ extern "C" {
 pub unsafe extern "C" fn rt_generator_next(gen: *mut Obj) -> *mut Obj {
     // Check if it's actually a generator
     if gen.is_null() || (*gen).header.type_tag != TypeTagKind::Generator {
-        let msg = b"next() called on non-generator";
-        rt_exc_raise(ExceptionType::StopIteration as u8, msg.as_ptr(), msg.len());
+        raise_exc!(
+            ExceptionType::StopIteration,
+            "next() called on non-generator"
+        );
     }
 
     // Call the dispatcher function (provided by compiled code)
@@ -69,14 +71,12 @@ pub unsafe extern "C" fn rt_make_generator(func_id: u32, num_locals: u32) -> *mu
     let locals_size = (num_locals as usize)
         .checked_mul(size_of::<i64>())
         .unwrap_or_else(|| {
-            let msg = b"MemoryError: generator locals size overflow";
-            rt_exc_raise(ExceptionType::MemoryError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::MemoryError, "generator locals size overflow");
         });
     let total_size = size_of::<GeneratorObj>()
         .checked_add(locals_size)
         .unwrap_or_else(|| {
-            let msg = b"MemoryError: generator size overflow";
-            rt_exc_raise(ExceptionType::MemoryError as u8, msg.as_ptr(), msg.len());
+            raise_exc!(ExceptionType::MemoryError, "generator size overflow");
         });
 
     let obj = gc_alloc(total_size, TypeTagKind::Generator as u8);
@@ -302,7 +302,7 @@ pub unsafe extern "C" fn rt_generator_is_exhausted(gen: *mut Obj) -> i8 {
 /// This function will not return normally.
 #[no_mangle]
 pub unsafe extern "C" fn rt_generator_stop_iteration() -> ! {
-    rt_exc_raise(ExceptionType::StopIteration as u8, std::ptr::null(), 0)
+    raise_exc!(ExceptionType::StopIteration, "")
 }
 
 /// Send a value to a generator and resume execution
@@ -317,24 +317,24 @@ pub unsafe extern "C" fn rt_generator_stop_iteration() -> ! {
 pub unsafe extern "C" fn rt_generator_send(gen: *mut Obj, value: i64) -> *mut Obj {
     // Check if it's actually a generator
     if gen.is_null() || (*gen).header.type_tag != TypeTagKind::Generator {
-        let msg = b"send() called on non-generator";
-        rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+        raise_exc!(ExceptionType::TypeError, "send() called on non-generator");
     }
 
     let gen_obj = gen as *mut GeneratorObj;
 
     // Check if generator is exhausted
     if (*gen_obj).exhausted {
-        let msg = b"generator already exhausted";
-        rt_exc_raise(ExceptionType::StopIteration as u8, msg.as_ptr(), msg.len());
+        raise_exc!(ExceptionType::StopIteration, "generator already exhausted");
     }
 
     // CPython: can't send non-None value to a just-started generator
     // State 0 means the generator hasn't started yet
     // In our representation, value 0 is None
     if (*gen_obj).state == 0 && value != 0 {
-        let msg = b"can't send non-None value to a just-started generator";
-        rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+        raise_exc!(
+            ExceptionType::TypeError,
+            "can't send non-None value to a just-started generator"
+        );
     }
 
     // Store the sent value
@@ -388,8 +388,10 @@ pub unsafe extern "C" fn rt_generator_close(gen: *mut Obj) {
     // otherwise be conflated with "did not yield" when testing the result pointer.
     if !(*gen_obj).exhausted {
         // Generator yielded instead of returning/raising - this is an error
-        let msg = b"generator ignored GeneratorExit";
-        rt_exc_raise(ExceptionType::RuntimeError as u8, msg.as_ptr(), msg.len());
+        raise_exc!(
+            ExceptionType::RuntimeError,
+            "generator ignored GeneratorExit"
+        );
     }
 
     // Mark as exhausted

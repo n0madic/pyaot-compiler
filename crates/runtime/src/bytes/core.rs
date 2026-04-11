@@ -1,7 +1,7 @@
 //! Core bytes operations: creation, get, len, eq, slice, concat, repeat
 
 use crate::exceptions;
-use crate::exceptions::{rt_exc_raise, ExceptionType};
+use crate::exceptions::ExceptionType;
 use crate::gc;
 use crate::object::Obj;
 use crate::slice_utils::{normalize_slice_indices, slice_length};
@@ -24,11 +24,7 @@ pub unsafe extern "C" fn rt_make_bytes(data: *const u8, len: usize) -> *mut Obj 
         .checked_add(std::mem::size_of::<usize>())
         .and_then(|s| s.checked_add(len))
         .unwrap_or_else(|| {
-            rt_exc_raise(
-                ExceptionType::MemoryError as u8,
-                b"MemoryError: bytes size overflow".as_ptr(),
-                32,
-            );
+            raise_exc!(ExceptionType::MemoryError, "bytes size overflow");
         });
 
     // Allocate using GC
@@ -60,11 +56,7 @@ pub extern "C" fn rt_make_bytes_zero(len: i64) -> *mut Obj {
         .checked_add(std::mem::size_of::<usize>())
         .and_then(|s| s.checked_add(len))
         .unwrap_or_else(|| unsafe {
-            rt_exc_raise(
-                ExceptionType::MemoryError as u8,
-                b"MemoryError: bytes size overflow".as_ptr(),
-                31,
-            );
+            raise_exc!(ExceptionType::MemoryError, "bytes size overflow");
         });
 
     // Allocate using GC (gc_alloc zeros the memory)
@@ -100,11 +92,7 @@ pub extern "C" fn rt_make_bytes_from_list(list: *mut Obj) -> *mut Obj {
             .checked_add(std::mem::size_of::<usize>())
             .and_then(|s| s.checked_add(len))
             .unwrap_or_else(|| {
-                rt_exc_raise(
-                    ExceptionType::OverflowError as u8,
-                    b"bytes too large" as *const u8,
-                    "bytes too large".len(),
-                );
+                raise_exc!(ExceptionType::OverflowError, "bytes too large");
             });
 
         // Root `list` across gc_alloc: a GC collection would free the ListObj
@@ -166,11 +154,7 @@ pub extern "C" fn rt_make_bytes_from_str(str_obj: *mut Obj) -> *mut Obj {
             .checked_add(std::mem::size_of::<usize>())
             .and_then(|s| s.checked_add(len))
             .unwrap_or_else(|| {
-                rt_exc_raise(
-                    ExceptionType::OverflowError as u8,
-                    b"bytes too large" as *const u8,
-                    "bytes too large".len(),
-                );
+                raise_exc!(ExceptionType::OverflowError, "bytes too large");
             });
 
         // Root `str_obj` across gc_alloc: a GC collection could free the StrObj
@@ -209,12 +193,10 @@ pub extern "C" fn rt_bytes_get(bytes: *mut Obj, index: i64) -> i64 {
     use crate::object::BytesObj;
 
     if bytes.is_null() {
-        let msg = b"bytes index out of range";
         unsafe {
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::IndexError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                exceptions::ExceptionType::IndexError,
+                "bytes index out of range"
             );
         }
     }
@@ -227,11 +209,9 @@ pub extern "C" fn rt_bytes_get(bytes: *mut Obj, index: i64) -> i64 {
         let idx = if index < 0 { len + index } else { index };
 
         if idx < 0 || idx >= len {
-            let msg = b"bytes index out of range";
-            exceptions::rt_exc_raise(
-                exceptions::ExceptionType::IndexError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                exceptions::ExceptionType::IndexError,
+                "bytes index out of range"
             );
         }
 
@@ -311,10 +291,7 @@ pub extern "C" fn rt_bytes_slice(bytes: *mut Obj, start: i64, end: i64) -> *mut 
         let size = std::mem::size_of::<ObjHeader>()
             .checked_add(std::mem::size_of::<usize>())
             .and_then(|s| s.checked_add(slice_len))
-            .unwrap_or_else(|| {
-                let msg = b"OverflowError: bytes slice too large";
-                rt_exc_raise(ExceptionType::OverflowError as u8, msg.as_ptr(), msg.len())
-            });
+            .unwrap_or_else(|| raise_exc!(ExceptionType::OverflowError, "bytes slice too large"));
         let obj = gc::gc_alloc(size, TypeTagKind::Bytes as u8);
 
         let new_bytes = obj as *mut BytesObj;

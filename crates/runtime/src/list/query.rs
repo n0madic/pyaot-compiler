@@ -1,7 +1,7 @@
 //! List query operations: index, count, copy
 
 use super::core::rt_make_list;
-use crate::exceptions::{rt_exc_raise, ExceptionType};
+use crate::exceptions::ExceptionType;
 use crate::hash_table_utils::eq_hashable_obj;
 use crate::object::{ListObj, Obj, ELEM_HEAP_OBJ};
 
@@ -144,11 +144,7 @@ pub extern "C" fn rt_list_concat(list1: *mut Obj, list2: *mut Obj) -> *mut Obj {
         let total_len = match len1.checked_add(len2) {
             Some(l) => l,
             None => {
-                rt_exc_raise(
-                    ExceptionType::OverflowError as u8,
-                    b"list concatenation too long" as *const u8,
-                    "list concatenation too long".len(),
-                );
+                raise_exc!(ExceptionType::OverflowError, "list concatenation too long");
             }
         };
 

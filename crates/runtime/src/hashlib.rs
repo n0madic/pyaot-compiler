@@ -28,10 +28,9 @@ unsafe fn extract_data_slice<'a>(data: *mut Obj) -> &'a [u8] {
             std::slice::from_raw_parts((*str_obj).data.as_ptr(), (*str_obj).len)
         }
         _ => {
-            crate::exceptions::rt_exc_raise(
-                pyaot_core_defs::BuiltinExceptionKind::TypeError.tag(),
-                b"expected bytes or str" as *const u8,
-                "expected bytes or str".len(),
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "expected bytes or str"
             );
         }
     }

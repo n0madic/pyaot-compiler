@@ -1,6 +1,6 @@
 //! Comparison, containment, truthiness, and subscript operations for Python runtime
 
-use crate::exceptions::{rt_exc_raise, ExceptionType};
+use crate::exceptions::ExceptionType;
 use crate::object::{
     BoolObj, BytesObj, DictObj, FloatObj, IntObj, ListObj, Obj, SetObj, StrObj, TupleObj,
     TypeTagKind, ELEM_RAW_BOOL, ELEM_RAW_INT,
@@ -110,8 +110,10 @@ pub(super) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ord
 
     // Handle null (None) - None is not orderable
     if a.is_null() || b.is_null() {
-        let msg = b"'<' not supported between instances of 'NoneType' and other types";
-        rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+        raise_exc!(
+            ExceptionType::TypeError,
+            "'<' not supported between instances of 'NoneType' and other types"
+        );
     }
 
     let tag_a = (*a).type_tag();
@@ -119,8 +121,10 @@ pub(super) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ord
 
     // Check for None type tag
     if tag_a == TypeTagKind::None || tag_b == TypeTagKind::None {
-        let msg = b"'<' not supported between instances of 'NoneType' and other types";
-        rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len());
+        raise_exc!(
+            ExceptionType::TypeError,
+            "'<' not supported between instances of 'NoneType' and other types"
+        );
     }
 
     // Same type comparisons
@@ -311,11 +315,9 @@ pub extern "C" fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
                 let len = (*list).len as i64;
                 let actual_idx = if index < 0 { len + index } else { index };
                 if actual_idx < 0 || actual_idx >= len {
-                    let msg = b"IndexError: list index out of range";
-                    crate::exceptions::rt_exc_raise(
-                        crate::exceptions::ExceptionType::IndexError as u8,
-                        msg.as_ptr(),
-                        msg.len(),
+                    raise_exc!(
+                        crate::exceptions::ExceptionType::IndexError,
+                        "list index out of range"
                     );
                 }
                 let elem = *(*list).data.add(actual_idx as usize);
@@ -331,11 +333,9 @@ pub extern "C" fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
                 let len = (*tuple).len as i64;
                 let actual_idx = if index < 0 { len + index } else { index };
                 if actual_idx < 0 || actual_idx >= len {
-                    let msg = b"IndexError: tuple index out of range";
-                    crate::exceptions::rt_exc_raise(
-                        crate::exceptions::ExceptionType::IndexError as u8,
-                        msg.as_ptr(),
-                        msg.len(),
+                    raise_exc!(
+                        crate::exceptions::ExceptionType::IndexError,
+                        "tuple index out of range"
                     );
                 }
                 let elem = *(*tuple).data.as_ptr().add(actual_idx as usize);
@@ -368,8 +368,12 @@ pub extern "C" fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
     if container.is_null() {
-        let msg = b"TypeError: argument of type 'NoneType' is not iterable";
-        unsafe { rt_exc_raise(ExceptionType::TypeError as u8, msg.as_ptr(), msg.len()) }
+        unsafe {
+            raise_exc!(
+                ExceptionType::TypeError,
+                "argument of type 'NoneType' is not iterable"
+            )
+        }
     }
 
     unsafe {

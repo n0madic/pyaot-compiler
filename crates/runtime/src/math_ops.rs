@@ -38,32 +38,24 @@ pub extern "C" fn rt_pow_int(base: i64, exp: i64) -> i64 {
             if exp & 1 == 1 {
                 result = match result.checked_mul(base) {
                     Some(v) => v,
-                    None => {
-                        let msg = b"integer overflow";
-                        unsafe {
-                            crate::exceptions::rt_exc_raise(
-                                crate::exceptions::ExceptionType::OverflowError as u8,
-                                msg.as_ptr(),
-                                msg.len(),
-                            )
-                        }
-                    }
+                    None => unsafe {
+                        raise_exc!(
+                            crate::exceptions::ExceptionType::OverflowError,
+                            "integer overflow"
+                        )
+                    },
                 };
             }
             if exp > 1 {
                 base = match base.checked_mul(base) {
                     Some(v) => v,
-                    None => {
-                        // Only overflow if we'll actually use this value
-                        let msg = b"integer overflow";
-                        unsafe {
-                            crate::exceptions::rt_exc_raise(
-                                crate::exceptions::ExceptionType::OverflowError as u8,
-                                msg.as_ptr(),
-                                msg.len(),
-                            )
-                        }
-                    }
+                    // Only overflow if we'll actually use this value
+                    None => unsafe {
+                        raise_exc!(
+                            crate::exceptions::ExceptionType::OverflowError,
+                            "integer overflow"
+                        )
+                    },
                 };
             }
             exp >>= 1;
@@ -77,22 +69,18 @@ pub extern "C" fn rt_pow_int(base: i64, exp: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn rt_round_to_int(x: f64) -> i64 {
     if x.is_nan() {
-        let msg = b"ValueError: cannot convert float NaN to integer";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ValueError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "cannot convert float NaN to integer"
             )
         }
     }
     if x.is_infinite() || x > i64::MAX as f64 || x < i64::MIN as f64 {
-        let msg = b"OverflowError: cannot convert float infinity to integer";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::OverflowError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::OverflowError,
+                "cannot convert float infinity to integer"
             )
         }
     }
@@ -127,12 +115,10 @@ pub extern "C" fn rt_round_to_digits(x: f64, ndigits: i64) -> f64 {
     }
     // Validate ndigits fits in i32 range (CPython raises OverflowError for extreme values)
     if ndigits > i32::MAX as i64 || ndigits < i32::MIN as i64 {
-        let msg = b"OverflowError: ndigits out of range for round()";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::OverflowError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::OverflowError,
+                "ndigits out of range for round()"
             )
         }
     }
@@ -168,22 +154,18 @@ pub extern "C" fn rt_round_to_digits(x: f64, ndigits: i64) -> f64 {
 #[no_mangle]
 pub extern "C" fn rt_float_to_int(x: f64) -> i64 {
     if x.is_nan() {
-        let msg = b"ValueError: cannot convert float NaN to integer";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ValueError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "cannot convert float NaN to integer"
             )
         }
     }
     if x.is_infinite() || x > i64::MAX as f64 || x < i64::MIN as f64 {
-        let msg = b"OverflowError: cannot convert float infinity to integer";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::OverflowError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::OverflowError,
+                "cannot convert float infinity to integer"
             )
         }
     }
@@ -198,12 +180,10 @@ pub extern "C" fn rt_float_to_int(x: f64) -> i64 {
 #[no_mangle]
 pub extern "C" fn rt_math_sqrt(x: f64) -> f64 {
     if x < 0.0 {
-        let msg = b"ValueError: math domain error";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ValueError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "math domain error"
             )
         }
     }
@@ -233,22 +213,18 @@ pub extern "C" fn rt_math_tan(x: f64) -> f64 {
 pub extern "C" fn rt_math_ceil(x: f64) -> i64 {
     let v = x.ceil();
     if v.is_nan() {
-        let msg = b"ValueError: cannot convert float NaN to integer";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ValueError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "cannot convert float NaN to integer"
             )
         }
     }
     if v.is_infinite() || v > i64::MAX as f64 || v < i64::MIN as f64 {
-        let msg = b"OverflowError: cannot convert float infinity to integer";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::OverflowError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::OverflowError,
+                "cannot convert float infinity to integer"
             )
         }
     }
@@ -260,22 +236,18 @@ pub extern "C" fn rt_math_ceil(x: f64) -> i64 {
 pub extern "C" fn rt_math_floor(x: f64) -> i64 {
     let v = x.floor();
     if v.is_nan() {
-        let msg = b"ValueError: cannot convert float NaN to integer";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ValueError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "cannot convert float NaN to integer"
             )
         }
     }
     if v.is_infinite() || v > i64::MAX as f64 || v < i64::MIN as f64 {
-        let msg = b"OverflowError: cannot convert float infinity to integer";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::OverflowError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::OverflowError,
+                "cannot convert float infinity to integer"
             )
         }
     }
@@ -287,9 +259,11 @@ pub extern "C" fn rt_math_floor(x: f64) -> i64 {
 #[no_mangle]
 pub extern "C" fn rt_math_factorial(n: i64) -> i64 {
     if n < 0 {
-        let msg = "factorial() not defined for negative values";
         unsafe {
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "factorial() not defined for negative values"
+            );
         }
     }
     if n <= 1 {
@@ -299,16 +273,12 @@ pub extern "C" fn rt_math_factorial(n: i64) -> i64 {
     for i in 2..=n {
         result = match result.checked_mul(i) {
             Some(v) => v,
-            None => {
-                let msg = b"OverflowError: int too large to convert to C long";
-                unsafe {
-                    crate::exceptions::rt_exc_raise(
-                        crate::exceptions::ExceptionType::OverflowError as u8,
-                        msg.as_ptr(),
-                        msg.len(),
-                    );
-                }
-            }
+            None => unsafe {
+                raise_exc!(
+                    crate::exceptions::ExceptionType::OverflowError,
+                    "int too large to convert to C long"
+                )
+            },
         };
     }
     result
@@ -320,12 +290,10 @@ pub extern "C" fn rt_math_factorial(n: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn rt_math_log(x: f64, base: f64) -> f64 {
     if x <= 0.0 {
-        let msg = b"ValueError: math domain error";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ValueError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "math domain error"
             )
         }
     }
@@ -340,12 +308,10 @@ pub extern "C" fn rt_math_log(x: f64, base: f64) -> f64 {
 #[no_mangle]
 pub extern "C" fn rt_math_log2(x: f64) -> f64 {
     if x <= 0.0 {
-        let msg = b"ValueError: math domain error";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ValueError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "math domain error"
             )
         }
     }
@@ -356,12 +322,10 @@ pub extern "C" fn rt_math_log2(x: f64) -> f64 {
 #[no_mangle]
 pub extern "C" fn rt_math_log10(x: f64) -> f64 {
     if x <= 0.0 {
-        let msg = b"ValueError: math domain error";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ValueError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "math domain error"
             )
         }
     }
@@ -378,12 +342,10 @@ pub extern "C" fn rt_math_exp(x: f64) -> f64 {
 #[no_mangle]
 pub extern "C" fn rt_math_asin(x: f64) -> f64 {
     if !(-1.0..=1.0).contains(&x) {
-        let msg = b"ValueError: math domain error";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ValueError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "math domain error"
             )
         }
     }
@@ -394,12 +356,10 @@ pub extern "C" fn rt_math_asin(x: f64) -> f64 {
 #[no_mangle]
 pub extern "C" fn rt_math_acos(x: f64) -> f64 {
     if !(-1.0..=1.0).contains(&x) {
-        let msg = b"ValueError: math domain error";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ValueError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "math domain error"
             )
         }
     }
@@ -453,22 +413,18 @@ pub extern "C" fn rt_math_radians(x: f64) -> f64 {
 pub extern "C" fn rt_math_trunc(x: f64) -> i64 {
     let v = x.trunc();
     if v.is_nan() {
-        let msg = b"ValueError: cannot convert float NaN to integer";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::ValueError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "cannot convert float NaN to integer"
             )
         }
     }
     if v.is_infinite() || v > i64::MAX as f64 || v < i64::MIN as f64 {
-        let msg = b"OverflowError: cannot convert float infinity to integer";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::OverflowError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::OverflowError,
+                "cannot convert float infinity to integer"
             )
         }
     }
@@ -536,12 +492,10 @@ pub extern "C" fn rt_math_gcd(a: i64, b: i64) -> i64 {
     }
     // gcd(i64::MIN, 0) == 2^63 which exceeds i64::MAX
     if a > i64::MAX as u64 {
-        let msg = b"OverflowError: math.gcd result too large to convert to int";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::OverflowError as u8,
-                msg.as_ptr(),
-                msg.len(),
+            raise_exc!(
+                crate::exceptions::ExceptionType::OverflowError,
+                "math.gcd result too large to convert to int"
             )
         }
     }
@@ -559,13 +513,11 @@ pub extern "C" fn rt_math_lcm(a: i64, b: i64) -> i64 {
     let bb = (b as i128).abs();
     let result = (aa / g as i128) * bb;
     if result > i64::MAX as i128 {
-        let msg = b"OverflowError: int too large to convert to C long";
         unsafe {
-            crate::exceptions::rt_exc_raise(
-                crate::exceptions::ExceptionType::OverflowError as u8,
-                msg.as_ptr(),
-                msg.len(),
-            );
+            raise_exc!(
+                crate::exceptions::ExceptionType::OverflowError,
+                "int too large to convert to C long"
+            )
         }
     }
     result as i64
@@ -576,9 +528,11 @@ pub extern "C" fn rt_math_lcm(a: i64, b: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn rt_math_comb(n: i64, k: i64) -> i64 {
     if k < 0 || n < 0 {
-        let msg = "comb() requires non-negative arguments";
         unsafe {
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "comb() requires non-negative arguments"
+            );
         }
     }
 
@@ -597,12 +551,10 @@ pub extern "C" fn rt_math_comb(n: i64, k: i64) -> i64 {
     for i in 0..k {
         result = result * (n - i) as i128 / (i + 1) as i128;
         if result > i64::MAX as i128 {
-            let msg = b"OverflowError: int too large to convert to C long";
             unsafe {
-                crate::exceptions::rt_exc_raise(
-                    crate::exceptions::ExceptionType::OverflowError as u8,
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    crate::exceptions::ExceptionType::OverflowError,
+                    "int too large to convert to C long"
                 );
             }
         }
@@ -615,9 +567,11 @@ pub extern "C" fn rt_math_comb(n: i64, k: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn rt_math_perm(n: i64, k: i64) -> i64 {
     if k < 0 || n < 0 {
-        let msg = "perm() requires non-negative arguments";
         unsafe {
-            crate::exceptions::rt_exc_raise_value_error(msg.as_ptr(), msg.len());
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "perm() requires non-negative arguments"
+            );
         }
     }
 
@@ -629,12 +583,10 @@ pub extern "C" fn rt_math_perm(n: i64, k: i64) -> i64 {
     for i in 0..k {
         result *= (n - i) as i128;
         if result > i64::MAX as i128 {
-            let msg = b"OverflowError: int too large to convert to C long";
             unsafe {
-                crate::exceptions::rt_exc_raise(
-                    crate::exceptions::ExceptionType::OverflowError as u8,
-                    msg.as_ptr(),
-                    msg.len(),
+                raise_exc!(
+                    crate::exceptions::ExceptionType::OverflowError,
+                    "int too large to convert to C long"
                 );
             }
         }
