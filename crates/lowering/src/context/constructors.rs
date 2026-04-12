@@ -51,6 +51,7 @@ impl<'a> Lowering<'a> {
             modules: ModuleState {
                 module_var_exports: HashMap::with_capacity(16),
                 module_func_exports: HashMap::with_capacity(16),
+                module_func_params: HashMap::with_capacity(16),
                 module_class_exports: HashMap::with_capacity(8),
                 cross_module_class_info: HashMap::with_capacity(class_count),
                 var_id_offset: 0,
@@ -113,6 +114,15 @@ impl<'a> Lowering<'a> {
     /// Set the module function exports for cross-module function calls
     pub fn set_module_func_exports(&mut self, exports: HashMap<(String, String), Type>) {
         self.modules.module_func_exports = exports;
+    }
+
+    /// Set the module function parameter info for cross-module keyword
+    /// arguments and default-value fill-in.
+    pub fn set_module_func_params(
+        &mut self,
+        params: HashMap<(String, String), Vec<super::ExportedParam>>,
+    ) {
+        self.modules.module_func_params = params;
     }
 
     /// Set the module class exports for cross-module class instantiation

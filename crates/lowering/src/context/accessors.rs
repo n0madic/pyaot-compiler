@@ -403,6 +403,14 @@ impl<'a> Lowering<'a> {
         self.modules.module_func_exports.get(key)
     }
 
+    /// Get a module function's parameter list (cross-module kwargs / defaults).
+    pub(crate) fn get_module_func_params(
+        &self,
+        key: &(String, String),
+    ) -> Option<&Vec<super::ExportedParam>> {
+        self.modules.module_func_params.get(key)
+    }
+
     /// Get a module class export (ClassId, class_name).
     pub(crate) fn get_module_class_export(
         &self,

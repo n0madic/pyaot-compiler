@@ -15,7 +15,9 @@ mod type_dispatch;
 mod type_planning;
 mod utils;
 
-pub use context::{CrossModuleClassInfo, FuncOrBuiltin, LoweredClassInfo, Lowering};
+pub use context::{
+    CrossModuleClassInfo, ExportedParam, FuncOrBuiltin, LoweredClassInfo, Lowering, SimpleDefault,
+};
 
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;

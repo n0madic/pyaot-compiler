@@ -47,6 +47,10 @@ impl MirMerger {
         let mut module_var_exports: HashMap<(String, String), (VarId, Type)> = HashMap::new();
         // Module function exports: (module_name, func_name) -> return Type
         let mut module_func_exports: HashMap<(String, String), Type> = HashMap::new();
+        // Module function parameters: ordered param list (names + simple
+        // defaults) for cross-module kwargs + default-arg filling.
+        let mut module_func_params: HashMap<(String, String), Vec<pyaot_lowering::ExportedParam>> =
+            HashMap::new();
         // Module class exports: (module_name, class_name) -> (remapped ClassId, class_name as String)
         let mut module_class_exports: HashMap<(String, String), (ClassId, String)> = HashMap::new();
         // Cross-module class field/method info (string-keyed intermediate)
@@ -107,7 +111,25 @@ impl MirMerger {
                 }
                 // Get return type, defaulting to None
                 let return_type = func_def.return_type.clone().unwrap_or(Type::None);
-                module_func_exports.insert((module_name.clone(), func_name), return_type);
+                module_func_exports.insert((module_name.clone(), func_name.clone()), return_type);
+
+                // Extract parameter names + simple-constant defaults so a
+                // cross-module caller can map keyword arguments to slots
+                // and omit args with defaults.
+                let params = func_def
+                    .params
+                    .iter()
+                    .map(|p| pyaot_lowering::ExportedParam {
+                        name: parsed.interner.resolve(p.name).to_string(),
+                        default: p.default.and_then(|eid| {
+                            Self::simple_default_from_expr(
+                                &parsed.hir.exprs[eid].kind,
+                                &parsed.interner,
+                            )
+                        }),
+                    })
+                    .collect::<Vec<_>>();
+                module_func_params.insert((module_name.clone(), func_name), params);
             }
 
             // Build class exports for this module
@@ -237,6 +259,7 @@ impl MirMerger {
             );
             lowering.set_module_var_exports(module_var_exports.clone());
             lowering.set_module_func_exports(module_func_exports.clone());
+            lowering.set_module_func_params(module_func_params.clone());
             lowering.set_module_class_exports(module_class_exports.clone());
             lowering.set_cross_module_class_info(interned_class_info);
             lowering.set_var_id_offset(this_var_offset);
@@ -315,6 +338,27 @@ impl MirMerger {
         }
 
         Ok((merged_mir, merged_interner))
+    }
+
+    /// Materialise a simple-constant default argument expression into a
+    /// cross-module-safe `SimpleDefault`. Returns `None` for anything that
+    /// can't be encoded as one of the four primitive constants or `None`.
+    /// Callers treat `None` here as "no default" — callers of the exported
+    /// function must then provide the arg explicitly.
+    fn simple_default_from_expr(
+        kind: &hir::ExprKind,
+        interner: &pyaot_utils::StringInterner,
+    ) -> Option<pyaot_lowering::SimpleDefault> {
+        match kind {
+            hir::ExprKind::None => Some(pyaot_lowering::SimpleDefault::None),
+            hir::ExprKind::Int(v) => Some(pyaot_lowering::SimpleDefault::Int(*v)),
+            hir::ExprKind::Float(v) => Some(pyaot_lowering::SimpleDefault::Float(*v)),
+            hir::ExprKind::Bool(v) => Some(pyaot_lowering::SimpleDefault::Bool(*v)),
+            hir::ExprKind::Str(s) => Some(pyaot_lowering::SimpleDefault::Str(
+                interner.resolve(*s).to_string(),
+            )),
+            _ => None,
+        }
     }
 
     /// Find the type of a variable from its assignment in module_init_stmts

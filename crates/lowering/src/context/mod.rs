@@ -224,12 +224,41 @@ pub struct ClosureState {
     pub wrapper_func_param_name: IndexMap<FuncId, InternedString>,
 }
 
+/// A simple-constant default value for a user-function parameter that can be
+/// materialised across module boundaries. Complex defaults (expressions,
+/// collections, references) are represented as `None` — callers must pass
+/// those args explicitly.
+#[derive(Debug, Clone)]
+pub enum SimpleDefault {
+    None,
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+}
+
+/// Cross-module-visible parameter info for a user-defined function.
+#[derive(Debug, Clone)]
+pub struct ExportedParam {
+    pub name: String,
+    /// Materialised default, if the parameter has one we can encode as a
+    /// simple constant. Parameters without a default (or with a complex
+    /// default expression) have `None` — callers must supply the arg
+    /// explicitly and will get a `None` fill otherwise.
+    pub default: Option<SimpleDefault>,
+}
+
 /// Cross-module imports, exports, and offsets
 pub struct ModuleState {
     /// (module_name, var_name) → (VarId, Type) for cross-module variable access
     pub module_var_exports: HashMap<(String, String), (VarId, Type)>,
     /// (module_name, func_name) → return Type for cross-module function calls
     pub module_func_exports: HashMap<(String, String), Type>,
+    /// (module_name, func_name) → ordered parameter list for cross-module
+    /// user-function calls. Used by `lower_imported_call` to map keyword
+    /// arguments to positional slots and fill unset slots with simple
+    /// defaults. Absent entries fall back to pass-through positional calls.
+    pub module_func_params: HashMap<(String, String), Vec<ExportedParam>>,
     /// (module_name, class_name) → (ClassId, class_name_string) for cross-module class instantiation
     pub module_class_exports: HashMap<(String, String), (ClassId, String)>,
     /// Cross-module class information for field/method access

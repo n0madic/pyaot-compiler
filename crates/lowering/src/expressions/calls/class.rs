@@ -224,15 +224,77 @@ impl<'a> Lowering<'a> {
         let safe_module = module.replace('.', "_");
         let mangled_name = format!("__module_{}_{}", safe_module, name);
 
-        // Lower arguments with runtime unpacking support (ignore kwargs for imported functions for now)
-        let _ = kwargs;
-        let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
+        let key = (module.to_string(), name.to_string());
+
+        // If we have signature metadata for this imported function, map
+        // keyword arguments to positional slots and fill unset slots with
+        // simple defaults. Without signature metadata (legacy callers),
+        // fall back to the old pass-through positional path.
+        let arg_operands = match self.get_module_func_params(&key).cloned() {
+            Some(params) if !params.is_empty() => {
+                // Seed the slot array with positional operands.
+                let positional = self.lower_expanded_args(args, hir_module, mir_func)?;
+                let mut slots: Vec<Option<mir::Operand>> =
+                    (0..params.len()).map(|_| None).collect();
+                for (i, op) in positional.into_iter().enumerate() {
+                    if i < slots.len() {
+                        slots[i] = Some(op);
+                    }
+                }
+                // Keyword arguments by name.
+                for kw in kwargs {
+                    let kw_name = self.resolve(kw.name).to_string();
+                    if let Some(pos) = params.iter().position(|p| p.name == kw_name) {
+                        let v =
+                            self.lower_expr(&hir_module.exprs[kw.value], hir_module, mir_func)?;
+                        slots[pos] = Some(v);
+                    }
+                }
+                // Fill any unset slots with the materialised default (or a
+                // `None` constant if the parameter has no default).
+                let mut out = Vec::with_capacity(slots.len());
+                for (i, slot) in slots.into_iter().enumerate() {
+                    out.push(slot.unwrap_or_else(|| match &params[i].default {
+                        Some(crate::SimpleDefault::None) | None => {
+                            mir::Operand::Constant(mir::Constant::None)
+                        }
+                        Some(crate::SimpleDefault::Int(v)) => {
+                            mir::Operand::Constant(mir::Constant::Int(*v))
+                        }
+                        Some(crate::SimpleDefault::Float(v)) => {
+                            mir::Operand::Constant(mir::Constant::Float(*v))
+                        }
+                        Some(crate::SimpleDefault::Bool(v)) => {
+                            mir::Operand::Constant(mir::Constant::Bool(*v))
+                        }
+                        Some(crate::SimpleDefault::Str(s)) => {
+                            // String defaults must round-trip through
+                            // `rt_make_str` — otherwise the raw interned
+                            // id leaks into a parameter that expects a
+                            // heap StrObj pointer.
+                            let interned = self.intern(s);
+                            let local = self.emit_runtime_call(
+                                mir::RuntimeFunc::MakeStr,
+                                vec![mir::Operand::Constant(mir::Constant::Str(interned))],
+                                Type::Str,
+                                mir_func,
+                            );
+                            mir::Operand::Local(local)
+                        }
+                    }));
+                }
+                out
+            }
+            _ => {
+                let _ = kwargs;
+                self.lower_expanded_args(args, hir_module, mir_func)?
+            }
+        };
 
         // Determine result type:
         // 1. Check module_func_exports for cross-module function return types
         // 2. Fall back to expression type hint
         // 3. Default to Any
-        let key = (module.to_string(), name.to_string());
         let result_ty = self
             .get_module_func_export(&key)
             .cloned()
