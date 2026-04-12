@@ -6,6 +6,7 @@
 use super::AstToHir;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::*;
+use pyaot_pkg_defs as pkgs;
 use pyaot_stdlib_defs::{self as stdlib, StdlibItem as RegistryItem};
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;
@@ -29,10 +30,21 @@ impl AstToHir {
             }));
         }
 
-        // Check if this is a stdlib module
+        // Check if this is a stdlib or a registered third-party package.
+        // Both registries expose the same `StdlibModuleDef` shape (via type
+        // alias in `pyaot_pkg_defs`), so the handling below is identical —
+        // we only need to additionally record the package name so the CLI
+        // can link its `.a` archive selectively.
         let module_name = import_from.module.as_deref().unwrap_or("");
-        if let Some(module_def) = stdlib::get_module(module_name) {
-            // Handle stdlib import
+        let module_def = stdlib::get_module(module_name).or_else(|| {
+            pkgs::get_package(module_name).inspect(|_| {
+                self.module
+                    .used_packages
+                    .insert(pkgs::get_root_package(module_name).to_string());
+            })
+        });
+        if let Some(module_def) = module_def {
+            // Handle stdlib / package import
             for alias in &import_from.names {
                 let local_name = if let Some(ref asname) = alias.asname {
                     self.interner.intern(asname.as_str())
@@ -40,8 +52,21 @@ impl AstToHir {
                     self.interner.intern(&alias.name)
                 };
 
-                // Look up the name in the module definition
-                if let Some(item) = stdlib::get_item(module_def.name, &alias.name) {
+                // Look up the name in the module definition. We use the
+                // `get_*` methods on the module struct directly so the
+                // lookup works uniformly for stdlib and package modules
+                // without depending on the stdlib `ALL_MODULES` registry.
+                let item = if let Some(f) = module_def.get_function(&alias.name) {
+                    Some(RegistryItem::Function(f))
+                } else if let Some(a) = module_def.get_attr(&alias.name) {
+                    Some(RegistryItem::Attr(a))
+                } else if let Some(c) = module_def.get_constant(&alias.name) {
+                    Some(RegistryItem::Constant(c))
+                } else {
+                    module_def.get_class(&alias.name).map(RegistryItem::Class)
+                };
+
+                if let Some(item) = item {
                     match item {
                         RegistryItem::Function(func_def) => {
                             // Store reference to definition (Single Source of Truth)
@@ -75,7 +100,11 @@ impl AstToHir {
                     }
                 } else {
                     // Name not found in module definition
-                    let available = stdlib::list_all_names(module_name);
+                    let mut available: Vec<&str> = Vec::new();
+                    available.extend(module_def.functions.iter().map(|f| f.name));
+                    available.extend(module_def.attrs.iter().map(|a| a.name));
+                    available.extend(module_def.constants.iter().map(|c| c.name));
+                    available.extend(module_def.classes.iter().map(|c| c.name));
                     return Err(CompilerError::parse_error(
                         format!(
                             "Unknown attribute '{}' in module '{}'. Available: {}",
@@ -163,10 +192,19 @@ impl AstToHir {
                 self.interner.intern(&alias.name)
             };
 
-            // Check if this is a stdlib module using the registry
+            // Check if this is a stdlib module or a registered third-party
+            // package. Packages reuse the stdlib lowering path (attribute
+            // access resolves through `StdlibModuleDef` either way), so we
+            // fold them into `stdlib_imports` and additionally record the
+            // root name for selective linking.
             let root_module = stdlib::get_root_module(&module_name);
-            if stdlib::is_stdlib_module(root_module) {
-                // Record as stdlib import for expression handling
+            let is_stdlib = stdlib::is_stdlib_module(root_module);
+            let is_pkg = !is_stdlib && pkgs::is_package(root_module);
+            if is_stdlib || is_pkg {
+                if is_pkg {
+                    self.module.used_packages.insert(root_module.to_string());
+                }
+                // Record as stdlib-style import for expression handling
                 self.imports.stdlib_imports.insert(local_name);
             } else {
                 // Record the imported module for attribute access

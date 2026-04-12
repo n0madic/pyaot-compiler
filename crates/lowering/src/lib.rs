@@ -438,7 +438,9 @@ impl<'a> Lowering<'a> {
         let prefix_tuple = self.create_tuple_from_operands(extra_positional, elem_type, mir_func);
 
         // Then, concatenate prefix_tuple + list_tail_tuple
-        let result_local = self.emit_runtime_call_gc(
+        
+
+        self.emit_runtime_call_gc(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_CONCAT),
             vec![
                 mir::Operand::Local(prefix_tuple),
@@ -446,9 +448,7 @@ impl<'a> Lowering<'a> {
             ],
             Type::Tuple(vec![Type::Any]),
             mir_func,
-        );
-
-        result_local
+        )
     }
 
     /// Create a dict from keyword arguments

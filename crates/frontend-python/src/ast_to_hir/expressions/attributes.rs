@@ -46,8 +46,13 @@ impl AstToHir {
                     ));
                 }
 
-                // Use registry to determine what kind of item this is
-                match stdlib::get_item(module_name, attr_name) {
+                // Use the stdlib registry to determine what kind of item
+                // this is, falling back to the package registry so that
+                // third-party packages reuse the same attribute/constant
+                // handling.
+                let item = stdlib::get_item(module_name, attr_name)
+                    .or_else(|| pyaot_pkg_defs::get_item(module_name, attr_name));
+                match item {
                     Some(RegistryItem::Attr(attr_def)) => {
                         return Ok(self.module.exprs.alloc(Expr {
                             kind: ExprKind::StdlibAttr(attr_def),
@@ -81,7 +86,10 @@ impl AstToHir {
                         ));
                     }
                     None => {
-                        let available = stdlib::list_all_names(module_name);
+                        let mut available = stdlib::list_all_names(module_name);
+                        if available.is_empty() {
+                            available = pyaot_pkg_defs::list_all_names(module_name);
+                        }
                         return Err(CompilerError::parse_error(
                             format!(
                                 "Unknown attribute '{}.{}'. Available: {}",

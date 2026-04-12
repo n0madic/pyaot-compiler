@@ -28,8 +28,18 @@ impl Linker {
         }
     }
 
-    /// Link object file with runtime to create executable
-    pub fn link(&self, object_file: &Path, output: &Path) -> Result<()> {
+    /// Link object file with runtime to create executable.
+    ///
+    /// `extra_archives` are additional `.a` files (typically per-package
+    /// static libraries like `libpyaot_pkg_requests.a`) that will be passed
+    /// to the linker after the runtime archive. They are included only when
+    /// the compiled source references the corresponding package.
+    pub fn link(
+        &self,
+        object_file: &Path,
+        output: &Path,
+        extra_archives: &[PathBuf],
+    ) -> Result<()> {
         // Determine linker command
         #[cfg(target_os = "linux")]
         let linker = "gcc";
@@ -44,6 +54,21 @@ impl Linker {
         // Add runtime library if it exists
         if self.runtime_lib.exists() {
             cmd.arg(&self.runtime_lib);
+        }
+
+        // Add per-package static archives. Order matters on Linux (symbols
+        // in pkg archives may reference the runtime), but the linker resolves
+        // archive members lazily and the runtime is re-read on demand.
+        for archive in extra_archives {
+            if archive.exists() {
+                cmd.arg(archive);
+            } else {
+                return Err(CompilerError::link_error(format!(
+                    "Package archive not found: {}. Build the package with \
+                     `cargo build --release` or check the runtime-lib directory.",
+                    archive.display()
+                )));
+            }
         }
 
         cmd.arg("-o").arg(output);

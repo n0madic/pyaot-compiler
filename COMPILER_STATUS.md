@@ -248,6 +248,14 @@ Native Executable
 
 Stdlib function calls support **keyword arguments** mapped to parameter positions (e.g., `random.choices([1,2,3], weights=[...], k=5)`).
 
+### Third-Party Packages (experimental)
+
+| Package | Functions | Notes |
+|---------|-----------|-------|
+| requests | get(url, timeout=5.0) | Returns `HTTPResponse` (same type as `urllib.request.urlopen`). Archive linked selectively via `crates/pkg/requests/`. |
+
+Packages live in separate workspace crates (`crates/pkg/<name>/`) and are linked into the compiled binary only when the source imports them. See `.claude/rules/pkg-dev.md` for authoring details.
+
 #### Stdlib Architecture
 
 The stdlib uses a **Single Source of Truth** pattern with declarative definitions:

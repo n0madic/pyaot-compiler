@@ -50,6 +50,10 @@ Python → AST → HIR → [generator desugaring] → MIR → Cranelift → Obje
 
 Generator functions are desugared at HIR level (before lowering) into regular functions using `GeneratorIntrinsic` expressions. Detailed structure in `.claude/rules/architecture.md`. Key APIs in `.claude/rules/api-reference.md`.
 
+## Third-Party Packages
+
+Optional packages live under `crates/pkg/<name>/` as standalone `staticlib+rlib` crates with their own dependencies. `pyaot-pkg-defs` registers them declaratively (feature-gated). The frontend records each `import <pkg>` into `hir::Module::used_packages`; the CLI resolves the set into `libpyaot_pkg_<name>.a` archives next to the runtime lib and passes them to the linker only when the source actually imports the package. See `.claude/rules/pkg-dev.md` for the authoring recipe.
+
 ## Error Handling Patterns
 
 ```rust

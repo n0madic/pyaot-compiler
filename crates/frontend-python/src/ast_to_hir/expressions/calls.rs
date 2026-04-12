@@ -394,9 +394,12 @@ impl AstToHir {
                     }
                 }
 
-                // Use registry to check if this is a valid stdlib function
-                if let Some(RegistryItem::Function(func_def)) = stdlib::get_item(module, func_name)
-                {
+                // Use registry to check if this is a valid stdlib function,
+                // falling back to the package registry so registered
+                // third-party packages reuse the same call lowering.
+                let item = stdlib::get_item(module, func_name)
+                    .or_else(|| pyaot_pkg_defs::get_item(module, func_name));
+                if let Some(RegistryItem::Function(func_def)) = item {
                     // Map positional and keyword args to parameter slots
                     let mut arg_slots: Vec<Option<ExprId>> = vec![None; func_def.params.len()];
 

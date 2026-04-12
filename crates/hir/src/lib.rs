@@ -109,6 +109,11 @@ pub struct Module {
     pub source_module_name: Option<String>,
     /// Map from module-level variable name to VarId (for cross-module access)
     pub module_var_map: IndexMap<InternedString, VarId>,
+    /// Names of third-party packages referenced by this module. Populated by
+    /// the frontend when an `import` references a package registered with
+    /// `pyaot_pkg_defs`; the CLI resolves each name to a `.a` archive and
+    /// passes it to the linker so unused packages aren't linked in.
+    pub used_packages: IndexSet<String>,
 }
 
 /// Class definition
@@ -781,6 +786,7 @@ impl Module {
             imported_symbols: IndexMap::new(),
             source_module_name: None,
             module_var_map: IndexMap::new(),
+            used_packages: IndexSet::new(),
         }
     }
 }

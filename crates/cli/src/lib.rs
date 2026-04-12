@@ -13,7 +13,7 @@ pub mod types;
 
 use miette::{IntoDiagnostic, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use target_lexicon::Triple;
 
 /// Options for compiling a Python file to a native executable.
@@ -128,6 +128,16 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
     // Get parsed modules
     let parsed_modules = discovery.take_modules();
 
+    // Collect package imports across every parsed module before the HIR is
+    // consumed by lowering. Each name maps onto a `libpyaot_pkg_<name>.a`
+    // archive that will be passed to the linker below.
+    let mut used_packages: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for module in parsed_modules.values() {
+        for pkg in &module.hir.used_packages {
+            used_packages.insert(pkg.clone());
+        }
+    }
+
     // Compile modules (single or multi)
     let (mut mir_module, mut interner) = if has_imports {
         if options.verbose {
@@ -224,7 +234,31 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
         println!("Linking...");
     }
     let linker = pyaot_linker::Linker::with_debug(&options.runtime_lib, options.debug);
-    linker.link(&obj_path, &options.output).into_diagnostic()?;
+
+    // Resolve used-package names onto `.a` archive paths that sit alongside
+    // the runtime library. This is the selective-linking step: a package's
+    // archive is only added to the linker command when the source actually
+    // imports it.
+    let pkg_archives: Vec<PathBuf> = if used_packages.is_empty() {
+        Vec::new()
+    } else {
+        let pkg_dir = options
+            .runtime_lib
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        used_packages
+            .iter()
+            .map(|name| pkg_dir.join(format!("libpyaot_pkg_{}.a", name)))
+            .collect()
+    };
+    if options.verbose && !pkg_archives.is_empty() {
+        println!("Package archives: {:?}", pkg_archives);
+    }
+
+    linker
+        .link(&obj_path, &options.output, &pkg_archives)
+        .into_diagnostic()?;
 
     if options.verbose {
         println!("Executable written to: {:?}", options.output);
