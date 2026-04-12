@@ -275,10 +275,40 @@ assert p.distance_squared() == 25
 def add(a: int, b: int) -> int:
     return a + b
 
+class Point:
+    x: int
+    y: int
+    def __init__(self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+    def sum(self) -> int:
+        return self.x + self.y
+
+def origin() -> Point:
+    return Point(0, 0)
+
 # main.py
-from utils import add
+from utils import add, Point, origin
+import utils
+
+# Plain function + function return type — both flow across module boundaries.
 result: int = add(2, 3)
 assert result == 5
+
+# Cross-module user classes in annotations (both `from-import` and
+# module-qualified forms), parameters, return types, field access, and
+# method calls all work.
+p: Point = Point(3, 4)
+q: utils.Point = origin()
+
+def sum_of(pt: Point) -> int:
+    return pt.sum()
+
+def shift(p: Point) -> utils.Point:
+    return Point(p.x + 1, p.y + 1)
+
+assert sum_of(p) == 7
+assert shift(q).x == 1
 ```
 
 Compile and run:

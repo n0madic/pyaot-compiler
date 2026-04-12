@@ -516,3 +516,36 @@ For defaultdict, the factory tag is packed into the **high byte (bits 56–63) o
 - `AnyGetItem` result in `indexing.rs` (runtime-dispatched subscript)
 - `List(Any)` and `Tuple([Any])` element access in `resolve_index_type` and subscript lowering
 - `ObjectMethodCall` returns with `TypeSpec::Any` in `stdlib.rs`
+
+## Cross-Module Types Must Round-Trip Through `RawType`
+
+Each module has its own `StringInterner` — `InternedString(7)` in module A and module B refer to different strings. A `Type::Class { class_id, name }` stored in module A carries A's local class id (e.g. 61) and A's interned name. Cloning that `Type` into module B's lowering context misroutes both: B's `cross_module_class_info` is keyed by B-side *remapped* class ids, and B's interner would resolve `InternedString(7)` to whatever happens to live at that slot.
+
+`mir_merger::type_to_raw` serializes Types into `RawType` (interner-free mirror with class ids already offset-adjusted via `class_id + class_id_offset`). `raw_to_type` reconstructs per caller, re-interning names through the caller's interner. This applies to:
+
+- `module_var_exports` values
+- `module_func_exports` return types
+- `cross_module_class_info` field types and method return types
+
+When storing method return types in `raw_cross_module_class_info`, HIR func_def names are mangled as `ClassName$method` — strip the prefix with `rsplit_once('$')` before inserting so callers can look up `info.method_return_types[method_name]` with a bare method name.
+
+## Cross-Module User-Class Annotations Use Placeholder Class Ids
+
+Annotations like `r: mymod.Response` are parsed BEFORE `mir_merger` runs, so the real remapped class id isn't known yet. The frontend (`AstToHir::alloc_external_class_ref`) hands out unique placeholder ids from `u32::MAX` downward and records `(module, class_name)` in `hir::Module.external_class_refs`. Placeholder ids can't collide with real user class ids because those grow upward from `FIRST_USER_CLASS_ID` (61).
+
+`mir_merger`'s second pass builds a `placeholder → (real_remapped_id, class_name)` map per module (via `module_class_exports` lookup), then `resolve_external_class_refs` walks the HIR and rewrites every `Type::Class` with a placeholder id. The walker covers:
+
+- `func_def.params[_].ty` and `func_def.return_type`
+- `class_def.fields[_].ty` and `class_def.class_attrs[_].ty`
+- `expr.ty` on every expression
+- `StmtKind::Assign { type_hint }`
+
+The rewrite descends into `Type::List`, `Dict`, `Tuple`, `Union`, `Function`, etc., so `list[mymod.Foo]` and `Optional[Foo]` also work.
+
+## `mir_merger` Must Remap `CallDirect` FuncIds
+
+When merging per-module MIR into one flat `HashMap<FuncId, Function>`, `mir_merger` assigns fresh `FuncId`s to avoid collisions — but instruction-embedded references are NOT in the main name-remap pass. For years this didn't matter because existing multi-module tests only used `CallNamed` (symbol-name-based, immune to id renumbering), never `CallDirect`.
+
+The moment a user defines their own function in `main.py` alongside any import — e.g. `def foo(x): ...` called directly as `foo(5)` — `mir_merger` must also walk every `CallDirect.func` and `VtableEntry.method_func_id` through the per-module `old → new FuncId` table. Without this, the local `CallDirect` dispatches to whichever function happens to land at that id in the source-module slice, typically producing `mismatched argument count` in the Cranelift verifier.
+
+See `mir_merger::remap_instruction_func_ids` — only `CallDirect` carries a raw `FuncId`; `CallNamed` routes by symbol, `Call` by operand, `CallVirtual{,Named}` by vtable slot. None of those need remapping.

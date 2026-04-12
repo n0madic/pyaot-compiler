@@ -220,6 +220,8 @@ Native Executable
 | Packages (__init__.py) | ✅ | Dotted imports supported |
 | Relative imports | ✅ | See supported patterns below |
 | import * | ❌ | Not planned |
+| Cross-module user class values | ✅ | Field access (`r.x`), method calls (`r.foo()`), function return types, kwargs + simple defaults on imported functions |
+| Cross-module user class annotations | ✅ | `r: Foo`, `r: mymod.Foo`, `def f(x: Foo) -> mymod.Foo`. Placeholders allocated at parse time, resolved in `mir_merger` before lowering |
 
 ### Standard Library
 
