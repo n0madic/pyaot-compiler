@@ -117,7 +117,25 @@ assert doubled_five == 10, "doubled_five should equal 10"
 print(doubled_five)
 
 # ============================================================
-# SECTION 6: Relative imports - "from . import VAR"
+# SECTION 6: Cross-module function returning a user class
+# The compiler propagates `Type::Class` through `module_func_exports`,
+# re-mapping class ids and re-interning class names per caller so that
+# field access and method calls resolve through `cross_module_class_info`.
+# ============================================================
+
+origin = math_utils.origin()
+assert origin.x == 0, "origin.x should equal 0"
+assert origin.y == 0, "origin.y should equal 0"
+assert origin.sum() == 0, "origin.sum() should equal 0"
+
+target = math_utils.point_at(3, 4)
+assert target.x == 3, "target.x should equal 3"
+assert target.y == 4, "target.y should equal 4"
+assert target.sum() == 7, "cross-module Point.sum() should equal 7"
+assert target.describe() == "Point(3,4)", "cross-module Point.describe() should match"
+
+# ============================================================
+# SECTION 7: Relative imports - "from . import VAR"
 # mypackage/math/ops.py uses: from . import PI
 # Tests importing a variable (not function) via relative import
 # ============================================================
