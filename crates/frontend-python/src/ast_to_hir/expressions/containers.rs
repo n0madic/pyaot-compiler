@@ -86,8 +86,8 @@ impl AstToHir {
             dict.keys.into_iter().zip(dict.values).collect();
         let mut start_idx = 0;
         for (key, value) in &items {
-            if key.is_some() {
-                let key_expr = self.convert_expr(key.clone().unwrap())?;
+            if let Some(key) = key {
+                let key_expr = self.convert_expr(key.clone())?;
                 let value_expr = self.convert_expr(value.clone())?;
                 init_pairs.push((key_expr, value_expr));
                 start_idx += 1;

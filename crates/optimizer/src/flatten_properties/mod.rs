@@ -94,7 +94,10 @@ pub fn flatten_property_getters(module: &mut Module) -> bool {
     let mut changed = false;
 
     for func_id in func_ids {
-        let func = module.functions.get_mut(&func_id).unwrap();
+        let func = module
+            .functions
+            .get_mut(&func_id)
+            .expect("internal error: func_id not found in module");
         for block in func.blocks.values_mut() {
             for inst in &mut block.instructions {
                 if let InstructionKind::CallDirect {

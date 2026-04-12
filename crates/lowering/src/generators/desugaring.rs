@@ -263,7 +263,11 @@ impl<'a> Lowering<'a> {
         m: &mut hir::Module,
         next_var_id: &mut u32,
     ) -> Result<()> {
-        let func = m.func_defs.get(&func_id).unwrap().clone();
+        let func = m
+            .func_defs
+            .get(&func_id)
+            .expect("internal error: generator func_id not found in HIR module")
+            .clone();
         let span = func.span;
 
         // 1. Collect persistent variables
@@ -338,7 +342,10 @@ impl<'a> Lowering<'a> {
             .get(&func_id)
             .cloned()
             .unwrap_or_else(|| Type::Iterator(Box::new(Type::Any)));
-        let original = m.func_defs.get_mut(&func_id).unwrap();
+        let original = m
+            .func_defs
+            .get_mut(&func_id)
+            .expect("internal error: generator func_id not found in HIR module");
         original.body = creator_body;
         original.is_generator = false;
         // Set return type so callers know this returns an iterator
@@ -1011,7 +1018,9 @@ fn build_for_loop_filtered(
     span: Span,
     stmts: &mut Vec<hir::StmtId>,
 ) {
-    let filter_cond_id = fg.filter_cond.unwrap();
+    let filter_cond_id = fg
+        .filter_cond
+        .expect("internal error: filter_cond is Some, guaranteed by caller's is_some() check");
     let true_expr = mk_expr(m, hir::ExprKind::Bool(true), Some(Type::Bool), span);
 
     let mut loop_body = Vec::new();

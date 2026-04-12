@@ -80,9 +80,15 @@ pub fn devirtualize(module: &mut Module) -> bool {
         changed = true;
 
         // Phase 2: apply replacements
-        let func = module.functions.get_mut(&func_id).unwrap();
+        let func = module
+            .functions
+            .get_mut(&func_id)
+            .expect("internal error: func_id not found in module");
         for (block_id, idx, method_func_id, obj_operand) in replacements {
-            let block = func.blocks.get_mut(&block_id).unwrap();
+            let block = func
+                .blocks
+                .get_mut(&block_id)
+                .expect("internal error: block_id not found in function");
             let inst = &mut block.instructions[idx];
 
             if let InstructionKind::CallVirtual { dest, args, .. } = &inst.kind {

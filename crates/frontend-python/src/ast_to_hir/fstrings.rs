@@ -374,7 +374,11 @@ impl AstToHir {
 
             if is_float_fmt {
                 let precision_expr = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::Int(spec.precision.unwrap() as i64),
+                    kind: ExprKind::Int(
+                        spec.precision
+                            .expect("internal error: precision is Some, guaranteed by is_float_fmt")
+                            as i64,
+                    ),
                     ty: Some(Type::Int),
                     span: fstring_span,
                 });
@@ -748,7 +752,11 @@ impl AstToHir {
 
             if is_float_fmt {
                 let precision_expr = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::Int(spec.precision.unwrap() as i64),
+                    kind: ExprKind::Int(
+                        spec.precision
+                            .expect("internal error: precision is Some, guaranteed by is_float_fmt")
+                            as i64,
+                    ),
                     ty: Some(Type::Int),
                     span,
                 });
