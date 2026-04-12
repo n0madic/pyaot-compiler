@@ -134,6 +134,35 @@ assert target.y == 4, "target.y should equal 4"
 assert target.sum() == 7, "cross-module Point.sum() should equal 7"
 assert target.describe() == "Point(3,4)", "cross-module Point.describe() should match"
 
+# Cross-module user-class type annotations — CPython-style paritet.
+# The frontend allocates a placeholder `ClassId` per imported user
+# class and stores `(module, name)` in `hir::Module.external_class_refs`;
+# `mir_merger` rewrites these to real remapped ids before lowering.
+from math_utils import Point
+
+anno_local: Point = math_utils.point_at(5, 6)
+assert anno_local.x == 5, "annotated local should retain cross-module fields"
+assert anno_local.y == 6, "annotated local should retain cross-module fields"
+assert anno_local.sum() == 11, "annotated local should resolve methods"
+
+anno_qualified: math_utils.Point = math_utils.point_at(7, 8)
+assert anno_qualified.x == 7, "qualified annotation should work"
+assert anno_qualified.sum() == 15, "qualified annotation should route methods"
+
+def cross_mod_param(p: Point) -> int:
+    return p.sum()
+
+def cross_mod_qualified_param(p: math_utils.Point) -> int:
+    return p.sum()
+
+def cross_mod_return(x: int, y: int) -> Point:
+    return math_utils.point_at(x, y)
+
+assert cross_mod_param(math_utils.point_at(10, 20)) == 30
+assert cross_mod_qualified_param(math_utils.point_at(11, 22)) == 33
+returned_pt: Point = cross_mod_return(4, 7)
+assert returned_pt.x == 4 and returned_pt.y == 7
+
 # ============================================================
 # SECTION 7: Relative imports - "from . import VAR"
 # mypackage/math/ops.py uses: from . import PI
