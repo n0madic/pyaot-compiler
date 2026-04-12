@@ -110,6 +110,15 @@ impl<'a> Lowering<'a> {
                         });
                     }
                 }
+                // Fall through to cross-module info (classes imported from
+                // another module — local `class_info` never had them).
+                if let Some(ret_ty) = self
+                    .get_cross_module_class_info(class_id)
+                    .and_then(|info| info.method_return_types.get(&method))
+                    .cloned()
+                {
+                    return Some(ret_ty);
+                }
                 None
             }
             Type::RuntimeObject(type_tag) => {
@@ -205,6 +214,12 @@ impl<'a> Lowering<'a> {
                     class_id: *class_id,
                     name: *attr,
                 });
+            }
+            // A `pkg.func()` call reaches here as a `ModuleAttr` func_expr,
+            // not as `ImportedRef` — propagate the function's return type
+            // the same way as the `ImportedRef` branch below.
+            if let Some(return_type) = self.get_module_func_export(&key) {
+                return Some(return_type.clone());
             }
         }
         if let hir::ExprKind::ImportedRef {
@@ -324,6 +339,13 @@ impl<'a> Lowering<'a> {
                 }
                 if let Some(attr_ty) = class_info.class_attr_types.get(&attr) {
                     return Some(attr_ty.clone());
+                }
+            }
+            // Fall through to cross-module class info (for classes imported
+            // from other modules — no local `class_info` entry exists).
+            if let Some(info) = self.get_cross_module_class_info(class_id) {
+                if let Some(field_ty) = info.field_types.get(&attr) {
+                    return Some(field_ty.clone());
                 }
             }
         }

@@ -4,17 +4,160 @@ use crate::types::ParsedModule;
 use miette::{NamedSource, Report, Result};
 use pyaot_hir as hir;
 use pyaot_lowering::CrossModuleClassInfo;
-use pyaot_types::Type;
+use pyaot_types::{BuiltinExceptionKind, Type, TypeTagKind};
 use pyaot_utils::{ClassId, FuncId, InternedString, StringInterner, VarId};
 use std::collections::HashMap;
+
+/// Interner-free mirror of `Type`.
+///
+/// The cross-module export pipeline resolves every `InternedString` through
+/// the owning module's interner (first pass), stores the result as a raw
+/// `String`, and re-interns through the caller's interner on demand (second
+/// pass). `Class` carries an already-offset class id so that callers can
+/// look it up directly in `cross_module_class_info`.
+#[derive(Debug, Clone)]
+enum RawType {
+    Int,
+    Float,
+    Bool,
+    Str,
+    Bytes,
+    None,
+    Any,
+    HeapAny,
+    File,
+    Never,
+    List(Box<RawType>),
+    Dict(Box<RawType>, Box<RawType>),
+    DefaultDict(Box<RawType>, Box<RawType>),
+    Set(Box<RawType>),
+    Tuple(Vec<RawType>),
+    Union(Vec<RawType>),
+    Function {
+        params: Vec<RawType>,
+        ret: Box<RawType>,
+    },
+    Var(String),
+    Class {
+        class_id: ClassId,
+        name: String,
+    },
+    Iterator(Box<RawType>),
+    BuiltinException(BuiltinExceptionKind),
+    RuntimeObject(TypeTagKind),
+}
+
+/// Serialize a `Type` from a source module's interner into an interner-free
+/// `RawType`. Applies the source module's class-id offset to `Type::Class`
+/// entries so the caller's `cross_module_class_info` lookup (which is keyed
+/// by remapped id) finds the right class info.
+fn type_to_raw(ty: &Type, source_interner: &StringInterner, class_id_offset: u32) -> RawType {
+    match ty {
+        Type::Int => RawType::Int,
+        Type::Float => RawType::Float,
+        Type::Bool => RawType::Bool,
+        Type::Str => RawType::Str,
+        Type::Bytes => RawType::Bytes,
+        Type::None => RawType::None,
+        Type::Any => RawType::Any,
+        Type::HeapAny => RawType::HeapAny,
+        Type::File => RawType::File,
+        Type::Never => RawType::Never,
+        Type::List(t) => RawType::List(Box::new(type_to_raw(t, source_interner, class_id_offset))),
+        Type::Dict(k, v) => RawType::Dict(
+            Box::new(type_to_raw(k, source_interner, class_id_offset)),
+            Box::new(type_to_raw(v, source_interner, class_id_offset)),
+        ),
+        Type::DefaultDict(k, v) => RawType::DefaultDict(
+            Box::new(type_to_raw(k, source_interner, class_id_offset)),
+            Box::new(type_to_raw(v, source_interner, class_id_offset)),
+        ),
+        Type::Set(t) => RawType::Set(Box::new(type_to_raw(t, source_interner, class_id_offset))),
+        Type::Tuple(ts) => RawType::Tuple(
+            ts.iter()
+                .map(|t| type_to_raw(t, source_interner, class_id_offset))
+                .collect(),
+        ),
+        Type::Union(ts) => RawType::Union(
+            ts.iter()
+                .map(|t| type_to_raw(t, source_interner, class_id_offset))
+                .collect(),
+        ),
+        Type::Function { params, ret } => RawType::Function {
+            params: params
+                .iter()
+                .map(|t| type_to_raw(t, source_interner, class_id_offset))
+                .collect(),
+            ret: Box::new(type_to_raw(ret, source_interner, class_id_offset)),
+        },
+        Type::Var(name) => RawType::Var(source_interner.resolve(*name).to_string()),
+        Type::Class { class_id, name } => RawType::Class {
+            class_id: ClassId(class_id.0 + class_id_offset),
+            name: source_interner.resolve(*name).to_string(),
+        },
+        Type::Iterator(t) => {
+            RawType::Iterator(Box::new(type_to_raw(t, source_interner, class_id_offset)))
+        }
+        Type::BuiltinException(k) => RawType::BuiltinException(*k),
+        Type::RuntimeObject(k) => RawType::RuntimeObject(*k),
+    }
+}
+
+/// Reconstruct a `Type` for a caller by re-interning class names through the
+/// caller's interner. Class ids are already remapped (see `type_to_raw`).
+fn raw_to_type(raw: &RawType, caller_interner: &mut StringInterner) -> Type {
+    match raw {
+        RawType::Int => Type::Int,
+        RawType::Float => Type::Float,
+        RawType::Bool => Type::Bool,
+        RawType::Str => Type::Str,
+        RawType::Bytes => Type::Bytes,
+        RawType::None => Type::None,
+        RawType::Any => Type::Any,
+        RawType::HeapAny => Type::HeapAny,
+        RawType::File => Type::File,
+        RawType::Never => Type::Never,
+        RawType::List(t) => Type::List(Box::new(raw_to_type(t, caller_interner))),
+        RawType::Dict(k, v) => Type::Dict(
+            Box::new(raw_to_type(k, caller_interner)),
+            Box::new(raw_to_type(v, caller_interner)),
+        ),
+        RawType::DefaultDict(k, v) => Type::DefaultDict(
+            Box::new(raw_to_type(k, caller_interner)),
+            Box::new(raw_to_type(v, caller_interner)),
+        ),
+        RawType::Set(t) => Type::Set(Box::new(raw_to_type(t, caller_interner))),
+        RawType::Tuple(ts) => {
+            Type::Tuple(ts.iter().map(|t| raw_to_type(t, caller_interner)).collect())
+        }
+        RawType::Union(ts) => {
+            Type::Union(ts.iter().map(|t| raw_to_type(t, caller_interner)).collect())
+        }
+        RawType::Function { params, ret } => Type::Function {
+            params: params
+                .iter()
+                .map(|t| raw_to_type(t, caller_interner))
+                .collect(),
+            ret: Box::new(raw_to_type(ret, caller_interner)),
+        },
+        RawType::Var(name) => Type::Var(caller_interner.intern(name)),
+        RawType::Class { class_id, name } => Type::Class {
+            class_id: *class_id,
+            name: caller_interner.intern(name),
+        },
+        RawType::Iterator(t) => Type::Iterator(Box::new(raw_to_type(t, caller_interner))),
+        RawType::BuiltinException(k) => Type::BuiltinException(*k),
+        RawType::RuntimeObject(k) => Type::RuntimeObject(*k),
+    }
+}
 
 /// String-based intermediate for cross-module class info.
 /// Built during the first pass (each module has its own interner),
 /// then converted to InternedString-based `CrossModuleClassInfo` per module.
 struct RawCrossModuleClassInfo {
     field_offsets: HashMap<String, usize>,
-    field_types: HashMap<String, Type>,
-    method_return_types: HashMap<String, Type>,
+    field_types: HashMap<String, RawType>,
+    method_return_types: HashMap<String, RawType>,
     total_field_count: usize,
 }
 
@@ -43,10 +186,13 @@ impl MirMerger {
         let mut module_var_offsets: HashMap<String, u32> = HashMap::new();
         let mut module_class_offsets: HashMap<String, u32> = HashMap::new();
 
-        // Module exports: (module_name, var_name) -> (remapped VarId, Type)
-        let mut module_var_exports: HashMap<(String, String), (VarId, Type)> = HashMap::new();
-        // Module function exports: (module_name, func_name) -> return Type
-        let mut module_func_exports: HashMap<(String, String), Type> = HashMap::new();
+        // Module exports: (module_name, var_name) -> (remapped VarId, RawType).
+        // `RawType` is interner-free — it is resolved into the caller's
+        // interner in the second pass. Storing raw lets cross-module class
+        // types round-trip across modules with remapped class ids.
+        let mut module_var_exports: HashMap<(String, String), (VarId, RawType)> = HashMap::new();
+        // Module function exports: (module_name, func_name) -> raw return type.
+        let mut module_func_exports: HashMap<(String, String), RawType> = HashMap::new();
         // Module function parameters: ordered param list (names + simple
         // defaults) for cross-module kwargs + default-arg filling.
         let mut module_func_params: HashMap<(String, String), Vec<pyaot_lowering::ExportedParam>> =
@@ -95,10 +241,11 @@ impl MirMerger {
                     &parsed.hir.module_init_stmts,
                     &parsed.hir,
                 );
+                let raw_var_type = type_to_raw(&var_type, &parsed.interner, class_id_offset);
 
                 module_var_exports.insert(
                     (module_name.clone(), var_name_str),
-                    (remapped_var_id, var_type),
+                    (remapped_var_id, raw_var_type),
                 );
             }
 
@@ -111,7 +258,9 @@ impl MirMerger {
                 }
                 // Get return type, defaulting to None
                 let return_type = func_def.return_type.clone().unwrap_or(Type::None);
-                module_func_exports.insert((module_name.clone(), func_name.clone()), return_type);
+                let raw_return_type = type_to_raw(&return_type, &parsed.interner, class_id_offset);
+                module_func_exports
+                    .insert((module_name.clone(), func_name.clone()), raw_return_type);
 
                 // Extract parameter names + simple-constant defaults so a
                 // cross-module caller can map keyword arguments to slots
@@ -145,19 +294,31 @@ impl MirMerger {
 
                 // Build field and method info for cross-module access
                 let mut field_offsets: HashMap<String, usize> = HashMap::new();
-                let mut field_types: HashMap<String, pyaot_types::Type> = HashMap::new();
-                let mut method_return_types: HashMap<String, pyaot_types::Type> = HashMap::new();
+                let mut field_types: HashMap<String, RawType> = HashMap::new();
+                let mut method_return_types: HashMap<String, RawType> = HashMap::new();
                 for (i, field) in class_def.fields.iter().enumerate() {
                     let field_name = parsed.interner.resolve(field.name).to_string();
                     field_offsets.insert(field_name.clone(), i);
-                    field_types.insert(field_name, field.ty.clone());
+                    field_types.insert(
+                        field_name,
+                        type_to_raw(&field.ty, &parsed.interner, class_id_offset),
+                    );
                 }
-                // Extract method return types
+                // Extract method return types. HIR stores method func names
+                // as `ClassName$method`; strip the prefix so lookups by bare
+                // method name (as produced by `r.ok()`-style callsites) hit.
                 for method_func_id in &class_def.methods {
                     if let Some(func_def) = parsed.hir.func_defs.get(method_func_id) {
-                        let method_name = parsed.interner.resolve(func_def.name).to_string();
+                        let raw_name = parsed.interner.resolve(func_def.name).to_string();
+                        let method_name = raw_name
+                            .rsplit_once('$')
+                            .map(|(_cls, m)| m.to_string())
+                            .unwrap_or(raw_name);
                         if let Some(ref ret_ty) = func_def.return_type {
-                            method_return_types.insert(method_name, ret_ty.clone());
+                            method_return_types.insert(
+                                method_name,
+                                type_to_raw(ret_ty, &parsed.interner, class_id_offset),
+                            );
                         }
                     }
                 }
@@ -230,12 +391,22 @@ impl MirMerger {
                         let field_types = raw
                             .field_types
                             .iter()
-                            .map(|(name, ty)| (parsed.interner.intern(name), ty.clone()))
+                            .map(|(name, raw_ty)| {
+                                (
+                                    parsed.interner.intern(name),
+                                    raw_to_type(raw_ty, &mut parsed.interner),
+                                )
+                            })
                             .collect();
                         let method_return_types = raw
                             .method_return_types
                             .iter()
-                            .map(|(name, ty)| (parsed.interner.intern(name), ty.clone()))
+                            .map(|(name, raw_ty)| {
+                                (
+                                    parsed.interner.intern(name),
+                                    raw_to_type(raw_ty, &mut parsed.interner),
+                                )
+                            })
                             .collect();
                         (
                             class_id,
@@ -249,6 +420,23 @@ impl MirMerger {
                     })
                     .collect();
 
+            // Re-intern module var/func exports into this module's interner
+            // so `Type::Class` references resolve to the caller's interner.
+            let var_exports_for_caller: HashMap<(String, String), (VarId, Type)> =
+                module_var_exports
+                    .iter()
+                    .map(|(key, (var_id, raw_ty))| {
+                        (
+                            key.clone(),
+                            (*var_id, raw_to_type(raw_ty, &mut parsed.interner)),
+                        )
+                    })
+                    .collect();
+            let func_exports_for_caller: HashMap<(String, String), Type> = module_func_exports
+                .iter()
+                .map(|(key, raw_ty)| (key.clone(), raw_to_type(raw_ty, &mut parsed.interner)))
+                .collect();
+
             // Lower to MIR with module exports (type inference runs inside lower_module)
             let func_count = parsed.hir.functions.len();
             let class_count = parsed.hir.class_defs.len();
@@ -257,8 +445,8 @@ impl MirMerger {
                 func_count,
                 class_count,
             );
-            lowering.set_module_var_exports(module_var_exports.clone());
-            lowering.set_module_func_exports(module_func_exports.clone());
+            lowering.set_module_var_exports(var_exports_for_caller);
+            lowering.set_module_func_exports(func_exports_for_caller);
             lowering.set_module_func_params(module_func_params.clone());
             lowering.set_module_class_exports(module_class_exports.clone());
             lowering.set_cross_module_class_info(interned_class_info);
