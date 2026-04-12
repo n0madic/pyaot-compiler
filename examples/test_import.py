@@ -163,6 +163,34 @@ assert cross_mod_qualified_param(math_utils.point_at(11, 22)) == 33
 returned_pt: Point = cross_mod_return(4, 7)
 assert returned_pt.x == 4 and returned_pt.y == 7
 
+# Direct constructor via `from-import`. `Point(...)` parses as a
+# `Call { func: ImportedRef { ... } }` and must route to
+# `lower_cross_module_class_instantiation`, not `lower_imported_call`
+# (which would emit a bogus `__module_math_utils_Point` symbol).
+direct_ctor: Point = Point(42, 58)
+assert direct_ctor.x == 42 and direct_ctor.y == 58
+assert direct_ctor.sum() == 100, "from-import constructor must produce a real instance"
+# Works without annotation too — confirms type inference picks up
+# `Type::Class` from `module_class_exports` via `ImportedRef`.
+direct_ctor_no_anno = Point(13, 7)
+assert direct_ctor_no_anno.describe() == "Point(13,7)"
+
+# FuncId-remap regression: defining ≥2 local functions in main while
+# importing another module used to confuse `CallDirect` targets
+# (mir_merger assigned fresh FuncIds without rewriting instruction
+# references, so `local_func(...)` dispatched to whichever function
+# landed at that id in the merged table — usually the wrong one).
+def _pair_sum(a: int, b: int) -> int:
+    return a + b
+
+def _pair_prod(a: int, b: int) -> int:
+    return a * b
+
+def _compose_with_point(p: Point) -> int:
+    return _pair_sum(p.x, p.y) + _pair_prod(p.x, p.y)
+
+assert _compose_with_point(Point(3, 4)) == (3 + 4) + (3 * 4)
+
 # ============================================================
 # SECTION 7: Relative imports - "from . import VAR"
 # mypackage/math/ops.py uses: from . import PI
