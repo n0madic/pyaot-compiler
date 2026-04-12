@@ -23,6 +23,8 @@ pyaot-mir = { path = "../mir" }
 pyaot-optimizer = { path = "../optimizer" }
 pyaot-codegen-cranelift = { path = "../codegen-cranelift" }
 pyaot-linker = { path = "../linker" }
+pyaot-stdlib-defs = { path = "../stdlib-defs" }
+pyaot-pkg-defs = { path = "../pkg/defs" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 miette = { workspace = true }

@@ -7,8 +7,20 @@ use crate::types::ExtractedImport;
 use miette::Result;
 use rustpython_parser as rpy;
 
-/// Standard library modules that should be skipped during import resolution.
-const STDLIB_MODULES: &[&str] = &["typing", "sys", "os", "re", "json"];
+/// Return true when `name` (or its dotted root) resolves to a module we know
+/// is provided by the compiler rather than by user-level `.py` files — either
+/// a stdlib module registered in `pyaot-stdlib-defs` or a third-party package
+/// registered in `pyaot-pkg-defs`. These must be skipped during module
+/// discovery so the graph builder doesn't try to locate them on disk and emit
+/// spurious "module not found" warnings.
+fn is_builtin_module(name: &str) -> bool {
+    let root = name.split('.').next().unwrap_or(name);
+    // `typing` is used only for annotations and is erased by the frontend; it
+    // isn't registered as a runtime stdlib module.
+    root == "typing"
+        || pyaot_stdlib_defs::is_stdlib_module(root)
+        || pyaot_pkg_defs::is_package(root)
+}
 
 /// Extract imports from a source file using AST parsing.
 /// Returns ExtractedImport structs with level and module path.
@@ -131,9 +143,9 @@ fn handle_import(import_stmt: &rpy::ast::StmtImport, imports: &mut Vec<Extracted
     for alias in &import_stmt.names {
         let module_name = alias.name.as_str();
 
-        // Skip stdlib modules
-        let base_module = module_name.split('.').next().unwrap_or(module_name);
-        if STDLIB_MODULES.contains(&base_module) {
+        // Skip stdlib modules and registered packages — they're provided by
+        // the compiler, not resolved from user `.py` files.
+        if is_builtin_module(module_name) {
             continue;
         }
 
@@ -159,12 +171,9 @@ fn handle_import_from(import_from: &rpy::ast::StmtImportFrom, imports: &mut Vec<
         .map(|id| id.as_str().to_string())
         .unwrap_or_default();
 
-    // For absolute imports (level 0), skip stdlib
-    if level == 0 {
-        let base_module = module_path.split('.').next().unwrap_or(&module_path);
-        if STDLIB_MODULES.contains(&base_module) {
-            return;
-        }
+    // For absolute imports (level 0), skip stdlib + registered packages.
+    if level == 0 && is_builtin_module(&module_path) {
+        return;
     }
 
     // Add the main module import
