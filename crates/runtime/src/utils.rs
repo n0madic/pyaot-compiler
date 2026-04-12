@@ -19,6 +19,21 @@ pub unsafe fn make_str_from_rust(s: &str) -> *mut Obj {
     crate::string::rt_make_str_impl(s.as_ptr(), s.len())
 }
 
+/// Return true when `obj` represents Python `None`: either a null pointer
+/// (runtime-internal "no value" sentinel / default-filled stdlib optional)
+/// or the canonical `NoneObj` singleton (how the compiler boxes a user-level
+/// `None` value when it flows through an `Optional[Heap]` slot).
+///
+/// Runtime functions that accept an `Optional[Heap]` parameter must treat
+/// both representations as "absent"; otherwise explicit `f(None)` calls from
+/// user code would raise spurious type errors.
+///
+/// # Safety
+/// `obj` must be either null or a valid heap object pointer.
+pub unsafe fn is_none_or_null(obj: *mut Obj) -> bool {
+    obj.is_null() || (*obj).header.type_tag == crate::object::TypeTagKind::None
+}
+
 /// Extract a Rust String from a StrObj
 ///
 /// This is a convenience wrapper for internal use.

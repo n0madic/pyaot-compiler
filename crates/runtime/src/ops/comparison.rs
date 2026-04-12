@@ -473,6 +473,28 @@ pub(super) unsafe fn rt_bytes_contains_value(bytes: *mut Obj, value: *mut Obj) -
     0
 }
 
+/// Check whether `obj` represents Python `None`.
+///
+/// Returns 1 if obj is a null pointer (runtime's unset / default-filled
+/// optional representation) OR a `NoneObj` singleton (what the compiler
+/// boxes a user-level `None` literal into when it crosses into an
+/// `Optional[Heap]` slot). Used by the `is None` / `is not None` lowering
+/// to sidestep the null-vs-NoneObj ABI asymmetry.
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_is_none(obj: *mut Obj) -> i8 {
+    if obj.is_null() {
+        return 1;
+    }
+    unsafe {
+        if (*obj).type_tag() == TypeTagKind::None {
+            1
+        } else {
+            0
+        }
+    }
+}
+
 /// Check truthiness of any value with runtime type dispatch
 /// Returns 1 if truthy, 0 if falsy
 /// Falsy values: None, False, 0, 0.0, empty str/list/tuple/dict/set/bytes

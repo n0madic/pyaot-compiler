@@ -250,6 +250,8 @@ pub static RT_FILE_NAME: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_file_nam
 
 /// rt_is_truthy(obj: *mut Obj) -> i8
 pub static RT_IS_TRUTHY: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_is_truthy");
+/// rt_is_none(obj: *mut Obj) -> i8
+pub static RT_IS_NONE: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_is_none");
 /// rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8
 pub static RT_OBJ_CONTAINS: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_obj_contains");
 /// rt_obj_to_str(obj: *mut Obj) -> *mut Obj

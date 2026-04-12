@@ -12,7 +12,9 @@ pub use arithmetic::{
     rt_sub_float, rt_sub_int, rt_true_div_int,
 };
 
-pub use comparison::{rt_any_getitem, rt_is_truthy, rt_obj_cmp, rt_obj_contains, rt_obj_eq};
+pub use comparison::{
+    rt_any_getitem, rt_is_none, rt_is_truthy, rt_obj_cmp, rt_obj_contains, rt_obj_eq,
+};
 
 pub use printing::{
     rt_flush_stdout, rt_print_bool_value, rt_print_float_value, rt_print_int_value,

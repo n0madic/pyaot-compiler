@@ -56,6 +56,40 @@ impl<'a> Lowering<'a> {
                     self.box_primitive_if_needed(right_op.clone(), &right_type, mir_func)
                 };
 
+                // When one side is a `None` literal we can't use a pointer
+                // equality test: the other operand may be a null pointer
+                // (default-filled optional) OR a NoneObj singleton (user-
+                // level `None` boxed across a module boundary). The runtime
+                // `rt_is_none` collapses both representations to true.
+                let is_left_none_literal = matches!(left_type, Type::None);
+                let is_right_none_literal = matches!(right_type, Type::None);
+                if is_left_none_literal ^ is_right_none_literal {
+                    let non_none = if is_left_none_literal {
+                        boxed_right
+                    } else {
+                        boxed_left
+                    };
+                    let is_none_local = self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_IS_NONE),
+                        vec![non_none],
+                        Type::Bool,
+                        mir_func,
+                    );
+                    if matches!(op, hir::CmpOp::IsNot) {
+                        self.emit_instruction(mir::InstructionKind::UnOp {
+                            dest: result_local,
+                            op: mir::UnOp::Not,
+                            operand: mir::Operand::Local(is_none_local),
+                        });
+                    } else {
+                        self.emit_instruction(mir::InstructionKind::Copy {
+                            dest: result_local,
+                            src: mir::Operand::Local(is_none_local),
+                        });
+                    }
+                    return Ok(mir::Operand::Local(result_local));
+                }
+
                 let mir_op = match op {
                     hir::CmpOp::Is => mir::BinOp::Eq,
                     hir::CmpOp::IsNot => mir::BinOp::NotEq,
