@@ -54,7 +54,8 @@ pub use registry::{
 
 pub use types::{
     ConstValue, LoweringHints, ParamDef, StdlibAttrDef, StdlibClassDef, StdlibConstDef,
-    StdlibFunctionDef, StdlibMethodDef, StdlibModuleDef, TypeSpec, TypeSpecRef,
+    StdlibExceptionClass, StdlibFunctionDef, StdlibMethodDef, StdlibModuleDef, TypeSpec,
+    TypeSpecRef,
 };
 
 pub use object_types::{

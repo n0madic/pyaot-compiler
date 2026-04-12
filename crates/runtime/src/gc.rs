@@ -782,6 +782,22 @@ fn mark_object(obj: *mut Obj) {
                     mark_object((*hr_obj).body);
                 }
             }
+            TypeTagKind::Request => {
+                // Request objects have url, data, headers, and method fields
+                let req_obj = obj as *mut crate::object::RequestObj;
+                if !(*req_obj).url.is_null() {
+                    mark_object((*req_obj).url);
+                }
+                if !(*req_obj).data.is_null() {
+                    mark_object((*req_obj).data);
+                }
+                if !(*req_obj).headers.is_null() {
+                    mark_object((*req_obj).headers);
+                }
+                if !(*req_obj).method.is_null() {
+                    mark_object((*req_obj).method);
+                }
+            }
             // DefaultDict and Counter use the same dict layout — mark entries
             TypeTagKind::DefaultDict | TypeTagKind::Counter => {
                 let dict = obj as *mut DictObj;

@@ -82,5 +82,6 @@ pub static HASHLIB_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[],
     classes: &[HASH_CLASS],
+    exceptions: &[],
     submodules: &[],
 };

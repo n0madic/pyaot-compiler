@@ -60,5 +60,6 @@ pub static STRING_MODULE: StdlibModuleDef = StdlibModuleDef {
         },
     ],
     classes: &[],
+    exceptions: &[],
     submodules: &[],
 };

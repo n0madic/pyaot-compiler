@@ -47,5 +47,6 @@ pub static ITERTOOLS_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[],
     classes: &[],
+    exceptions: &[],
     submodules: &[],
 };

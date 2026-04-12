@@ -132,6 +132,18 @@ macro_rules! define_exceptions {
     };
 }
 
+/// Number of contiguous class IDs reserved after `BUILTIN_EXCEPTION_COUNT`
+/// for stdlib-provided exception classes (e.g. `urllib.error.HTTPError`,
+/// `re.error`, `socket.error`). Each stdlib module declares a
+/// `StdlibExceptionClass` with a class_id in `BUILTIN_EXCEPTION_COUNT ..
+/// FIRST_USER_CLASS_ID`. User-defined classes start at FIRST_USER_CLASS_ID
+/// and never overlap stdlib or built-in tags.
+pub const RESERVED_STDLIB_EXCEPTION_SLOTS: u8 = 32;
+
+/// First `class_id` available for user-defined Python classes. Stdlib
+/// exception classes occupy `[BUILTIN_EXCEPTION_COUNT, FIRST_USER_CLASS_ID)`.
+pub const FIRST_USER_CLASS_ID: u8 = BUILTIN_EXCEPTION_COUNT + RESERVED_STDLIB_EXCEPTION_SLOTS;
+
 // =============================================================================
 // SINGLE SOURCE OF TRUTH FOR BUILT-IN EXCEPTIONS
 // =============================================================================

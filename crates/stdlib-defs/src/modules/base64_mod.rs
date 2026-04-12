@@ -67,5 +67,6 @@ pub static BASE64_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[],
     classes: &[],
+    exceptions: &[],
     submodules: &[],
 };

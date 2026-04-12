@@ -369,5 +369,6 @@ pub static COLLECTIONS_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[],
     classes: &[ORDERED_DICT_CLASS],
+    exceptions: &[],
     submodules: &[],
 };

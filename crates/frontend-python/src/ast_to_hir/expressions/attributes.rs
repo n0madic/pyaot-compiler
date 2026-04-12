@@ -85,6 +85,23 @@ impl AstToHir {
                             expr_span,
                         ));
                     }
+                    Some(RegistryItem::Exception(_)) => {
+                        // `urllib.error.HTTPError` used without import is a
+                        // value expression that refers to an exception class
+                        // — supporting it via module attribute access would
+                        // require synthesising a class reference here. For
+                        // now require the standard `from urllib.error import
+                        // HTTPError` form, which CPython strongly encourages
+                        // anyway.
+                        return Err(CompilerError::parse_error(
+                            format!(
+                                "Stdlib exception '{}.{}' must be imported before use: \
+                                 `from {} import {}`",
+                                module_name, attr_name, module_name, attr_name
+                            ),
+                            expr_span,
+                        ));
+                    }
                     None => {
                         let mut available = stdlib::list_all_names(module_name);
                         if available.is_empty() {

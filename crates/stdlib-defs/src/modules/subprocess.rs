@@ -120,5 +120,6 @@ pub static SUBPROCESS_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[],
     classes: &[COMPLETED_PROCESS_CLASS],
+    exceptions: &[],
     submodules: &[],
 };

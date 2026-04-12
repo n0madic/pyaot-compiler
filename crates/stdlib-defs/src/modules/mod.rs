@@ -8,6 +8,7 @@ pub mod collections;
 pub mod copy;
 pub mod functools;
 pub mod hashlib;
+pub mod http_client;
 pub mod io;
 pub mod itertools;
 pub mod json;
@@ -20,6 +21,7 @@ pub mod subprocess;
 pub mod sys;
 pub mod time;
 pub mod urllib;
+pub mod urllib_error;
 
 use crate::types::StdlibModuleDef;
 
@@ -46,6 +48,9 @@ pub static ALL_MODULES: &[&StdlibModuleDef] = &[
     &itertools::ITERTOOLS_MODULE,
     &io::IO_MODULE,
     &collections::COLLECTIONS_MODULE,
+    &http_client::HTTP_MODULE,
+    &http_client::HTTP_CLIENT_MODULE,
+    &urllib_error::URLLIB_ERROR_MODULE,
 ];
 
 /// Get a module definition by name (supports dotted names like "os.path")

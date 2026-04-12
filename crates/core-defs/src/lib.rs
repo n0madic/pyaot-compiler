@@ -26,7 +26,8 @@ pub mod type_tags;
 
 pub use exceptions::{
     exception_name_to_tag, exception_tag_to_name, is_builtin_exception_name, BuiltinException,
-    BuiltinExceptionKind, BUILTIN_EXCEPTIONS, BUILTIN_EXCEPTION_COUNT,
+    BuiltinExceptionKind, BUILTIN_EXCEPTIONS, BUILTIN_EXCEPTION_COUNT, FIRST_USER_CLASS_ID,
+    RESERVED_STDLIB_EXCEPTION_SLOTS,
 };
 
 pub use type_tags::{is_type_tag_name, type_tag_to_name, TypeTagKind, TYPE_TAG_COUNT};

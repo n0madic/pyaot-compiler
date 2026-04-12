@@ -186,5 +186,6 @@ pub static RANDOM_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[],
     classes: &[],
+    exceptions: &[],
     submodules: &[],
 };

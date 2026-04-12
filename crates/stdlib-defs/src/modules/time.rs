@@ -180,5 +180,6 @@ pub static TIME_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[],
     classes: &[STRUCT_TIME_CLASS],
+    exceptions: &[],
     submodules: &[],
 };

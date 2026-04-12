@@ -344,9 +344,26 @@ pub static PARSE_RESULT: ObjectTypeDef = ObjectTypeDef {
 // HttpResponse object (urllib.request module)
 // =============================================================================
 
+// Standard `http.client.HTTPResponse` fields (`.status`, `.url`, `.headers`)
+// plus pyaot-specific conveniences that mirror the pip `requests.Response`
+// surface (`.status_code`, `.ok`, `.content`, `.text`). The extensions make
+// pyaot's bundled `site-packages/requests` a drop-in for the real pip
+// `requests` library: user code writing `resp.status_code` / `resp.text` /
+// `resp.json()` works against either package without changes. On plain
+// CPython without pip-installed requests, `urlopen()` still returns a
+// standard HTTPResponse (no extension) — users should prefer `.status` /
+// `.read()` for CPython-urllib-only portability.
 static HTTP_RESPONSE_FIELDS: &[ObjectFieldDef] = &[
     ObjectFieldDef {
         name: "status",
+        runtime_getter: "rt_http_response_get_status",
+        field_type: TypeSpec::Int,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_http_response_get_status"),
+        field_index: None,
+    },
+    // `.status_code` — alias matching the pip `requests` library.
+    ObjectFieldDef {
+        name: "status_code",
         runtime_getter: "rt_http_response_get_status",
         field_type: TypeSpec::Int,
         codegen: RuntimeFuncDef::unary_to_i64("rt_http_response_get_status"),
@@ -366,13 +383,39 @@ static HTTP_RESPONSE_FIELDS: &[ObjectFieldDef] = &[
         codegen: RuntimeFuncDef::unary_to_i64("rt_http_response_get_headers"),
         field_index: None,
     },
+    // `.ok` — 200 <= status < 300 (requests-library convention).
+    ObjectFieldDef {
+        name: "ok",
+        runtime_getter: "rt_http_response_get_ok",
+        field_type: TypeSpec::Bool,
+        codegen: RuntimeFuncDef::unary_to_i8("rt_http_response_get_ok"),
+        field_index: None,
+    },
+    // `.content` — raw response body as bytes.
+    ObjectFieldDef {
+        name: "content",
+        runtime_getter: "rt_http_response_read",
+        field_type: TypeSpec::Bytes,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_http_response_read"),
+        field_index: None,
+    },
+    // `.text` — response body decoded as UTF-8 str.
+    ObjectFieldDef {
+        name: "text",
+        runtime_getter: "rt_http_response_get_text",
+        field_type: TypeSpec::Str,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_http_response_get_text"),
+        field_index: None,
+    },
 ];
 
-// HttpResponse object methods from urllib module
+// HttpResponse object methods — CPython-standard urllib methods plus the
+// requests-library-compatible `.json()` parser.
 static HTTP_RESPONSE_METHODS: &[&StdlibMethodDef] = &[
     &urllib::HTTP_RESPONSE_READ,
     &urllib::HTTP_RESPONSE_GETURL,
     &urllib::HTTP_RESPONSE_GETCODE,
+    &urllib::HTTP_RESPONSE_JSON,
 ];
 
 pub static HTTP_RESPONSE: ObjectTypeDef = ObjectTypeDef {
@@ -381,6 +424,53 @@ pub static HTTP_RESPONSE: ObjectTypeDef = ObjectTypeDef {
     fields: HTTP_RESPONSE_FIELDS,
     methods: HTTP_RESPONSE_METHODS,
     display_format: DisplayFormat::Custom("rt_http_response_repr"),
+};
+
+// =============================================================================
+// Request object (urllib.request module)
+// =============================================================================
+
+static REQUEST_FIELDS: &[ObjectFieldDef] = &[
+    // `full_url` — CPython-compatible alias for the URL.
+    ObjectFieldDef {
+        name: "full_url",
+        runtime_getter: "rt_request_get_url",
+        field_type: TypeSpec::Str,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_request_get_url"),
+        field_index: None,
+    },
+    // `data` — request body bytes (or None if unset).
+    ObjectFieldDef {
+        name: "data",
+        runtime_getter: "rt_request_get_data",
+        field_type: TypeSpec::Bytes,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_request_get_data"),
+        field_index: None,
+    },
+    ObjectFieldDef {
+        name: "headers",
+        runtime_getter: "rt_request_get_headers",
+        field_type: TYPE_DICT_STR_STR,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_request_get_headers"),
+        field_index: None,
+    },
+    ObjectFieldDef {
+        name: "method",
+        runtime_getter: "rt_request_get_method",
+        field_type: TypeSpec::Str,
+        codegen: RuntimeFuncDef::unary_to_i64("rt_request_get_method"),
+        field_index: None,
+    },
+];
+
+static REQUEST_METHODS: &[&StdlibMethodDef] = &[];
+
+pub static REQUEST: ObjectTypeDef = ObjectTypeDef {
+    type_tag: TypeTagKind::Request,
+    name: "Request",
+    fields: REQUEST_FIELDS,
+    methods: REQUEST_METHODS,
+    display_format: DisplayFormat::Static("<urllib.request.Request object>"),
 };
 
 // =============================================================================
@@ -508,6 +598,7 @@ pub static ALL_OBJECT_TYPES: &[&ObjectTypeDef] = &[
     &FILE,
     &PARSE_RESULT,
     &HTTP_RESPONSE,
+    &REQUEST,
     &HASH,
     &STRINGIO,
     &BYTESIO,

@@ -225,5 +225,6 @@ pub static IO_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[],
     classes: &[STRINGIO_CLASS, BYTESIO_CLASS],
+    exceptions: &[],
     submodules: &[],
 };

@@ -182,6 +182,7 @@ pub static OS_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[OS_ENVIRON, OS_NAME],
     constants: &[],
     classes: &[],
+    exceptions: &[],
     submodules: &[&OS_PATH_MODULE],
 };
 
@@ -301,5 +302,6 @@ pub static OS_PATH_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[],
     classes: &[],
+    exceptions: &[],
     submodules: &[],
 };

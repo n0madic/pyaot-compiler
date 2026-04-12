@@ -18,7 +18,7 @@ stdlib-json = ["dep:serde_json"]
 stdlib-regex = ["dep:regex-lite"]
 stdlib-crypto = ["dep:sha2", "dep:md-5", "dep:sha1"]
 stdlib-base64 = ["dep:base64"]
-stdlib-network = ["dep:ureq"]
+stdlib-network = ["dep:ureq", "stdlib-json"]
 
 [dependencies]
 pyaot-core-defs = { path = "../core-defs" }

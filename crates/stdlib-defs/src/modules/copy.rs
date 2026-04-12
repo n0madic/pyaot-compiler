@@ -38,5 +38,6 @@ pub static COPY_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[],
     classes: &[],
+    exceptions: &[],
     submodules: &[],
 };

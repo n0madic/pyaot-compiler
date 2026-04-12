@@ -7,39 +7,42 @@ use pyaot_types::{BuiltinExceptionKind, Type};
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;
 
-/// Convert a built-in exception name to its Type variant.
-/// Uses BuiltinExceptionKind from the unified exception system.
-/// Returns None if the name is not a built-in exception.
-fn builtin_exception_name_to_type(name: &str) -> Option<Type> {
-    BuiltinExceptionKind::from_name(name).map(Type::BuiltinException)
-}
-
 impl AstToHir {
     /// Resolve a single exception type from an AST expression.
-    /// Handles built-in exceptions and user-defined exception classes.
+    /// Handles built-in exceptions, scoped stdlib exceptions imported by the
+    /// user, and user-defined exception classes.
     fn resolve_exception_type(&mut self, expr: &py::Expr) -> Type {
         match expr {
             py::Expr::Name(name) => {
                 let name_str = name.id.as_str();
-                // First check if it's a built-in exception
-                if let Some(exc_ty) = builtin_exception_name_to_type(name_str) {
-                    exc_ty
-                } else {
-                    // Check if it's a user-defined exception class
-                    let class_name = self.interner.intern(&name.id);
-                    if let Some(&class_id) = self.symbols.class_map.get(&class_name) {
-                        if let Some(class_def) = self.module.class_defs.get(&class_id) {
-                            if class_def.is_exception_class {
-                                return Type::Class {
-                                    class_id,
-                                    name: class_name,
-                                };
-                            }
+                let interned = self.interner.intern(&name.id);
+
+                // Python built-in exceptions resolve globally by name.
+                // Stdlib exceptions from submodules (e.g. HTTPError) are NOT
+                // here — they're registered as synthetic classes by
+                // `imports.rs::register_stdlib_exception` and resolved
+                // through the class_map path below, matching CPython's
+                // requirement that they be explicitly imported.
+                if let Some(kind) = BuiltinExceptionKind::from_name(name_str) {
+                    return Type::BuiltinException(kind);
+                }
+
+                // Class-bound lookup covers both user-defined exception
+                // classes AND imported stdlib exception classes (same
+                // mechanism).
+                if let Some(&class_id) = self.symbols.class_map.get(&interned) {
+                    if let Some(class_def) = self.module.class_defs.get(&class_id) {
+                        if class_def.is_exception_class {
+                            return Type::Class {
+                                class_id,
+                                name: interned,
+                            };
                         }
                     }
-                    // Fallback to base Exception
-                    Type::BuiltinException(BuiltinExceptionKind::Exception)
                 }
+
+                // Fallback to base Exception
+                Type::BuiltinException(BuiltinExceptionKind::Exception)
             }
             _ => Type::BuiltinException(BuiltinExceptionKind::Exception),
         }

@@ -4,7 +4,8 @@
 
 use crate::modules;
 use crate::types::{
-    StdlibAttrDef, StdlibClassDef, StdlibConstDef, StdlibFunctionDef, StdlibModuleDef,
+    StdlibAttrDef, StdlibClassDef, StdlibConstDef, StdlibExceptionClass, StdlibFunctionDef,
+    StdlibModuleDef,
 };
 
 /// Get a module definition by name (supports dotted names like "os.path")
@@ -60,6 +61,7 @@ pub enum StdlibItemKind {
     Attr,
     Constant,
     Class,
+    Exception,
 }
 
 /// Result of looking up a name in a stdlib module
@@ -69,6 +71,7 @@ pub enum StdlibItem {
     Attr(&'static StdlibAttrDef),
     Constant(&'static StdlibConstDef),
     Class(&'static StdlibClassDef),
+    Exception(&'static StdlibExceptionClass),
 }
 
 impl StdlibItem {
@@ -78,11 +81,13 @@ impl StdlibItem {
             StdlibItem::Attr(_) => StdlibItemKind::Attr,
             StdlibItem::Constant(_) => StdlibItemKind::Constant,
             StdlibItem::Class(_) => StdlibItemKind::Class,
+            StdlibItem::Exception(_) => StdlibItemKind::Exception,
         }
     }
 }
 
-/// Look up any item (function, attr, constant, class) in a module by name
+/// Look up any item (function, attr, constant, class, exception) in a
+/// module by name.
 pub fn get_item(module_name: &str, item_name: &str) -> Option<StdlibItem> {
     let module = get_module(module_name)?;
 
@@ -104,6 +109,11 @@ pub fn get_item(module_name: &str, item_name: &str) -> Option<StdlibItem> {
     // Check classes
     if let Some(class) = module.get_class(item_name) {
         return Some(StdlibItem::Class(class));
+    }
+
+    // Check exception classes
+    if let Some(exc) = module.get_exception(item_name) {
+        return Some(StdlibItem::Exception(exc));
     }
 
     None

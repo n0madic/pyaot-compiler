@@ -247,7 +247,10 @@ impl AstToHir {
                 call_span,
             ),
 
-            // Check if it's a built-in exception type using the unified exception system
+            // Check if it's a built-in exception type. Stdlib-submodule
+            // exceptions (e.g. HTTPError from urllib.error) are synthetic
+            // classes handled through the regular class-instantiation path,
+            // not here — so this only matches true Python builtins.
             _ if BuiltinExceptionKind::from_name(name).is_some() => {
                 let kind = BuiltinExceptionKind::from_name(name)
                     .expect("internal error: from_name guaranteed by is_some() match guard");

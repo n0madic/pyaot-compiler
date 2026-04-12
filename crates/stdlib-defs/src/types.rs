@@ -53,6 +53,8 @@ pub enum TypeSpec {
     ParseResult,
     /// HTTPResponse object (from urllib.request module)
     HttpResponse,
+    /// Request object (from urllib.request module)
+    Request,
     /// Hash object (from hashlib module)
     Hash,
     /// StringIO object (from io module)
@@ -315,8 +317,35 @@ pub struct StdlibModuleDef {
     pub constants: &'static [StdlibConstDef],
     /// Classes in this module (e.g., re.Match)
     pub classes: &'static [StdlibClassDef],
+    /// Exception classes provided by this module
+    /// (e.g. `urllib.error.HTTPError`). Each entry carries a reserved
+    /// `class_id` in `[BUILTIN_EXCEPTION_COUNT, FIRST_USER_CLASS_ID)` and a
+    /// `parent` `BuiltinExceptionKind` used for catch-by-base hierarchy.
+    pub exceptions: &'static [&'static StdlibExceptionClass],
     /// Submodules (e.g., os contains os.path)
     pub submodules: &'static [&'static StdlibModuleDef],
+}
+
+/// Declaration of a stdlib-provided exception class.
+///
+/// Stdlib exceptions (like `urllib.error.HTTPError`) are not in the Python
+/// `builtins` namespace and must be imported explicitly. At runtime they
+/// use the same `class_id`-based catch mechanism as user-defined exception
+/// classes, which is why each declaration carries a reserved `class_id`
+/// from `core_defs::RESERVED_STDLIB_EXCEPTION_SLOTS` range.
+#[derive(Debug, Clone, Copy)]
+pub struct StdlibExceptionClass {
+    /// Python class name (e.g. "HTTPError").
+    pub name: &'static str,
+    /// Reserved class ID in `[BUILTIN_EXCEPTION_COUNT, FIRST_USER_CLASS_ID)`.
+    /// Globally unique across all stdlib modules.
+    pub class_id: u8,
+    /// Immediate parent in the CPython exception hierarchy — used by the
+    /// runtime so `except OSError:` correctly catches a raised HTTPError.
+    pub parent: pyaot_core_defs::BuiltinExceptionKind,
+    /// Module that owns this exception (e.g. "urllib.error"). Informational
+    /// — used for nicer error messages.
+    pub module: &'static str,
 }
 
 impl StdlibModuleDef {
@@ -362,6 +391,18 @@ impl StdlibModuleDef {
         while i < self.classes.len() {
             if const_str_eq(self.classes[i].name, name) {
                 return Some(&self.classes[i]);
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// Get an exception class by name
+    pub const fn get_exception(&self, name: &str) -> Option<&'static StdlibExceptionClass> {
+        let mut i = 0;
+        while i < self.exceptions.len() {
+            if const_str_eq(self.exceptions[i].name, name) {
+                return Some(self.exceptions[i]);
             }
             i += 1;
         }

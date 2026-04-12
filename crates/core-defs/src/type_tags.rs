@@ -174,6 +174,7 @@ define_type_tags! {
     DefaultDict = 24 => "DefaultDict" => "<class 'collections.defaultdict'>" => "collections.defaultdict",
     Counter = 25 => "Counter" => "<class 'collections.Counter'>" => "collections.Counter",
     Deque = 26 => "Deque" => "<class 'collections.deque'>" => "collections.deque",
+    Request = 27 => "Request" => "<class 'urllib.request.Request'>" => "urllib.request.Request",
 }
 
 #[cfg(test)]
@@ -232,7 +233,8 @@ mod tests {
         assert_eq!(TypeTagKind::from_tag(24), Some(TypeTagKind::DefaultDict));
         assert_eq!(TypeTagKind::from_tag(25), Some(TypeTagKind::Counter));
         assert_eq!(TypeTagKind::from_tag(26), Some(TypeTagKind::Deque));
-        assert_eq!(TypeTagKind::from_tag(27), None);
+        assert_eq!(TypeTagKind::from_tag(27), Some(TypeTagKind::Request));
+        assert_eq!(TypeTagKind::from_tag(28), None);
         assert_eq!(TypeTagKind::from_tag(255), None);
     }
 

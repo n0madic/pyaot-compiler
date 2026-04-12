@@ -562,6 +562,21 @@ pub struct HttpResponseObj {
     pub body: *mut Obj,    // BytesObj - Response body
 }
 
+/// Request object for urllib.request module.
+///
+/// Mirrors the standard CPython `urllib.request.Request` type: it bundles
+/// URL + body + headers + method so callers can build a fully-specified
+/// request and pass it to `urlopen()`. All pointer fields are heap objects
+/// and are traced by the GC.
+#[repr(C)]
+pub struct RequestObj {
+    pub header: ObjHeader,
+    pub url: *mut Obj,     // StrObj
+    pub data: *mut Obj,    // BytesObj | null
+    pub headers: *mut Obj, // DictObj[str, str] | null
+    pub method: *mut Obj,  // StrObj | null — "GET" when null/empty
+}
+
 use std::cell::UnsafeCell;
 use std::sync::OnceLock;
 

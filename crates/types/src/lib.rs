@@ -7,7 +7,8 @@ pub mod type_tags;
 
 pub use exceptions::{
     exception_name_to_tag, exception_tag_to_name, is_builtin_exception_name, BuiltinException,
-    BuiltinExceptionKind, BUILTIN_EXCEPTIONS, BUILTIN_EXCEPTION_COUNT,
+    BuiltinExceptionKind, BUILTIN_EXCEPTIONS, BUILTIN_EXCEPTION_COUNT, FIRST_USER_CLASS_ID,
+    RESERVED_STDLIB_EXCEPTION_SLOTS,
 };
 
 pub use type_tags::{is_type_tag_name, type_tag_to_name, TypeTagKind, TYPE_TAG_COUNT};
@@ -530,6 +531,7 @@ pub fn typespec_to_type(spec: &TypeSpec) -> Type {
         TypeSpec::CompletedProcess => Type::RuntimeObject(TypeTagKind::CompletedProcess),
         TypeSpec::ParseResult => Type::RuntimeObject(TypeTagKind::ParseResult),
         TypeSpec::HttpResponse => Type::RuntimeObject(TypeTagKind::HttpResponse),
+        TypeSpec::Request => Type::RuntimeObject(TypeTagKind::Request),
         TypeSpec::Hash => Type::RuntimeObject(TypeTagKind::Hash),
         TypeSpec::StringIO => Type::RuntimeObject(TypeTagKind::StringIO),
         TypeSpec::BytesIO => Type::RuntimeObject(TypeTagKind::BytesIO),

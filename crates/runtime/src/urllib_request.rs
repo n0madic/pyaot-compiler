@@ -16,8 +16,8 @@
 use crate::bytes::rt_make_bytes;
 use crate::dict::{rt_dict_set, rt_make_dict};
 use crate::gc;
-use crate::object::{BytesObj, DictObj, HttpResponseObj, Obj, ObjHeader, TypeTagKind};
-use crate::utils::{make_str_from_rust, raise_io_error, str_obj_to_rust_string};
+use crate::object::{BytesObj, DictObj, HttpResponseObj, Obj, ObjHeader, RequestObj, TypeTagKind};
+use crate::utils::{is_none_or_null, make_str_from_rust, raise_io_error, str_obj_to_rust_string};
 use std::time::Duration;
 
 /// Iterate `str -> str` entries of a DictObj. Entries with non-`Str` keys or
@@ -27,7 +27,7 @@ use std::time::Duration;
 /// # Safety
 /// `dict` must be a valid `*mut DictObj` or null.
 unsafe fn for_each_str_entry<F: FnMut(String, String)>(dict: *mut Obj, mut f: F) {
-    if dict.is_null() {
+    if is_none_or_null(dict) {
         return;
     }
     if (*dict).header.type_tag != TypeTagKind::Dict {
@@ -109,6 +109,7 @@ unsafe fn create_http_response(status: i64, url: &str, headers: *mut Obj, body: 
 /// `params_dict` and `headers_dict` must be valid `*mut DictObj` or null.
 /// All GC-managed objects returned by runtime helpers are rooted internally
 /// where needed.
+#[allow(clippy::too_many_arguments)]
 unsafe fn do_http_request(
     method: &str,
     url_str: &str,
@@ -116,6 +117,8 @@ unsafe fn do_http_request(
     body: Option<&[u8]>,
     headers_dict: *mut Obj,
     timeout: f64,
+    verify: bool,
+    allow_redirects: bool,
     error_prefix: &str,
 ) -> *mut Obj {
     // Validate URL scheme
@@ -128,14 +131,23 @@ unsafe fn do_http_request(
         );
     }
 
-    // Build the agent with timeout configuration
-    // ureq 3.x uses Agent::config_builder() instead of AgentBuilder
+    // Build the agent with timeout + optional TLS / redirect overrides.
+    // ureq 3.x uses Agent::config_builder() instead of AgentBuilder.
     let timeout_duration = Duration::from_secs_f64(timeout.max(0.1));
-    let agent = ureq::Agent::config_builder()
+    let mut agent_cfg = ureq::Agent::config_builder()
         .timeout_global(Some(timeout_duration))
-        .http_status_as_error(false) // Return response even for 4xx/5xx
-        .build()
-        .new_agent();
+        .http_status_as_error(false); // Return response even for 4xx/5xx
+    if !verify {
+        agent_cfg = agent_cfg.tls_config(
+            ureq::tls::TlsConfig::builder()
+                .disable_verification(true)
+                .build(),
+        );
+    }
+    if !allow_redirects {
+        agent_cfg = agent_cfg.max_redirects(0);
+    }
+    let agent = agent_cfg.build().new_agent();
 
     // Collect params / headers from their DictObjs up-front so the request
     // builder can consume them without re-entering the closure (RequestBuilder
@@ -279,7 +291,7 @@ unsafe fn do_http_request(
 /// # Safety
 /// `data` must be a valid `*mut Obj` or null.
 unsafe fn data_to_body_slice<'a>(data: *mut Obj, error_prefix: &str) -> Option<&'a [u8]> {
-    if data.is_null() {
+    if is_none_or_null(data) {
         return None;
     }
     if (*data).header.type_tag != TypeTagKind::Bytes {
@@ -291,16 +303,75 @@ unsafe fn data_to_body_slice<'a>(data: *mut Obj, error_prefix: &str) -> Option<&
     Some(std::slice::from_raw_parts(data_ptr, data_len))
 }
 
-/// `urllib.request.urlopen(url, data=None, timeout=30.0)` — Open a URL.
-/// Returns an `HTTPResponse` object. GET when `data` is null, POST otherwise.
+/// `urllib.request.urlopen(url_or_request, data=None, timeout=30.0)`
+///
+/// The first argument is either a `StrObj` (plain URL) or a `RequestObj`
+/// built via `urllib.request.Request(...)`. When a Request is passed, its
+/// `data` / `headers` / `method` fields override the positional `data`
+/// argument. This mirrors CPython semantics so code targeting pyaot runs
+/// unchanged on any Python interpreter.
+///
+/// Returns an `HTTPResponse`.
+///
+/// TODO: CPython also accepts a `context=ssl.SSLContext` kwarg for TLS
+/// configuration and supports custom `build_opener()` directors for
+/// redirect handling. Both require new stdlib types (ssl.SSLContext,
+/// OpenerDirector, HTTPRedirectHandler) — tracked as a follow-up for when
+/// we need verify=False / allow_redirects=False from requests.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_urlopen(url: *mut Obj, data: *mut Obj, timeout: f64) -> *mut Obj {
+pub extern "C" fn rt_urlopen(url_or_request: *mut Obj, data: *mut Obj, timeout: f64) -> *mut Obj {
     unsafe {
-        if url.is_null() {
+        if url_or_request.is_null() {
             raise_io_error("urlopen: URL cannot be None");
         }
-        let url_str = str_obj_to_rust_string(url);
+        let tag = (*url_or_request).header.type_tag;
+        if tag == TypeTagKind::Request {
+            // Request path — fields of the Request drive the call. Positional
+            // `data` is ignored, matching CPython behaviour.
+            let req = url_or_request as *const RequestObj;
+            let url_str = str_obj_to_rust_string((*req).url);
+            let body = data_to_body_slice((*req).data, "urlopen");
+            // Own the method String so the &str below is valid until the
+            // call completes. A null pointer or a Python `None` singleton
+            // both mean "no explicit method".
+            let method_owned: String = if is_none_or_null((*req).method) {
+                String::new()
+            } else {
+                str_obj_to_rust_string((*req).method)
+            };
+            let method: &str = if method_owned.is_empty() {
+                if body.is_some() {
+                    "POST"
+                } else {
+                    "GET"
+                }
+            } else {
+                method_owned.as_str()
+            };
+            // Normalise headers — null and NoneObj both mean "no headers".
+            let headers_for_call = if is_none_or_null((*req).headers) {
+                std::ptr::null_mut()
+            } else {
+                (*req).headers
+            };
+            return do_http_request(
+                method,
+                &url_str,
+                std::ptr::null_mut(),
+                body,
+                headers_for_call,
+                timeout,
+                true,
+                true,
+                "urlopen",
+            );
+        }
+        if tag != TypeTagKind::Str {
+            raise_io_error("urlopen: first argument must be a URL string or Request object");
+        }
+        // String URL path — legacy form: GET when data is null, POST otherwise.
+        let url_str = str_obj_to_rust_string(url_or_request);
         let body = data_to_body_slice(data, "urlopen");
         let method = if body.is_some() { "POST" } else { "GET" };
         do_http_request(
@@ -310,47 +381,11 @@ pub extern "C" fn rt_urlopen(url: *mut Obj, data: *mut Obj, timeout: f64) -> *mu
             body,
             std::ptr::null_mut(),
             timeout,
+            true,
+            true,
             "urlopen",
         )
     }
-}
-
-/// Generic HTTP request entry point used by the `pyaot-pkg-requests` crate.
-///
-/// `method_ptr` / `method_len` point to a UTF-8 HTTP method literal (e.g.
-/// `b"POST"`). `params` and `headers` are `dict[str, str]` (or null). `data`
-/// is a `BytesObj` request body (or null).
-///
-/// # Safety
-/// `method_ptr` must reference at least `method_len` valid UTF-8 bytes.
-/// `url` must be a non-null StrObj. Dict/body arguments must point to valid
-/// runtime objects of the claimed type or be null.
-#[no_mangle]
-pub unsafe extern "C" fn rt_http_request_raw(
-    method_ptr: *const u8,
-    method_len: usize,
-    url: *mut Obj,
-    params: *mut Obj,
-    data: *mut Obj,
-    headers: *mut Obj,
-    timeout: f64,
-) -> *mut Obj {
-    if url.is_null() {
-        raise_io_error("http_request: URL cannot be None");
-    }
-    let method_bytes = std::slice::from_raw_parts(method_ptr, method_len);
-    let method = std::str::from_utf8(method_bytes).unwrap_or("GET");
-    let url_str = str_obj_to_rust_string(url);
-    let body = data_to_body_slice(data, "http_request");
-    do_http_request(
-        method,
-        &url_str,
-        params,
-        body,
-        headers,
-        timeout,
-        "http_request",
-    )
 }
 
 // =============================================================================
@@ -425,6 +460,58 @@ pub extern "C" fn rt_http_response_read(obj: *mut Obj) -> *mut Obj {
     }
 }
 
+/// HTTPResponse.ok — true iff status is 2xx (requests-library convention).
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_http_response_get_ok(obj: *mut Obj) -> i8 {
+    if obj.is_null() {
+        return 0;
+    }
+    unsafe {
+        crate::debug_assert_type_tag!(obj, TypeTagKind::HttpResponse, "rt_http_response_get_ok");
+        let hr = obj as *const HttpResponseObj;
+        if (200..300).contains(&(*hr).status) {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+/// HTTPResponse.text — decode the response body as UTF-8 string.
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_http_response_get_text(obj: *mut Obj) -> *mut Obj {
+    unsafe {
+        if obj.is_null() {
+            return make_str_from_rust("");
+        }
+        crate::debug_assert_type_tag!(obj, TypeTagKind::HttpResponse, "rt_http_response_get_text");
+        let hr = obj as *const HttpResponseObj;
+        let body = (*hr).body;
+        if body.is_null() {
+            return make_str_from_rust("");
+        }
+        let bytes_obj = body as *const BytesObj;
+        let data_len = (*bytes_obj).len;
+        let data_ptr = (*bytes_obj).data.as_ptr();
+        let slice = std::slice::from_raw_parts(data_ptr, data_len);
+        let s = std::str::from_utf8(slice).unwrap_or("");
+        make_str_from_rust(s)
+    }
+}
+
+/// HTTPResponse.json() — parse body as JSON (requests-library convention).
+/// Delegates to `rt_json_loads`.
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_http_response_json(obj: *mut Obj) -> *mut Obj {
+    unsafe {
+        let text = rt_http_response_get_text(obj);
+        crate::json::rt_json_loads(text)
+    }
+}
+
 /// HTTPResponse.geturl() - Get the URL of the response
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -452,5 +539,104 @@ pub extern "C" fn rt_http_response_repr(obj: *mut Obj) -> *mut Obj {
         let hr = obj as *const HttpResponseObj;
         let repr = format!("<http.client.HTTPResponse [{}]>", (*hr).status);
         make_str_from_rust(&repr)
+    }
+}
+
+// =============================================================================
+// urllib.request.Request — standard CPython type bundling URL + body +
+// headers + method for use with urlopen().
+// =============================================================================
+
+/// Construct a new `Request(url, data=None, headers=None, method=None)`.
+///
+/// # Safety
+/// Each non-null argument must point at a valid runtime object of the
+/// expected type (StrObj / BytesObj / DictObj / StrObj).
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_request(
+    url: *mut Obj,
+    data: *mut Obj,
+    headers: *mut Obj,
+    method: *mut Obj,
+) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+    unsafe {
+        // Root every caller-supplied pointer across the allocating call.
+        let mut roots: [*mut Obj; 4] = [url, data, headers, method];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 4,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        let size = std::mem::size_of::<RequestObj>();
+        let ptr = gc::gc_alloc(size, TypeTagKind::Request as u8) as *mut RequestObj;
+
+        (*ptr).header = ObjHeader {
+            type_tag: TypeTagKind::Request,
+            marked: false,
+            size,
+        };
+        (*ptr).url = roots[0];
+        (*ptr).data = roots[1];
+        (*ptr).headers = roots[2];
+        (*ptr).method = roots[3];
+
+        gc_pop();
+        ptr as *mut Obj
+    }
+}
+
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_request_get_url(obj: *mut Obj) -> *mut Obj {
+    if obj.is_null() {
+        return unsafe { make_str_from_rust("") };
+    }
+    unsafe {
+        crate::debug_assert_type_tag!(obj, TypeTagKind::Request, "rt_request_get_url");
+        (*(obj as *const RequestObj)).url
+    }
+}
+
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_request_get_data(obj: *mut Obj) -> *mut Obj {
+    if obj.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        crate::debug_assert_type_tag!(obj, TypeTagKind::Request, "rt_request_get_data");
+        (*(obj as *const RequestObj)).data
+    }
+}
+
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_request_get_headers(obj: *mut Obj) -> *mut Obj {
+    if obj.is_null() {
+        return rt_make_dict(0);
+    }
+    unsafe {
+        crate::debug_assert_type_tag!(obj, TypeTagKind::Request, "rt_request_get_headers");
+        (*(obj as *const RequestObj)).headers
+    }
+}
+
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_request_get_method(obj: *mut Obj) -> *mut Obj {
+    if obj.is_null() {
+        return unsafe { make_str_from_rust("GET") };
+    }
+    unsafe {
+        crate::debug_assert_type_tag!(obj, TypeTagKind::Request, "rt_request_get_method");
+        let method = (*(obj as *const RequestObj)).method;
+        if method.is_null() {
+            return make_str_from_rust("GET");
+        }
+        method
     }
 }

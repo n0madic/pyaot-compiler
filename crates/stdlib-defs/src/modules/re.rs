@@ -138,5 +138,6 @@ pub static RE_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[],
     classes: &[MATCH_CLASS],
+    exceptions: &[],
     submodules: &[],
 };

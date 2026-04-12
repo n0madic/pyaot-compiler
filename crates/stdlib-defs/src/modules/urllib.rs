@@ -133,6 +133,7 @@ pub static URLLIB_PARSE_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[],
     classes: &[PARSE_RESULT_CLASS],
+    exceptions: &[],
     submodules: &[],
 };
 
@@ -140,21 +141,50 @@ pub static URLLIB_PARSE_MODULE: StdlibModuleDef = StdlibModuleDef {
 // urllib.request module functions
 // =============================================================================
 
-/// urllib.request.urlopen(url, data=None, timeout=30.0) - Open a URL
-/// Returns an HTTPResponse object
+/// urllib.request.urlopen(url_or_request, data=None, timeout=30.0)
+///
+/// First argument accepts either a `str` (URL) or a `Request` object — this
+/// matches the standard CPython signature so code targeting pyaot runs
+/// unchanged on any Python interpreter. Returns an HTTPResponse.
 pub static URLOPEN: StdlibFunctionDef = StdlibFunctionDef {
     name: "urlopen",
     runtime_name: "rt_urlopen",
     params: &[
-        ParamDef::required("url", TypeSpec::Str),
+        // `TypeSpec::Any` lets both `str` and `Request` bind; rt_urlopen
+        // inspects the runtime type_tag and dispatches.
+        ParamDef::required("url", TypeSpec::Any),
         ParamDef::optional("data", TypeSpec::Optional(&TypeSpec::Bytes)),
         ParamDef::optional_with_default("timeout", TypeSpec::Float, ConstValue::Float(30.0)),
     ],
     return_type: TypeSpec::HttpResponse,
     min_args: 1,
     max_args: 3,
-    hints: LoweringHints::NO_AUTO_BOX,
+    hints: LoweringHints::DEFAULT,
     codegen: RuntimeFuncDef::new("rt_urlopen", &[P_I64, P_I64, P_F64], Some(R_I64), false),
+};
+
+/// `urllib.request.Request(url, data=None, headers=None, method=None)`
+/// — standard CPython constructor that bundles the pieces of a request for
+/// later dispatch via `urlopen(Request(...))`.
+pub static REQUEST_INIT: StdlibFunctionDef = StdlibFunctionDef {
+    name: "Request",
+    runtime_name: "rt_make_request",
+    params: &[
+        ParamDef::required("url", TypeSpec::Str),
+        ParamDef::optional("data", TypeSpec::Optional(&TypeSpec::Bytes)),
+        ParamDef::optional("headers", TypeSpec::Optional(&TYPE_DICT_STR_STR)),
+        ParamDef::optional("method", TypeSpec::Optional(&TypeSpec::Str)),
+    ],
+    return_type: TypeSpec::Request,
+    min_args: 1,
+    max_args: 4,
+    hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new(
+        "rt_make_request",
+        &[P_I64, P_I64, P_I64, P_I64],
+        Some(R_I64),
+        false,
+    ),
 };
 
 // =============================================================================
@@ -170,6 +200,17 @@ pub static HTTP_RESPONSE_READ: StdlibMethodDef = StdlibMethodDef {
     min_args: 0,
     max_args: 0,
     codegen: RuntimeFuncDef::new("rt_http_response_read", &[P_I64], Some(R_I64), false),
+};
+
+/// HTTPResponse.json() - Parse body as JSON (requests-library convention).
+pub static HTTP_RESPONSE_JSON: StdlibMethodDef = StdlibMethodDef {
+    name: "json",
+    runtime_name: "rt_http_response_json",
+    params: &[],
+    return_type: TypeSpec::Any,
+    min_args: 0,
+    max_args: 0,
+    codegen: RuntimeFuncDef::new("rt_http_response_json", &[P_I64], Some(R_I64), false),
 };
 
 /// HTTPResponse.geturl() - Get the URL of the response
@@ -194,24 +235,17 @@ pub static HTTP_RESPONSE_GETCODE: StdlibMethodDef = StdlibMethodDef {
     codegen: RuntimeFuncDef::new("rt_http_response_getcode", &[P_I64], Some(R_I64), false),
 };
 
-/// HTTPResponse class definition
-static HTTP_RESPONSE_CLASS: StdlibClassDef = StdlibClassDef {
-    name: "HTTPResponse",
-    methods: &[
-        HTTP_RESPONSE_READ,
-        HTTP_RESPONSE_GETURL,
-        HTTP_RESPONSE_GETCODE,
-    ],
-    type_spec: Some(TypeSpec::HttpResponse),
-};
-
-/// urllib.request module - HTTP request utilities
+/// urllib.request module - HTTP request utilities.
+///
+/// Note: `HTTPResponse` lives in `http.client` to match CPython exactly.
+/// `urlopen` still returns one; users import it from `http.client`.
 pub static URLLIB_REQUEST_MODULE: StdlibModuleDef = StdlibModuleDef {
     name: "urllib.request",
-    functions: &[URLOPEN],
+    functions: &[URLOPEN, REQUEST_INIT],
     attrs: &[],
     constants: &[],
-    classes: &[HTTP_RESPONSE_CLASS],
+    classes: &[],
+    exceptions: &[],
     submodules: &[],
 };
 
@@ -222,5 +256,10 @@ pub static URLLIB_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[],
     classes: &[],
-    submodules: &[&URLLIB_PARSE_MODULE, &URLLIB_REQUEST_MODULE],
+    exceptions: &[],
+    submodules: &[
+        &URLLIB_PARSE_MODULE,
+        &URLLIB_REQUEST_MODULE,
+        &crate::modules::urllib_error::URLLIB_ERROR_MODULE,
+    ],
 };

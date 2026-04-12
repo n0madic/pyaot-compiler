@@ -54,5 +54,6 @@ pub static SYS_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[SYS_ARGV],
     constants: &[],
     classes: &[],
+    exceptions: &[],
     submodules: &[],
 };

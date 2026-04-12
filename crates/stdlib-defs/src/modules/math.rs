@@ -512,5 +512,6 @@ pub static MATH_MODULE: StdlibModuleDef = StdlibModuleDef {
     attrs: &[],
     constants: &[MATH_PI, MATH_E, MATH_TAU, MATH_INF, MATH_NAN],
     classes: &[],
+    exceptions: &[],
     submodules: &[],
 };

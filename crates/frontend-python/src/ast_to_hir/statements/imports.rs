@@ -4,14 +4,62 @@
 //! Stdlib imports are validated against the pyaot-stdlib-defs registry.
 
 use super::AstToHir;
+use indexmap::IndexSet;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::*;
 use pyaot_pkg_defs as pkgs;
 use pyaot_stdlib_defs::{self as stdlib, StdlibItem as RegistryItem};
-use pyaot_utils::Span;
+use pyaot_utils::{ClassId, InternedString, Span};
 use rustpython_parser::ast as py;
 
 impl AstToHir {
+    /// Materialise a stdlib exception class (e.g. `urllib.error.HTTPError`)
+    /// as a synthetic `ClassDef` in the current module so it behaves like
+    /// any other user-defined exception class for raise / except / isinstance.
+    ///
+    /// Idempotent across repeated imports — the reserved `class_id` in the
+    /// `StdlibExceptionClass` is the canonical identity; multiple imports
+    /// of the same exception simply re-bind the local name.
+    pub(crate) fn register_stdlib_exception(
+        &mut self,
+        exc_def: &stdlib::StdlibExceptionClass,
+        local_name: InternedString,
+        stmt_span: Span,
+    ) -> Result<()> {
+        let class_id = ClassId::new(exc_def.class_id as u32);
+        let name = self.interner.intern(exc_def.name);
+
+        // Add to class_defs only once; subsequent imports just rebind names.
+        if !self.module.class_defs.contains_key(&class_id) {
+            self.module.class_defs.insert(
+                class_id,
+                ClassDef {
+                    id: class_id,
+                    name,
+                    base_class: None,
+                    fields: Vec::new(),
+                    class_attrs: Vec::new(),
+                    methods: Vec::new(),
+                    init_method: None,
+                    properties: Vec::new(),
+                    abstract_methods: IndexSet::new(),
+                    span: stmt_span,
+                    is_exception_class: true,
+                    is_protocol: false,
+                    // Parent is a Python builtin exception — lowering emits
+                    // `rt_register_class(class_id, parent_tag)` so
+                    // `except <parent>:` catches this class at runtime.
+                    base_exception_type: Some(exc_def.parent.tag()),
+                },
+            );
+        }
+
+        // Bind the imported local name. Multiple aliases of the same
+        // exception map to the same class_id.
+        self.symbols.class_map.insert(local_name, class_id);
+        Ok(())
+    }
+
     pub(crate) fn convert_import_from(
         &mut self,
         import_from: py::StmtImportFrom,
@@ -62,8 +110,12 @@ impl AstToHir {
                     Some(RegistryItem::Attr(a))
                 } else if let Some(c) = module_def.get_constant(&alias.name) {
                     Some(RegistryItem::Constant(c))
+                } else if let Some(c) = module_def.get_class(&alias.name) {
+                    Some(RegistryItem::Class(c))
                 } else {
-                    module_def.get_class(&alias.name).map(RegistryItem::Class)
+                    module_def
+                        .get_exception(&alias.name)
+                        .map(RegistryItem::Exception)
                 };
 
                 if let Some(item) = item {
@@ -87,15 +139,35 @@ impl AstToHir {
                                 .stdlib_names
                                 .insert(local_name, super::super::StdlibItem::Const(const_def));
                         }
-                        RegistryItem::Class(_class_def) => {
-                            // Classes like re.Match are not typically imported directly
-                            return Err(CompilerError::parse_error(
-                                format!(
-                                    "Stdlib class '{}' from module '{}' cannot be directly imported",
-                                    alias.name, module_name
-                                ),
-                                stmt_span,
-                            ));
+                        RegistryItem::Class(class_def) => {
+                            // Classes with a `type_spec` (e.g. HTTPResponse,
+                            // Match, StructTime) are runtime-object types and
+                            // can be imported as type aliases so user code
+                            // can write `x: HTTPResponse` after
+                            // `from urllib.request import HTTPResponse`.
+                            if let Some(spec) = class_def.type_spec {
+                                let ty = pyaot_types::typespec_to_type(&spec);
+                                self.types.type_aliases.insert(local_name, ty);
+                            } else {
+                                return Err(CompilerError::parse_error(
+                                    format!(
+                                        "Stdlib class '{}' from module '{}' cannot be directly imported",
+                                        alias.name, module_name
+                                    ),
+                                    stmt_span,
+                                ));
+                            }
+                        }
+                        RegistryItem::Exception(exc_def) => {
+                            // Stdlib exception class (e.g.
+                            // `urllib.error.HTTPError`). Materialise a
+                            // synthetic ClassDef with the reserved class_id
+                            // so downstream passes (symbol lookup, raise /
+                            // except resolution) treat it like any other
+                            // user-defined exception class. The compiler
+                            // emits a runtime registration call at module
+                            // init so `except OSError:` catches it.
+                            self.register_stdlib_exception(exc_def, local_name, stmt_span)?;
                         }
                     }
                 } else {
@@ -105,6 +177,7 @@ impl AstToHir {
                     available.extend(module_def.attrs.iter().map(|a| a.name));
                     available.extend(module_def.constants.iter().map(|c| c.name));
                     available.extend(module_def.classes.iter().map(|c| c.name));
+                    available.extend(module_def.exceptions.iter().map(|e| e.name));
                     return Err(CompilerError::parse_error(
                         format!(
                             "Unknown attribute '{}' in module '{}'. Available: {}",
