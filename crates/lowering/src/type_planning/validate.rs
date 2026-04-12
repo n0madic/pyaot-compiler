@@ -47,6 +47,13 @@ impl<'a> Lowering<'a> {
                     continue;
                 }
 
+                // Implicit Optional: `None` as default is a conventional Python
+                // sentinel for any parameter type (e.g. `x: list[str] = None`)
+                // and is expected to be replaced in the function body.
+                if inferred == Type::None {
+                    continue;
+                }
+
                 // Python special cases: int/float promotion, bool/int promotion
                 let is_python_compatible = matches!(
                     (&inferred, param_ty),
