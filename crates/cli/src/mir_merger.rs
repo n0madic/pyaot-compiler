@@ -360,6 +360,26 @@ impl MirMerger {
             let this_var_offset = *module_var_offsets.get(module_name).unwrap_or(&0);
             let this_class_offset = *module_class_offsets.get(module_name).unwrap_or(&0);
 
+            // Resolve cross-module user-class type annotations. The frontend
+            // allocated a unique placeholder `ClassId` per imported class
+            // (see `AstToHir::alloc_external_class_ref`) and stored the
+            // `(module, class_name)` pair in `hir.external_class_refs`. We
+            // walk the HIR's types and rewrite every `Type::Class` with a
+            // placeholder id to the real remapped id.
+            if !parsed.hir.external_class_refs.is_empty() {
+                let mut placeholder_remap: HashMap<ClassId, (ClassId, String)> = HashMap::new();
+                for (placeholder_id, (src_mod, src_name)) in &parsed.hir.external_class_refs {
+                    let key = (src_mod.clone(), src_name.clone());
+                    if let Some((remapped_id, class_name)) = module_class_exports.get(&key) {
+                        placeholder_remap
+                            .insert(*placeholder_id, (*remapped_id, class_name.clone()));
+                    }
+                }
+                if !placeholder_remap.is_empty() {
+                    resolve_external_class_refs(&mut parsed, &placeholder_remap);
+                }
+            }
+
             if verbose {
                 println!(
                     "Processing module: {} (var_offset={}, class_offset={})",
@@ -473,10 +493,13 @@ impl MirMerger {
             let remap_str =
                 |old: InternedString| -> InternedString { *string_remap.get(&old).unwrap_or(&old) };
 
-            // Merge MIR functions into the unified module with new FuncIds
-            for (_old_func_id, mut func) in module_mir.functions {
-                // Mangle function name for non-main modules
-                // Replace dots with underscores for valid symbol names
+            // First sub-pass: assign fresh FuncIds and build a per-module
+            // old→new remap. We need the full remap table before rewriting
+            // instructions since a `CallDirect` may target a function
+            // defined later in the same module.
+            let mut func_id_remap: HashMap<FuncId, FuncId> = HashMap::new();
+            let mut module_functions: Vec<(FuncId, pyaot_mir::Function, String)> = Vec::new();
+            for (old_func_id, mut func) in module_mir.functions {
                 let safe_module_name = module_name.replace('.', "_");
                 let original_name = func.name.clone();
                 if !is_main && original_name != "__pyaot_module_init__" {
@@ -485,42 +508,49 @@ impl MirMerger {
                     func.name = format!("__module_{}_init__", safe_module_name);
                 }
 
-                // Assign new unique FuncId to avoid collisions
                 let new_func_id = FuncId::from(next_func_id);
                 next_func_id += 1;
                 func.id = new_func_id;
+                func_id_remap.insert(old_func_id, new_func_id);
 
-                // Track module init for calling order
                 if !is_main && original_name == "__pyaot_module_init__" {
                     merged_mir
                         .module_init_order
                         .push((module_name.clone(), new_func_id));
                 }
 
-                // Intern function name
+                module_functions.push((new_func_id, func, original_name));
+            }
+
+            let remap_func = |old: FuncId| -> FuncId { *func_id_remap.get(&old).unwrap_or(&old) };
+
+            // Second sub-pass: remap FuncIds and InternedStrings inside each
+            // function body, then insert into the merged module.
+            for (new_func_id, mut func, _original_name) in module_functions {
                 merged_interner.intern(&func.name);
 
-                // Remap InternedStrings in locals
                 for (_local_id, local) in func.locals.iter_mut() {
                     if let Some(name) = local.name {
                         local.name = Some(remap_str(name));
                     }
                 }
 
-                // Remap InternedStrings in instructions
                 for (_block_id, block) in func.blocks.iter_mut() {
                     for inst in block.instructions.iter_mut() {
                         Self::remap_instruction_strings(&mut inst.kind, &remap_str);
+                        Self::remap_instruction_func_ids(&mut inst.kind, &remap_func);
                     }
-                    // Remap strings in terminator
                     Self::remap_terminator_strings(&mut block.terminator, &remap_str);
                 }
 
                 merged_mir.functions.insert(new_func_id, func);
             }
 
-            // Merge vtables (note: vtables reference old FuncIds, may need fixing for complex cases)
-            for vtable in module_mir.vtables {
+            // Merge vtables, remapping their FuncId references to the new ids.
+            for mut vtable in module_mir.vtables {
+                for entry in vtable.entries.iter_mut() {
+                    entry.method_func_id = remap_func(entry.method_func_id);
+                }
                 merged_mir.vtables.push(vtable);
             }
         }
@@ -593,6 +623,21 @@ impl MirMerger {
         }
         // Default to Any if not found
         Type::Any
+    }
+
+    /// Remap `FuncId` references embedded in an instruction. Only
+    /// `CallDirect` carries a `FuncId` directly — other call kinds route
+    /// through a symbol name (`CallNamed`), an operand (`Call`), or a
+    /// vtable slot (`CallVirtual{,Named}`), none of which change when
+    /// module-local ids are merged into a global namespace.
+    fn remap_instruction_func_ids<F>(kind: &mut pyaot_mir::InstructionKind, remap: &F)
+    where
+        F: Fn(FuncId) -> FuncId,
+    {
+        use pyaot_mir::InstructionKind;
+        if let InstructionKind::CallDirect { func, .. } = kind {
+            *func = remap(*func);
+        }
     }
 
     /// Remap InternedStrings in an instruction
@@ -703,5 +748,99 @@ impl MirMerger {
         if let pyaot_mir::Constant::Str(s) = c {
             *s = remap(*s);
         }
+    }
+}
+
+/// Rewrite every `Type::Class` with a placeholder id in `parsed.hir` to its
+/// real remapped class id. The `remap` table is keyed by the placeholder id
+/// the frontend emitted (from `AstToHir::alloc_external_class_ref`).
+///
+/// This walks every Type embedded in the HIR — function parameter/return
+/// types, expression types, statement type hints, and class-def field /
+/// class-attribute types — so cross-module user-class annotations work in
+/// the same positions CPython allows them. Non-placeholder `Type::Class`
+/// entries are left untouched.
+fn resolve_external_class_refs(
+    parsed: &mut crate::types::ParsedModule,
+    remap: &HashMap<ClassId, (ClassId, String)>,
+) {
+    let remap_ty = |ty: &mut Type, interner: &mut StringInterner| {
+        rewrite_class_type(ty, remap, interner);
+    };
+
+    // Function parameters and return types
+    for func_def in parsed.hir.func_defs.values_mut() {
+        if let Some(ret) = func_def.return_type.as_mut() {
+            remap_ty(ret, &mut parsed.interner);
+        }
+        for param in func_def.params.iter_mut() {
+            if let Some(ty) = param.ty.as_mut() {
+                remap_ty(ty, &mut parsed.interner);
+            }
+        }
+    }
+
+    // Class field and class-attribute annotations
+    for class_def in parsed.hir.class_defs.values_mut() {
+        for field in class_def.fields.iter_mut() {
+            remap_ty(&mut field.ty, &mut parsed.interner);
+        }
+        for attr in class_def.class_attrs.iter_mut() {
+            remap_ty(&mut attr.ty, &mut parsed.interner);
+        }
+    }
+
+    // Expression types (populated by the frontend for annotated values)
+    for expr in parsed.hir.exprs.iter_mut() {
+        if let Some(ty) = expr.1.ty.as_mut() {
+            remap_ty(ty, &mut parsed.interner);
+        }
+    }
+
+    // Statement type hints (annotated assignments)
+    for stmt in parsed.hir.stmts.iter_mut() {
+        if let pyaot_hir::StmtKind::Assign { type_hint, .. } = &mut stmt.1.kind {
+            if let Some(ty) = type_hint.as_mut() {
+                remap_ty(ty, &mut parsed.interner);
+            }
+        }
+    }
+}
+
+/// Rewrite `Type::Class` placeholder ids inside a `Type` tree, re-interning
+/// the class name through `interner` so the result is valid in the current
+/// caller's interner. Non-class structural types (List, Dict, Union, ...)
+/// are descended into recursively.
+fn rewrite_class_type(
+    ty: &mut Type,
+    remap: &HashMap<ClassId, (ClassId, String)>,
+    interner: &mut StringInterner,
+) {
+    match ty {
+        Type::Class { class_id, name } => {
+            if let Some((real_id, class_name)) = remap.get(class_id) {
+                *class_id = *real_id;
+                *name = interner.intern(class_name);
+            }
+        }
+        Type::List(inner) | Type::Set(inner) | Type::Iterator(inner) => {
+            rewrite_class_type(inner, remap, interner);
+        }
+        Type::Dict(k, v) | Type::DefaultDict(k, v) => {
+            rewrite_class_type(k, remap, interner);
+            rewrite_class_type(v, remap, interner);
+        }
+        Type::Tuple(elems) | Type::Union(elems) => {
+            for t in elems.iter_mut() {
+                rewrite_class_type(t, remap, interner);
+            }
+        }
+        Type::Function { params, ret } => {
+            for t in params.iter_mut() {
+                rewrite_class_type(t, remap, interner);
+            }
+            rewrite_class_type(ret, remap, interner);
+        }
+        _ => {}
     }
 }
