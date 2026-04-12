@@ -1,7 +1,8 @@
 # Test urllib.parse module functionality
 from urllib.parse import urlparse, quote, unquote, urljoin, urlencode, parse_qs
-from urllib.request import urlopen
-from urllib.error import HTTPError
+from urllib.request import urlopen, Request
+from urllib.error import HTTPError, URLError
+from http.client import HTTPResponse
 
 # =============================================================================
 # Test urlparse - Parse URLs into components
@@ -280,5 +281,137 @@ try:
     print("urllib.request tests passed!")
 except IOError:
     print("urllib.request tests skipped (no network)")
+
+# =============================================================================
+# Test urllib.request.Request - CPython-standard request builder
+# =============================================================================
+
+# Constructor uses `method=` kwarg so the call is identical to CPython
+# (whose positional layout is `url, data, headers, origin_req_host,
+# unverifiable, method`). Pyaot's Request has fewer positional slots but
+# accepts the same kwarg name.
+req_min = Request("https://example.com/api", method="GET")
+assert req_min.full_url == "https://example.com/api", (
+    f"full_url should round-trip; got '{req_min.full_url}'"
+)
+assert req_min.method == "GET", (
+    f"method should round-trip 'GET'; got '{req_min.method}'"
+)
+
+# Explicit POST with body and headers
+req_post = Request(
+    "https://example.com/items",
+    data=b'{"name":"alice"}',
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+assert req_post.full_url == "https://example.com/items"
+assert req_post.method == "POST"
+assert req_post.data == b'{"name":"alice"}', (
+    f"data should round-trip as bytes; got '{req_post.data!r}'"
+)
+# CPython normalises header names to Title-Case on set via add_header; when
+# you hand a dict to the constructor it's preserved as-is. Accept either
+# form so the test works on CPython and pyaot uniformly.
+post_hdrs = req_post.headers
+assert "Content-Type" in post_hdrs or "Content-type" in post_hdrs, (
+    "Content-Type header should round-trip through Request.headers"
+)
+
+# PUT and DELETE preserve their method string.
+req_put = Request("https://example.com/items/1", data=b"x", method="PUT")
+assert req_put.method == "PUT"
+req_del = Request("https://example.com/items/1", method="DELETE")
+assert req_del.method == "DELETE"
+
+print("urllib.request.Request tests passed!")
+
+# =============================================================================
+# Test urlopen(Request) dispatch — CPython's preferred calling convention
+# =============================================================================
+
+try:
+    # urlopen(str) — legacy path, still works.
+    resp_str = urlopen("https://httpbin.org/get", None, 10.0)
+    assert resp_str.status == 200, (
+        f"urlopen(str) GET should return 200, got {resp_str.status}"
+    )
+
+    # urlopen(Request) — CPython-style. GET via Request.
+    req_get = Request(
+        "https://httpbin.org/get",
+        headers={"X-Probe": "pyaot"},
+        method="GET",
+    )
+    resp_req = urlopen(req_get, None, 10.0)
+    assert resp_req.status == 200, (
+        f"urlopen(Request) GET should return 200, got {resp_req.status}"
+    )
+    body_req = resp_req.read().decode()
+    assert "X-Probe" in body_req or "pyaot" in body_req, (
+        "Request headers should be sent to the server (httpbin echoes them)"
+    )
+
+    # Request.method drives the HTTP verb regardless of body presence.
+    req_put = Request("https://httpbin.org/put", data=b"payload", method="PUT")
+    resp_put = urlopen(req_put, None, 10.0)
+    assert resp_put.status == 200, (
+        f"urlopen(Request method=PUT) should return 200, got {resp_put.status}"
+    )
+
+    req_del = Request("https://httpbin.org/delete", method="DELETE")
+    resp_del = urlopen(req_del, None, 10.0)
+    assert resp_del.status == 200, (
+        f"urlopen(Request method=DELETE) should return 200, got {resp_del.status}"
+    )
+
+    print("urlopen(Request) dispatch tests passed!")
+except IOError:
+    print("urlopen(Request) tests skipped (no network)")
+
+# =============================================================================
+# Test urllib.error.HTTPError / URLError — stdlib exception classes
+# =============================================================================
+
+# Raise / catch HTTPError. CPython's HTTPError requires the canonical
+# (url, code, msg, hdrs, fp) positional signature; pyaot accepts any args
+# (generic Exception __init__), so passing the CPython form works on both.
+try:
+    raise HTTPError("https://example.com/boom", 500, "boom", {}, None)
+except HTTPError:
+    pass  # success path — caught by its own name
+
+# URLError in CPython takes (reason, filename=None). Pyaot accepts any args.
+try:
+    raise URLError("url-boom")
+except URLError:
+    pass
+
+# CPython hierarchy: HTTPError / URLError inherit from OSError, so a bare
+# `except OSError:` must also catch them. This is the whole point of the
+# stdlib-exception class_id + parent registration.
+caught_via_os_error = False
+try:
+    raise HTTPError("https://example.com/boom", 500, "boom", {}, None)
+except OSError:
+    caught_via_os_error = True
+assert caught_via_os_error, "HTTPError must be catchable as OSError (parent hierarchy)"
+
+caught_url_via_os_error = False
+try:
+    raise URLError("as-oserror")
+except OSError:
+    caught_url_via_os_error = True
+assert caught_url_via_os_error, "URLError must be catchable as OSError (parent hierarchy)"
+
+# And as `Exception` (OSError subclasses Exception).
+caught_via_exception = False
+try:
+    raise HTTPError("https://example.com/boom", 500, "boom", {}, None)
+except Exception:
+    caught_via_exception = True
+assert caught_via_exception, "HTTPError must be catchable as Exception"
+
+print("urllib.error exception hierarchy tests passed!")
 
 print("All urllib tests passed!")

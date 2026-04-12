@@ -235,7 +235,9 @@ Native Executable
 | time | time, sleep, monotonic, perf_counter, ctime, struct_time, localtime, gmtime, strftime, strptime |
 | subprocess | run, CompletedProcess |
 | urllib.parse | urlparse, urlencode, quote, unquote, urljoin, parse_qs; ParseResult fields and geturl() |
-| urllib.request | urlopen; HTTPResponse fields (status, url, headers), methods (read, geturl, getcode) |
+| urllib.request | urlopen(url_or_Request, data=None, timeout=30.0), Request(url, data=None, headers=None, method=None); Request fields (full_url, data, headers, method) |
+| http.client | HTTPResponse class: CPython-standard fields (`.status`, `.url`, `.headers`) + methods (`.read()`, `.geturl()`, `.getcode()`), plus pip-requests-compatible conveniences (`.status_code`, `.ok`, `.content`, `.text`, `.json()`) so bundled `requests` is drop-in with the pip package |
+| urllib.error | HTTPError, URLError (stdlib exception classes — must be imported explicitly, then catchable via try/except. Parent: OSError, so `except OSError:` also catches them) |
 | string | ascii_letters, ascii_lowercase, ascii_uppercase, digits, hexdigits, octdigits, punctuation, whitespace, printable |
 | random | random, randint, choice, choices, shuffle, seed, uniform, randrange, sample, gauss |
 | hashlib | md5, sha256, sha1; Hash.hexdigest(), Hash.digest() |
@@ -250,11 +252,21 @@ Stdlib function calls support **keyword arguments** mapped to parameter position
 
 ### Third-Party Packages (experimental)
 
-| Package | Functions | Notes |
-|---------|-----------|-------|
-| requests | get(url, params={}, headers={}, timeout=5.0); post/put(url, data=b"...", headers={}, timeout=5.0); delete(url, headers={}, timeout=5.0) | Returns `HTTPResponse` (`.status`, `.url`, `.headers`, `.read()`). `params` / `headers` are `dict[str, str]`, `data` is `bytes`. Archive linked selectively via `crates/pkg/requests/`. |
+**Python-based packages (site-packages/)**
 
-Packages live in separate workspace crates (`crates/pkg/<name>/`) and are linked into the compiled binary only when the source imports them. See `.claude/rules/pkg-dev.md` for authoring details.
+Bundled Python packages live under `site-packages/<name>/` in the repo and are auto-added to the compiler's module search path (alongside existing `--module-path` handling). No Rust code involved — they compile with the same Python → native pipeline as user code.
+
+| Package | Surface | Notes |
+|---------|---------|-------|
+| requests | `get/post/put/delete(url, params=None, headers=None, auth=None, timeout=30.0)`; post/put also accept `data=bytes\|str\|dict` and `json=dict`. Returns `http.client.HTTPResponse` extended with pip-requests conveniences (`.status_code`, `.ok`, `.content`, `.text`, `.json()`). | **Drop-in for pip `requests`** on the covered API slice — `test_requests.py` runs identically against `pip install requests`, pyaot's bundled `site-packages/requests`, or a pyaot-compiled binary. Pure Python over the standard `urllib.request.Request + urlopen` pattern; `HTTPError` is caught internally so 4xx/5xx statuses return the response object (matching pip). TODOs: `verify` / `allow_redirects` need `ssl.SSLContext` + `build_opener()`. |
+
+`urllib.request` exposes the standard `Request(url, data=None, headers=None, method=None)` class; `urlopen()` accepts either a URL string or a Request object. `http.client.HTTPResponse` carries both CPython-standard attributes and pip-requests conveniences. `urllib.error` exposes `HTTPError` and `URLError` as catchable stdlib exception classes (reserved `class_id`s, `parent = OSError`), so `except OSError:` also catches them uniformly.
+
+**Cross-module user-function kwargs + defaults** are supported: a function declared in one module can be called from another with keyword arguments, and unset optional params auto-fill from their declared defaults (simple constants — `None`/`int`/`float`/`bool`/`str`). This is what lets our `requests.get(url, params={...}, timeout=10.0)` call compile without listing every positional slot.
+
+**Rust-based packages (crates/pkg/<name>/)**
+
+Infrastructure remains for packages that genuinely need native Rust code (e.g. numeric libraries with BLAS). Registry is currently empty. See `.claude/rules/pkg-dev.md` for authoring either category.
 
 #### Stdlib Architecture
 
