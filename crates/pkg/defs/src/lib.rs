@@ -113,8 +113,22 @@ mod tests {
         let m = get_package("requests").unwrap();
         let f = m.get_function("get").unwrap();
         assert_eq!(f.runtime_name, "rt_requests_get");
+        // url (required) + params + headers + timeout (all optional)
         assert_eq!(f.min_args, 1);
-        assert_eq!(f.max_args, 2);
+        assert_eq!(f.max_args, 4);
+    }
+
+    #[cfg(feature = "pkg-requests")]
+    #[test]
+    fn requests_exposes_full_verb_set() {
+        let m = get_package("requests").unwrap();
+        for verb in ["get", "post", "put", "delete"] {
+            let f = m
+                .get_function(verb)
+                .unwrap_or_else(|| panic!("missing requests.{}", verb));
+            assert_eq!(f.runtime_name, format!("rt_requests_{}", verb));
+            assert_eq!(f.return_type, pyaot_stdlib_defs::TypeSpec::HttpResponse);
+        }
     }
 
     #[test]

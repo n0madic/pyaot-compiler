@@ -252,7 +252,7 @@ Stdlib function calls support **keyword arguments** mapped to parameter position
 
 | Package | Functions | Notes |
 |---------|-----------|-------|
-| requests | get(url, timeout=5.0) | Returns `HTTPResponse` (same type as `urllib.request.urlopen`). Archive linked selectively via `crates/pkg/requests/`. |
+| requests | get(url, params={}, headers={}, timeout=5.0); post/put(url, data=b"...", headers={}, timeout=5.0); delete(url, headers={}, timeout=5.0) | Returns `HTTPResponse` (`.status`, `.url`, `.headers`, `.read()`). `params` / `headers` are `dict[str, str]`, `data` is `bytes`. Archive linked selectively via `crates/pkg/requests/`. |
 
 Packages live in separate workspace crates (`crates/pkg/<name>/`) and are linked into the compiled binary only when the source imports them. See `.claude/rules/pkg-dev.md` for authoring details.
 
