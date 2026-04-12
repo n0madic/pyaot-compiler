@@ -6,8 +6,15 @@
 //! compiler) and produces a `staticlib` (the `.a` file linked into the
 //! user's binary only when the Python source imports the package).
 //!
-//! The schema currently piggybacks on `StdlibModuleDef` through type aliases
-//! so packages describe themselves with the same declarative format as the
+//! Currently empty — see `site-packages/` for Python-based packages that use
+//! the ordinary module-discovery path instead of this registry. This crate
+//! stays because the selective-linking infrastructure it drives (Linker
+//! `extra_archives`, `hir::Module::used_packages`) remains the right design
+//! for future packages that genuinely need native Rust code (e.g. numeric
+//! libraries with BLAS).
+//!
+//! The schema piggybacks on `StdlibModuleDef` through type aliases so
+//! packages describe themselves with the same declarative format as the
 //! standard library. The aliases provide a stable surface for the compiler:
 //! when the schemas need to diverge in the future, we can introduce a
 //! dedicated `PackageModuleDef` type here without touching call sites.
@@ -22,14 +29,11 @@ pub type PackageAttrDef = pyaot_stdlib_defs::StdlibAttrDef;
 pub type PackageConstDef = pyaot_stdlib_defs::StdlibConstDef;
 pub type PackageClassDef = pyaot_stdlib_defs::StdlibClassDef;
 
-/// All registered packages. Entries are feature-gated so that disabling a
-/// Cargo feature on this crate excludes the package from both the compiler's
-/// registry and the build graph (the corresponding crate is then not a
-/// dependency at all).
-pub static ALL_PACKAGES: &[&PackageModuleDef] = &[
-    #[cfg(feature = "pkg-requests")]
-    &pyaot_pkg_requests::REQUESTS_MODULE,
-];
+/// All registered packages. Native Rust packages add themselves here via a
+/// `#[cfg(feature = "...")]` entry (see `Cargo.toml` of this crate for the
+/// feature list). Currently empty — `requests` lives in `site-packages/`
+/// as pure Python.
+pub static ALL_PACKAGES: &[&PackageModuleDef] = &[];
 
 /// Look up a package module definition by exact name.
 pub fn get_package(name: &str) -> Option<&'static PackageModuleDef> {
@@ -98,37 +102,12 @@ pub fn list_all_names(module_name: &str) -> Vec<&'static str> {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "pkg-requests")]
     #[test]
-    fn requests_is_registered() {
-        assert!(is_package("requests"));
-        let m = get_package("requests").expect("requests package missing");
-        assert_eq!(m.name, "requests");
-        assert!(m.get_function("get").is_some());
-    }
-
-    #[cfg(feature = "pkg-requests")]
-    #[test]
-    fn requests_get_has_expected_runtime_symbol() {
-        let m = get_package("requests").unwrap();
-        let f = m.get_function("get").unwrap();
-        assert_eq!(f.runtime_name, "rt_requests_get");
-        // url (required) + params + headers + timeout (all optional)
-        assert_eq!(f.min_args, 1);
-        assert_eq!(f.max_args, 4);
-    }
-
-    #[cfg(feature = "pkg-requests")]
-    #[test]
-    fn requests_exposes_full_verb_set() {
-        let m = get_package("requests").unwrap();
-        for verb in ["get", "post", "put", "delete"] {
-            let f = m
-                .get_function(verb)
-                .unwrap_or_else(|| panic!("missing requests.{}", verb));
-            assert_eq!(f.runtime_name, format!("rt_requests_{}", verb));
-            assert_eq!(f.return_type, pyaot_stdlib_defs::TypeSpec::HttpResponse);
-        }
+    fn registry_is_currently_empty() {
+        // Sanity: the Rust-pkg registry holds no entries right now
+        // (`requests` moved to site-packages/, future native pkgs will
+        // register themselves here).
+        assert!(ALL_PACKAGES.is_empty());
     }
 
     #[test]

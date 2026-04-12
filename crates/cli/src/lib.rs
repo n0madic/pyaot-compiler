@@ -107,6 +107,28 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
         }
     }
 
+    // Append bundled `site-packages/` locations so Python packages shipped
+    // with the compiler (e.g. `requests`) are importable without
+    // `--module-path`. Candidates, in priority order:
+    //   1. `<exe_dir>/site-packages`  — for installed / copied binaries
+    //   2. `<repo_root>/site-packages` — dev fallback baked in at compile time
+    // User-supplied paths and the input file's parent still win because they
+    // were pushed before this block.
+    let site_packages_candidates = [
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("site-packages"))),
+        Some(PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../site-packages"
+        ))),
+    ];
+    for root in site_packages_candidates.into_iter().flatten() {
+        if root.is_dir() {
+            search_paths.push(root);
+        }
+    }
+
     // Create module discovery
     let mut discovery = module_discovery::ModuleDiscovery::new(search_paths, options.verbose);
 

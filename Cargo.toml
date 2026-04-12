@@ -17,7 +17,6 @@ members = [
     "crates/diagnostics",
     "crates/utils",
     "crates/pkg/defs",
-    "crates/pkg/requests",
 ]
 
 [workspace.package]

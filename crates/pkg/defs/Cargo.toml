@@ -3,10 +3,5 @@ name = "pyaot-pkg-defs"
 version.workspace = true
 edition.workspace = true
 
-[features]
-default = ["pkg-requests"]
-pkg-requests = ["dep:pyaot-pkg-requests"]
-
 [dependencies]
 pyaot-stdlib-defs = { path = "../../stdlib-defs" }
-pyaot-pkg-requests = { path = "../requests", optional = true }
