@@ -255,6 +255,29 @@ impl AstToHir {
         Span::new(u32::from(range.start()), u32::from(range.end()))
     }
 
+    /// Allocate a placeholder `ClassId` for a cross-module user-class type
+    /// annotation. The real class id is only known after `mir_merger`'s first
+    /// pass, so we hand out ids from a reserved high range and rely on the
+    /// merger to rewrite `Type::Class` references before lowering. Same
+    /// `(module, name)` pair returns the same placeholder so type equality
+    /// across multiple annotations (e.g. `def f(x: Resp, y: Resp)`) holds.
+    pub(crate) fn alloc_external_class_ref(&mut self, module: String, name: String) -> ClassId {
+        for (&id, entry) in &self.module.external_class_refs {
+            if entry.0 == module && entry.1 == name {
+                return id;
+            }
+        }
+        // Placeholder ids come from the top of u32 space so they never
+        // collide with local user class ids (which grow from
+        // `FIRST_USER_CLASS_ID` upward).
+        let next_index = self.module.external_class_refs.len() as u32;
+        let class_id = ClassId::new(u32::MAX - next_index);
+        self.module
+            .external_class_refs
+            .insert(class_id, (module, name));
+        class_id
+    }
+
     pub fn convert(mut self, ast: py::Mod) -> Result<(Module, StringInterner)> {
         match ast {
             py::Mod::Module(m) => {

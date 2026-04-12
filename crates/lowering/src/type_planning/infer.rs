@@ -228,6 +228,21 @@ impl<'a> Lowering<'a> {
         } = &func_expr.kind
         {
             let key = (mod_name.clone(), name.clone());
+            // Class constructor: `from mymod import Foo; Foo(...)` lowers to
+            // a `Call { func: ImportedRef, ... }`. The call expression's
+            // type is the class being instantiated — use module_class_exports
+            // to recover the remapped class id. The class name must already
+            // be interned in the caller (it appeared as an import alias);
+            // skip the shortcut otherwise and fall through to the function-
+            // export lookup so we don't fabricate a garbage `InternedString`.
+            if let Some((class_id, class_name)) = self.get_module_class_export(&key).cloned() {
+                if let Some(name_interned) = self.lookup_interned(&class_name) {
+                    return Some(Type::Class {
+                        class_id,
+                        name: name_interned,
+                    });
+                }
+            }
             if let Some(return_type) = self.get_module_func_export(&key) {
                 return Some(return_type.clone());
             }

@@ -1,4 +1,4 @@
-use super::AstToHir;
+use super::{AstToHir, ImportedNameKind};
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::*;
 use pyaot_stdlib_defs::registry::get_class_type;
@@ -50,6 +50,34 @@ impl AstToHir {
                         class_id,
                         name: interned,
                     });
+                }
+
+                // Check for user classes imported from another module:
+                //   `from mymod import Response` → `r: Response = ...`
+                //
+                // The real `class_id` lives in the source module and is
+                // only known after `mir_merger`'s first pass. We emit a
+                // per-module-unique placeholder id in a reserved high
+                // range and record the `(module, class_name)` pair in
+                // `hir::Module.external_class_refs`. `mir_merger` rewrites
+                // all `Type::Class` entries with a placeholder id to the
+                // remapped real id before lowering, so function parameters
+                // and return types (where there's no RHS to refine from)
+                // still see the proper user class.
+                if let Some(imp) = self.imports.imported_names.get(&interned).cloned() {
+                    if matches!(
+                        imp.kind,
+                        ImportedNameKind::Unresolved | ImportedNameKind::Class(_)
+                    ) {
+                        let class_id = self.alloc_external_class_ref(
+                            imp.module.clone(),
+                            imp.original_name.clone(),
+                        );
+                        return Ok(Type::Class {
+                            class_id,
+                            name: interned,
+                        });
+                    }
                 }
 
                 // Check if it's a typing import that needs to be subscripted
@@ -192,6 +220,23 @@ impl AstToHir {
                     // Look up in stdlib registry (Single Source of Truth)
                     if let Some(type_spec) = get_class_type(module, type_name) {
                         return Ok(typespec_to_type(&type_spec));
+                    }
+
+                    // Cross-module user-class annotation: `r: mymod.Response`.
+                    // Mirror the `from import` path: allocate a placeholder
+                    // class id and let `mir_merger` rewrite it to the real
+                    // remapped id once cross-module class exports are known.
+                    let module_interned = self.interner.intern(module);
+                    if let Some(source_module) =
+                        self.imports.imported_modules.get(&module_interned).cloned()
+                    {
+                        let class_id =
+                            self.alloc_external_class_ref(source_module, type_name.to_string());
+                        let name_interned = self.interner.intern(type_name);
+                        return Ok(Type::Class {
+                            class_id,
+                            name: name_interned,
+                        });
                     }
                 }
                 Err(CompilerError::parse_error(

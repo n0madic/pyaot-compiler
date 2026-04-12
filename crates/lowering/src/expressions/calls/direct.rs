@@ -135,6 +135,22 @@ impl<'a> Lowering<'a> {
 
         // Handle imported function calls: ImportedRef or ModuleAttr
         if let hir::ExprKind::ImportedRef { module, name } = &func_expr.kind {
+            // Class constructor: `from mymod import Foo; Foo(...)` reaches
+            // here with `ImportedRef`. Route to the class-instantiation path
+            // so we emit `mymod.Foo$__init__` (not a bogus `mymod.Foo`
+            // function symbol, which doesn't exist in the generated MIR).
+            let key = (module.clone(), name.clone());
+            if let Some((class_id, class_name)) = self.get_module_class_export(&key).cloned() {
+                return self.lower_cross_module_class_instantiation(
+                    module,
+                    class_id,
+                    &class_name,
+                    args,
+                    kwargs,
+                    hir_module,
+                    mir_func,
+                );
+            }
             return self
                 .lower_imported_call(module, name, args, kwargs, expr, hir_module, mir_func);
         }

@@ -114,6 +114,16 @@ pub struct Module {
     /// `pyaot_pkg_defs`; the CLI resolves each name to a `.a` archive and
     /// passes it to the linker so unused packages aren't linked in.
     pub used_packages: IndexSet<String>,
+    /// Placeholder class ids for cross-module user-class type annotations.
+    ///
+    /// When the frontend sees `r: Response = ...` or `def f(x: mymod.Foo)`
+    /// and `Response`/`mymod.Foo` refers to a user class defined in another
+    /// module, the real `class_id` is only known after `mir_merger`'s first
+    /// pass. The frontend allocates a unique placeholder id and records
+    /// `(source_module_name, class_name)` here. `mir_merger` resolves the
+    /// pair against `module_class_exports` and rewrites every `Type::Class`
+    /// with the placeholder id to the remapped real id before lowering.
+    pub external_class_refs: IndexMap<ClassId, (String, String)>,
 }
 
 /// Class definition
@@ -787,6 +797,7 @@ impl Module {
             source_module_name: None,
             module_var_map: IndexMap::new(),
             used_packages: IndexSet::new(),
+            external_class_refs: IndexMap::new(),
         }
     }
 }
