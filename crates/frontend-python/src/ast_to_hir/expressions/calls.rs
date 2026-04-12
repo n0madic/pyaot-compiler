@@ -184,10 +184,70 @@ impl AstToHir {
             }));
         }
 
-        // Generic stdlib call
-        let mut args = Vec::new();
-        for arg in call.args.clone() {
-            args.push(self.convert_expr(arg)?);
+        // Generic stdlib call. Variadic functions (e.g. `os.path.join`)
+        // keep the simple pass-through so their trailing `*args` param
+        // receives every positional arg. Fixed-arity functions get the
+        // richer slot-filling path so callers can mix positional and
+        // keyword arguments (e.g. `Request(url, method="POST")` after
+        // `from urllib.request import Request`).
+        if stdlib_func.params.iter().any(|p| p.variadic) {
+            let mut args = Vec::new();
+            for arg in call.args.clone() {
+                args.push(self.convert_expr(arg)?);
+            }
+            return Ok(self.module.exprs.alloc(Expr {
+                kind: ExprKind::StdlibCall {
+                    func: stdlib_func,
+                    args,
+                },
+                ty: None,
+                span: expr_span,
+            }));
+        }
+        let mut arg_slots: Vec<Option<ExprId>> = vec![None; stdlib_func.params.len()];
+        for (i, arg) in call.args.iter().enumerate() {
+            if i < stdlib_func.params.len() {
+                arg_slots[i] = Some(self.convert_expr(arg.clone())?);
+            }
+        }
+        for kw in &call.keywords {
+            if let Some(ref kw_name) = kw.arg {
+                if let Some(pos) = stdlib_func
+                    .params
+                    .iter()
+                    .position(|p| p.name == kw_name.as_str())
+                {
+                    arg_slots[pos] = Some(self.convert_expr(kw.value.clone())?);
+                }
+            }
+        }
+        let last_filled = arg_slots.iter().rposition(|s| s.is_some());
+        let collect_len = last_filled.map_or(0, |i| i + 1);
+        let mut args = Vec::with_capacity(collect_len);
+        for (i, slot) in arg_slots.iter().enumerate().take(collect_len) {
+            if let Some(expr_id) = slot {
+                args.push(*expr_id);
+            } else {
+                let param = &stdlib_func.params[i];
+                let default_expr = if let Some(ref dv) = param.default {
+                    match dv {
+                        pyaot_stdlib_defs::ConstValue::Int(v) => ExprKind::Int(*v),
+                        pyaot_stdlib_defs::ConstValue::Float(v) => ExprKind::Float(*v),
+                        pyaot_stdlib_defs::ConstValue::Bool(v) => ExprKind::Bool(*v),
+                        pyaot_stdlib_defs::ConstValue::Str(s) => {
+                            ExprKind::Str(self.interner.intern(s))
+                        }
+                    }
+                } else {
+                    ExprKind::None
+                };
+                let filler = self.module.exprs.alloc(Expr {
+                    kind: default_expr,
+                    ty: None,
+                    span: expr_span,
+                });
+                args.push(filler);
+            }
         }
         Ok(self.module.exprs.alloc(Expr {
             kind: ExprKind::StdlibCall {
