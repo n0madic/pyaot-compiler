@@ -44,12 +44,23 @@ fn mk_var(m: &mut hir::Module, var_id: VarId, ty: Type, span: Span) -> hir::Expr
 }
 
 /// Allocate a `GeneratorIntrinsic::GetLocal` expression.
-fn mk_get_local(m: &mut hir::Module, gen_obj_var: VarId, idx: u32, span: Span) -> hir::ExprId {
+///
+/// `ty` declares the logical Python type stored in the slot (e.g. `Int`, `Str`,
+/// `Iterator[Any]`). The runtime always returns raw i64 bits; the HIR-level
+/// type is used for bidirectional coercion and type validation of the
+/// surrounding assignment.
+fn mk_get_local(
+    m: &mut hir::Module,
+    gen_obj_var: VarId,
+    idx: u32,
+    ty: Type,
+    span: Span,
+) -> hir::ExprId {
     let g = mk_var(m, gen_obj_var, Type::HeapAny, span);
     mk_expr(
         m,
         hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::GetLocal { gen: g, idx }),
-        Some(Type::Int),
+        Some(ty),
         span,
     )
 }
@@ -195,7 +206,7 @@ fn emit_load_all_vars(
     span: Span,
 ) {
     for gv in gen_vars {
-        let get = mk_get_local(m, gen_obj_var, gv.gen_local_idx, span);
+        let get = mk_get_local(m, gen_obj_var, gv.gen_local_idx, gv.ty.clone(), span);
         body.push(mk_stmt(
             m,
             hir::StmtKind::Assign {
@@ -684,7 +695,7 @@ fn build_while_init(
     // Load parameters
     for gv in gen_vars {
         if gv.is_param {
-            let get = mk_get_local(m, gen_obj_var, gv.gen_local_idx, span);
+            let get = mk_get_local(m, gen_obj_var, gv.gen_local_idx, gv.ty.clone(), span);
             body.push(mk_stmt(
                 m,
                 hir::StmtKind::Assign {
@@ -867,13 +878,14 @@ fn build_for_loop_resume(
     *next_var_id += 1;
 
     // iter = __gen_get_local(gen_obj, 0)
-    let get_iter = mk_get_local(m, gen_obj_var, 0, span);
+    let iter_ty = Type::Iterator(Box::new(Type::Any));
+    let get_iter = mk_get_local(m, gen_obj_var, 0, iter_ty.clone(), span);
     stmts.push(mk_stmt(
         m,
         hir::StmtKind::Assign {
             target: iter_var,
             value: get_iter,
-            type_hint: Some(Type::Iterator(Box::new(Type::Any))),
+            type_hint: Some(iter_ty),
         },
         span,
     ));

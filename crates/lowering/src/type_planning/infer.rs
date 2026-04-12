@@ -500,6 +500,9 @@ impl<'a> Lowering<'a> {
                 hir::GeneratorIntrinsic::Create { .. } => Type::Iterator(Box::new(Type::Any)),
                 hir::GeneratorIntrinsic::IsExhausted(_)
                 | hir::GeneratorIntrinsic::IterIsExhausted(_) => Type::Bool,
+                // GetLocal: slot storage is type-erased (i64); desugaring annotates
+                // `expr.ty` with the logical Python type stored in the slot.
+                hir::GeneratorIntrinsic::GetLocal { .. } => expr.ty.clone().unwrap_or(Type::Int),
                 _ => Type::Int,
             },
             _ => expr.ty.clone().unwrap_or(Type::Any),
@@ -708,6 +711,9 @@ impl<'a> Lowering<'a> {
                 hir::GeneratorIntrinsic::Create { .. } => Type::Iterator(Box::new(Type::Any)),
                 hir::GeneratorIntrinsic::IsExhausted(_)
                 | hir::GeneratorIntrinsic::IterIsExhausted(_) => Type::Bool,
+                // GetLocal: slot storage is type-erased (i64); desugaring annotates
+                // `expr.ty` with the logical Python type stored in the slot.
+                hir::GeneratorIntrinsic::GetLocal { .. } => expr.ty.clone().unwrap_or(Type::Int),
                 _ => Type::Int,
             },
             _ => expr.ty.clone().unwrap_or(Type::Any),
