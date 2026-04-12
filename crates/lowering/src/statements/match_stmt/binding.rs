@@ -20,39 +20,41 @@ impl<'a> Lowering<'a> {
         ty: &Type,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
-
-        match ty {
+        let result_local = match ty {
             Type::Str => {
                 // String comparison
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
+                self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(
                         mir::CompareKind::Str.runtime_func_def(mir::ComparisonOp::Eq),
                     ),
-                    args: vec![left, right],
-                });
+                    vec![left, right],
+                    Type::Bool,
+                    mir_func,
+                )
             }
             Type::Int | Type::Bool | Type::Float => {
                 // Primitive comparison
+                let local = self.alloc_and_add_local(Type::Bool, mir_func);
                 self.emit_instruction(mir::InstructionKind::BinOp {
-                    dest: result_local,
+                    dest: local,
                     op: mir::BinOp::Eq,
                     left,
                     right,
                 });
+                local
             }
             _ => {
                 // For other types, use object equality
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
+                self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(
                         mir::CompareKind::Obj.runtime_func_def(mir::ComparisonOp::Eq),
                     ),
-                    args: vec![left, right],
-                });
+                    vec![left, right],
+                    Type::Bool,
+                    mir_func,
+                )
             }
-        }
+        };
 
         Ok(mir::Operand::Local(result_local))
     }

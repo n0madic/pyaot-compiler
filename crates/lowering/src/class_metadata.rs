@@ -263,10 +263,6 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) {
-        // Allocate a dummy local for the void return of registration calls
-        // Use Type::Int since we store a 0 constant (i64)
-        let dummy_local = self.alloc_and_add_local(Type::Int, mir_func);
-
         // Register all classes with their parent (or 255 if no parent - sentinel value)
         // Use offset-adjusted ClassIds to avoid collisions across modules
         for (class_id, class_def) in &hir_module.class_defs {
@@ -292,14 +288,14 @@ impl<'a> Lowering<'a> {
                 255
             };
 
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_REGISTER_CLASS),
-                args: vec![
+            self.emit_runtime_call_void(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_REGISTER_CLASS),
+                vec![
                     mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                     mir::Operand::Constant(mir::Constant::Int(parent_class_id)),
                 ],
-            });
+                mir_func,
+            );
 
             // Compute heap field mask: bit i is set if field i is a heap type (pointer)
             // that needs GC tracing. Raw values (Int, Float, Bool, None) are NOT heap.
@@ -332,32 +328,32 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::Call(
+            self.emit_runtime_call_void(
+                mir::RuntimeFunc::Call(
                     &pyaot_core_defs::runtime_func_def::RT_REGISTER_CLASS_FIELDS,
                 ),
-                args: vec![
+                vec![
                     mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                     mir::Operand::Constant(mir::Constant::Int(heap_field_mask)),
                 ],
-            });
+                mir_func,
+            );
 
             // Register field count for object.__new__ support
             let total_field_count = self
                 .get_class_info(class_id)
                 .map(|ci| ci.total_field_count as i64)
                 .unwrap_or(0);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: dummy_local,
-                func: mir::RuntimeFunc::Call(
+            self.emit_runtime_call_void(
+                mir::RuntimeFunc::Call(
                     &pyaot_core_defs::runtime_func_def::RT_REGISTER_CLASS_FIELD_COUNT,
                 ),
-                args: vec![
+                vec![
                     mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                     mir::Operand::Constant(mir::Constant::Int(total_field_count)),
                 ],
-            });
+                mir_func,
+            );
 
             // Register dunder function pointers (__del__, __copy__, __deepcopy__)
             // These are called from the runtime via function pointer registries.
@@ -399,14 +395,14 @@ impl<'a> Lowering<'a> {
                     dest: func_addr_local,
                     func: func_id,
                 });
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: reg_func,
-                    args: vec![
+                self.emit_runtime_call_void(
+                    reg_func,
+                    vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                         mir::Operand::Local(func_addr_local),
                     ],
-                });
+                    mir_func,
+                );
             }
 
             // Register method name→slot mappings for Protocol dispatch.
@@ -425,30 +421,30 @@ impl<'a> Lowering<'a> {
                 })
                 .unwrap_or_default();
             for (name_hash, slot) in method_slots {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::Call(
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(
                         &pyaot_core_defs::runtime_func_def::RT_REGISTER_METHOD_NAME,
                     ),
-                    args: vec![
+                    vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                         mir::Operand::Constant(mir::Constant::Int(name_hash)),
                         mir::Operand::Constant(mir::Constant::Int(slot)),
                     ],
-                });
+                    mir_func,
+                );
             }
 
             // For exception classes, also register the class name for error messages
             if class_def.is_exception_class {
                 // class_def.name is already an InternedString, use it directly
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: dummy_local,
-                    func: mir::RuntimeFunc::ExcRegisterClassName,
-                    args: vec![
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::ExcRegisterClassName,
+                    vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                         mir::Operand::Constant(mir::Constant::Str(class_def.name)),
                     ],
-                });
+                    mir_func,
+                );
             }
         }
     }

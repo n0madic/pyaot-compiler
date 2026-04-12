@@ -329,23 +329,21 @@ impl<'a> Lowering<'a> {
                 class_info.class_attr_offsets.get(&attr),
                 class_info.class_attr_types.get(&attr).cloned(),
             ) {
-                // Allocate result local
-                let result_local = self.alloc_and_add_local(attr_type.clone(), mir_func);
-
                 // Get the appropriate runtime function based on type
                 let get_func = self.get_class_attr_get_func(&attr_type);
 
                 // Emit runtime call: rt_class_attr_get_*(owning_class_id, attr_idx)
                 // Use the owning_class_id, not the accessed class_id, to handle inheritance
                 let effective_class_id = self.get_effective_class_id(owning_class_id);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: get_func,
-                    args: vec![
+                let result_local = self.emit_runtime_call(
+                    get_func,
+                    vec![
                         mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
                         mir::Operand::Constant(mir::Constant::Int(attr_offset as i64)),
                     ],
-                });
+                    attr_type,
+                    mir_func,
+                );
 
                 return Ok(mir::Operand::Local(result_local));
             }

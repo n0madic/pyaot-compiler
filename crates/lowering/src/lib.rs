@@ -39,17 +39,12 @@ impl<'a> Lowering<'a> {
         runtime_func: mir::RuntimeFunc,
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
-        let boxed_local = self.alloc_gc_local(result_ty, mir_func);
         let args = if matches!(runtime_func, mir::RuntimeFunc::Call(def) if def.params.is_empty()) {
             vec![]
         } else {
             vec![operand]
         };
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: boxed_local,
-            func: runtime_func,
-            args,
-        });
+        let boxed_local = self.emit_runtime_call_gc(runtime_func, args, result_ty, mir_func);
         mir::Operand::Local(boxed_local)
     }
 

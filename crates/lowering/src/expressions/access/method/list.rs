@@ -294,7 +294,6 @@ impl<'a> Lowering<'a> {
             "sort" => {
                 // CPython signature: list.sort(*, key=None, reverse=False)
                 // All arguments are keyword-only; positional args are not allowed
-                let result_local = self.alloc_and_add_local(Type::None, mir_func);
 
                 // Reject positional arguments (CPython behavior)
                 if !arg_operands.is_empty() {
@@ -322,7 +321,7 @@ impl<'a> Lowering<'a> {
                 let sort_kwargs = self.extract_sort_kwargs(kwargs, hir_module, mir_func)?;
 
                 // If key function is provided, use ListSortWithKey
-                if let Some(resolved) = self.emit_key_func_with_captures(
+                let result_local = if let Some(resolved) = self.emit_key_func_with_captures(
                     sort_kwargs.key_func.as_ref(),
                     hir_module,
                     mir_func,
@@ -336,12 +335,11 @@ impl<'a> Lowering<'a> {
                         .unwrap_or(0);
                     let elem_tag_operand = mir::Operand::Constant(mir::Constant::Int(elem_tag));
 
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
+                    self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_LIST_SORT_WITH_KEY,
                         ),
-                        args: vec![
+                        vec![
                             obj_operand,
                             sort_kwargs.reverse,
                             resolved.func_addr,
@@ -349,17 +347,18 @@ impl<'a> Lowering<'a> {
                             resolved.captures,
                             resolved.capture_count,
                         ],
-                    });
+                        Type::None,
+                        mir_func,
+                    )
                 } else {
                     // No key function - use standard ListSort
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_LIST_SORT,
-                        ),
-                        args: vec![obj_operand, sort_kwargs.reverse],
-                    });
-                }
+                    self.emit_runtime_call(
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SORT),
+                        vec![obj_operand, sort_kwargs.reverse],
+                        Type::None,
+                        mir_func,
+                    )
+                };
 
                 Ok(mir::Operand::Local(result_local))
             }

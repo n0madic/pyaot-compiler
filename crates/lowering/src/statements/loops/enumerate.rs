@@ -336,17 +336,16 @@ impl<'a> Lowering<'a> {
 
         // Handle dict/set conversion to list for iteration
         let (actual_iter_local, _converted) = if iterable_kind == IterableKind::Dict {
-            let keys_local =
-                self.alloc_and_add_local(Type::List(Box::new(elem_type.clone())), mir_func);
             let key_elem_tag = crate::type_dispatch::elem_tag_for_type(&elem_type);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: keys_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
-                args: vec![
+            let keys_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
+                vec![
                     mir::Operand::Local(iter_local),
                     mir::Operand::Constant(mir::Constant::Int(key_elem_tag)),
                 ],
-            });
+                Type::List(Box::new(elem_type.clone())),
+                mir_func,
+            );
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: len_local,
                 func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),

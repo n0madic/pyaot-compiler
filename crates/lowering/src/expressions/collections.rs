@@ -108,7 +108,6 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         let tuple_type = self.get_expr_type(expr, hir_module);
-        let result_local = self.alloc_and_add_local(tuple_type.clone(), mir_func);
 
         // Determine elem_tag for tuple
         // If all elements have the same primitive type, use that tag
@@ -127,14 +126,15 @@ impl<'a> Lowering<'a> {
 
         // Create tuple with size and elem_tag
         let size = elements.len() as i64;
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
-            args: vec![
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
+            vec![
                 mir::Operand::Constant(mir::Constant::Int(size)),
                 mir::Operand::Constant(mir::Constant::Int(elem_tag)),
             ],
-        });
+            tuple_type.clone(),
+            mir_func,
+        );
 
         // Set each element
         for (i, elem_id) in elements.iter().enumerate() {
@@ -216,15 +216,14 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        let result_local = self.alloc_and_add_local(dict_type.clone(), mir_func);
-
         // Create dict with capacity
         let capacity = pairs.len().max(8) as i64;
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DICT),
-            args: vec![mir::Operand::Constant(mir::Constant::Int(capacity))],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DICT),
+            vec![mir::Operand::Constant(mir::Constant::Int(capacity))],
+            dict_type.clone(),
+            mir_func,
+        );
 
         // Insert each key-value pair
         for (key_id, value_id) in pairs {
@@ -274,15 +273,14 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        let result_local = self.alloc_and_add_local(set_type.clone(), mir_func);
-
         // Create set with capacity
         let capacity = elements.len().max(8) as i64;
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_SET),
-            args: vec![mir::Operand::Constant(mir::Constant::Int(capacity))],
-        });
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_SET),
+            vec![mir::Operand::Constant(mir::Constant::Int(capacity))],
+            set_type.clone(),
+            mir_func,
+        );
 
         // Add each element
         for elem_id in elements {

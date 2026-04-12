@@ -645,19 +645,17 @@ impl<'a> Lowering<'a> {
                                 .cloned()
                                 .unwrap_or(Type::Any);
 
-                            let result_local =
-                                self.alloc_and_add_local(field_type.clone(), mir_func);
-
-                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                                dest: result_local,
-                                func: mir::RuntimeFunc::Call(
+                            let result_local = self.emit_runtime_call(
+                                mir::RuntimeFunc::Call(
                                     &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
                                 ),
-                                args: vec![
+                                vec![
                                     obj_operand,
                                     mir::Operand::Constant(mir::Constant::Int(offset as i64)),
                                 ],
-                            });
+                                field_type,
+                                mir_func,
+                            );
 
                             return Ok(mir::Operand::Local(result_local));
                         }

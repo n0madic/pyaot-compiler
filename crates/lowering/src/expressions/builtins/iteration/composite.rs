@@ -49,19 +49,12 @@ impl<'a> Lowering<'a> {
                 elem_types.push(elem_type);
             }
 
-            let result_local = self.alloc_local_id();
-            mir_func.add_local(mir::Local {
-                id: result_local,
-                name: None,
-                ty: Type::Iterator(Box::new(Type::Tuple(elem_types))),
-                is_gc_root: true,
-            });
-
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: result_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ZIP3_NEW),
-                args: iter_locals,
-            });
+            let result_local = self.emit_runtime_call_gc(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ZIP3_NEW),
+                iter_locals,
+                Type::Iterator(Box::new(Type::Tuple(elem_types))),
+                mir_func,
+            );
 
             return Ok(mir::Operand::Local(result_local));
         } else if args.len() > 3 {
@@ -102,22 +95,15 @@ impl<'a> Lowering<'a> {
                 );
             }
 
-            let result_local = self.alloc_local_id();
-            mir_func.add_local(mir::Local {
-                id: result_local,
-                name: None,
-                ty: Type::Iterator(Box::new(Type::Tuple(elem_types))),
-                is_gc_root: true,
-            });
-
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: result_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ZIPN_NEW),
-                args: vec![
+            let result_local = self.emit_runtime_call_gc(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ZIPN_NEW),
+                vec![
                     mir::Operand::Local(iter_list_local),
                     mir::Operand::Constant(mir::Constant::Int(count)),
                 ],
-            });
+                Type::Iterator(Box::new(Type::Tuple(elem_types))),
+                mir_func,
+            );
 
             return Ok(mir::Operand::Local(result_local));
         }
@@ -250,25 +236,18 @@ impl<'a> Lowering<'a> {
         }
 
         // Create zip iterator
-        let result_local = self.alloc_local_id();
-        mir_func.add_local(mir::Local {
-            id: result_local,
-            name: None,
-            ty: Type::Iterator(Box::new(Type::Tuple(vec![
-                first_elem_type,
-                second_elem_type,
-            ]))),
-            is_gc_root: true,
-        });
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ZIP_NEW),
-            args: vec![
+        let result_local = self.emit_runtime_call_gc(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ZIP_NEW),
+            vec![
                 mir::Operand::Local(first_iter_local),
                 mir::Operand::Local(second_iter_local),
             ],
-        });
+            Type::Iterator(Box::new(Type::Tuple(vec![
+                first_elem_type,
+                second_elem_type,
+            ]))),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }

@@ -186,17 +186,16 @@ impl<'a> Lowering<'a> {
         // For dict and set iteration, we need to convert to list first, then iterate by index
         let (actual_iter_local, converted_list_local) = if iterable_kind == IterableKind::Dict {
             // Get dict keys as a list
-            let keys_local =
-                self.alloc_and_add_local(Type::List(Box::new(elem_type.clone())), mir_func);
             let key_elem_tag = crate::type_dispatch::elem_tag_for_type(&elem_type);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: keys_local,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
-                args: vec![
+            let keys_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
+                vec![
                     mir::Operand::Local(iter_local),
                     mir::Operand::Constant(mir::Constant::Int(key_elem_tag)),
                 ],
-            });
+                Type::List(Box::new(elem_type.clone())),
+                mir_func,
+            );
             // Get length from the keys list
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: len_local,

@@ -77,12 +77,12 @@ impl<'a> Lowering<'a> {
             } else {
                 // Merge extra_keywords into remaining dict
                 for (key_name, value_op) in &extra_keywords {
-                    let key_local = self.alloc_gc_local(Type::Str, mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: key_local,
-                        func: mir::RuntimeFunc::MakeStr,
-                        args: vec![mir::Operand::Constant(mir::Constant::Str(*key_name))],
-                    });
+                    let key_local = self.emit_runtime_call_gc(
+                        mir::RuntimeFunc::MakeStr,
+                        vec![mir::Operand::Constant(mir::Constant::Str(*key_name))],
+                        Type::Str,
+                        mir_func,
+                    );
 
                     self.emit_runtime_call(
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
@@ -141,15 +141,12 @@ impl<'a> Lowering<'a> {
 
         // Build remaining dict for **kwargs if needed
         if has_kwarg_param {
-            let remaining_dict = self.alloc_gc_local(
+            let remaining_dict = self.emit_runtime_call_gc(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_COPY),
+                vec![mir::Operand::Local(dict_local)],
                 Type::Dict(Box::new(Type::Str), Box::new(value_type.clone())),
                 mir_func,
             );
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: remaining_dict,
-                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_COPY),
-                args: vec![mir::Operand::Local(dict_local)],
-            });
 
             // Remove consumed keys
             for key_local in &consumed_keys {
@@ -211,12 +208,12 @@ impl<'a> Lowering<'a> {
     ) -> Result<Option<(LocalId, LocalId)>> {
         let param_name_str = self.resolve(param.name).to_string();
         let key_interned = self.intern(&param_name_str);
-        let key_local = self.alloc_gc_local(Type::Str, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: key_local,
-            func: mir::RuntimeFunc::MakeStr,
-            args: vec![mir::Operand::Constant(mir::Constant::Str(key_interned))],
-        });
+        let key_local = self.emit_runtime_call_gc(
+            mir::RuntimeFunc::MakeStr,
+            vec![mir::Operand::Constant(mir::Constant::Str(key_interned))],
+            Type::Str,
+            mir_func,
+        );
 
         // Check if dict contains key
         let contains_local = self.emit_runtime_call(

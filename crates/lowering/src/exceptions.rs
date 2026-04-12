@@ -547,22 +547,14 @@ impl<'a> Lowering<'a> {
                 // Variable exists - create cell with current value
                 let var_type = self.get_var_type(var_id).cloned().unwrap_or(Type::Int);
 
-                // Allocate a local for the cell (cells are heap objects, need GC tracking)
-                let cell_local = self.alloc_local_id();
-                mir_func.add_local(mir::Local {
-                    id: cell_local,
-                    name: None,
-                    ty: Type::HeapAny, // Cell pointer (heap object)
-                    is_gc_root: true,  // Cells are heap objects
-                });
-
-                // Create cell with current value
+                // Create cell with current value (heap object, always GC root)
                 let make_func = self.get_make_cell_func(&var_type);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: cell_local,
-                    func: make_func,
-                    args: vec![mir::Operand::Local(existing_local)],
-                });
+                let cell_local = self.emit_runtime_call_gc(
+                    make_func,
+                    vec![mir::Operand::Local(existing_local)],
+                    Type::HeapAny,
+                    mir_func,
+                );
 
                 try_cell_locals.insert(*var_id, cell_local);
             }

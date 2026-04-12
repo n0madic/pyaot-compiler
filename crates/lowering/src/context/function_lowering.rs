@@ -246,15 +246,6 @@ impl<'a> Lowering<'a> {
             // Get the current local for this variable (might be a parameter or declared later)
             let initial_local = self.get_var_local(&var_id);
 
-            // Create a local to hold the cell pointer
-            let cell_local = self.alloc_local_id();
-            mir_func.add_local(mir::Local {
-                id: cell_local,
-                name: None,
-                ty: Type::HeapAny, // Cell pointer (heap object)
-                is_gc_root: true,  // Cells are heap objects
-            });
-
             // Create the cell with the initial value (or default if not yet initialized)
             let make_cell_func = self.get_make_cell_func(&var_type);
             let initial_value = if let Some(local_id) = initial_local {
@@ -269,11 +260,13 @@ impl<'a> Lowering<'a> {
                 }
             };
 
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: cell_local,
-                func: make_cell_func,
-                args: vec![initial_value],
-            });
+            // Create a local to hold the cell pointer (heap object, always GC root)
+            let cell_local = self.emit_runtime_call_gc(
+                make_cell_func,
+                vec![initial_value],
+                Type::HeapAny,
+                &mut mir_func,
+            );
 
             // Map this variable to its cell for later reads/writes
             self.symbols.nonlocal_cells.insert(var_id, cell_local);

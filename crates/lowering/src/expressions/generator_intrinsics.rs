@@ -41,128 +41,128 @@ impl<'a> Lowering<'a> {
             hir::GeneratorIntrinsic::GetState(gen_expr_id) => {
                 let gen_op =
                     self.lower_expr(&hir_module.exprs[*gen_expr_id], hir_module, mir_func)?;
-                let dest = self.alloc_and_add_local(Type::Int, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest,
-                    func: mir::RuntimeFunc::Call(&RT_GENERATOR_GET_STATE),
-                    args: vec![gen_op],
-                });
+                let dest = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&RT_GENERATOR_GET_STATE),
+                    vec![gen_op],
+                    Type::Int,
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(dest))
             }
 
             hir::GeneratorIntrinsic::SetState { gen, state } => {
                 let gen_op = self.lower_expr(&hir_module.exprs[*gen], hir_module, mir_func)?;
-                let dest = self.alloc_and_add_local(Type::Int, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest,
-                    func: mir::RuntimeFunc::Call(&RT_GENERATOR_SET_STATE),
-                    args: vec![gen_op, mir::Operand::Constant(mir::Constant::Int(*state))],
-                });
+                let dest = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&RT_GENERATOR_SET_STATE),
+                    vec![gen_op, mir::Operand::Constant(mir::Constant::Int(*state))],
+                    Type::Int,
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(dest))
             }
 
             hir::GeneratorIntrinsic::GetLocal { gen, idx } => {
                 let gen_op = self.lower_expr(&hir_module.exprs[*gen], hir_module, mir_func)?;
-                let dest = self.alloc_and_add_local(Type::Int, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest,
-                    func: mir::RuntimeFunc::Call(&RT_GENERATOR_GET_LOCAL),
-                    args: vec![
+                let dest = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&RT_GENERATOR_GET_LOCAL),
+                    vec![
                         gen_op,
                         mir::Operand::Constant(mir::Constant::Int(*idx as i64)),
                     ],
-                });
+                    Type::Int,
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(dest))
             }
 
             hir::GeneratorIntrinsic::SetLocal { gen, idx, value } => {
                 let gen_op = self.lower_expr(&hir_module.exprs[*gen], hir_module, mir_func)?;
                 let val_op = self.lower_expr(&hir_module.exprs[*value], hir_module, mir_func)?;
-                let dest = self.alloc_and_add_local(Type::Int, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest,
-                    func: mir::RuntimeFunc::Call(&RT_GENERATOR_SET_LOCAL),
-                    args: vec![
+                let dest = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&RT_GENERATOR_SET_LOCAL),
+                    vec![
                         gen_op,
                         mir::Operand::Constant(mir::Constant::Int(*idx as i64)),
                         val_op,
                     ],
-                });
+                    Type::Int,
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(dest))
             }
 
             hir::GeneratorIntrinsic::SetLocalType { gen, idx, type_tag } => {
                 let gen_op = self.lower_expr(&hir_module.exprs[*gen], hir_module, mir_func)?;
-                let dest = self.alloc_and_add_local(Type::Int, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest,
-                    func: mir::RuntimeFunc::Call(&RT_GENERATOR_SET_LOCAL_TYPE),
-                    args: vec![
+                let dest = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&RT_GENERATOR_SET_LOCAL_TYPE),
+                    vec![
                         gen_op,
                         mir::Operand::Constant(mir::Constant::Int(*idx as i64)),
                         mir::Operand::Constant(mir::Constant::Int(*type_tag as i64)),
                     ],
-                });
+                    Type::Int,
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(dest))
             }
 
             hir::GeneratorIntrinsic::SetExhausted(gen_expr_id) => {
                 let gen_op =
                     self.lower_expr(&hir_module.exprs[*gen_expr_id], hir_module, mir_func)?;
-                let dest = self.alloc_and_add_local(Type::Int, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest,
-                    func: mir::RuntimeFunc::Call(&RT_GENERATOR_SET_EXHAUSTED),
-                    args: vec![gen_op],
-                });
+                let dest = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&RT_GENERATOR_SET_EXHAUSTED),
+                    vec![gen_op],
+                    Type::Int,
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(dest))
             }
 
             hir::GeneratorIntrinsic::IsExhausted(gen_expr_id) => {
                 let gen_op =
                     self.lower_expr(&hir_module.exprs[*gen_expr_id], hir_module, mir_func)?;
-                let dest = self.alloc_and_add_local(Type::Bool, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest,
-                    func: mir::RuntimeFunc::Call(&RT_GENERATOR_IS_EXHAUSTED),
-                    args: vec![gen_op],
-                });
+                let dest = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&RT_GENERATOR_IS_EXHAUSTED),
+                    vec![gen_op],
+                    Type::Bool,
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(dest))
             }
 
             hir::GeneratorIntrinsic::GetSentValue(gen_expr_id) => {
                 let gen_op =
                     self.lower_expr(&hir_module.exprs[*gen_expr_id], hir_module, mir_func)?;
-                let dest = self.alloc_and_add_local(Type::Int, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest,
-                    func: mir::RuntimeFunc::Call(&RT_GENERATOR_GET_SENT_VALUE),
-                    args: vec![gen_op],
-                });
+                let dest = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&RT_GENERATOR_GET_SENT_VALUE),
+                    vec![gen_op],
+                    Type::Int,
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(dest))
             }
 
             hir::GeneratorIntrinsic::IterNextNoExc(iter_expr_id) => {
                 let iter_op =
                     self.lower_expr(&hir_module.exprs[*iter_expr_id], hir_module, mir_func)?;
-                let dest = self.alloc_and_add_local(Type::Int, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest,
-                    func: mir::RuntimeFunc::Call(&RT_ITER_NEXT_NO_EXC),
-                    args: vec![iter_op],
-                });
+                let dest = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&RT_ITER_NEXT_NO_EXC),
+                    vec![iter_op],
+                    Type::Int,
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(dest))
             }
 
             hir::GeneratorIntrinsic::IterIsExhausted(iter_expr_id) => {
                 let iter_op =
                     self.lower_expr(&hir_module.exprs[*iter_expr_id], hir_module, mir_func)?;
-                let dest = self.alloc_and_add_local(Type::Bool, mir_func);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest,
-                    func: mir::RuntimeFunc::Call(&RT_ITER_IS_EXHAUSTED),
-                    args: vec![iter_op],
-                });
+                let dest = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&RT_ITER_IS_EXHAUSTED),
+                    vec![iter_op],
+                    Type::Bool,
+                    mir_func,
+                );
                 Ok(mir::Operand::Local(dest))
             }
         }

@@ -94,9 +94,6 @@ impl<'a> Lowering<'a> {
             src: iter_operand,
         });
 
-        // Get length
-        let len_local = self.alloc_and_add_local(Type::Int, mir_func);
-
         let len_func = match kind {
             IterableKind::List => {
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN)
@@ -115,11 +112,13 @@ impl<'a> Lowering<'a> {
             | IterableKind::Iterator
             | IterableKind::File => unreachable!("handled by lower_for_unpack_iterator"),
         };
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: len_local,
-            func: len_func,
-            args: vec![mir::Operand::Local(iter_local)],
-        });
+        // Get length
+        let len_local = self.emit_runtime_call(
+            len_func,
+            vec![mir::Operand::Local(iter_local)],
+            Type::Int,
+            mir_func,
+        );
 
         // Initialize index
         let idx_local = self.alloc_and_add_local(Type::Int, mir_func);

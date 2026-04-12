@@ -130,22 +130,15 @@ impl<'a> Lowering<'a> {
         }
 
         // Create chain iterator
-        let result_local = self.alloc_local_id();
-        mir_func.add_local(mir::Local {
-            id: result_local,
-            name: None,
-            ty: Type::Iterator(Box::new(Type::Any)),
-            is_gc_root: true,
-        });
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CHAIN_NEW),
-            args: vec![
+        let result_local = self.emit_runtime_call_gc(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CHAIN_NEW),
+            vec![
                 mir::Operand::Local(iters_list_local),
                 mir::Operand::Constant(mir::Constant::Int(num_iters)),
             ],
-        });
+            Type::Iterator(Box::new(Type::Any)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
@@ -244,24 +237,17 @@ impl<'a> Lowering<'a> {
         };
 
         // Create islice iterator
-        let result_local = self.alloc_local_id();
-        mir_func.add_local(mir::Local {
-            id: result_local,
-            name: None,
-            ty: Type::Iterator(Box::new(Type::Any)),
-            is_gc_root: true,
-        });
-
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-            dest: result_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ISLICE_NEW),
-            args: vec![
+        let result_local = self.emit_runtime_call_gc(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ISLICE_NEW),
+            vec![
                 mir::Operand::Local(inner_iter_local),
                 start_op,
                 stop_op,
                 step_op,
             ],
-        });
+            Type::Iterator(Box::new(Type::Any)),
+            mir_func,
+        );
 
         Ok(mir::Operand::Local(result_local))
     }
