@@ -101,7 +101,7 @@ impl<'a> Lowering<'a> {
     /// Unpack a list at runtime, handling varargs and default values.
     ///
     /// Returns a vector of operands extracted from the list.
-    fn lower_runtime_list_unpack(
+    pub(crate) fn lower_runtime_list_unpack(
         &mut self,
         expr_id: hir::ExprId,
         already_processed: &[mir::Operand],

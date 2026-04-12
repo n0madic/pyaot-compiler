@@ -44,8 +44,27 @@ impl<'a> Lowering<'a> {
             all_args.push(capture_op);
         }
 
-        // Then lower regular call arguments with runtime unpacking support
-        let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
+        // Lower regular call arguments. When the function definition is available, use
+        // resolve_call_args so that *list unpacking and default parameters are handled
+        // correctly. Fall back to lower_expanded_args when the definition is absent.
+        let func_def = hir_module.func_defs.get(&func_id);
+        let arg_operands = if let Some(func_def) = func_def {
+            let n_captures = captures.len();
+            let user_params: Vec<hir::Param> =
+                func_def.params.iter().skip(n_captures).cloned().collect();
+            self.resolve_call_args(
+                args,
+                &[],
+                &user_params,
+                Some(func_id),
+                n_captures,
+                self.call_span(),
+                hir_module,
+                mir_func,
+            )?
+        } else {
+            self.lower_expanded_args(args, hir_module, mir_func)?
+        };
         all_args.extend(arg_operands);
 
         // Get return type: check inferred types first, then HIR definition
@@ -124,9 +143,26 @@ impl<'a> Lowering<'a> {
             )?;
             all_args.extend(user_arg_operands);
         } else {
-            // No *args — lower directly (existing behavior)
-            let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
-            all_args.extend(arg_operands);
+            // No *args — use resolve_call_args so that *list unpacking and default
+            // parameters work correctly even in the non-varargs wrapper path.
+            let user_arg_operands =
+                if let Some(wrapper_def) = hir_module.func_defs.get(&wrapper_func_id) {
+                    let user_params: Vec<hir::Param> =
+                        wrapper_def.params.iter().skip(1).cloned().collect();
+                    self.resolve_call_args(
+                        args,
+                        kwargs,
+                        &user_params,
+                        Some(wrapper_func_id),
+                        1, // offset for the func-ptr capture param
+                        self.call_span(),
+                        hir_module,
+                        mir_func,
+                    )?
+                } else {
+                    self.lower_expanded_args(args, hir_module, mir_func)?
+                };
+            all_args.extend(user_arg_operands);
         }
 
         // 3. Get return type: prefer original function's return type (more precise),

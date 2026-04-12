@@ -5,6 +5,7 @@ use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
 
+use crate::call_resolution::ParamClassification;
 use crate::context::Lowering;
 
 use super::ExpandedArg;
@@ -92,16 +93,29 @@ impl<'a> Lowering<'a> {
                         operands.push(tuple_operand);
                     }
                 }
-                ExpandedArg::RuntimeUnpackList(_expr_id) => {
-                    // TODO: Implement full list unpacking for all call paths
-                    // Runtime list unpacking is handled in resolve_call_args
-                    // where we have access to the function signature.
-                    // This case should not be reached when using lower_expanded_args
-                    // directly (without resolve_call_args).
-                    return Err(pyaot_diagnostics::CompilerError::semantic_error(
-                        "Star unpacking of non-literal lists is not yet supported in this call context",
-                        self.call_span(),
-                    ));
+                ExpandedArg::RuntimeUnpackList(expr_id) => {
+                    // When parameter types are known, delegate to the full list-unpack
+                    // machinery (same path used by resolve_call_args).
+                    if let Some(params) = param_types {
+                        let param_classification = ParamClassification::from_params(params);
+                        let extracted = self.lower_runtime_list_unpack(
+                            *expr_id,
+                            &operands,
+                            &param_classification,
+                            hir_module,
+                            mir_func,
+                        )?;
+                        positional_index += extracted.len();
+                        operands.extend(extracted);
+                    } else {
+                        // No signature available (indirect/dynamic call) — cannot determine
+                        // how many elements to extract at compile time.
+                        return Err(pyaot_diagnostics::CompilerError::semantic_error(
+                            "Star unpacking of non-literal lists is not supported for \
+                             indirect calls with unknown signatures",
+                            self.call_span(),
+                        ));
+                    }
                 }
             }
         }

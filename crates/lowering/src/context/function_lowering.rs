@@ -103,18 +103,26 @@ impl<'a> Lowering<'a> {
             self.symbols.cell_vars.insert(*var_id);
         }
 
-        // Check if this function is a wrapper (closure returned by a decorator)
-        // If so, mark the `func` parameter as a function pointer for indirect calls
+        // Check if this function is a wrapper (closure returned by a decorator).
+        // If so, mark the function-pointer parameter for indirect calls.
         let is_wrapper_func = self.is_wrapper_func(&func.id);
         if is_wrapper_func && !func.params.is_empty() {
-            // Find the parameter that holds the decorated function.
-            // This is typically named "func" or "__capture_func" (when captured from outer scope).
-            // In simple decorators, it's the first parameter.
-            // In decorator factories with multiple captures, it may be at a different position.
+            // The pre-scan recorded the decorator's function-parameter name (e.g. "f", "fn",
+            // "decorated") alongside the wrapper FuncId. Use it to find the right parameter
+            // regardless of what name the user chose. Fall back to the hardcoded names
+            // "func" / "__capture_func" for wrappers not covered by the pre-scan.
+            let known_param_name = self.closures.wrapper_func_param_name.get(&func.id).copied();
             for param in &func.params {
                 let param_name = self.interner.resolve(param.name);
-                // Check for both direct parameter "func" and captured parameter "__capture_func"
-                if param_name == "func" || param_name == "__capture_func" {
+                let is_func_ptr = if let Some(known) = known_param_name {
+                    let known_str = self.interner.resolve(known);
+                    let capture_variant = format!("__capture_{}", known_str);
+                    param_name == known_str || param_name == capture_variant.as_str()
+                } else {
+                    // Fallback: pre-scan didn't record a name (e.g. complex decorator factory)
+                    param_name == "func" || param_name == "__capture_func"
+                };
+                if is_func_ptr {
                     self.insert_func_ptr_param(param.var);
                     break;
                 }

@@ -274,4 +274,51 @@ result_va7 = sub_va(10, 3)
 assert result_va7 == 7, f"*args reuse: expected 7, got {result_va7}"
 print("*args wrapper reuse: PASS")
 
+# ===== Decorator with non-"func" parameter name (V2-P11a) =====
+# Tests that func-ptr detection works even when the decorator names its
+# parameter something other than "func" (e.g. "f").
+
+def my_deco_f(f):
+    def wrapper(*args):
+        return f(*args)
+    return wrapper
+
+@my_deco_f
+def add_nf(x: int, y: int) -> int:
+    return x + y
+
+result_nf = add_nf(3, 4)
+assert result_nf == 7, f"non-func param decorator: expected 7, got {result_nf}"
+print("Non-func-named decorator param (*args): PASS")
+
+def my_deco_g(g):
+    def wrapper_g(x: int) -> int:
+        return g(x) + 1
+    return wrapper_g
+
+@my_deco_g
+def inc_g(x: int) -> int:
+    return x
+
+result_g = inc_g(10)
+assert result_g == 11, f"non-func param (simple call): expected 11, got {result_g}"
+print("Non-func-named decorator param (simple call): PASS")
+
+# ===== List unpacking in decorated function call (V2-P11b) =====
+# Tests that *list works when calling a non-varargs decorated function.
+
+def plain_deco(func):
+    def plain_wrapper(x: int, y: int) -> int:
+        return func(x, y)
+    return plain_wrapper
+
+@plain_deco
+def add_plain(x: int, y: int) -> int:
+    return x + y
+
+nums_list: list[int] = [10, 20]
+result_list = add_plain(*nums_list)
+assert result_list == 30, f"*list in decorated call: expected 30, got {result_list}"
+print("List unpacking in decorated call: PASS")
+
 print("All decorator factory tests passed!")

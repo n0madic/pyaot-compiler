@@ -215,6 +215,13 @@ pub struct ClosureState {
     pub varargs_params: IndexSet<VarId>,
     /// Caller-provided parameter type hints for lambdas
     pub lambda_param_type_hints: IndexMap<FuncId, Vec<Type>>,
+    /// Maps original (decorated) function ID to its wrapper function ID.
+    /// Populated during pre-scan; used to look up the original function for a wrapper.
+    pub decorated_to_wrapper: IndexMap<FuncId, FuncId>,
+    /// Maps wrapper function ID to the decorator's function-parameter name.
+    /// Used by function_lowering.rs to detect the func-ptr param by name regardless
+    /// of whether the user named it "func", "f", "fn", etc.
+    pub wrapper_func_param_name: IndexMap<FuncId, InternedString>,
 }
 
 /// Cross-module imports, exports, and offsets

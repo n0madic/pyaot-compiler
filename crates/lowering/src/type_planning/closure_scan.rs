@@ -77,10 +77,8 @@ impl<'a> Lowering<'a> {
                     func: call_func, ..
                 } = &expr.kind
                 {
-                    // TODO: innermost_func_id (the decorated function) is found but currently
-                    // unused — future work should use it to link the decorated function to its
-                    // wrapper so call sites can be rewritten directly.
-                    if self.find_innermost_func_ref(expr, hir_module).is_some() {
+                    if let Some(innermost_func_id) = self.find_innermost_func_ref(expr, hir_module)
+                    {
                         let call_func_expr = &hir_module.exprs[*call_func];
                         if let hir::ExprKind::FuncRef(decorator_func_id) = &call_func_expr.kind {
                             if let Some(decorator_def) = hir_module.func_defs.get(decorator_func_id)
@@ -90,6 +88,19 @@ impl<'a> Lowering<'a> {
                                 {
                                     // Mark this function as a wrapper
                                     self.insert_wrapper_func_id(wrapper_func_id);
+                                    // Store the original→wrapper mapping so function_lowering.rs
+                                    // can look up what function a wrapper wraps.
+                                    self.closures
+                                        .decorated_to_wrapper
+                                        .insert(innermost_func_id, wrapper_func_id);
+                                    // Store the decorator's function-parameter name so the
+                                    // func-ptr param can be detected regardless of its name
+                                    // ("f", "fn", "decorated", etc., not just "func").
+                                    if let Some(func_param) = decorator_def.params.first() {
+                                        self.closures
+                                            .wrapper_func_param_name
+                                            .insert(wrapper_func_id, func_param.name);
+                                    }
                                 }
                             }
                         }
