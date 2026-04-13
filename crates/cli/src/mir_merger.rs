@@ -91,10 +91,21 @@ fn type_to_raw(ty: &Type, source_interner: &StringInterner, class_id_offset: u32
             ret: Box::new(type_to_raw(ret, source_interner, class_id_offset)),
         },
         Type::Var(name) => RawType::Var(source_interner.resolve(*name).to_string()),
-        Type::Class { class_id, name } => RawType::Class {
-            class_id: ClassId(class_id.0 + class_id_offset),
-            name: source_interner.resolve(*name).to_string(),
-        },
+        Type::Class { class_id, name } => {
+            // Placeholder class ids occupy the top of u32 space (u32::MAX - N).
+            // They are only resolved in the second pass; if we encounter one
+            // here (first-pass variable-type scanning), emit Any so the
+            // cross-module export is treated as opaque rather than panicking
+            // on u32 overflow.
+            if let Some(remapped) = class_id.0.checked_add(class_id_offset) {
+                RawType::Class {
+                    class_id: ClassId(remapped),
+                    name: source_interner.resolve(*name).to_string(),
+                }
+            } else {
+                RawType::Any
+            }
+        }
         Type::Iterator(t) => {
             RawType::Iterator(Box::new(type_to_raw(t, source_interner, class_id_offset)))
         }
@@ -587,19 +598,22 @@ impl MirMerger {
     ) -> Type {
         for stmt_id in stmt_ids {
             let stmt = &hir_module.stmts[*stmt_id];
-            if let hir::StmtKind::Assign {
-                target,
-                type_hint,
-                value,
-            } = &stmt.kind
-            {
-                if *target == var_id {
+            let var_assign = match &stmt.kind {
+                hir::StmtKind::Bind {
+                    target: hir::BindingTarget::Var(target_var),
+                    type_hint,
+                    value,
+                } => Some((*target_var, type_hint.as_ref(), *value)),
+                _ => None,
+            };
+            if let Some((target, type_hint, value)) = var_assign {
+                if target == var_id {
                     // Prefer explicit type hint
                     if let Some(ty) = type_hint {
                         return ty.clone();
                     }
                     // Fall back to expression type
-                    let value_expr = &hir_module.exprs[*value];
+                    let value_expr = &hir_module.exprs[value];
                     if let Some(ty) = &value_expr.ty {
                         return ty.clone();
                     }
@@ -799,10 +813,13 @@ fn resolve_external_class_refs(
 
     // Statement type hints (annotated assignments)
     for stmt in parsed.hir.stmts.iter_mut() {
-        if let pyaot_hir::StmtKind::Assign { type_hint, .. } = &mut stmt.1.kind {
-            if let Some(ty) = type_hint.as_mut() {
-                remap_ty(ty, &mut parsed.interner);
+        match &mut stmt.1.kind {
+            pyaot_hir::StmtKind::Bind { type_hint, .. } => {
+                if let Some(ty) = type_hint.as_mut() {
+                    remap_ty(ty, &mut parsed.interner);
+                }
             }
+            _ => {}
         }
     }
 }

@@ -294,8 +294,8 @@ impl AstToHir {
 
                         // Create assignment: method_var = decorated_result
                         let assign_stmt = self.module.stmts.alloc(Stmt {
-                            kind: StmtKind::Assign {
-                                target: method_var_id,
+                            kind: StmtKind::Bind {
+                                target: BindingTarget::Var(method_var_id),
                                 value: current_expr,
                                 type_hint: None,
                             },

@@ -41,10 +41,14 @@ impl AstToHir {
                     let value = self.convert_expr(*assign.value)?;
 
                     return Ok(self.module.stmts.alloc(Stmt {
-                        kind: StmtKind::ClassAttrAssign {
-                            class_id,
-                            attr: attr_name,
+                        kind: StmtKind::Bind {
+                            target: BindingTarget::ClassAttr {
+                                class_id,
+                                attr: attr_name,
+                                span: stmt_span,
+                            },
                             value,
+                            type_hint: None,
                         },
                         span: stmt_span,
                     }));
@@ -57,10 +61,14 @@ impl AstToHir {
             let value = self.convert_expr(*assign.value)?;
 
             return Ok(self.module.stmts.alloc(Stmt {
-                kind: StmtKind::FieldAssign {
-                    obj: obj_expr,
-                    field: field_name,
+                kind: StmtKind::Bind {
+                    target: BindingTarget::Attr {
+                        obj: obj_expr,
+                        field: field_name,
+                        span: stmt_span,
+                    },
                     value,
+                    type_hint: None,
                 },
                 span: stmt_span,
             }));
@@ -71,99 +79,39 @@ impl AstToHir {
             let value = self.convert_expr(*assign.value)?;
 
             return Ok(self.module.stmts.alloc(Stmt {
-                kind: StmtKind::IndexAssign {
-                    obj: obj_expr,
-                    index: index_expr,
+                kind: StmtKind::Bind {
+                    target: BindingTarget::Index {
+                        obj: obj_expr,
+                        index: index_expr,
+                        span: stmt_span,
+                    },
                     value,
+                    type_hint: None,
                 },
                 span: stmt_span,
             }));
-        } else if let py::Expr::Tuple(tuple) = target {
-            // Check if pattern has nested tuples/lists or starred expressions
-            let has_nested = tuple
-                .elts
-                .iter()
-                .any(|elt| matches!(elt, py::Expr::Tuple(_) | py::Expr::List(_)));
-            let has_starred = tuple
-                .elts
-                .iter()
-                .any(|elt| matches!(elt, py::Expr::Starred(_)));
-
-            if has_nested && !has_starred {
-                // Nested unpacking: (a, (b, c)) = value
-                self.mark_vars_initialized(&tuple.elts);
-                let targets = self.parse_nested_unpack_pattern(&tuple.elts)?;
-                let value = self.convert_expr(*assign.value)?;
-
-                return Ok(self.module.stmts.alloc(Stmt {
-                    kind: StmtKind::NestedUnpackAssign { targets, value },
-                    span: stmt_span,
-                }));
-            } else {
-                // Simple tuple unpacking or starred unpacking: a, b, c = (1, 2, 3) or a, *rest = (1, 2, 3)
-                self.mark_vars_initialized(&tuple.elts);
-                let (before_star, starred, after_star) =
-                    self.parse_unpack_pattern(&tuple.elts, stmt_span)?;
-                let value = self.convert_expr(*assign.value)?;
-
-                return Ok(self.module.stmts.alloc(Stmt {
-                    kind: StmtKind::UnpackAssign {
-                        before_star,
-                        starred,
-                        after_star,
-                        value,
-                    },
-                    span: stmt_span,
-                }));
-            }
-        } else if let py::Expr::List(list) = target {
-            // Check if pattern has nested tuples/lists or starred expressions
-            let has_nested = list
-                .elts
-                .iter()
-                .any(|elt| matches!(elt, py::Expr::Tuple(_) | py::Expr::List(_)));
-            let has_starred = list
-                .elts
-                .iter()
-                .any(|elt| matches!(elt, py::Expr::Starred(_)));
-
-            if has_nested && !has_starred {
-                // Nested unpacking: [a, [b, c]] = value
-                self.mark_vars_initialized(&list.elts);
-                let targets = self.parse_nested_unpack_pattern(&list.elts)?;
-                let value = self.convert_expr(*assign.value)?;
-
-                return Ok(self.module.stmts.alloc(Stmt {
-                    kind: StmtKind::NestedUnpackAssign { targets, value },
-                    span: stmt_span,
-                }));
-            } else {
-                // List unpacking: [a, b, c] = [1, 2, 3] or [a, *rest] = [1, 2, 3]
-                self.mark_vars_initialized(&list.elts);
-                let (before_star, starred, after_star) =
-                    self.parse_unpack_pattern(&list.elts, stmt_span)?;
-                let value = self.convert_expr(*assign.value)?;
-
-                return Ok(self.module.stmts.alloc(Stmt {
-                    kind: StmtKind::UnpackAssign {
-                        before_star,
-                        starred,
-                        after_star,
-                        value,
-                    },
-                    span: stmt_span,
-                }));
-            }
+        } else if matches!(target, py::Expr::Tuple(_) | py::Expr::List(_)) {
+            // Tuple/list unpacking: (a, b) = ..., [a, b] = ..., (a, *rest) = ...,
+            // (a, (b, c)) = ..., etc. All shapes routed through bind_target.
+            let bt = self.bind_target(target)?;
+            let value = self.convert_expr(*assign.value)?;
+            return Ok(self.module.stmts.alloc(Stmt {
+                kind: StmtKind::Bind {
+                    target: bt,
+                    value,
+                    type_hint: None,
+                },
+                span: stmt_span,
+            }));
         }
 
         // Simple variable assignment
-        self.mark_var_initialized(target);
-        let target_var = self.get_or_create_var_from_expr(target)?;
+        let bt = self.bind_target(target)?;
         let value = self.convert_expr(*assign.value)?;
 
         Ok(self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: target_var,
+            kind: StmtKind::Bind {
+                target: bt,
                 value,
                 type_hint: None,
             },
@@ -202,8 +150,16 @@ impl AstToHir {
         }
 
         // Annotated assignment: target: Type = value
-        self.mark_var_initialized(&ann_assign.target);
-        let target_var = self.get_or_create_var_from_expr(&ann_assign.target)?;
+        let bt = self.bind_target(&ann_assign.target)?;
+        let target_var = match bt {
+            BindingTarget::Var(v) => v,
+            _ => {
+                return Err(CompilerError::parse_error(
+                    "annotated assignment target must be a simple name",
+                    stmt_span,
+                ))
+            }
+        };
         let raw_type_hint = self.convert_type_annotation(&ann_assign.annotation)?;
         // TypeVar placeholders → no type hint (let inference determine the type)
         let type_hint = if matches!(raw_type_hint, Type::Var(_)) {
@@ -230,8 +186,8 @@ impl AstToHir {
         };
 
         Ok(self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: target_var,
+            kind: StmtKind::Bind {
+                target: BindingTarget::Var(target_var),
                 value,
                 type_hint,
             },
@@ -290,8 +246,8 @@ impl AstToHir {
             });
 
             Ok(self.module.stmts.alloc(Stmt {
-                kind: StmtKind::Assign {
-                    target: target_var,
+                kind: StmtKind::Bind {
+                    target: BindingTarget::Var(target_var),
                     value: binop_expr,
                     type_hint: None,
                 },
@@ -330,10 +286,14 @@ impl AstToHir {
                     });
 
                     return Ok(self.module.stmts.alloc(Stmt {
-                        kind: StmtKind::ClassAttrAssign {
-                            class_id,
-                            attr: attr_name,
+                        kind: StmtKind::Bind {
+                            target: BindingTarget::ClassAttr {
+                                class_id,
+                                attr: attr_name,
+                                span: stmt_span,
+                            },
                             value: binop_expr,
+                            type_hint: None,
                         },
                         span: stmt_span,
                     }));
@@ -369,10 +329,14 @@ impl AstToHir {
             });
 
             Ok(self.module.stmts.alloc(Stmt {
-                kind: StmtKind::FieldAssign {
-                    obj: obj_expr,
-                    field: field_name,
+                kind: StmtKind::Bind {
+                    target: BindingTarget::Attr {
+                        obj: obj_expr,
+                        field: field_name,
+                        span: stmt_span,
+                    },
                     value: binop_expr,
+                    type_hint: None,
                 },
                 span: stmt_span,
             }))
@@ -406,10 +370,14 @@ impl AstToHir {
             });
 
             Ok(self.module.stmts.alloc(Stmt {
-                kind: StmtKind::IndexAssign {
-                    obj: obj_expr,
-                    index: index_expr,
+                kind: StmtKind::Bind {
+                    target: BindingTarget::Index {
+                        obj: obj_expr,
+                        index: index_expr,
+                        span: stmt_span,
+                    },
                     value: binop_expr,
+                    type_hint: None,
                 },
                 span: stmt_span,
             }))
@@ -424,72 +392,25 @@ impl AstToHir {
         }
     }
 
-    /// Create an assignment statement for any target type (Name, Attribute, Subscript).
+    /// Create an assignment statement for any target type.
     /// Used by chained assignments and other multi-target scenarios.
+    /// CPython allows chained assignment with tuple/list targets:
+    /// `a, b = x, y = 1, 2` binds both `(a,b)` and `(x,y)` to `(1,2)`.
     fn assign_to_target(
         &mut self,
         target: &py::Expr,
         value_expr: ExprId,
         span: Span,
     ) -> Result<StmtId> {
-        match target {
-            py::Expr::Name(_) => {
-                self.mark_var_initialized(target);
-                let target_var = self.get_or_create_var_from_expr(target)?;
-                Ok(self.module.stmts.alloc(Stmt {
-                    kind: StmtKind::Assign {
-                        target: target_var,
-                        value: value_expr,
-                        type_hint: None,
-                    },
-                    span,
-                }))
-            }
-            py::Expr::Attribute(attr) => {
-                // Check for class attribute assignment: ClassName.attr = value
-                if let py::Expr::Name(base_name) = &*attr.value {
-                    let base_str = self.interner.intern(&base_name.id);
-                    if let Some(&class_id) = self.symbols.class_map.get(&base_str) {
-                        let attr_name = self.interner.intern(&attr.attr);
-                        return Ok(self.module.stmts.alloc(Stmt {
-                            kind: StmtKind::ClassAttrAssign {
-                                class_id,
-                                attr: attr_name,
-                                value: value_expr,
-                            },
-                            span,
-                        }));
-                    }
-                }
-                // Regular field assignment: obj.field = value
-                let obj_expr = self.convert_expr(*attr.value.clone())?;
-                let field_name = self.interner.intern(&attr.attr);
-                Ok(self.module.stmts.alloc(Stmt {
-                    kind: StmtKind::FieldAssign {
-                        obj: obj_expr,
-                        field: field_name,
-                        value: value_expr,
-                    },
-                    span,
-                }))
-            }
-            py::Expr::Subscript(sub) => {
-                let obj_expr = self.convert_expr(*sub.value.clone())?;
-                let index_expr = self.convert_expr(*sub.slice.clone())?;
-                Ok(self.module.stmts.alloc(Stmt {
-                    kind: StmtKind::IndexAssign {
-                        obj: obj_expr,
-                        index: index_expr,
-                        value: value_expr,
-                    },
-                    span,
-                }))
-            }
-            _ => Err(CompilerError::parse_error(
-                "Unsupported chained assignment target",
-                span,
-            )),
-        }
+        let bt = self.bind_target(target)?;
+        Ok(self.module.stmts.alloc(Stmt {
+            kind: StmtKind::Bind {
+                target: bt,
+                value: value_expr,
+                type_hint: None,
+            },
+            span,
+        }))
     }
 
     /// Convert chained assignment: a = b = value
@@ -504,8 +425,8 @@ impl AstToHir {
         let value = self.convert_expr(*assign.value)?;
         let temp_var = self.ids.alloc_var();
         let temp_assign = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: temp_var,
+            kind: StmtKind::Bind {
+                target: BindingTarget::Var(temp_var),
                 value,
                 type_hint: None,
             },

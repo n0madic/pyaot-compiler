@@ -62,8 +62,8 @@ impl AstToHir {
             span: comp_span,
         });
         let init_stmt = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: temp_var_id,
+            kind: StmtKind::Bind {
+                target: BindingTarget::Var(temp_var_id),
                 value: empty_list,
                 type_hint: None,
             },
@@ -123,8 +123,8 @@ impl AstToHir {
             span: comp_span,
         });
         let init_stmt = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: temp_var_id,
+            kind: StmtKind::Bind {
+                target: BindingTarget::Var(temp_var_id),
                 value: empty_dict,
                 type_hint: None,
             },
@@ -188,8 +188,8 @@ impl AstToHir {
             span: comp_span,
         });
         let init_stmt = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: temp_var_id,
+            kind: StmtKind::Bind {
+                target: BindingTarget::Var(temp_var_id),
                 value: empty_set,
                 type_hint: None,
             },
@@ -305,8 +305,12 @@ impl AstToHir {
 
         let gen = &generators[gen_idx];
 
-        // Create loop target variable
-        let target_var = self.get_or_create_var_from_expr(&gen.target)?;
+        // Build the unified binding target for this generator clause. Unlike
+        // the old `get_or_create_var_from_expr`, `bind_target` accepts any
+        // valid Python LHS — simple names, attribute/subscript leaves, and
+        // nested/starred tuple patterns — matching the grammar CPython
+        // admits inside `for TARGET in ITER:` of a comprehension.
+        let target = self.bind_target(&gen.target)?;
 
         // Convert iterable
         let iter_expr = self.convert_expr(gen.iter.clone())?;
@@ -329,10 +333,25 @@ impl AstToHir {
             inner_body = vec![if_stmt];
         }
 
-        // Create for loop
+        // Emit the unified `ForBind` directly with the binding target.
+        //
+        // KNOWN LIMITATION: a *generator expression* (not list/dict/set
+        // comprehension) with a non-`Var` target — e.g.
+        // `sum(x * y for x, y in zip(a, b))` — desugars into a generator
+        // function whose body is exactly this `ForBind { target: Tuple{..} }`.
+        // The generator-desugaring pipeline's `detect_for_loop_generator`
+        // (`crates/lowering/src/generators/for_loop.rs`) only recognises
+        // `Var` targets for the optimised resume path; tuple targets fall
+        // through to the generic sequential resume, which does not iterate
+        // and therefore yields at most one element. List/dict/set
+        // comprehensions (handled directly via `lower_for_bind`) do work
+        // correctly for tuple targets. The full fix requires teaching the
+        // resume builder to emit tuple unpacking with proper element-type
+        // inference across `zip()`/`enumerate()` and friends — tracked as a
+        // follow-up to the overall BindingTarget migration.
         let for_stmt = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::For {
-                target: target_var,
+            kind: StmtKind::ForBind {
+                target,
                 iter: iter_expr,
                 body: inner_body,
                 else_block: Vec::new(),
@@ -387,10 +406,14 @@ impl AstToHir {
                     span: comp_span,
                 });
                 let set_stmt = self.module.stmts.alloc(Stmt {
-                    kind: StmtKind::IndexAssign {
-                        obj: dict_ref,
-                        index: key_id,
+                    kind: StmtKind::Bind {
+                        target: BindingTarget::Index {
+                            obj: dict_ref,
+                            index: key_id,
+                            span: comp_span,
+                        },
                         value: value_id,
+                        type_hint: None,
                     },
                     span: comp_span,
                 });

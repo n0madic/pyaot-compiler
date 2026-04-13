@@ -38,8 +38,8 @@ impl<'a> Lowering<'a> {
         match builtin {
             hir::Builtin::Print => self.lower_print(args, kwargs, hir_module, mir_func),
             hir::Builtin::Range => {
-                // Range is handled specially in StmtKind::For
-                // If it appears as a standalone expression, just return None
+                // Range is handled specially in StmtKind::ForBind.
+                // If it appears as a standalone expression, just return None.
                 Ok(mir::Operand::Constant(mir::Constant::None))
             }
             hir::Builtin::Len => self.lower_len(args, hir_module, mir_func),

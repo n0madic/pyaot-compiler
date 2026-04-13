@@ -982,4 +982,70 @@ assert insert_list == [100], "remove after insert"
 
 print("Empty container type inference tests passed!")
 
+# ===== SECTION: New unpacking shapes (BindingTarget migration) =====
+
+# Flat — baseline
+bt_a, bt_b, bt_c = (1, 2, 3)
+assert (bt_a, bt_b, bt_c) == (1, 2, 3)
+
+# Starred — baseline (homogeneous source so rest comparison is safe)
+bt_a2, *bt_rest2 = [1, 2, 3, 4]
+assert bt_a2 == 1 and bt_rest2 == [2, 3, 4]
+*bt_rest3, bt_z3 = [1, 2, 3, 4]
+assert bt_rest3 == [1, 2, 3] and bt_z3 == 4
+bt_a4, *bt_mid4, bt_z4 = [1, 2, 3, 4, 5]
+assert bt_a4 == 1 and bt_mid4 == [2, 3, 4] and bt_z4 == 5
+
+# Nested — baseline
+(bt_na, (bt_nb, bt_nc)) = (1, (2, 3))
+assert (bt_na, bt_nb, bt_nc) == (1, 2, 3)
+
+# NEW: nested + starred (element checks — comparison of starred rest from mixed
+# tuple currently hits a pre-existing type-tag limitation; see INSIGHTS.md)
+(bt_sna, *bt_snm, (bt_snb, bt_snc)) = (1, 2, 3, (4, 5))
+assert bt_sna == 1 and bt_snb == 4 and bt_snc == 5
+assert len(bt_snm) == 2 and bt_snm[0] == 2 and bt_snm[1] == 3
+
+# NEW: attribute leaves
+class BtC:
+    x: int
+    y: int
+
+bt_obj = BtC()
+bt_obj.x, bt_obj.y = 10, 20
+assert (bt_obj.x, bt_obj.y) == (10, 20)
+
+# NEW: subscript leaves
+bt_lst = [0, 0]
+bt_lst[0], bt_lst[1] = 111, 222
+assert bt_lst == [111, 222]
+
+# NEW: mixed leaves (Var, Attr, Index) — use a function to avoid module-level
+# global-reassignment limitation (pre-existing, not caused by this commit)
+class BtMix:
+    x: int
+
+def _test_mixed_leaves() -> None:
+    bt_mix_obj = BtMix()
+    bt_mix_lst = [0, 0]
+    bt_mix_a, bt_mix_obj.x, bt_mix_lst[0] = 100, 200, 300
+    assert bt_mix_a == 100 and bt_mix_obj.x == 200 and bt_mix_lst[0] == 300
+
+_test_mixed_leaves()
+
+# NEW: list-form target behaves like tuple-form
+[bt_p, bt_q] = (7, 8)
+assert (bt_p, bt_q) == (7, 8)
+
+# NEW: deeply nested with both starred and attr leaf
+class BtD:
+    field: int
+
+bt_d = BtD()
+(bt_xa, *bt_xm, (bt_xb, bt_d.field)) = (1, 2, 3, (4, 5))
+assert bt_xa == 1 and bt_xb == 4 and bt_d.field == 5
+assert len(bt_xm) == 2 and bt_xm[0] == 2 and bt_xm[1] == 3
+
+print("New unpacking shapes (BindingTarget migration) tests passed!")
+
 print("All list and tuple collection tests passed!")

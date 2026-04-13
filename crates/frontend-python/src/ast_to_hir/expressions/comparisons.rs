@@ -139,8 +139,8 @@ impl AstToHir {
                 self.symbols.var_map.insert(temp_interned, temp_var_id);
 
                 let assign_stmt = self.module.stmts.alloc(Stmt {
-                    kind: StmtKind::Assign {
-                        target: temp_var_id,
+                    kind: StmtKind::Bind {
+                        target: BindingTarget::Var(temp_var_id),
                         value: expr_id,
                         type_hint: None,
                     },

@@ -205,13 +205,7 @@ impl<'a> Lowering<'a> {
                     self.collect_return_types(*s, module, param_types, return_types);
                 }
             }
-            hir::StmtKind::For {
-                body, else_block, ..
-            }
-            | hir::StmtKind::ForUnpack {
-                body, else_block, ..
-            }
-            | hir::StmtKind::ForUnpackStarred {
+            hir::StmtKind::ForBind {
                 body, else_block, ..
             }
             | hir::StmtKind::While {

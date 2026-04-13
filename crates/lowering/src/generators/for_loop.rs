@@ -32,9 +32,15 @@ pub(crate) fn detect_for_loop_generator(
     }
 
     let stmt = &hir_module.stmts[body[0]];
+    // Only handle `ForBind` with a simple variable target.
+    // Other `BindingTarget` shapes (tuple, attr, index) need the generic
+    // generator path and are intentionally not detected here.
     let (target_var, iter_expr, for_body) = match &stmt.kind {
-        hir::StmtKind::For {
-            target, iter, body, ..
+        hir::StmtKind::ForBind {
+            target: hir::BindingTarget::Var(target),
+            iter,
+            body,
+            ..
         } => (*target, *iter, body),
         _ => return None,
     };

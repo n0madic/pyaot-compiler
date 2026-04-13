@@ -61,9 +61,9 @@ impl AstToHir {
                         span: stmt_span,
                     });
 
-                    // Return For loop directly (no trailing Expr(None))
-                    StmtKind::For {
-                        target: temp_var,
+                    // Return ForBind directly (no trailing Expr(None))
+                    StmtKind::ForBind {
+                        target: BindingTarget::Var(temp_var),
                         iter: iter_expr_id,
                         body: vec![yield_stmt],
                         else_block: vec![],

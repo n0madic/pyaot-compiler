@@ -54,59 +54,6 @@ impl<'a> Lowering<'a> {
     ) {
         let stmt = &hir_module.stmts[stmt_id];
         match &stmt.kind {
-            hir::StmtKind::Assign {
-                target,
-                value,
-                type_hint,
-            } => {
-                let expr = &hir_module.exprs[*value];
-
-                // Determine the variable type
-                let var_type = type_hint
-                    .clone()
-                    .unwrap_or_else(|| self.infer_deep_expr_type(expr, hir_module, var_types));
-                var_types.insert(*target, var_type);
-
-                // Scan the value expression for inline closures
-                // This catches cases like: result = list(map(lambda x: ..., ...))
-                self.scan_expr_for_closures(expr, hir_module, var_types);
-
-                // Check for decorated function pattern: var = decorator(FuncRef(func))
-                // If the decorator returns a closure, mark that closure as a wrapper
-                if let hir::ExprKind::Call {
-                    func: call_func, ..
-                } = &expr.kind
-                {
-                    if let Some(innermost_func_id) = self.find_innermost_func_ref(expr, hir_module)
-                    {
-                        let call_func_expr = &hir_module.exprs[*call_func];
-                        if let hir::ExprKind::FuncRef(decorator_func_id) = &call_func_expr.kind {
-                            if let Some(decorator_def) = hir_module.func_defs.get(decorator_func_id)
-                            {
-                                if let Some(wrapper_func_id) =
-                                    self.find_returned_closure(decorator_def, hir_module)
-                                {
-                                    // Mark this function as a wrapper
-                                    self.insert_wrapper_func_id(wrapper_func_id);
-                                    // Store the original→wrapper mapping so function_lowering.rs
-                                    // can look up what function a wrapper wraps.
-                                    self.closures
-                                        .decorated_to_wrapper
-                                        .insert(innermost_func_id, wrapper_func_id);
-                                    // Store the decorator's function-parameter name so the
-                                    // func-ptr param can be detected regardless of its name
-                                    // ("f", "fn", "decorated", etc., not just "func").
-                                    if let Some(func_param) = decorator_def.params.first() {
-                                        self.closures
-                                            .wrapper_func_param_name
-                                            .insert(wrapper_func_id, func_param.name);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
             hir::StmtKind::If {
                 then_block,
                 else_block,
@@ -119,13 +66,7 @@ impl<'a> Lowering<'a> {
                     self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
                 }
             }
-            hir::StmtKind::For {
-                body, else_block, ..
-            }
-            | hir::StmtKind::ForUnpack {
-                body, else_block, ..
-            }
-            | hir::StmtKind::ForUnpackStarred {
+            hir::StmtKind::ForBind {
                 body, else_block, ..
             }
             | hir::StmtKind::While {
@@ -170,6 +111,63 @@ impl<'a> Lowering<'a> {
                     for stmt_id in &case.body {
                         self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
                     }
+                }
+            }
+            hir::StmtKind::Bind {
+                target,
+                value,
+                type_hint,
+            } => {
+                let expr = &hir_module.exprs[*value];
+
+                if let hir::BindingTarget::Var(target_var) = target {
+                    // Determine the variable type (mirrors the Assign branch above)
+                    let var_type = type_hint
+                        .clone()
+                        .unwrap_or_else(|| self.infer_deep_expr_type(expr, hir_module, var_types));
+                    var_types.insert(*target_var, var_type);
+
+                    // Scan the value expression for inline closures
+                    self.scan_expr_for_closures(expr, hir_module, var_types);
+
+                    // Check for decorated function pattern: var = decorator(FuncRef(func))
+                    if let hir::ExprKind::Call {
+                        func: call_func, ..
+                    } = &expr.kind
+                    {
+                        if let Some(innermost_func_id) =
+                            self.find_innermost_func_ref(expr, hir_module)
+                        {
+                            let call_func_expr = &hir_module.exprs[*call_func];
+                            if let hir::ExprKind::FuncRef(decorator_func_id) = &call_func_expr.kind
+                            {
+                                if let Some(decorator_def) =
+                                    hir_module.func_defs.get(decorator_func_id)
+                                {
+                                    if let Some(wrapper_func_id) =
+                                        self.find_returned_closure(decorator_def, hir_module)
+                                    {
+                                        self.insert_wrapper_func_id(wrapper_func_id);
+                                        self.closures
+                                            .decorated_to_wrapper
+                                            .insert(innermost_func_id, wrapper_func_id);
+                                        if let Some(func_param) = decorator_def.params.first() {
+                                            self.closures
+                                                .wrapper_func_param_name
+                                                .insert(wrapper_func_id, func_param.name);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // For Tuple/Attr/Index/ClassAttr targets, record each bound Var
+                    // with Any type and scan the value for closures.
+                    target.for_each_var(&mut |var_id| {
+                        var_types.insert(var_id, Type::Any);
+                    });
+                    self.scan_expr_for_closures(expr, hir_module, var_types);
                 }
             }
             hir::StmtKind::Expr(expr_id) => {

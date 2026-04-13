@@ -436,18 +436,23 @@ impl<'a> Lowering<'a> {
         // Scan statements in module init for assignments to global variables
         for stmt_id in &init_func.body {
             let stmt = &hir_module.stmts[*stmt_id];
-            if let hir::StmtKind::Assign {
-                target, type_hint, ..
-            } = &stmt.kind
-            {
+            let var_assign = match &stmt.kind {
+                hir::StmtKind::Bind {
+                    target: hir::BindingTarget::Var(target_var),
+                    type_hint,
+                    ..
+                } => Some((*target_var, type_hint.as_ref())),
+                _ => None,
+            };
+            if let Some((target, type_hint)) = var_assign {
                 // Only process if target is a global variable with an explicit type hint.
                 // Variables without type hints will get their types from lowering.
-                if self.symbols.globals.contains(target) {
+                if self.symbols.globals.contains(&target) {
                     if let Some(var_type) = type_hint {
                         // Store in global_var_types for persistence across function boundaries
                         self.symbols
                             .global_var_types
-                            .insert(*target, var_type.clone());
+                            .insert(target, var_type.clone());
                     }
                 }
             }
@@ -471,18 +476,26 @@ impl<'a> Lowering<'a> {
         // Scan statements in module init for decorated function assignments
         for stmt_id in &init_func.body {
             let stmt = &hir_module.stmts[*stmt_id];
-            if let hir::StmtKind::Assign { target, value, .. } = &stmt.kind {
-                let expr = &hir_module.exprs[*value];
+            let var_assign = match &stmt.kind {
+                hir::StmtKind::Bind {
+                    target: hir::BindingTarget::Var(target_var),
+                    value,
+                    ..
+                } => Some((*target_var, *value)),
+                _ => None,
+            };
+            if let Some((target, value)) = var_assign {
+                let expr = &hir_module.exprs[value];
 
                 // Check for decorated function pattern: Call { func: FuncRef(decorator), args: [FuncRef(original)] }
                 match &expr.kind {
                     hir::ExprKind::FuncRef(func_id) => {
                         // Simple function reference: var = func
-                        self.insert_module_var_func(*target, *func_id);
+                        self.insert_module_var_func(target, *func_id);
                     }
                     hir::ExprKind::Closure { func, .. } => {
                         // Direct closure assignment: var = lambda
-                        self.insert_module_var_func(*target, *func);
+                        self.insert_module_var_func(target, *func);
                     }
                     hir::ExprKind::Call { func, args, .. } => {
                         // Check for decorator factory pattern first: Call { func: Call(...), args: [FuncRef] }
@@ -493,7 +506,7 @@ impl<'a> Lowering<'a> {
                             // 1. The factory must be called first with its arguments
                             // 2. The result (a closure/decorator) must then be applied to the function
                             // Mark as global for runtime evaluation
-                            self.symbols.globals.insert(*target);
+                            self.symbols.globals.insert(target);
                             // Register any wrapper functions that might be involved
                             self.register_all_wrappers_in_chain(expr, hir_module);
                             continue;
@@ -536,7 +549,7 @@ impl<'a> Lowering<'a> {
                             {
                                 // Mark the target as a global so that when it's called,
                                 // we load from global storage and do an indirect call
-                                self.symbols.globals.insert(*target);
+                                self.symbols.globals.insert(target);
                                 continue;
                             }
 
@@ -550,7 +563,7 @@ impl<'a> Lowering<'a> {
                                     {
                                         // Wrapper decorator: track wrapper with original function
                                         self.insert_module_var_wrapper(
-                                            *target,
+                                            target,
                                             wrapper_func_id,
                                             innermost_func_id,
                                         );
@@ -561,7 +574,7 @@ impl<'a> Lowering<'a> {
                                 }
                             }
                             // Identity-like decorator: track the original function directly
-                            self.insert_module_var_func(*target, innermost_func_id);
+                            self.insert_module_var_func(target, innermost_func_id);
                         }
                     }
                     _ => {}

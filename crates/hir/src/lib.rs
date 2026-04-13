@@ -211,13 +211,71 @@ pub struct Param {
     pub span: Span,
 }
 
-/// Unpacking target (for nested patterns)
+/// Unified binding target — anywhere CPython admits an assignment LHS.
+///
+/// Covers every binding site in the language: simple `Assign`, `For`/`with`
+/// targets, comprehension targets, attribute and subscript writes, and
+/// arbitrarily-nested tuple/list patterns with at most one starred slot per
+/// level. Walrus (`PEP 572`) and `except ... as NAME` are intentionally
+/// outside this enum — the language grammar restricts them to a bare Name.
+///
+/// Match patterns (`PEP 634`) use a separate `Pattern` AST because their
+/// semantics are refutable; keep distinct.
 #[derive(Debug, Clone)]
-pub enum UnpackTarget {
-    /// Simple variable
+pub enum BindingTarget {
+    /// `name = ...`
     Var(VarId),
-    /// Nested pattern: (a, (b, c))
-    Nested(Vec<UnpackTarget>),
+    /// `obj.field = ...`
+    Attr {
+        obj: ExprId,
+        field: InternedString,
+        span: Span,
+    },
+    /// `obj[index] = ...`
+    Index {
+        obj: ExprId,
+        index: ExprId,
+        span: Span,
+    },
+    /// `ClassName.attr = ...`
+    ClassAttr {
+        class_id: ClassId,
+        attr: InternedString,
+        span: Span,
+    },
+    /// `(a, *b, c) = ...` or `[a, b, c] = ...`. At most one `Starred` per
+    /// level — validated at construction time in `bind_target`.
+    Tuple {
+        elts: Vec<BindingTarget>,
+        span: Span,
+    },
+    /// `*name = ...` — only meaningful as a child of `Tuple`. The inner
+    /// target receives a list slice; nested binding is permitted (e.g.
+    /// `*(a, b) = ...`).
+    Starred {
+        inner: Box<BindingTarget>,
+        span: Span,
+    },
+}
+
+impl BindingTarget {
+    /// Invoke `f` on every `Var(VarId)` leaf reachable from this binding
+    /// target, recursing through `Tuple` and `Starred`. `Attr`/`Index`/`ClassAttr`
+    /// leaves don't bind a new `Var` and are skipped.
+    pub fn for_each_var<F: FnMut(VarId)>(&self, f: &mut F) {
+        match self {
+            BindingTarget::Var(v) => f(*v),
+            BindingTarget::Attr { .. }
+            | BindingTarget::Index { .. }
+            | BindingTarget::ClassAttr { .. } => {}
+            BindingTarget::Tuple { elts, .. } => {
+                for e in elts {
+                    e.for_each_var(f);
+                }
+            }
+            BindingTarget::Starred { inner, .. } => inner.for_each_var(f),
+        }
+    }
 }
 
 /// HIR Statement
@@ -232,30 +290,24 @@ pub enum StmtKind {
     /// Expression statement
     Expr(ExprId),
 
-    /// Assignment: target = value (with optional type hint from annotation)
-    Assign {
-        target: VarId,
+    /// Unified binding statement: `target = value`. Covers simple variable
+    /// assignment, field/index/class-attr writes, and all tuple-unpack patterns.
+    /// `type_hint` is plumbed through for annotated assigns
+    /// (`x: T = e`); only meaningful when `target` is `BindingTarget::Var`.
+    Bind {
+        target: BindingTarget,
         value: ExprId,
         type_hint: Option<Type>,
     },
 
-    /// Unpacking assignment: a, b, c = value or a, *rest, b = value
-    /// Supports extended unpacking with starred expression.
-    /// - `before_star`: targets before the starred expression
-    /// - `starred`: the starred variable (collects remaining elements as a list)
-    /// - `after_star`: targets after the starred expression
-    UnpackAssign {
-        before_star: Vec<VarId>,
-        starred: Option<VarId>,
-        after_star: Vec<VarId>,
-        value: ExprId,
-    },
-
-    /// Nested unpacking assignment: (a, (b, c)) = value
-    /// Supports arbitrarily nested patterns (no starred expressions in nested contexts)
-    NestedUnpackAssign {
-        targets: Vec<UnpackTarget>,
-        value: ExprId,
+    /// Unified for-loop with arbitrary binding target: `for TARGET in ITER:`.
+    /// Covers simple variable targets, tuple/starred unpack patterns, and
+    /// attribute/index write targets.
+    ForBind {
+        target: BindingTarget,
+        iter: ExprId,
+        body: Vec<StmtId>,
+        else_block: Vec<StmtId>,
     },
 
     /// Return statement
@@ -271,32 +323,6 @@ pub enum StmtKind {
     /// While loop (with optional else block, executed if loop completes without break)
     While {
         cond: ExprId,
-        body: Vec<StmtId>,
-        else_block: Vec<StmtId>,
-    },
-
-    /// For loop (over range or iterable, with optional else block)
-    For {
-        target: VarId,
-        iter: ExprId,
-        body: Vec<StmtId>,
-        else_block: Vec<StmtId>,
-    },
-
-    /// For loop with tuple unpacking: for a, b in items
-    ForUnpack {
-        targets: Vec<VarId>,
-        iter: ExprId,
-        body: Vec<StmtId>,
-        else_block: Vec<StmtId>,
-    },
-
-    /// For loop with starred unpacking: for first, *rest, last in items
-    ForUnpackStarred {
-        before_star: Vec<VarId>,
-        starred: Option<VarId>,
-        after_star: Vec<VarId>,
-        iter: ExprId,
         body: Vec<StmtId>,
         else_block: Vec<StmtId>,
     },
@@ -326,27 +352,6 @@ pub enum StmtKind {
 
     /// Assert statement: assert cond or assert cond, msg
     Assert { cond: ExprId, msg: Option<ExprId> },
-
-    /// Indexed assignment: obj[index] = value (for dict/list)
-    IndexAssign {
-        obj: ExprId,
-        index: ExprId,
-        value: ExprId,
-    },
-
-    /// Field assignment: obj.field = value (for class instances)
-    FieldAssign {
-        obj: ExprId,
-        field: InternedString,
-        value: ExprId,
-    },
-
-    /// Class attribute assignment: ClassName.attr = value (for class-level variables)
-    ClassAttrAssign {
-        class_id: ClassId,
-        attr: InternedString,
-        value: ExprId,
-    },
 
     /// Delete indexed item: del obj[index] (for dict/list)
     IndexDelete { obj: ExprId, index: ExprId },

@@ -36,46 +36,6 @@ impl<'a> Lowering<'a> {
                 self.lower_expr(expr, hir_module, mir_func)?;
             }
 
-            // Assignments (assign.rs)
-            hir::StmtKind::Assign {
-                target,
-                value,
-                type_hint,
-            } => {
-                self.lower_assign(*target, *value, type_hint.clone(), hir_module, mir_func)?;
-            }
-            hir::StmtKind::UnpackAssign {
-                before_star,
-                starred,
-                after_star,
-                value,
-            } => {
-                self.lower_unpack_assign(
-                    before_star,
-                    starred.as_ref(),
-                    after_star,
-                    *value,
-                    hir_module,
-                    mir_func,
-                )?;
-            }
-            hir::StmtKind::NestedUnpackAssign { targets, value } => {
-                self.lower_nested_unpack_assign(targets, *value, hir_module, mir_func)?;
-            }
-            hir::StmtKind::IndexAssign { obj, index, value } => {
-                self.lower_index_assign(*obj, *index, *value, hir_module, mir_func)?;
-            }
-            hir::StmtKind::FieldAssign { obj, field, value } => {
-                self.lower_field_assign(*obj, *field, *value, hir_module, mir_func)?;
-            }
-            hir::StmtKind::ClassAttrAssign {
-                class_id,
-                attr,
-                value,
-            } => {
-                self.lower_class_attr_assign(*class_id, *attr, *value, hir_module, mir_func)?;
-            }
-
             // Control flow (control_flow.rs)
             hir::StmtKind::Return(value_expr) => {
                 self.lower_return(value_expr.as_ref(), hir_module, mir_func)?;
@@ -102,43 +62,6 @@ impl<'a> Lowering<'a> {
             }
             hir::StmtKind::Pass => {
                 // No-op
-            }
-
-            // Loops (loops.rs)
-            hir::StmtKind::For {
-                target,
-                iter,
-                body,
-                else_block,
-            } => {
-                self.lower_for(*target, *iter, body, else_block, hir_module, mir_func)?;
-            }
-            hir::StmtKind::ForUnpack {
-                targets,
-                iter,
-                body,
-                else_block,
-            } => {
-                self.lower_for_unpack(targets, *iter, body, else_block, hir_module, mir_func)?;
-            }
-            hir::StmtKind::ForUnpackStarred {
-                before_star,
-                starred,
-                after_star,
-                iter,
-                body,
-                else_block,
-            } => {
-                self.lower_for_unpack_starred_dispatch(
-                    before_star,
-                    starred.as_ref(),
-                    after_star,
-                    *iter,
-                    body,
-                    else_block,
-                    hir_module,
-                    mir_func,
-                )?;
             }
 
             // Delete (del obj[key])
@@ -174,6 +97,39 @@ impl<'a> Lowering<'a> {
                     hir_module,
                     mir_func,
                 )?;
+            }
+
+            // Unified binding: assign/bind.rs
+            hir::StmtKind::Bind {
+                target,
+                value,
+                type_hint,
+            } => {
+                // For plain variable targets, delegate to lower_assign which handles all
+                // the special cases: globals, cell variables, union boxing, FuncRef/Closure
+                // tracking, dict in-place update, and bidirectional type propagation.
+                if let hir::BindingTarget::Var(var_id) = target {
+                    self.lower_assign(*var_id, *value, type_hint.clone(), hir_module, mir_func)?;
+                } else {
+                    let value_expr = &hir_module.exprs[*value];
+                    let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
+                    let value_type = self.get_type_of_expr_id(*value, hir_module);
+                    self.lower_binding_target(
+                        target,
+                        value_operand,
+                        &value_type,
+                        hir_module,
+                        mir_func,
+                    )?;
+                }
+            }
+            hir::StmtKind::ForBind {
+                target,
+                iter,
+                body,
+                else_block,
+            } => {
+                self.lower_for_bind(target, *iter, body, else_block, hir_module, mir_func)?;
             }
         }
         Ok(())

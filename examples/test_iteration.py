@@ -1031,4 +1031,89 @@ assert _cap_str_sorted == ["apple", "banana", "cherry"], f"sorted str capture: {
 
 print("sorted/min/max capturing lambda tests passed!")
 
+# ===== SECTION: New for-loop target shapes (BindingTarget migration) =====
+
+# Baseline shapes — these worked before the refactor, make sure they still do.
+for _bt_a, _bt_b in [(1, 10), (2, 20), (3, 30)]:
+    assert _bt_a * 10 == _bt_b
+for _bt_first, *_bt_rest in [(1, 2, 3), (10, 20, 30)]:
+    assert isinstance(_bt_rest, list)
+for *_bt_init, _bt_last in [(1, 2, 3), (10, 20, 30)]:
+    assert _bt_last == 3 or _bt_last == 30
+for _bt_aa, *_bt_mid, _bt_z in [(1, 2, 3, 4, 5)]:
+    assert _bt_aa == 1 and _bt_mid == [2, 3, 4] and _bt_z == 5
+
+# NEW: nested for-target
+for _bt_na, (_bt_nb, _bt_nc) in [(1, (2, 3)), (4, (5, 6))]:
+    assert _bt_nb + _bt_nc > _bt_na
+
+# NEW: attribute as for-target
+class _BtContainer:
+    val: int
+    def __init__(self) -> None:
+        self.val = 0
+_bt_k = _BtContainer()
+for _bt_k.val in [10, 20, 30]:
+    pass
+assert _bt_k.val == 30
+
+# NEW: subscript as for-target
+_bt_lst: list[int] = [0, 0, 0]
+for _bt_lst[0] in [1, 2, 3]:
+    pass
+assert _bt_lst[0] == 3
+
+# NEW: mixed — tuple-of-attr-and-var
+class _BtPoint:
+    x: int
+    y: int
+    def __init__(self) -> None:
+        self.x = 0
+        self.y = 0
+_bt_p = _BtPoint()
+for _bt_p.x, _bt_p.y in [(1, 2), (3, 4)]:
+    pass
+assert _bt_p.x == 3 and _bt_p.y == 4
+
+print("New for-loop target shape tests passed!")
+
+# ===== SECTION: Tuple targets in comprehensions (BindingTarget migration) =====
+# Primary bug fix from the unified BindingTarget refactor: comprehension
+# `for TARGET in ITER` clauses now accept the full target grammar, matching
+# what CPython has always allowed.
+
+# List comprehension with flat tuple target
+_ct_pairs = [(1, 10), (2, 20), (3, 30)]
+_ct_flat = [a + b for a, b in _ct_pairs]
+assert _ct_flat == [11, 22, 33]
+
+# Dict comprehension with tuple targets
+_ct_items = [("a", 1), ("b", 2), ("c", 3)]
+_ct_dict = {k: v for k, v in _ct_items}
+assert _ct_dict["a"] == 1 and _ct_dict["b"] == 2 and _ct_dict["c"] == 3
+assert len(_ct_dict) == 3
+
+# Dict comprehension building inverted mapping — unpack order matters
+_ct_inv = {v: k for k, v in _ct_items}
+assert _ct_inv[1] == "a" and _ct_inv[2] == "b" and _ct_inv[3] == "c"
+assert len(_ct_inv) == 3
+
+# Set comprehension with tuple targets
+_ct_set = {a * b for a, b in _ct_pairs}
+assert 10 in _ct_set and 40 in _ct_set and 90 in _ct_set
+assert len(_ct_set) == 3
+
+# Multi-clause comprehension with tuple target
+_ct_nested = [[(1, 2), (3, 4)], [(5, 6)]]
+_ct_flattened = [a + b for row in _ct_nested for a, b in row]
+assert _ct_flattened == [3, 7, 11]
+
+# NOTE: Generator expressions with tuple targets — e.g.
+#   sum(x * y for x, y in zip(a, b))
+# — currently compile but yield 0 due to a generator-desugaring limitation
+# (the resume builder only optimises simple-Var for-loops). Tracked as a
+# follow-up; use `sum([...])` list-comp form as a workaround.
+
+print("New comprehension tuple-target tests passed!")
+
 print("All iteration and comprehension tests passed!")

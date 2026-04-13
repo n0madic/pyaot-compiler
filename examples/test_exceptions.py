@@ -1645,4 +1645,39 @@ def test_custom_base_exception_not_caught_by_exception():
 test_custom_base_exception_not_caught_by_exception()
 print("test_custom_base_exception_not_caught_by_exception passed")
 
+# ===== SECTION: with-statement target shapes (BindingTarget migration) =====
+# The unified `bind_target` helper accepts the full grammar for `with ... as TARGET:`,
+# not just a bare Name. `__enter__` is still called exactly once per `with` item.
+
+class _WtEnterPair:
+    def __enter__(self):
+        return (10, 20)
+    def __exit__(self, *a):
+        return False
+
+with _WtEnterPair() as (_wt_x, _wt_y):
+    assert _wt_x == 10 and _wt_y == 20
+
+# Starred unpack in with-target
+class _WtEnterFour:
+    def __enter__(self):
+        return (1, 2, 3, 4)
+    def __exit__(self, *a):
+        return False
+
+with _WtEnterFour() as (_wt_a, *_wt_rest):
+    assert _wt_a == 1 and _wt_rest == [2, 3, 4]
+
+# Simple name continues to work
+class _WtEnterInt:
+    def __enter__(self):
+        return 42
+    def __exit__(self, *a):
+        return False
+
+with _WtEnterInt() as _wt_v:
+    assert _wt_v == 42
+
+print("with-statement tuple target tests passed!")
+
 print("All exception tests passed!")

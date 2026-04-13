@@ -542,9 +542,17 @@ impl<'a> Lowering<'a> {
                     // Check if this variable was assigned a closure in this function
                     for other_stmt_id in &func.body {
                         let other_stmt = &hir_module.stmts[*other_stmt_id];
-                        if let hir::StmtKind::Assign { target, value, .. } = &other_stmt.kind {
-                            if target == var_id {
-                                let value_expr = &hir_module.exprs[*value];
+                        let var_assign = match &other_stmt.kind {
+                            hir::StmtKind::Bind {
+                                target: hir::BindingTarget::Var(target_var),
+                                value,
+                                ..
+                            } => Some((*target_var, *value)),
+                            _ => None,
+                        };
+                        if let Some((target, value)) = var_assign {
+                            if target == *var_id {
+                                let value_expr = &hir_module.exprs[value];
                                 if let hir::ExprKind::Closure { func, .. } = &value_expr.kind {
                                     return Some(*func);
                                 }

@@ -51,48 +51,35 @@ fn collect_vars_from_stmt(
 ) {
     let stmt = &hir_module.stmts[stmt_id];
     match &stmt.kind {
-        hir::StmtKind::Assign {
+        hir::StmtKind::Bind {
             target, type_hint, ..
         } => {
-            if !var_set.contains(target) {
-                vars.push(GeneratorVar {
-                    var_id: *target,
-                    gen_local_idx: *next_idx,
-                    ty: type_hint.clone().unwrap_or(Type::Any),
-                    is_param: false,
-                });
-                var_set.insert(*target);
-                *next_idx += 1;
-            }
-        }
-        hir::StmtKind::For { target, body, .. } => {
-            if !var_set.contains(target) {
-                vars.push(GeneratorVar {
-                    var_id: *target,
-                    gen_local_idx: *next_idx,
-                    ty: Type::Any, // Loop variable may hold any type (int, str, etc.)
-                    is_param: false,
-                });
-                var_set.insert(*target);
-                *next_idx += 1;
-            }
-            for s in body {
-                collect_vars_from_stmt(*s, hir_module, vars, var_set, next_idx);
-            }
-        }
-        hir::StmtKind::ForUnpack { targets, body, .. } => {
-            for target in targets {
-                if !var_set.contains(target) {
+            target.for_each_var(&mut |var_id| {
+                if !var_set.contains(&var_id) {
                     vars.push(GeneratorVar {
-                        var_id: *target,
+                        var_id,
+                        gen_local_idx: *next_idx,
+                        ty: type_hint.clone().unwrap_or(Type::Any),
+                        is_param: false,
+                    });
+                    var_set.insert(var_id);
+                    *next_idx += 1;
+                }
+            });
+        }
+        hir::StmtKind::ForBind { target, body, .. } => {
+            target.for_each_var(&mut |var_id| {
+                if !var_set.contains(&var_id) {
+                    vars.push(GeneratorVar {
+                        var_id,
                         gen_local_idx: *next_idx,
                         ty: Type::Any,
                         is_param: false,
                     });
-                    var_set.insert(*target);
+                    var_set.insert(var_id);
                     *next_idx += 1;
                 }
-            }
+            });
             for s in body {
                 collect_vars_from_stmt(*s, hir_module, vars, var_set, next_idx);
             }

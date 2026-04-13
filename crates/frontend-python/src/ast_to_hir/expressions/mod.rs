@@ -167,8 +167,8 @@ impl AstToHir {
                     span: expr_span,
                 });
                 let for_stmt = self.module.stmts.alloc(Stmt {
-                    kind: StmtKind::For {
-                        target: temp_var,
+                    kind: StmtKind::ForBind {
+                        target: BindingTarget::Var(temp_var),
                         iter: iter_expr_id,
                         body: vec![yield_stmt],
                         else_block: vec![],
@@ -186,8 +186,8 @@ impl AstToHir {
                 self.mark_var_initialized(&named.target);
 
                 let assign_stmt = self.module.stmts.alloc(Stmt {
-                    kind: StmtKind::Assign {
-                        target: target_var,
+                    kind: StmtKind::Bind {
+                        target: BindingTarget::Var(target_var),
                         value: value_id,
                         type_hint: None,
                     },

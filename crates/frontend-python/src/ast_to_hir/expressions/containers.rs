@@ -103,8 +103,8 @@ impl AstToHir {
             span: expr_span,
         });
         let init_stmt = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: temp_var_id,
+            kind: StmtKind::Bind {
+                target: BindingTarget::Var(temp_var_id),
                 value: init_dict,
                 type_hint: None,
             },
@@ -127,10 +127,14 @@ impl AstToHir {
                 let key_expr = self.convert_expr(k)?;
                 let value_expr = self.convert_expr(value)?;
                 let assign_stmt = self.module.stmts.alloc(Stmt {
-                    kind: StmtKind::IndexAssign {
-                        obj: dict_ref,
-                        index: key_expr,
+                    kind: StmtKind::Bind {
+                        target: BindingTarget::Index {
+                            obj: dict_ref,
+                            index: key_expr,
+                            span: expr_span,
+                        },
                         value: value_expr,
+                        type_hint: None,
                     },
                     span: expr_span,
                 });

@@ -76,8 +76,8 @@ impl AstToHir {
 
         let context_expr = self.convert_expr(item.context_expr.clone())?;
         let ctx_mgr_assign = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: ctx_mgr_var,
+            kind: StmtKind::Bind {
+                target: BindingTarget::Var(ctx_mgr_var),
                 value: context_expr,
                 type_hint: None,
             },
@@ -106,25 +106,37 @@ impl AstToHir {
         self.symbols.var_map.insert(ctx_val_name, ctx_val_var);
 
         let ctx_val_assign = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: ctx_val_var,
+            kind: StmtKind::Bind {
+                target: BindingTarget::Var(ctx_val_var),
                 value: enter_call,
                 type_hint: None,
             },
             span: with_span,
         });
 
-        // 3. VAR = __ctx_val (if 'as VAR' present)
+        // 3. TARGET = __ctx_val (if 'as TARGET' present)
+        //
+        // Use the unified `bind_target` helper so every binding shape is
+        // accepted — simple name (`as x:`), attribute / subscript leaf
+        // (`as self.field:` / `as registry[key]:`), and arbitrarily-nested
+        // tuple patterns (`as (a, b):`, `as (first, *rest):`). CPython
+        // admits the full grammar here; before this commit we rejected
+        // anything but a bare name.
+        //
+        // Evaluation order is preserved: `__enter__` has already run into
+        // `__ctx_val_N` (step 2 above), and the single `Bind` statement
+        // consumes that value exactly once regardless of whether the
+        // target is a simple name or a full unpack pattern.
         let target_assign = if let Some(ref opt_var) = item.optional_vars {
-            let target_var = self.get_or_create_var_from_expr(opt_var)?;
+            let target = self.bind_target(opt_var)?;
             let ctx_val_ref = self.module.exprs.alloc(Expr {
                 kind: ExprKind::Var(ctx_val_var),
                 ty: None,
                 span: with_span,
             });
             Some(self.module.stmts.alloc(Stmt {
-                kind: StmtKind::Assign {
-                    target: target_var,
+                kind: StmtKind::Bind {
+                    target,
                     value: ctx_val_ref,
                     type_hint: None,
                 },
@@ -147,8 +159,8 @@ impl AstToHir {
             span: with_span,
         });
         let ctx_had_exc_init = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: ctx_had_exc_var,
+            kind: StmtKind::Bind {
+                target: BindingTarget::Var(ctx_had_exc_var),
                 value: false_expr,
                 type_hint: Some(Type::Bool),
             },
@@ -184,8 +196,8 @@ impl AstToHir {
             span: with_span,
         });
         let ctx_had_exc_set = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: ctx_had_exc_var,
+            kind: StmtKind::Bind {
+                target: BindingTarget::Var(ctx_had_exc_var),
                 value: true_expr,
                 type_hint: None,
             },
@@ -228,8 +240,8 @@ impl AstToHir {
             span: with_span,
         });
         let ctx_suppress_assign = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: ctx_suppress_var,
+            kind: StmtKind::Bind {
+                target: BindingTarget::Var(ctx_suppress_var),
                 value: exit_call_exc,
                 type_hint: Some(Type::Bool),
             },

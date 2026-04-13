@@ -28,15 +28,20 @@ fn collect_yields_from_stmt_with_target(
         hir::StmtKind::Expr(expr_id) => {
             collect_yields_from_expr_with_target(*expr_id, None, hir_module, yields);
         }
-        hir::StmtKind::Assign { target, value, .. } => {
-            // Check if the value is a yield expression
+        hir::StmtKind::Bind { target, value, .. } => {
             let value_expr = &hir_module.exprs[*value];
-            if matches!(value_expr.kind, hir::ExprKind::Yield(_)) {
-                // This is `target = yield value` - record the assignment target
-                collect_yields_from_expr_with_target(*value, Some(*target), hir_module, yields);
+            // Only record a yield assignment target for plain Var bindings;
+            // tuple-pattern bindings of a yield are not a standard generator idiom.
+            let yield_target = if let hir::BindingTarget::Var(var_id) = target {
+                if matches!(value_expr.kind, hir::ExprKind::Yield(_)) {
+                    Some(*var_id)
+                } else {
+                    None
+                }
             } else {
-                collect_yields_from_expr_with_target(*value, None, hir_module, yields);
-            }
+                None
+            };
+            collect_yields_from_expr_with_target(*value, yield_target, hir_module, yields);
         }
         hir::StmtKind::Return(Some(expr_id)) => {
             collect_yields_from_expr_with_target(*expr_id, None, hir_module, yields);
@@ -67,13 +72,7 @@ fn collect_yields_from_stmt_with_target(
                 collect_yields_from_stmt_with_target(*s, hir_module, yields);
             }
         }
-        hir::StmtKind::For {
-            iter,
-            body,
-            else_block,
-            ..
-        }
-        | hir::StmtKind::ForUnpack {
+        hir::StmtKind::ForBind {
             iter,
             body,
             else_block,

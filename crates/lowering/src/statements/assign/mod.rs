@@ -1,13 +1,13 @@
 //! Assignment statement lowering
 //!
-//! Handles: Assign, UnpackAssign, IndexAssign, FieldAssign, ClassAttrAssign
+//! Handles: Bind (unified), IndexDelete
 //!
 //! Split into focused submodules:
-//! - `unpack`: Tuple/list unpacking assignments (UnpackAssign, NestedUnpackAssign)
-//! - `augmented`: Index/field/class_attr assignments + index delete
+//! - `bind`: Unified binding targets (Bind, ForBind)
+//! - `augmented`: Index delete
 
 mod augmented;
-mod unpack;
+mod bind;
 
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;

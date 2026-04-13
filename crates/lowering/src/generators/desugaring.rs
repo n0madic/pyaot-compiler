@@ -134,8 +134,8 @@ fn mk_resume_preamble(
     );
     stmts.push(mk_stmt(
         m,
-        hir::StmtKind::Assign {
-            target: state_var,
+        hir::StmtKind::Bind {
+            target: hir::BindingTarget::Var(state_var),
             value: get_state,
             type_hint: Some(Type::Int),
         },
@@ -209,8 +209,8 @@ fn emit_load_all_vars(
         let get = mk_get_local(m, gen_obj_var, gv.gen_local_idx, gv.ty.clone(), span);
         body.push(mk_stmt(
             m,
-            hir::StmtKind::Assign {
-                target: gv.var_id,
+            hir::StmtKind::Bind {
+                target: hir::BindingTarget::Var(gv.var_id),
                 value: get,
                 type_hint: Some(gv.ty.clone()),
             },
@@ -442,8 +442,8 @@ fn build_creator_body(
     );
     stmts.push(mk_stmt(
         m,
-        hir::StmtKind::Assign {
-            target: creator_gen_var,
+        hir::StmtKind::Bind {
+            target: hir::BindingTarget::Var(creator_gen_var),
             value: create,
             type_hint: Some(Type::Iterator(Box::new(Type::Any))),
         },
@@ -462,28 +462,34 @@ fn build_creator_body(
     // Initialize constant assignments before first yield
     for stmt_id in &func.body {
         let stmt = m.stmts[*stmt_id].clone();
-        match &stmt.kind {
-            hir::StmtKind::Assign { target, value, .. } => {
-                let ve = m.exprs[*value].clone();
-                let is_const = matches!(
-                    ve.kind,
-                    hir::ExprKind::Int(_) | hir::ExprKind::Float(_) | hir::ExprKind::Bool(_)
-                );
-                if is_const {
-                    if let Some(gv) = gen_vars.iter().find(|v| v.var_id == *target) {
-                        let val = clone_expr(m, *value);
-                        let set = mk_set_local(m, creator_gen_var, gv.gen_local_idx, val, span);
-                        stmts.push(mk_stmt(m, hir::StmtKind::Expr(set), span));
-                    }
+        // Only scalar Var bindings are candidates for constant initialization;
+        // tuple-pattern bindings (e.g., `a, b = 1, 2`) are not constants.
+        let var_assign = match &stmt.kind {
+            hir::StmtKind::Bind {
+                target: hir::BindingTarget::Var(target_var),
+                value,
+                ..
+            } => Some((*target_var, *value)),
+            _ => None,
+        };
+        if let Some((target, value)) = var_assign {
+            let ve = m.exprs[value].clone();
+            let is_const = matches!(
+                ve.kind,
+                hir::ExprKind::Int(_) | hir::ExprKind::Float(_) | hir::ExprKind::Bool(_)
+            );
+            if is_const {
+                if let Some(gv) = gen_vars.iter().find(|v| v.var_id == target) {
+                    let val = clone_expr(m, value);
+                    let set = mk_set_local(m, creator_gen_var, gv.gen_local_idx, val, span);
+                    stmts.push(mk_stmt(m, hir::StmtKind::Expr(set), span));
                 }
             }
-            hir::StmtKind::Expr(eid) => {
-                let e = &m.exprs[*eid];
-                if matches!(e.kind, hir::ExprKind::Yield(_)) {
-                    break;
-                }
+        } else if let hir::StmtKind::Expr(eid) = &stmt.kind {
+            let e = &m.exprs[*eid];
+            if matches!(e.kind, hir::ExprKind::Yield(_)) {
+                break;
             }
-            _ => {}
         }
     }
 
@@ -575,8 +581,8 @@ fn build_generic_resume(
                 );
                 body.push(mk_stmt(
                     m,
-                    hir::StmtKind::Assign {
-                        target,
+                    hir::StmtKind::Bind {
+                        target: hir::BindingTarget::Var(target),
                         value: get_sent,
                         type_hint: Some(Type::Int),
                     },
@@ -698,8 +704,8 @@ fn build_while_init(
             let get = mk_get_local(m, gen_obj_var, gv.gen_local_idx, gv.ty.clone(), span);
             body.push(mk_stmt(
                 m,
-                hir::StmtKind::Assign {
-                    target: gv.var_id,
+                hir::StmtKind::Bind {
+                    target: hir::BindingTarget::Var(gv.var_id),
                     value: get,
                     type_hint: Some(gv.ty.clone()),
                 },
@@ -882,8 +888,8 @@ fn build_for_loop_resume(
     let get_iter = mk_get_local(m, gen_obj_var, 0, iter_ty.clone(), span);
     stmts.push(mk_stmt(
         m,
-        hir::StmtKind::Assign {
-            target: iter_var,
+        hir::StmtKind::Bind {
+            target: hir::BindingTarget::Var(iter_var),
             value: get_iter,
             type_hint: Some(iter_ty),
         },
@@ -943,8 +949,8 @@ fn build_for_loop_direct(
     );
     stmts.push(mk_stmt(
         m,
-        hir::StmtKind::Assign {
-            target: next_val_var,
+        hir::StmtKind::Bind {
+            target: hir::BindingTarget::Var(next_val_var),
             value: nv,
             type_hint: Some(Type::Int),
         },
@@ -961,8 +967,8 @@ fn build_for_loop_direct(
     );
     stmts.push(mk_stmt(
         m,
-        hir::StmtKind::Assign {
-            target: iter_done_var,
+        hir::StmtKind::Bind {
+            target: hir::BindingTarget::Var(iter_done_var),
             value: id,
             type_hint: Some(Type::Bool),
         },
@@ -997,8 +1003,8 @@ fn build_for_loop_direct(
     let nvr = mk_var(m, next_val_var, Type::Int, span);
     stmts.push(mk_stmt(
         m,
-        hir::StmtKind::Assign {
-            target: fg.target_var,
+        hir::StmtKind::Bind {
+            target: hir::BindingTarget::Var(fg.target_var),
             value: nvr,
             type_hint: None,
         },
@@ -1047,8 +1053,8 @@ fn build_for_loop_filtered(
     );
     loop_body.push(mk_stmt(
         m,
-        hir::StmtKind::Assign {
-            target: next_val_var,
+        hir::StmtKind::Bind {
+            target: hir::BindingTarget::Var(next_val_var),
             value: nv,
             type_hint: Some(Type::Int),
         },
@@ -1065,8 +1071,8 @@ fn build_for_loop_filtered(
     );
     loop_body.push(mk_stmt(
         m,
-        hir::StmtKind::Assign {
-            target: iter_done_var,
+        hir::StmtKind::Bind {
+            target: hir::BindingTarget::Var(iter_done_var),
             value: id,
             type_hint: Some(Type::Bool),
         },
@@ -1101,8 +1107,8 @@ fn build_for_loop_filtered(
     let nvr = mk_var(m, next_val_var, Type::Int, span);
     loop_body.push(mk_stmt(
         m,
-        hir::StmtKind::Assign {
-            target: fg.target_var,
+        hir::StmtKind::Bind {
+            target: hir::BindingTarget::Var(fg.target_var),
             value: nvr,
             type_hint: None,
         },

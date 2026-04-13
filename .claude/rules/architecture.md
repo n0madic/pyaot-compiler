@@ -16,7 +16,7 @@
 | `runtime` | Runtime library (staticlib) | `gc.rs`, `object.rs`, collections, stdlib |
 | `utils` | IDs, string interning, line mapping | `ids.rs`, `interner.rs`, `line_map.rs` |
 | `semantics` | Name resolution, control flow | `lib.rs` |
-| `lowering` (type_planning) | Bidirectional type inference during HIR→MIR lowering | `type_planning/infer.rs`, `type_planning/check.rs`, `type_planning/pre_scan.rs` |
+| `lowering` (type_planning) | Bidirectional type inference during HIR→MIR lowering | `type_planning/infer.rs`, `type_planning/check.rs`, `type_planning/closure_scan.rs` |
 | `diagnostics` | Error reporting | `lib.rs` |
 
 ## Runtime Module Structure
@@ -36,3 +36,37 @@ crates/runtime/src/
 ├── collections.rs, defaultdict.rs, counter.rs, deque.rs  # Collections module
 └── hash_table_utils.rs, minmax_utils.rs, slice_utils.rs, utils.rs  # Utilities
 ```
+
+## HIR Statement Shape — Unified Binding
+
+All Python binding sites (assignment, `for`, `with ... as`, comprehension `for`-clauses) share a single recursive target type. Two statement variants cover the whole surface:
+
+```rust
+pub enum BindingTarget {
+    Var(VarId),
+    Attr { obj: ExprId, field: InternedString, span: Span },
+    Index { obj: ExprId, index: ExprId, span: Span },
+    ClassAttr { class_id: ClassId, attr: InternedString, span: Span },
+    Tuple { elts: Vec<BindingTarget>, span: Span },       // ≤1 Starred per level
+    Starred { inner: Box<BindingTarget>, span: Span },    // only inside Tuple
+}
+
+pub enum StmtKind {
+    Bind    { target: BindingTarget, value: ExprId, type_hint: Option<Type> },
+    ForBind { target: BindingTarget, iter: ExprId, body: Vec<StmtId>, else_block: Vec<StmtId> },
+    // ... plus If, While, Try, Match, Return, Break, Continue, Pass, Assert, IndexDelete, Raise, Expr
+}
+```
+
+**Entry points:**
+- Frontend: `frontend-python/src/ast_to_hir/variables.rs::bind_target(&py::Expr) -> Result<BindingTarget>`.
+- Lowering: `lowering/src/statements/assign/bind.rs::lower_binding_target` (recursive MIR emission); `lowering/src/statements/loops/bind.rs::lower_for_bind` (single for-loop entry, handles range/class-iter/enumerate/starred-unpack/general all inline).
+
+**Shared walker:** `BindingTarget::for_each_var<F: FnMut(VarId)>` — enumerates every `Var` leaf for name-collection passes.
+
+**Bespoke paths (intentionally not using BindingTarget):**
+- Walrus `:=` (PEP 572 — restricted to Name) — `expressions/mod.rs`.
+- `except ... as NAME` (grammar restricts to Name) — `statements/exceptions.rs`.
+- Match patterns (PEP 634 — separate refutable `Pattern` AST) — `statements/match_stmt/`.
+
+See `INSIGHTS.md` § "Unified Binding Targets" for the full design rationale.

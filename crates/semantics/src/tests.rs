@@ -1,6 +1,6 @@
 use super::*;
 use indexmap::IndexSet;
-use pyaot_hir::{ClassDef, ExceptHandler, Expr, Module, Stmt};
+use pyaot_hir::{BindingTarget, ClassDef, ExceptHandler, Expr, Module, Stmt};
 use pyaot_utils::{ClassId, Span, StringInterner, VarId};
 
 fn dummy_span() -> Span {
@@ -141,8 +141,8 @@ fn test_continue_inside_for_loop_succeeds() {
 
     let var_id = VarId::new(0);
     let for_stmt = module.stmts.alloc(Stmt {
-        kind: StmtKind::For {
-            target: var_id,
+        kind: StmtKind::ForBind {
+            target: BindingTarget::Var(var_id),
             iter: empty_list,
             body: vec![continue_stmt],
             else_block: vec![],

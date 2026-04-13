@@ -19,51 +19,15 @@ fn collect_assigned_vars(
     for stmt_id in stmts {
         let stmt = &hir_module.stmts[*stmt_id];
         match &stmt.kind {
-            hir::StmtKind::Assign { target, .. } => {
-                assigned.insert(*target);
+            hir::StmtKind::Bind { target, .. } => {
+                target.for_each_var(&mut |var_id| {
+                    assigned.insert(var_id);
+                });
             }
-            hir::StmtKind::UnpackAssign {
-                before_star,
-                starred,
-                after_star,
-                ..
-            } => {
-                for target in before_star {
-                    assigned.insert(*target);
-                }
-                if let Some(starred_var) = starred {
-                    assigned.insert(*starred_var);
-                }
-                for target in after_star {
-                    assigned.insert(*target);
-                }
-            }
-            hir::StmtKind::NestedUnpackAssign { targets, .. } => {
-                // Recursively extract variables from nested unpacking patterns
-                fn extract_vars(target: &hir::UnpackTarget, assigned: &mut IndexSet<VarId>) {
-                    match target {
-                        hir::UnpackTarget::Var(var_id) => {
-                            assigned.insert(*var_id);
-                        }
-                        hir::UnpackTarget::Nested(nested) => {
-                            for t in nested {
-                                extract_vars(t, assigned);
-                            }
-                        }
-                    }
-                }
-                for target in targets {
-                    extract_vars(target, assigned);
-                }
-            }
-            hir::StmtKind::For { target, body, .. } => {
-                assigned.insert(*target);
-                collect_assigned_vars(body, hir_module, assigned);
-            }
-            hir::StmtKind::ForUnpack { targets, body, .. } => {
-                for target in targets {
-                    assigned.insert(*target);
-                }
+            hir::StmtKind::ForBind { target, body, .. } => {
+                target.for_each_var(&mut |var_id| {
+                    assigned.insert(var_id);
+                });
                 collect_assigned_vars(body, hir_module, assigned);
             }
             hir::StmtKind::If {

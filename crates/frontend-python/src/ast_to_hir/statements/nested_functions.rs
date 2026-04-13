@@ -279,8 +279,8 @@ impl AstToHir {
 
         // 14. Return an assignment statement: nested_func_name = closure
         Ok(self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Assign {
-                target: nested_var_id,
+            kind: StmtKind::Bind {
+                target: BindingTarget::Var(nested_var_id),
                 value: closure_expr,
                 type_hint: None,
             },

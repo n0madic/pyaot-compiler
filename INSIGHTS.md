@@ -60,13 +60,13 @@ Dict comprehensions are desugared in `frontend-python/src/ast_to_hir/comprehensi
 # Desugared to
 __comp_N = {}                    # Empty dict → Dict(Any, Any)
 for x in range(5):
-    __comp_N[x] = x ** 2        # IndexAssign
+    __comp_N[x] = x ** 2        # Bind { Index { ... } }
 result = __comp_N
 ```
 
 The initial empty `{}` has no type hint, so the variable starts with `Dict(Any, Any)`. Without type refinement, all subsequent `DictGet` operations would skip unboxing.
 
-**Fix**: `lowering/src/statements/assign.rs` performs dynamic type refinement during `IndexAssign`. When it detects a `Dict(Any, Any)` target and the actual key/value types are known, it updates the variable's tracked type. This only works for direct variable references (`ExprKind::Var`).
+**Fix**: `lowering/src/statements/assign/bind.rs` performs dynamic type refinement during `Bind { Index { ... } }`. When it detects a `Dict(Any, Any)` target and the actual key/value types are known, it updates the variable's tracked type. This only works for direct variable references (`ExprKind::Var`).
 
 ---
 
@@ -582,4 +582,78 @@ Every context-manager-aware type (currently `Type::File(_)`) must handle both `_
 
 Tuple indexing (`t[0]`) promotes `Type::Any` elements to `Type::HeapAny` when the tuple uses `ELEM_HEAP_OBJ` storage (see `expressions/access/indexing.rs::175-209`). Destructuring (`a, b = t`) used to skip this and assign `Type::Any` directly, which causes `print(a)` to emit the raw pointer as an integer instead of dispatching on the object's type tag (`type_dispatch.rs::select_print_func`).
 
-`statements/assign/unpack.rs` now mirrors the indexing logic: it computes `uses_heap_obj = !elem_types.iter().all(|t| *t == Int)` and promotes `Any → HeapAny` before storing in temp locals / nested recursive extraction. If you add a new unpacking code path (e.g. pattern matching), apply the same promotion — otherwise print/compare/len on the unpacked variables silently misbehaves.
+`statements/assign/bind.rs` (`lower_tuple_pattern`) mirrors the indexing logic: it computes `uses_heap_obj = !elem_types.iter().all(|t| *t == Int)` and promotes `Any → HeapAny` before storing in temp locals / nested recursive extraction. If you add a new unpacking code path (e.g. pattern matching), apply the same promotion — otherwise print/compare/len on the unpacked variables silently misbehaves.
+
+---
+
+## Cross-Module Placeholder ClassIds Must Not Be Offset in First Pass
+
+The frontend allocates placeholder `ClassId`s from the top of `u32` space (`u32::MAX - N`) for imported user classes whose real ids are only known after `mir_merger`'s second pass. The first pass in `MirMerger::compile_modules` scans `module_init_stmts` for variable types and calls `type_to_raw` — if a module-level variable carries a `Type::Class` with a placeholder id (e.g., `anno_local: Point = ...`), adding `class_id_offset` to `u32::MAX` wraps and panics with "attempt to add with overflow".
+
+Fix: `type_to_raw` uses `checked_add` and falls back to `RawType::Any` on overflow. The placeholder will be resolved to the real class id during the second pass when `resolve_external_class_refs` rewrites all `Type::Class` references in the HIR.
+
+---
+
+## Unified Binding Targets — One Enum for Every LHS
+
+Every Python binding site (`x = ...`, `for x in ...`, `with f() as x:`, comprehension `for x in ...`) historically had its own helpers and its own HIR statement variant. The fragmentation meant `[a+b for a, b in pairs]` rejected at parse time while `for a, b in pairs:` worked — same grammar, different frontend path. The `BindingTarget` refactor collapses all of it to a single type.
+
+### HIR shape
+
+`crates/hir/src/lib.rs` — one enum covers every valid Python LHS:
+
+```rust
+pub enum BindingTarget {
+    Var(VarId),
+    Attr { obj: ExprId, field: InternedString, span: Span },
+    Index { obj: ExprId, index: ExprId, span: Span },
+    ClassAttr { class_id: ClassId, attr: InternedString, span: Span },
+    Tuple { elts: Vec<BindingTarget>, span: Span },
+    Starred { inner: Box<BindingTarget>, span: Span },
+}
+
+pub enum StmtKind {
+    Bind { target: BindingTarget, value: ExprId, type_hint: Option<Type> },
+    ForBind { target: BindingTarget, iter: ExprId, body: Vec<StmtId>, else_block: Vec<StmtId> },
+    // ... other variants
+}
+```
+
+Nine legacy variants (`Assign`, `UnpackAssign`, `NestedUnpackAssign`, `FieldAssign`, `IndexAssign`, `ClassAttrAssign`, `For`, `ForUnpack`, `ForUnpackStarred`) and `UnpackTarget` are gone. Adding a new Python feature that binds names — e.g. pattern guards extending match scope — plugs into the existing `BindingTarget` instead of spawning its own `StmtKind`.
+
+### Frontend contract
+
+`crates/frontend-python/src/ast_to_hir/variables.rs::bind_target(&py::Expr) -> Result<BindingTarget>` is the single entry point. It:
+
+- Accepts any Python LHS grammar (Name / Attribute / Subscript / Tuple / List / Starred).
+- Detects `ClassName.attr` via `symbols.class_map` and routes to `ClassAttr` (class-level and instance-level writes dispatch to different runtime paths at lowering).
+- Validates shape inline — at most one `Starred` per `Tuple` level, no `Starred(Starred(_))` — with clear errors and spans.
+- Folds former `mark_var_initialized` bookkeeping into the `Var` arm, so every `BindingTarget::Var` leaf is automatically recorded in `scope.initialized_vars`.
+
+Bespoke paths remain intentionally for grammatically-restricted sites: walrus (`expressions/mod.rs`, PEP 572 restricts to a bare Name) and `except ... as NAME` (CPython grammar). Match patterns (`statements/match_stmt/`) use a separate `Pattern` AST per PEP 634 — different semantics (refutable) — and are not merged.
+
+### Lowering contract
+
+`crates/lowering/src/statements/assign/bind.rs::lower_binding_target` is the single recursive MIR-emission entry point:
+
+- Dispatches on the target variant; leaves call small operand-taking helpers (`bind_var_op`, `bind_attr_op`, `bind_index_op`, `bind_class_attr_op`).
+- `Tuple { elts }` recurses via `lower_tuple_pattern` which handles both the no-star and one-star branches with identical element-type inference (`uses_heap_obj` promotion for `Any → HeapAny` on heap-obj-backed tuples).
+- For-loops go through `loops/bind.rs::lower_for_bind`, a true single entry point — range fast-path, class-iterator (`__iter__`), general iterable, enumerate optimisation, and flat starred unpack all dispatch directly from it. No legacy wrapper indirection.
+
+### Shared walker
+
+`BindingTarget::for_each_var<F: FnMut(VarId)>` recurses through `Tuple` and `Starred`, invoking the closure on every `Var` leaf (skipping Attr/Index/ClassAttr — they don't bind a new name). Used everywhere downstream needs the set of variables a statement binds:
+
+- `lowering/src/exceptions.rs::collect_assigned_vars`
+- `lowering/src/type_planning/{closure_scan, container_refine}.rs`
+- `lowering/src/generators/{vars, utils}.rs`
+
+New code should use the walker rather than pattern-matching each binding shape separately.
+
+### Adding a new binding site
+
+If Python gains (or you discover) another LHS grammar — say, walrus expanded to accept attributes — extend `bind_target_inner` in `variables.rs`. No new HIR variant, no new lowering helper, no new downstream match arms. The whole pipeline flows through the existing `Bind` / `ForBind`.
+
+### Known gap: generator expressions with tuple targets
+
+`sum(x * y for x, y in zip(a, b))` compiles but returns 0. The generator-desugaring detector in `crates/lowering/src/generators/for_loop.rs::detect_for_loop_generator` only optimises `ForBind { target: Var, .. }` into the efficient resume loop; tuple-target falls through to `build_generic_resume` which does not know how to iterate. List-comprehension form (`sum([x*y for x, y in zip(a, b)])`) works correctly. Full fix requires teaching the resume builder to emit tuple unpack with element-type inference through `zip()` / `enumerate()` — tracked as a follow-up to the builtin-reductions work (Area C in `MICROGPT_PLAN.md`).

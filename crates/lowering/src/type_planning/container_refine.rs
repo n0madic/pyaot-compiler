@@ -39,13 +39,16 @@ impl<'a> Lowering<'a> {
             let stmt = &hir_module.stmts[*stmt_id];
 
             // Look for: var = [] / {} / set() (no type hint, empty container)
-            if let hir::StmtKind::Assign {
-                target,
-                value,
-                type_hint: None,
-            } = &stmt.kind
-            {
-                let expr = &hir_module.exprs[*value];
+            let empty_container = match &stmt.kind {
+                hir::StmtKind::Bind {
+                    target: hir::BindingTarget::Var(target_var),
+                    value,
+                    type_hint: None,
+                } => Some((*target_var, *value)),
+                _ => None,
+            };
+            if let Some((target, value)) = empty_container {
+                let expr = &hir_module.exprs[value];
                 let is_empty_list =
                     matches!(&expr.kind, hir::ExprKind::List(elems) if elems.is_empty());
                 let is_empty_set =
@@ -53,22 +56,18 @@ impl<'a> Lowering<'a> {
                 let is_empty_dict =
                     matches!(&expr.kind, hir::ExprKind::Dict(pairs) if pairs.is_empty());
 
-                if !is_empty_list && !is_empty_set && !is_empty_dict {
-                    continue;
-                }
-
                 if is_empty_dict {
                     // Scan for d[key] = value assignments to infer key/value types
                     let (key_ty, val_ty) =
-                        self.find_dict_types_from_usage(*target, &stmts[i + 1..], hir_module);
+                        self.find_dict_types_from_usage(target, &stmts[i + 1..], hir_module);
                     if key_ty != Type::Any || val_ty != Type::Any {
                         let refined = Type::Dict(Box::new(key_ty), Box::new(val_ty));
-                        self.types.refined_var_types.insert(*target, refined);
+                        self.types.refined_var_types.insert(target, refined);
                     }
-                } else {
+                } else if is_empty_list || is_empty_set {
                     // Scan subsequent statements for method calls on this variable
                     let elem_ty =
-                        self.find_elem_type_from_usage(*target, &stmts[i + 1..], hir_module);
+                        self.find_elem_type_from_usage(target, &stmts[i + 1..], hir_module);
 
                     if elem_ty != Type::Any {
                         let refined = if is_empty_list {
@@ -77,7 +76,7 @@ impl<'a> Lowering<'a> {
                             Type::Set(Box::new(elem_ty))
                         };
                         // Store in refined_var_types which persists across function lowerings
-                        self.types.refined_var_types.insert(*target, refined);
+                        self.types.refined_var_types.insert(target, refined);
                     }
                 }
             }
@@ -92,13 +91,7 @@ impl<'a> Lowering<'a> {
                     self.refine_empty_containers_in_block(then_block, hir_module);
                     self.refine_empty_containers_in_block(else_block, hir_module);
                 }
-                hir::StmtKind::For {
-                    body, else_block, ..
-                }
-                | hir::StmtKind::ForUnpack {
-                    body, else_block, ..
-                }
-                | hir::StmtKind::ForUnpackStarred {
+                hir::StmtKind::ForBind {
                     body, else_block, ..
                 }
                 | hir::StmtKind::While {
@@ -157,17 +150,14 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 // Stop at reassignment to the same variable
-                hir::StmtKind::Assign { target, .. } if *target == var => {
+                hir::StmtKind::Bind {
+                    target: hir::BindingTarget::Var(target_var),
+                    ..
+                } if *target_var == var => {
                     return Type::Any;
                 }
                 // Recurse into nested blocks
-                hir::StmtKind::For {
-                    body, else_block, ..
-                }
-                | hir::StmtKind::ForUnpack {
-                    body, else_block, ..
-                }
-                | hir::StmtKind::ForUnpackStarred {
+                hir::StmtKind::ForBind {
                     body, else_block, ..
                 }
                 | hir::StmtKind::While {
@@ -271,7 +261,11 @@ impl<'a> Lowering<'a> {
         for stmt_id in stmts {
             let stmt = &hir_module.stmts[*stmt_id];
             match &stmt.kind {
-                hir::StmtKind::IndexAssign { obj, index, value } => {
+                hir::StmtKind::Bind {
+                    target: hir::BindingTarget::Index { obj, index, .. },
+                    value,
+                    ..
+                } => {
                     let obj_expr = &hir_module.exprs[*obj];
                     if matches!(&obj_expr.kind, hir::ExprKind::Var(v) if *v == var) {
                         let key_ty = self.infer_deep_expr_type(
@@ -290,17 +284,14 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 // Stop at reassignment to the same variable
-                hir::StmtKind::Assign { target, .. } if *target == var => {
+                hir::StmtKind::Bind {
+                    target: hir::BindingTarget::Var(target_var),
+                    ..
+                } if *target_var == var => {
                     return (Type::Any, Type::Any);
                 }
                 // Recurse into nested blocks
-                hir::StmtKind::For {
-                    body, else_block, ..
-                }
-                | hir::StmtKind::ForUnpack {
-                    body, else_block, ..
-                }
-                | hir::StmtKind::ForUnpackStarred {
+                hir::StmtKind::ForBind {
                     body, else_block, ..
                 }
                 | hir::StmtKind::While {

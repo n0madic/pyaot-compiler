@@ -83,17 +83,18 @@ Native Executable
 |---------|--------|-------------|
 | if/elif/else | ✅ | Implicit truthiness for all types (int, str, list, dict, set, etc.) |
 | while | ✅ | |
-| for | ✅ | range, iterables (list/tuple/dict/str/set/bytes/file), unpacking with starred expressions |
+| for | ✅ | range, iterables (list/tuple/dict/str/set/bytes/file); **full target grammar** — simple name, attribute (`for obj.attr in xs`), subscript (`for lst[i] in xs`), nested (`for a, (b, c) in xs`), starred (`for head, *tail in xs`) |
 | for...else / while...else | ✅ | else block runs when loop completes without break |
 | break/continue | ✅ | |
 | try/except/else/finally | ✅ | Full exception objects: `.args`, `__class__.__name__`, `str(e)`, `raise e`, BaseException hierarchy |
 | Multiple except types | ✅ | `except (ValueError, TypeError) as e:` |
 | del statement | ✅ | `del dict[key]`, `del list[index]` |
-| Walrus operator `:=` | ✅ | `if (n := len(items)) > 10:` |
-| with (context managers) | ✅ | Exception suppression; `__exit__` receives `(exc_instance, exc_instance, None)` on exception, `(None, None, None)` otherwise |
+| Walrus operator `:=` | ✅ | `if (n := len(items)) > 10:` (Name target only, per PEP 572) |
+| with (context managers) | ✅ | Exception suppression; `__exit__` receives `(exc_instance, exc_instance, None)` on exception, `(None, None, None)` otherwise; **full target grammar for `as` clause** — `with cm() as (a, b):`, `with cm() as (head, *rest):` |
 | assert | ✅ | Supports f-string messages |
 | match (pattern matching) | ✅ | Literal, singleton, capture, or, sequence, starred, mapping, class patterns; guards; `**rest` in mapping |
 | Multiple assignment | ✅ | `a = b = c = 5` |
+| Unified binding targets | ✅ | Single `BindingTarget` enum spans every binding site (assignment, `for`, `with`, comprehension `for`-clauses); attribute/subscript leaves inside tuple unpack (`c.x, c.y = 1, 2`, `a, obj.x, (b, lst[0]) = it`); nested + starred (`(a, *rest, (b, c)) = ...`) |
 
 ### Functions & Classes
 
@@ -195,7 +196,7 @@ Native Executable
 | Set methods | ✅ | add, remove, discard, pop, union, intersection, difference, symmetric_difference, update, intersection_update, difference_update, symmetric_difference_update, issubset, issuperset, isdisjoint, etc. |
 | Set operators | ✅ | `\|`, `&`, `-`, `^` |
 | Bytes methods | ✅ | decode, startswith, endswith, find, rfind, count, replace, split, rsplit, strip, lstrip, rstrip, upper, lower, join, hex, index; concatenation, repetition |
-| Comprehensions | ✅ | list, dict, set, generator |
+| Comprehensions | ✅ | list, dict, set, generator; **full target grammar**: tuple unpacking (`[a+b for a, b in pairs]`), dict/set (`{k: v for k, v in items}`, `{a*b for a, b in pairs}`), multi-clause (`[x for row in nested for a, b in row]`). Known limitation: generator expressions with tuple targets wrapped in reductions (`sum(x*y for x,y in zip(a,b))`) return 0 due to a generator-desugaring detector limitation — use list-comp form (`sum([...])`) as workaround |
 
 ### Strings
 

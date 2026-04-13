@@ -9,7 +9,7 @@
 #![forbid(unsafe_code)]
 
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::{CallArg, ExprId, ExprKind, Module, StmtId, StmtKind};
+use pyaot_hir::{BindingTarget, CallArg, ExprId, ExprKind, Module, StmtId, StmtKind};
 use pyaot_utils::StringInterner;
 
 /// Semantic analyzer for HIR
@@ -107,19 +107,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 self.analyze_stmts(else_block, module)?;
             }
 
-            StmtKind::For {
-                iter,
-                body,
-                else_block,
-                ..
-            }
-            | StmtKind::ForUnpack {
-                iter,
-                body,
-                else_block,
-                ..
-            }
-            | StmtKind::ForUnpackStarred {
+            StmtKind::ForBind {
                 iter,
                 body,
                 else_block,
@@ -172,21 +160,6 @@ impl<'a> SemanticAnalyzer<'a> {
                 self.analyze_expr(*expr_id, module)?;
             }
 
-            StmtKind::Assign { value, .. } => {
-                self.analyze_expr(*value, module)?;
-            }
-
-            StmtKind::UnpackAssign { value, .. } => {
-                // The new fields (before_star, starred, after_star) don't need
-                // semantic analysis - they're just variable IDs
-                self.analyze_expr(*value, module)?;
-            }
-
-            StmtKind::NestedUnpackAssign { value, .. } => {
-                // Nested unpacking - targets are just variable IDs
-                self.analyze_expr(*value, module)?;
-            }
-
             StmtKind::Return(expr) => {
                 if let Some(expr_id) = expr {
                     self.analyze_expr(*expr_id, module)?;
@@ -198,21 +171,6 @@ impl<'a> SemanticAnalyzer<'a> {
                 if let Some(msg_id) = msg {
                     self.analyze_expr(*msg_id, module)?;
                 }
-            }
-
-            StmtKind::IndexAssign { obj, index, value } => {
-                self.analyze_expr(*obj, module)?;
-                self.analyze_expr(*index, module)?;
-                self.analyze_expr(*value, module)?;
-            }
-
-            StmtKind::FieldAssign { obj, value, .. } => {
-                self.analyze_expr(*obj, module)?;
-                self.analyze_expr(*value, module)?;
-            }
-
-            StmtKind::ClassAttrAssign { value, .. } => {
-                self.analyze_expr(*value, module)?;
             }
 
             StmtKind::Match { subject, cases } => {
@@ -231,8 +189,38 @@ impl<'a> SemanticAnalyzer<'a> {
             }
 
             StmtKind::Pass => {}
+
+            StmtKind::Bind { target, value, .. } => {
+                self.analyze_binding_target(target, module)?;
+                self.analyze_expr(*value, module)?;
+            }
         }
 
+        Ok(())
+    }
+
+    /// Analyze a binding target — recursively walk into expressions embedded
+    /// in `Attr`/`Index` targets, and into nested `Tuple`/`Starred` patterns.
+    /// `Var` and `ClassAttr` carry no nested expressions.
+    fn analyze_binding_target(&mut self, target: &BindingTarget, module: &Module) -> Result<()> {
+        match target {
+            BindingTarget::Var(_) | BindingTarget::ClassAttr { .. } => {}
+            BindingTarget::Attr { obj, .. } => {
+                self.analyze_expr(*obj, module)?;
+            }
+            BindingTarget::Index { obj, index, .. } => {
+                self.analyze_expr(*obj, module)?;
+                self.analyze_expr(*index, module)?;
+            }
+            BindingTarget::Tuple { elts, .. } => {
+                for elt in elts {
+                    self.analyze_binding_target(elt, module)?;
+                }
+            }
+            BindingTarget::Starred { inner, .. } => {
+                self.analyze_binding_target(inner, module)?;
+            }
+        }
         Ok(())
     }
 
