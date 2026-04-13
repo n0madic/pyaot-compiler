@@ -45,17 +45,22 @@ impl<'a> Lowering<'a> {
         // For files, call readlines() first, then iterate the resulting list
         if iterable_kind == IterableKind::File {
             let file_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
-            let file_local = self.alloc_and_add_local(Type::File, mir_func);
+            // Derive the binary flag from the iterable's declared element
+            // type — `elem_type` is `bytes` for `open(p, "rb")` and `str` for
+            // text mode (see `utils::get_iterable_info`).
+            let binary = matches!(elem_type, Type::Bytes);
+            let file_local = self.alloc_and_add_local(Type::File(binary), mir_func);
             self.emit_instruction(mir::InstructionKind::Copy {
                 dest: file_local,
                 src: file_operand,
             });
 
-            // Call FileReadlines to get list[str]
+            // Call FileReadlines to get list[str] / list[bytes] depending on
+            // the file's mode — matches the runtime's per-mode dispatch.
             let lines_local = self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READLINES),
                 vec![mir::Operand::Local(file_local)],
-                Type::List(Box::new(Type::Str)),
+                Type::List(Box::new(elem_type.clone())),
                 mir_func,
             );
 

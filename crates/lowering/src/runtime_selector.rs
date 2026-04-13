@@ -32,7 +32,7 @@ impl<'a> Lowering<'a> {
             | Type::Iterator(_)
             | Type::Union(_)
             | Type::RuntimeObject(_)
-            | Type::File
+            | Type::File(_)
             | Type::Any
             | Type::HeapAny
             | Type::BuiltinException(_) => ValueKind::Ptr,

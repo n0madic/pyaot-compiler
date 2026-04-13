@@ -215,9 +215,39 @@ impl AstToHir {
                 call_span,
             ),
 
-            // Builtins returning File
+            // Builtins returning File — inspect the `mode` literal (positional
+            // arg index 1 or `mode=` kwarg) so `open(p, "rb").read()` statically
+            // types as bytes while `open(p, "r").read()` stays as str. Mode
+            // strings we can't constant-fold default to text.
             "open" => {
-                self.create_simple_builtin(call, Builtin::Open, Some(Type::File), kwargs, call_span)
+                let is_binary_mode = {
+                    fn mode_from_ast(e: &py::Expr) -> Option<bool> {
+                        if let py::Expr::Constant(c) = e {
+                            if let rustpython_parser::ast::Constant::Str(s) = &c.value {
+                                return Some(s.contains('b'));
+                            }
+                        }
+                        None
+                    }
+                    let mode_interned = self.interner.lookup("mode");
+                    let pos_mode = call.args.get(1).and_then(mode_from_ast);
+                    let kw_mode = mode_interned.and_then(|m| {
+                        kwargs.iter().find(|kw| kw.name == m).and_then(|kw| {
+                            match &self.module.exprs[kw.value].kind {
+                                ExprKind::Str(s) => self.interner.get(*s).map(|s| s.contains('b')),
+                                _ => None,
+                            }
+                        })
+                    });
+                    pos_mode.or(kw_mode).unwrap_or(false)
+                };
+                self.create_simple_builtin(
+                    call,
+                    Builtin::Open,
+                    Some(Type::File(is_binary_mode)),
+                    kwargs,
+                    call_span,
+                )
             }
 
             // Builtins returning Set

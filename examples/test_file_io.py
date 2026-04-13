@@ -181,8 +181,57 @@ f.close()
 assert enc_content == "café", f"latin-1 encoding failed: {enc_content}"
 print("encoding=latin-1 test passed!")
 
+# Test 17b: Regression — `with open(...) as f:` followed by `f = open(...)`
+# must not freeze `f`'s type at `Any`. Before the fix, the File type's
+# context-manager dunders (`__enter__` / `__exit__`) were not wired into
+# type-planning, so after a `with` block the name kept a stale type and
+# `f.read()` resolved to `NoneType` instead of `str`.
+ctx_reuse_file = "/tmp/test_ctx_reuse.txt"
+with open(ctx_reuse_file, "w") as ctx_f:
+    ctx_f.write("ctx-reused")
+ctx_f = open(ctx_reuse_file, "r")
+ctx_reuse_content = ctx_f.read()
+ctx_f.close()
+assert ctx_reuse_content == "ctx-reused", (
+    f"expected 'ctx-reused' after `with` + rebind; got {ctx_reuse_content!r}"
+)
+# Must actually behave like a str — a stale `Any` typing used to make
+# length-zero / NoneType slip through; using str methods keeps the check
+# portable (CPython + pyaot) and verifies the inferred type end-to-end.
+assert ctx_reuse_content.startswith("ctx"), (
+    "f.read() after `with ... as f:` rebind must return a real str"
+)
+assert len(ctx_reuse_content) == 10, (
+    f"read content length mismatch — expected 10, got {len(ctx_reuse_content)}"
+)
+print("context-manager rebind regression test passed!")
+
+# Test 17c: Regression — binary-mode `.read()` must return `bytes`.
+# Before parameterising `Type::File(bool)` on the mode literal, `open(p, "rb")`
+# always typed as text-mode, so `.read()` fell through to a str getter and
+# silently gave back an empty / mistyped value.
+bin_file = "/tmp/test_bin_mode.bin"
+with open(bin_file, "wb") as bin_fw:
+    bin_fw.write(b"\x00\x01\x02\xff" * 32)  # 128 bytes
+
+with open(bin_file, "rb") as bin_fr:
+    bin_payload = bin_fr.read()
+assert isinstance(bin_payload, bytes), (
+    f"open(p, 'rb').read() must return bytes, got {type(bin_payload).__name__}"
+)
+assert len(bin_payload) == 128, (
+    f"binary read should recover every byte written; got {len(bin_payload)}"
+)
+assert bin_payload[0] == 0x00 and bin_payload[3] == 0xFF, (
+    "binary read content mismatch"
+)
+print("binary-mode read regression test passed!")
+
 # Test 18: Clean up temporary files with os.remove
 import os
+
+os.remove(ctx_reuse_file)
+os.remove(bin_file)
 
 os.remove("/tmp/test_aot_file.txt")
 os.remove("/tmp/test_aot_file2.txt")

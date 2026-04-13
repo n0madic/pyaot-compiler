@@ -45,9 +45,29 @@ impl<'a> Lowering<'a> {
             ),
         };
 
+        // Tuples use `ELEM_RAW_INT` storage only when every element is `Int`;
+        // any other shape falls back to `ELEM_HEAP_OBJ` (boxed pointers). When
+        // an element's declared type is `Any` but the storage is heap-obj,
+        // promote it to `HeapAny` so `print`/compare dispatch on the actual
+        // object's type tag instead of interpreting the pointer as raw i64.
+        // Mirrors the logic in `expressions/access/indexing.rs::175-209`.
+        let uses_heap_obj = match &value_type {
+            Type::Tuple(elem_types) => {
+                elem_types.is_empty() || !elem_types.iter().all(|t| *t == Type::Int)
+            }
+            _ => true,
+        };
+        let promote_any = |t: Type| -> Type {
+            if uses_heap_obj && matches!(t, Type::Any) {
+                Type::HeapAny
+            } else {
+                t
+            }
+        };
+
         // Helper to determine element type
         let get_elem_type = |index: usize| -> Type {
-            match &value_type {
+            let raw = match &value_type {
                 Type::Tuple(elem_types) => {
                     if index < elem_types.len() {
                         elem_types[index].clone()
@@ -57,12 +77,13 @@ impl<'a> Lowering<'a> {
                 }
                 Type::List(elem_ty) => (**elem_ty).clone(),
                 _ => Type::Any,
-            }
+            };
+            promote_any(raw)
         };
 
         // Helper to determine element type for negative index
         let get_elem_type_neg = |neg_index: i64| -> Type {
-            match &value_type {
+            let raw = match &value_type {
                 Type::Tuple(elem_types) => {
                     let len = elem_types.len() as i64;
                     let actual_idx = (len + neg_index) as usize;
@@ -74,7 +95,8 @@ impl<'a> Lowering<'a> {
                 }
                 Type::List(elem_ty) => (**elem_ty).clone(),
                 _ => Type::Any,
-            }
+            };
+            promote_any(raw)
         };
 
         // Store all extracted values in temps first (for parallel assignment safety)
@@ -254,9 +276,21 @@ impl<'a> Lowering<'a> {
             Type::List(inner) => vec![(**inner).clone(); targets.len()],
             _ => vec![Type::Any; targets.len()],
         };
+        // See `lower_unpack_assign` for the rationale — mirror that promotion
+        // so nested destructuring (`a, (b, c) = ...`) also routes `Any`
+        // elements through HeapAny when the container is heap-obj backed.
+        let uses_heap_obj = match source_type {
+            Type::Tuple(types) => types.is_empty() || !types.iter().all(|t| *t == Type::Int),
+            _ => true,
+        };
 
         for (i, target) in targets.iter().enumerate() {
-            let elem_type = elem_types.get(i).cloned().unwrap_or(Type::Any);
+            let raw_elem_type = elem_types.get(i).cloned().unwrap_or(Type::Any);
+            let elem_type = if uses_heap_obj && matches!(raw_elem_type, Type::Any) {
+                Type::HeapAny
+            } else {
+                raw_elem_type
+            };
 
             match target {
                 hir::UnpackTarget::Var(var_id) => {

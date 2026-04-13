@@ -24,7 +24,7 @@ impl<'a> Lowering<'a> {
         let obj_type = self.get_type_of_expr_id(obj, hir_module);
 
         // Handle file attributes
-        if matches!(obj_type, Type::File) {
+        if matches!(obj_type, Type::File(_)) {
             let attr_name = self.resolve(attr);
             match attr_name {
                 "closed" => {

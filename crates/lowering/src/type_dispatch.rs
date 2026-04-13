@@ -68,7 +68,7 @@ pub(crate) fn select_print_func(ty: &Type) -> &'static RuntimeFuncDef {
         | Type::Set(_)
         | Type::Iterator(_)
         | Type::RuntimeObject(_)
-        | Type::File => &runtime_func_def::RT_PRINT_OBJ,
+        | Type::File(_) => &runtime_func_def::RT_PRINT_OBJ,
         // Any: ambiguous (could be raw i64) — print as Int
         Type::Any => &runtime_func_def::RT_PRINT_INT,
         _ => &runtime_func_def::RT_PRINT_INT,

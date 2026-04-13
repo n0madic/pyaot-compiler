@@ -563,3 +563,23 @@ When merging per-module MIR into one flat `HashMap<FuncId, Function>`, `mir_merg
 The moment a user defines their own function in `main.py` alongside any import — e.g. `def foo(x): ...` called directly as `foo(5)` — `mir_merger` must also walk every `CallDirect.func` and `VtableEntry.method_func_id` through the per-module `old → new FuncId` table. Without this, the local `CallDirect` dispatches to whichever function happens to land at that id in the source-module slice, typically producing `mismatched argument count` in the Cranelift verifier.
 
 See `mir_merger::remap_instruction_func_ids` — only `CallDirect` carries a raw `FuncId`; `CallNamed` routes by symbol, `Call` by operand, `CallVirtual{,Named}` by vtable slot. None of those need remapping.
+
+## `Type::File(binary)` Flows From AST, Not Type-Planning
+
+`open(path, "rb").read()` must type-infer as `bytes`, but `open(path, "r").read()` as `str`. The binary/text flag lives on `Type::File(bool)` (see `crates/types/src/lib.rs`), and its authoritative source is the AST lowering — `ast_to_hir/builtins.rs` inspects the mode literal (positional arg 1 or `mode=` kwarg) and stamps `Expr.ty = Some(Type::File(is_binary))`.
+
+`resolve_builtin_call_type(Builtin::Open, ...)` in `lowering/src/type_planning/helpers.rs` intentionally returns `None` so the caller falls back to `expr.ty`. If that helper returns `Some(Type::File(false))` instead, it **silently overwrites** the frontend-computed flag and breaks binary reads — the lowering paths that dispatch on `Type::File(binary)` (e.g. `lower_file_method` routing `.read()` to str vs bytes return) see the wrong flag.
+
+Any new caller that constructs a `Type::File(_)` should mirror this rule: the mode literal is authoritative, and non-literal/runtime-computed modes default to text.
+
+## `with ctx as f:` + Rebinding `f` Needs `__enter__` Return Types
+
+`with open(path) as f: ...` desugars to `f = <mgr>.__enter__()` at HIR-time. The type of `f` is set from `resolve_method_return_type(<mgr type>, "__enter__")` in `lowering/src/type_planning/helpers.rs`. If that match arm doesn't include `__enter__`, the return type resolves to `None`, callers fall back to `expr.ty.unwrap_or(Any)`, and a later `f = open(...)` rebind with a non-trivial type can't re-infer method return types — `f.read()` silently falls through to `NoneType`.
+
+Every context-manager-aware type (currently `Type::File(_)`) must handle both `__enter__` (returns self — i.e. `File(binary)`) and `__exit__` (returns `Bool`) in `resolve_method_return_type`. If you add a new stdlib type that supports `with`, don't forget these dunder arms.
+
+## `Tuple[Any]` Destructuring Needs HeapAny Promotion
+
+Tuple indexing (`t[0]`) promotes `Type::Any` elements to `Type::HeapAny` when the tuple uses `ELEM_HEAP_OBJ` storage (see `expressions/access/indexing.rs::175-209`). Destructuring (`a, b = t`) used to skip this and assign `Type::Any` directly, which causes `print(a)` to emit the raw pointer as an integer instead of dispatching on the object's type tag (`type_dispatch.rs::select_print_func`).
+
+`statements/assign/unpack.rs` now mirrors the indexing logic: it computes `uses_heap_obj = !elem_types.iter().all(|t| *t == Int)` and promotes `Any → HeapAny` before storing in temp locals / nested recursive extraction. If you add a new unpacking code path (e.g. pattern matching), apply the same promotion — otherwise print/compare/len on the unpacked variables silently misbehaves.

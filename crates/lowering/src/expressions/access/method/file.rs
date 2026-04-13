@@ -7,14 +7,20 @@ use pyaot_types::Type;
 use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
-    /// Lower file method calls.
+    /// Lower file method calls. `binary` comes from the `Type::File(bool)`
+    /// of the receiver — in binary mode `.read()` / `.readline()` /
+    /// `.readlines()` return `bytes` / `list[bytes]`, while text mode returns
+    /// `str` / `list[str]`. The runtime `rt_file_*` implementations already
+    /// branch on the file's binary flag; this only gets the static type right.
     pub(super) fn lower_file_method(
         &mut self,
         obj_operand: mir::Operand,
         method_name: &str,
         arg_operands: Vec<mir::Operand>,
+        binary: bool,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
+        let str_or_bytes = if binary { Type::Bytes } else { Type::Str };
         match method_name {
             "read" => {
                 // .read() or .read(n) - read entire file or n bytes
@@ -23,7 +29,7 @@ impl<'a> Lowering<'a> {
                     self.emit_runtime_call(
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READ),
                         vec![obj_operand],
-                        Type::Str,
+                        str_or_bytes,
                         mir_func,
                     )
                 } else {
@@ -31,7 +37,7 @@ impl<'a> Lowering<'a> {
                     self.emit_runtime_call(
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READ_N),
                         vec![obj_operand, arg_operands[0].clone()],
-                        Type::Str,
+                        str_or_bytes,
                         mir_func,
                     )
                 };
@@ -43,7 +49,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READLINE),
                     vec![obj_operand],
-                    Type::Str,
+                    str_or_bytes,
                     mir_func,
                 );
 
@@ -54,7 +60,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READLINES),
                     vec![obj_operand],
-                    Type::List(Box::new(Type::Str)),
+                    Type::List(Box::new(str_or_bytes)),
                     mir_func,
                 );
 
@@ -100,7 +106,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_ENTER),
                     vec![obj_operand],
-                    Type::File,
+                    Type::File(binary),
                     mir_func,
                 );
 

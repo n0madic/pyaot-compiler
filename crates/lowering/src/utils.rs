@@ -95,9 +95,11 @@ pub(crate) fn get_iterable_info(ty: &Type) -> Option<(IterableKind, Type)> {
             // Iterating over an iterator/generator yields its element type
             Some((IterableKind::Iterator, (**elem_ty).clone()))
         }
-        Type::File => {
-            // Iterating over a file yields lines as strings
-            Some((IterableKind::File, Type::Str))
+        Type::File(binary) => {
+            // Iterating over a file yields lines — str for text mode, bytes
+            // for binary mode (matches CPython's file-iterator semantics).
+            let elem = if *binary { Type::Bytes } else { Type::Str };
+            Some((IterableKind::File, elem))
         }
         _ => None,
     }

@@ -82,13 +82,22 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
             // Concatenation/repetition (handled via operators, but for completeness)
             _ => None,
         },
-        Type::File => match method_name {
-            "read" | "readline" => Some(Type::Str),
-            "readlines" => Some(Type::List(Box::new(Type::Str))),
-            "write" => Some(Type::Int),
-            "close" | "flush" => Some(Type::None),
-            _ => None,
-        },
+        Type::File(binary) => {
+            let str_or_bytes = if *binary { Type::Bytes } else { Type::Str };
+            match method_name {
+                "read" | "readline" => Some(str_or_bytes),
+                "readlines" => Some(Type::List(Box::new(str_or_bytes))),
+                "write" => Some(Type::Int),
+                "close" | "flush" => Some(Type::None),
+                // Context-manager protocol — `with open(...) as f:` desugars
+                // to `f = <mgr>.__enter__()`, so __enter__ must return the
+                // same File flavour so the binary/text distinction propagates
+                // through the `as f` binding.
+                "__enter__" => Some(Type::File(*binary)),
+                "__exit__" => Some(Type::Bool),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -324,7 +333,13 @@ pub(crate) fn resolve_builtin_call_type(
         Builtin::Print | Builtin::Setattr => Some(Type::None),
         Builtin::Range => Some(Type::Iterator(Box::new(Type::Int))),
         Builtin::Pow => Some(Type::Float),
-        Builtin::Open => Some(Type::File),
+        // `Builtin::Open`'s binary/text flag is stamped on the Expr's `ty`
+        // slot by `ast_to_hir/builtins.rs` (it has the interner and can
+        // resolve the mode string). Return `None` here so the caller falls
+        // back to `expr.ty`, keeping the frontend as the single source of
+        // truth — otherwise this fallback would always overwrite it with
+        // text-mode and defeat the whole detection.
+        Builtin::Open => None,
         Builtin::Getattr => Some(Type::Any),
 
         // === Abs: preserves input type ===

@@ -104,7 +104,9 @@ impl<'a> Lowering<'a> {
                 &elem_ty,
                 mir_func,
             ),
-            Type::File => self.lower_file_method(obj_operand, &method_name, arg_operands, mir_func),
+            Type::File(binary) => {
+                self.lower_file_method(obj_operand, &method_name, arg_operands, binary, mir_func)
+            }
             Type::RuntimeObject(type_tag) => {
                 // Handle RuntimeObject methods using the specific type tag
                 // This correctly routes methods like geturl() to the right object type

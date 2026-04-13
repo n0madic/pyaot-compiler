@@ -298,4 +298,21 @@ assert len(od5) == 1, "OrderedDict popitem(False) removes first"
 assert "x" not in od5, "OrderedDict popitem(False) removed correct key"
 assert "y" in od5, "OrderedDict remaining key after popitem"
 
+# ===== SECTION: Destructuring a Tuple[Any] (regression) =====
+# Before the fix, `a, b = ...` over a `Tuple[Any]` widened each binding to
+# the ambiguous `Any` type (printed as a raw i64 pointer), while index access
+# `t[0]` correctly promoted to HeapAny. Both paths must now agree.
+od6 = OrderedDict()
+od6["alpha"] = 1
+od6["beta"] = 2
+key_last, val_last = od6.popitem()
+assert key_last == "beta", (
+    f"destructured key from popitem() must behave as str; got {key_last}"
+)
+assert val_last == 2, f"destructured value from popitem() must equal 2; got {val_last}"
+# Also test `str(key)` round-trip which relies on HeapAny dispatch.
+assert str(key_last) == "beta", (
+    "str() of destructured Tuple[Any] element must dispatch on actual type tag"
+)
+
 print("All collections tests passed!")

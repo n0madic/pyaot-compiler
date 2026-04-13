@@ -1,7 +1,7 @@
 //! File I/O builtin lowering: open()
 
 use pyaot_diagnostics::Result;
-use pyaot_hir as hir;
+use pyaot_hir::{self as hir, ExprKind};
 use pyaot_mir as mir;
 use pyaot_types::Type;
 
@@ -49,11 +49,32 @@ impl<'a> Lowering<'a> {
             enc_op.unwrap_or(mir::Operand::Constant(mir::Constant::Int(0)))
         };
 
+        // Determine text/binary from the mode literal so the returned local
+        // carries the correct `Type::File(bool)`. The frontend (ast_to_hir)
+        // does the same check for `expr.ty`; doing it again here keeps the
+        // MIR local's declared type consistent with later method dispatch.
+        let is_binary = {
+            let mut b = false;
+            if args.len() > 1 {
+                if let ExprKind::Str(interned) = &hir_module.exprs[args[1]].kind {
+                    b = self.interner.resolve(*interned).contains('b');
+                }
+            }
+            for kwarg in kwargs {
+                if self.resolve(kwarg.name) == "mode" {
+                    if let ExprKind::Str(interned) = &hir_module.exprs[kwarg.value].kind {
+                        b = self.interner.resolve(*interned).contains('b');
+                    }
+                }
+            }
+            b
+        };
+
         // Call rt_file_open(filename, mode, encoding)
         let result = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_OPEN),
             vec![filename_op, mode_op, encoding_op],
-            Type::File,
+            Type::File(is_binary),
             mir_func,
         );
 

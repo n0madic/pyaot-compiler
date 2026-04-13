@@ -79,8 +79,11 @@ pub enum Type {
     /// Uses BuiltinExceptionKind enum from exceptions module
     BuiltinException(BuiltinExceptionKind),
 
-    /// File type (for open() builtin)
-    File,
+    /// File type (for open() builtin). The boolean discriminates text mode
+    /// (`false`) from binary mode (`true`, e.g. `open(p, "rb")`), because
+    /// `.read()` / `.readline()` return `str` in text mode but `bytes` in
+    /// binary mode and both need distinct static return-type inference.
+    File(bool),
 
     /// Runtime object type from stdlib (StructTime, CompletedProcess, etc.)
     /// Uses TypeTagKind as single source of truth from core-defs.
@@ -304,8 +307,11 @@ impl Type {
             // Iterator types
             (Type::Iterator(_), Type::Iterator(_)) => true,
 
-            // File type
-            (Type::File, Type::File) => true,
+            // File type — text and binary files are structurally the same
+            // for dispatch purposes (both accept `.read()` etc.), so any
+            // `File(_)` matches any other `File(_)`. The binary flag only
+            // affects return-type inference, not structural equality.
+            (Type::File(_), Type::File(_)) => true,
 
             // Runtime object types match by TypeTagKind
             (Type::RuntimeObject(k1), Type::RuntimeObject(k2)) => k1 == k2,
@@ -477,7 +483,7 @@ impl std::fmt::Display for Type {
             Type::Class { name, .. } => write!(f, "{:?}", name),
             Type::Iterator(t) => write!(f, "Iterator[{}]", t),
             Type::BuiltinException(kind) => write!(f, "{}", kind),
-            Type::File => write!(f, "File"),
+            Type::File(binary) => write!(f, "File({})", if *binary { "binary" } else { "text" }),
             Type::RuntimeObject(kind) => write!(f, "{}", kind),
             Type::Never => write!(f, "Never"),
         }
@@ -531,7 +537,9 @@ pub fn typespec_to_type(spec: &TypeSpec) -> Type {
         TypeSpec::Optional(inner) => Type::optional(typespec_to_type(inner)),
         TypeSpec::Any => Type::Any,
         TypeSpec::Iterator(elem) => Type::Iterator(Box::new(typespec_to_type(elem))),
-        TypeSpec::File => Type::File,
+        // TypeSpec::File carries no mode info — stdlib signatures that name
+        // `File` as a param/return type default to text mode.
+        TypeSpec::File => Type::File(false),
         // Runtime object types - use TypeTagKind as single source of truth
         TypeSpec::Match => Type::RuntimeObject(TypeTagKind::Match),
         TypeSpec::StructTime => Type::RuntimeObject(TypeTagKind::StructTime),

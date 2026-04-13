@@ -251,7 +251,7 @@ impl<'a> Lowering<'a> {
             Type::Iterator(_) => Some(TypeTagKind::Iterator.tag() as i64),
             Type::Set(_) => Some(TypeTagKind::Set.tag() as i64),
             Type::Bytes => Some(TypeTagKind::Bytes.tag() as i64),
-            Type::File => Some(TypeTagKind::File.tag() as i64),
+            Type::File(_) => Some(TypeTagKind::File.tag() as i64),
             _ => None, // Unknown type
         }
     }

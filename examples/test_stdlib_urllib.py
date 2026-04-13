@@ -376,45 +376,37 @@ except IOError:
 # pyaot requires `filename` (CPython allows None → tempfile). Passing a path
 # works the same way on both runtimes. `reporthook` is accepted by CPython and
 # pyaot but pyaot never invokes it.
-# NOTE: pyaot types the return as `Tuple[Any]`, so tests access elements
-# by index rather than destructuring — index access preserves the underlying
-# `str` typing, whereas `a, b = ret` widens each binding to `Any`. Both forms
-# are legal Python and CPython returns the same tuple, so this keeps the
-# test runnable under both runtimes.
-#
-# We verify the download by reading the written file back in text mode and
-# checking it looks like the expected content. pyaot's binary-mode
-# `.read()` is not wired up yet, so text mode is the portable choice —
-# /robots.txt is plain ASCII and round-trips cleanly under both runtimes.
-retrieve_path = "/tmp/pyaot_test_urlretrieve.txt"
+# Destructuring the `(filename, headers)` tuple exercises the HeapAny
+# promotion fix for `Tuple[Any]` unpacking; binary-mode read exercises the
+# `Type::File(bool)` flag.
+retrieve_path = "/tmp/pyaot_test_urlretrieve.bin"
 if os.path.exists(retrieve_path):
     os.remove(retrieve_path)
 try:
-    ret = urlretrieve("https://httpbin.org/robots.txt", retrieve_path)
-    assert ret[0] == retrieve_path, (
-        f"urlretrieve should return the filename it was asked to write; got '{ret[0]}'"
+    ret_filename, _ = urlretrieve("https://httpbin.org/bytes/128", retrieve_path)
+    assert ret_filename == retrieve_path, (
+        f"urlretrieve should return the filename it was asked to write; got '{ret_filename}'"
     )
     assert os.path.exists(retrieve_path), (
         f"urlretrieve must create the file at '{retrieve_path}'"
     )
-    retrieve_fh = open(retrieve_path, "r")
-    retrieved_text = retrieve_fh.read()
-    retrieve_fh.close()
-    assert "User-agent" in retrieved_text, (
-        "downloaded /robots.txt should contain 'User-agent' directive"
+    with open(retrieve_path, "rb") as retrieve_fh:
+        retrieved_bytes = retrieve_fh.read()
+    assert len(retrieved_bytes) == 128, (
+        f"httpbin.org/bytes/128 should return 128 bytes; got {len(retrieved_bytes)}"
     )
     os.remove(retrieve_path)
 
     # POST variant — `data` triggers a POST. httpbin.org/post echoes the
     # request body back in its JSON response, so we just verify the file
     # gets created (the body is non-empty JSON under both runtimes).
-    post_path = "/tmp/pyaot_test_urlretrieve_post.txt"
+    post_path = "/tmp/pyaot_test_urlretrieve_post.bin"
     if os.path.exists(post_path):
         os.remove(post_path)
-    ret_post = urlretrieve(
+    post_filename, _ = urlretrieve(
         "https://httpbin.org/post", post_path, None, b"payload=hello"
     )
-    assert ret_post[0] == post_path
+    assert post_filename == post_path
     assert os.path.exists(post_path), "urlretrieve POST must write the response body"
     os.remove(post_path)
 

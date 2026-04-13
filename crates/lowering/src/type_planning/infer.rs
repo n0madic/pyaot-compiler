@@ -322,7 +322,7 @@ impl<'a> Lowering<'a> {
             }
             return Some(Type::Any);
         }
-        if matches!(obj_ty, Type::File) {
+        if matches!(obj_ty, Type::File(_)) {
             let attr_name = self.resolve(attr);
             return Some(match attr_name {
                 "closed" => Type::Bool,

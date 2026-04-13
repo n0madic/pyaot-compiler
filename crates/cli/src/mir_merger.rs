@@ -25,7 +25,7 @@ enum RawType {
     None,
     Any,
     HeapAny,
-    File,
+    File(bool),
     Never,
     List(Box<RawType>),
     Dict(Box<RawType>, Box<RawType>),
@@ -61,7 +61,7 @@ fn type_to_raw(ty: &Type, source_interner: &StringInterner, class_id_offset: u32
         Type::None => RawType::None,
         Type::Any => RawType::Any,
         Type::HeapAny => RawType::HeapAny,
-        Type::File => RawType::File,
+        Type::File(binary) => RawType::File(*binary),
         Type::Never => RawType::Never,
         Type::List(t) => RawType::List(Box::new(type_to_raw(t, source_interner, class_id_offset))),
         Type::Dict(k, v) => RawType::Dict(
@@ -115,7 +115,7 @@ fn raw_to_type(raw: &RawType, caller_interner: &mut StringInterner) -> Type {
         RawType::None => Type::None,
         RawType::Any => Type::Any,
         RawType::HeapAny => Type::HeapAny,
-        RawType::File => Type::File,
+        RawType::File(binary) => Type::File(*binary),
         RawType::Never => Type::Never,
         RawType::List(t) => Type::List(Box::new(raw_to_type(t, caller_interner))),
         RawType::Dict(k, v) => Type::Dict(
