@@ -2,6 +2,7 @@
 //!
 //! Provides:
 //! - sys.argv: Command line arguments as list[str]
+//! - sys.path: Module search path as list[str]
 //! - sys.exit(code): Exit program with given code
 
 use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
@@ -16,6 +17,16 @@ struct SysArgvStorage(UnsafeCell<*mut Obj>);
 unsafe impl Sync for SysArgvStorage {}
 
 static SYS_ARGV: SysArgvStorage = SysArgvStorage(UnsafeCell::new(std::ptr::null_mut()));
+
+/// Lock-free global storage for sys.path list.
+/// Lazily initialised on first read so we don't pay the cost (allocating a
+/// list + N strings, walking `PYTHONPATH`) on programs that never read it.
+struct SysPathStorage(UnsafeCell<*mut Obj>);
+
+// Safety: The runtime is single-threaded (AOT-compiled Python has no threading)
+unsafe impl Sync for SysPathStorage {}
+
+static SYS_PATH: SysPathStorage = SysPathStorage(UnsafeCell::new(std::ptr::null_mut()));
 
 /// Initialize sys.argv from main's argc/argv
 ///
@@ -114,6 +125,14 @@ unsafe fn create_argv_list(argc: i32, argv: *const *const i8) -> *mut Obj {
     roots[0]
 }
 
+/// Pointers held in the `sys` module's static slots. Returned to the GC
+/// mark phase so the cached `sys.argv` and `sys.path` lists (which live in
+/// process-wide statics, not in the shadow stack or globals map) survive
+/// collection cycles regardless of how often user code holds references.
+pub fn get_sys_module_roots() -> [*mut Obj; 2] {
+    unsafe { [*SYS_ARGV.0.get(), *SYS_PATH.0.get()] }
+}
+
 /// Get sys.argv list
 /// Returns a pointer to the list of command-line arguments
 #[no_mangle]
@@ -123,21 +142,122 @@ pub extern "C" fn rt_sys_get_argv() -> *mut Obj {
         return argv_ptr;
     }
     // Return empty list if not initialized (shouldn't happen in normal usage)
-    unsafe {
-        let list_size = std::mem::size_of::<ListObj>();
-        let list_ptr = gc::gc_alloc(list_size, TypeTagKind::List as u8) as *mut ListObj;
+    unsafe { build_str_list::<&str>(&[]) }
+}
 
-        (*list_ptr).header = ObjHeader {
-            type_tag: TypeTagKind::List,
-            marked: false,
-            size: list_size,
-        };
-        (*list_ptr).len = 0;
-        (*list_ptr).capacity = 0;
-        (*list_ptr).data = std::ptr::null_mut();
-
-        list_ptr as *mut Obj
+/// Get sys.path list — module search paths.
+///
+/// On first call, builds the list from:
+/// 1. Directory of the executable (for code installed next to the binary)
+/// 2. Current working directory
+/// 3. `:`-separated entries of `PYTHONPATH` (Unix; `;` on Windows)
+///
+/// Subsequent calls return the cached list, so user code can do
+/// `sys.path.append("...")` and have the change persist within the
+/// process. Imports are resolved at compile time and ignore mutations
+/// to the runtime list.
+#[no_mangle]
+pub extern "C" fn rt_sys_get_path() -> *mut Obj {
+    let cached = unsafe { *SYS_PATH.0.get() };
+    if !cached.is_null() {
+        return cached;
     }
+
+    let mut entries: Vec<String> = Vec::new();
+
+    // 1. Executable's directory.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            entries.push(dir.to_string_lossy().into_owned());
+        }
+    }
+
+    // 2. Current working directory.
+    if let Ok(cwd) = std::env::current_dir() {
+        entries.push(cwd.to_string_lossy().into_owned());
+    }
+
+    // 3. PYTHONPATH entries.
+    if let Ok(pythonpath) = std::env::var("PYTHONPATH") {
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        for entry in pythonpath.split(sep) {
+            if !entry.is_empty() {
+                entries.push(entry.to_string());
+            }
+        }
+    }
+
+    let list_ptr = unsafe { build_str_list(&entries) };
+    unsafe {
+        *SYS_PATH.0.get() = list_ptr;
+    }
+    list_ptr
+}
+
+/// Build a `ListObj` of `StrObj` from a slice of Rust strings.
+///
+/// # Safety
+/// The caller must ensure the GC root for the returned list is established
+/// if the caller plans to allocate after this call. Internally, the list
+/// pointer is rooted across each per-string allocation since `gc_alloc`
+/// for the strings can trigger a collection.
+unsafe fn build_str_list<S: AsRef<str>>(entries: &[S]) -> *mut Obj {
+    let capacity = entries.len();
+    let list_size = std::mem::size_of::<ListObj>();
+    let list_ptr = gc::gc_alloc(list_size, TypeTagKind::List as u8) as *mut ListObj;
+
+    (*list_ptr).header = ObjHeader {
+        type_tag: TypeTagKind::List,
+        marked: false,
+        size: list_size,
+    };
+    (*list_ptr).len = 0;
+    (*list_ptr).capacity = capacity;
+
+    if capacity > 0 {
+        let data_layout = std::alloc::Layout::array::<*mut Obj>(capacity)
+            .expect("Allocation size overflow - capacity too large");
+        (*list_ptr).data = std::alloc::alloc(data_layout) as *mut *mut Obj;
+        for i in 0..capacity {
+            *(*list_ptr).data.add(i) = std::ptr::null_mut();
+        }
+    } else {
+        (*list_ptr).data = std::ptr::null_mut();
+        return list_ptr as *mut Obj;
+    }
+
+    // Root the list while we allocate the per-entry strings.
+    let mut roots: [*mut Obj; 1] = [list_ptr as *mut Obj];
+    let mut frame = ShadowFrame {
+        prev: std::ptr::null_mut(),
+        nroots: 1,
+        roots: roots.as_mut_ptr(),
+    };
+    gc_push(&mut frame);
+
+    for (i, entry) in entries.iter().enumerate() {
+        let bytes = entry.as_ref().as_bytes();
+        let len = bytes.len();
+        let str_size = std::mem::size_of::<StrObj>() + len;
+        let str_ptr = gc::gc_alloc(str_size, TypeTagKind::Str as u8) as *mut StrObj;
+
+        (*str_ptr).header = ObjHeader {
+            type_tag: TypeTagKind::Str,
+            marked: false,
+            size: str_size,
+        };
+        (*str_ptr).len = len;
+        if len > 0 {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), (*str_ptr).data.as_mut_ptr(), len);
+        }
+
+        let list_ptr = roots[0] as *mut ListObj;
+        *(*list_ptr).data.add(i) = str_ptr as *mut Obj;
+        (*list_ptr).len += 1;
+    }
+
+    gc_pop();
+    roots[0]
 }
 
 /// Exit the program with the given exit code

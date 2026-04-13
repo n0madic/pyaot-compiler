@@ -437,6 +437,17 @@ fn mark_roots(state: &mut GcState) {
     // Exception instances survive longjmp (which unwinds the shadow stack) because
     // they are stored in Rust heap-allocated ExceptionObject, not in GC roots.
     mark_exception_pointers();
+
+    // Mark process-wide singletons cached in `sys` module statics
+    // (`sys.argv`, `sys.path`). They are not reachable through globals or
+    // the shadow stack, so without explicit marking the next collection
+    // would free the underlying `ListObj` and a subsequent `sys.path`
+    // read would dereference a dangling pointer.
+    for ptr in crate::sys::get_sys_module_roots() {
+        if !ptr.is_null() {
+            mark_object(ptr);
+        }
+    }
 }
 
 /// Mark all heap objects stored in exception state (current/handling exceptions)

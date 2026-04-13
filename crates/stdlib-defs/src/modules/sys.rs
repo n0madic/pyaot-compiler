@@ -19,6 +19,26 @@ pub static SYS_ARGV: StdlibAttrDef = StdlibAttrDef {
     codegen: RuntimeFuncDef::new("rt_sys_get_argv", &[], Some(R_I64), false),
 };
 
+/// sys.path attribute — module search path.
+///
+/// Initialised at process start from:
+///   1. Directory of the executable (for code next to the installed binary).
+///   2. Current working directory.
+///   3. Each `:`-separated entry of `PYTHONPATH`, if set.
+///
+/// Returns the SAME `ListObj` across calls, so mutations like
+/// `sys.path.append("...")` persist for the lifetime of the process.
+/// The list has no effect on module resolution (that happens at compile
+/// time), but matches CPython's surface so portability/diagnostic code
+/// that reads `sys.path` keeps working.
+pub static SYS_PATH: StdlibAttrDef = StdlibAttrDef {
+    name: "path",
+    runtime_getter: "rt_sys_get_path",
+    ty: TypeSpec::List(&TYPE_STR),
+    writable: false,
+    codegen: RuntimeFuncDef::new("rt_sys_get_path", &[], Some(R_I64), false),
+};
+
 /// sys.exit function
 pub static SYS_EXIT: StdlibFunctionDef = StdlibFunctionDef {
     name: "exit",
@@ -51,7 +71,7 @@ pub static SYS_INTERN: StdlibFunctionDef = StdlibFunctionDef {
 pub static SYS_MODULE: StdlibModuleDef = StdlibModuleDef {
     name: "sys",
     functions: &[SYS_EXIT, SYS_INTERN],
-    attrs: &[SYS_ARGV],
+    attrs: &[SYS_ARGV, SYS_PATH],
     constants: &[],
     classes: &[],
     exceptions: &[],
