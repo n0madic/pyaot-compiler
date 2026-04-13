@@ -175,6 +175,27 @@ assert direct_ctor.sum() == 100, "from-import constructor must produce a real in
 direct_ctor_no_anno = Point(13, 7)
 assert direct_ctor_no_anno.describe() == "Point(13,7)"
 
+# Cross-module return type auto-inference — caller omits the annotation
+# and still gets `Type::Class` from the function's declared return type,
+# routed through `module_func_exports` in mir_merger. Before the
+# placeholder-resolution pass, this path misrouted to `Type::Any` and
+# the downstream `.x` access failed with "unknown attribute".
+inferred_pt = math_utils.point_at(21, 42)
+assert inferred_pt.x == 21
+assert inferred_pt.y == 42
+assert inferred_pt.sum() == 63
+
+# Cross-module default arguments — the caller omits the optional params
+# and mir_merger fills them from `ExportedParam.default` (simple const
+# defaults: int / float / bool / str / None).
+defaulted: Point = math_utils.default_point()
+assert defaulted.x == 10, "default int arg should fill from exported param"
+assert defaulted.y == 20
+
+# Mixed positional + default (omit only the trailing str default)
+partial: Point = math_utils.default_point(1, 2)
+assert partial.x == 1 and partial.y == 2
+
 # FuncId-remap regression: defining ≥2 local functions in main while
 # importing another module used to confuse `CallDirect` targets
 # (mir_merger assigned fresh FuncIds without rewriting instruction

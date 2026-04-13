@@ -30,3 +30,10 @@ def origin() -> Point:
 
 def point_at(x: int, y: int) -> Point:
     return Point(x, y)
+
+
+def default_point(x: int = 10, y: int = 20, label: str = "p") -> Point:
+    """Cross-module-call regression: a caller that omits every optional
+    argument must fill in the declared defaults, not crash the Cranelift
+    verifier with `got 1, expected 3`."""
+    return Point(x, y)

@@ -542,6 +542,20 @@ Annotations like `r: mymod.Response` are parsed BEFORE `mir_merger` runs, so the
 
 The rewrite descends into `Type::List`, `Dict`, `Tuple`, `Union`, `Function`, etc., so `list[mymod.Foo]` and `Optional[Foo]` also work.
 
+## Type Narrowing on `Any` / `HeapAny` Must Route to the Target
+
+`isinstance(x, T)` inside an `if` branch needs to narrow the variable's compile-time type so that downstream dispatchers (`lower_len`, `lower_print`, `select_compare_func`) pick the right runtime call. For `Union` types this works naturally — the narrowed type is the Union element that matches `T`. For `Type::Any` and `Type::HeapAny` it didn't: `narrow_to` fell through to the generic arm, asked `types_match_for_isinstance(Any, T)` (which has no `Any` case and returns `false`), and produced `Type::Never`.
+
+The symptom was subtle: `len(x)` where `x: Any` under `isinstance(x, str)` returned `0` silently (the `_ => Int(0)` fallback in `lower_len`). For `requests.post(data="string")`, the `data.encode()` path reached `encode()` with the narrowed type set to `Never`, so the compiler emitted a no-op body, and the server received an empty request.
+
+Fix: `Type::Any` and `Type::HeapAny` narrow to the isinstance target type. See `Type::narrow_to` in `crates/types/src/lib.rs`. The else-branch still returns `Any` via `narrow_excluding`'s non-Union arm (correct — after `if isinstance(x, str): ... else:`, `x` can still be anything except `str`).
+
+## Don't Cache `Var` Expression Types
+
+`get_type_of_expr_id` memoizes expression types in `TypeEnvironment.expr_types`. This is correct for derived expressions (Call, BinOp, Attribute) whose type is a pure function of their sub-expressions. It's WRONG for `Var(id)` expressions: `Var`'s type comes from `get_var_type(id)`, which changes between `apply_narrowings` and `restore_types` calls. If the cache was populated before narrowing, a subsequent lookup inside the narrowed branch returns the stale pre-narrow type.
+
+`get_type_of_expr_id` now bypasses the cache for `Var` expressions and re-runs `compute_expr_type` each time. Recomputation is a single HashMap lookup — no measurable cost.
+
 ## `mir_merger` Must Remap `CallDirect` FuncIds
 
 When merging per-module MIR into one flat `HashMap<FuncId, Function>`, `mir_merger` assigns fresh `FuncId`s to avoid collisions — but instruction-embedded references are NOT in the main name-remap pass. For years this didn't matter because existing multi-module tests only used `CallNamed` (symbol-name-based, immune to id renumbering), never `CallDirect`.
