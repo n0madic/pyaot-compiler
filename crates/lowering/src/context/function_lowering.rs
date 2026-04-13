@@ -210,7 +210,7 @@ impl<'a> Lowering<'a> {
             // only if that pass produced nothing (empty body, unreachable,
             // or the pass couldn't see this function).
             let from_planning = self.get_func_return_type(&func.id).cloned();
-            let inferred = from_planning.unwrap_or_else(|| {
+            from_planning.unwrap_or_else(|| {
                 let lambda_inferred = self.infer_lambda_return_type(func, hir_module);
                 if lambda_inferred == Type::None
                     && self.find_returned_closure(func, hir_module).is_some()
@@ -219,8 +219,7 @@ impl<'a> Lowering<'a> {
                 } else {
                     lambda_inferred
                 }
-            });
-            inferred
+            })
         } else {
             // Use the declared return type
             func.return_type.clone().unwrap_or(Type::None)

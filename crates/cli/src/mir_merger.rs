@@ -818,13 +818,10 @@ fn resolve_external_class_refs(
 
     // Statement type hints (annotated assignments)
     for stmt in parsed.hir.stmts.iter_mut() {
-        match &mut stmt.1.kind {
-            pyaot_hir::StmtKind::Bind { type_hint, .. } => {
-                if let Some(ty) = type_hint.as_mut() {
-                    remap_ty(ty, &mut parsed.interner);
-                }
+        if let pyaot_hir::StmtKind::Bind { type_hint, .. } = &mut stmt.1.kind {
+            if let Some(ty) = type_hint.as_mut() {
+                remap_ty(ty, &mut parsed.interner);
             }
-            _ => {}
         }
     }
 }

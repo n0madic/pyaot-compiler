@@ -7,7 +7,7 @@
 | `stdlib-defs` | Stdlib module definitions | `types.rs`, `registry.rs`, `modules/*.rs` |
 | `frontend-python` | Python parsing → HIR | `ast_to_hir/` |
 | `hir` | High-level IR | `lib.rs` |
-| `types` | Type system | `lib.rs` |
+| `types` | Type system; `dunders` is the single source of truth for Python dunder method classification (`DunderKind`, `canonical_dunder_name`, `polymorphic_other_type`) | `lib.rs`, `dunders.rs` |
 | `lowering` | HIR → MIR transformation | `context/`, `expressions/`, `statements/`, `generators/` |
 | `mir` | Mid-level IR (CFG) | `lib.rs` |
 | `optimizer` | MIR optimization passes | `pass.rs`, `devirtualize/`, `flatten_properties/`, `inline/`, `constfold/`, `peephole/`, `dce/` |

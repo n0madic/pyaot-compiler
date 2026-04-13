@@ -119,7 +119,9 @@ Native Executable
 | `__eq__`, `__ne__` | ✅ | `__ne__` auto-negates `__eq__` if not defined |
 | `__lt__`, `__le__`, `__gt__`, `__ge__` | ✅ | Enables sorted(), min(), max() on custom objects |
 | `__add__`, `__sub__`, `__mul__` | ✅ | Arithmetic operators on custom objects; explicit calls (`a.__add__(b)`) supported |
-| `__radd__`, `__rsub__`, `__rmul__`, etc. | ✅ | Reverse arithmetic dunders; enables `2 + obj` when left operand has no forward dunder |
+| `__radd__`, `__rsub__`, `__rmul__`, etc. | ✅ | Reverse arithmetic dunders; enables `2 + obj`; CPython §3.3.8 subclass-first reflected rule: when the right operand is a strict subclass of the left, the reflected dunder is tried first |
+| `NotImplemented` sentinel | ✅ | Forward dunder can `return NotImplemented`; compiler detects this via body scan and emits a runtime branch that falls back to the reflected dunder on the right operand. Comparison dunders (`__eq__`/`__lt__`/...) must return `bool` — returning `NotImplemented` from them is not yet supported |
+| Polymorphic `other` parameter | ✅ | When no annotation is given, binary numeric dunders (`__add__`, `__rmul__`, ...) type `other` as `Union[Self, int, float, bool]`; bitwise dunders as `Union[Self, int, bool]`; comparison dunders as `Any`. Explicit annotation overrides this (e.g. `def __mul__(self, other: float)` gives direct f64 arithmetic) |
 | `__neg__`, `__pos__` | ✅ | Unary minus/plus on custom objects |
 | `__abs__` | ✅ | `abs(obj)` on custom classes |
 | `__invert__` | ✅ | `~obj` on custom classes |
@@ -165,7 +167,7 @@ Native Executable
 | min(), max(), sum() | ✅ | Supports lists, tuples, sets, ranges, and iterators/generators |
 | abs(), pow(), round() | ✅ | |
 | hash(), id() | ✅ | |
-| isinstance() | ✅ | |
+| isinstance() | ✅ | Single type and tuple-of-types: `isinstance(x, (int, float))` supported; Union-aware narrowing in if/else branches |
 | issubclass() | ✅ | |
 | chr(), ord() | ✅ | |
 | all(), any() | ✅ | |

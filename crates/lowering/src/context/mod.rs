@@ -21,7 +21,7 @@ use indexmap::IndexSet;
 use pyaot_diagnostics::CompilerWarnings;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
-use pyaot_types::Type;
+use pyaot_types::{dunders::canonical_dunder_name, Type};
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, Span, StringInterner, VarId};
 use std::collections::HashMap;
 
@@ -65,67 +65,6 @@ pub struct CrossModuleClassInfo {
     /// Total field count including inherited fields (for instance allocation)
     pub total_field_count: usize,
 }
-
-/// All recognized dunder method names (excluding __init__ which is handled separately).
-/// Used by `set_dunder_func` to validate whether a method name is a tracked dunder.
-const KNOWN_DUNDERS: &[&str] = &[
-    "__str__",
-    "__repr__",
-    "__eq__",
-    "__ne__",
-    "__lt__",
-    "__le__",
-    "__gt__",
-    "__ge__",
-    "__hash__",
-    "__len__",
-    "__add__",
-    "__sub__",
-    "__mul__",
-    "__truediv__",
-    "__floordiv__",
-    "__mod__",
-    "__pow__",
-    "__radd__",
-    "__rsub__",
-    "__rmul__",
-    "__rtruediv__",
-    "__rfloordiv__",
-    "__rmod__",
-    "__rpow__",
-    "__and__",
-    "__or__",
-    "__xor__",
-    "__lshift__",
-    "__rshift__",
-    "__rand__",
-    "__ror__",
-    "__rxor__",
-    "__rlshift__",
-    "__rrshift__",
-    "__matmul__",
-    "__rmatmul__",
-    "__neg__",
-    "__pos__",
-    "__abs__",
-    "__invert__",
-    "__bool__",
-    "__int__",
-    "__float__",
-    "__getitem__",
-    "__setitem__",
-    "__delitem__",
-    "__contains__",
-    "__iter__",
-    "__next__",
-    "__call__",
-    "__index__",
-    "__format__",
-    "__del__",
-    "__new__",
-    "__copy__",
-    "__deepcopy__",
-];
 
 /// Class information for lowering (compiled from HIR ClassDef)
 ///
@@ -181,10 +120,17 @@ impl LoweredClassInfo {
     /// Set a dunder method by name. Returns `true` if the name was recognized as a
     /// tracked dunder, `false` if the caller should treat it as a regular method.
     ///
+    /// Uses `pyaot_types::dunders::canonical_dunder_name` as the single source of truth
+    /// for recognized dunder names.
+    ///
     /// Note: `__init__` is intentionally excluded — it is handled separately via
     /// `class_def.init_method` and stored in `init_func` by the caller.
     pub fn set_dunder_func(&mut self, name: &str, func_id: FuncId) -> bool {
-        if let Some(&static_name) = KNOWN_DUNDERS.iter().find(|&&n| n == name) {
+        // __init__ is routed to init_func by the caller; do not store it here.
+        if name == "__init__" {
+            return false;
+        }
+        if let Some(static_name) = canonical_dunder_name(name) {
             self.dunder_methods.insert(static_name, func_id);
             true
         } else {

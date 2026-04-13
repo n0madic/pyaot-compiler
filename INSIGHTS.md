@@ -657,3 +657,64 @@ If Python gains (or you discover) another LHS grammar — say, walrus expanded t
 ### Known gap: generator expressions with tuple targets
 
 `sum(x * y for x, y in zip(a, b))` compiles but returns 0. The generator-desugaring detector in `crates/lowering/src/generators/for_loop.rs::detect_for_loop_generator` only optimises `ForBind { target: Var, .. }` into the efficient resume loop; tuple-target falls through to `build_generic_resume` which does not know how to iterate. List-comprehension form (`sum([x*y for x, y in zip(a, b)])`) works correctly. Full fix requires teaching the resume builder to emit tuple unpack with element-type inference through `zip()` / `enumerate()` — tracked as a follow-up to the builtin-reductions work (Area C in `MICROGPT_PLAN.md`).
+
+---
+
+## Numeric Tower & Dunder Parameter Types
+
+Area B of `MICROGPT_PLAN.md` added four interconnected mechanisms for correct operator overloading. They are described together because they interact: changing one without the others produces subtle Cranelift verifier failures or silent wrong-type dispatch.
+
+### 1. Polymorphic `other` parameter
+
+CPython does **not** constrain the `other` parameter of binary operator dunders — the dunder is expected to inspect `other` at runtime via `isinstance` and either produce a result or return `NotImplemented`. This means the compiler must widen `other` to at least the numeric tower when no annotation is supplied.
+
+`pyaot_types::dunders::polymorphic_other_type(kind, self_ty)` (`crates/types/src/dunders.rs`) encodes the canonical widening:
+
+| `DunderKind` | Default `other` type |
+|---|---|
+| `BinaryNumeric` | `Union[Self, int, float, bool]` |
+| `BinaryBitwise` | `Union[Self, int, bool]` (floats excluded — bitwise on floats is a Python TypeError) |
+| `Comparison` | `Any` (CPython guarantees `a == b` never raises) |
+| `Unary` / `Conversion` / `Container` / `Lifecycle` | `None` — no `other` |
+
+Without this widening, `2.5 * V(3.0)` (which calls `V.__rmul__(2.5)`) fails the Cranelift IR verifier with `"arg 1 has type i64, expected f64"` — the compiler had narrowed `other: V` from the single forward call site `v * v`.
+
+An explicit annotation overrides the default: `def __mul__(self, other: float)` gives direct `f64 * f64` arithmetic instead of boxed dispatch. Use explicit annotations when you need maximum performance and know the caller types.
+
+### 2. Why `other: Union[...]` produces boxed dunder bodies
+
+With `other: Union[Self, int, float, bool]`, expressions like `self.x * other` (where `self.x: float`) cannot emit a direct `f64` multiply — `other` may be a boxed heap object. The lowering routes through `rt_obj_mul` (runtime type-tag dispatch), which is correct (matches CPython semantics) but slower.
+
+`V(self.x * other)` hits a further wrinkle: `__init__(self, x: float)` requires `f64`, but `self.x * other` returns `Union` (boxed pointer). The call-site resolver (`lowering/src/lib.rs::resolve_call_args`, step 7.6) handles this: when a `float` parameter receives a `Union`/`Any`/`HeapAny` argument, it emits `rt_unbox_float` before the call. No special casing needed in `__init__` itself.
+
+### 3. Subclass-first reflected rule (CPython §3.3.8)
+
+When the right operand is a *strict subclass* of the left and defines the reflected dunder, CPython tries the reflected dunder **first**:
+
+```python
+Base() * Derived()   # calls Derived.__rmul__, not Base.__mul__
+```
+
+Implemented at the top of `lowering/src/expressions/binary_ops.rs::lower_binop` via `is_proper_subclass(right_ty, left_ty, class_defs)`. The check is done entirely at compile time using the static class hierarchy in `class_defs`.
+
+### 4. `NotImplemented` fallback protocol
+
+When a forward dunder *may* return the `NotImplemented` sentinel, the binary-op lowering emits a runtime branch:
+
+1. Call the forward dunder, capturing the result.
+2. Compare the result pointer to `rt_not_implemented_singleton`.
+3. If equal, dispatch the reflected dunder on the right operand.
+
+The "may return" predicate is `dunder_may_return_not_implemented` (walks the HIR body for `return NotImplemented` statements). Only functions that actually have such a branch incur the extra comparison — functions that always return a concrete value take the fast path with no branch.
+
+**Why `NotImplementedT` must stay in the return type union.** When a dunder only ever returns `NotImplemented` (no other branch yet), the type planner would infer return type `None` (the i8 sentinel from `NoneType`). The Cranelift signature would emit i8. Later, the binary-op lowering casts the result to i64 for the sentinel comparison — silently truncating the pointer. `Type::NotImplementedT` keeps the return type as a heap pointer (i64) even in the degenerate case.
+
+### 5. Comparison dunders return `bool`, not heap
+
+`__eq__`, `__lt__`, etc. lower to i8 (`Type::Bool`) in Cranelift. Returning `NotImplemented` (an i64 heap pointer) from a comparison dunder would require flipping the signature to `Union[Bool, NotImplementedT]` and boxing every concrete `True`/`False` return through `rt_box_bool`. This is out of scope — comparison dunders must return a concrete `bool`. The standard CPython idiom (`return False` in the unhandled branch of `__eq__`) works correctly as-is.
+
+### 6. `class_defs.get(class_id).name` is unreliable during method body conversion
+
+`class_defs` (the `IndexMap<ClassId, ClassDef>` in the frontend) is populated **after** the class body is fully converted. During conversion of a method body, looking up the current class by `class_id` returns `None`, so the fallback is the first parameter name (e.g. `"self"`). This produces `Type::Class { class_id, name: "self" }` — a drifted name that breaks `Union` deduplication: two entries with the same `class_id` but different `name` strings won't deduplicate, and the union grows unboundedly.
+
+Fix: track the canonical class name alongside `scope.current_class` in a `scope.current_class_name: Option<InternedString>` field, set when the frontend enters the class body. Method bodies read from `current_class_name` instead of doing a `class_defs` lookup.

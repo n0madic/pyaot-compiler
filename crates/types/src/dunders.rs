@@ -95,6 +95,76 @@ pub fn is_dunder(name: &str) -> bool {
     dunder_kind(name).is_some()
 }
 
+/// If `name` is a recognized dunder method, returns the canonical `&'static str`
+/// spelling of that name (e.g. `"__add__"`), otherwise returns `None`.
+///
+/// The returned reference has `'static` lifetime, which makes it safe to store
+/// directly in `IndexMap<&'static str, _>` without additional interning.
+pub fn canonical_dunder_name(name: &str) -> Option<&'static str> {
+    // Walk the same match table that `dunder_kind` uses, but return the
+    // matched key instead of its classification.
+    Some(match name {
+        "__add__" => "__add__",
+        "__sub__" => "__sub__",
+        "__mul__" => "__mul__",
+        "__truediv__" => "__truediv__",
+        "__floordiv__" => "__floordiv__",
+        "__mod__" => "__mod__",
+        "__pow__" => "__pow__",
+        "__matmul__" => "__matmul__",
+        "__radd__" => "__radd__",
+        "__rsub__" => "__rsub__",
+        "__rmul__" => "__rmul__",
+        "__rtruediv__" => "__rtruediv__",
+        "__rfloordiv__" => "__rfloordiv__",
+        "__rmod__" => "__rmod__",
+        "__rpow__" => "__rpow__",
+        "__rmatmul__" => "__rmatmul__",
+        "__and__" => "__and__",
+        "__or__" => "__or__",
+        "__xor__" => "__xor__",
+        "__lshift__" => "__lshift__",
+        "__rshift__" => "__rshift__",
+        "__rand__" => "__rand__",
+        "__ror__" => "__ror__",
+        "__rxor__" => "__rxor__",
+        "__rlshift__" => "__rlshift__",
+        "__rrshift__" => "__rrshift__",
+        "__eq__" => "__eq__",
+        "__ne__" => "__ne__",
+        "__lt__" => "__lt__",
+        "__le__" => "__le__",
+        "__gt__" => "__gt__",
+        "__ge__" => "__ge__",
+        "__neg__" => "__neg__",
+        "__pos__" => "__pos__",
+        "__abs__" => "__abs__",
+        "__invert__" => "__invert__",
+        "__bool__" => "__bool__",
+        "__int__" => "__int__",
+        "__float__" => "__float__",
+        "__str__" => "__str__",
+        "__repr__" => "__repr__",
+        "__hash__" => "__hash__",
+        "__index__" => "__index__",
+        "__len__" => "__len__",
+        "__format__" => "__format__",
+        "__getitem__" => "__getitem__",
+        "__setitem__" => "__setitem__",
+        "__delitem__" => "__delitem__",
+        "__contains__" => "__contains__",
+        "__iter__" => "__iter__",
+        "__next__" => "__next__",
+        "__call__" => "__call__",
+        "__init__" => "__init__",
+        "__new__" => "__new__",
+        "__del__" => "__del__",
+        "__copy__" => "__copy__",
+        "__deepcopy__" => "__deepcopy__",
+        _ => return None,
+    })
+}
+
 /// Given a forward binary dunder name (e.g. `"__add__"`), return the name of
 /// its reflected counterpart (e.g. `"__radd__"`). Returns `None` for any
 /// input that is not a forward binary dunder.
