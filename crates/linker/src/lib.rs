@@ -95,6 +95,14 @@ impl Linker {
                 cmd.arg("-Wl,-x,-S,-dead_strip"); // Strip all local/debug symbols and dead code
             }
             cmd.arg("-lSystem");
+            // `rustls-platform-verifier` (enabled via `stdlib-network`) talks
+            // to the macOS trust store through `security-framework`, which
+            // pulls in both Security.framework and CoreFoundation.framework.
+            // ureq's rustls + webpki fallback doesn't need these, but the
+            // platform verifier does, and its symbols (SecTrust*, CF*) won't
+            // resolve without explicit `-framework` flags.
+            cmd.arg("-framework").arg("Security");
+            cmd.arg("-framework").arg("CoreFoundation");
         }
 
         let link_output = cmd

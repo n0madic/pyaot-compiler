@@ -133,17 +133,25 @@ unsafe fn do_http_request(
 
     // Build the agent with timeout + optional TLS / redirect overrides.
     // ureq 3.x uses Agent::config_builder() instead of AgentBuilder.
+    //
+    // TLS provider: `rustls-platform-verifier` delegates to the OS trust
+    // store (macOS Keychain, Windows cert store, Linux /etc/ssl/...), so
+    // the verified CA set matches what CPython's urllib.request sees.
+    // Without this we fall back to `webpki-roots` — Mozilla's bundled CA
+    // list — which misses a handful of ISP-issued CAs. Users reported
+    // `UnknownIssuer` on sites like `example.com` (Cloudflare cert chain
+    // not present in Mozilla bundle) that resolve fine in CPython.
     let timeout_duration = Duration::from_secs_f64(timeout.max(0.1));
+    let mut tls_cfg = ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::Rustls)
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier);
+    if !verify {
+        tls_cfg = tls_cfg.disable_verification(true);
+    }
     let mut agent_cfg = ureq::Agent::config_builder()
         .timeout_global(Some(timeout_duration))
-        .http_status_as_error(false); // Return response even for 4xx/5xx
-    if !verify {
-        agent_cfg = agent_cfg.tls_config(
-            ureq::tls::TlsConfig::builder()
-                .disable_verification(true)
-                .build(),
-        );
-    }
+        .http_status_as_error(false) // Return response even for 4xx/5xx
+        .tls_config(tls_cfg.build());
     if !allow_redirects {
         agent_cfg = agent_cfg.max_redirects(0);
     }

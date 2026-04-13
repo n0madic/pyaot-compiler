@@ -27,7 +27,7 @@ libc = "0.2"
 # Optional stdlib dependencies
 regex-lite = { version = "0.1", optional = true }
 serde_json = { version = "1", optional = true }
-ureq = { version = "3", optional = true }
+ureq = { version = "3", optional = true, features = ["platform-verifier"] }
 sha2 = { version = "0.10", optional = true }
 sha1 = { version = "0.10", optional = true }
 md-5 = { version = "0.10", optional = true }
