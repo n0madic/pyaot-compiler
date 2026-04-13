@@ -63,6 +63,33 @@ impl<'a> Lowering<'a> {
             }
             // Built-in type - can resolve statically for primitives
             hir::ExprKind::TypeRef(check_type) => {
+                // Tuple-of-types `isinstance(x, (int, float))` arrives as a
+                // Union-valued TypeRef. Dispatch per member and OR the results.
+                if let Type::Union(members) = check_type {
+                    let mut running = mir::Operand::Constant(mir::Constant::Bool(false));
+                    for member in members {
+                        let member_result = self.lower_isinstance_single(
+                            obj_operand.clone(),
+                            &obj_type,
+                            member,
+                            mir_func,
+                        );
+                        let combined = self.alloc_and_add_local(Type::Bool, mir_func);
+                        self.emit_instruction(mir::InstructionKind::BinOp {
+                            dest: combined,
+                            op: mir::BinOp::Or,
+                            left: running,
+                            right: member_result,
+                        });
+                        running = mir::Operand::Local(combined);
+                    }
+                    self.emit_instruction(mir::InstructionKind::Copy {
+                        dest: result_local,
+                        src: running,
+                    });
+                    return Ok(mir::Operand::Local(result_local));
+                }
+
                 // Check if we can resolve at compile time
                 // (primitives have known types, heap types need runtime check)
                 let can_resolve = matches!(
@@ -116,6 +143,77 @@ impl<'a> Lowering<'a> {
         }
 
         Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Lower a single-type `isinstance` check (primitive, container, or
+    /// Class) against an object operand. Returns the bool result operand.
+    /// Used by the Union-target (tuple-of-types) path in `lower_isinstance`.
+    fn lower_isinstance_single(
+        &mut self,
+        obj_operand: mir::Operand,
+        obj_type: &Type,
+        check_type: &Type,
+        mir_func: &mut mir::Function,
+    ) -> mir::Operand {
+        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+
+        // Class member: runtime inheritance check.
+        if let Type::Class { class_id, .. } = check_type {
+            let is_primitive =
+                matches!(obj_type, Type::Int | Type::Float | Type::Bool | Type::None);
+            if is_primitive {
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: result_local,
+                    src: mir::Operand::Constant(mir::Constant::Bool(false)),
+                });
+            } else {
+                let effective_class_id = self.get_effective_class_id(*class_id);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS_INHERITED,
+                    ),
+                    args: vec![
+                        obj_operand,
+                        mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                    ],
+                });
+            }
+            return mir::Operand::Local(result_local);
+        }
+
+        // Compile-time resolution for primitive object types.
+        let can_resolve = matches!(obj_type, Type::Int | Type::Float | Type::Bool | Type::None);
+        if can_resolve {
+            let result = self.types_match_isinstance(obj_type, check_type);
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest: result_local,
+                src: mir::Operand::Constant(mir::Constant::Bool(result)),
+            });
+            return mir::Operand::Local(result_local);
+        }
+
+        // Runtime type-tag check.
+        if let Some(type_tag) = self.get_type_tag_for_isinstance_check(check_type) {
+            let tag_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
+                vec![obj_operand],
+                Type::Int,
+                mir_func,
+            );
+            self.emit_instruction(mir::InstructionKind::BinOp {
+                dest: result_local,
+                op: mir::BinOp::Eq,
+                left: mir::Operand::Local(tag_local),
+                right: mir::Operand::Constant(mir::Constant::Int(type_tag)),
+            });
+        } else {
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest: result_local,
+                src: mir::Operand::Constant(mir::Constant::Bool(false)),
+            });
+        }
+        mir::Operand::Local(result_local)
     }
 
     /// Lower issubclass(class, classinfo) -> bool

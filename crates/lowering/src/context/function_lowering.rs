@@ -203,17 +203,24 @@ impl<'a> Lowering<'a> {
             func.return_type.is_some() && func.return_type.as_ref() != Some(&Type::None);
         let needs_return_type_inference = !func.body.is_empty() && !has_explicit_return_type;
         let return_type = if needs_return_type_inference {
-            let inferred = self.infer_lambda_return_type(func, hir_module);
-            // If inference returns None (no return statement found), check for closure return
-            if inferred == Type::None {
-                if self.find_returned_closure(func, hir_module).is_some() {
+            // Prefer the return type already inferred by the type-planning
+            // pass (`infer_all_return_types`), which walks the full body
+            // including nested if/for/try and uses declared param types.
+            // Fall back to the lambda-style single-top-level-return inference
+            // only if that pass produced nothing (empty body, unreachable,
+            // or the pass couldn't see this function).
+            let from_planning = self.get_func_return_type(&func.id).cloned();
+            let inferred = from_planning.unwrap_or_else(|| {
+                let lambda_inferred = self.infer_lambda_return_type(func, hir_module);
+                if lambda_inferred == Type::None
+                    && self.find_returned_closure(func, hir_module).is_some()
+                {
                     Type::Any
                 } else {
-                    Type::None
+                    lambda_inferred
                 }
-            } else {
-                inferred
-            }
+            });
+            inferred
         } else {
             // Use the declared return type
             func.return_type.clone().unwrap_or(Type::None)

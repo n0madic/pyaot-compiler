@@ -352,6 +352,48 @@ impl AstToHir {
                     span: expr_span,
                 }))
             }
+            // Tuple of types: `isinstance(x, (int, float, MyClass))`.
+            // CPython accepts a tuple; we emit a TypeRef holding a Union so
+            // narrowing uses the existing Union path.
+            py::Expr::Tuple(tup) => {
+                let mut members = Vec::with_capacity(tup.elts.len());
+                for elt in &tup.elts {
+                    let sub_id = self.convert_type_expr(elt)?;
+                    let sub_kind = self.module.exprs[sub_id].kind.clone();
+                    match sub_kind {
+                        ExprKind::TypeRef(t) => members.push(t),
+                        ExprKind::ClassRef(cid) => {
+                            let cname = self
+                                .module
+                                .class_defs
+                                .get(&cid)
+                                .map(|c| c.name)
+                                .ok_or_else(|| {
+                                    CompilerError::parse_error(
+                                        "isinstance tuple member references unknown class",
+                                        expr_span,
+                                    )
+                                })?;
+                            members.push(Type::Class {
+                                class_id: cid,
+                                name: cname,
+                            });
+                        }
+                        _ => {
+                            return Err(CompilerError::parse_error(
+                                "isinstance tuple elements must be type names",
+                                expr_span,
+                            ))
+                        }
+                    }
+                }
+                let unioned = Type::normalize_union(members);
+                Ok(self.module.exprs.alloc(Expr {
+                    kind: ExprKind::TypeRef(unioned),
+                    ty: None,
+                    span: expr_span,
+                }))
+            }
             _ => Err(CompilerError::parse_error(
                 "isinstance type argument must be a type name",
                 expr_span,

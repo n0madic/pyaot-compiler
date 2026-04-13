@@ -241,10 +241,16 @@ impl<'a> Lowering<'a> {
                 .and_then(|ci| ci.get_dunder_func(dunder_name));
 
             if let Some(func_id) = dunder_func {
+                // When the dunder declares a polymorphic `other` parameter
+                // (Union / Any), primitive arguments must be boxed — the
+                // runtime signature expects a heap pointer.
+                let boxed_right = self.box_dunder_arg_if_needed(
+                    right_op, &right_ty, func_id, 1, hir_module, mir_func,
+                );
                 self.emit_instruction(mir::InstructionKind::CallDirect {
                     dest: result_local,
                     func: func_id,
-                    args: vec![left_op, right_op],
+                    args: vec![left_op, boxed_right],
                 });
                 return Ok(mir::Operand::Local(result_local));
             }
@@ -274,10 +280,12 @@ impl<'a> Lowering<'a> {
 
             if let Some(func_id) = rdunder_func {
                 // Reverse dunders: self is the right operand, other is the left
+                let boxed_left = self
+                    .box_dunder_arg_if_needed(left_op, &left_ty, func_id, 1, hir_module, mir_func);
                 self.emit_instruction(mir::InstructionKind::CallDirect {
                     dest: result_local,
                     func: func_id,
-                    args: vec![right_op, left_op],
+                    args: vec![right_op, boxed_left],
                 });
                 return Ok(mir::Operand::Local(result_local));
             }
@@ -432,5 +440,36 @@ impl<'a> Lowering<'a> {
         );
 
         Ok(mir::Operand::Local(result_local))
+    }
+
+    /// When a user dunder declares a polymorphic `other` parameter (typically
+    /// `Union[Self, int, float, bool]` from unannotated numeric dunders, or
+    /// `Any` from unannotated comparison dunders), the function signature at
+    /// Cranelift level expects a heap pointer. Primitive arguments (int, bool,
+    /// float, None) must be boxed before the call.
+    ///
+    /// `param_idx` is the 0-based index of the parameter in the target
+    /// function's signature. Returns the operand unchanged when the
+    /// parameter is concrete or when the argument is already heap-typed.
+    pub(in crate::expressions) fn box_dunder_arg_if_needed(
+        &mut self,
+        operand: mir::Operand,
+        arg_ty: &Type,
+        func_id: pyaot_utils::FuncId,
+        param_idx: usize,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> mir::Operand {
+        let needs_box = hir_module
+            .func_defs
+            .get(&func_id)
+            .and_then(|f| f.params.get(param_idx))
+            .and_then(|p| p.ty.as_ref())
+            .is_some_and(|t| matches!(t, Type::Any | Type::Union(_) | Type::HeapAny));
+        if needs_box {
+            self.box_primitive_if_needed(operand, arg_ty, mir_func)
+        } else {
+            operand
+        }
     }
 }

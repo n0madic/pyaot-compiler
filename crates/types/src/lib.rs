@@ -203,6 +203,17 @@ impl Type {
     ///
     /// Returns Type::Never if no types match the target, indicating unreachable code.
     pub fn narrow_to(&self, target: &Type) -> Type {
+        // Tuple-of-types `isinstance(x, (int, float))` is lowered to a
+        // `TypeRef(Union[int, float])`. Narrowing against a Union target
+        // means "narrow to ANY of these" — compute per-member and union.
+        if let Type::Union(target_members) = target {
+            let candidates: Vec<Type> = target_members
+                .iter()
+                .map(|m| self.narrow_to(m))
+                .filter(|t| !matches!(t, Type::Never))
+                .collect();
+            return Type::normalize_union(candidates);
+        }
         match self {
             Type::Union(types) => {
                 // Find all types in the union that match the target
@@ -247,6 +258,13 @@ impl Type {
     /// Returns the type excluding the target.
     /// For Union[int, str] excluding int -> str
     pub fn narrow_excluding(&self, excluded: &Type) -> Type {
+        // Union-valued exclusion (`isinstance(x, (int, float))` in the
+        // else-branch): exclude each member sequentially.
+        if let Type::Union(excluded_members) = excluded {
+            return excluded_members
+                .iter()
+                .fold(self.clone(), |acc, m| acc.narrow_excluding(m));
+        }
         match self {
             Type::Union(types) => {
                 // Keep all types that don't match the excluded type

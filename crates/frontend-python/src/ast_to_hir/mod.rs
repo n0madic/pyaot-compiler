@@ -142,6 +142,13 @@ impl SymbolTable {
 pub(crate) struct ScopeContext {
     /// Current class being processed (for method conversion)
     pub(crate) current_class: Option<ClassId>,
+    /// Interned name of the current class. Set alongside `current_class` so
+    /// that `Type::Class { .. }` values built during method body conversion
+    /// use the canonical class name — `class_defs` is not populated until
+    /// after the class body is fully walked, so `class_defs.get(..).name`
+    /// returns `None` mid-walk and produces drifted names that break
+    /// Union deduplication.
+    pub(crate) current_class_name: Option<InternedString>,
     /// Variables declared as global in the current function scope
     pub(crate) global_vars: HashSet<InternedString>,
     /// Variables declared as nonlocal in the current function scope
@@ -164,6 +171,7 @@ impl ScopeContext {
     fn new() -> Self {
         Self {
             current_class: None,
+            current_class_name: None,
             global_vars: HashSet::new(),
             nonlocal_vars: HashSet::new(),
             scope_stack: Vec::new(),

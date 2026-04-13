@@ -260,6 +260,11 @@ impl<'a> Lowering<'a> {
 
         // Step 7.5: Box primitive values passed to Any-typed or Union-typed parameters.
         // Union parameters are boxed pointers at runtime, so primitive args must be boxed.
+        //
+        // Step 7.6 (inverse direction): when a concrete-primitive parameter (int/float/bool)
+        // receives a boxed Union/Any argument (e.g. the result of `rt_obj_mul` flowing into
+        // a `V(...)` constructor whose `__init__` expects `x: float`), unbox it. Without
+        // this, Cranelift verifier rejects the i64-into-f64 call.
         for (i, operand_opt) in resolved.iter_mut().enumerate() {
             if let Some(operand) = operand_opt {
                 if i < param_class.regular.len() {
@@ -268,6 +273,18 @@ impl<'a> Lowering<'a> {
                         let arg_type = self.operand_type(operand, mir_func);
                         *operand =
                             self.box_primitive_if_needed(operand.clone(), &arg_type, mir_func);
+                    } else if matches!(
+                        &param.ty,
+                        Some(Type::Int) | Some(Type::Float) | Some(Type::Bool)
+                    ) {
+                        let arg_type = self.operand_type(operand, mir_func);
+                        if matches!(arg_type, Type::Union(_) | Type::Any | Type::HeapAny) {
+                            *operand = self.unbox_if_needed(
+                                operand.clone(),
+                                param.ty.as_ref().expect("checked by outer match"),
+                                mir_func,
+                            );
+                        }
                     }
                 }
             }
@@ -280,6 +297,18 @@ impl<'a> Lowering<'a> {
                         let arg_type = self.operand_type(operand, mir_func);
                         *operand =
                             self.box_primitive_if_needed(operand.clone(), &arg_type, mir_func);
+                    } else if matches!(
+                        &param.ty,
+                        Some(Type::Int) | Some(Type::Float) | Some(Type::Bool)
+                    ) {
+                        let arg_type = self.operand_type(operand, mir_func);
+                        if matches!(arg_type, Type::Union(_) | Type::Any | Type::HeapAny) {
+                            *operand = self.unbox_if_needed(
+                                operand.clone(),
+                                param.ty.as_ref().expect("checked by outer match"),
+                                mir_func,
+                            );
+                        }
                     }
                 }
             }

@@ -663,8 +663,11 @@ class PointWithEq:
         self.y = y
 
     def __eq__(self, other) -> bool:
-        # Now works! Field access on 'other' parameter thanks to dunder method type inference
-        return self.x == other.x and self.y == other.y
+        # CPython idiom: guard field access with isinstance — __eq__'s `other`
+        # is polymorphic (any type) per Data Model §3.3.8.
+        if isinstance(other, PointWithEq):
+            return self.x == other.x and self.y == other.y
+        return False
 
 p1_eq = PointWithEq(1, 2)
 p2_eq = PointWithEq(1, 2)  # Different instance with same values
@@ -856,20 +859,33 @@ class Temperature:
     def __init__(self, deg: float) -> None:
         self.degrees = deg
 
+    # Comparison dunders default `other` to `Any` per Data Model §3.3.8
+    # (`a == b` must never raise). Guard field access with isinstance —
+    # CPython idiom for heterogeneous comparisons.
     def __lt__(self, other) -> bool:
-        return self.degrees < other.degrees
+        if isinstance(other, Temperature):
+            return self.degrees < other.degrees
+        return False
 
     def __le__(self, other) -> bool:
-        return self.degrees <= other.degrees
+        if isinstance(other, Temperature):
+            return self.degrees <= other.degrees
+        return False
 
     def __gt__(self, other) -> bool:
-        return self.degrees > other.degrees
+        if isinstance(other, Temperature):
+            return self.degrees > other.degrees
+        return False
 
     def __ge__(self, other) -> bool:
-        return self.degrees >= other.degrees
+        if isinstance(other, Temperature):
+            return self.degrees >= other.degrees
+        return False
 
     def __eq__(self, other) -> bool:
-        return self.degrees == other.degrees
+        if isinstance(other, Temperature):
+            return self.degrees == other.degrees
+        return False
 
 cold = Temperature(0.0)
 warm = Temperature(25.0)
@@ -912,20 +928,31 @@ class Vector2D:
         self.x = x
         self.y = y
 
+    # Binary numeric dunders default `other` to `Union[Self, int, float, bool]`
+    # per Data Model §3.3.8. Narrow with isinstance for Self-specific field
+    # access; other branches fall through to a sensible default.
     def __add__(self, other) -> Vector2D:
-        return Vector2D(self.x + other.x, self.y + other.y)
+        if isinstance(other, Vector2D):
+            return Vector2D(self.x + other.x, self.y + other.y)
+        return self
 
     def __sub__(self, other) -> Vector2D:
-        return Vector2D(self.x - other.x, self.y - other.y)
+        if isinstance(other, Vector2D):
+            return Vector2D(self.x - other.x, self.y - other.y)
+        return self
 
     def __mul__(self, other) -> Vector2D:
-        return Vector2D(self.x * other.x, self.y * other.y)
+        if isinstance(other, Vector2D):
+            return Vector2D(self.x * other.x, self.y * other.y)
+        return self
 
     def __neg__(self) -> Vector2D:
         return Vector2D(-self.x, -self.y)
 
     def __eq__(self, other) -> bool:
-        return self.x == other.x and self.y == other.y
+        if isinstance(other, Vector2D):
+            return self.x == other.x and self.y == other.y
+        return False
 
 v1 = Vector2D(1.0, 2.0)
 v2 = Vector2D(3.0, 4.0)
@@ -1408,20 +1435,32 @@ class DunderVec:
         self.x = x
         self.y = y
 
+    # Polymorphic `other` (Data Model §3.3.8). Guard with isinstance so
+    # `.x`/`.y` access is well-typed inside the branch.
     def __add__(self, other):
-        return DunderVec(self.x + other.x, self.y + other.y)
+        if isinstance(other, DunderVec):
+            return DunderVec(self.x + other.x, self.y + other.y)
+        return self
 
     def __sub__(self, other):
-        return DunderVec(self.x - other.x, self.y - other.y)
+        if isinstance(other, DunderVec):
+            return DunderVec(self.x - other.x, self.y - other.y)
+        return self
 
     def __mul__(self, other):
-        return DunderVec(self.x * other.x, self.y * other.y)
+        if isinstance(other, DunderVec):
+            return DunderVec(self.x * other.x, self.y * other.y)
+        return self
 
     def __eq__(self, other):
-        return self.x == other.x and self.y == other.y
+        if isinstance(other, DunderVec):
+            return self.x == other.x and self.y == other.y
+        return False
 
     def __ne__(self, other):
-        return self.x != other.x or self.y != other.y
+        if isinstance(other, DunderVec):
+            return self.x != other.x or self.y != other.y
+        return True
 
     def __str__(self):
         return "DunderVec(" + str(self.x) + ", " + str(self.y) + ")"
@@ -1487,7 +1526,9 @@ class RevNum:
         self.v = v
 
     def __add__(self, other) -> RevNum:
-        return RevNum(self.v + other.v)
+        if isinstance(other, RevNum):
+            return RevNum(self.v + other.v)
+        return self
 
     def __radd__(self, other: int) -> RevNum:
         return RevNum(other + self.v)
@@ -1776,5 +1817,76 @@ dc_deep.items.append(4)
 assert len(dc_orig.items) == 3, f"deepcopy independence failed"
 
 print("__deepcopy__ dunder: PASS")
+
+# ==================== Numeric tower on user classes (Area B) ====================
+# CPython Data Model §3.3.8: `other` parameter is polymorphic — the compiler
+# MUST type it as Union[Self, int, float, bool] so the full numeric tower
+# (V*int, int*V, float*V, V*float, ...) type-checks without spurious
+# "unreachable code" warnings and without verifier panics.
+
+class NumTower:
+    def __init__(self, x: float): self.x = x
+    def __add__(self, other):
+        if isinstance(other, NumTower): return NumTower(self.x + other.x)
+        if isinstance(other, (int, float)): return NumTower(self.x + other)
+        return NumTower(0.0)
+    def __radd__(self, other):
+        if isinstance(other, (int, float)): return NumTower(other + self.x)
+        return NumTower(0.0)
+    def __mul__(self, other):
+        if isinstance(other, NumTower): return NumTower(self.x * other.x)
+        if isinstance(other, (int, float)): return NumTower(self.x * other)
+        return NumTower(0.0)
+    def __rmul__(self, other):
+        if isinstance(other, NumTower): return NumTower(self.x * other.x)
+        if isinstance(other, (int, float)): return NumTower(self.x * other)
+        return NumTower(0.0)
+    def __truediv__(self, other):
+        if isinstance(other, NumTower): return NumTower(self.x / other.x)
+        return NumTower(self.x / other)
+    def __rtruediv__(self, other): return NumTower(other / self.x)
+    def __sub__(self, other):
+        if isinstance(other, NumTower): return NumTower(self.x - other.x)
+        if isinstance(other, (int, float)): return NumTower(self.x - other)
+        return NumTower(0.0)
+    def __neg__(self): return NumTower(-self.x)
+    def __pow__(self, other): return NumTower(self.x ** other)
+    def __eq__(self, other):
+        if isinstance(other, NumTower): return self.x == other.x
+        return False
+
+_a = NumTower(2.0)
+_b = NumTower(3.0)
+
+# Forward arithmetic
+assert (_a + _b).x == 5.0, "NumTower + NumTower"
+assert (_a + 1).x == 3.0, "NumTower + int"
+assert (_a + 0.5).x == 2.5, "NumTower + float"
+
+# Reverse arithmetic — the core Area B fix. Before Area B these panic'd with
+# "arg 1 has type i64, expected f64" because `other` was wrongly narrowed to Self.
+assert (1 + _a).x == 3.0, "int + NumTower (via __radd__)"
+assert (0.5 + _a).x == 2.5, "float + NumTower (via __radd__)"
+assert (2 * _a).x == 4.0, "int * NumTower (via __rmul__)"
+assert (0.5 * _a).x == 1.0, "float * NumTower (via __rmul__)"
+assert (6.0 / _a).x == 3.0, "float / NumTower (via __rtruediv__)"
+
+# Chained mixed-operand expressions
+assert ((1 + _a) * 2).x == 6.0, "chained int/NumTower ops"
+assert ((_a * 2) - _b).x == 1.0, "sub after mul"
+
+# Unary
+assert (-_a).x == -2.0, "unary negation"
+
+# Power with negative float exponent
+assert abs((NumTower(4.0) ** -0.5).x - 0.5) < 1e-9, "pow negative float"
+
+# Equality NEVER raises per CPython §3.3.8 — always yields a bool.
+assert _a == NumTower(2.0), "V == V true"
+assert not (_a == 2), "V == int never raises, returns False"
+assert not (_a == "s"), "V == str never raises, returns False"
+assert not (_a == None), "V == None never raises, returns False"
+
+print("Numeric tower on user classes: PASS")
 
 print("All class tests passed!")

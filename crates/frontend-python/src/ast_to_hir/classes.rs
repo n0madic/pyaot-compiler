@@ -2,6 +2,7 @@ use super::AstToHir;
 use indexmap::{IndexMap, IndexSet};
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::*;
+use pyaot_types::dunders::{dunder_kind, polymorphic_other_type};
 use pyaot_types::{exception_name_to_tag, Type};
 use pyaot_utils::{FuncId, InternedString, Span};
 use rustpython_parser::ast as py;
@@ -158,7 +159,9 @@ impl AstToHir {
 
         // Save current class context
         let prev_class = self.scope.current_class;
+        let prev_class_name = self.scope.current_class_name;
         self.scope.current_class = Some(class_id);
+        self.scope.current_class_name = Some(class_name);
 
         // Parse class body: collect fields, class attributes, and methods
         let mut fields = Vec::new();
@@ -347,6 +350,7 @@ impl AstToHir {
 
         // Restore class context
         self.scope.current_class = prev_class;
+        self.scope.current_class_name = prev_class_name;
 
         // Build PropertyDef structures from collected getters/setters
         let mut properties = Vec::new();
@@ -407,45 +411,6 @@ impl AstToHir {
         self.module.class_defs.insert(class_id, class_def);
 
         Ok(())
-    }
-
-    /// Helper function to detect dunder methods that should infer second param as self type
-    fn should_infer_second_param_as_self(method_name: &str) -> bool {
-        matches!(
-            method_name,
-            "__eq__"
-                | "__ne__"
-                | "__lt__"
-                | "__le__"
-                | "__gt__"
-                | "__ge__"
-                | "__add__"
-                | "__sub__"
-                | "__mul__"
-                | "__truediv__"
-                | "__floordiv__"
-                | "__mod__"
-                | "__pow__"
-                | "__and__"
-                | "__or__"
-                | "__xor__"
-                | "__radd__"
-                | "__rsub__"
-                | "__rmul__"
-                | "__rtruediv__"
-                | "__rfloordiv__"
-                | "__rmod__"
-                | "__rpow__"
-                | "__lshift__"
-                | "__rshift__"
-                | "__matmul__"
-                | "__rand__"
-                | "__ror__"
-                | "__rxor__"
-                | "__rlshift__"
-                | "__rrshift__"
-                | "__rmatmul__"
-        )
     }
 
     /// Convert a method definition with decorator handling
@@ -520,12 +485,13 @@ impl AstToHir {
                         // Regular instance method: 'self' gets the class type
                         if arg.def.arg.as_str() == "self" {
                             if let Some(current_class_id) = self.scope.current_class {
-                                let current_class_name = self
-                                    .module
-                                    .class_defs
-                                    .get(&current_class_id)
-                                    .map(|c| c.name)
-                                    .unwrap_or(param_name);
+                                // Use scope.current_class_name (set alongside current_class)
+                                // rather than reading from class_defs, which is not populated
+                                // until after the class body is walked — reading it here would
+                                // fall back to param_name and produce drifted Class type names
+                                // that break Union deduplication later.
+                                let current_class_name =
+                                    self.scope.current_class_name.unwrap_or(param_name);
                                 Some(Type::Class {
                                     class_id: current_class_id,
                                     name: current_class_name,
@@ -541,28 +507,30 @@ impl AstToHir {
                     }
                 }
             } else if i == 1 {
-                // Second parameter - NEW LOGIC for dunder method inference
+                // Second parameter — polymorphic `other` for operator dunders.
+                // Per CPython Data Model §3.3.8, the `other` parameter of an
+                // operator dunder is NOT constrained to `Self` — the dunder
+                // must inspect it at runtime and either handle it or return
+                // `NotImplemented`. The union expresses exactly that: the
+                // caller may legitimately pass any member of the numeric
+                // tower (for binary numeric/bitwise dunders) or anything at
+                // all (for comparison dunders).
                 if let Some(annotation) = &arg.def.annotation {
-                    // Explicit annotation takes precedence
+                    // Explicit annotation always wins.
                     Some(self.convert_type_annotation(annotation)?)
-                } else if decorators.method_kind == MethodKind::Instance
-                    && Self::should_infer_second_param_as_self(&original_method_name)
-                {
-                    // Infer as same type as self for dunder methods
-                    if let Some(current_class_id) = self.scope.current_class {
-                        let current_class_name = self
-                            .module
-                            .class_defs
-                            .get(&current_class_id)
-                            .map(|c| c.name)
-                            .unwrap_or(param_name);
-                        Some(Type::Class {
-                            class_id: current_class_id,
-                            name: current_class_name,
+                } else if decorators.method_kind == MethodKind::Instance {
+                    dunder_kind(&original_method_name).and_then(|kind| {
+                        self.scope.current_class.and_then(|cid| {
+                            let name = self.scope.current_class_name.unwrap_or(param_name);
+                            polymorphic_other_type(
+                                kind,
+                                &Type::Class {
+                                    class_id: cid,
+                                    name,
+                                },
+                            )
                         })
-                    } else {
-                        None
-                    }
+                    })
                 } else {
                     None
                 }
@@ -596,11 +564,16 @@ impl AstToHir {
         // Process *args, keyword-only, and **kwargs parameters
         params.extend(self.convert_extra_params(&func_def.args, method_span)?);
 
-        // Convert return type
+        // Convert return type. An unannotated method has no known return
+        // type; record it as `None` so the type-planning pass can infer it
+        // from the body (matching the regular-function convention at
+        // `functions.rs`). Using `Some(Type::None)` here would short-circuit
+        // Pass-2 inference and lock every unannotated method to a None
+        // result — breaking any method that actually returns a value.
         let return_type = if let Some(ret_ann) = &func_def.returns {
             Some(self.convert_type_annotation(ret_ann)?)
         } else {
-            Some(Type::None)
+            None
         };
 
         // Convert function body
