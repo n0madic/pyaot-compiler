@@ -206,4 +206,22 @@ print("os.name:", os_name)
 assert os_name == "posix" or os_name == "nt", "os.name should be posix or nt"
 print("os.name test passed!")
 
+# ============= Test chained stdlib submodule calls =============
+# Regression: `import urllib.request; urllib.request.urlretrieve(...)` used
+# to fail with "Unknown attribute 'urllib.request'" because the attribute
+# resolver couldn't walk two segments into a stdlib module. The fix
+# generalises to any `<root>.<submod>.<func>(...)` chain where the registry
+# has a module at `<root>.<submod>`. `os.path.*` exercises the same path:
+chain_joined: str = os.path.join("a", "b", "c.txt")
+assert chain_joined.endswith("c.txt"), (
+    f"os.path.join chained call should produce a path ending in c.txt; got {chain_joined}"
+)
+assert os.path.exists("."), "os.path.exists via chained call must return True for cwd"
+assert os.path.isdir("."), "os.path.isdir chained call must work"
+chain_base: str = os.path.basename("/x/y/z.txt")
+assert chain_base == "z.txt", (
+    f"os.path.basename chained call must return 'z.txt'; got {chain_base}"
+)
+print("chained stdlib-submodule call regression test passed!")
+
 print("\nAll os module tests passed!")

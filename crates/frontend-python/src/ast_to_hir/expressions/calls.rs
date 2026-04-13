@@ -291,15 +291,21 @@ impl AstToHir {
             }
         }
 
-        // Check for os.path.join(...) / os.path.exists(...) pattern
+        // Handle stdlib submodule calls: `<root>.<submod>.<func>(...)` for any
+        // dotted stdlib path the registry knows about (os.path.*,
+        // urllib.request.*, etc.). Resolves via the submodule's function
+        // registry so adding a new submodule function doesn't require an
+        // edit here — the single source of truth is `stdlib-defs`.
         if let py::Expr::Attribute(outer_attr) = &*attr.value {
             if let py::Expr::Name(module_name) = &*outer_attr.value {
                 let module_str = self.interner.intern(&module_name.id);
                 if self.imports.stdlib_imports.contains(&module_str) {
-                    let module = self.interner.resolve(module_str);
-                    if module == "os"
-                        && outer_attr.attr.as_str() == "path"
-                        && attr.attr.as_str() == "join"
+                    let root = self.interner.resolve(module_str);
+                    let submod = outer_attr.attr.as_str();
+                    let func_name = attr.attr.as_str();
+                    let dotted = format!("{}.{}", root, submod);
+                    if let Some(func_def) =
+                        stdlib::get_module(&dotted).and_then(|m| m.get_function(func_name))
                     {
                         let mut args = Vec::new();
                         for arg in call.args.clone() {
@@ -307,25 +313,7 @@ impl AstToHir {
                         }
                         return Ok(self.module.exprs.alloc(Expr {
                             kind: ExprKind::StdlibCall {
-                                func: &pyaot_stdlib_defs::modules::os::OS_PATH_JOIN,
-                                args,
-                            },
-                            ty: None,
-                            span: expr_span,
-                        }));
-                    }
-
-                    if module == "os"
-                        && outer_attr.attr.as_str() == "path"
-                        && attr.attr.as_str() == "exists"
-                    {
-                        let mut args = Vec::new();
-                        for arg in call.args.clone() {
-                            args.push(self.convert_expr(arg)?);
-                        }
-                        return Ok(self.module.exprs.alloc(Expr {
-                            kind: ExprKind::StdlibCall {
-                                func: &pyaot_stdlib_defs::modules::os::OS_PATH_EXISTS,
+                                func: func_def,
                                 args,
                             },
                             ty: None,
