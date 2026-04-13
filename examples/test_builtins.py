@@ -662,6 +662,20 @@ assert str(type(type_dict)) == "<class 'dict'>", "type(type_dict) should equal \
 type_set: set[int] = {1, 2, 3}
 assert str(type(type_set)) == "<class 'set'>", "type(type_set) should equal \"<class 'set'>\""
 
+# Regression: `type(x).__name__` must return the bare class name as a real
+# `str`, not a raw pointer. Before the fix, `resolve_attribute_on_type` had
+# no arm for `Str.__name__`, so the attribute expression fell through to
+# `Type::Any` and `print`/`==` treated the resulting pointer as a raw i64.
+assert type("hi").__name__ == "str", "type(str).__name__ must equal 'str'"
+assert type(42).__name__ == "int", "type(int).__name__ must equal 'int'"
+assert type(3.14).__name__ == "float", "type(float).__name__ must equal 'float'"
+assert type(True).__name__ == "bool", "type(bool).__name__ must equal 'bool'"
+assert type(None).__name__ == "NoneType", "type(None).__name__ must equal 'NoneType'"
+assert type([1, 2]).__name__ == "list", "type(list).__name__ must equal 'list'"
+# Round-trip: bind the extracted name and compare/print.
+name_var = type("x").__name__
+assert name_var == "str", f"bound `name_var` must equal 'str'; got {name_var!r}"
+
 print("type() tests passed")
 
 

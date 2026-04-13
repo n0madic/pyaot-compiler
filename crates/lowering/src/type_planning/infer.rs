@@ -330,6 +330,15 @@ impl<'a> Lowering<'a> {
                 _ => Type::Any,
             });
         }
+        // `type(x).__name__` — `type(x)` already returns a `Str` (the
+        // `<class 'X'>` form), and the lowering (attributes.rs) turns
+        // `__name__` on a str into a call to `rt_type_name_extract`, which
+        // returns the bare class name as a `Str`. Type-plan it as `Str` so
+        // `print`/`==` go through the string-dispatch paths instead of the
+        // raw-i64 `Any` fallback.
+        if matches!(obj_ty, Type::Str) && self.resolve(attr) == "__name__" {
+            return Some(Type::Str);
+        }
         // Handle built-in exception attributes (.args, __class__)
         if matches!(obj_ty, Type::BuiltinException(_)) {
             let attr_name = self.resolve(attr);
