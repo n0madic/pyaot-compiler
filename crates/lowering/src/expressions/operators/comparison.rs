@@ -600,8 +600,16 @@ impl<'a> Lowering<'a> {
                         .and_then(|ci| ci.get_dunder_func("__ne__"))
                         .is_none();
 
+                // NOTE: comparison dunders that return `NotImplemented` from
+                // some branch are NOT yet supported — that requires boxing
+                // the bool return at every concrete `return True/False` so
+                // the function signature can be Union[Bool, NotImplementedT].
+                // Until that's wired, comparison dunders must consistently
+                // return a concrete bool (the CPython idiom is to return
+                // `False` for the unhandled case in `__eq__`). The binary
+                // arithmetic path (`__add__` etc.) DOES handle NotImplemented
+                // fully, since arithmetic dunders already return heap values.
                 if use_eq_negated {
-                    // No __ne__, use __eq__ + NOT
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,
                         func: func_id,
@@ -615,8 +623,6 @@ impl<'a> Lowering<'a> {
                     });
                     return Ok(mir::Operand::Local(negated));
                 }
-
-                // Direct dunder call
                 self.emit_instruction(mir::InstructionKind::CallDirect {
                     dest: result_local,
                     func: func_id,

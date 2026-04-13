@@ -15,6 +15,14 @@ impl AstToHir {
         name: py::ExprName,
         expr_span: Span,
     ) -> Result<ExprKind> {
+        // The bare name `NotImplemented` is a Python builtin sentinel used by
+        // operator dunders (Data Model §3.3.8). Lower it to its dedicated
+        // HIR variant so binary-op dispatch can detect it and try the
+        // reflected dunder. Skip the rest of name resolution.
+        if name.id.as_str() == "NotImplemented" {
+            return Ok(ExprKind::NotImplemented);
+        }
+
         let name_str = self.interner.intern(&name.id);
 
         // First check if it's a stdlib name (from X import Y)

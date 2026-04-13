@@ -11,6 +11,25 @@ use crate::context::Lowering;
 /// Below this threshold, regular StrConcat is used (simpler and still efficient for 2 strings)
 const STRING_BUILDER_THRESHOLD: usize = 3;
 
+/// Map a forward binary-op to its reflected dunder name.
+fn forward_to_reflected(op: hir::BinOp) -> &'static str {
+    match op {
+        hir::BinOp::Add => "__radd__",
+        hir::BinOp::Sub => "__rsub__",
+        hir::BinOp::Mul => "__rmul__",
+        hir::BinOp::Div => "__rtruediv__",
+        hir::BinOp::FloorDiv => "__rfloordiv__",
+        hir::BinOp::Mod => "__rmod__",
+        hir::BinOp::Pow => "__rpow__",
+        hir::BinOp::BitAnd => "__rand__",
+        hir::BinOp::BitOr => "__ror__",
+        hir::BinOp::BitXor => "__rxor__",
+        hir::BinOp::LShift => "__rlshift__",
+        hir::BinOp::RShift => "__rrshift__",
+        hir::BinOp::MatMul => "__rmatmul__",
+    }
+}
+
 impl<'a> Lowering<'a> {
     /// Collect all string operands from a left-associative concatenation chain.
     /// Returns true if the expression is a string add operation, false otherwise.
@@ -294,14 +313,38 @@ impl<'a> Lowering<'a> {
                 // (Union / Any), primitive arguments must be boxed — the
                 // runtime signature expects a heap pointer.
                 let boxed_right = self.box_dunder_arg_if_needed(
-                    right_op, &right_ty, func_id, 1, hir_module, mir_func,
+                    right_op.clone(),
+                    &right_ty,
+                    func_id,
+                    1,
+                    hir_module,
+                    mir_func,
                 );
                 let dest = self.alloc_dunder_result(func_id, &result_ty, hir_module, mir_func);
                 self.emit_instruction(mir::InstructionKind::CallDirect {
                     dest,
                     func: func_id,
-                    args: vec![left_op, boxed_right],
+                    args: vec![left_op.clone(), boxed_right],
                 });
+                // CPython §3.3.8 fallback: if forward dunder may return
+                // `NotImplemented` AND the right operand has a reflected
+                // dunder, branch on the sentinel and dispatch reflected.
+                if self.dunder_may_return_not_implemented(func_id, hir_module) {
+                    let rdunder_name = forward_to_reflected(op);
+                    let reflected_func = if let Type::Class { class_id: r_id, .. } = &right_ty {
+                        self.get_class_info(r_id)
+                            .and_then(|ci| ci.get_dunder_func(rdunder_name))
+                    } else {
+                        None
+                    };
+                    if let Some(rfunc_id) = reflected_func {
+                        let final_local = self.emit_not_implemented_fallback(
+                            dest, rfunc_id, right_op, left_op, &left_ty, &result_ty, hir_module,
+                            mir_func,
+                        );
+                        return Ok(mir::Operand::Local(final_local));
+                    }
+                }
                 return Ok(mir::Operand::Local(dest));
             }
         }
@@ -491,6 +534,154 @@ impl<'a> Lowering<'a> {
         );
 
         Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Walk a HIR function body and return `true` iff at least one
+    /// `return` statement returns the `NotImplemented` sentinel. Used to
+    /// gate the runtime fallback branch — emitting it for dunders that
+    /// never return `NotImplemented` would burn an unconditional
+    /// compare-and-branch on every operator call site.
+    pub(in crate::expressions) fn dunder_may_return_not_implemented(
+        &self,
+        func_id: pyaot_utils::FuncId,
+        hir_module: &hir::Module,
+    ) -> bool {
+        let Some(func) = hir_module.func_defs.get(&func_id) else {
+            return false;
+        };
+        fn scan(stmt_id: hir::StmtId, module: &hir::Module) -> bool {
+            let stmt = &module.stmts[stmt_id];
+            match &stmt.kind {
+                hir::StmtKind::Return(Some(expr_id)) => {
+                    matches!(module.exprs[*expr_id].kind, hir::ExprKind::NotImplemented)
+                }
+                hir::StmtKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    then_block.iter().any(|s| scan(*s, module))
+                        || else_block.iter().any(|s| scan(*s, module))
+                }
+                hir::StmtKind::ForBind {
+                    body, else_block, ..
+                }
+                | hir::StmtKind::While {
+                    body, else_block, ..
+                } => {
+                    body.iter().any(|s| scan(*s, module))
+                        || else_block.iter().any(|s| scan(*s, module))
+                }
+                hir::StmtKind::Try {
+                    body,
+                    handlers,
+                    else_block,
+                    finally_block,
+                } => {
+                    body.iter().any(|s| scan(*s, module))
+                        || handlers
+                            .iter()
+                            .any(|h| h.body.iter().any(|s| scan(*s, module)))
+                        || else_block.iter().any(|s| scan(*s, module))
+                        || finally_block.iter().any(|s| scan(*s, module))
+                }
+                hir::StmtKind::Match { cases, .. } => cases
+                    .iter()
+                    .any(|c| c.body.iter().any(|s| scan(*s, module))),
+                _ => false,
+            }
+        }
+        func.body.iter().any(|s| scan(*s, hir_module))
+    }
+
+    /// Emit the §3.3.8 fallback control flow:
+    /// ```ignore
+    /// if forward_result is NotImplemented:
+    ///     final = right.__rop__(left)
+    /// else:
+    ///     final = forward_result
+    /// ```
+    /// Returns the `final` local id (typed as `result_ty`).
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::expressions) fn emit_not_implemented_fallback(
+        &mut self,
+        forward_result: pyaot_utils::LocalId,
+        reflected_func: pyaot_utils::FuncId,
+        right_op: mir::Operand,
+        left_op: mir::Operand,
+        left_ty: &Type,
+        result_ty: &Type,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> pyaot_utils::LocalId {
+        // Materialize the NotImplemented singleton for identity comparison.
+        let ni_local = self.alloc_and_add_local(Type::NotImplementedT, mir_func);
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: ni_local,
+            func: mir::RuntimeFunc::Call(
+                &pyaot_core_defs::runtime_func_def::RT_NOT_IMPLEMENTED_SINGLETON,
+            ),
+            args: vec![],
+        });
+
+        // Compare forward_result == NotImplemented (pointer equality).
+        let is_ni = self.alloc_and_add_local(Type::Bool, mir_func);
+        self.emit_instruction(mir::InstructionKind::BinOp {
+            dest: is_ni,
+            op: mir::BinOp::Eq,
+            left: mir::Operand::Local(forward_result),
+            right: mir::Operand::Local(ni_local),
+        });
+
+        // Output local — receives the merged value from both branches.
+        let final_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
+
+        let reflected_bb = self.new_block();
+        let cont_bb = self.new_block();
+        let else_bb = self.new_block();
+
+        let reflected_id = reflected_bb.id;
+        let cont_id = cont_bb.id;
+        let else_id = else_bb.id;
+
+        self.current_block_mut().terminator = mir::Terminator::Branch {
+            cond: mir::Operand::Local(is_ni),
+            then_block: reflected_id,
+            else_block: else_id,
+        };
+
+        // `then` branch: dispatch reflected dunder.
+        self.push_block(reflected_bb);
+        let boxed_left = self.box_dunder_arg_if_needed(
+            left_op,
+            left_ty,
+            reflected_func,
+            1,
+            hir_module,
+            mir_func,
+        );
+        let refl_result = self.alloc_dunder_result(reflected_func, result_ty, hir_module, mir_func);
+        self.emit_instruction(mir::InstructionKind::CallDirect {
+            dest: refl_result,
+            func: reflected_func,
+            args: vec![right_op, boxed_left],
+        });
+        self.emit_instruction(mir::InstructionKind::Copy {
+            dest: final_local,
+            src: mir::Operand::Local(refl_result),
+        });
+        self.current_block_mut().terminator = mir::Terminator::Goto(cont_id);
+
+        // `else` branch: forward result is the final value.
+        self.push_block(else_bb);
+        self.emit_instruction(mir::InstructionKind::Copy {
+            dest: final_local,
+            src: mir::Operand::Local(forward_result),
+        });
+        self.current_block_mut().terminator = mir::Terminator::Goto(cont_id);
+
+        self.push_block(cont_bb);
+        final_local
     }
 
     /// Allocate the destination local for a user dunder call using the

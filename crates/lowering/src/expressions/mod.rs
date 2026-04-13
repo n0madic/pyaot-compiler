@@ -62,6 +62,20 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::Str(s) => self.lower_str_literal(*s, mir_func),
             hir::ExprKind::Bytes(b) => self.lower_bytes_literal(b, mir_func),
             hir::ExprKind::None => Ok(mir::Operand::Constant(mir::Constant::None)),
+            hir::ExprKind::NotImplemented => {
+                // Materialize the NotImplemented singleton via a runtime call.
+                // Identity-compared at operator-dunder dispatch to detect
+                // "this dunder does not handle the operand" (Data Model §3.3.8).
+                let dest = self.alloc_and_add_local(Type::NotImplementedT, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_NOT_IMPLEMENTED_SINGLETON,
+                    ),
+                    args: vec![],
+                });
+                Ok(mir::Operand::Local(dest))
+            }
             hir::ExprKind::ExcCurrentValue => {
                 let dest = self.alloc_and_add_local(Type::Any, mir_func);
                 self.emit_instruction(mir::InstructionKind::ExcGetCurrent { dest });

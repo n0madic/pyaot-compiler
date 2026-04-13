@@ -175,6 +175,7 @@ define_type_tags! {
     Counter = 25 => "Counter" => "<class 'collections.Counter'>" => "collections.Counter",
     Deque = 26 => "Deque" => "<class 'collections.deque'>" => "collections.deque",
     Request = 27 => "Request" => "<class 'urllib.request.Request'>" => "urllib.request.Request",
+    NotImplemented = 28 => "NotImplemented" => "<class 'NotImplementedType'>" => "NotImplementedType",
 }
 
 #[cfg(test)]
@@ -234,7 +235,8 @@ mod tests {
         assert_eq!(TypeTagKind::from_tag(25), Some(TypeTagKind::Counter));
         assert_eq!(TypeTagKind::from_tag(26), Some(TypeTagKind::Deque));
         assert_eq!(TypeTagKind::from_tag(27), Some(TypeTagKind::Request));
-        assert_eq!(TypeTagKind::from_tag(28), None);
+        assert_eq!(TypeTagKind::from_tag(28), Some(TypeTagKind::NotImplemented));
+        assert_eq!(TypeTagKind::from_tag(29), None);
         assert_eq!(TypeTagKind::from_tag(255), None);
     }
 

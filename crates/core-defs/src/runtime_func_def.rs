@@ -208,6 +208,12 @@ pub static RT_BOX_FLOAT: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_box_float", &[PF64], Some(RI64), true);
 /// rt_box_none() -> *mut Obj
 pub static RT_BOX_NONE: RuntimeFuncDef = RuntimeFuncDef::new("rt_box_none", &[], Some(RI64), true);
+/// rt_not_implemented_singleton() -> *mut Obj
+/// Returns the canonical NotImplemented sentinel pointer. Identity-compared
+/// at operator-dunder dispatch sites to detect the "no dispatch handled
+/// this operand" return and try the reflected dunder per CPython §3.3.8.
+pub static RT_NOT_IMPLEMENTED_SINGLETON: RuntimeFuncDef =
+    RuntimeFuncDef::new("rt_not_implemented_singleton", &[], Some(RI64), false);
 
 // ===== Unboxing operations =====
 

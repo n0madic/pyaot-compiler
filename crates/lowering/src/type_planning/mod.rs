@@ -154,6 +154,13 @@ impl<'a> Lowering<'a> {
             self.collect_return_types(*stmt_id, module, param_types, &mut return_types);
         }
 
+        // `NotImplemented` is a control-flow sentinel. We KEEP it in the
+        // return-type union so the compiled function's Cranelift signature
+        // returns a pointer (NotImplementedT is heap-allocated) and the
+        // operator dispatch can identity-compare the result against the
+        // singleton. Without this, a dunder that ONLY returns NotImplemented
+        // would have signature returning `None` (i8) and the i64 pointer
+        // would be silently truncated.
         if return_types.is_empty() {
             Type::None
         } else if return_types.len() == 1 {

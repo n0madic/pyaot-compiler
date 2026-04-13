@@ -482,6 +482,12 @@ pub enum ExprKind {
     /// None literal
     None,
 
+    /// `NotImplemented` sentinel — used inside operator dunders to signal
+    /// that the dunder does not handle the operand; the interpreter then
+    /// tries the reflected dunder on the right operand. See CPython Data
+    /// Model §3.3.8.
+    NotImplemented,
+
     /// Variable reference
     Var(VarId),
 

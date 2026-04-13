@@ -608,3 +608,26 @@ pub fn none_obj() -> *mut Obj {
     });
     holder.0.get()
 }
+
+/// `NotImplemented` singleton — same lifetime/locking discipline as the
+/// `None` singleton above. Identity-compared at operator-dunder dispatch
+/// sites to detect the "I do not handle this operand" return value and
+/// fall back to the right operand's reflected dunder per CPython
+/// Data Model §3.3.8.
+struct NotImplementedHolder(UnsafeCell<Obj>);
+unsafe impl Sync for NotImplementedHolder {}
+static NOT_IMPLEMENTED_SINGLETON: OnceLock<NotImplementedHolder> = OnceLock::new();
+
+#[no_mangle]
+pub extern "C" fn rt_not_implemented_singleton() -> *mut Obj {
+    let holder = NOT_IMPLEMENTED_SINGLETON.get_or_init(|| {
+        NotImplementedHolder(UnsafeCell::new(Obj {
+            header: ObjHeader {
+                type_tag: TypeTagKind::NotImplemented,
+                marked: true, // Never collect — singleton lives forever
+                size: std::mem::size_of::<Obj>(),
+            },
+        }))
+    });
+    holder.0.get()
+}

@@ -411,6 +411,7 @@ impl<'a> SemanticAnalyzer<'a> {
             | ExprKind::Str(_)
             | ExprKind::Bytes(_)
             | ExprKind::None
+            | ExprKind::NotImplemented
             | ExprKind::Var(_)
             | ExprKind::FuncRef(_)
             | ExprKind::ClassRef(_)

@@ -166,6 +166,7 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
         TypeTagKind::Counter => print_dict_repr(obj),     // Same repr as dict
         TypeTagKind::Deque => print!("<deque at {:p}>", obj),
         TypeTagKind::Request => print!("<{} at {:p}>", TypeTagKind::Request.type_name(), obj),
+        TypeTagKind::NotImplemented => print!("NotImplemented"),
     }
 }
 
@@ -342,6 +343,7 @@ pub extern "C" fn rt_print_obj(obj: *mut Obj) {
             TypeTagKind::Request => {
                 print!("<{} at {:p}>", TypeTagKind::Request.type_name(), obj)
             }
+            TypeTagKind::NotImplemented => print!("NotImplemented"),
         }
     }
 }

@@ -133,6 +133,102 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// When at least one operand of a binary op is a user class, look up
+    /// the dispatched dunder's *actual* inferred return type. Returns
+    /// `None` if neither operand is a user class or the corresponding
+    /// dunder is missing — in which case the caller falls back to the
+    /// structural `resolve_binop_type` heuristic.
+    ///
+    /// Mirrors the dispatch order in `lower_binop`: subclass-first,
+    /// forward, reverse — so the inferred type matches the actually
+    /// dispatched dunder.
+    pub(crate) fn resolve_class_binop_return(
+        &self,
+        op: &hir::BinOp,
+        left_ty: &Type,
+        right_ty: &Type,
+    ) -> Option<Type> {
+        let forward = match op {
+            hir::BinOp::Add => "__add__",
+            hir::BinOp::Sub => "__sub__",
+            hir::BinOp::Mul => "__mul__",
+            hir::BinOp::Div => "__truediv__",
+            hir::BinOp::FloorDiv => "__floordiv__",
+            hir::BinOp::Mod => "__mod__",
+            hir::BinOp::Pow => "__pow__",
+            hir::BinOp::BitAnd => "__and__",
+            hir::BinOp::BitOr => "__or__",
+            hir::BinOp::BitXor => "__xor__",
+            hir::BinOp::LShift => "__lshift__",
+            hir::BinOp::RShift => "__rshift__",
+            hir::BinOp::MatMul => "__matmul__",
+        };
+        let reflected = pyaot_types::dunders::reflected_name(forward)?;
+
+        // Subclass-first: right is a strict subclass of left and has reflected.
+        if let (Type::Class { class_id: l_id, .. }, Type::Class { class_id: r_id, .. }) =
+            (left_ty, right_ty)
+        {
+            if l_id != r_id && self.is_proper_subclass(*r_id, *l_id) {
+                if let Some(rfid) = self
+                    .get_class_info(r_id)
+                    .and_then(|ci| ci.get_dunder_func(reflected))
+                {
+                    if let Some(rt) = self.get_func_return_type(&rfid) {
+                        return Some(rt.clone());
+                    }
+                }
+            }
+        }
+        // Forward dunder on left.
+        let forward_ret = if let Type::Class { class_id, .. } = left_ty {
+            self.get_class_info(class_id)
+                .and_then(|ci| ci.get_dunder_func(forward))
+                .and_then(|fid| self.get_func_return_type(&fid).cloned())
+        } else {
+            None
+        };
+        // Reflected dunder on right (used both for the no-forward fallback
+        // and for unioning into the forward's return when forward may
+        // return NotImplemented).
+        let reflected_ret = if let Type::Class { class_id, .. } = right_ty {
+            self.get_class_info(class_id)
+                .and_then(|ci| ci.get_dunder_func(reflected))
+                .and_then(|rfid| self.get_func_return_type(&rfid).cloned())
+        } else {
+            None
+        };
+
+        // After the §3.3.8 NotImplemented fallback, the call-site value is
+        // (forward's returns \ NotImplementedT) ∪ reflected's returns. So
+        // strip NotImplementedT from the forward type and union with
+        // reflected — that's what the consumer of the binop actually sees.
+        fn strip_ni(ty: Type) -> Option<Type> {
+            match ty {
+                Type::NotImplementedT => None,
+                Type::Union(members) => {
+                    let kept: Vec<Type> = members
+                        .into_iter()
+                        .filter(|t| *t != Type::NotImplementedT)
+                        .collect();
+                    if kept.is_empty() {
+                        None
+                    } else {
+                        Some(Type::normalize_union(kept))
+                    }
+                }
+                other => Some(other),
+            }
+        }
+        let forward_visible = forward_ret.and_then(strip_ni);
+        match (forward_visible, reflected_ret) {
+            (Some(f), Some(r)) if f != r => Some(Type::normalize_union(vec![f, r])),
+            (Some(f), _) => Some(f),
+            (None, Some(r)) => Some(r),
+            (None, None) => None,
+        }
+    }
+
     /// Resolve call target type from the function expression.
     /// Returns `None` if no resolution found (caller applies fallback).
     fn resolve_call_target_type(
@@ -413,8 +509,16 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::BinOp { op, left, right } => {
                 let left_ty = self.get_type_of_expr_id(*left, hir_module);
                 let right_ty = self.get_type_of_expr_id(*right, hir_module);
-                helpers::resolve_binop_type(op, &left_ty, &right_ty)
-                    .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                // Class operands: prefer the dunder's *actual* inferred return
+                // type over the helper's "left_ty if Class" heuristic. Required
+                // because dunders may legitimately return another type
+                // (`__bool__` → bool, `__str__` → str, custom user dunders).
+                if let Some(ty) = self.resolve_class_binop_return(op, &left_ty, &right_ty) {
+                    ty
+                } else {
+                    helpers::resolve_binop_type(op, &left_ty, &right_ty)
+                        .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                }
             }
             hir::ExprKind::UnOp { op, operand } => match op {
                 hir::UnOp::Not => Type::Bool,
@@ -588,6 +692,7 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::Str(_) => Type::Str,
             hir::ExprKind::Bytes(_) => Type::Bytes,
             hir::ExprKind::None => Type::None,
+            hir::ExprKind::NotImplemented => Type::NotImplementedT,
 
             hir::ExprKind::Var(var_id) => {
                 if let Some(pt) = param_types {
@@ -606,8 +711,12 @@ impl<'a> Lowering<'a> {
                 let left_ty = self.infer_expr_type_inner(&module.exprs[*left], module, param_types);
                 let right_ty =
                     self.infer_expr_type_inner(&module.exprs[*right], module, param_types);
-                helpers::resolve_binop_type(op, &left_ty, &right_ty)
-                    .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                if let Some(ty) = self.resolve_class_binop_return(op, &left_ty, &right_ty) {
+                    ty
+                } else {
+                    helpers::resolve_binop_type(op, &left_ty, &right_ty)
+                        .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                }
             }
             hir::ExprKind::UnOp { op, operand } => match op {
                 hir::UnOp::Not => Type::Bool,

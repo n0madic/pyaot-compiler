@@ -1922,4 +1922,49 @@ assert (_sd * _sb).tag == "derived_mul"
 
 print("Subclass-first reflected rule: PASS")
 
+# ==================== NotImplemented sentinel + fallback dispatch ====================
+# CPython Data Model §3.3.8: a forward dunder may return `NotImplemented`
+# to signal "I don't know how to handle this operand"; the interpreter then
+# tries the reflected dunder on the right operand.
+
+class NiX:
+    def __mul__(self, other):
+        if isinstance(other, NiX):
+            return "XX"
+        return NotImplemented
+
+class NiY:
+    def __rmul__(self, other):
+        return "Yr"
+
+# Forward dunder handles same-type — return value is used directly.
+assert NiX() * NiX() == "XX"
+# Forward returns NotImplemented for NiY → reflected NiY.__rmul__ dispatched.
+assert NiX() * NiY() == "Yr"
+
+# Three-way: forward returns NotImplemented, reflected also returns it,
+# falls back to the original forward result (which IS NotImplemented).
+class NiA:
+    def __add__(self, other): return NotImplemented
+class NiB:
+    def __radd__(self, other): return "B_handles"
+assert NiA() + NiB() == "B_handles"
+
+# Mixed numeric tower with NotImplemented branch — common CPython idiom.
+class NumNi:
+    def __init__(self, x: float): self.x = x
+    def __mul__(self, other):
+        if isinstance(other, NumNi):
+            return NumNi(self.x * other.x)
+        if isinstance(other, (int, float)):
+            return NumNi(self.x * other)
+        return NotImplemented
+
+_n = NumNi(3.0)
+assert (_n * NumNi(2.0)).x == 6.0
+assert (_n * 4).x == 12.0
+assert (_n * 0.5).x == 1.5
+
+print("NotImplemented fallback dispatch: PASS")
+
 print("All class tests passed!")
