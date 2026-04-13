@@ -34,7 +34,8 @@ examples/*_out
 *.o
 
 *PLAN*.md
-test.py
+/*.py
+/*.txt
 IMPROVEMENT_PLAN.md
 .claude/commands
 .claude/feature_contracts
