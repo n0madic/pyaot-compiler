@@ -228,7 +228,7 @@ Native Executable
 | Module | Functions/Constants |
 |--------|---------------------|
 | abc | abstractmethod |
-| sys | argv, exit, intern |
+| sys | argv, exit, intern, path (lazy-init from exe dir + CWD + PYTHONPATH; mutations persist on the cached singleton) |
 | os | environ, remove, getcwd, chdir, listdir, mkdir, makedirs, rmdir |
 | os.path | join, exists |
 | re | search, match, sub; Match.group(), .start(), .end(), .groups(), .span() |

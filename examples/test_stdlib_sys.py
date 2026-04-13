@@ -32,4 +32,32 @@ assert interned_str.upper() == "HELLO", "interned string should support methods"
 assert len(interned_str) == 5, "interned string should have correct length"
 
 print("sys.intern tests passed")
+
+# Test sys.path — module search path. Lazily initialised on first read
+# from: exe dir, CWD, PYTHONPATH entries. The list is a process-wide
+# singleton, so user mutations persist (mutations don't affect imports —
+# those are resolved at compile time — but the list surface matches
+# CPython for portability).
+paths: list[str] = sys.path
+assert len(paths) >= 1, "sys.path must have at least one entry (exe dir or cwd)"
+
+# Every entry is a non-empty string
+for p in paths:
+    assert isinstance(p, str), "every sys.path entry must be a str"
+    assert len(p) > 0, "sys.path entries must be non-empty"
+
+# Mutation persists via the singleton. Capture the count, append, re-read
+# `sys.path` (returns the SAME list), confirm both operations see it.
+before: int = len(sys.path)
+sys.path.append("/pyaot/test/marker")
+after: int = len(sys.path)
+assert after == before + 1, "append must persist on the cached singleton list"
+assert sys.path[-1] == "/pyaot/test/marker", "appended entry must be the last element"
+
+# pop restores the count — proves we're operating on the same list each time
+popped: str = sys.path.pop()
+assert popped == "/pyaot/test/marker"
+assert len(sys.path) == before, "pop must reduce the cached list back to the original count"
+
+print("sys.path tests passed")
 print("All sys module tests passed!")
