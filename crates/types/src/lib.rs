@@ -212,6 +212,13 @@ impl Type {
                     Type::Union(matching)
                 }
             }
+            // `Any` / `HeapAny` could be anything at runtime — `isinstance`
+            // is the compiler's only tool to commit to a concrete shape, so
+            // the then-branch gets narrowed straight to the target type.
+            // Without this, `len(x)` after `isinstance(x, str)` (where `x`
+            // is typed `Any`) falls through to the `Type::Never` branch of
+            // `select_len_func` and silently returns 0.
+            Type::Any | Type::HeapAny => target.clone(),
             // For non-Union types, return self if it matches target
             _ => {
                 if Self::types_match_for_isinstance(self, target) {

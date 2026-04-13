@@ -31,15 +31,27 @@ impl<'a> Lowering<'a> {
     }
 
     /// Get the type of an expression by its ID (memoized).
+    ///
+    /// `Var` expressions are NOT cached: their type depends on
+    /// `get_var_type` which can change between lookups when type narrowing
+    /// kicks in (`apply_narrowings` / `restore_types`). Caching the
+    /// pre-narrow type would make `len(x)` inside `if isinstance(x, str)`
+    /// incorrectly dispatch through the `Any` fallback. Var lookups go
+    /// straight through `compute_expr_type`, which re-reads `var_types`
+    /// (including any active narrowings). Recomputation is cheap — it's a
+    /// single HashMap lookup.
     pub(crate) fn get_type_of_expr_id(
         &mut self,
         expr_id: hir::ExprId,
         hir_module: &hir::Module,
     ) -> Type {
+        let expr = &hir_module.exprs[expr_id];
+        if matches!(expr.kind, hir::ExprKind::Var(_)) {
+            return self.compute_expr_type(expr, hir_module);
+        }
         if let Some(cached) = self.types.expr_types.get(&expr_id).cloned() {
             return cached;
         }
-        let expr = &hir_module.exprs[expr_id];
         let result = self.compute_expr_type(expr, hir_module);
         self.types.expr_types.insert(expr_id, result.clone());
         result
