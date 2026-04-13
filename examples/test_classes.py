@@ -1889,4 +1889,37 @@ assert not (_a == None), "V == None never raises, returns False"
 
 print("Numeric tower on user classes: PASS")
 
+# ==================== Subclass-first reflected rule (§3.3.8) ====================
+# CPython Data Model §3.3.8: "If the operands are of different types, and
+# right operand's type is a direct or indirect subclass of the left operand's
+# type, the reflected method of the right operand has priority over a
+# non-reflected method of the left operand." This matters so that the more
+# specialized (derived) class always gets a chance to handle the operation
+# first — essential for correct arithmetic in class hierarchies.
+
+class SfBase:
+    def __init__(self, tag: str):
+        self.tag = tag
+    def __mul__(self, other):
+        return SfBase("base_mul")
+
+class SfDerived(SfBase):
+    def __init__(self, tag: str):
+        self.tag = tag
+    def __mul__(self, other):
+        return SfDerived("derived_mul")
+    def __rmul__(self, other):
+        return SfDerived("derived_rmul")
+
+_sb, _sd = SfBase("b"), SfDerived("d")
+# Subclass-first: Base * Derived → Derived.__rmul__ (not Base.__mul__)
+assert (_sb * _sd).tag == "derived_rmul", "subclass-first rule"
+# Same-type: regular forward dispatch
+assert (_sb * _sb).tag == "base_mul"
+assert (_sd * _sd).tag == "derived_mul"
+# Derived on the LEFT: left's forward dunder wins (no special rule)
+assert (_sd * _sb).tag == "derived_mul"
+
+print("Subclass-first reflected rule: PASS")
+
 print("All class tests passed!")

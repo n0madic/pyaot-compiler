@@ -258,6 +258,25 @@ impl<'a> Lowering<'a> {
     pub(crate) fn class_info_iter(&self) -> impl Iterator<Item = (&ClassId, &LoweredClassInfo)> {
         self.classes.class_info.iter()
     }
+
+    /// Return `true` iff `child` is a STRICT (proper) subclass of `parent` —
+    /// they are not the same class and `parent` appears anywhere on
+    /// `child`'s base-class chain. Used for the CPython §3.3.8
+    /// subclass-first rule in operator dunder dispatch.
+    pub(crate) fn is_proper_subclass(&self, child: ClassId, parent: ClassId) -> bool {
+        if child == parent {
+            return false;
+        }
+        let mut current = child;
+        while let Some(info) = self.get_class_info(&current) {
+            match info.base_class {
+                Some(base) if base == parent => return true,
+                Some(base) => current = base,
+                None => return false,
+            }
+        }
+        false
+    }
 }
 
 // =============================================================================

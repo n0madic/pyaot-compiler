@@ -219,6 +219,55 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        // Subclass-first reflected rule (CPython Data Model §3.3.8):
+        // "If the operands are of different types, and right operand's type
+        // is a direct or indirect subclass of the left operand's type, the
+        // reflected method of the right operand has priority."
+        //
+        // Only checked when both operands are user classes — primitives do
+        // not participate in the subclass-first rule.
+        if let (Type::Class { class_id: l_id, .. }, Type::Class { class_id: r_id, .. }) =
+            (&left_ty, &right_ty)
+        {
+            if l_id != r_id && self.is_proper_subclass(*r_id, *l_id) {
+                let rdunder_name = match op {
+                    hir::BinOp::Add => "__radd__",
+                    hir::BinOp::Sub => "__rsub__",
+                    hir::BinOp::Mul => "__rmul__",
+                    hir::BinOp::Div => "__rtruediv__",
+                    hir::BinOp::FloorDiv => "__rfloordiv__",
+                    hir::BinOp::Mod => "__rmod__",
+                    hir::BinOp::Pow => "__rpow__",
+                    hir::BinOp::BitAnd => "__rand__",
+                    hir::BinOp::BitOr => "__ror__",
+                    hir::BinOp::BitXor => "__rxor__",
+                    hir::BinOp::LShift => "__rlshift__",
+                    hir::BinOp::RShift => "__rrshift__",
+                    hir::BinOp::MatMul => "__rmatmul__",
+                };
+                if let Some(rfunc_id) = self
+                    .get_class_info(r_id)
+                    .and_then(|ci| ci.get_dunder_func(rdunder_name))
+                {
+                    let boxed_left = self.box_dunder_arg_if_needed(
+                        left_op.clone(),
+                        &left_ty,
+                        rfunc_id,
+                        1,
+                        hir_module,
+                        mir_func,
+                    );
+                    let dest = self.alloc_dunder_result(rfunc_id, &result_ty, hir_module, mir_func);
+                    self.emit_instruction(mir::InstructionKind::CallDirect {
+                        dest,
+                        func: rfunc_id,
+                        args: vec![right_op, boxed_left],
+                    });
+                    return Ok(mir::Operand::Local(dest));
+                }
+            }
+        }
+
         // Check for class type with arithmetic dunders
         if let Type::Class { class_id, .. } = &left_ty {
             let dunder_name = match op {
@@ -247,12 +296,13 @@ impl<'a> Lowering<'a> {
                 let boxed_right = self.box_dunder_arg_if_needed(
                     right_op, &right_ty, func_id, 1, hir_module, mir_func,
                 );
+                let dest = self.alloc_dunder_result(func_id, &result_ty, hir_module, mir_func);
                 self.emit_instruction(mir::InstructionKind::CallDirect {
-                    dest: result_local,
+                    dest,
                     func: func_id,
                     args: vec![left_op, boxed_right],
                 });
-                return Ok(mir::Operand::Local(result_local));
+                return Ok(mir::Operand::Local(dest));
             }
         }
 
@@ -282,12 +332,13 @@ impl<'a> Lowering<'a> {
                 // Reverse dunders: self is the right operand, other is the left
                 let boxed_left = self
                     .box_dunder_arg_if_needed(left_op, &left_ty, func_id, 1, hir_module, mir_func);
+                let dest = self.alloc_dunder_result(func_id, &result_ty, hir_module, mir_func);
                 self.emit_instruction(mir::InstructionKind::CallDirect {
-                    dest: result_local,
+                    dest,
                     func: func_id,
                     args: vec![right_op, boxed_left],
                 });
-                return Ok(mir::Operand::Local(result_local));
+                return Ok(mir::Operand::Local(dest));
             }
         }
 
@@ -440,6 +491,31 @@ impl<'a> Lowering<'a> {
         );
 
         Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Allocate the destination local for a user dunder call using the
+    /// dunder's *actual* return type when known — instead of the outer
+    /// `result_ty` heuristic that assumes numeric dunders return `Self`.
+    /// Required because comparison dunders return `bool`, `__str__` returns
+    /// `str`, user-defined dunders may legitimately return any type, etc.
+    pub(in crate::expressions) fn alloc_dunder_result(
+        &mut self,
+        func_id: pyaot_utils::FuncId,
+        fallback_ty: &Type,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> pyaot_utils::LocalId {
+        let ret_ty = self
+            .get_func_return_type(&func_id)
+            .cloned()
+            .or_else(|| {
+                hir_module
+                    .func_defs
+                    .get(&func_id)
+                    .and_then(|f| f.return_type.clone())
+            })
+            .unwrap_or_else(|| fallback_ty.clone());
+        self.alloc_and_add_local(ret_ty, mir_func)
     }
 
     /// When a user dunder declares a polymorphic `other` parameter (typically

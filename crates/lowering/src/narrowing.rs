@@ -391,10 +391,25 @@ impl<'a> Lowering<'a> {
         let then_type = original_type.narrow_to(&checked_type);
         let else_type = original_type.narrow_excluding(&checked_type);
 
+        // Class inheritance blindness: `Type::narrow_to` uses a structural
+        // match and cannot see that a Union member may be a subclass of the
+        // checked class. Before flagging the then-branch as dead, ask the
+        // class registry. `isinstance(other, Base)` where `other: Derived|int`
+        // must NOT be marked unreachable.
+        let class_inheritance_might_match = if let Type::Class {
+            class_id: target_id,
+            ..
+        } = &checked_type
+        {
+            self.union_contains_subclass_of(&original_type, *target_id)
+        } else {
+            false
+        };
+
         // Detect dead branches based on narrowing results
         let dead_branch = if matches!(original_type, Type::Union(_)) {
             // For Union types, check if narrowing produces Type::Never
-            if matches!(then_type, Type::Never) {
+            if matches!(then_type, Type::Never) && !class_inheritance_might_match {
                 Some(DeadBranch::ThenBranch)
             } else if matches!(else_type, Type::Never) {
                 Some(DeadBranch::ElseBranch)
@@ -468,27 +483,35 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Returns `true` iff `ty` is a Union that contains at least one Class
+    /// member that is a subclass of `target_id` (or equal to it). Used to
+    /// suppress false-positive "unreachable code" warnings from
+    /// `isinstance(x, Base)` when `x: Derived | ...`.
+    fn union_contains_subclass_of(&self, ty: &Type, target_id: pyaot_utils::ClassId) -> bool {
+        let Type::Union(members) = ty else {
+            return false;
+        };
+        for m in members {
+            if let Type::Class { class_id, .. } = m {
+                if *class_id == target_id || self.is_proper_subclass(*class_id, target_id) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Full isinstance compatibility check including class inheritance.
     /// Walks the class hierarchy to determine if `actual` is a subclass of `target`.
     fn types_compatible_for_isinstance_full(&self, actual: &Type, target: &Type) -> bool {
         if Self::types_compatible_for_isinstance(actual, target) {
             return true;
         }
-        // Check class inheritance chain
+        // Class inheritance: delegate to the shared walk.
         if let (Type::Class { class_id: id1, .. }, Type::Class { class_id: id2, .. }) =
             (actual, target)
         {
-            let mut current_id = *id1;
-            while let Some(class_info) = self.get_class_info(&current_id) {
-                if let Some(base_id) = class_info.base_class {
-                    if base_id == *id2 {
-                        return true;
-                    }
-                    current_id = base_id;
-                } else {
-                    break;
-                }
-            }
+            return self.is_proper_subclass(*id1, *id2);
         }
         false
     }
