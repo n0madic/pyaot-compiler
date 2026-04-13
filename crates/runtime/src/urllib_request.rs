@@ -110,7 +110,7 @@ unsafe fn create_http_response(status: i64, url: &str, headers: *mut Obj, body: 
 /// All GC-managed objects returned by runtime helpers are rooted internally
 /// where needed.
 #[allow(clippy::too_many_arguments)]
-unsafe fn do_http_request(
+pub(crate) unsafe fn do_http_request(
     method: &str,
     url_str: &str,
     params_dict: *mut Obj,
@@ -646,5 +646,91 @@ pub extern "C" fn rt_request_get_method(obj: *mut Obj) -> *mut Obj {
             return make_str_from_rust("GET");
         }
         method
+    }
+}
+
+// =============================================================================
+// urllib.request.urlretrieve — download URL to a local file and return
+// (filename, headers) tuple.
+// =============================================================================
+
+/// `urllib.request.urlretrieve(url, filename, reporthook=None, data=None)`
+///
+/// Fetches `url` and writes the response body to `filename`. Returns a
+/// 2-tuple `(filename, headers_dict)` — CPython returns `(filename,
+/// HTTPMessage)`, but pyaot has no HTTPMessage type, so the headers come
+/// back as a `dict[str, str]`.
+///
+/// `reporthook` is accepted for source compatibility with CPython but is
+/// never called — pyaot writes the full body in one step.
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_urlretrieve(
+    url: *mut Obj,
+    filename: *mut Obj,
+    _reporthook: *mut Obj,
+    data: *mut Obj,
+) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+    unsafe {
+        if url.is_null() || (*url).header.type_tag != TypeTagKind::Str {
+            raise_io_error("urlretrieve: url must be a str");
+        }
+        if filename.is_null() || (*filename).header.type_tag != TypeTagKind::Str {
+            raise_io_error("urlretrieve: filename must be a str");
+        }
+
+        let url_str = str_obj_to_rust_string(url);
+        let filename_str = str_obj_to_rust_string(filename);
+        let body = data_to_body_slice(data, "urlretrieve");
+        let method = if body.is_some() { "POST" } else { "GET" };
+
+        let response = do_http_request(
+            method,
+            &url_str,
+            std::ptr::null_mut(),
+            body,
+            std::ptr::null_mut(),
+            30.0,
+            true,
+            true,
+            "urlretrieve",
+        );
+
+        let hr = response as *const HttpResponseObj;
+        let body_obj = (*hr).body;
+        if body_obj.is_null() || (*body_obj).header.type_tag != TypeTagKind::Bytes {
+            raise_io_error("urlretrieve: response body is missing");
+        }
+        let bytes_obj = body_obj as *const BytesObj;
+        let data_len = (*bytes_obj).len;
+        let data_ptr = (*bytes_obj).data.as_ptr();
+        let body_slice = std::slice::from_raw_parts(data_ptr, data_len);
+
+        if let Err(e) = std::fs::write(&filename_str, body_slice) {
+            raise_io_error(&format!(
+                "urlretrieve: failed to write '{}': {}",
+                filename_str, e
+            ));
+        }
+
+        // Build (filename, headers) tuple. Root response (keeps headers
+        // reachable) and filename across the tuple allocation.
+        let headers_dict = (*hr).headers;
+        let mut roots: [*mut Obj; 4] = [response, filename, headers_dict, std::ptr::null_mut()];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 4,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        let tuple = crate::tuple::rt_make_tuple(2, 0); // ELEM_HEAP_OBJ
+        roots[3] = tuple;
+        crate::tuple::rt_tuple_set(roots[3], 0, roots[1]);
+        crate::tuple::rt_tuple_set(roots[3], 1, roots[2]);
+
+        gc_pop();
+        roots[3]
     }
 }

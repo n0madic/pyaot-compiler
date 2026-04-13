@@ -163,6 +163,39 @@ pub static URLOPEN: StdlibFunctionDef = StdlibFunctionDef {
     codegen: RuntimeFuncDef::new("rt_urlopen", &[P_I64, P_I64, P_F64], Some(R_I64), false),
 };
 
+/// `urllib.request.urlretrieve(url, filename, reporthook=None, data=None)`
+///
+/// Downloads the URL and writes the response body to `filename`. Returns
+/// a `(filename, headers)` tuple, mirroring CPython's return value.
+///
+/// Deviations from CPython:
+/// - `filename` is **required** (pyaot does not auto-generate a tempfile path).
+/// - `reporthook` is accepted for source compatibility but not invoked
+///   (the whole body is written in a single step).
+/// - The returned `headers` is a `dict[str, str]` — pyaot has no
+///   `http.client.HTTPMessage` type; values can be looked up via `in` / `[]`
+///   just like a regular dict.
+pub static URLRETRIEVE: StdlibFunctionDef = StdlibFunctionDef {
+    name: "urlretrieve",
+    runtime_name: "rt_urlretrieve",
+    params: &[
+        ParamDef::required("url", TypeSpec::Str),
+        ParamDef::required("filename", TypeSpec::Str),
+        ParamDef::optional("reporthook", TypeSpec::Any),
+        ParamDef::optional("data", TypeSpec::Optional(&TypeSpec::Bytes)),
+    ],
+    return_type: TypeSpec::Tuple(&TypeSpec::Any),
+    min_args: 2,
+    max_args: 4,
+    hints: LoweringHints::NO_AUTO_BOX,
+    codegen: RuntimeFuncDef::new(
+        "rt_urlretrieve",
+        &[P_I64, P_I64, P_I64, P_I64],
+        Some(R_I64),
+        false,
+    ),
+};
+
 /// `urllib.request.Request(url, data=None, headers=None, method=None)`
 /// — standard CPython constructor that bundles the pieces of a request for
 /// later dispatch via `urlopen(Request(...))`.
@@ -241,7 +274,7 @@ pub static HTTP_RESPONSE_GETCODE: StdlibMethodDef = StdlibMethodDef {
 /// `urlopen` still returns one; users import it from `http.client`.
 pub static URLLIB_REQUEST_MODULE: StdlibModuleDef = StdlibModuleDef {
     name: "urllib.request",
-    functions: &[URLOPEN, REQUEST_INIT],
+    functions: &[URLOPEN, URLRETRIEVE, REQUEST_INIT],
     attrs: &[],
     constants: &[],
     classes: &[],
