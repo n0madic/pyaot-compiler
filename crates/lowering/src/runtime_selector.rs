@@ -36,6 +36,8 @@ impl<'a> Lowering<'a> {
             | Type::Any
             | Type::HeapAny
             | Type::BuiltinException(_) => ValueKind::Ptr,
+            // NotImplemented sentinel — represented as a heap pointer at runtime.
+            Type::NotImplementedT => ValueKind::Ptr,
             // Compile-time-only types that should not appear in storage operations.
             // Explicit matches ensure new Type variants trigger exhaustiveness errors.
             Type::Function { .. } | Type::Var(_) | Type::Never => ValueKind::Int,

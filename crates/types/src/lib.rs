@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod dunders;
 pub mod exceptions;
 pub mod type_tags;
 
@@ -94,6 +95,14 @@ pub enum Type {
     /// Represents the type with no values - used for empty unions
     /// and unreachable code. Never is a subtype of all types.
     Never,
+
+    /// Singleton type for the `NotImplemented` sentinel. Operator dunders
+    /// that don't know how to handle an operand return `NotImplemented`,
+    /// which signals the interpreter to try the reflected dunder on the
+    /// right operand. Treated like `Never` when unioned with other types
+    /// for the purpose of return-type inference — it is a control-flow
+    /// signal, not a real result value.
+    NotImplementedT,
 }
 
 impl Type {
@@ -486,6 +495,7 @@ impl std::fmt::Display for Type {
             Type::File(binary) => write!(f, "File({})", if *binary { "binary" } else { "text" }),
             Type::RuntimeObject(kind) => write!(f, "{}", kind),
             Type::Never => write!(f, "Never"),
+            Type::NotImplementedT => write!(f, "NotImplementedType"),
         }
     }
 }

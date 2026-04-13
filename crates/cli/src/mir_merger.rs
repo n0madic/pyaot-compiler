@@ -111,6 +111,11 @@ fn type_to_raw(ty: &Type, source_interner: &StringInterner, class_id_offset: u32
         }
         Type::BuiltinException(k) => RawType::BuiltinException(*k),
         Type::RuntimeObject(k) => RawType::RuntimeObject(*k),
+        // NotImplementedT is a transient dispatch sentinel — it is consumed
+        // at binary-op call sites within the same module and should never
+        // appear in a cross-module signature. Serialize as `Any` so that a
+        // stale appearance does not crash the merger.
+        Type::NotImplementedT => RawType::Any,
     }
 }
 
