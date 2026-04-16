@@ -846,6 +846,65 @@ assert mixed_tuple2[-3] == 100, "mixed_tuple2[-3] should be 100"
 
 print("Mixed-type tuple indexing passed")
 
+# ===== SECTION: Variable-length tuples (tuple[T, ...]) =====
+
+# PEP 585 form — compiles and iterates over variable-length homogeneous tuple
+def tv_sum_all(t: tuple[int, ...]) -> int:
+    total: int = 0
+    for x in t:
+        total += x
+    return total
+assert tv_sum_all(()) == 0, "tv_sum_all(empty)"
+assert tv_sum_all((1,)) == 1, "tv_sum_all((1,))"
+assert tv_sum_all((1, 2, 3, 4)) == 10, "tv_sum_all((1,2,3,4))"
+
+# Another TupleVar function — first element
+def tv_first(t: tuple[int, ...]) -> int:
+    if len(t) > 0:
+        return t[0]
+    return -1
+assert tv_first(()) == -1, "tv_first(empty)"
+assert tv_first((5,)) == 5, "tv_first((5,))"
+assert tv_first((10, 20, 30)) == 10, "tv_first((10,20,30))"
+
+# len() over TupleVar — widens fixed tuples at call site
+def tv_describe(nums: tuple[int, ...]) -> int:
+    return len(nums)
+assert tv_describe(()) == 0, "tv_describe(empty)"
+assert tv_describe((1,)) == 1, "tv_describe((1,))"
+assert tv_describe((1, 2, 3)) == 3, "tv_describe((1,2,3))"
+
+# zip over two TupleVars
+def tv_sum_pairs(a: tuple[int, ...], b: tuple[int, ...]) -> int:
+    total: int = 0
+    for x, y in zip(a, b):
+        total += x * y
+    return total
+assert tv_sum_pairs((1, 2, 3), (10, 20, 30)) == 10 + 40 + 90, "zip over TupleVars"
+
+# enumerate over TupleVar
+def tv_find(t: tuple[int, ...], v: int) -> int:
+    for i, x in enumerate(t):
+        if x == v:
+            return i
+    return -1
+assert tv_find((10, 20, 30, 40), 30) == 2, "enumerate over TupleVar"
+assert tv_find((10, 20, 30, 40), 99) == -1, "enumerate over TupleVar (miss)"
+
+# Slice preserves element type and compares equal to a fixed tuple
+def tv_take_two(t: tuple[int, ...]) -> tuple[int, ...]:
+    return t[:2]
+assert tv_take_two((1, 2, 3, 4, 5)) == (1, 2), "slice TupleVar == fixed"
+
+# Contains operator
+def tv_contains(t: tuple[int, ...], v: int) -> bool:
+    return v in t
+assert tv_contains((1, 2, 3), 2) is True
+assert tv_contains((1, 2, 3), 99) is False
+assert tv_contains((), 1) is False
+
+print("Variable-length tuple tests passed")
+
 # ============================================================================
 # Tuple 'in' operator (regression test)
 # ============================================================================

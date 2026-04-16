@@ -75,6 +75,7 @@ pub(crate) fn get_iterable_info(ty: &Type) -> Option<(IterableKind, Type)> {
             };
             Some((IterableKind::Tuple, elem_ty))
         }
+        Type::TupleVar(elem_ty) => Some((IterableKind::Tuple, (**elem_ty).clone())),
         Type::Dict(key_ty, _value_ty) => {
             // Iterating over a dict yields keys
             Some((IterableKind::Dict, (**key_ty).clone()))

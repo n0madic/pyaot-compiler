@@ -63,6 +63,7 @@ pub(crate) fn select_print_func(ty: &Type) -> &'static RuntimeFuncDef {
         Type::HeapAny => &runtime_func_def::RT_PRINT_OBJ,
         Type::List(_)
         | Type::Tuple(_)
+        | Type::TupleVar(_)
         | Type::Dict(_, _)
         | Type::DefaultDict(_, _)
         | Type::Set(_)
@@ -85,7 +86,7 @@ pub(crate) fn select_len_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
     match ty {
         Type::Str => Some(&runtime_func_def::RT_STR_LEN_INT),
         Type::List(_) => Some(&runtime_func_def::RT_LIST_LEN),
-        Type::Tuple(_) => Some(&runtime_func_def::RT_TUPLE_LEN),
+        Type::Tuple(_) | Type::TupleVar(_) => Some(&runtime_func_def::RT_TUPLE_LEN),
         Type::Dict(_, _) | Type::DefaultDict(_, _) => Some(&runtime_func_def::RT_DICT_LEN),
         Type::Set(_) => Some(&runtime_func_def::RT_SET_LEN),
         Type::Bytes => Some(&runtime_func_def::RT_BYTES_LEN),
@@ -126,7 +127,7 @@ pub(crate) fn type_to_conversion_kind(ty: &Type) -> Option<mir::ConversionTypeKi
 pub(crate) fn type_to_iter_source(ty: &Type) -> mir::IterSourceKind {
     match ty {
         Type::List(_) => mir::IterSourceKind::List,
-        Type::Tuple(_) => mir::IterSourceKind::Tuple,
+        Type::Tuple(_) | Type::TupleVar(_) => mir::IterSourceKind::Tuple,
         Type::Dict(_, _) | Type::DefaultDict(_, _) => mir::IterSourceKind::Dict,
         Type::Set(_) => mir::IterSourceKind::Set,
         Type::Str => mir::IterSourceKind::Str,
@@ -146,7 +147,7 @@ pub(crate) fn select_slicing_func(ty: &Type) -> Option<&'static RuntimeFuncDef> 
     match ty {
         Type::Str => Some(&runtime_func_def::RT_STR_SLICE),
         Type::List(_) => Some(&runtime_func_def::RT_LIST_SLICE),
-        Type::Tuple(_) => Some(&runtime_func_def::RT_TUPLE_SLICE),
+        Type::Tuple(_) | Type::TupleVar(_) => Some(&runtime_func_def::RT_TUPLE_SLICE),
         Type::Bytes => Some(&runtime_func_def::RT_BYTES_SLICE),
         _ => None,
     }
@@ -158,7 +159,7 @@ pub(crate) fn select_slicing_step_func(ty: &Type) -> Option<&'static RuntimeFunc
     match ty {
         Type::Str => Some(&runtime_func_def::RT_STR_SLICE_STEP),
         Type::List(_) => Some(&runtime_func_def::RT_LIST_SLICE_STEP),
-        Type::Tuple(_) => Some(&runtime_func_def::RT_TUPLE_SLICE_STEP),
+        Type::Tuple(_) | Type::TupleVar(_) => Some(&runtime_func_def::RT_TUPLE_SLICE_STEP),
         Type::Bytes => Some(&runtime_func_def::RT_BYTES_SLICE_STEP),
         _ => None,
     }
@@ -197,7 +198,9 @@ pub(crate) fn select_truthiness(ty: &Type) -> TruthinessStrategy {
         Type::None => TruthinessStrategy::AlwaysFalse,
         Type::Bytes => TruthinessStrategy::LenBased(&runtime_func_def::RT_BYTES_LEN),
         Type::List(_) => TruthinessStrategy::LenBased(&runtime_func_def::RT_LIST_LEN),
-        Type::Tuple(_) => TruthinessStrategy::LenBased(&runtime_func_def::RT_TUPLE_LEN),
+        Type::Tuple(_) | Type::TupleVar(_) => {
+            TruthinessStrategy::LenBased(&runtime_func_def::RT_TUPLE_LEN)
+        }
         Type::Dict(_, _) | Type::DefaultDict(_, _) => {
             TruthinessStrategy::LenBased(&runtime_func_def::RT_DICT_LEN)
         }

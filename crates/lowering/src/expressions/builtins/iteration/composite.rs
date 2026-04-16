@@ -151,7 +151,7 @@ impl<'a> Lowering<'a> {
             let first_operand = self.lower_expr(first_expr, hir_module, mir_func)?;
             let first_source = match &first_type {
                 Type::List(_) => mir::IterSourceKind::List,
-                Type::Tuple(_) => mir::IterSourceKind::Tuple,
+                Type::Tuple(_) | Type::TupleVar(_) => mir::IterSourceKind::Tuple,
                 Type::Dict(_, _) => mir::IterSourceKind::Dict,
                 Type::Set(_) => mir::IterSourceKind::Set,
                 Type::Str => mir::IterSourceKind::Str,
@@ -217,7 +217,7 @@ impl<'a> Lowering<'a> {
             let second_operand = self.lower_expr(second_expr, hir_module, mir_func)?;
             let second_source = match &second_type {
                 Type::List(_) => mir::IterSourceKind::List,
-                Type::Tuple(_) => mir::IterSourceKind::Tuple,
+                Type::Tuple(_) | Type::TupleVar(_) => mir::IterSourceKind::Tuple,
                 Type::Dict(_, _) => mir::IterSourceKind::Dict,
                 Type::Set(_) => mir::IterSourceKind::Set,
                 Type::Str => mir::IterSourceKind::Str,

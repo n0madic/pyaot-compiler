@@ -228,6 +228,33 @@ impl<'a> Lowering<'a> {
                     args: vec![obj_operand, index_operand],
                 });
             }
+            Type::TupleVar(elem_ty_box) => {
+                // Variable-length tuple — every index returns the element type.
+                // Runtime bounds-check is done by rt_tuple_get.
+                let elem_ty = (**elem_ty_box).clone();
+                let uses_heap_obj = !matches!(elem_ty, Type::Int);
+                let result_ty = if matches!(elem_ty, Type::Any) && uses_heap_obj {
+                    Type::HeapAny
+                } else {
+                    elem_ty.clone()
+                };
+                mir_func.add_local(mir::Local {
+                    id: result_local,
+                    name: None,
+                    ty: result_ty.clone(),
+                    is_gc_root: result_ty.is_heap(),
+                });
+                let runtime_func = if uses_heap_obj {
+                    crate::type_dispatch::tuple_get_func(&elem_ty)
+                } else {
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
+                };
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: runtime_func,
+                    args: vec![obj_operand, index_operand],
+                });
+            }
             Type::Dict(_key_ty, value_ty) => {
                 // Dict indexing: dict[key] returns value type
                 // Dict values are always stored as boxed pointers for GC, so we need to unbox primitives

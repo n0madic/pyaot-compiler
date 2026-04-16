@@ -277,6 +277,16 @@ pub(crate) fn resolve_index_type(obj_ty: &Type, index_expr: &hir::Expr) -> Type 
                 t
             }
         }
+        // Variable-length tuple — indexing always returns the element type.
+        // Bounds-checked at runtime via rt_tuple_get.
+        Type::TupleVar(elem) => {
+            let t = (**elem).clone();
+            if matches!(t, Type::Any) {
+                Type::HeapAny
+            } else {
+                t
+            }
+        }
         _ => Type::Any,
     }
 }

@@ -421,7 +421,7 @@ impl<'a> Lowering<'a> {
                         right: mir::Operand::Constant(mir::Constant::Int(0)),
                     });
                 }
-                Type::Tuple(_) => {
+                Type::Tuple(_) | Type::TupleVar(_) => {
                     // elem in tuple - use rt_obj_contains (needs boxed element)
                     let boxed_elem = self.box_primitive_if_needed(left_op, &left_type, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -524,10 +524,12 @@ impl<'a> Lowering<'a> {
                     args: vec![left_op, right_op, op_tag],
                 });
             }
-        } else if let Type::Tuple(_) = &left_type {
+        } else if matches!(&left_type, Type::Tuple(_) | Type::TupleVar(_)) {
             // Tuple comparison - use runtime function for element-wise comparison
+            // (works uniformly on both fixed and variable-length tuples since
+            // rt_tuple_eq dispatches per element tag at runtime).
             if matches!(op, hir::CmpOp::Eq | hir::CmpOp::NotEq)
-                && matches!(right_type, Type::Tuple(_))
+                && matches!(right_type, Type::Tuple(_) | Type::TupleVar(_))
             {
                 let is_not_eq = matches!(op, hir::CmpOp::NotEq);
 
