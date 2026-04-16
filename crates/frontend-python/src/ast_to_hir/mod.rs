@@ -289,6 +289,14 @@ impl AstToHir {
     pub fn convert(mut self, ast: py::Mod) -> Result<(Module, StringInterner)> {
         match ast {
             py::Mod::Module(m) => {
+                // Pre-scan: register every top-level class name before any
+                // body is converted. Mirrors the `func_map` pre-existing
+                // pattern for forward function references — without this,
+                // `class A: def make(self) -> "B": ...; class B: ...` would
+                // fail to resolve `B` while parsing `A`. Needed for PEP 563
+                // string annotations and for recursive/forward class refs
+                // in method signatures.
+                self.prescan_top_level_classes(&m.body);
                 for stmt in m.body {
                     self.convert_top_level_stmt(stmt)?;
                 }
@@ -303,6 +311,23 @@ impl AstToHir {
         // Create synthetic __pyaot_module_init__ function for top-level statements
         self.finalize_module();
         Ok((self.module, self.interner))
+    }
+
+    /// Reserve `ClassId`s for every top-level class declaration so that
+    /// forward references in method annotations resolve to the correct id.
+    /// Bodies are converted later in source order — this pre-pass only
+    /// populates `class_map` with the names.
+    fn prescan_top_level_classes(&mut self, stmts: &[py::Stmt]) {
+        for stmt in stmts {
+            if let py::Stmt::ClassDef(cls) = stmt {
+                let name = self.interner.intern(&cls.name);
+                if self.symbols.class_map.contains_key(&name) {
+                    continue;
+                }
+                let class_id = self.ids.alloc_class();
+                self.symbols.class_map.insert(name, class_id);
+            }
+        }
     }
 
     fn convert_top_level_stmt(&mut self, stmt: py::Stmt) -> Result<()> {

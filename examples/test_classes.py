@@ -2141,4 +2141,52 @@ assert len(_buf.data) == 5
 
 print("Tuple-shape unification (§D.3.6): PASS")
 
+# ==================== String forward references in annotations (Area D §D.7) ====================
+
+# Self-reference in method annotation. `"LL"` is re-parsed as a Python
+# expression; `LL` resolves via the top-level class pre-scan that registers
+# every class name before any body is converted.
+class LL:
+    def __init__(self, val: int, next_node: "LL | None" = None):
+        self.val = val
+        self.next_node = next_node
+    def tail(self) -> "LL":
+        node = self
+        while node.next_node is not None:
+            node = node.next_node
+        return node
+
+_head = LL(1, LL(2, LL(3)))
+assert _head.tail().val == 3, "LL self-reference"
+
+# Forward ref in dunder parameter — closes §B.6 #3.
+class VecF:
+    def __init__(self, x: float):
+        self.x = x
+    def __mul__(self, other: "VecF") -> "VecF":
+        return VecF(self.x * other.x)
+
+assert (VecF(3.0) * VecF(2.0)).x == 6.0, "VecF __mul__ with string forward ref"
+
+# Recursive tuple type — bridges §D.3 (tuple[T, ...]) and §D.7 (string refs).
+class Tree:
+    def __init__(self, value: int, children: "tuple[Tree, ...]" = ()):
+        self.value = value
+        self._children = children
+
+_root = Tree(1, (Tree(2), Tree(3, (Tree(4),))))
+assert _root._children[1]._children[0].value == 4, "recursive tuple annotation"
+
+# Forward reference to a class declared LATER in the same module.
+class Maker:
+    def make(self) -> "Made":
+        return Made()
+class Made:
+    def name(self) -> str:
+        return "Made"
+
+assert Maker().make().name() == "Made", "forward ref to later class"
+
+print("String forward reference annotations (§D.7): PASS")
+
 print("All class tests passed!")

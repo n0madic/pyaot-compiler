@@ -101,16 +101,39 @@ impl AstToHir {
                 ))
             }
             // Handle None as a constant (Python 3 parses `-> None` as Constant::None)
-            py::Expr::Constant(c) => {
-                if matches!(c.value, py::Constant::None) {
-                    Ok(Type::None)
-                } else {
-                    Err(CompilerError::parse_error(
-                        "Only None constant allowed in type annotations",
-                        ann_span,
-                    ))
+            py::Expr::Constant(c) => match &c.value {
+                py::Constant::None => Ok(Type::None),
+                // PEP 563 forward reference: re-parse the string as a Python
+                // expression and recurse. Name resolution falls through to the
+                // normal path — `class_map` already contains every top-level
+                // class name by the time this runs (see `prescan_top_level_classes`
+                // in `mod.rs`), so `"Node"`, `"tuple[Tree, ...]"`, and recursive
+                // self-references all resolve correctly.
+                py::Constant::Str(s) => {
+                    let parsed = rustpython_parser::parse(
+                        s,
+                        rustpython_parser::Mode::Expression,
+                        "<annotation>",
+                    )
+                    .map_err(|e| {
+                        CompilerError::parse_error(
+                            format!("invalid type annotation string '{s}': {e}"),
+                            ann_span,
+                        )
+                    })?;
+                    match parsed {
+                        py::Mod::Expression(m) => self.convert_type_annotation(&m.body),
+                        _ => Err(CompilerError::parse_error(
+                            format!("type annotation string '{s}' did not parse as expression"),
+                            ann_span,
+                        )),
+                    }
                 }
-            }
+                _ => Err(CompilerError::parse_error(
+                    "Only None and string constants allowed in type annotations",
+                    ann_span,
+                )),
+            },
             py::Expr::Subscript(sub) => {
                 // Handle generic types like list[int], dict[str, int]
                 if let py::Expr::Name(name) = &*sub.value {

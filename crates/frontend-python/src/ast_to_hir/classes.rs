@@ -86,11 +86,25 @@ impl AstToHir {
     }
     pub(crate) fn convert_class_def(&mut self, class_def: py::StmtClassDef) -> Result<()> {
         let class_span = Self::span_from(&class_def);
-        let class_id = self.ids.alloc_class();
         let class_name = self.interner.intern(&class_def.name);
 
-        // Register class in class_map
-        self.symbols.class_map.insert(class_name, class_id);
+        // Use the pre-reserved `ClassId` from `prescan_top_level_classes` if
+        // present AND not yet populated — this is the normal top-level class
+        // path. If the class_map entry already maps to an id whose body has
+        // been converted (e.g. test files that declare two classes with the
+        // same name), allocate a fresh id and rebind `class_map` to match
+        // pre-prescan behaviour: later declarations shadow earlier ones for
+        // name-resolution, but earlier ClassRef captures still see their
+        // original ClassId.
+        let prescanned = self.symbols.class_map.get(&class_name).copied();
+        let class_id = match prescanned {
+            Some(id) if !self.module.class_defs.contains_key(&id) => id,
+            _ => {
+                let fresh = self.ids.alloc_class();
+                self.symbols.class_map.insert(class_name, fresh);
+                fresh
+            }
+        };
 
         // Parse base class from bases (single inheritance only)
         // Also detect if this is an exception class or Protocol
