@@ -16,6 +16,7 @@ impl<'a> Lowering<'a> {
     pub(crate) fn lower_generator_intrinsic(
         &mut self,
         intrinsic: &hir::GeneratorIntrinsic,
+        expr: &hir::Expr,
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
@@ -145,10 +146,21 @@ impl<'a> Lowering<'a> {
             hir::GeneratorIntrinsic::IterNextNoExc(iter_expr_id) => {
                 let iter_op =
                     self.lower_expr(&hir_module.exprs[*iter_expr_id], hir_module, mir_func)?;
+                // Derive the destination type from the iterator's element
+                // type so tuple iterators (e.g. `zip(a, b)`) propagate
+                // `Tuple<..>` downstream to `lower_binding_target`. The
+                // runtime always returns raw i64 (a value or heap pointer),
+                // so the MIR type is just bookkeeping — the bits are the
+                // same.
+                let iter_ty = self.get_type_of_expr_id(*iter_expr_id, hir_module);
+                let dest_ty = crate::utils::get_iterable_info(&iter_ty)
+                    .map(|(_k, elem)| elem)
+                    .or_else(|| expr.ty.clone())
+                    .unwrap_or(Type::Int);
                 let dest = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&RT_ITER_NEXT_NO_EXC),
                     vec![iter_op],
-                    Type::Int,
+                    dest_ty,
                     mir_func,
                 );
                 Ok(mir::Operand::Local(dest))

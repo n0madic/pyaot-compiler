@@ -32,16 +32,14 @@ pub(crate) fn detect_for_loop_generator(
     }
 
     let stmt = &hir_module.stmts[body[0]];
-    // Only handle `ForBind` with a simple variable target.
-    // Other `BindingTarget` shapes (tuple, attr, index) need the generic
-    // generator path and are intentionally not detected here.
-    let (target_var, iter_expr, for_body) = match &stmt.kind {
+    // Accept any `BindingTarget` shape — simple Var, tuple unpack, attr, index.
+    // The generic resume-loop builder expands the target recursively via
+    // `lower_binding_target`, so `for x, y in zip(...)` works alongside
+    // `for v in items`.
+    let (target, iter_expr, for_body) = match &stmt.kind {
         hir::StmtKind::ForBind {
-            target: hir::BindingTarget::Var(target),
-            iter,
-            body,
-            ..
-        } => (*target, *iter, body),
+            target, iter, body, ..
+        } => (target.clone(), *iter, body),
         _ => return None,
     };
 
@@ -106,7 +104,7 @@ pub(crate) fn detect_for_loop_generator(
     }
 
     Some(ForLoopGenerator {
-        target_var,
+        target,
         iter_expr,
         yield_expr,
         filter_cond,

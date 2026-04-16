@@ -1108,12 +1108,28 @@ _ct_nested = [[(1, 2), (3, 4)], [(5, 6)]]
 _ct_flattened = [a + b for row in _ct_nested for a, b in row]
 assert _ct_flattened == [3, 7, 11]
 
-# NOTE: Generator expressions with tuple targets — e.g.
-#   sum(x * y for x, y in zip(a, b))
-# — currently compile but yield 0 due to a generator-desugaring limitation
-# (the resume builder only optimises simple-Var for-loops). Tracked as a
-# follow-up; use `sum([...])` list-comp form as a workaround.
-
 print("New comprehension tuple-target tests passed!")
+
+# =============================================================================
+# §C.6 — tuple targets in generator expressions (Area C).
+# `detect_for_loop_generator` now accepts any `BindingTarget`, so tuple /
+# attr / index targets propagate through the optimised resume-loop builder.
+# Currently supported: iter expressions whose element type is computable at
+# desugar time (zip of literal args, enumerate of literals, list / set /
+# tuple literals). Bare `Var` references to heterogeneous iterables still
+# fall back to the legacy `Int` element-type (single-var only).
+# =============================================================================
+
+# zip with literal args
+assert sum(x * y for x, y in zip([1, 2, 3], [4, 5, 6])) == 32
+
+# list literal of tuple literals
+assert sum(x * y for x, y in [(1, 4), (2, 5), (3, 6)]) == 32
+
+# nested unpack in gen-expr
+_ct_nested_sum = sum(a * b + c for a, (b, c) in [(1, (2, 3)), (4, (5, 6))])
+assert _ct_nested_sum == (1 * 2 + 3) + (4 * 5 + 6)
+
+print("Generator-expression tuple-target tests passed!")
 
 print("All iteration and comprehension tests passed!")

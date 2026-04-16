@@ -653,6 +653,19 @@ impl<'a> Lowering<'a> {
                 // GetLocal: slot storage is type-erased (i64); desugaring annotates
                 // `expr.ty` with the logical Python type stored in the slot.
                 hir::GeneratorIntrinsic::GetLocal { .. } => expr.ty.clone().unwrap_or(Type::Int),
+                // IterNextNoExc: element type flows from the iterator being
+                // advanced. Prefer the real iterator's element type (via
+                // `get_iterable_info`) so tuple iterators like `zip(a, b)`
+                // propagate `Tuple<..>` downstream even when desugaring
+                // couldn't compute it from the raw AST.
+                hir::GeneratorIntrinsic::IterNextNoExc(iter_id) => {
+                    let iter_ty = self.get_type_of_expr_id(*iter_id, hir_module);
+                    if let Some((_k, elem)) = crate::utils::get_iterable_info(&iter_ty) {
+                        elem
+                    } else {
+                        expr.ty.clone().unwrap_or(Type::Int)
+                    }
+                }
                 _ => Type::Int,
             },
             _ => expr.ty.clone().unwrap_or(Type::Any),
@@ -869,6 +882,17 @@ impl<'a> Lowering<'a> {
                 // GetLocal: slot storage is type-erased (i64); desugaring annotates
                 // `expr.ty` with the logical Python type stored in the slot.
                 hir::GeneratorIntrinsic::GetLocal { .. } => expr.ty.clone().unwrap_or(Type::Int),
+                // IterNextNoExc: element type flows from the iterator. See the
+                // `compute_expr_type` arm for rationale.
+                hir::GeneratorIntrinsic::IterNextNoExc(iter_id) => {
+                    let iter_ty =
+                        self.infer_expr_type_inner(&module.exprs[*iter_id], module, param_types);
+                    if let Some((_k, elem)) = crate::utils::get_iterable_info(&iter_ty) {
+                        elem
+                    } else {
+                        expr.ty.clone().unwrap_or(Type::Int)
+                    }
+                }
                 _ => Type::Int,
             },
             _ => expr.ty.clone().unwrap_or(Type::Any),

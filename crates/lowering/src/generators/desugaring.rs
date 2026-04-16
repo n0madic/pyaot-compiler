@@ -43,6 +43,113 @@ fn mk_var(m: &mut hir::Module, var_id: VarId, ty: Type, span: Span) -> hir::Expr
     mk_expr(m, hir::ExprKind::Var(var_id), Some(ty), span)
 }
 
+/// Element type yielded by `fg.iter_expr` per iteration.
+///
+/// Generator desugaring runs **before** type planning, so call expressions
+/// (`zip`, `enumerate`) have no `Expr.ty` yet. We reconstruct the element
+/// shape from their arguments directly — required for the Tuple/Attr/Index
+/// target forms of `§C.6`. Falls back to `Type::Int` for opaque sources
+/// (e.g. user generators, bare `Var` refs): matches the legacy hardcoded
+/// `Int` used before `§C.6`, keeping non-tuple generators unchanged.
+fn iter_elem_type(m: &hir::Module, fg: &super::ForLoopGenerator) -> Type {
+    let iter_ty = m.exprs[fg.iter_expr].ty.clone().unwrap_or(Type::Any);
+    if let Some((_k, ty)) = get_iterable_info(&iter_ty) {
+        return ty;
+    }
+    // For tuple targets we refuse to fall back to `Int` — that would
+    // trigger nonsensical unpack (an integer can't be unpacked). Use
+    // `Any` for tuple targets; the generic `rt_tuple_get` / `rt_list_get`
+    // path will still run but won't unbox primitives.
+    let fallback = if matches!(fg.target, hir::BindingTarget::Var(_)) {
+        Type::Int
+    } else {
+        Type::Any
+    };
+    infer_iter_elem_from_kind(m, fg.iter_expr).unwrap_or(fallback)
+}
+
+/// Shape-based fallback for the common iterables whose element type can
+/// be reconstructed without type planning.
+fn infer_iter_elem_from_kind(m: &hir::Module, expr_id: hir::ExprId) -> Option<Type> {
+    let expr = &m.exprs[expr_id];
+    match &expr.kind {
+        hir::ExprKind::BuiltinCall {
+            builtin: hir::Builtin::Zip,
+            args,
+            ..
+        } => {
+            let tuple_elems: Vec<Type> = args
+                .iter()
+                .map(|a| arg_elem_type(m, *a).unwrap_or(Type::Any))
+                .collect();
+            Some(Type::Tuple(tuple_elems))
+        }
+        hir::ExprKind::BuiltinCall {
+            builtin: hir::Builtin::Enumerate,
+            args,
+            ..
+        } => {
+            let inner = args
+                .first()
+                .and_then(|a| arg_elem_type(m, *a))
+                .unwrap_or(Type::Any);
+            Some(Type::Tuple(vec![Type::Int, inner]))
+        }
+        hir::ExprKind::List(items) | hir::ExprKind::Set(items) => {
+            items.first().and_then(|first| shape_infer_type(m, *first))
+        }
+        _ => None,
+    }
+}
+
+/// Element type of an arbitrary iterable expression.
+fn arg_elem_type(m: &hir::Module, expr_id: hir::ExprId) -> Option<Type> {
+    let expr = &m.exprs[expr_id];
+    if let Some(ty) = &expr.ty {
+        if let Some((_k, elem)) = get_iterable_info(ty) {
+            return Some(elem);
+        }
+    }
+    infer_iter_elem_from_kind(m, expr_id)
+}
+
+/// Best-effort type inference without the memoised `TypeEnvironment`.
+fn shape_infer_type(m: &hir::Module, expr_id: hir::ExprId) -> Option<Type> {
+    let expr = &m.exprs[expr_id];
+    if let Some(ty) = &expr.ty {
+        return Some(ty.clone());
+    }
+    match &expr.kind {
+        hir::ExprKind::Int(_) => Some(Type::Int),
+        hir::ExprKind::Float(_) => Some(Type::Float),
+        hir::ExprKind::Bool(_) => Some(Type::Bool),
+        hir::ExprKind::Str(_) => Some(Type::Str),
+        hir::ExprKind::None => Some(Type::None),
+        hir::ExprKind::Tuple(items) => {
+            let elem_types: Vec<Type> = items
+                .iter()
+                .map(|e| shape_infer_type(m, *e).unwrap_or(Type::Any))
+                .collect();
+            Some(Type::Tuple(elem_types))
+        }
+        hir::ExprKind::List(items) => {
+            let elem_ty = items
+                .first()
+                .and_then(|first| shape_infer_type(m, *first))
+                .unwrap_or(Type::Any);
+            Some(Type::List(Box::new(elem_ty)))
+        }
+        hir::ExprKind::Set(items) => {
+            let elem_ty = items
+                .first()
+                .and_then(|first| shape_infer_type(m, *first))
+                .unwrap_or(Type::Any);
+            Some(Type::Set(Box::new(elem_ty)))
+        }
+        _ => None,
+    }
+}
+
 /// Allocate a `GeneratorIntrinsic::GetLocal` expression.
 ///
 /// `ty` declares the logical Python type stored in the slot (e.g. `Int`, `Str`,
@@ -390,15 +497,19 @@ impl<'a> Lowering<'a> {
                 if yield_ty != Type::Any {
                     return yield_ty;
                 }
-                // Attribute access: yield v.field
-                let ye = &m.exprs[yield_eid];
-                if let hir::ExprKind::Attribute { obj, attr } = &ye.kind {
-                    if let hir::ExprKind::Var(vid) = &m.exprs[*obj].kind {
-                        if *vid == for_gen.target_var {
-                            if let Some(Type::Class { class_id, .. }) = &elem_ty {
-                                if let Some(ci) = self.classes.class_info.get(class_id) {
-                                    if let Some(ft) = ci.field_types.get(attr) {
-                                        return ft.clone();
+                // Attribute access: yield v.field — only valid when the
+                // for-loop target is a single Var leaf (tuple targets expose
+                // multiple names, so this shortcut can't apply).
+                if let hir::BindingTarget::Var(target_var) = for_gen.target {
+                    let ye = &m.exprs[yield_eid];
+                    if let hir::ExprKind::Attribute { obj, attr } = &ye.kind {
+                        if let hir::ExprKind::Var(vid) = &m.exprs[*obj].kind {
+                            if *vid == target_var {
+                                if let Some(Type::Class { class_id, .. }) = &elem_ty {
+                                    if let Some(ci) = self.classes.class_info.get(class_id) {
+                                        if let Some(ft) = ci.field_types.get(attr) {
+                                            return ft.clone();
+                                        }
                                     }
                                 }
                             }
@@ -939,12 +1050,18 @@ fn build_for_loop_direct(
     span: Span,
     stmts: &mut Vec<hir::StmtId>,
 ) {
+    // Element type yielded per iteration. Required so `lower_binding_target`
+    // picks the right runtime call (`RT_TUPLE_GET_INT` vs `RT_LIST_GET`) when
+    // the target is a Tuple. Falls back to `Any` for iterables whose element
+    // type is only known after type planning.
+    let elem_ty = iter_elem_type(m, fg);
+
     // next_val = __iter_next_no_exc(iter)
     let ir = mk_var(m, iter_var, Type::Iterator(Box::new(Type::Any)), span);
     let nv = mk_expr(
         m,
         hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::IterNextNoExc(ir)),
-        Some(Type::Int),
+        Some(elem_ty.clone()),
         span,
     );
     stmts.push(mk_stmt(
@@ -952,7 +1069,7 @@ fn build_for_loop_direct(
         hir::StmtKind::Bind {
             target: hir::BindingTarget::Var(next_val_var),
             value: nv,
-            type_hint: Some(Type::Int),
+            type_hint: Some(elem_ty.clone()),
         },
         span,
     ));
@@ -999,14 +1116,17 @@ fn build_for_loop_direct(
         span,
     ));
 
-    // Assign loop variable
-    let nvr = mk_var(m, next_val_var, Type::Int, span);
+    // Assign loop target — may be Var, Tuple, Attr, Index, etc. The Bind
+    // statement's handler lowers the full shape recursively. `elem_ty` flows
+    // through `type_hint` so tuple-target unpack picks the right
+    // `RT_TUPLE_GET_*` runtime call.
+    let nvr = mk_var(m, next_val_var, elem_ty.clone(), span);
     stmts.push(mk_stmt(
         m,
         hir::StmtKind::Bind {
-            target: hir::BindingTarget::Var(fg.target_var),
+            target: fg.target.clone(),
             value: nvr,
-            type_hint: None,
+            type_hint: Some(elem_ty),
         },
         span,
     ));
@@ -1041,6 +1161,10 @@ fn build_for_loop_filtered(
         .expect("internal error: filter_cond is Some, guaranteed by caller's is_some() check");
     let true_expr = mk_expr(m, hir::ExprKind::Bool(true), Some(Type::Bool), span);
 
+    // See `build_for_loop_direct` — propagate iter element type to the Bind
+    // so recursive unpack picks the correct runtime call.
+    let elem_ty = iter_elem_type(m, fg);
+
     let mut loop_body = Vec::new();
 
     // next_val = __iter_next_no_exc(iter)
@@ -1048,7 +1172,7 @@ fn build_for_loop_filtered(
     let nv = mk_expr(
         m,
         hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::IterNextNoExc(ir)),
-        Some(Type::Int),
+        Some(elem_ty.clone()),
         span,
     );
     loop_body.push(mk_stmt(
@@ -1056,7 +1180,7 @@ fn build_for_loop_filtered(
         hir::StmtKind::Bind {
             target: hir::BindingTarget::Var(next_val_var),
             value: nv,
-            type_hint: Some(Type::Int),
+            type_hint: Some(elem_ty.clone()),
         },
         span,
     ));
@@ -1103,14 +1227,14 @@ fn build_for_loop_filtered(
         span,
     ));
 
-    // Assign target var
-    let nvr = mk_var(m, next_val_var, Type::Int, span);
+    // Assign loop target (recursive unpack for Tuple/Attr/Index shapes).
+    let nvr = mk_var(m, next_val_var, elem_ty.clone(), span);
     loop_body.push(mk_stmt(
         m,
         hir::StmtKind::Bind {
-            target: hir::BindingTarget::Var(fg.target_var),
+            target: fg.target.clone(),
             value: nvr,
-            type_hint: None,
+            type_hint: Some(elem_ty),
         },
         span,
     ));

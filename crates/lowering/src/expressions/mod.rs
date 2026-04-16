@@ -205,7 +205,7 @@ impl<'a> Lowering<'a> {
 
             // Generator intrinsic (post-desugaring)
             hir::ExprKind::GeneratorIntrinsic(ref intrinsic) => {
-                self.lower_generator_intrinsic(intrinsic, hir_module, mir_func)
+                self.lower_generator_intrinsic(intrinsic, expr, hir_module, mir_func)
             }
 
             // Type reference (for isinstance)

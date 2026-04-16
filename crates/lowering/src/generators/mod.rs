@@ -24,6 +24,9 @@ use pyaot_hir as hir;
 use pyaot_types::Type;
 use pyaot_utils::VarId;
 
+#[allow(unused_imports)] // BindingTarget is used below
+use hir::BindingTarget;
+
 /// Information about a while-loop generator pattern
 #[derive(Debug, Clone)]
 pub(crate) struct WhileLoopGenerator {
@@ -49,8 +52,11 @@ pub(crate) struct YieldSection {
 /// Information about a for-loop generator pattern
 #[derive(Debug, Clone)]
 pub(crate) struct ForLoopGenerator {
-    /// The loop variable
-    pub(crate) target_var: VarId,
+    /// The loop binding target — may be a simple Var, or a Tuple/Attr/Index
+    /// shape (`for x, y in zip(a, b)` etc.). `build_for_loop_direct` /
+    /// `build_for_loop_filtered` emit a recursive `Bind` per iteration so
+    /// `lower_binding_target` can handle the full shape uniformly.
+    pub(crate) target: hir::BindingTarget,
     /// The iterable expression (what we iterate over)
     pub(crate) iter_expr: hir::ExprId,
     /// The yield expression inside the loop
