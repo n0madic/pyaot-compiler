@@ -11,8 +11,27 @@ use crate::context::Lowering;
 /// Below this threshold, regular StrConcat is used (simpler and still efficient for 2 strings)
 const STRING_BUILDER_THRESHOLD: usize = 3;
 
-/// Map a forward binary-op to its reflected dunder name.
-fn forward_to_reflected(op: hir::BinOp) -> &'static str {
+/// Map a forward binary-op to its forward dunder name (`+` → `"__add__"`).
+pub(crate) fn forward_dunder(op: hir::BinOp) -> &'static str {
+    match op {
+        hir::BinOp::Add => "__add__",
+        hir::BinOp::Sub => "__sub__",
+        hir::BinOp::Mul => "__mul__",
+        hir::BinOp::Div => "__truediv__",
+        hir::BinOp::FloorDiv => "__floordiv__",
+        hir::BinOp::Mod => "__mod__",
+        hir::BinOp::Pow => "__pow__",
+        hir::BinOp::BitAnd => "__and__",
+        hir::BinOp::BitOr => "__or__",
+        hir::BinOp::BitXor => "__xor__",
+        hir::BinOp::LShift => "__lshift__",
+        hir::BinOp::RShift => "__rshift__",
+        hir::BinOp::MatMul => "__matmul__",
+    }
+}
+
+/// Map a forward binary-op to its reflected dunder name (`+` → `"__radd__"`).
+pub(crate) fn forward_to_reflected(op: hir::BinOp) -> &'static str {
     match op {
         hir::BinOp::Add => "__radd__",
         hir::BinOp::Sub => "__rsub__",
@@ -238,151 +257,21 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // Subclass-first reflected rule (CPython Data Model §3.3.8):
-        // "If the operands are of different types, and right operand's type
-        // is a direct or indirect subclass of the left operand's type, the
-        // reflected method of the right operand has priority."
-        //
-        // Only checked when both operands are user classes — primitives do
-        // not participate in the subclass-first rule.
-        if let (Type::Class { class_id: l_id, .. }, Type::Class { class_id: r_id, .. }) =
-            (&left_ty, &right_ty)
-        {
-            if l_id != r_id && self.is_proper_subclass(*r_id, *l_id) {
-                let rdunder_name = match op {
-                    hir::BinOp::Add => "__radd__",
-                    hir::BinOp::Sub => "__rsub__",
-                    hir::BinOp::Mul => "__rmul__",
-                    hir::BinOp::Div => "__rtruediv__",
-                    hir::BinOp::FloorDiv => "__rfloordiv__",
-                    hir::BinOp::Mod => "__rmod__",
-                    hir::BinOp::Pow => "__rpow__",
-                    hir::BinOp::BitAnd => "__rand__",
-                    hir::BinOp::BitOr => "__ror__",
-                    hir::BinOp::BitXor => "__rxor__",
-                    hir::BinOp::LShift => "__rlshift__",
-                    hir::BinOp::RShift => "__rrshift__",
-                    hir::BinOp::MatMul => "__rmatmul__",
-                };
-                if let Some(rfunc_id) = self
-                    .get_class_info(r_id)
-                    .and_then(|ci| ci.get_dunder_func(rdunder_name))
-                {
-                    let boxed_left = self.box_dunder_arg_if_needed(
-                        left_op.clone(),
-                        &left_ty,
-                        rfunc_id,
-                        1,
-                        hir_module,
-                        mir_func,
-                    );
-                    let dest = self.alloc_dunder_result(rfunc_id, &result_ty, hir_module, mir_func);
-                    self.emit_instruction(mir::InstructionKind::CallDirect {
-                        dest,
-                        func: rfunc_id,
-                        args: vec![right_op, boxed_left],
-                    });
-                    return Ok(mir::Operand::Local(dest));
-                }
-            }
-        }
-
-        // Check for class type with arithmetic dunders
-        if let Type::Class { class_id, .. } = &left_ty {
-            let dunder_name = match op {
-                hir::BinOp::Add => "__add__",
-                hir::BinOp::Sub => "__sub__",
-                hir::BinOp::Mul => "__mul__",
-                hir::BinOp::Div => "__truediv__",
-                hir::BinOp::FloorDiv => "__floordiv__",
-                hir::BinOp::Mod => "__mod__",
-                hir::BinOp::Pow => "__pow__",
-                hir::BinOp::BitAnd => "__and__",
-                hir::BinOp::BitOr => "__or__",
-                hir::BinOp::BitXor => "__xor__",
-                hir::BinOp::LShift => "__lshift__",
-                hir::BinOp::RShift => "__rshift__",
-                hir::BinOp::MatMul => "__matmul__",
-            };
-            let dunder_func = self
-                .get_class_info(class_id)
-                .and_then(|ci| ci.get_dunder_func(dunder_name));
-
-            if let Some(func_id) = dunder_func {
-                // When the dunder declares a polymorphic `other` parameter
-                // (Union / Any), primitive arguments must be boxed — the
-                // runtime signature expects a heap pointer.
-                let boxed_right = self.box_dunder_arg_if_needed(
-                    right_op.clone(),
-                    &right_ty,
-                    func_id,
-                    1,
-                    hir_module,
-                    mir_func,
-                );
-                let dest = self.alloc_dunder_result(func_id, &result_ty, hir_module, mir_func);
-                self.emit_instruction(mir::InstructionKind::CallDirect {
-                    dest,
-                    func: func_id,
-                    args: vec![left_op.clone(), boxed_right],
-                });
-                // CPython §3.3.8 fallback: if forward dunder may return
-                // `NotImplemented` AND the right operand has a reflected
-                // dunder, branch on the sentinel and dispatch reflected.
-                if self.func_may_return_not_implemented(func_id, hir_module) {
-                    let rdunder_name = forward_to_reflected(op);
-                    let reflected_func = if let Type::Class { class_id: r_id, .. } = &right_ty {
-                        self.get_class_info(r_id)
-                            .and_then(|ci| ci.get_dunder_func(rdunder_name))
-                    } else {
-                        None
-                    };
-                    if let Some(rfunc_id) = reflected_func {
-                        let final_local = self.emit_not_implemented_fallback(
-                            dest, rfunc_id, right_op, left_op, &left_ty, &result_ty, hir_module,
-                            mir_func,
-                        );
-                        return Ok(mir::Operand::Local(final_local));
-                    }
-                }
-                return Ok(mir::Operand::Local(dest));
-            }
-        }
-
-        // Check for right operand's reverse arithmetic dunders
-        // e.g., 2 + custom_obj -> custom_obj.__radd__(2)
-        if let Type::Class { class_id, .. } = &right_ty {
-            let rdunder_name = match op {
-                hir::BinOp::Add => "__radd__",
-                hir::BinOp::Sub => "__rsub__",
-                hir::BinOp::Mul => "__rmul__",
-                hir::BinOp::Div => "__rtruediv__",
-                hir::BinOp::FloorDiv => "__rfloordiv__",
-                hir::BinOp::Mod => "__rmod__",
-                hir::BinOp::Pow => "__rpow__",
-                hir::BinOp::BitAnd => "__rand__",
-                hir::BinOp::BitOr => "__ror__",
-                hir::BinOp::BitXor => "__rxor__",
-                hir::BinOp::LShift => "__rlshift__",
-                hir::BinOp::RShift => "__rrshift__",
-                hir::BinOp::MatMul => "__rmatmul__",
-            };
-            let rdunder_func = self
-                .get_class_info(class_id)
-                .and_then(|ci| ci.get_dunder_func(rdunder_name));
-
-            if let Some(func_id) = rdunder_func {
-                // Reverse dunders: self is the right operand, other is the left
-                let boxed_left = self
-                    .box_dunder_arg_if_needed(left_op, &left_ty, func_id, 1, hir_module, mir_func);
-                let dest = self.alloc_dunder_result(func_id, &result_ty, hir_module, mir_func);
-                self.emit_instruction(mir::InstructionKind::CallDirect {
-                    dest,
-                    func: func_id,
-                    args: vec![right_op, boxed_left],
-                });
-                return Ok(mir::Operand::Local(dest));
-            }
+        // Class dispatch: subclass-first (§3.3.8), forward dunder with NI
+        // fallback, reflected dunder. Extracted so Area C reductions can
+        // reuse the exact same state machine for `sum`/`min`/`max` on
+        // user classes without duplicating boxing / NI fallback logic.
+        if let Some(op_) = self.dispatch_class_binop(
+            op,
+            left_op.clone(),
+            &left_ty,
+            right_op.clone(),
+            &right_ty,
+            &result_ty,
+            hir_module,
+            mir_func,
+        ) {
+            return Ok(op_);
         }
 
         // Check if operands are stored as Union (boxed pointers), even if inference
@@ -537,6 +426,128 @@ impl<'a> Lowering<'a> {
     }
 
     /// Emit the §3.3.8 fallback control flow:
+    /// CPython §3.3.8 operator dunder dispatch state machine for user
+    /// class operands. Shared between [`Lowering::lower_binop`] and the
+    /// Area C reduction helpers (`sum`/`min`/`max` over user classes).
+    ///
+    /// Order of precedence:
+    /// 1. **Subclass-first** — if `right` is a strict subclass of `left`,
+    ///    try its reflected dunder first.
+    /// 2. **Forward dunder on `left`** — standard `left.__op__(right)`;
+    ///    if the forward dunder may return `NotImplemented` and `right`
+    ///    has a reflected dunder, emit the compare+branch fallback.
+    /// 3. **Reflected dunder on `right`** — when `left` doesn't define
+    ///    the forward dunder (e.g. primitive left operand).
+    ///
+    /// Returns `Some(result)` if any dunder path matched, `None` to let
+    /// the caller fall through to primitive / runtime dispatch.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dispatch_class_binop(
+        &mut self,
+        op: hir::BinOp,
+        left_op: mir::Operand,
+        left_ty: &Type,
+        right_op: mir::Operand,
+        right_ty: &Type,
+        result_ty: &Type,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Option<mir::Operand> {
+        let fwd_name = forward_dunder(op);
+        let rev_name = forward_to_reflected(op);
+
+        // §3.3.8 subclass-first: `right` is a strict subclass of `left` →
+        // reflected on right wins over forward on left. Only user classes
+        // participate.
+        if let (Type::Class { class_id: l_id, .. }, Type::Class { class_id: r_id, .. }) =
+            (left_ty, right_ty)
+        {
+            if l_id != r_id && self.is_proper_subclass(*r_id, *l_id) {
+                if let Some(rfunc_id) = self
+                    .get_class_info(r_id)
+                    .and_then(|ci| ci.get_dunder_func(rev_name))
+                {
+                    let boxed_left = self.box_dunder_arg_if_needed(
+                        left_op.clone(),
+                        left_ty,
+                        rfunc_id,
+                        1,
+                        hir_module,
+                        mir_func,
+                    );
+                    let dest = self.alloc_dunder_result(rfunc_id, result_ty, hir_module, mir_func);
+                    self.emit_instruction(mir::InstructionKind::CallDirect {
+                        dest,
+                        func: rfunc_id,
+                        args: vec![right_op.clone(), boxed_left],
+                    });
+                    return Some(mir::Operand::Local(dest));
+                }
+            }
+        }
+
+        // Forward dunder on left class.
+        if let Type::Class { class_id, .. } = left_ty {
+            if let Some(func_id) = self
+                .get_class_info(class_id)
+                .and_then(|ci| ci.get_dunder_func(fwd_name))
+            {
+                let boxed_right = self.box_dunder_arg_if_needed(
+                    right_op.clone(),
+                    right_ty,
+                    func_id,
+                    1,
+                    hir_module,
+                    mir_func,
+                );
+                let dest = self.alloc_dunder_result(func_id, result_ty, hir_module, mir_func);
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest,
+                    func: func_id,
+                    args: vec![left_op.clone(), boxed_right],
+                });
+                // NI fallback: if forward may return `NotImplemented` and
+                // right has a reflected dunder, emit compare+branch.
+                if self.func_may_return_not_implemented(func_id, hir_module) {
+                    let reflected_func = match right_ty {
+                        Type::Class { class_id: r_id, .. } => self
+                            .get_class_info(r_id)
+                            .and_then(|ci| ci.get_dunder_func(rev_name)),
+                        _ => None,
+                    };
+                    if let Some(rfunc_id) = reflected_func {
+                        let final_local = self.emit_not_implemented_fallback(
+                            dest, rfunc_id, right_op, left_op, left_ty, result_ty, hir_module,
+                            mir_func,
+                        );
+                        return Some(mir::Operand::Local(final_local));
+                    }
+                }
+                return Some(mir::Operand::Local(dest));
+            }
+        }
+
+        // Reflected dunder on right class (e.g. `2 + V()` → `V.__radd__(2)`).
+        if let Type::Class { class_id, .. } = right_ty {
+            if let Some(func_id) = self
+                .get_class_info(class_id)
+                .and_then(|ci| ci.get_dunder_func(rev_name))
+            {
+                let boxed_left = self
+                    .box_dunder_arg_if_needed(left_op, left_ty, func_id, 1, hir_module, mir_func);
+                let dest = self.alloc_dunder_result(func_id, result_ty, hir_module, mir_func);
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest,
+                    func: func_id,
+                    args: vec![right_op, boxed_left],
+                });
+                return Some(mir::Operand::Local(dest));
+            }
+        }
+
+        None
+    }
+
     /// ```ignore
     /// if forward_result is NotImplemented:
     ///     final = right.__rop__(left)
