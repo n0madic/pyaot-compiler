@@ -32,12 +32,7 @@ impl<'a> Lowering<'a> {
 
         // Check for class type with unary dunders
         if let Type::Class { class_id, .. } = &operand_ty {
-            let dunder_name = match op {
-                hir::UnOp::Neg => "__neg__",
-                hir::UnOp::Not => "__bool__",
-                hir::UnOp::Pos => "__pos__",
-                hir::UnOp::Invert => "__invert__",
-            };
+            let dunder_name = op.dunder_name();
             let dunder_func = self
                 .get_class_info(class_id)
                 .and_then(|ci| ci.get_dunder_func(dunder_name));

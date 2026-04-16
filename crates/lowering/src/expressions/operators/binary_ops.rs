@@ -11,43 +11,9 @@ use crate::context::Lowering;
 /// Below this threshold, regular StrConcat is used (simpler and still efficient for 2 strings)
 const STRING_BUILDER_THRESHOLD: usize = 3;
 
-/// Map a forward binary-op to its forward dunder name (`+` → `"__add__"`).
-pub(crate) fn forward_dunder(op: hir::BinOp) -> &'static str {
-    match op {
-        hir::BinOp::Add => "__add__",
-        hir::BinOp::Sub => "__sub__",
-        hir::BinOp::Mul => "__mul__",
-        hir::BinOp::Div => "__truediv__",
-        hir::BinOp::FloorDiv => "__floordiv__",
-        hir::BinOp::Mod => "__mod__",
-        hir::BinOp::Pow => "__pow__",
-        hir::BinOp::BitAnd => "__and__",
-        hir::BinOp::BitOr => "__or__",
-        hir::BinOp::BitXor => "__xor__",
-        hir::BinOp::LShift => "__lshift__",
-        hir::BinOp::RShift => "__rshift__",
-        hir::BinOp::MatMul => "__matmul__",
-    }
-}
-
-/// Map a forward binary-op to its reflected dunder name (`+` → `"__radd__"`).
-pub(crate) fn forward_to_reflected(op: hir::BinOp) -> &'static str {
-    match op {
-        hir::BinOp::Add => "__radd__",
-        hir::BinOp::Sub => "__rsub__",
-        hir::BinOp::Mul => "__rmul__",
-        hir::BinOp::Div => "__rtruediv__",
-        hir::BinOp::FloorDiv => "__rfloordiv__",
-        hir::BinOp::Mod => "__rmod__",
-        hir::BinOp::Pow => "__rpow__",
-        hir::BinOp::BitAnd => "__rand__",
-        hir::BinOp::BitOr => "__ror__",
-        hir::BinOp::BitXor => "__rxor__",
-        hir::BinOp::LShift => "__rlshift__",
-        hir::BinOp::RShift => "__rrshift__",
-        hir::BinOp::MatMul => "__rmatmul__",
-    }
-}
+// Op → dunder-name mappings live on `hir::BinOp` itself
+// (`forward_dunder` / `reflected_dunder`) so every consumer — binary-op
+// dispatch, type planning, reductions — shares one source of truth.
 
 impl<'a> Lowering<'a> {
     /// Collect all string operands from a left-associative concatenation chain.
@@ -453,8 +419,8 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Option<mir::Operand> {
-        let fwd_name = forward_dunder(op);
-        let rev_name = forward_to_reflected(op);
+        let fwd_name = op.forward_dunder();
+        let rev_name = op.reflected_dunder();
 
         // §3.3.8 subclass-first: `right` is a strict subclass of `left` →
         // reflected on right wins over forward on left. Only user classes

@@ -148,22 +148,8 @@ impl<'a> Lowering<'a> {
         left_ty: &Type,
         right_ty: &Type,
     ) -> Option<Type> {
-        let forward = match op {
-            hir::BinOp::Add => "__add__",
-            hir::BinOp::Sub => "__sub__",
-            hir::BinOp::Mul => "__mul__",
-            hir::BinOp::Div => "__truediv__",
-            hir::BinOp::FloorDiv => "__floordiv__",
-            hir::BinOp::Mod => "__mod__",
-            hir::BinOp::Pow => "__pow__",
-            hir::BinOp::BitAnd => "__and__",
-            hir::BinOp::BitOr => "__or__",
-            hir::BinOp::BitXor => "__xor__",
-            hir::BinOp::LShift => "__lshift__",
-            hir::BinOp::RShift => "__rshift__",
-            hir::BinOp::MatMul => "__matmul__",
-        };
-        let reflected = pyaot_types::dunders::reflected_name(forward)?;
+        let forward = op.forward_dunder();
+        let reflected = op.reflected_dunder();
 
         // Subclass-first: right is a strict subclass of left and has reflected.
         if let (Type::Class { class_id: l_id, .. }, Type::Class { class_id: r_id, .. }) =

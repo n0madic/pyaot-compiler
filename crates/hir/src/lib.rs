@@ -671,6 +671,39 @@ pub enum BinOp {
     MatMul,
 }
 
+impl BinOp {
+    /// Forward dunder name for this binary op (`+` → `"__add__"`).
+    ///
+    /// Single source of truth consumed by `lowering::binary_ops`,
+    /// `lowering::type_planning::infer`, and `lowering::reductions`.
+    pub fn forward_dunder(self) -> &'static str {
+        match self {
+            BinOp::Add => "__add__",
+            BinOp::Sub => "__sub__",
+            BinOp::Mul => "__mul__",
+            BinOp::Div => "__truediv__",
+            BinOp::FloorDiv => "__floordiv__",
+            BinOp::Mod => "__mod__",
+            BinOp::Pow => "__pow__",
+            BinOp::BitAnd => "__and__",
+            BinOp::BitOr => "__or__",
+            BinOp::BitXor => "__xor__",
+            BinOp::LShift => "__lshift__",
+            BinOp::RShift => "__rshift__",
+            BinOp::MatMul => "__matmul__",
+        }
+    }
+
+    /// Reflected dunder name for this binary op (`+` → `"__radd__"`).
+    /// Derived from [`Self::forward_dunder`] via the string-based
+    /// [`pyaot_types::dunders::reflected_name`] — keeps the
+    /// forward-to-reflected relation in one place (`types::dunders`).
+    pub fn reflected_dunder(self) -> &'static str {
+        pyaot_types::dunders::reflected_name(self.forward_dunder())
+            .expect("every BinOp has a reflected dunder")
+    }
+}
+
 /// Unary operators
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
@@ -678,6 +711,19 @@ pub enum UnOp {
     Not,
     Invert, // Bitwise NOT (~)
     Pos,    // Unary plus (+)
+}
+
+impl UnOp {
+    /// Dunder name for this unary op. `Not` maps to `"__bool__"` — the
+    /// caller is responsible for negating the result.
+    pub fn dunder_name(self) -> &'static str {
+        match self {
+            UnOp::Neg => "__neg__",
+            UnOp::Pos => "__pos__",
+            UnOp::Invert => "__invert__",
+            UnOp::Not => "__bool__",
+        }
+    }
 }
 
 /// Comparison operators
@@ -693,6 +739,23 @@ pub enum CmpOp {
     NotIn,
     Is,
     IsNot,
+}
+
+impl CmpOp {
+    /// Dunder name for this rich-comparison op. `None` for `In`/`NotIn`
+    /// (dispatched via `__contains__`, not on the left operand) and
+    /// `Is`/`IsNot` (identity check — no dunder).
+    pub fn dunder_name(self) -> Option<&'static str> {
+        Some(match self {
+            CmpOp::Eq => "__eq__",
+            CmpOp::NotEq => "__ne__",
+            CmpOp::Lt => "__lt__",
+            CmpOp::LtE => "__le__",
+            CmpOp::Gt => "__gt__",
+            CmpOp::GtE => "__ge__",
+            CmpOp::In | CmpOp::NotIn | CmpOp::Is | CmpOp::IsNot => return None,
+        })
+    }
 }
 
 /// Logical operators

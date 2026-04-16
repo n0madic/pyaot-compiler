@@ -575,18 +575,16 @@ impl<'a> Lowering<'a> {
                 });
             }
         } else if let Type::Class { class_id, .. } = &left_type {
-            // Class type: dispatch to dunder methods if available
+            // Class type: dispatch to dunder methods if available.
+            // `CmpOp::dunder_name()` is the single source of truth for
+            // op → dunder mapping; `__ne__` falls back to `__eq__` below.
             let dunder_func = if let Some(class_info) = self.get_class_info(class_id) {
-                match op {
-                    hir::CmpOp::Eq => class_info.get_dunder_func("__eq__"),
-                    hir::CmpOp::NotEq => class_info
+                match op.dunder_name() {
+                    Some("__ne__") => class_info
                         .get_dunder_func("__ne__")
                         .or_else(|| class_info.get_dunder_func("__eq__")),
-                    hir::CmpOp::Lt => class_info.get_dunder_func("__lt__"),
-                    hir::CmpOp::LtE => class_info.get_dunder_func("__le__"),
-                    hir::CmpOp::Gt => class_info.get_dunder_func("__gt__"),
-                    hir::CmpOp::GtE => class_info.get_dunder_func("__ge__"),
-                    _ => None,
+                    Some(name) => class_info.get_dunder_func(name),
+                    None => None,
                 }
             } else {
                 None
