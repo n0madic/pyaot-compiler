@@ -11,6 +11,7 @@ mod container_refine;
 pub(crate) mod helpers;
 pub(crate) mod infer;
 mod lambda_inference;
+pub(crate) mod ni_analysis;
 mod validate;
 
 use indexmap::IndexMap;

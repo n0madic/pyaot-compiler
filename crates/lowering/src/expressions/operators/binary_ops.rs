@@ -329,7 +329,7 @@ impl<'a> Lowering<'a> {
                 // CPython §3.3.8 fallback: if forward dunder may return
                 // `NotImplemented` AND the right operand has a reflected
                 // dunder, branch on the sentinel and dispatch reflected.
-                if self.dunder_may_return_not_implemented(func_id, hir_module) {
+                if self.func_may_return_not_implemented(func_id, hir_module) {
                     let rdunder_name = forward_to_reflected(op);
                     let reflected_func = if let Type::Class { class_id: r_id, .. } = &right_ty {
                         self.get_class_info(r_id)
@@ -534,64 +534,6 @@ impl<'a> Lowering<'a> {
         );
 
         Ok(mir::Operand::Local(result_local))
-    }
-
-    /// Walk a HIR function body and return `true` iff at least one
-    /// `return` statement returns the `NotImplemented` sentinel. Used to
-    /// gate the runtime fallback branch — emitting it for dunders that
-    /// never return `NotImplemented` would burn an unconditional
-    /// compare-and-branch on every operator call site.
-    pub(in crate::expressions) fn dunder_may_return_not_implemented(
-        &self,
-        func_id: pyaot_utils::FuncId,
-        hir_module: &hir::Module,
-    ) -> bool {
-        let Some(func) = hir_module.func_defs.get(&func_id) else {
-            return false;
-        };
-        fn scan(stmt_id: hir::StmtId, module: &hir::Module) -> bool {
-            let stmt = &module.stmts[stmt_id];
-            match &stmt.kind {
-                hir::StmtKind::Return(Some(expr_id)) => {
-                    matches!(module.exprs[*expr_id].kind, hir::ExprKind::NotImplemented)
-                }
-                hir::StmtKind::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    then_block.iter().any(|s| scan(*s, module))
-                        || else_block.iter().any(|s| scan(*s, module))
-                }
-                hir::StmtKind::ForBind {
-                    body, else_block, ..
-                }
-                | hir::StmtKind::While {
-                    body, else_block, ..
-                } => {
-                    body.iter().any(|s| scan(*s, module))
-                        || else_block.iter().any(|s| scan(*s, module))
-                }
-                hir::StmtKind::Try {
-                    body,
-                    handlers,
-                    else_block,
-                    finally_block,
-                } => {
-                    body.iter().any(|s| scan(*s, module))
-                        || handlers
-                            .iter()
-                            .any(|h| h.body.iter().any(|s| scan(*s, module)))
-                        || else_block.iter().any(|s| scan(*s, module))
-                        || finally_block.iter().any(|s| scan(*s, module))
-                }
-                hir::StmtKind::Match { cases, .. } => cases
-                    .iter()
-                    .any(|c| c.body.iter().any(|s| scan(*s, module))),
-                _ => false,
-            }
-        }
-        func.body.iter().any(|s| scan(*s, hir_module))
     }
 
     /// Emit the §3.3.8 fallback control flow:

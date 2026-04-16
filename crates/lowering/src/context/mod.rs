@@ -301,6 +301,26 @@ pub struct FuncReturnTypes {
     pub inner: IndexMap<FuncId, Type>,
 }
 
+/// State for the "may return NotImplemented" analysis.
+///
+/// Filled lazily on first query by `func_may_return_not_implemented`
+/// in `type_planning::ni_analysis`. Shared between binary-op dispatch and
+/// builtin-reduction dispatch so both emit the §3.3.8 fallback on the
+/// same set of dunders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NiState {
+    Yes,
+    No,
+    /// Visiting the function body — treated as `No` on recursive re-entry
+    /// to break cycles. Upon return we commit the final state.
+    Computing,
+}
+
+#[derive(Debug, Default)]
+pub struct NiAnalysis {
+    pub cache: IndexMap<FuncId, NiState>,
+}
+
 // =============================================================================
 // Main lowering context
 // =============================================================================
@@ -331,6 +351,8 @@ pub struct Lowering<'a> {
     pub(crate) types: TypeEnvironment,
     /// Inferred function return types (mutable during lowering)
     pub(crate) func_return_types: FuncReturnTypes,
+    /// Inter-procedural `NotImplemented` analysis (filled lazily)
+    pub(crate) ni_analysis: NiAnalysis,
     /// Warnings collected during lowering
     pub(crate) warnings: CompilerWarnings,
 }

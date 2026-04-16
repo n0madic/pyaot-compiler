@@ -12,7 +12,7 @@ use super::FuncReturnTypes;
 
 use super::{
     ClassRegistry, ClosureState, CodeGenState, CrossModuleClassInfo, Lowering, ModuleState,
-    SymbolTable, TypeEnvironment,
+    NiAnalysis, SymbolTable, TypeEnvironment,
 };
 
 impl<'a> Lowering<'a> {
@@ -95,6 +95,7 @@ impl<'a> Lowering<'a> {
             func_return_types: FuncReturnTypes {
                 inner: IndexMap::with_capacity(func_count),
             },
+            ni_analysis: NiAnalysis::default(),
             warnings: CompilerWarnings::new(),
         }
     }

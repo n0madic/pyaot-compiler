@@ -1967,4 +1967,43 @@ assert (_n * 0.5).x == 1.5
 
 print("NotImplemented fallback dispatch: PASS")
 
+# ==================== NotImplemented delegated through helper (§C.7) ====================
+# Area C §C.7: `dunder_may_return_not_implemented` is inter-procedural — when
+# a dunder tail-calls a helper that itself returns `NotImplemented`, the
+# reflected fallback must still fire. Tests the fixed-point propagation in
+# `type_planning/ni_analysis.rs`.
+
+class NiHelp:
+    def _bail(self):
+        return NotImplemented
+    def __mul__(self, other):
+        if isinstance(other, NiHelp):
+            return "HH"
+        return self._bail()  # NI via helper — fallback MUST still dispatch
+
+class NiHelpPartner:
+    def __rmul__(self, other):
+        return "K_rmul"
+
+assert NiHelp() * NiHelp() == "HH"
+assert NiHelp() * NiHelpPartner() == "K_rmul"
+
+# Same-module free-function helper.
+def _free_bail():
+    return NotImplemented
+
+class NiFree:
+    def __add__(self, other):
+        if isinstance(other, NiFree):
+            return "FF"
+        return _free_bail()
+
+class NiFreePartner:
+    def __radd__(self, other):
+        return "free_radd"
+
+assert NiFree() + NiFreePartner() == "free_radd"
+
+print("NotImplemented through helper (§C.7): PASS")
+
 print("All class tests passed!")
