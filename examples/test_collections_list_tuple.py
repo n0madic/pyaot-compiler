@@ -248,6 +248,28 @@ str_list_a: list[str] = ["hello", "world"]
 str_list_b: list[str] = ["hello", "world"]
 assert str_list_a == str_list_b, "string lists should be equal"
 
+# ===== SECTION: Cross-elem-tag list equality =====
+# Same-tag regression guard — starred-rest on homogeneous source produces
+# List(Int) / ELEM_RAW_INT, matches the literal's storage.
+cx_a, *cx_rest = (1, 2, 3, 4)
+assert cx_rest == [2, 3, 4], "same-tag cross-rest equality"
+assert [2, 3, 4] == cx_rest, "same-tag cross-rest equality (symmetric)"
+
+# Cross-tag — heterogeneous tuple source produces List(Any) / ELEM_HEAP_OBJ
+# starred slice (boxed pointers). Literal [2, 3] is ELEM_RAW_INT.
+# rt_list_eq must dispatch per element.
+(cx_b, *cx_rest2, cx_last) = (1, 2, 3, (4, 5))
+assert cx_rest2 == [2, 3], "cross-tag list eq: heap-boxed vs raw-int"
+assert [2, 3] == cx_rest2, "cross-tag list eq (symmetric)"
+
+# Heterogeneous source with float — exercises the float branch of list_elem_eq.
+(cx_c, *cx_rest3, cx_last3) = (1, 2.5, 3, (4, 5))
+assert cx_rest3 == [2.5, 3], "cross-tag list eq with float"
+
+# Bool in heterogeneous source — exercises bool branch.
+(cx_d, *cx_rest4, cx_last4) = (1, True, False, (4, 5))
+assert cx_rest4 == [True, False], "cross-tag list eq with bool"
+
 # ===== SECTION: List ordering comparisons (lexicographic) =====
 
 # Basic list[int] ordering
