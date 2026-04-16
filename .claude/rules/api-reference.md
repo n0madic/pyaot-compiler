@@ -3,12 +3,13 @@
 ## Type System
 
 - **Primitives**: `int` (i64), `float` (f64), `bool` (i8), `str`, `None`
-- **Containers**: `list[T]`, `dict[K,V]`, `defaultdict[K,V]`, `tuple[T1,...,Tn]`, `set[T]`, `bytes`
-- **Special**: `Union[T, U]`, `Optional[T]`, `Iterator[T]`, `Any`, `HeapAny`
+- **Containers**: `list[T]`, `dict[K,V]`, `defaultdict[K,V]`, `tuple[T1,...,Tn]` (fixed-length heterogeneous → `Type::Tuple(Vec<Type>)`), `tuple[T, ...]` (variable-length homogeneous → `Type::TupleVar(Box<Type>)`, PEP 484/585), `set[T]`, `bytes`
+- **Special**: `Union[T, U]`, `Optional[T]`, `Iterator[T]`, `Any`, `HeapAny`, `NotImplementedT`
 - **Collections**: `Type::DefaultDict(K, V)`, `Type::RuntimeObject(TypeTagKind::Counter)`, `Type::RuntimeObject(TypeTagKind::Deque)`
 - **Classes**: `Type::Class { class_id, name }`
 - **Exceptions**: `Type::BuiltinException(BuiltinExceptionKind)`
 - **Any vs HeapAny**: `Any` = ambiguous (raw i64 or pointer), `HeapAny` = guaranteed `*mut Obj` (safe for runtime dispatch in print/compare)
+- **Tuple variants**: `Type::Tuple` and `Type::TupleVar` share the same runtime (`TupleObj` + `elem_tag`); the distinction is compile-time only. Fixed tuples support per-slot typed indexing and static bounds checks; variable tuples emit `rt_tuple_get` with runtime bounds checks and return the homogeneous element type. Merge rule: `Type::unify_tuple_shapes(a, b)` — same-length → element-wise union keeping fixed shape; different-lengths → collapse to `TupleVar`; empty absorbs into any other tuple.
 
 ## Shared Definitions (`core-defs`)
 

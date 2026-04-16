@@ -49,7 +49,8 @@ Native Executable
 | bool | ✅ | |
 | str | ✅ | |
 | list[T] | ✅ | |
-| tuple[T1, ...] | ✅ | |
+| tuple[T1, ..., Tn] / tuple[T, ...] | ✅ | Both forms supported (PEP 484/585): fixed-length heterogeneous (`tuple[int, str, float]` → `Type::Tuple`) and variable-length homogeneous (`tuple[int, ...]` → `Type::TupleVar`). Unified at the runtime level (same `TupleObj` + `elem_tag`), distinguished in the type system for indexing/iteration type inference. |
+| String forward references in annotations | ✅ | PEP 563: `other: "V"`, `children: "tuple[Node, ...]"`, forward refs to later-declared classes. Eager re-parse via `rustpython_parser::parse(Mode::Expression)` at annotation-conversion time — `from __future__ import annotations` parses through as a documentation marker (our AOT is eager-evaluate by design). Top-level class pre-scan populates `class_map` before any body is converted, so self-references and forward refs resolve regardless of declaration order. |
 | dict[K, V] | ✅ | Keys: all hashable types (str/int/bool/float/tuple/None); insertion order preserved (Python 3.7+) |
 | set[T] | ✅ | Elements: all hashable types (str/int/bool/float/tuple/None) |
 | bytes | ✅ | |

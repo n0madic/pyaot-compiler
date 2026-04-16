@@ -278,6 +278,83 @@ Three closure creation paths must all set the mask:
 2. `expressions/mod.rs` — lambda closures passed as values
 3. `expressions/builtins/iteration.rs` — map/filter captures
 
+## Tuple Type System — Fixed vs Variable-Length
+
+Area D of `MICROGPT_PLAN.md` split the tuple type into two variants to track PEP 484's distinction at compile time:
+
+```rust
+pub enum Type {
+    ...
+    Tuple(Vec<Type>),          // fixed-length heterogeneous — tuple[int, str, float]
+    TupleVar(Box<Type>),       // variable-length homogeneous — tuple[int, ...]
+    ...
+}
+```
+
+**Same runtime layout.** Both map onto `TupleObj` with `elem_tag` — the distinction lives purely in the compiler. `t[k]` on a fixed `Tuple` uses compile-time bounds-checked indexing with the static per-slot type; `t[k]` on `TupleVar` emits `rt_tuple_get` with a runtime bounds-check and returns the homogeneous element type. Iteration (`for x in t`), `len(t)`, `zip(t, ...)` dispatch identically via the existing runtime.
+
+### Shape unification — `Type::unify_tuple_shapes`
+
+`crates/types/src/lib.rs::unify_tuple_shapes` is the canonical decision tree for merging two tuple-typed values (used by class-field inference when the same `self.<field>` is assigned tuples of different shapes in different methods):
+
+| LHS | RHS | Result |
+|---|---|---|
+| `Tuple([])` (empty) | anything | absorbed into RHS (empty is compatible with every tuple shape) |
+| `Tuple([a1..an])` | `Tuple([b1..bn])` (same length) | element-wise union, **keep fixed shape** — `Tuple([union(a_i, b_i)])` |
+| `Tuple([a1..an])` | `Tuple([b1..bm])` (diff lengths) | collapse to `TupleVar(normalize_union(all a_i ∪ all b_j))` |
+| `TupleVar(e1)` | `TupleVar(e2)` | `TupleVar(normalize_union([e1, e2]))` |
+| `TupleVar(e)` | `Tuple([t_j])` (either side) | `TupleVar(normalize_union([e] ∪ t_j))` — fixed absorbed into variable |
+| non-tuple | non-tuple | falls back to `normalize_union` |
+
+### Class-field scan walks all methods
+
+`frontend-python/src/ast_to_hir/classes.rs::scan_method_for_self_fields` now walks **every** method in the class body (not just `__init__`). Each site's inferred type merges via `unify_tuple_shapes` when the observed types are tuples. `infer_field_type_from_rhs` recognises tuple literals (`()`, `(a,)`, `(a, b)`) and tuple-typed constants, so literal shape info feeds the merge directly. Parameter defaults without annotations are also honoured — `class Node: def __init__(self, children=())` contributes `Tuple([])` for the `_children` field even though no explicit annotation exists.
+
+### Cross-tag list equality — `rt_list_eq`
+
+`crates/runtime/src/list/compare.rs::list_elem_eq` is a new helper that dispatches on the `(tag_a, tag_b)` pair per element. `rt_list_eq` calls it for every index instead of assuming both lists share one `elem_tag`. This closes the Area A §A.6 #2 segfault where `rest == [2, 3]` crashed because `rest` ended up `ELEM_HEAP_OBJ` (from a heterogeneous-tuple starred slice) while `[2, 3]` stayed `ELEM_RAW_INT` (int-literal list). The pattern mirrors the tuple mixed-storage comparison already in `hash_table_utils.rs::eq_hashable_obj`.
+
+### PEP 563 string forward references
+
+`ast_to_hir/types.rs::convert_type_annotation` recognises string-constant annotations and re-parses them eagerly:
+
+```rust
+py::Expr::Constant(c) if let py::Constant::Str(source) = &c.value => {
+    let reparsed = rustpython_parser::parse(source, Mode::Expression, "<annotation>")?;
+    // recurse into the parsed expression
+}
+```
+
+This handles `other: "V"`, `children: "tuple[Node, ...]"`, forward refs to later-declared classes, and recursive self-references. Two complementary mechanisms make it work:
+
+1. **Top-level class pre-scan.** Before converting any class body, the frontend walks module-level `StmtClassDef` nodes and populates `symbols.class_map` with every class name → `ClassId`. Forward refs to later-declared classes resolve immediately. Duplicate top-level class names (a common test-file pattern) each get a fresh `ClassId`; earlier `ClassRef`s keep their original id; `class_map` rebinds to the latest.
+2. **`from __future__ import annotations`** parses through as a documentation marker — our AOT is eager-evaluate by design, so every annotation (stringified or not) is resolved at compile time. The import has no effect on type resolution but is not rejected as a syntax error.
+
+**Cross-references:**
+- `crates/types/src/lib.rs::unify_tuple_shapes` — shape merge
+- `crates/frontend-python/src/ast_to_hir/classes.rs::scan_method_for_self_fields` — all-methods field scan
+- `crates/frontend-python/src/ast_to_hir/types.rs::convert_type_annotation` — string forward-ref re-parse
+- `crates/runtime/src/list/compare.rs::list_elem_eq` — cross-tag list equality
+- `crates/runtime/src/list/compare.rs::rt_list_eq` — per-element tag dispatch
+
+### Known limitation — call-site cross-field inference (deferred to Area E)
+
+The intra-class `scan_method_for_self_fields` walks assignments *inside* the class body. Widening a field's type based on **call-site argument types** remains out of scope:
+
+```python
+class Node:
+    def __init__(self, data, children=()):
+        self._children = children
+
+a = Node(1)                     # children=() → Tuple([])
+b = Node(2, (a,))               # caller hands in Tuple([Class(Node)])
+c = Node(3, (a, b))             # caller hands in Tuple([Class(Node), Class(Node)])
+# Desired: Node._children : TupleVar(Class(Node))
+# Actual:  Node._children stays at whatever the default-value inference produces (Tuple([]))
+```
+
+This requires cross-site inference that threads argument types at every constructor call back into the class's field type. Area E (cross-site type inference for class attributes with numeric promotion) is the natural home. Until then, widen explicitly with an annotation: `children: tuple[Node, ...] = ()`.
+
 ## Expected Type Propagation for Empty Collections
 
 Empty collection literals (`[]`, `{}`) have no elements to infer the type from, defaulting to `List(Any)` → `ELEM_HEAP_OBJ`. This causes GC issues when ints are later appended.
