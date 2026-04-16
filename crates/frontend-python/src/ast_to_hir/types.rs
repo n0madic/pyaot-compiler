@@ -145,15 +145,26 @@ impl AstToHir {
                             Ok(Type::Set(Box::new(elem_type)))
                         }
                         "tuple" | "Tuple" if name_str == "tuple" || is_typing_import => {
-                            let mut types = Vec::new();
+                            // PEP 484 / PEP 585 variable-length form: `tuple[T, ...]`.
                             if let py::Expr::Tuple(tuple) = &*sub.slice {
+                                if tuple.elts.len() == 2
+                                    && matches!(
+                                        &tuple.elts[1],
+                                        py::Expr::Constant(c)
+                                            if matches!(c.value, py::Constant::Ellipsis)
+                                    )
+                                {
+                                    let elem_ty = self.convert_type_annotation(&tuple.elts[0])?;
+                                    return Ok(Type::TupleVar(Box::new(elem_ty)));
+                                }
+                                let mut types = Vec::new();
                                 for elem in &tuple.elts {
                                     types.push(self.convert_type_annotation(elem)?);
                                 }
+                                Ok(Type::Tuple(types))
                             } else {
-                                types.push(self.convert_type_annotation(&sub.slice)?);
+                                Ok(Type::Tuple(vec![self.convert_type_annotation(&sub.slice)?]))
                             }
-                            Ok(Type::Tuple(types))
                         }
                         "Optional" if is_typing_import => {
                             // Optional[T] → Union[T, None]

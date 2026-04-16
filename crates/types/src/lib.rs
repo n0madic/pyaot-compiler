@@ -42,8 +42,16 @@ pub enum Type {
     /// Generic set
     Set(Box<Type>),
 
-    /// Tuple with specific element types
+    /// Tuple with specific element types (fixed-length heterogeneous).
+    /// `tuple[int, str, float]` — element count known at compile-time;
+    /// `t[k]` with literal `k` narrows to the exact element type.
     Tuple(Vec<Type>),
+
+    /// Variable-length homogeneous tuple (PEP 484 / PEP 585 `tuple[T, ...]`).
+    /// Element count is runtime-only; `t[k]` always returns `T` and needs a
+    /// runtime bounds-check. Shares the same runtime layout as `Tuple` —
+    /// `rt_tuple_*` functions work uniformly on both.
+    TupleVar(Box<Type>),
 
     /// Union type (includes Optional via Union[T, None])
     /// Stored as a Vec with unique elements (normalized)
@@ -314,7 +322,8 @@ impl Type {
             // defaultdict is a subtype of dict
             (Type::DefaultDict(_, _), Type::Dict(_, _)) => true,
             (Type::Set(_), Type::Set(_)) => true,
-            (Type::Tuple(_), Type::Tuple(_)) => true,
+            // Both fixed and variable-length tuples match under isinstance(_, tuple).
+            (Type::Tuple(_) | Type::TupleVar(_), Type::Tuple(_) | Type::TupleVar(_)) => true,
 
             // Class types - match by class_id
             // Note: Inheritance is handled at runtime via rt_isinstance_class_inherited.
@@ -420,6 +429,15 @@ impl Type {
                         .zip(ts2.iter())
                         .all(|(t1, t2)| *t1 == Type::Any || t1.is_subtype_of(t2))
             }
+            // Fixed-length tuple is a subtype of any variable-length tuple whose
+            // element type covers every slot. Empty tuple is subtype of any
+            // TupleVar by vacuous quantification.
+            (Type::Tuple(ts), Type::TupleVar(elem)) => {
+                ts.iter().all(|t| *t == Type::Any || t.is_subtype_of(elem))
+            }
+            // Variable-length tuples are covariant in element type.
+            (Type::TupleVar(a), Type::TupleVar(b)) => **a == Type::Any || a.is_subtype_of(b),
+            // TupleVar is NOT a subtype of any fixed Tuple — length unknown.
 
             // Function types (contravariant in params, covariant in return)
             (
@@ -485,6 +503,7 @@ impl std::fmt::Display for Type {
                 }
                 write!(f, "]")
             }
+            Type::TupleVar(t) => write!(f, "tuple[{}, ...]", t),
             Type::Union(ts) => {
                 let types: Vec<_> = ts.iter().collect();
                 for (i, t) in types.iter().enumerate() {

@@ -32,6 +32,7 @@ enum RawType {
     DefaultDict(Box<RawType>, Box<RawType>),
     Set(Box<RawType>),
     Tuple(Vec<RawType>),
+    TupleVar(Box<RawType>),
     Union(Vec<RawType>),
     Function {
         params: Vec<RawType>,
@@ -78,6 +79,9 @@ fn type_to_raw(ty: &Type, source_interner: &StringInterner, class_id_offset: u32
                 .map(|t| type_to_raw(t, source_interner, class_id_offset))
                 .collect(),
         ),
+        Type::TupleVar(t) => {
+            RawType::TupleVar(Box::new(type_to_raw(t, source_interner, class_id_offset)))
+        }
         Type::Union(ts) => RawType::Union(
             ts.iter()
                 .map(|t| type_to_raw(t, source_interner, class_id_offset))
@@ -146,6 +150,7 @@ fn raw_to_type(raw: &RawType, caller_interner: &mut StringInterner) -> Type {
         RawType::Tuple(ts) => {
             Type::Tuple(ts.iter().map(|t| raw_to_type(t, caller_interner)).collect())
         }
+        RawType::TupleVar(t) => Type::TupleVar(Box::new(raw_to_type(t, caller_interner))),
         RawType::Union(ts) => {
             Type::Union(ts.iter().map(|t| raw_to_type(t, caller_interner)).collect())
         }

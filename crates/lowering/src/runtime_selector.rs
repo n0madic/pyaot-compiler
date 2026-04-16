@@ -26,6 +26,7 @@ impl<'a> Lowering<'a> {
             | Type::Dict(_, _)
             | Type::DefaultDict(_, _)
             | Type::Tuple(_)
+            | Type::TupleVar(_)
             | Type::Set(_)
             | Type::Bytes
             | Type::Class { .. }
