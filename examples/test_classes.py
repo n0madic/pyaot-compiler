@@ -2043,6 +2043,41 @@ class SumV:
 _sv = sum([SumV(1.5), SumV(2.5), SumV(3.0)])
 assert abs(_sv.x - 7.0) < 1e-9
 
+# Primitive start with class elements — bootstraps via `first.__radd__(start)`.
+_sv_int = sum([SumV(1.0), SumV(2.0), SumV(3.0)], 100)
+assert abs(_sv_int.x - 106.0) < 1e-9
+_sv_float = sum([SumV(1.0), SumV(2.0)], 0.5)
+assert abs(_sv_float.x - 3.5) < 1e-9
+
 print("Reductions on user classes (§C.3): PASS")
+
+# min() / max() on user classes dispatch through rich-comparison dunders.
+# `min` prefers `elem.__lt__(best)`; `max` prefers `elem.__gt__(best)`,
+# falling back to `best.__lt__(elem)` when only `__lt__` is defined.
+
+class Length:
+    def __init__(self, m: float): self.m = m
+    def __lt__(self, o):
+        if isinstance(o, Length): return self.m < o.m
+        return False
+
+_lens = [Length(3.0), Length(1.0), Length(2.0)]
+assert min(_lens).m == 1.0
+assert max(_lens).m == 3.0  # uses __lt__ with swapped args (best < elem)
+
+class Weight:
+    def __init__(self, kg: float): self.kg = kg
+    def __lt__(self, o):
+        if isinstance(o, Weight): return self.kg < o.kg
+        return False
+    def __gt__(self, o):
+        if isinstance(o, Weight): return self.kg > o.kg
+        return False
+
+_ws = [Weight(5.0), Weight(2.0), Weight(8.0), Weight(3.0)]
+assert min(_ws).kg == 2.0
+assert max(_ws).kg == 8.0  # uses __gt__ directly
+
+print("min/max on user classes (§C.3): PASS")
 
 print("All class tests passed!")

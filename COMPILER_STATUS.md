@@ -164,7 +164,7 @@ Native Executable
 | functools.reduce() | ✅ | Supports initial value and closures with captures |
 | format() | ✅ | Format specs: d, b, o, x, X, f, e, g, width, fill, alignment, grouping (`,`, `_`) |
 | reversed(), sorted() | ✅ | sorted() supports key= (incl. builtins like abs) and reverse= |
-| min(), max(), sum() | ✅ | Supports lists, tuples, sets, ranges, and iterators/generators. **sum() dispatches `__add__`/`__radd__` on user-class elements** (Area C §C.3). min()/max() on user classes — follow-up. |
+| min(), max(), sum() | ✅ | Supports lists, tuples, sets, ranges, and iterators/generators. **Full dunder dispatch on user-class elements** (Area C §C.3): sum() via `__add__`/`__radd__` (primitive start bootstraps through reflected); min()/max() via `__lt__`/`__gt__` rich-comparison dunders. |
 | abs(), pow(), round() | ✅ | |
 | hash(), id() | ✅ | |
 | isinstance() | ✅ | Single type and tuple-of-types: `isinstance(x, (int, float))` supported; Union-aware narrowing in if/else branches |

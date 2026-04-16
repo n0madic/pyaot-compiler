@@ -52,6 +52,17 @@ impl<'a> Lowering<'a> {
             ));
         }
 
+        // Area C §C.3 extension: dispatch through `__lt__` / `__gt__` when
+        // the iterable's elements are a user class. Falls through to the
+        // numeric fast path below for primitive elements.
+        if key_func.is_none() && args.len() == 1 {
+            if let Some(result) =
+                self.try_lower_minmax_class_elem(args[0], is_min, hir_module, mir_func)?
+            {
+                return Ok(result);
+            }
+        }
+
         if args.len() == 1 {
             // Single argument - check if it's an iterable (list, tuple, set, or range)
             let arg_expr = &hir_module.exprs[args[0]];

@@ -745,10 +745,22 @@ Conservative default for unresolved callees (cross-module, Union/Any receiver): 
 
 ### 4. Type inference for `Call sum(...)` on class elements
 
-`crates/lowering/src/type_planning/helpers.rs::builtin_return_type` for `Builtin::Sum` now returns the element type when it's a `Type::Class`. Without this, `sum([V(...)]).x` would be flagged as "unknown attribute" — the expression's inferred type would be `Int` (legacy fallback) and `.x` wouldn't resolve.
+`crates/lowering/src/type_planning/helpers.rs::builtin_return_type` for `Builtin::Sum` / `Builtin::Min` / `Builtin::Max` returns the element type when it's a `Type::Class`. Without this, `sum([V(...)]).x` / `min([V(...)]).x` would be flagged as "unknown attribute".
+
+### 5. `min()` / `max()` on user classes — rich-comparison dunders
+
+`try_lower_minmax_class_elem` in `reductions/mod.rs` is the parallel to `try_lower_sum_class_elem` for rich-comparison reductions. Seeds `best` with the first element, then loops calling:
+
+- `min` → `elem.__lt__(best)` when `__lt__` exists; else `best.__gt__(elem)` (swapped args).
+- `max` → `elem.__gt__(best)` when `__gt__` exists; else `best.__lt__(elem)` (swapped args).
+
+If the dunder returns truthy, `best := elem`. Comparison dunders return `Bool` (i8) so no Union-boxing or NI fallback is involved (see §E.7 for the `NotImplemented` path on comparisons, still deferred).
+
+### 6. `sum(list, primitive_start)` with class elements
+
+When `start_ty` is `Int`/`Float`/`Bool` and `elem_ty` is a class, the fold bootstraps via `dispatch_class_binop(primitive + first_elem)` — the dispatch skips the subclass-first / forward-on-left branches (left is not a class) and falls through to the reflected dunder on the right operand (`first_elem.__radd__(primitive)`), producing a class-typed result. The accumulator slot stays class-typed throughout; subsequent iterations are the normal class + class fold. Matches CPython's `0 + V(x) → NotImplemented → V(x).__radd__(0)` dance but skips the explicit NI round-trip.
 
 ### Known limitations
 
-- `min()` / `max()` on user classes (requires `CmpOp` dispatch rather than `BinOp`) — follow-up.
 - Heterogeneous iterables (`list[V | int]`): accumulator would need to be a Union, dispatching via `rt_obj_add` each iteration. Not implemented; users pre-homogenise.
-- `sum(monies, 0)` where `monies: list[Money]` and `0` is a bare `int`: falls through to the numeric path and produces a type error. Workaround: `sum(monies, Money(0))` or omit the start.
+- Empty iterable + primitive start (`sum([], 0)` with a hypothetical class-only path): we write a null placeholder in the class-typed accumulator slot. In practice the path isn't exercised because the empty-iter type inference returns the class type, not `Int`. Document as best-effort parity.
