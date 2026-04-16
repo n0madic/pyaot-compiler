@@ -164,7 +164,7 @@ Native Executable
 | functools.reduce() | ✅ | Supports initial value and closures with captures |
 | format() | ✅ | Format specs: d, b, o, x, X, f, e, g, width, fill, alignment, grouping (`,`, `_`) |
 | reversed(), sorted() | ✅ | sorted() supports key= (incl. builtins like abs) and reverse= |
-| min(), max(), sum() | ✅ | Supports lists, tuples, sets, ranges, and iterators/generators |
+| min(), max(), sum() | ✅ | Supports lists, tuples, sets, ranges, and iterators/generators. **sum() dispatches `__add__`/`__radd__` on user-class elements** (Area C §C.3). min()/max() on user classes — follow-up. |
 | abs(), pow(), round() | ✅ | |
 | hash(), id() | ✅ | |
 | isinstance() | ✅ | Single type and tuple-of-types: `isinstance(x, (int, float))` supported; Union-aware narrowing in if/else branches |
@@ -198,7 +198,7 @@ Native Executable
 | Set methods | ✅ | add, remove, discard, pop, union, intersection, difference, symmetric_difference, update, intersection_update, difference_update, symmetric_difference_update, issubset, issuperset, isdisjoint, etc. |
 | Set operators | ✅ | `\|`, `&`, `-`, `^` |
 | Bytes methods | ✅ | decode, startswith, endswith, find, rfind, count, replace, split, rsplit, strip, lstrip, rstrip, upper, lower, join, hex, index; concatenation, repetition |
-| Comprehensions | ✅ | list, dict, set, generator; **full target grammar**: tuple unpacking (`[a+b for a, b in pairs]`), dict/set (`{k: v for k, v in items}`, `{a*b for a, b in pairs}`), multi-clause (`[x for row in nested for a, b in row]`). Known limitation: generator expressions with tuple targets wrapped in reductions (`sum(x*y for x,y in zip(a,b))`) return 0 due to a generator-desugaring detector limitation — use list-comp form (`sum([...])`) as workaround |
+| Comprehensions | ✅ | list, dict, set, generator; **full target grammar**: tuple unpacking (`[a+b for a, b in pairs]`), dict/set (`{k: v for k, v in items}`, `{a*b for a, b in pairs}`), multi-clause (`[x for row in nested for a, b in row]`). Generator expressions with tuple targets wrapped in reductions (`sum(x*y for x,y in zip([1,2,3], [4,5,6]))`) now work when the iterable's element type is computable at desugar time (zip/enumerate/literals); bare `Var` refs (`sum(x*y for x,y in pairs)`) remain a known limitation — use list-comp form (`sum([...])`) as workaround. |
 
 ### Strings
 

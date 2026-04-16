@@ -656,7 +656,9 @@ If Python gains (or you discover) another LHS grammar — say, walrus expanded t
 
 ### Known gap: generator expressions with tuple targets
 
-`sum(x * y for x, y in zip(a, b))` compiles but returns 0. The generator-desugaring detector in `crates/lowering/src/generators/for_loop.rs::detect_for_loop_generator` only optimises `ForBind { target: Var, .. }` into the efficient resume loop; tuple-target falls through to `build_generic_resume` which does not know how to iterate. List-comprehension form (`sum([x*y for x, y in zip(a, b)])`) works correctly. Full fix requires teaching the resume builder to emit tuple unpack with element-type inference through `zip()` / `enumerate()` — tracked as a follow-up to the builtin-reductions work (Area C in `MICROGPT_PLAN.md`).
+**Closed for literal-typed iterables in Area C §C.6.** `detect_for_loop_generator` now accepts any `BindingTarget`, and `build_for_loop_direct` / `build_for_loop_filtered` emit a recursive `Bind` per iteration. The element type flows through the `IterNextNoExc` HIR annotation, so `lower_binding_target` picks the right `RT_TUPLE_GET_*` runtime call. `sum(x*y for x,y in zip([1,2,3], [4,5,6]))` and `sum(x*y for x,y in [(1,4),(2,5)])` work.
+
+**Still limited**: bare `Var` references to heterogeneous iterables (e.g. `pairs = [(1,4),(2,5)]; sum(x*y for x,y in pairs)`). Type planning runs *after* generator desugaring, so `Var(pairs)` has no type at desugar time; element-type inference falls back to `Int`/`Any` for the tuple target and the generic `rt_tuple_get` can't unbox. The canonical workaround is to use the list-comprehension form (`sum([x*y for x,y in pairs])`) or pass a typed literal inline. A full fix would require a lightweight iter-type pre-pass before generator desugaring (or moving desugaring to run after type planning).
 
 ---
 
@@ -718,3 +720,35 @@ The "may return" predicate is `dunder_may_return_not_implemented` (walks the HIR
 `class_defs` (the `IndexMap<ClassId, ClassDef>` in the frontend) is populated **after** the class body is fully converted. During conversion of a method body, looking up the current class by `class_id` returns `None`, so the fallback is the first parameter name (e.g. `"self"`). This produces `Type::Class { class_id, name: "self" }` — a drifted name that breaks `Union` deduplication: two entries with the same `class_id` but different `name` strings won't deduplicate, and the union grows unboundedly.
 
 Fix: track the canonical class name alongside `scope.current_class` in a `scope.current_class_name: Option<InternedString>` field, set when the frontend enters the class body. Method bodies read from `current_class_name` instead of doing a `class_defs` lookup.
+
+---
+
+## Built-in Reductions & User Dunders (Area C §C.3)
+
+`sum()` on a list/iterator/set of class instances folds through the operator-dunder protocol, not a raw `BinOp::Add` at MIR level. Three pieces work together:
+
+### 1. `dispatch_class_binop` — the shared dispatch core
+
+Extracted from `lower_binop` into `crates/lowering/src/expressions/operators/binary_ops.rs::dispatch_class_binop`. The full §3.3.8 state machine (subclass-first → forward → NotImplemented fallback → reflected) is now a single `pub(crate)` method consumed by both binary expressions and the reduction helper. No duplication — any future Area B improvement automatically applies to reductions.
+
+### 2. Accumulator seeding — skip the `0 + V(x)` dance
+
+CPython's `sum([V(1), V(2)])` does `0 + V(1) → NotImplemented → V(1).__radd__(0) → V(1)`, then folds from there. `crates/lowering/src/expressions/builtins/reductions/mod.rs::lower_reduction_class_fold` short-circuits: pull the first element from the iterator, use it as the initial accumulator, fold from the second onwards via `dispatch_class_binop(BinOp::Add, acc, elem)`. Keeps the accumulator type stable at `Type::Class { .. }` throughout — no Union accumulator, no extra dispatch overhead.
+
+The shortcut applies only when `start` is default (absent) **or** explicitly a same-class instance. Primitive `start` with class elements falls through to the numeric fast path (matches legacy — CPython would raise at runtime in the `0 + V(x)` step if `__radd__` doesn't handle int; compilation-time shortcut is less relevant).
+
+### 3. Inter-procedural `NotImplemented` analysis (§C.7)
+
+`dunder_may_return_not_implemented` (used to gate the fallback compare+branch) used to be a private body scanner in `binary_ops.rs` — only direct `return NotImplemented` counted. Moved to `crates/lowering/src/type_planning/ni_analysis.rs::func_may_return_not_implemented` with fixed-point propagation: a dunder that tail-calls a helper inherits the helper's NI-producing status. Cache is lazy (populated on first query), cycles broken by a `Computing` marker treated as `No` on re-entry.
+
+Conservative default for unresolved callees (cross-module, Union/Any receiver): treat as `may return NI`. One extra compare+branch at the call site is cheap; a false-negative would silently produce wrong results.
+
+### 4. Type inference for `Call sum(...)` on class elements
+
+`crates/lowering/src/type_planning/helpers.rs::builtin_return_type` for `Builtin::Sum` now returns the element type when it's a `Type::Class`. Without this, `sum([V(...)]).x` would be flagged as "unknown attribute" — the expression's inferred type would be `Int` (legacy fallback) and `.x` wouldn't resolve.
+
+### Known limitations
+
+- `min()` / `max()` on user classes (requires `CmpOp` dispatch rather than `BinOp`) — follow-up.
+- Heterogeneous iterables (`list[V | int]`): accumulator would need to be a Union, dispatching via `rt_obj_add` each iteration. Not implemented; users pre-homogenise.
+- `sum(monies, 0)` where `monies: list[Money]` and `0` is a bare `int`: falls through to the numeric path and produces a type error. Workaround: `sum(monies, Money(0))` or omit the start.
