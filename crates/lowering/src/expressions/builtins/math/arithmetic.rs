@@ -198,6 +198,15 @@ impl<'a> Lowering<'a> {
             return Ok(mir::Operand::Constant(mir::Constant::Int(0)));
         }
 
+        // Area C §C.3: when the iterable's elements are user-class
+        // instances, fold via the `__add__` / `__radd__` dunder state
+        // machine (extracted in `binary_ops::dispatch_class_binop`).
+        // Falls through to the primitive fast path below for non-class
+        // elements, matching legacy behaviour bit-for-bit.
+        if let Some(class_result) = self.try_lower_sum_class_elem(args, hir_module, mir_func)? {
+            return Ok(class_result);
+        }
+
         let iterable_expr = &hir_module.exprs[args[0]];
         let iterable_type = self.get_type_of_expr_id(args[0], hir_module);
 

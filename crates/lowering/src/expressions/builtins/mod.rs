@@ -18,6 +18,7 @@ mod iteration;
 mod math;
 mod predicates;
 mod print;
+mod reductions;
 
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;

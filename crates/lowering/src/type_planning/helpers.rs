@@ -351,15 +351,20 @@ pub(crate) fn resolve_builtin_call_type(
             }
         }
 
-        // === Sum: int or float ===
+        // === Sum: int, float, or user class (Area C §C.3) ===
         Builtin::Sum => {
             if arg_types.is_empty() {
                 return Some(Type::Int);
             }
             let element_type = match &arg_types[0] {
-                Type::List(elem) => (**elem).clone(),
+                Type::List(elem) | Type::Iterator(elem) | Type::Set(elem) => (**elem).clone(),
                 _ => Type::Int,
             };
+            // User class elements: sum returns an instance of the class
+            // (matches CPython when `__add__`/`__radd__` are defined).
+            if matches!(element_type, Type::Class { .. }) {
+                return Some(element_type);
+            }
             let start_type = arg_types.get(1).cloned().unwrap_or(Type::Int);
             if element_type == Type::Float || start_type == Type::Float {
                 Some(Type::Float)

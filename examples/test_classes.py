@@ -2006,4 +2006,43 @@ assert NiFree() + NiFreePartner() == "free_radd"
 
 print("NotImplemented through helper (§C.7): PASS")
 
+# ==================== Reductions on user classes (Area C §C.3) ====================
+# `sum()` on a list of class instances folds via __add__ / __radd__ through the
+# Area B dispatch state machine. Accumulator is seeded with the first element
+# (CPython's `0 + V(x)` → NotImplemented → V(x).__radd__(0) shortcut).
+
+class Money:
+    def __init__(self, c: int): self.c = c
+    def __add__(self, o):
+        if isinstance(o, Money): return Money(self.c + o.c)
+        if isinstance(o, (int, float)): return Money(self.c + o)
+        return NotImplemented
+    def __radd__(self, o):
+        if isinstance(o, (int, float)): return Money(o + self.c)
+        return NotImplemented
+
+# Plain sum over class list.
+_m = sum([Money(1), Money(2), Money(3)])
+assert _m.c == 6
+
+# Custom start of the same class.
+_m2 = sum([Money(1), Money(2)], Money(100))
+assert _m2.c == 103
+
+# Canonical autograd-Value pattern.
+class SumV:
+    def __init__(self, x: float): self.x = x
+    def __add__(self, o):
+        if isinstance(o, SumV): return SumV(self.x + o.x)
+        if isinstance(o, (int, float)): return SumV(self.x + o)
+        return NotImplemented
+    def __radd__(self, o):
+        if isinstance(o, (int, float)): return SumV(o + self.x)
+        return NotImplemented
+
+_sv = sum([SumV(1.5), SumV(2.5), SumV(3.0)])
+assert abs(_sv.x - 7.0) < 1e-9
+
+print("Reductions on user classes (§C.3): PASS")
+
 print("All class tests passed!")
