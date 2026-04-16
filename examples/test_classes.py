@@ -2080,4 +2080,65 @@ assert max(_ws).kg == 8.0  # uses __gt__ directly
 
 print("min/max on user classes (§C.3): PASS")
 
+# ==================== Tuple-shape unification across methods (Area D §D.3.6) ====================
+
+# Fields receiving tuples of different shapes across methods infer as TupleVar.
+# `unify_tuple_shapes` merges () (len 0), (...) (len 3), (...) (len 4) into
+# TupleVar(Int) — not Any. Iteration and len work uniformly.
+class ShapePts:
+    def reset(self):
+        self.pts = ()
+    def triangle(self):
+        self.pts = (0, 0, 0)
+    def square(self):
+        self.pts = (0, 0, 0, 0)
+    def pentagon(self):
+        self.pts = (0, 0, 0, 0, 0)
+
+_s = ShapePts()
+_s.triangle()
+assert len(_s.pts) == 3, "triangle len"
+_count = 0
+for _p in _s.pts:
+    _count += 1
+assert _count == 3, "triangle iteration"
+_s.square()
+assert len(_s.pts) == 4, "square len"
+_s.pentagon()
+assert len(_s.pts) == 5, "pentagon len"
+_s.reset()
+assert len(_s.pts) == 0, "reset len"
+
+# Same-length heterogeneous assignments keep the fixed Tuple shape
+# (element-wise union of Int/Int = Int — no widening to TupleVar).
+class Point2D:
+    def origin(self):
+        self.xy = (0, 0)
+    def unit_x(self):
+        self.xy = (1, 0)
+
+_p2 = Point2D()
+_p2.origin()
+assert _p2.xy == (0, 0)
+_p2.unit_x()
+assert _p2.xy == (1, 0)
+
+# Multi-method write to same field: `__init__` empty default + `load()` with
+# tuple-literal shape — infers TupleVar(Int).
+class Buffer:
+    def __init__(self):
+        self.data = ()
+    def load_small(self):
+        self.data = (1, 2)
+    def load_large(self):
+        self.data = (1, 2, 3, 4, 5)
+
+_buf = Buffer()
+_buf.load_small()
+assert len(_buf.data) == 2
+_buf.load_large()
+assert len(_buf.data) == 5
+
+print("Tuple-shape unification (§D.3.6): PASS")
+
 print("All class tests passed!")

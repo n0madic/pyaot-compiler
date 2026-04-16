@@ -360,6 +360,63 @@ impl Type {
         }
     }
 
+    /// Unify two tuple shapes into a common supertype.
+    ///
+    /// - Same length → element-wise union, keep fixed shape.
+    /// - Different lengths → `TupleVar(union of all elements)`.
+    /// - Empty tuple is absorbed by any other tuple shape.
+    /// - Fixed ∪ Variable → absorbs fixed into variable.
+    /// - Non-tuple pair → falls back to `normalize_union`.
+    ///
+    /// Used by class-field unification (Area D §D.3.6) when the same
+    /// `self.<field>` is assigned tuples of different shapes in different
+    /// methods; see `ast_to_hir/classes.rs` for the call site.
+    pub fn unify_tuple_shapes(a: &Type, b: &Type) -> Type {
+        match (a, b) {
+            // Empty tuple is absorbed by any other tuple shape.
+            (Type::Tuple(es), other) if es.is_empty() => Self::absorb_empty_tuple_into(other),
+            (other, Type::Tuple(es)) if es.is_empty() => Self::absorb_empty_tuple_into(other),
+
+            // Same length → element-wise union, keep fixed shape.
+            (Type::Tuple(ts1), Type::Tuple(ts2)) if ts1.len() == ts2.len() => Type::Tuple(
+                ts1.iter()
+                    .zip(ts2)
+                    .map(|(a, b)| Type::normalize_union(vec![a.clone(), b.clone()]))
+                    .collect(),
+            ),
+
+            // Different lengths → collapse to TupleVar(union-of-all-elements).
+            (Type::Tuple(ts1), Type::Tuple(ts2)) => {
+                let elems: Vec<Type> = ts1.iter().chain(ts2.iter()).cloned().collect();
+                Type::TupleVar(Box::new(Type::normalize_union(elems)))
+            }
+
+            // Variable ∪ variable.
+            (Type::TupleVar(e1), Type::TupleVar(e2)) => {
+                Type::TupleVar(Box::new(Type::normalize_union(vec![
+                    (**e1).clone(),
+                    (**e2).clone(),
+                ])))
+            }
+
+            // Fixed ∪ variable → absorb fixed into variable.
+            (Type::Tuple(ts), Type::TupleVar(e)) | (Type::TupleVar(e), Type::Tuple(ts)) => {
+                let mut elems = vec![(**e).clone()];
+                elems.extend(ts.iter().cloned());
+                Type::TupleVar(Box::new(Type::normalize_union(elems)))
+            }
+
+            _ => Type::normalize_union(vec![a.clone(), b.clone()]),
+        }
+    }
+
+    fn absorb_empty_tuple_into(other: &Type) -> Type {
+        match other {
+            Type::Tuple(_) | Type::TupleVar(_) => other.clone(),
+            _ => Type::normalize_union(vec![Type::Tuple(vec![]), other.clone()]),
+        }
+    }
+
     /// Check if type is a subtype of another
     pub fn is_subtype_of(&self, other: &Type) -> bool {
         match (self, other) {

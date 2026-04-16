@@ -246,18 +246,43 @@ impl AstToHir {
                         Type::None
                     };
 
-                    // Scan __init__ body for self.field = value assignments to discover
-                    // instance fields that aren't declared at the class level.
-                    // Must happen before convert_method_def which moves func_def.
-                    if is_init {
-                        let new_fields = self.scan_init_fields(
-                            &func_def.body,
-                            &func_def.args,
-                            &fields,
-                            &class_attrs,
-                            class_span,
-                        );
-                        fields.extend(new_fields);
+                    // Scan EVERY method body for `self.field = value` assignments
+                    // (Area D §D.3.6). Tuples of different shapes in different
+                    // methods unify via `Type::unify_tuple_shapes`, so a field
+                    // that receives `()`, `(a,)`, and `(a, b)` across methods
+                    // infers as `TupleVar(T)` — not `Any`.
+                    //
+                    // Fields are introduced in source order — the first method
+                    // to write a field establishes its layout offset; subsequent
+                    // methods only widen the type. A class without `__init__`
+                    // (e.g. fields only set in `reset()` / `configure()`) still
+                    // gets its fields discovered via whichever method writes them
+                    // first.
+                    let observed = self.scan_method_for_self_fields(&func_def.body, &func_def.args);
+                    for (name_str, inferred_ty) in observed {
+                        // Skip fields already declared at class level.
+                        let name_interned = self.interner.intern(&name_str);
+                        if class_attrs.iter().any(|a| a.name == name_interned) {
+                            continue;
+                        }
+                        if let Some(existing) = fields.iter_mut().find(|f| f.name == name_interned)
+                        {
+                            // Don't dilute a precise existing type with `Any`
+                            // from an un-inferrable RHS (e.g. `self.x = self.x + 1`
+                            // where the RHS BinOp infers to Any in our pre-lowering
+                            // scan). Tuple-shape merge only kicks in when the new
+                            // observation is itself a meaningful type.
+                            if !matches!(inferred_ty, Type::Any) {
+                                existing.ty = Type::unify_tuple_shapes(&existing.ty, &inferred_ty);
+                            }
+                        } else {
+                            // First method to reference this field introduces it.
+                            fields.push(FieldDef {
+                                name: name_interned,
+                                ty: inferred_ty,
+                                span: class_span,
+                            });
+                        }
                     }
 
                     let method_func_id =
@@ -612,58 +637,62 @@ impl AstToHir {
         Ok(func_id)
     }
 
-    /// Scan __init__ body for `self.field = value` assignments to discover
-    /// instance fields that aren't explicitly declared at the class level.
-    fn scan_init_fields(
+    /// Scan a method's body for `self.field = value` and `self.field: T = v`
+    /// assignments, collecting inferred types per field name. Multiple writes
+    /// within the same method unify via `Type::unify_tuple_shapes`.
+    ///
+    /// Returns an IndexMap preserving first-seen order for stable codegen.
+    fn scan_method_for_self_fields(
         &mut self,
         body: &[py::Stmt],
         args: &py::Arguments,
-        existing_fields: &[FieldDef],
-        class_attrs: &[ClassAttribute],
-        class_span: Span,
-    ) -> Vec<FieldDef> {
-        let mut new_fields = Vec::new();
-        let mut seen_names = std::collections::HashSet::new();
+    ) -> IndexMap<String, Type> {
+        // Build param name → inferred type. Annotation wins; default value
+        // provides a fallback (so `children=()` infers as Tuple([]) without
+        // requiring an explicit annotation). This is what makes `self._x = p`
+        // reach a concrete tuple shape for unification across methods.
+        let mut param_types: std::collections::HashMap<String, Type> =
+            std::collections::HashMap::new();
 
-        // Build set of already-declared field/attr names for dedup
-        for f in existing_fields {
-            seen_names.insert(self.interner.resolve(f.name).to_string());
+        // Defaults in rustpython-parser align to the tail of positional args.
+        // `defaults()` returns an iterator over the trailing defaults.
+        let defaults: Vec<&py::Expr> = args.defaults().collect();
+        let n_args = args.args.len();
+        let n_defaults = defaults.len();
+        let first_default_idx = n_args.saturating_sub(n_defaults);
+        for (i, arg) in args.args.iter().enumerate() {
+            let name = arg.def.arg.to_string();
+            if let Some(ann) = arg.def.annotation.as_ref() {
+                if let Ok(ty) = self.convert_type_annotation(ann) {
+                    param_types.insert(name, ty);
+                    continue;
+                }
+            }
+            if i >= first_default_idx {
+                let default_expr = defaults[i - first_default_idx];
+                let snapshot = param_types.clone();
+                let default_ty = self.infer_field_type_from_rhs(default_expr, &snapshot);
+                if !matches!(default_ty, Type::Any) {
+                    param_types.insert(name, default_ty);
+                }
+            }
         }
-        for a in class_attrs {
-            seen_names.insert(self.interner.resolve(a.name).to_string());
-        }
 
-        // Build map from param name → type annotation for type inference
-        let param_types: std::collections::HashMap<String, &py::Expr> = args
-            .args
-            .iter()
-            .filter_map(|arg| {
-                arg.def
-                    .annotation
-                    .as_ref()
-                    .map(|ann| (arg.def.arg.to_string(), ann.as_ref()))
-            })
-            .collect();
-
-        self.scan_stmts_for_self_fields(
-            body,
-            &param_types,
-            &mut seen_names,
-            &mut new_fields,
-            class_span,
-        );
-
-        new_fields
+        let mut out: IndexMap<String, Type> = IndexMap::new();
+        self.scan_stmts_for_self_fields(body, &param_types, &mut out);
+        out
     }
 
     /// Recursively scan statements for `self.field = value` patterns.
+    /// Types are merged across writes via `Type::unify_tuple_shapes`, which
+    /// preserves tuple-shape information — a field assigned tuples of
+    /// different lengths in different branches infers as `TupleVar` instead
+    /// of `Any`.
     fn scan_stmts_for_self_fields(
         &mut self,
         stmts: &[py::Stmt],
-        param_types: &std::collections::HashMap<String, &py::Expr>,
-        seen: &mut std::collections::HashSet<String>,
-        out: &mut Vec<FieldDef>,
-        span: Span,
+        param_types: &std::collections::HashMap<String, Type>,
+        out: &mut IndexMap<String, Type>,
     ) {
         for stmt in stmts {
             match stmt {
@@ -673,17 +702,13 @@ impl AstToHir {
                             if let py::Expr::Name(name) = &*attr.value {
                                 if name.id.as_str() == "self" {
                                     let field_name = attr.attr.to_string();
-                                    if !seen.contains(&field_name) {
-                                        seen.insert(field_name.clone());
-                                        let ty = self
-                                            .infer_field_type_from_rhs(&assign.value, param_types);
-                                        let interned = self.interner.intern(&field_name);
-                                        out.push(FieldDef {
-                                            name: interned,
-                                            ty,
-                                            span,
-                                        });
-                                    }
+                                    let ty =
+                                        self.infer_field_type_from_rhs(&assign.value, param_types);
+                                    out.entry(field_name)
+                                        .and_modify(|prev| {
+                                            *prev = Type::unify_tuple_shapes(prev, &ty)
+                                        })
+                                        .or_insert(ty);
                                 }
                             }
                         }
@@ -694,38 +719,31 @@ impl AstToHir {
                         if let py::Expr::Name(name) = &*attr.value {
                             if name.id.as_str() == "self" {
                                 let field_name = attr.attr.to_string();
-                                if !seen.contains(&field_name) {
-                                    seen.insert(field_name.clone());
-                                    let ty = self
-                                        .convert_type_annotation(&ann.annotation)
-                                        .unwrap_or(Type::Any);
-                                    let interned = self.interner.intern(&field_name);
-                                    out.push(FieldDef {
-                                        name: interned,
-                                        ty,
-                                        span,
-                                    });
-                                }
+                                let ty = self
+                                    .convert_type_annotation(&ann.annotation)
+                                    .unwrap_or(Type::Any);
+                                // Explicit annotation wins — overwrite prior inference.
+                                out.insert(field_name, ty);
                             }
                         }
                     }
                 }
-                // Recurse into control flow blocks to find fields set conditionally
+                // Recurse into control-flow blocks to find conditional assignments.
                 py::Stmt::If(if_stmt) => {
-                    self.scan_stmts_for_self_fields(&if_stmt.body, param_types, seen, out, span);
-                    self.scan_stmts_for_self_fields(&if_stmt.orelse, param_types, seen, out, span);
+                    self.scan_stmts_for_self_fields(&if_stmt.body, param_types, out);
+                    self.scan_stmts_for_self_fields(&if_stmt.orelse, param_types, out);
                 }
                 py::Stmt::For(for_stmt) => {
-                    self.scan_stmts_for_self_fields(&for_stmt.body, param_types, seen, out, span);
+                    self.scan_stmts_for_self_fields(&for_stmt.body, param_types, out);
                 }
                 py::Stmt::While(while_stmt) => {
-                    self.scan_stmts_for_self_fields(&while_stmt.body, param_types, seen, out, span);
+                    self.scan_stmts_for_self_fields(&while_stmt.body, param_types, out);
                 }
                 py::Stmt::Try(try_stmt) => {
-                    self.scan_stmts_for_self_fields(&try_stmt.body, param_types, seen, out, span);
+                    self.scan_stmts_for_self_fields(&try_stmt.body, param_types, out);
                     for handler in &try_stmt.handlers {
                         let py::ExceptHandler::ExceptHandler(h) = handler;
-                        self.scan_stmts_for_self_fields(&h.body, param_types, seen, out, span);
+                        self.scan_stmts_for_self_fields(&h.body, param_types, out);
                     }
                 }
                 _ => {}
@@ -734,20 +752,42 @@ impl AstToHir {
     }
 
     /// Infer field type from the RHS of `self.field = value`.
-    /// If the RHS is a simple parameter reference with a type annotation, use that.
-    /// Otherwise, fall back to Type::Any.
+    ///
+    /// Covers:
+    ///   (a) parameter reference with a type annotation → annotated type.
+    ///   (b) tuple literal → `Type::Tuple([shape])`, element types inferred
+    ///       recursively (enables `unify_tuple_shapes` to see real shapes
+    ///       and produce `TupleVar` for cross-method heterogeneity).
+    ///   (c) primitive literal → matching primitive type.
+    ///
+    /// All other shapes fall back to `Type::Any`.
     fn infer_field_type_from_rhs(
         &mut self,
         rhs: &py::Expr,
-        param_types: &std::collections::HashMap<String, &py::Expr>,
+        param_types: &std::collections::HashMap<String, Type>,
     ) -> Type {
-        if let py::Expr::Name(name) = rhs {
-            if let Some(ann) = param_types.get(name.id.as_str()) {
-                if let Ok(ty) = self.convert_type_annotation(ann) {
-                    return ty;
-                }
+        match rhs {
+            py::Expr::Name(name) => param_types
+                .get(name.id.as_str())
+                .cloned()
+                .unwrap_or(Type::Any),
+            py::Expr::Tuple(tuple) => {
+                let elem_tys: Vec<Type> = tuple
+                    .elts
+                    .iter()
+                    .map(|e| self.infer_field_type_from_rhs(e, param_types))
+                    .collect();
+                Type::Tuple(elem_tys)
             }
+            py::Expr::Constant(c) => match &c.value {
+                py::Constant::Int(_) => Type::Int,
+                py::Constant::Float(_) => Type::Float,
+                py::Constant::Bool(_) => Type::Bool,
+                py::Constant::Str(_) => Type::Str,
+                py::Constant::None => Type::None,
+                _ => Type::Any,
+            },
+            _ => Type::Any,
         }
-        Type::Any
     }
 }
