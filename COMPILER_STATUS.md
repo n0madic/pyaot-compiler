@@ -166,7 +166,7 @@ Native Executable
 | functools.reduce() | ✅ | Supports initial value and closures with captures |
 | format() | ✅ | Format specs: d, b, o, x, X, f, e, g, width, fill, alignment, grouping (`,`, `_`) |
 | reversed(), sorted() | ✅ | sorted() supports key= (incl. builtins like abs) and reverse= |
-| min(), max(), sum() | ✅ | Supports lists, tuples, sets, ranges, and iterators/generators. **Full dunder dispatch on user-class elements** (Area C §C.3): sum() via `__add__`/`__radd__` (primitive start bootstraps through reflected); min()/max() via `__lt__`/`__gt__` rich-comparison dunders. |
+| min(), max(), sum() | ✅ | Supports lists, tuples, sets, ranges, and iterators/generators. **Full dunder dispatch on user-class elements** (Area C §C.3): sum() via `__add__`/`__radd__` (primitive start bootstraps through reflected); min()/max() via `__lt__`/`__gt__` rich-comparison dunders. **Area G §G.4**: min/max on tuple-yielding gen-exprs (`min((v, i) for i, v in enumerate(...))`) now use lexicographic `rt_tuple_cmp` instead of raw pointer comparison. |
 | abs(), pow(), round() | ✅ | |
 | hash(), id() | ✅ | |
 | isinstance() | ✅ | Single type and tuple-of-types: `isinstance(x, (int, float))` supported; Union-aware narrowing in if/else branches |
@@ -200,7 +200,7 @@ Native Executable
 | Set methods | ✅ | add, remove, discard, pop, union, intersection, difference, symmetric_difference, update, intersection_update, difference_update, symmetric_difference_update, issubset, issuperset, isdisjoint, etc. |
 | Set operators | ✅ | `\|`, `&`, `-`, `^` |
 | Bytes methods | ✅ | decode, startswith, endswith, find, rfind, count, replace, split, rsplit, strip, lstrip, rstrip, upper, lower, join, hex, index; concatenation, repetition |
-| Comprehensions | ✅ | list, dict, set, generator; **full target grammar**: tuple unpacking (`[a+b for a, b in pairs]`), dict/set (`{k: v for k, v in items}`, `{a*b for a, b in pairs}`), multi-clause (`[x for row in nested for a, b in row]`). Generator expressions with tuple targets wrapped in reductions (`sum(x*y for x,y in zip([1,2,3], [4,5,6]))`) now work when the iterable's element type is computable at desugar time (zip/enumerate/literals); bare `Var` refs (`sum(x*y for x,y in pairs)`) remain a known limitation — use list-comp form (`sum([...])`) as workaround. |
+| Comprehensions | ✅ | list, dict, set, generator; **full target grammar**: tuple unpacking (`[a+b for a, b in pairs]`), dict/set (`{k: v for k, v in items}`, `{a*b for a, b in pairs}`), multi-clause (`[x for row in nested for a, b in row]`). Generator expressions with tuple targets wrapped in reductions (`sum(x*y for x,y in zip([1,2,3], [4,5,6]))`) now work when the iterable's element type is computable at desugar time (zip/enumerate/literals); bare `Var` refs (`sum(x*y for x,y in pairs)`) remain a known limitation — use list-comp form (`sum([...])`) as workaround. **Area G §G.3** closes function-local and function-param heap captures (`def f(a: list[int]): return sum(x for x in a)` — was SIGSEGV, now correct) via implicit `__capture_*` params plumbed through `ExprKind::Closure`; generator slots are GC-marked per-element via `rt_generator_set_local_type`. |
 
 ### Strings
 

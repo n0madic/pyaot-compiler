@@ -982,3 +982,110 @@ an I8 where a pointer is expected.
 bitwise pairs in `pyaot_types::dunders::reflected_name`:
 `__lt__` ↔ `__gt__`, `__le__` ↔ `__ge__`, and self-reflected `__eq__`
 and `__ne__` per the data model.
+
+## Generator Heap Captures (Area G §G.3)
+
+Generator expressions desugar at the frontend into a regular
+`__genexp_N` function whose body is `for <target> in <iter>: yield <elt>`.
+Before Area G the synthesized function was built with **empty params** —
+every free variable in the body kept its outer `VarId`. That worked for
+module globals (lowering resolves them through `rt_global_get_*` at use
+sites) but segfaulted for function-local or function-param heap captures:
+nothing initialises the outer `VarId` inside the `__genexp_N` scope, so
+the body reads an uninitialised local.
+
+### Shape of the fix
+
+Mirror the lambda capture pattern in
+`frontend-python/src/ast_to_hir/comprehensions.rs::desugar_generator_expression`:
+
+1. **Walk** `genexp.elt`, each `generator.iter`, and each `generator.ifs`
+   with `collect_free_variables` (shared with `convert_lambda`),
+   excluding the loop-target names collected via `add_target_to_scope`.
+2. **Partition** free vars: module globals (via
+   `self.scope.module_level_assignments.contains(var_id)` OR
+   `self.module.globals.contains(var_id)`) keep their outer `VarId` —
+   `module.globals` is only populated in `finalize_module`, so the
+   `module_level_assignments` check catches progressively-assigned
+   globals. Everything else becomes a real capture.
+3. For each capture, allocate a fresh `VarId`, name it `__capture_NAME`,
+   insert it into `var_map[NAME]` so the body resolves references to it,
+   and push a `Param` with `ty: None` (filled in by lambda param-type
+   inference at lowering time).
+4. Restore the outer `var_map` after body generation.
+5. Emit the call as
+   `Call { func: Closure { func: __genexp_N, captures: [Var(outer_id)...] }, args: [] }`.
+   `lower_closure_call` prepends capture values to the creator call,
+   matching CPython's snapshot-on-create semantics.
+
+### Downstream plumbing
+
+- **Slot 0 reservation.** The desugaring in
+  `lowering/src/generators/desugaring.rs::build_creator_body` hardcodes
+  generator slot 0 for the for-loop iterator (stored via
+  `mk_set_local(creator_gen_var, 0, iter_call, …)`). Capture params
+  would collide with slot 0, so `collect_generator_vars` (vars.rs) now
+  starts `next_idx = 1` when the function is a for-loop generator.
+- **Per-slot GC marking.** `GeneratorObj.type_tags: *mut u8` already
+  carries a one-byte-per-slot tag; `gc.rs` traces a slot only when
+  `type_tags[i] == LOCAL_TYPE_PTR` (value `3`). Before Area G, slot 0
+  (iter) was the only marked slot. Capture params now get the same
+  treatment — `mk_set_local_type_ptr` emits
+  `rt_generator_set_local_type(slot, 3)` immediately after `SetLocal`
+  whenever `gv.ty.is_heap()`. The two-call pair must stay adjacent
+  (no `gc_alloc` between them) or GC between calls would leave the
+  slot untagged — confirmed by reading the codegen'd MIR.
+- **Capture param types.**
+  `context/function_lowering.rs` routes gen-expr creators
+  (`name.starts_with("__genexp_")`) through
+  `infer_lambda_param_types`, which in turn reads
+  `closure_capture_types` recorded by `precompute_closure_capture_types`
+  during type planning. Without this, capture params default to `Any`,
+  which mis-tags raw-int lists as `ELEM_HEAP_OBJ` on iteration and
+  cascades into pointer-valued tuple elements.
+- **Call-target type inference.**
+  `type_planning/infer.rs::resolve_call_target_type` grew a `Closure`
+  arm so immediate calls of the form `Call { func: Closure { … } }`
+  propagate the wrapped function's return type — needed for
+  downstream `sum` / `min` / `max` to see `Iterator(…)` and dispatch
+  correctly.
+
+### Known gaps
+
+- **Nested gen-exprs over captures** (e.g.
+  `[sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]`) — the outer
+  `w` is captured correctly, but the inner zip's tuple element types
+  collapse to `Any`, so `wi * xi` multiplies pointers and overflows.
+  The gap is in how capture types propagate into a nested gen-expr's
+  for-loop iter type inference. Single-level captures are correct.
+- **`dict.items()` inside a gen-expr** (both module-level and
+  function-local) silently fails: the `(_k, v)` tuple-unpack doesn't
+  carry the dict value type. Pre-existing — separate from §G.3.
+
+## Lexicographic min/max on Tuple-Yielding Iterators (Area G §G.4)
+
+`min((v, i) for i, v in enumerate([3, 1, 4, 1, 5]))` used to return
+`(3, 0)` — the first yielded element. The primitive Iterator path in
+`lower_minmax_builtin` (`expressions/builtins/math/minmax.rs`) assumes
+`elem_ty` is `Int` / `Float` and compares raw i64 values with
+`BinOp::Lt` / `Gt`. For tuple elements the i64 is a `*mut Obj` pointer,
+so `cand < best` was always false against later allocations (the
+accumulator never updates). `max` accidentally returned the correct lex
+answer because higher addresses happened to also be lex-greater.
+
+Area G §G.4 inserts a tuple-dispatch arm in the
+`Type::Iterator(elem_ty)` branch. When `elem_ty` is `Type::Tuple(_)` or
+`Type::TupleVar(_)`, the new `lower_minmax_tuple_iter_fold` helper
+seeds `best` with the first element, loops via `rt_iter_next_no_exc` +
+`rt_generator_is_exhausted`, and compares each candidate against the
+running best with
+`rt_tuple_cmp(cand, best, op_tag)` — `op_tag` is `0` (Lt) for min and
+`2` (Gt) for max. Strict comparison means the first-seen best stays on
+tie, matching CPython. Empty-iterable semantics mirror
+`lower_minmax_class_fold`: null accumulator + exit (CPython-strict
+`ValueError` is out of scope).
+
+`rt_tuple_cmp` is registered as `RT_CMP_TUPLE_ORD` in
+`core-defs/src/runtime_func_def.rs:612` (symbol is the Python-visible
+`rt_tuple_cmp`; the static name follows the `RT_CMP_*` convention for
+comparison runtime functions).

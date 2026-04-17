@@ -87,6 +87,7 @@ pub struct ShadowFrame {
 - Codegen: `gc_push` on entry, `gc_pop` on exit (skipped when `nroots == 0`)
 - Lock-free: GC state accessed via `AtomicPtr<GcState>`, no mutex
 - Slab allocator: objects ≤ 64 bytes bump-allocated from 4KB pages (`slab.rs`), not tracked in `GcState.objects` Vec
+- **Per-slot tagging** on compound objects (`TupleObj.heap_field_mask: u64`, `ClassInfo.heap_field_mask: u64`, `GeneratorObj.type_tags: *mut u8`) lets the GC distinguish heap pointers from raw ints/floats/bools per slot. For generators, `rt_generator_set_local_type(gen, idx, LOCAL_TYPE_PTR)` (tag `3`) is emitted after `rt_generator_set_local` for any heap capture — gen-expr desugaring does this automatically for every `__capture_*` param whose type `is_heap()` (Area G §G.3).
 
 ## Runtime Object Header
 
