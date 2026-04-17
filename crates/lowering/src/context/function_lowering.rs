@@ -465,27 +465,63 @@ impl<'a> Lowering<'a> {
             return;
         };
 
-        // Scan statements in module init for assignments to global variables
+        // Scan statements in module init for assignments to global variables.
+        // Records the global's type for persistence across function boundaries:
+        // explicit annotations take precedence; when absent, best-effort
+        // inference from the RHS expression covers literal containers
+        // (list, dict, set, tuple) and simple constants so that gen-exprs
+        // referencing the global (e.g. `d.items()` inside `sum(...)`) can
+        // dispatch the right method — otherwise the global defaults to `Int`
+        // and `MethodCall` on dict lowers to `None` (§G.11).
         for stmt_id in &init_func.body {
             let stmt = &hir_module.stmts[*stmt_id];
-            let var_assign = match &stmt.kind {
+            let (target, type_hint, value) = match &stmt.kind {
                 hir::StmtKind::Bind {
                     target: hir::BindingTarget::Var(target_var),
                     type_hint,
-                    ..
-                } => Some((*target_var, type_hint.as_ref())),
-                _ => None,
+                    value,
+                } => (*target_var, type_hint.as_ref(), *value),
+                _ => continue,
             };
-            if let Some((target, type_hint)) = var_assign {
-                // Only process if target is a global variable with an explicit type hint.
-                // Variables without type hints will get their types from lowering.
-                if self.symbols.globals.contains(&target) {
-                    if let Some(var_type) = type_hint {
-                        // Store in global_var_types for persistence across function boundaries
-                        self.symbols
-                            .global_var_types
-                            .insert(target, var_type.clone());
-                    }
+
+            if !self.symbols.globals.contains(&target) {
+                continue;
+            }
+
+            // Explicit annotation wins.
+            if let Some(var_type) = type_hint {
+                self.symbols
+                    .global_var_types
+                    .insert(target, var_type.clone());
+                continue;
+            }
+
+            // Fall back to RHS inference for **literal-shaped** globals only
+            // (container literals and primitive constants). Skipping
+            // `Call` / `Var` / `MethodCall` etc. is intentional — those
+            // lowering paths have their own typing machinery (module-var
+            // wrappers, closure tracking, nonlocal cells) and pre-recording
+            // a potentially wrong type here has caused regressions in
+            // escaping-closure globals. Container literals are safe because
+            // their type is fully determined by the literal shape.
+            let value_expr = &hir_module.exprs[value];
+            let is_literal_shape = matches!(
+                value_expr.kind,
+                hir::ExprKind::Dict(_)
+                    | hir::ExprKind::List(_)
+                    | hir::ExprKind::Set(_)
+                    | hir::ExprKind::Tuple(_)
+                    | hir::ExprKind::Int(_)
+                    | hir::ExprKind::Float(_)
+                    | hir::ExprKind::Bool(_)
+                    | hir::ExprKind::Str(_)
+                    | hir::ExprKind::Bytes(_)
+                    | hir::ExprKind::None
+            );
+            if is_literal_shape {
+                let inferred = self.infer_expr_type_inner(value_expr, hir_module, None);
+                if !matches!(inferred, Type::Any) {
+                    self.symbols.global_var_types.insert(target, inferred);
                 }
             }
         }

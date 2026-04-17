@@ -1076,12 +1076,41 @@ gen-exprs like `[sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]`:
    capture chains (inner gen-expr capturing an outer gen-expr's
    capture param) converge.
 
-### Remaining gap
+### Untyped module globals & method dispatch (§G.11)
 
-- **`dict.items()` inside a gen-expr** (both module-level and
-  function-local) silently fails: the `(_k, v)` tuple-unpack doesn't
-  carry the dict value type. Pre-existing — separate from §G.3 /
-  §G.10, tracked independently.
+The `dict.items()` inside a gen-expr gap turned out to be an
+**untyped module-global typing bug**, not a gen-expr gap. Until §G.11,
+`scan_global_var_types` (`context/function_lowering.rs`) only recorded
+module-globals that carried an **explicit type annotation**:
+
+```rust
+if let Some(var_type) = type_hint {
+    self.symbols.global_var_types.insert(target, var_type.clone());
+}
+```
+
+Untyped globals fell through to `Type::Int` at `lower_var` time
+(`expressions/literals.rs:48`). For list globals this was mostly
+harmless — `rt_global_get_int` returns the stored i64 which *is* the
+list pointer, and `rt_iter_list` dereferences it correctly. But for
+dict globals, `MethodCall { obj: Var(d), method: "items" }` dispatches
+on the obj's type: if the type looks like `Int`, no method resolves
+and the call lowers to a `None` constant. The creator's
+`rt_iter_list(None)` then segfaulted.
+
+Fix: when no explicit annotation is present, fall back to
+`infer_expr_type_inner` on the Bind value — but only for
+**literal-shaped** RHS expressions (`Dict`, `List`, `Set`, `Tuple`,
+primitive constants). Calls / Vars / MethodCalls are left alone
+because their typing machinery interacts with module-var wrappers,
+closure tracking, and nonlocal cells; pre-recording a possibly-wrong
+type there breaks escaping-closure globals
+(`esc_counter = make_counter_escape()` regression).
+
+This fix also applies to function-local and function-param dicts in
+gen-exprs (those were always heap-typed correctly at the param/Bind
+level; the gen-expr capture-type propagation from §G.10 completes the
+chain).
 
 ## Lexicographic min/max on Tuple-Yielding Iterators (Area G §G.4)
 

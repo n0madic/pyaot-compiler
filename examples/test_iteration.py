@@ -1214,6 +1214,37 @@ def _g3_linear(x: list[int], w: list[list[int]]) -> list[int]:
 assert _g3_linear([1, 2, 3], [[10, 20, 30], [1, 1, 1]]) == [140, 6]
 assert _g3_linear([1, 1, 1], [[1, 2, 3], [4, 5, 6], [0, 0, 0]]) == [6, 15, 0]
 
+
+# Area G §G.11: `dict.items()` inside a gen-expr. The untyped-global gap
+# mis-classified module-level dict literals as `Int` (scan_global_var_types
+# only recorded globals with explicit annotations), so `d.items()` inside
+# a gen-expr dispatched `MethodCall` against `Int` and lowered to a None
+# receiver — rt_iter_list(None) segfaulted. Fix: fall back to RHS inference
+# for literal-shaped globals (list/dict/set/tuple + primitive literals).
+_g11_mod_d = {"a": 1, "b": 2, "c": 3}
+assert sum(v for _k, v in _g11_mod_d.items()) == 6
+assert sum(v for _k, v in _g11_mod_d.items() if v > 1) == 5
+
+
+def _g11_local_dict_sum() -> int:
+    d = {"x": 10, "y": 20, "z": 30}
+    return sum(v for _k, v in d.items())
+
+
+assert _g11_local_dict_sum() == 60
+
+
+def _g11_param_dict_sum(d: dict[str, int]) -> int:
+    return sum(v for _k, v in d.items())
+
+
+assert _g11_param_dict_sum({"a": 100, "b": 200}) == 300
+
+
+# Same pattern with .values() — shouldn't have been broken but regression-check.
+_g11_vals = {"p": 1, "q": 2}
+assert sum(v for v in _g11_vals.values()) == 3
+
 print("§G.3 heap-captured gen-expr tests passed!")
 
 print("All iteration and comprehension tests passed!")
