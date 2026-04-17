@@ -10,6 +10,11 @@
 - **Exceptions**: `Type::BuiltinException(BuiltinExceptionKind)`
 - **Any vs HeapAny**: `Any` = ambiguous (raw i64 or pointer), `HeapAny` = guaranteed `*mut Obj` (safe for runtime dispatch in print/compare)
 - **Tuple variants**: `Type::Tuple` and `Type::TupleVar` share the same runtime (`TupleObj` + `elem_tag`); the distinction is compile-time only. Fixed tuples support per-slot typed indexing and static bounds checks; variable tuples emit `rt_tuple_get` with runtime bounds checks and return the homogeneous element type. Merge rule: `Type::unify_tuple_shapes(a, b)` — same-length → element-wise union keeping fixed shape; different-lengths → collapse to `TupleVar`; empty absorbs into any other tuple.
+- **Numeric tower helpers (Area E §E.1)**:
+  - `Type::promote_numeric(a, b) -> Option<Type>` — PEP 3141 tower (`bool ⊂ int ⊂ float`); `None` for non-numeric pairs.
+  - `Type::unify_numeric(a, b) -> Type` — promote if both numeric, else `normalize_union`.
+  - `Type::unify_field_type(a, b) -> Type` — single entry-point for cross-site unification (class fields + locals). Defers to `unify_tuple_shapes` when either side is tuple-shaped, else `unify_numeric`. Used by `scan_stmts_for_self_fields` (classes.rs) and `local_prescan.rs`.
+- **Dunder reflections**: `pyaot_types::dunders::reflected_name(forward)` returns the reflected counterpart for binary numeric (`__add__` ↔ `__radd__` etc.), binary bitwise (`__and__` ↔ `__rand__`), **and** comparison ops (`__lt__` ↔ `__gt__`, `__le__` ↔ `__ge__`; `__eq__` / `__ne__` are self-reflected). `hir::CmpOp::reflected_dunder_name` / `is_ordering` mirror these at the HIR level for comparison lowering.
 
 ## Shared Definitions (`core-defs`)
 

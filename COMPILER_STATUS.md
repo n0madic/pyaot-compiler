@@ -51,6 +51,7 @@ Native Executable
 | list[T] | ✅ | |
 | tuple[T1, ..., Tn] / tuple[T, ...] | ✅ | Both forms supported (PEP 484/585): fixed-length heterogeneous (`tuple[int, str, float]` → `Type::Tuple`) and variable-length homogeneous (`tuple[int, ...]` → `Type::TupleVar`). Unified at the runtime level (same `TupleObj` + `elem_tag`), distinguished in the type system for indexing/iteration type inference. |
 | String forward references in annotations | ✅ | PEP 563: `other: "V"`, `children: "tuple[Node, ...]"`, forward refs to later-declared classes. Eager re-parse via `rustpython_parser::parse(Mode::Expression)` at annotation-conversion time — `from __future__ import annotations` parses through as a documentation marker (our AOT is eager-evaluate by design). Top-level class pre-scan populates `class_map` before any body is converted, so self-references and forward refs resolve regardless of declaration order. |
+| Cross-site field numeric promotion | ✅ | PEP 3141 tower on class fields. Field scan walks every method (not just `__init__`), observes plain `Assign`, `AnnAssign`, and `AugAssign` on `self.<f>`, and merges types via `Type::unify_field_type` — numeric widening for `{bool, int} → int`, `{int, float} → float`, tuple-shape for mismatched lengths. Write-site coercion in `bind_attr_op` emits `IntToFloat` when storing a primitive into a wider field. Area E §E.3. |
 | dict[K, V] | ✅ | Keys: all hashable types (str/int/bool/float/tuple/None); insertion order preserved (Python 3.7+) |
 | set[T] | ✅ | Elements: all hashable types (str/int/bool/float/tuple/None) |
 | bytes | ✅ | |
@@ -121,7 +122,7 @@ Native Executable
 | `__lt__`, `__le__`, `__gt__`, `__ge__` | ✅ | Enables sorted(), min(), max() on custom objects |
 | `__add__`, `__sub__`, `__mul__` | ✅ | Arithmetic operators on custom objects; explicit calls (`a.__add__(b)`) supported |
 | `__radd__`, `__rsub__`, `__rmul__`, etc. | ✅ | Reverse arithmetic dunders; enables `2 + obj`; CPython §3.3.8 subclass-first reflected rule: when the right operand is a strict subclass of the left, the reflected dunder is tried first |
-| `NotImplemented` sentinel | ✅ | Forward dunder can `return NotImplemented`; compiler detects this via body scan and emits a runtime branch that falls back to the reflected dunder on the right operand. Comparison dunders (`__eq__`/`__lt__`/...) must return `bool` — returning `NotImplemented` from them is not yet supported |
+| `NotImplemented` sentinel | ✅ | Supported on both arithmetic and **comparison** dunders. Forward dunder can `return NotImplemented`; compiler detects this via body scan and emits a runtime branch that falls back to the reflected dunder on the right operand. For comparisons, the fallback adds default identity (for `==`/`!=`) and `TypeError` (for `<`/`<=`/`>`/`>=`) when both sides return `NotImplemented`. Area E §E.7 closed this gap. |
 | Polymorphic `other` parameter | ✅ | When no annotation is given, binary numeric dunders (`__add__`, `__rmul__`, ...) type `other` as `Union[Self, int, float, bool]`; bitwise dunders as `Union[Self, int, bool]`; comparison dunders as `Any`. Explicit annotation overrides this (e.g. `def __mul__(self, other: float)` gives direct f64 arithmetic) |
 | `__neg__`, `__pos__` | ✅ | Unary minus/plus on custom objects |
 | `__abs__` | ✅ | `abs(obj)` on custom classes |
@@ -456,7 +457,7 @@ lldb -o "b add" -o "r" -o "bt" program
 
 ## Known Limitations
 
-1. **Type Annotations**: Function parameters require type annotations; local variables infer types from initializers
+1. **Type Annotations**: Function parameters require type annotations; local variables infer types from initializers. Cross-site inference widens a local through the numeric tower (`bool ⊂ int ⊂ float`, Area E §E.6) — e.g. `x = 0; x += 0.5; return x` types `x` as `float`. A post-loop rebind (`for _, c in pairs: pass; c = SomeClass()`) replaces the loop-inferred type with the outer type.
 
 ---
 

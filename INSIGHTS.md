@@ -857,3 +857,128 @@ When `start_ty` is `Int`/`Float`/`Bool` and `elem_ty` is a class, the fold boots
 
 - Heterogeneous iterables (`list[V | int]`): accumulator would need to be a Union, dispatching via `rt_obj_add` each iteration. Not implemented; users pre-homogenise.
 - Empty iterable + primitive start (`sum([], 0)` with a hypothetical class-only path): we write a null placeholder in the class-typed accumulator slot. In practice the path isn't exercised because the empty-iter type inference returns the class type, not `Int`. Document as best-effort parity.
+
+---
+
+## Numeric Tower & Cross-Site Type Unification (Area E)
+
+Class fields and function-local variables both need a single static
+type even when they're written from many sites with different primitive
+types. Area E formalises this as a three-layer system.
+
+### 1. Unification primitive: `Type::unify_field_type`
+
+Central entry-point in `crates/types/src/lib.rs`. Decision tree:
+
+```
+unify_field_type(a, b)
+├── either side is Tuple/TupleVar → Type::unify_tuple_shapes   # Area D
+└── otherwise                      → Type::unify_numeric
+                                     ├── promote_numeric(a, b) if both numeric
+                                     │   Bool ⊂ Int ⊂ Float (PEP 3141)
+                                     └── normalize_union([a, b])          # fallthrough
+```
+
+`promote_numeric` covers the full 9-cell numeric matrix and returns
+`None` for non-numeric pairs. `unify_numeric` falls through to
+`normalize_union` so `{Int, Str}` becomes `Union[Int, Str]`.
+
+### 2. Class fields: all-methods scan + write-site coercion (§E.3)
+
+`ast_to_hir/classes.rs::scan_stmts_for_self_fields` walks every method
+(not just `__init__`) and sees three site shapes on `self.<field>`:
+
+- `Assign` — RHS type via `infer_field_type_from_rhs` (covers parameter
+  references, tuple literals, primitive literals, and — new in §E.3 —
+  narrow numeric-BinOp inference so `self.x = self.x + 0.5` yields
+  `Float` instead of collapsing to `Any`).
+- `AnnAssign` — explicit annotation overwrites prior inference.
+- `AugAssign` — added in §E.3; `self.total += x` was previously
+  invisible to the scanner.
+
+Each observation is merged via `Type::unify_field_type`. Annotation
+still wins over inference when both exist.
+
+**Write-site coercion** — `lower_binding_target`'s `Attr` branch passes
+`value_type` to `bind_attr_op`, which calls `coerce_to_field_type`
+before `rt_instance_set_field`. `(Int | Bool, Float)` emits
+`IntToFloat`; primitive-into-Union boxes via `box_primitive_if_needed`.
+Without this, `self.total = 1` into a Float-widened field would store
+the bit-pattern of `1_i64` — read back as `5e-324`.
+
+### 3. Locals: pre-scan + consumer priority (§E.6)
+
+`type_planning/local_prescan.rs` runs once per function after
+return-type inference. Walks `Bind` / `ForBind` / control-flow bodies,
+skipping nested function defs. Per-VarId it records the merged type in
+`per_function_prescan_var_types[func_id]`. A few special rules:
+
+1. **Scope filter.** `FuncRef` / `Closure` RHS values are skipped —
+   `infer_expr_type_inner` synthesises the callee's return type for
+   them, which is nonsense for a binding target (which holds a function
+   pointer, not the call result). Cell / nonlocal variables are dropped
+   from the output map so they stay in cell storage, not in plain MIR
+   locals.
+
+2. **Narrow merge.** On a rebind, we only widen the scratch type when
+   the pair is numeric-tower (`Bool | Int | Float` on both sides) or
+   tuple-shaped. Other combinations preserve the first-write type —
+   Union-aware narrowing, cell handling, and existing tests depend on
+   first-write-wins for non-numeric rebinds.
+
+3. **Post-loop replace.** If a variable was observed only inside a
+   `for` / `while` body and the next write is outside any loop, the
+   outer write **replaces** the loop-inferred type. Fixes the §A.6 #3
+   idiom where `for _, c in pairs: pass; c = SomeClass()` previously
+   failed with "unknown attribute `c.x`" because the loop had typed `c`
+   as `Int`.
+
+**Consumer priority**. `get_or_create_local` and `lower_assign` both
+consult: `refined_var_types` (Area D empty-container refinement) >
+prescan (unless "uselessly wide" like `Dict(Any, Any)`) > prior
+`var_types` > RHS-inferred. The "uselessly wide" filter matters for
+module-level empty dict / list / set literals that later refine to a
+concrete element type — without the filter the prescan snapshot
+would shadow `refined_var_types`.
+
+**Return-type re-inference**. `reinfer_return_types_with_prescan`
+runs after prescan for un-annotated functions: seeds the `param_types`
+map with prescan entries and re-scans return statements. Makes
+`def f(): x = 0; x += 0.5; return x` type-infer return as `Float` — the
+initial return-type pass only saw `x: Int` from the first write.
+
+### 4. Comparison dunders with `NotImplemented` (§E.7)
+
+Semantically identical to the §3.3.8 arithmetic-dunder state machine
+but with unboxing at the end. `comparison.rs::lower_compare` now sizes
+the dunder result via `alloc_dunder_result` — `Bool` when
+`func_may_return_not_implemented` says no, else `Union[Bool,
+NotImplementedT]`. The NI-aware branch calls
+`emit_comparison_ni_fallback`:
+
+```
+forward_result = left.__op__(right)
+if forward_result is NotImplementedSingleton:
+    if right.__refl_op__ exists:
+        refl = right.__refl_op__(left)
+        if refl is NI: default_fallback(op)
+        else: unbox_bool(refl)
+    else: default_fallback(op)
+else:
+    unbox_bool(forward_result)
+```
+
+`default_fallback`: `==`/`!=` → pointer-identity compare; `<`/`<=`/`>`/
+`>=` → `raise TypeError` (via `mir::Terminator::Raise`).
+
+**Return-site boxing**. A comparison dunder with both `return True` and
+`return NotImplemented` has signature `Union[Bool, NotImplementedT]`
+(I64 pointer at Cranelift level). `lower_return` auto-boxes primitive
+returns (`Bool`/`Int`/`Float`/`None`) when the enclosing signature is a
+Union containing `NotImplementedT` — without this, `return True` emits
+an I8 where a pointer is expected.
+
+**Reflected comparison names** live alongside the arithmetic and
+bitwise pairs in `pyaot_types::dunders::reflected_name`:
+`__lt__` ↔ `__gt__`, `__le__` ↔ `__ge__`, and self-reflected `__eq__`
+and `__ne__` per the data model.
