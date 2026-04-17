@@ -1139,3 +1139,26 @@ tie, matching CPython. Empty-iterable semantics mirror
 `core-defs/src/runtime_func_def.rs:612` (symbol is the Python-visible
 `rt_tuple_cmp`; the static name follows the `RT_CMP_*` convention for
 comparison runtime functions).
+
+### Empty-iterable ValueError (§G.12)
+
+All three iterator-fold paths for `min` / `max` now raise
+`ValueError("min() arg is an empty sequence")` / `"max() arg is an
+empty sequence"` when fed an empty iterator, matching CPython:
+
+- **Primitive** (`minmax.rs::lower_minmax_builtin`, the `Type::Iterator`
+  branch): after the first `rt_iter_next_no_exc`, a
+  `rt_generator_is_exhausted` check branches to a `Raise` terminator
+  block before the result accumulator is initialised.
+- **Tuple** (`minmax.rs::lower_minmax_tuple_iter_fold`, §G.4): the
+  seed-stage exhaustion branch now emits `mir::Terminator::Raise`
+  with the appropriate message instead of copying `Int(0)` into the
+  accumulator.
+- **User class** (`reductions/mod.rs::lower_minmax_class_fold`): same
+  — the `raise_bb` now terminates with a Raise instead of a null
+  accumulator Goto. Needs `is_min` passed through
+  `try_lower_minmax_class_elem → lower_minmax_class_fold` for the
+  message selection.
+
+The list-based fast path (`min([1, 2, 3])`) was already correct via
+the `rt_list_minmax` runtime helper.

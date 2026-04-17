@@ -504,7 +504,7 @@ impl<'a> Lowering<'a> {
             self.make_iter_from_operand(iterable_operand, &iterable_type, mir_func);
 
         self.lower_minmax_class_fold(
-            iter_local, &class_ty, cmp_func, swap_args, hir_module, mir_func,
+            iter_local, &class_ty, cmp_func, swap_args, is_min, hir_module, mir_func,
         )
         .map(Some)
     }
@@ -512,12 +512,15 @@ impl<'a> Lowering<'a> {
     /// Fold loop shared by `min` / `max` on user classes. `swap_args`
     /// controls the call-site order: `false` → `dunder(elem, best)`,
     /// `true` → `dunder(best, elem)` (for the swapped-fallback path).
+    /// `is_min` selects the ValueError message on empty iterables.
+    #[allow(clippy::too_many_arguments)]
     fn lower_minmax_class_fold(
         &mut self,
         iter_local: pyaot_utils::LocalId,
         class_ty: &Type,
         cmp_func: pyaot_utils::FuncId,
         swap_args: bool,
+        is_min: bool,
         _hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
@@ -551,10 +554,7 @@ impl<'a> Lowering<'a> {
             Type::Bool,
             mir_func,
         );
-        // Empty iterable without default raises ValueError — CPython
-        // parity. `rt_exc_raise_empty_minmax` doesn't exist, so we fall
-        // back to writing a null accumulator; in practice users don't
-        // pass empty iterables to min/max without default.
+        // Empty iterable → ValueError, matching CPython (§G.12).
         let raise_bb = self.new_block();
         let raise_bb_id = raise_bb.id;
         let seed_ok_bb = self.new_block();
@@ -565,11 +565,18 @@ impl<'a> Lowering<'a> {
             else_block: seed_ok_bb_id,
         };
         self.push_block(raise_bb);
-        self.emit_instruction(mir::InstructionKind::Copy {
-            dest: best_local,
-            src: mir::Operand::Constant(mir::Constant::Int(0)),
-        });
-        self.current_block_mut().terminator = mir::Terminator::Goto(exit_bb_id);
+        let msg = if is_min {
+            "min() arg is an empty sequence"
+        } else {
+            "max() arg is an empty sequence"
+        };
+        let msg_interned = self.interner.intern(msg);
+        self.current_block_mut().terminator = mir::Terminator::Raise {
+            exc_type: pyaot_core_defs::exceptions::BuiltinExceptionKind::ValueError.tag(),
+            message: Some(mir::Operand::Constant(mir::Constant::Str(msg_interned))),
+            cause: None,
+            suppress_context: false,
+        };
 
         self.push_block(seed_ok_bb);
         self.emit_instruction(mir::InstructionKind::Copy {

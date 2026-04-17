@@ -1245,6 +1245,80 @@ assert _g11_param_dict_sum({"a": 100, "b": 200}) == 300
 _g11_vals = {"p": 1, "q": 2}
 assert sum(v for v in _g11_vals.values()) == 3
 
+
+# Area G §G.12: `min()` / `max()` on an empty iterable must raise
+# `ValueError`, not silently return a null accumulator. Covers all three
+# fold paths — primitive Iterator (gen-expr over []), tuple Iterator
+# (tuple-yielding gen-expr over []), and class Iterator (list of class
+# instances). Also regression-covers the already-working list path.
+_g12_empty_int: list[int] = []
+try:
+    _ = min(x for x in _g12_empty_int)
+    raise RuntimeError("min on empty gen-expr should have raised ValueError")
+except ValueError as _e:
+    assert "min" in str(_e)
+
+try:
+    _ = max(x for x in _g12_empty_int)
+    raise RuntimeError("max on empty gen-expr should have raised ValueError")
+except ValueError as _e:
+    assert "max" in str(_e)
+
+# Tuple-yield gen-expr over empty iterable (§G.4 path)
+try:
+    _ = min((v, i) for i, v in enumerate(_g12_empty_int))
+    raise RuntimeError("min on empty tuple gen-expr should have raised")
+except ValueError as _e:
+    assert "min" in str(_e)
+
+try:
+    _ = max((v, i) for i, v in enumerate(_g12_empty_int))
+    raise RuntimeError("max on empty tuple gen-expr should have raised")
+except ValueError as _e:
+    assert "max" in str(_e)
+
+
+# Class-element list via min/max — exercises `lower_minmax_class_fold`.
+class _G12K:
+    def __init__(self, v: int):
+        self.v = v
+
+    def __lt__(self, other: "_G12K") -> bool:
+        return self.v < other.v
+
+
+_g12_non_empty_ks = [_G12K(3), _G12K(1), _G12K(2)]
+_g12_min_k = min(_g12_non_empty_ks)
+assert _g12_min_k.v == 1
+
+_g12_empty_ks: list[_G12K] = []
+try:
+    _ = min(_g12_empty_ks)
+    raise RuntimeError("min on empty class list should have raised")
+except ValueError as _e:
+    assert "min" in str(_e)
+
+try:
+    _ = max(_g12_empty_ks)
+    raise RuntimeError("max on empty class list should have raised")
+except ValueError as _e:
+    assert "max" in str(_e)
+
+
+# Direct list min/max — always raised correctly; regression-check that
+# §G.12 changes didn't break the non-iterator path.
+try:
+    _ = min(_g12_empty_int)
+    raise RuntimeError("min on empty list should have raised")
+except ValueError as _e:
+    assert "min" in str(_e)
+
+try:
+    _ = max(_g12_empty_int)
+    raise RuntimeError("max on empty list should have raised")
+except ValueError as _e:
+    assert "max" in str(_e)
+
 print("§G.3 heap-captured gen-expr tests passed!")
 
 print("All iteration and comprehension tests passed!")

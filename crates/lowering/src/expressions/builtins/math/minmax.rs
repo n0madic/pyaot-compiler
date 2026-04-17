@@ -377,6 +377,41 @@ impl<'a> Lowering<'a> {
                     mir_func,
                 );
 
+                // Empty iterable → ValueError, matching CPython (§G.12).
+                let first_exhausted = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED,
+                    ),
+                    vec![mir::Operand::Local(iter_local)],
+                    Type::Bool,
+                    mir_func,
+                );
+                let prim_raise_bb = self.new_block();
+                let prim_raise_bb_id = prim_raise_bb.id;
+                let prim_seed_ok_bb = self.new_block();
+                let prim_seed_ok_bb_id = prim_seed_ok_bb.id;
+                self.current_block_mut().terminator = mir::Terminator::Branch {
+                    cond: mir::Operand::Local(first_exhausted),
+                    then_block: prim_raise_bb_id,
+                    else_block: prim_seed_ok_bb_id,
+                };
+                self.push_block(prim_raise_bb);
+                let empty_msg = if is_min {
+                    "min() arg is an empty sequence"
+                } else {
+                    "max() arg is an empty sequence"
+                };
+                let empty_msg_interned = self.interner.intern(empty_msg);
+                self.current_block_mut().terminator = mir::Terminator::Raise {
+                    exc_type: pyaot_core_defs::exceptions::BuiltinExceptionKind::ValueError.tag(),
+                    message: Some(mir::Operand::Constant(mir::Constant::Str(
+                        empty_msg_interned,
+                    ))),
+                    cause: None,
+                    suppress_context: false,
+                };
+                self.push_block(prim_seed_ok_bb);
+
                 let result_local = self.alloc_and_add_local(iter_result_type.clone(), mir_func);
                 if is_float_iter {
                     // The iterator yields a pointer to a boxed float object (since list[float]
@@ -929,14 +964,20 @@ impl<'a> Lowering<'a> {
             else_block: seed_ok_bb_id,
         };
 
-        // Empty iterable — mirror `lower_minmax_class_fold` behaviour: null
-        // accumulator and exit. CPython-strict ValueError is out of scope.
+        // Empty iterable → ValueError, matching CPython (§G.12).
         self.push_block(raise_bb);
-        self.emit_instruction(mir::InstructionKind::Copy {
-            dest: best_local,
-            src: mir::Operand::Constant(mir::Constant::Int(0)),
-        });
-        self.current_block_mut().terminator = mir::Terminator::Goto(exit_bb_id);
+        let msg = if is_min {
+            "min() arg is an empty sequence"
+        } else {
+            "max() arg is an empty sequence"
+        };
+        let msg_interned = self.interner.intern(msg);
+        self.current_block_mut().terminator = mir::Terminator::Raise {
+            exc_type: pyaot_core_defs::exceptions::BuiltinExceptionKind::ValueError.tag(),
+            message: Some(mir::Operand::Constant(mir::Constant::Str(msg_interned))),
+            cause: None,
+            suppress_context: false,
+        };
 
         self.push_block(seed_ok_bb);
         self.emit_instruction(mir::InstructionKind::Copy {
