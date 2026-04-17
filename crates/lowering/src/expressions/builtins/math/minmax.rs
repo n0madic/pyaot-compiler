@@ -327,6 +327,27 @@ impl<'a> Lowering<'a> {
 
             // Iterator/generator: use IterNextNoExc + GeneratorIsExhausted protocol
             if let Type::Iterator(elem_ty) = &arg_type {
+                // Area G §G.4: tuple-yielding iterators need lexicographic
+                // compare via `rt_tuple_cmp`. The primitive fast-path below
+                // uses raw `BinOp::Lt` / `BinOp::Gt` on the i64 return of
+                // `rt_iter_next_no_exc`, which for tuple elements is the
+                // pointer value — not lexicographic ordering.
+                if matches!(elem_ty.as_ref(), Type::Tuple(_) | Type::TupleVar(_)) {
+                    let iter_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
+                    let iter_local = self.alloc_and_add_local(arg_type.clone(), mir_func);
+                    self.emit_instruction(mir::InstructionKind::Copy {
+                        dest: iter_local,
+                        src: iter_operand,
+                    });
+                    let result_local = self.lower_minmax_tuple_iter_fold(
+                        iter_local,
+                        elem_ty.as_ref().clone(),
+                        is_min,
+                        mir_func,
+                    );
+                    return Ok(mir::Operand::Local(result_local));
+                }
+
                 let iter_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
                 let iter_local = self.alloc_and_add_local(arg_type.clone(), mir_func);
                 self.emit_instruction(mir::InstructionKind::Copy {
@@ -849,5 +870,132 @@ impl<'a> Lowering<'a> {
         }
 
         Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Area G §G.4: lexicographic min/max fold over an iterator yielding
+    /// tuples. Seeds with the first element from `rt_iter_next_no_exc`,
+    /// then loops using `rt_tuple_cmp(candidate, best, op_tag)` per
+    /// element; `op_tag` = 0 (Lt) for min, 2 (Gt) for max. Both use strict
+    /// comparison — on tie, the first-seen best stays (matches CPython).
+    ///
+    /// Parallel to `lower_minmax_class_fold` in
+    /// `crates/lowering/src/expressions/builtins/reductions/mod.rs`; both
+    /// share the seed / header / body / update / exit block shape.
+    fn lower_minmax_tuple_iter_fold(
+        &mut self,
+        iter_local: pyaot_utils::LocalId,
+        elem_ty: Type,
+        is_min: bool,
+        mir_func: &mut mir::Function,
+    ) -> pyaot_utils::LocalId {
+        let op_tag: i64 = if is_min { 0 } else { 2 };
+        let best_local = self.alloc_gc_local(elem_ty.clone(), mir_func);
+
+        let seed_bb = self.new_block();
+        let seed_bb_id = seed_bb.id;
+        let raise_bb = self.new_block();
+        let raise_bb_id = raise_bb.id;
+        let seed_ok_bb = self.new_block();
+        let seed_ok_bb_id = seed_ok_bb.id;
+        let header_bb = self.new_block();
+        let header_bb_id = header_bb.id;
+        let body_bb = self.new_block();
+        let body_bb_id = body_bb.id;
+        let update_bb = self.new_block();
+        let update_bb_id = update_bb.id;
+        let continue_bb = self.new_block();
+        let continue_bb_id = continue_bb.id;
+        let exit_bb = self.new_block();
+        let exit_bb_id = exit_bb.id;
+
+        // Entry: seed `best` with the first element.
+        self.current_block_mut().terminator = mir::Terminator::Goto(seed_bb_id);
+        self.push_block(seed_bb);
+        let first_val = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
+            vec![mir::Operand::Local(iter_local)],
+            elem_ty.clone(),
+            mir_func,
+        );
+        let first_exhausted = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED),
+            vec![mir::Operand::Local(iter_local)],
+            Type::Bool,
+            mir_func,
+        );
+        self.current_block_mut().terminator = mir::Terminator::Branch {
+            cond: mir::Operand::Local(first_exhausted),
+            then_block: raise_bb_id,
+            else_block: seed_ok_bb_id,
+        };
+
+        // Empty iterable — mirror `lower_minmax_class_fold` behaviour: null
+        // accumulator and exit. CPython-strict ValueError is out of scope.
+        self.push_block(raise_bb);
+        self.emit_instruction(mir::InstructionKind::Copy {
+            dest: best_local,
+            src: mir::Operand::Constant(mir::Constant::Int(0)),
+        });
+        self.current_block_mut().terminator = mir::Terminator::Goto(exit_bb_id);
+
+        self.push_block(seed_ok_bb);
+        self.emit_instruction(mir::InstructionKind::Copy {
+            dest: best_local,
+            src: mir::Operand::Local(first_val),
+        });
+        self.current_block_mut().terminator = mir::Terminator::Goto(header_bb_id);
+
+        // Loop header: fetch next, check exhausted.
+        self.push_block(header_bb);
+        let cand_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
+            vec![mir::Operand::Local(iter_local)],
+            elem_ty.clone(),
+            mir_func,
+        );
+        let exhausted_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED),
+            vec![mir::Operand::Local(iter_local)],
+            Type::Bool,
+            mir_func,
+        );
+        self.current_block_mut().terminator = mir::Terminator::Branch {
+            cond: mir::Operand::Local(exhausted_local),
+            then_block: exit_bb_id,
+            else_block: body_bb_id,
+        };
+
+        // Body: rt_tuple_cmp(cand, best, op_tag) returns i8 (0 or 1).
+        self.push_block(body_bb);
+        let cmp_dest = self.alloc_and_add_local(Type::Bool, mir_func);
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: cmp_dest,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CMP_TUPLE_ORD),
+            args: vec![
+                mir::Operand::Local(cand_local),
+                mir::Operand::Local(best_local),
+                mir::Operand::Constant(mir::Constant::Int(op_tag)),
+            ],
+        });
+        self.current_block_mut().terminator = mir::Terminator::Branch {
+            cond: mir::Operand::Local(cmp_dest),
+            then_block: update_bb_id,
+            else_block: continue_bb_id,
+        };
+
+        // Update: best := cand.
+        self.push_block(update_bb);
+        self.emit_instruction(mir::InstructionKind::Copy {
+            dest: best_local,
+            src: mir::Operand::Local(cand_local),
+        });
+        self.current_block_mut().terminator = mir::Terminator::Goto(continue_bb_id);
+
+        // Continue: back to header.
+        self.push_block(continue_bb);
+        self.current_block_mut().terminator = mir::Terminator::Goto(header_bb_id);
+
+        self.push_block(exit_bb);
+        best_local
     }
 }

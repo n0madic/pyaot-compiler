@@ -1129,12 +1129,24 @@ assert sum(x * y for x, y in [(1, 4), (2, 5), (3, 6)]) == 32
 _ct_nested_sum = sum(a * b + c for a, (b, c) in [(1, (2, 3)), (4, (5, 6))])
 assert _ct_nested_sum == (1 * 2 + 3) + (4 * 5 + 6)
 
-# max over gen-expr yielding tuples — yield-type must shape-infer as
-# Tuple([Int, Int]) or max() dispatches to Int and returns garbage.
-# NB: min() on gen-expr of tuples still has a separate pre-existing bug
-# where the fold returns the first element; tracked outside §C.6.
+# min/max over gen-expr yielding tuples — Area G §G.4 routes tuple-yielding
+# iterators through `rt_tuple_cmp` (lexicographic) instead of raw pointer
+# comparison. Before the fix, `min` returned the first element (pointer
+# Lt against later allocations was always false); `max` was accidentally
+# correct because higher-address tuples happened to also be lex-greater.
 _ct_max = max((v, i) for i, v in enumerate([3, 1, 4, 1, 5]))
 assert _ct_max == (5, 4)
+_ct_min = min((v, i) for i, v in enumerate([3, 1, 4, 1, 5]))
+assert _ct_min == (1, 1)
+
+# 3-tuple yield, lexicographic compare
+_g4_data = [(1, 2, 3), (1, 2, 4), (1, 1, 9)]
+assert min((a, b, c) for a, b, c in _g4_data) == (1, 1, 9)
+assert max((a, b, c) for a, b, c in _g4_data) == (1, 2, 4)
+
+# Tie-breaking: strict `<` / `>` keeps the first-seen best on tie.
+assert min((v, i) for i, v in enumerate([3, 1, 1, 4])) == (1, 1)
+assert max((v, i) for i, v in enumerate([4, 1, 4, 1])) == (4, 2)
 
 # zip over Var-typed module-level lists (shape-infer via VarTypeMap)
 _ct_wo = [10, 20, 30]
