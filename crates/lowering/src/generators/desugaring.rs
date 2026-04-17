@@ -607,6 +607,31 @@ impl<'a> Lowering<'a> {
             return Ok(());
         }
 
+        // Area G §G.10: propagate capture types onto gen-expr creator
+        // params before desugaring. Gen-exprs receive their free variables
+        // through `ExprKind::Closure { func, captures }` (see
+        // comprehensions.rs::desugar_generator_expression). At call time,
+        // `lower_closure_call` prepends capture values to the call args,
+        // so the creator's first N params *are* the captures. The frontend
+        // creates those params with `ty: None`, but the resume function's
+        // for-loop element type (used for `rt_tuple_get_int` vs the
+        // generic `rt_tuple_get`) is inferred here at desugar time via
+        // `VarTypeMap`, which only sees typed params. Without this pass a
+        // nested gen-expr like
+        //     [sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]
+        // leaves the inner zip's tuple elements as `Any` and the
+        // `wi * xi` multiplication overflows on raw pointers.
+        //
+        // Iterate up to a small bound so nested captures (inner gen-expr
+        // capturing an outer gen-expr's capture param) converge.
+        let gen_func_set: std::collections::HashSet<FuncId> =
+            gen_func_ids.iter().copied().collect();
+        for _ in 0..3 {
+            if !self.propagate_genexp_capture_types(hir_module, &gen_func_set) {
+                break;
+            }
+        }
+
         // Find max VarId in the module to allocate fresh VarIds above it
         let mut max_var_id: u32 = 0;
         for func in hir_module.func_defs.values() {
@@ -621,6 +646,65 @@ impl<'a> Lowering<'a> {
         }
 
         Ok(())
+    }
+
+    /// For every `ExprKind::Closure { func, captures }` whose `func` is a
+    /// gen-expr creator, resolve each capture's type via `VarTypeMap` and
+    /// write it onto the corresponding `func.params[i].ty`. Returns
+    /// `true` if any param type was updated — callers can iterate to
+    /// fixed-point for nested gen-expr chains.
+    fn propagate_genexp_capture_types(
+        &self,
+        m: &mut hir::Module,
+        gen_func_set: &std::collections::HashSet<FuncId>,
+    ) -> bool {
+        let vmap = VarTypeMap::build(m);
+        // Collect (func_id, param_idx -> type) updates before mutating to
+        // satisfy the borrow checker.
+        let mut updates: Vec<(FuncId, Vec<(usize, Type)>)> = Vec::new();
+        for (_eid, expr) in m.exprs.iter() {
+            if let hir::ExprKind::Closure { func, captures } = &expr.kind {
+                if !gen_func_set.contains(func) {
+                    continue;
+                }
+                let Some(func_def) = m.func_defs.get(func) else {
+                    continue;
+                };
+                let mut param_updates = Vec::new();
+                for (i, cap_id) in captures.iter().enumerate() {
+                    if i >= func_def.params.len() {
+                        break;
+                    }
+                    if func_def.params[i].ty.is_some() {
+                        continue;
+                    }
+                    let cap_expr = &m.exprs[*cap_id];
+                    let ty = shape_infer_type(m, &vmap, *cap_id, 0, self.interner)
+                        .or_else(|| cap_expr.ty.clone())
+                        .unwrap_or(Type::Any);
+                    if !matches!(ty, Type::Any) {
+                        param_updates.push((i, ty));
+                    }
+                }
+                if !param_updates.is_empty() {
+                    updates.push((*func, param_updates));
+                }
+            }
+        }
+
+        let changed = !updates.is_empty();
+        for (func_id, param_updates) in updates {
+            if let Some(func_def) = m.func_defs.get_mut(&func_id) {
+                for (idx, ty) in param_updates {
+                    if let Some(param) = func_def.params.get_mut(idx) {
+                        if param.ty.is_none() {
+                            param.ty = Some(ty);
+                        }
+                    }
+                }
+            }
+        }
+        changed
     }
 
     fn desugar_one_generator(

@@ -1201,13 +1201,18 @@ def _g3_stress() -> int:
 
 assert _g3_stress() == sum(i * i for i in range(1000))
 
-# Note: nested gen-exprs over captured lists (e.g. the microgpt.py:95
-# `[sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]` pattern) still hit
-# the same type-propagation gap as function-local `dict.items()` captures:
-# the inner zip's tuple elements collapse to Any, so `wi * xi` overflows on
-# pointers. The single-level list-capture payload above is the primary fix
-# and closes the microgpt.py:95 pattern's function-local list capture as
-# long as the multiplication happens at one level.
+
+# Nested gen-exprs over captured lists — the microgpt.py:95 pattern.
+# §G.10 adds a pre-desugar pass (`propagate_genexp_capture_types`) that
+# writes capture types onto gen-expr creator params so the resume's
+# for-loop element type resolves to `Tuple([Int, Int])` instead of Any,
+# giving `rt_tuple_get_int` for the unpack.
+def _g3_linear(x: list[int], w: list[list[int]]) -> list[int]:
+    return [sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]
+
+
+assert _g3_linear([1, 2, 3], [[10, 20, 30], [1, 1, 1]]) == [140, 6]
+assert _g3_linear([1, 1, 1], [[1, 2, 3], [4, 5, 6], [0, 0, 0]]) == [6, 15, 0]
 
 print("§G.3 heap-captured gen-expr tests passed!")
 

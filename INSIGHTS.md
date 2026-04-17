@@ -1050,17 +1050,38 @@ Mirror the lambda capture pattern in
   downstream `sum` / `min` / `max` to see `Iterator(…)` and dispatch
   correctly.
 
-### Known gaps
+### Nested captures (§G.10)
 
-- **Nested gen-exprs over captures** (e.g.
-  `[sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]`) — the outer
-  `w` is captured correctly, but the inner zip's tuple element types
-  collapse to `Any`, so `wi * xi` multiplies pointers and overflows.
-  The gap is in how capture types propagate into a nested gen-expr's
-  for-loop iter type inference. Single-level captures are correct.
+The naive §G.3 implementation left two cascading gaps for nested
+gen-exprs like `[sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]`:
+
+1. `precompute_closure_capture_types` recursed into `ForBind` bodies
+   without inserting the loop-target's element type into its
+   `var_types` map. Nested closures capturing loop targets (`wo`)
+   therefore saw `Any`. Fixed in `closure_scan.rs::scan_stmt_for_closures`
+   by destructuring the target against
+   `extract_iterable_element_type(iter)` before recursing.
+2. Generator desugaring runs **before** type planning, so the inner
+   gen-expr's resume body uses `VarTypeMap` to infer the for-loop
+   iter type. `VarTypeMap` only reads `param.ty` from HIR, and
+   frontend-created gen-expr capture params have `ty: None`. The inner
+   `zip(wo, x)` therefore resolved both args to `Any`, the tuple
+   unpack used generic `rt_tuple_get` (pointer return), and
+   `wi * xi` overflowed on raw pointers. Fixed in
+   `desugar_generators::propagate_genexp_capture_types` — a pre-desugar
+   pass that walks every `ExprKind::Closure` whose `func` is a
+   gen-expr creator, resolves each capture's type via `VarTypeMap`
+   (reusing `shape_infer_type` + `resolve_var_type`), and writes it
+   onto `func.params[i].ty`. Runs to a bounded fixed-point so nested
+   capture chains (inner gen-expr capturing an outer gen-expr's
+   capture param) converge.
+
+### Remaining gap
+
 - **`dict.items()` inside a gen-expr** (both module-level and
   function-local) silently fails: the `(_k, v)` tuple-unpack doesn't
-  carry the dict value type. Pre-existing — separate from §G.3.
+  carry the dict value type. Pre-existing — separate from §G.3 /
+  §G.10, tracked independently.
 
 ## Lexicographic min/max on Tuple-Yielding Iterators (Area G §G.4)
 

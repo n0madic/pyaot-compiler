@@ -67,9 +67,37 @@ impl<'a> Lowering<'a> {
                 }
             }
             hir::StmtKind::ForBind {
-                body, else_block, ..
+                target,
+                iter,
+                body,
+                else_block,
+            } => {
+                // Scan the iter expression first — it can contain nested
+                // closures (e.g. the list-comp/gen-expr case
+                // `[... for wo in <gen-expr>]`) whose captures need recording.
+                let iter_expr = &hir_module.exprs[*iter];
+                self.scan_expr_for_closures(iter_expr, hir_module, var_types);
+
+                // Propagate the loop-target's element type into `var_types`
+                // so closures **inside** the body (Area G §G.10 gap) see the
+                // concrete type of captured loop targets instead of `Any`.
+                // Without this, a nested gen-expr like
+                //     [sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]
+                // infers `wo` as `Any` when computing the inner closure's
+                // capture types, which cascades into `Tuple([Any, Any])` for
+                // the `zip` yield and raw-pointer tuple unpacks at runtime.
+                let iter_ty = self.infer_deep_expr_type(iter_expr, hir_module, var_types);
+                let elem_ty = extract_iterable_element_type(&iter_ty);
+                insert_target_types(target, &elem_ty, var_types);
+
+                for stmt_id in body {
+                    self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
+                }
+                for stmt_id in else_block {
+                    self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
+                }
             }
-            | hir::StmtKind::While {
+            hir::StmtKind::While {
                 body, else_block, ..
             } => {
                 for stmt_id in body {
@@ -400,5 +428,51 @@ impl<'a> Lowering<'a> {
         }
         param_hints.extend(make_hints(elem_type));
         self.insert_lambda_param_type_hints(func_id, param_hints);
+    }
+}
+
+/// Recursively walk a `BindingTarget`, inserting the destructured element
+/// type into `var_types` for each `Var` leaf. Used by the `ForBind` arm of
+/// `scan_stmt_for_closures` to propagate loop-target types so nested
+/// closures capturing those targets infer concrete types (§G.10).
+///
+/// Mirrors the destructuring logic in `local_prescan::absorb_into_targets`
+/// but without the loop-depth / loop-only bookkeeping, since this scanner
+/// tracks only closure-capture types.
+fn insert_target_types(
+    target: &hir::BindingTarget,
+    elem_ty: &Type,
+    var_types: &mut IndexMap<VarId, Type>,
+) {
+    match target {
+        hir::BindingTarget::Var(var_id) => {
+            var_types.insert(*var_id, elem_ty.clone());
+        }
+        hir::BindingTarget::Tuple { elts, .. } => match elem_ty {
+            Type::Tuple(types) if types.len() == elts.len() => {
+                for (elt, t) in elts.iter().zip(types) {
+                    insert_target_types(elt, t, var_types);
+                }
+            }
+            Type::TupleVar(inner) => {
+                for elt in elts {
+                    insert_target_types(elt, inner, var_types);
+                }
+            }
+            _ => {
+                for elt in elts {
+                    insert_target_types(elt, &Type::Any, var_types);
+                }
+            }
+        },
+        hir::BindingTarget::Starred { inner, .. } => {
+            // Starred captures a list of the outer element type.
+            insert_target_types(inner, &Type::List(Box::new(elem_ty.clone())), var_types);
+        }
+        hir::BindingTarget::Attr { .. }
+        | hir::BindingTarget::Index { .. }
+        | hir::BindingTarget::ClassAttr { .. } => {
+            // Not a variable binding — nothing to record.
+        }
     }
 }
