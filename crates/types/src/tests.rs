@@ -137,3 +137,112 @@ fn test_narrow_excluding_all_returns_never() {
 fn test_never_display() {
     assert_eq!(format!("{}", Type::Never), "Never");
 }
+
+// ---------------------------------------------------------------------------
+// Area E §E.1 — numeric tower helpers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_promote_numeric_tower() {
+    // All 9 numeric combinations (Bool, Int, Float × Bool, Int, Float).
+    let cases = [
+        (Type::Bool, Type::Bool, Type::Bool),
+        (Type::Bool, Type::Int, Type::Int),
+        (Type::Bool, Type::Float, Type::Float),
+        (Type::Int, Type::Bool, Type::Int),
+        (Type::Int, Type::Int, Type::Int),
+        (Type::Int, Type::Float, Type::Float),
+        (Type::Float, Type::Bool, Type::Float),
+        (Type::Float, Type::Int, Type::Float),
+        (Type::Float, Type::Float, Type::Float),
+    ];
+    for (a, b, expected) in cases {
+        assert_eq!(
+            Type::promote_numeric(&a, &b),
+            Some(expected.clone()),
+            "promote_numeric({a:?}, {b:?}) should be {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn test_promote_numeric_non_numeric_returns_none() {
+    assert_eq!(Type::promote_numeric(&Type::Int, &Type::Str), None);
+    assert_eq!(Type::promote_numeric(&Type::Str, &Type::Int), None);
+    assert_eq!(Type::promote_numeric(&Type::Any, &Type::Int), None);
+    assert_eq!(Type::promote_numeric(&Type::None, &Type::Bool), None);
+}
+
+#[test]
+fn test_unify_numeric_falls_back_to_union() {
+    // Numeric — promotes.
+    assert_eq!(Type::unify_numeric(&Type::Int, &Type::Float), Type::Float);
+    assert_eq!(Type::unify_numeric(&Type::Bool, &Type::Int), Type::Int);
+    // Non-numeric pair — falls back to Union.
+    let u = Type::unify_numeric(&Type::Int, &Type::Str);
+    match u {
+        Type::Union(members) => {
+            assert_eq!(members.len(), 2);
+            assert!(members.contains(&Type::Int));
+            assert!(members.contains(&Type::Str));
+        }
+        other => panic!("expected Union, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_unify_field_type_identity() {
+    // unify_field_type(T, T) == T for every T.
+    for t in [
+        Type::Int,
+        Type::Float,
+        Type::Bool,
+        Type::Str,
+        Type::None,
+        Type::List(Box::new(Type::Int)),
+        Type::Tuple(vec![Type::Int, Type::Str]),
+        Type::TupleVar(Box::new(Type::Int)),
+    ] {
+        assert_eq!(
+            Type::unify_field_type(&t, &t),
+            t,
+            "identity law broken for {t:?}"
+        );
+    }
+}
+
+#[test]
+fn test_unify_field_type_defers_to_tuple_shapes() {
+    // Different-length tuples → TupleVar per Area D.
+    let a = Type::Tuple(vec![Type::Int]);
+    let b = Type::Tuple(vec![Type::Int, Type::Int]);
+    let merged = Type::unify_field_type(&a, &b);
+    assert!(matches!(merged, Type::TupleVar(_)));
+}
+
+#[test]
+fn test_unify_field_type_numeric_promotion() {
+    // Non-tuple numerics → numeric tower.
+    assert_eq!(
+        Type::unify_field_type(&Type::Int, &Type::Float),
+        Type::Float
+    );
+    assert_eq!(Type::unify_field_type(&Type::Bool, &Type::Int), Type::Int);
+    assert_eq!(
+        Type::unify_field_type(&Type::Bool, &Type::Float),
+        Type::Float
+    );
+}
+
+#[test]
+fn test_reflected_name_comparison_pairs() {
+    use crate::dunders::reflected_name;
+    assert_eq!(reflected_name("__lt__"), Some("__gt__"));
+    assert_eq!(reflected_name("__gt__"), Some("__lt__"));
+    assert_eq!(reflected_name("__le__"), Some("__ge__"));
+    assert_eq!(reflected_name("__ge__"), Some("__le__"));
+    assert_eq!(reflected_name("__eq__"), Some("__eq__"));
+    assert_eq!(reflected_name("__ne__"), Some("__ne__"));
+    // Non-dunder sanity check.
+    assert_eq!(reflected_name("__str__"), None);
+}

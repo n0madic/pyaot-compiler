@@ -185,6 +185,13 @@ pub fn reflected_name(forward: &str) -> Option<&'static str> {
         "__xor__" => "__rxor__",
         "__lshift__" => "__rlshift__",
         "__rshift__" => "__rrshift__",
+        // Comparison (per Python data model — symmetric pairs)
+        "__lt__" => "__gt__",
+        "__gt__" => "__lt__",
+        "__le__" => "__ge__",
+        "__ge__" => "__le__",
+        "__eq__" => "__eq__",
+        "__ne__" => "__ne__",
         _ => return None,
     })
 }
@@ -375,8 +382,19 @@ mod tests {
     }
 
     #[test]
-    fn reflected_name_returns_none_for_non_binary() {
-        assert_eq!(reflected_name("__eq__"), None);
+    fn reflected_name_comparison_pairs() {
+        // Comparison dunders have reflected forms (added in Area E §E.7).
+        assert_eq!(reflected_name("__lt__"), Some("__gt__"));
+        assert_eq!(reflected_name("__gt__"), Some("__lt__"));
+        assert_eq!(reflected_name("__le__"), Some("__ge__"));
+        assert_eq!(reflected_name("__ge__"), Some("__le__"));
+        // __eq__ / __ne__ are self-reflected.
+        assert_eq!(reflected_name("__eq__"), Some("__eq__"));
+        assert_eq!(reflected_name("__ne__"), Some("__ne__"));
+    }
+
+    #[test]
+    fn reflected_name_returns_none_for_unary_and_unknown() {
         assert_eq!(reflected_name("__neg__"), None);
         assert_eq!(reflected_name("__str__"), None);
         assert_eq!(reflected_name("random"), None);

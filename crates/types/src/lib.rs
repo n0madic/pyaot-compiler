@@ -417,6 +417,56 @@ impl Type {
         }
     }
 
+    /// PEP 3141 numeric tower: `bool ⊂ int ⊂ float`. Returns the wider of two
+    /// numeric types, or `None` if either argument is non-numeric.
+    ///
+    /// Used by [`unify_numeric`] and [`unify_field_type`] for cross-site
+    /// type unification at class fields and local variables (Area E).
+    pub fn promote_numeric(a: &Type, b: &Type) -> Option<Type> {
+        match (a, b) {
+            (Type::Float, Type::Float)
+            | (Type::Float, Type::Int)
+            | (Type::Float, Type::Bool)
+            | (Type::Int, Type::Float)
+            | (Type::Bool, Type::Float) => Some(Type::Float),
+            (Type::Int, Type::Int) | (Type::Int, Type::Bool) | (Type::Bool, Type::Int) => {
+                Some(Type::Int)
+            }
+            (Type::Bool, Type::Bool) => Some(Type::Bool),
+            _ => None,
+        }
+    }
+
+    /// Unify two types for a binding site using the numeric tower where
+    /// applicable, else fall back to [`normalize_union`].
+    ///
+    /// - `{Bool, Int}`        → `Int`
+    /// - `{Int, Float}`       → `Float`
+    /// - `{Bool, Int, Float}` → `Float`
+    /// - `{Int, Str}`         → `Union[Int, Str]` (non-numeric → union)
+    pub fn unify_numeric(a: &Type, b: &Type) -> Type {
+        if let Some(t) = Type::promote_numeric(a, b) {
+            return t;
+        }
+        Type::normalize_union(vec![a.clone(), b.clone()])
+    }
+
+    /// Single entry-point for every cross-site unification call (class
+    /// fields and local variables). Layers the Area D tuple-shape rule
+    /// on top of the numeric tower so both generalisations apply in one
+    /// place.
+    ///
+    /// When either argument is tuple-shaped, defers to
+    /// [`unify_tuple_shapes`]; otherwise applies [`unify_numeric`].
+    pub fn unify_field_type(a: &Type, b: &Type) -> Type {
+        if matches!(a, Type::Tuple(_) | Type::TupleVar(_))
+            || matches!(b, Type::Tuple(_) | Type::TupleVar(_))
+        {
+            return Type::unify_tuple_shapes(a, b);
+        }
+        Type::unify_numeric(a, b)
+    }
+
     /// Check if type is a subtype of another
     pub fn is_subtype_of(&self, other: &Type) -> bool {
         match (self, other) {
