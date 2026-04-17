@@ -287,7 +287,7 @@ impl AstToHir {
                             // scan). Tuple-shape merge only kicks in when the new
                             // observation is itself a meaningful type.
                             if !matches!(inferred_ty, Type::Any) {
-                                existing.ty = Type::unify_tuple_shapes(&existing.ty, &inferred_ty);
+                                existing.ty = Type::unify_field_type(&existing.ty, &inferred_ty);
                             }
                         } else {
                             // First method to reference this field introduces it.
@@ -720,9 +720,33 @@ impl AstToHir {
                                         self.infer_field_type_from_rhs(&assign.value, param_types);
                                     out.entry(field_name)
                                         .and_modify(|prev| {
-                                            *prev = Type::unify_tuple_shapes(prev, &ty)
+                                            *prev = Type::unify_field_type(prev, &ty)
                                         })
                                         .or_insert(ty);
+                                }
+                            }
+                        }
+                    }
+                }
+                // `self.f <op>= <rhs>` — merge the RHS type through the
+                // numeric tower (Area E §E.3). `x += y` desugars to
+                // `x = x + y` in HIR, but the AST-level scan runs before
+                // desugaring and sees `AugAssign` directly; without this
+                // arm, compound assignments on fields were invisible and
+                // could not widen the inferred field type.
+                py::Stmt::AugAssign(aug) => {
+                    if let py::Expr::Attribute(attr) = &*aug.target {
+                        if let py::Expr::Name(name) = &*attr.value {
+                            if name.id.as_str() == "self" {
+                                let field_name = attr.attr.to_string();
+                                let rhs_ty =
+                                    self.infer_field_type_from_rhs(&aug.value, param_types);
+                                if !matches!(rhs_ty, Type::Any) {
+                                    out.entry(field_name)
+                                        .and_modify(|prev| {
+                                            *prev = Type::unify_field_type(prev, &rhs_ty)
+                                        })
+                                        .or_insert(rhs_ty);
                                 }
                             }
                         }
@@ -801,6 +825,14 @@ impl AstToHir {
                 py::Constant::None => Type::None,
                 _ => Type::Any,
             },
+            // Narrow numeric-BinOp inference: common idiom `self.x = self.x + 0.5`.
+            // Only attempts numeric-tower promotion on the two operand types;
+            // non-numeric mixes bail out to Any (conservative).
+            py::Expr::BinOp(bop) => {
+                let lhs = self.infer_field_type_from_rhs(&bop.left, param_types);
+                let rhs = self.infer_field_type_from_rhs(&bop.right, param_types);
+                Type::promote_numeric(&lhs, &rhs).unwrap_or(Type::Any)
+            }
             _ => Type::Any,
         }
     }

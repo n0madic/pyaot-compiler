@@ -2189,4 +2189,52 @@ assert Maker().make().name() == "Made", "forward ref to later class"
 
 print("String forward reference annotations (§D.7): PASS")
 
+# =============================================================================
+# Cross-site field type inference with numeric tower (§E.3)
+# =============================================================================
+# PEP 3141 numeric tower (bool ⊂ int ⊂ float) applied to class fields when
+# observations across multiple methods disagree. AugAssign on self-fields
+# is now captured in the field scan.
+
+# Headline: int-initialized field widens to float via AugAssign.
+class AccE3:
+    def __init__(self):
+        self.total = 0
+    def add(self, x: float):
+        self.total += x
+
+acc_e3 = AccE3()
+acc_e3.add(0.5)
+acc_e3.add(0.25)
+assert abs(acc_e3.total - 0.75) < 1e-9, f"E.3 acc.total = {acc_e3.total}"
+acc_e3.total = 0                      # int literal into widened float field
+acc_e3.add(1.5)
+assert abs(acc_e3.total - 1.5) < 1e-9, f"E.3 acc.total after reset = {acc_e3.total}"
+
+# Bool widens to int via numeric-tower rule.
+class CounterE3:
+    def __init__(self):
+        self.n = False
+    def tick(self):
+        self.n += 1
+
+counter_e3 = CounterE3()
+counter_e3.tick()
+counter_e3.tick()
+assert counter_e3.n == 2, f"E.3 counter.n = {counter_e3.n}"
+
+# Mixed int / float seeding across methods → field unifies to float.
+class WeightedE3:
+    def __init__(self):
+        self.w = 0
+    def seed_float(self):
+        self.w = 1.0
+
+weighted_e3 = WeightedE3()
+weighted_e3.seed_float()
+weighted_e3.w += 0.5
+assert abs(weighted_e3.w - 1.5) < 1e-9, f"E.3 weighted.w = {weighted_e3.w}"
+
+print("Cross-site field numeric promotion (§E.3): PASS")
+
 print("All class tests passed!")
