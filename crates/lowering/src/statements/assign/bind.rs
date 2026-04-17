@@ -38,7 +38,14 @@ impl<'a> Lowering<'a> {
                 let obj_expr = &hir_module.exprs[*obj];
                 let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
                 let obj_type = self.get_type_of_expr_id(*obj, hir_module);
-                self.bind_attr_op(obj_operand, &obj_type, *field, value_operand, mir_func)
+                self.bind_attr_op(
+                    obj_operand,
+                    &obj_type,
+                    *field,
+                    value_operand,
+                    value_type,
+                    mir_func,
+                )
             }
             hir::BindingTarget::Index { obj, index, .. } => {
                 let obj_expr = &hir_module.exprs[*obj];
@@ -345,12 +352,19 @@ impl<'a> Lowering<'a> {
 
     /// Bind an already-lowered RHS operand into `obj.field` (instance field
     /// or `@property` setter).
+    ///
+    /// When the declared field type is wider than the value type through
+    /// the numeric tower (Area E §E.3), emits an `IntToFloat` conversion
+    /// before the runtime call — `self.total = 0` into a `float`-widened
+    /// field stores `0.0`, not the bit-pattern of `0_i64`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn bind_attr_op(
         &mut self,
         obj_operand: mir::Operand,
         obj_type: &Type,
         field: InternedString,
         value_operand: mir::Operand,
+        value_type: &Type,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
         if let Type::Class { class_id, .. } = obj_type {
@@ -368,6 +382,13 @@ impl<'a> Lowering<'a> {
                 }
                 // 2. Regular instance field
                 if let Some(&offset) = class_info.field_offsets.get(&field) {
+                    let field_ty = class_info
+                        .field_types
+                        .get(&field)
+                        .cloned()
+                        .unwrap_or(Type::Any);
+                    let coerced =
+                        self.coerce_to_field_type(value_operand, value_type, &field_ty, mir_func);
                     self.emit_runtime_call(
                         mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD,
@@ -375,7 +396,7 @@ impl<'a> Lowering<'a> {
                         vec![
                             obj_operand,
                             mir::Operand::Constant(mir::Constant::Int(offset as i64)),
-                            value_operand,
+                            coerced,
                         ],
                         Type::None,
                         mir_func,
@@ -404,6 +425,50 @@ impl<'a> Lowering<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Coerce `value_operand` to match the declared `field_ty` before it is
+    /// stored via `rt_instance_set_field`. The runtime stores every field
+    /// as a raw `i64`; read-side codegen then interprets those bits
+    /// according to the field's declared type. Without coercion, writing
+    /// an `Int` literal into a field that was widened to `Float` (Area E
+    /// §E.3) stores the `i64` bit-pattern, which the read would later
+    /// bitcast into a subnormal `f64`.
+    ///
+    /// Rules:
+    /// - `(Int | Bool, Float)` → emit `IntToFloat` (reuses
+    ///   `promote_to_float_if_needed`).
+    /// - `(primitive, Union | Any | HeapAny)` → box via
+    ///   `box_primitive_if_needed` so the field can hold a heap pointer.
+    /// - Everything else — identity. `Bool → Int` is a safe bit-extension
+    ///   handled by the existing `GlobalSet(Ptr)` pattern (Cranelift zero-
+    ///   extends `i8` to `i64`).
+    pub(crate) fn coerce_to_field_type(
+        &mut self,
+        value_operand: mir::Operand,
+        value_ty: &Type,
+        field_ty: &Type,
+        mir_func: &mut mir::Function,
+    ) -> mir::Operand {
+        // Identity — no coercion required.
+        if value_ty == field_ty {
+            return value_operand;
+        }
+        match (value_ty, field_ty) {
+            // Numeric tower widening.
+            (Type::Int | Type::Bool, Type::Float) => {
+                self.promote_to_float_if_needed(mir_func, value_operand, value_ty)
+            }
+            // Primitive into union / dynamic field — box so the raw bits
+            // become a heap pointer.
+            (Type::Int | Type::Bool | Type::Float | Type::None, Type::Union(_))
+            | (Type::Int | Type::Bool | Type::Float | Type::None, Type::Any)
+            | (Type::Int | Type::Bool | Type::Float | Type::None, Type::HeapAny) => {
+                self.box_primitive_if_needed(value_operand, value_ty, mir_func)
+            }
+            // Everything else — identity.
+            _ => value_operand,
+        }
     }
 
     /// Bind an already-lowered RHS operand into `obj[index]`.

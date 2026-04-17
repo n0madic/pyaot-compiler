@@ -520,7 +520,7 @@ impl<'a> Lowering<'a> {
 
     /// Promote an operand to float if needed.
     /// Returns the operand unchanged if already float, otherwise emits IntToFloat conversion.
-    pub(super) fn promote_to_float_if_needed(
+    pub(crate) fn promote_to_float_if_needed(
         &mut self,
         mir_func: &mut mir::Function,
         operand: mir::Operand,

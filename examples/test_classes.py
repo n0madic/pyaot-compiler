@@ -2207,9 +2207,13 @@ acc_e3 = AccE3()
 acc_e3.add(0.5)
 acc_e3.add(0.25)
 assert abs(acc_e3.total - 0.75) < 1e-9, f"E.3 acc.total = {acc_e3.total}"
-acc_e3.total = 0                      # int literal into widened float field
+acc_e3.total = 0                      # int literal 0 (bit-compatible with 0.0)
 acc_e3.add(1.5)
 assert abs(acc_e3.total - 1.5) < 1e-9, f"E.3 acc.total after reset = {acc_e3.total}"
+acc_e3.total = 5                      # non-zero int → must coerce to 5.0
+assert abs(acc_e3.total - 5.0) < 1e-9, f"E.3 acc.total after int 5 = {acc_e3.total}"
+acc_e3.add(0.5)
+assert abs(acc_e3.total - 5.5) < 1e-9, f"E.3 acc.total after +0.5 = {acc_e3.total}"
 
 # Bool widens to int via numeric-tower rule.
 class CounterE3:

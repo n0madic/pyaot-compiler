@@ -58,7 +58,7 @@ impl<'a> Lowering<'a> {
     /// and pass through unchanged.
     ///
     /// Uses `Type::HeapAny` for the boxed result type since boxing produces a generic heap pointer.
-    fn box_primitive_if_needed(
+    pub(crate) fn box_primitive_if_needed(
         &mut self,
         operand: mir::Operand,
         ty: &Type,
