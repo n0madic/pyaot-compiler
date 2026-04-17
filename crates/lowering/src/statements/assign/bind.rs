@@ -341,11 +341,22 @@ impl<'a> Lowering<'a> {
         value_type: &Type,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
-        self.insert_var_type(var_id, value_type.clone());
-        let dest_local = self.get_or_create_local(var_id, value_type.clone(), mir_func);
+        // Prefer the pre-scanned unified type (Area E §E.6) so the MIR
+        // local is typed consistently across all writes. Locals widened
+        // through the numeric tower store via the same coercion path
+        // used for class fields (§E.3 Part B).
+        let local_ty = self
+            .symbols
+            .prescan_var_types
+            .get(&var_id)
+            .cloned()
+            .unwrap_or_else(|| value_type.clone());
+        self.insert_var_type(var_id, local_ty.clone());
+        let dest_local = self.get_or_create_local(var_id, local_ty.clone(), mir_func);
+        let coerced = self.coerce_to_field_type(value_operand, value_type, &local_ty, mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {
             dest: dest_local,
-            src: value_operand,
+            src: coerced,
         });
         Ok(())
     }

@@ -309,13 +309,33 @@ impl<'a> Lowering<'a> {
             self.check_expr_type(value, hint, hir_module);
         }
 
-        // Priority: explicit type hint > existing variable type > inferred from RHS
-        // For reassignments to existing variables (especially Union types),
-        // we need to use the variable's original type, not the RHS type
+        // Priority: explicit type hint > pre-scanned unified type (Area E §E.6)
+        // > existing variable type > inferred from RHS.
+        //
+        // The pre-scan pass walks the full function body ahead of time and
+        // merges every binding observation through the numeric tower, so a
+        // local that is written `Int` once and `Float` once is typed
+        // `Float` here — and the Int write gets coerced below.
         let var_type = type_hint.unwrap_or_else(|| {
-            // Check if variable already has a type (reassignment case)
-            self.get_var_type(&target)
+            // Priority: refined container type > prescan (when useful)
+            // > prior var_type > RHS inference.
+            //
+            // Prescan is skipped if it's "uselessly wide" — an Any-
+            // parameterised container (Dict(Any, Any), List(Any),
+            // Set(Any)) — because the RHS-driven inference or later
+            // refinement will produce a tighter type.
+            let prescan = self
+                .symbols
+                .prescan_var_types
+                .get(&target)
                 .cloned()
+                .filter(|ty| !crate::is_useless_container_ty(ty));
+            self.types
+                .refined_var_types
+                .get(&target)
+                .cloned()
+                .or(prescan)
+                .or_else(|| self.get_var_type(&target).cloned())
                 .unwrap_or_else(|| self.get_type_of_expr_id(value, hir_module))
         });
         // Track the variable type for later reference
@@ -330,11 +350,14 @@ impl<'a> Lowering<'a> {
             self.lower_expr_expecting(expr, Some(var_type.clone()), hir_module, mir_func)?;
 
         // Box primitives when assigning to Union type (or narrowed Union variable)
+        // or coerce through the numeric tower when the target local is
+        // wider than the RHS (Area E §E.6: `x = 0; x += 0.5` widens
+        // `x: Float`; the literal `0` must be `IntToFloat`'d).
+        let value_type = self.get_type_of_expr_id(value, hir_module);
         let final_operand = if var_type.is_union() || original_union_type.is_some() {
-            let value_type = self.get_type_of_expr_id(value, hir_module);
             self.box_primitive_if_needed(value_operand, &value_type, mir_func)
         } else {
-            value_operand
+            self.coerce_to_field_type(value_operand, &value_type, &var_type, mir_func)
         };
 
         // Check if this is a global variable

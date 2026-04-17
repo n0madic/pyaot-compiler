@@ -77,6 +77,7 @@ impl<'a> Lowering<'a> {
         // Reset per-function state
         self.symbols.var_to_local.clear();
         self.symbols.var_types.clear();
+        self.symbols.prescan_var_types.clear();
         self.symbols.var_to_func.clear();
         self.closures.var_to_closure.clear();
         self.closures.var_to_wrapper.clear();
@@ -193,6 +194,25 @@ impl<'a> Lowering<'a> {
                 is_gc_root: is_cell_param || param_ty.is_heap(), // Cells are heap objects
             };
             params.push(mir_param);
+        }
+
+        // Area E §E.6 — copy this function's pre-scan results (computed
+        // during `run_type_planning::precompute_all_local_var_types`) into
+        // the active `prescan_var_types` map. `get_or_create_local` and
+        // `lower_assign` consult it to size MIR locals and coerce RHS
+        // values through the numeric tower.
+        if let Some(prescanned) = self
+            .symbols
+            .per_function_prescan_var_types
+            .get(&func.id)
+            .cloned()
+        {
+            for (var_id, ty) in prescanned {
+                // Skip params — their MIR local types come from signatures.
+                if !func.params.iter().any(|p| p.var == var_id) {
+                    self.symbols.prescan_var_types.insert(var_id, ty);
+                }
+            }
         }
 
         // Infer return type for functions without explicit return type annotation

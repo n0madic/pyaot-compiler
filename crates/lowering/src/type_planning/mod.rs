@@ -11,6 +11,7 @@ mod container_refine;
 pub(crate) mod helpers;
 pub(crate) mod infer;
 mod lambda_inference;
+mod local_prescan;
 pub(crate) mod ni_analysis;
 mod validate;
 
@@ -28,6 +29,11 @@ impl<'a> Lowering<'a> {
         self.process_module_decorated_functions(hir_module);
         self.refine_empty_container_types(hir_module);
         self.infer_all_return_types(hir_module);
+        self.precompute_all_local_var_types(hir_module);
+        // Area E §E.6 — re-infer return types for unannotated functions
+        // after prescan has widened any numeric locals (e.g.
+        // `x = 0; x += 0.5; return x` → `Float`, not `Int`).
+        self.reinfer_return_types_with_prescan(hir_module);
         self.validate_type_annotations(hir_module);
     }
 
@@ -121,6 +127,15 @@ impl<'a> Lowering<'a> {
                     });
                     param_types.insert(param.var, ty);
                 }
+                // Area E §E.6 — layer in pre-scanned local types so `return x`
+                // sees the unified type for a local that was widened across
+                // multiple writes.
+                if let Some(prescanned) = self.symbols.per_function_prescan_var_types.get(func_id) {
+                    for (var_id, ty) in prescanned {
+                        // Don't clobber param types (param annotations win).
+                        param_types.entry(*var_id).or_insert_with(|| ty.clone());
+                    }
+                }
 
                 // Scan body for return statements
                 let return_type =
@@ -139,6 +154,63 @@ impl<'a> Lowering<'a> {
 
                 self.func_return_types.inner.insert(*func_id, return_type);
             }
+        }
+    }
+
+    /// Re-infer return types for functions whose local types widened
+    /// through the Area E §E.6 prescan (e.g. `x = 0; x += 0.5; return x`
+    /// returns `Float`, not `Int`). Only touches functions that have a
+    /// prescan entry and are NOT explicitly annotated — annotated
+    /// signatures are authoritative.
+    fn reinfer_return_types_with_prescan(&mut self, hir_module: &hir::Module) {
+        let func_ids = hir_module.functions.to_vec();
+        for func_id in &func_ids {
+            let Some(func) = hir_module.func_defs.get(func_id) else {
+                continue;
+            };
+            // Skip explicitly annotated functions.
+            if let Some(ref rt) = func.return_type {
+                if *rt != Type::None {
+                    continue;
+                }
+            }
+            if func.body.is_empty() {
+                continue;
+            }
+            let Some(prescanned) = self
+                .symbols
+                .per_function_prescan_var_types
+                .get(func_id)
+                .cloned()
+            else {
+                continue;
+            };
+            // Build param_types merging param annotations + prescan.
+            let hints = self.closures.lambda_param_type_hints.get(func_id).cloned();
+            let mut param_types: IndexMap<VarId, Type> = IndexMap::new();
+            for (i, param) in func.params.iter().enumerate() {
+                let ty = param.ty.clone().unwrap_or_else(|| {
+                    hints
+                        .as_ref()
+                        .and_then(|h| h.get(i).cloned())
+                        .unwrap_or(Type::Any)
+                });
+                param_types.insert(param.var, ty);
+            }
+            for (var_id, ty) in prescanned {
+                param_types.entry(var_id).or_insert(ty);
+            }
+            let new_rt = self.infer_return_type_from_body(&func.body, hir_module, &param_types);
+            let final_rt = if new_rt == Type::None {
+                if self.find_returned_closure(func, hir_module).is_some() {
+                    Type::Any
+                } else {
+                    Type::None
+                }
+            } else {
+                new_rt
+            };
+            self.func_return_types.inner.insert(*func_id, final_rt);
         }
     }
 

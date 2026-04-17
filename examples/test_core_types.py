@@ -472,4 +472,43 @@ assert _bidir_d["a"] == 1, "bidirectional: empty dict with type hint"
 
 print("Bidirectional type propagation tests passed!")
 
+# =============================================================================
+# Area E §E.6 — local variable type rebinding
+# =============================================================================
+# Cross-site type unification for locals via numeric tower + post-loop
+# rebind heuristic (§A.6 #3). Walks the function body before lowering and
+# merges every `Bind`/`ForBind` observation; the MIR local is then sized
+# for the unified type and each RHS is coerced through the tower.
+
+# Numeric promotion on a local via AugAssign inside a function.
+def _e6_f1() -> float:
+    x = 0
+    x += 0.5
+    x += 0.25
+    return x
+
+assert abs(_e6_f1() - 0.75) < 1e-9, "E.6 augassign int->float in function"
+
+# Bool absorbed by Int on AugAssign in function.
+def _e6_f2() -> int:
+    flag = False
+    flag += 1
+    flag += 1
+    return flag
+
+assert _e6_f2() == 2, "E.6 augassign bool->int in function"
+
+# Post-loop rebind (§A.6 #3 — previously failed with "unknown attribute").
+class _E6Wrapper:
+    def __init__(self) -> None:
+        self.x = 0
+
+for _e6_a, _e6_b in [(1, 2), (3, 4)]:
+    pass
+_e6_c = _E6Wrapper()
+_e6_c.x = 99
+assert _e6_c.x == 99, "E.6 post-loop rebind to class instance"
+
+print("Local variable type rebinding (§E.6): PASS")
+
 print("All core types and operator tests passed!")

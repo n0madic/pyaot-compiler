@@ -81,6 +81,8 @@ impl<'a> Lowering<'a> {
                 globals: IndexSet::with_capacity(32),
                 global_var_types: IndexMap::with_capacity(32),
                 var_types: IndexMap::with_capacity(estimated_vars),
+                prescan_var_types: IndexMap::with_capacity(estimated_vars),
+                per_function_prescan_var_types: IndexMap::with_capacity(func_count),
                 narrowed_union_vars: IndexMap::with_capacity(16),
                 cell_vars: IndexSet::with_capacity(16),
                 nonlocal_cells: IndexMap::with_capacity(16),

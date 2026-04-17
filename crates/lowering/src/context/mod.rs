@@ -261,6 +261,19 @@ pub struct SymbolTable {
     /// Populated during lowering as assignments are processed.
     /// Distinct from `TypeEnvironment::refined_var_types` (set during type planning).
     pub var_types: IndexMap<VarId, Type>,
+    /// Pre-scanned unified types for locals (Area E §E.6). Populated by
+    /// `precompute_var_types` before each function's body is lowered. When
+    /// present, `get_or_create_local` uses the pre-scan type to size the
+    /// MIR local so later rebinds with wider numeric / incompatible types
+    /// can still be stored. Cleared per function from
+    /// `per_function_prescan_var_types[func_id]`.
+    pub prescan_var_types: IndexMap<VarId, Type>,
+    /// Per-function pre-scan results (Area E §E.6). Computed during
+    /// `run_type_planning` so that `infer_all_return_types` can see
+    /// unified local types when inferring `return x`. Survives across
+    /// functions; `lower_function` copies the relevant entry into
+    /// `prescan_var_types` for the current function.
+    pub per_function_prescan_var_types: IndexMap<FuncId, IndexMap<VarId, Type>>,
     /// Track original types of narrowed Union variables (for unboxing during reads).
     /// Cleared per function.
     pub narrowed_union_vars: IndexMap<VarId, Type>,

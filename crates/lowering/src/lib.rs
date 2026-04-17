@@ -32,6 +32,18 @@ fn first_arg_or_none(args: Vec<mir::Operand>) -> mir::Operand {
         .unwrap_or(mir::Operand::Constant(mir::Constant::None))
 }
 
+/// Whether `ty` is a container type with `Any` element / key / value
+/// parameters. Used by the Area E §E.6 prescan consumers to defer to
+/// later, more precise type sources (RHS inference, `refined_var_types`,
+/// etc.) rather than hard-coding a shape that will be tightened later.
+pub(crate) fn is_useless_container_ty(ty: &Type) -> bool {
+    match ty {
+        Type::List(e) | Type::Set(e) => **e == Type::Any,
+        Type::Dict(k, v) | Type::DefaultDict(k, v) => **k == Type::Any && **v == Type::Any,
+        _ => false,
+    }
+}
+
 impl<'a> Lowering<'a> {
     /// Helper to emit a boxing instruction and return the boxed operand.
     fn emit_box_primitive(
@@ -153,13 +165,30 @@ impl<'a> Lowering<'a> {
         if let Some(local_id) = self.get_var_local(&var_id) {
             local_id
         } else {
+            // Priority: refined container types > prescan unified type
+            // (Area E §E.6) > per-site var_type. Refined types win so
+            // `Dict(Any, Any)` tightened to `Dict(Str, Int)` by the
+            // empty-container pass is preserved.
+            let prescan = self
+                .symbols
+                .prescan_var_types
+                .get(&var_id)
+                .cloned()
+                .filter(|ty| !is_useless_container_ty(ty));
+            let ty = self
+                .types
+                .refined_var_types
+                .get(&var_id)
+                .cloned()
+                .or(prescan)
+                .unwrap_or(var_type);
             let local_id = self.alloc_local_id();
             self.insert_var_local(var_id, local_id);
             mir_func.add_local(mir::Local {
                 id: local_id,
                 name: None,
-                ty: var_type.clone(),
-                is_gc_root: var_type.is_heap(),
+                ty: ty.clone(),
+                is_gc_root: ty.is_heap(),
             });
             local_id
         }
