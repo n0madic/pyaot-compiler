@@ -42,6 +42,11 @@ pub struct Function {
     pub entry_block: BlockId,
     /// Source location of the function definition (for DWARF DW_TAG_subprogram)
     pub span: Option<Span>,
+    /// If true, the SSA property checker (`crate::ssa_check`) runs on this
+    /// function and will fail the build on invariant violations. Default is
+    /// `false`; Phase 1 of the architecture refactor flips individual
+    /// functions to `true` after rewriting them in proper SSA form.
+    pub is_ssa: bool,
 }
 
 /// Local variable in MIR
@@ -109,6 +114,7 @@ impl Function {
             blocks,
             entry_block,
             span,
+            is_ssa: false,
         }
     }
 

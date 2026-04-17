@@ -1,0 +1,20 @@
+[package]
+name = "pyaot-bench"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# This crate contains only benchmark harnesses — no library or binary code.
+# Cargo still requires a lib or bin target; we use an empty lib.
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "pyaot_bench"
+harness = false
+
+[lints.rust]
+unsafe_code = "forbid"

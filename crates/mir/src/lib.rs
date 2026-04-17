@@ -10,6 +10,7 @@ mod kinds;
 mod operands;
 mod operators;
 mod runtime_func;
+pub mod ssa_check;
 mod terminators;
 
 // Re-export all public types

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "bench",
     "crates/cli",
     "crates/core-defs",
     "crates/frontend-python",

@@ -50,6 +50,7 @@ fn make_func(locals: Vec<Local>, instructions: Vec<InstructionKind>) -> Function
         blocks,
         entry_block: block_id,
         span: None,
+        is_ssa: false,
     }
 }
 
@@ -400,6 +401,7 @@ fn test_constant_branch_simplification() {
         blocks,
         entry_block: block0,
         span: None,
+        is_ssa: false,
     };
 
     let mut module = make_module(func);

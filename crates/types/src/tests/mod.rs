@@ -1,5 +1,7 @@
 use super::*;
 
+mod lattice_props;
+
 #[test]
 fn test_optional_normalization() {
     let opt_int = Type::optional(Type::Int);

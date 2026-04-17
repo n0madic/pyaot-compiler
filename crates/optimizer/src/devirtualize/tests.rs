@@ -65,6 +65,7 @@ fn make_module_with_vtable(
         blocks,
         entry_block: block_id,
         span: None,
+        is_ssa: false,
     };
 
     // Create a stub callee function

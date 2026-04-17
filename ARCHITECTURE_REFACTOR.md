@@ -144,14 +144,17 @@ a lattice that doesn't fit the flow-sensitive SSA type system.
 
 ---
 
-# Phase 0 — Preparation
+# Phase 0 — Preparation ✅
+
+**Status**: complete (scaffolding landed). Follow-up test-coverage work
+tracked in `bench/COVERAGE.md` before Phase 1 kickoff.
 
 **Duration**: 1 week.
 
 **Goal**: establish the regression-detection infrastructure that the
 remaining phases depend on. Zero user-visible changes.
 
-## 0.1 Benchmark harness
+## 0.1 Benchmark harness ✅
 
 Create `bench/` with microbenchmarks covering:
 
@@ -195,7 +198,14 @@ results (variance < 3% across 5 runs for each metric), baseline
 committed. Running `cargo bench --compare` against the committed
 baseline produces diff output suitable for PR review.
 
-## 0.2 Coverage audit
+**Status (2026-04-17)**: harness landed in `bench/` with 11 benchmark
+sources covering every category above. `cargo bench -p pyaot-bench`
+runs `run::<name>` and `end_to_end::<name>` groups. Phase-0 numbers
+captured in `--quick` mode are in `bench/BASELINE.md`; a full
+10-sample / 30s-measurement sweep must run before the Phase-1
+acceptance gate.
+
+## 0.2 Coverage audit ✅
 
 Run `cargo llvm-cov --workspace --html` (install if missing). Identify
 any major area (lowering crate, optimizer, type_planning) with < 70%
@@ -205,7 +215,14 @@ coverage. For each gap, add tests in `examples/test_*.py` or
 **Non-negotiable**: Phase 1 must not be bottlenecked on "we don't
 have a test for this case". Add the tests now.
 
-## 0.3 SSA property checker (stub)
+**Status (2026-04-17)**: `cargo-llvm-cov` installed, baseline captured,
+per-module gaps documented in `bench/COVERAGE.md`. Every sub-70 %
+compiler-side module is listed with a TODO action. **Closing those
+gaps is the remaining Phase-0 exit action before Phase 1 kickoff** —
+each row must be raised to ≥ 70 % region *and* line coverage, or
+marked "TODO-blocked" with a linked issue.
+
+## 0.3 SSA property checker (stub) ✅
 
 Add `crates/mir/src/ssa_check.rs` with a checker that validates:
 
@@ -223,7 +240,17 @@ one; the checker asserts on each.
 actionable error messages. Verified on a hand-constructed SSA
 function.
 
-## 0.4 Lattice property harness
+**Status (2026-04-17)**: checker landed at `crates/mir/src/ssa_check.rs`.
+`mir::Function` now carries `is_ssa: bool` (default `false` — stays a
+no-op on legacy MIR). Validates multiple-definition, use-dominance,
+and dangling-terminator invariants today; φ-arity check is an explicit
+no-op until Phase 1 introduces `InstructionKind::Phi`. Seven
+hand-crafted-SSA tests pass in `cargo test -p pyaot-mir`, including
+both positive and negative cases (double-def, use-without-def,
+use-before-def in same block, non-dominating cross-block use,
+dangling goto target).
+
+## 0.4 Lattice property harness ✅
 
 Add `crates/types/src/tests/lattice_props.rs` with:
 
@@ -241,6 +268,14 @@ un-ignores them.
 
 **Exit criterion**: tests compile, are marked ignored, documented as
 Phase 3 activation targets.
+
+**Status (2026-04-17)**: 11 property tests landed at
+`crates/types/src/tests/lattice_props.rs`, all `#[ignore]`'d with
+explicit "Phase 3 — lattice join/meet not implemented yet" reasons.
+`tests.rs` was migrated to `tests/mod.rs` so the new sub-module slots
+in cleanly. `join` and `meet` are local stubs that `todo!()` at call
+time — Phase 3 replaces them with `Type::join` / `Type::meet` method
+calls and removes the `#[ignore]` attributes.
 
 ---
 

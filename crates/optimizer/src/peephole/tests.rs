@@ -49,6 +49,7 @@ fn make_func(locals: Vec<Local>, instructions: Vec<InstructionKind>) -> Function
         blocks,
         entry_block: block_id,
         span: None,
+        is_ssa: false,
     }
 }
 
