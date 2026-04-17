@@ -214,8 +214,21 @@ impl<'a> Lowering<'a> {
             .cloned()
         {
             for (var_id, ty) in prescanned {
-                // Skip params — their MIR local types come from signatures.
-                if !func.params.iter().any(|p| p.var == var_id) {
+                // Params whose signature carries a concrete type keep
+                // the signature type — the MIR local is allocated once
+                // at that type, and overriding it here would break the
+                // caller ABI (boxing, arg coercion). For unannotated
+                // params (signature `None` → `Any`) the prescan
+                // override is safe because the param is otherwise
+                // `Any`-typed and won't receive coerced values at the
+                // call site (§G.13: `other = other if isinstance(other,
+                // Value) else Value(other)` in a plain function
+                // narrows `other` to `Value`).
+                let is_annotated_param = func
+                    .params
+                    .iter()
+                    .any(|p| p.var == var_id && p.ty.is_some());
+                if !is_annotated_param {
                     self.symbols.prescan_var_types.insert(var_id, ty);
                 }
             }

@@ -2302,4 +2302,48 @@ assert not (_Sym(1) != _Sym(1)), "E.7 __ne__ derived equal"
 
 print("Comparison dunders with NotImplemented (§E.7): PASS")
 
+# =============================================================================
+# Area G §G.13: isinstance-narrowing rebind in ternary / if-statement.
+#
+# The idiom
+#     x = x if isinstance(x, T) else T(x)
+# is used for type coercion. Without narrowing, unannotated params remain
+# typed `Any` after the rebind, and subsequent `x.attr` lookups fail with
+# "unknown attribute". §G.13 adds two-sided isinstance narrowing in
+# `infer_expr_type_inner`'s `IfExpr` arm plus an `Any → concrete`
+# override in `local_prescan::merge_var`.
+# =============================================================================
+
+
+class _G13:
+    __slots__ = ("data",)
+
+    def __init__(self, data):
+        self.data = data
+
+
+def _g13_combine(a: _G13, other):
+    # Unannotated `other` — narrowed via the ternary-isinstance idiom.
+    other = other if isinstance(other, _G13) else _G13(other)
+    return _G13(a.data + other.data)
+
+
+_g13_a = _g13_combine(_G13(3), 5)
+assert _g13_a.data == 8
+_g13_b = _g13_combine(_G13(3), _G13(10))
+assert _g13_b.data == 13
+
+
+# Narrowing over an unannotated local (not a param).
+def _g13_local_narrow(x):
+    x = x if isinstance(x, _G13) else _G13(x)
+    return x.data * 2
+
+
+assert _g13_local_narrow(3) == 6
+assert _g13_local_narrow(_G13(11)) == 22
+
+
+print("isinstance-narrowing rebind (§G.13): PASS")
+
 print("All class tests passed!")

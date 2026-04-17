@@ -529,11 +529,47 @@ impl<'a> Lowering<'a> {
                 helpers::union_or_any(left_ty, right_ty)
             }
             hir::ExprKind::IfExpr {
-                then_val, else_val, ..
+                cond,
+                then_val,
+                else_val,
             } => {
-                let then_ty = self.get_type_of_expr_id(*then_val, hir_module);
-                let else_ty = self.get_type_of_expr_id(*else_val, hir_module);
-                helpers::union_or_any(then_ty, else_ty)
+                // Apply isinstance narrowing to the ternary branches so
+                // `x if isinstance(x, T) else T(x)` infers as `T` at the
+                // lowering path (§G.13). Without this, the `other = other
+                // if isinstance(other, Value) else Value(other)` pattern
+                // used in Value.__add__ and friends keeps `other` widened
+                // to `Any`, and subsequent `other.data` fails with
+                // "unknown attribute 'data'".
+                let cond_expr = &hir_module.exprs[*cond];
+                let narrow = self.extract_simple_isinstance_narrowing(cond_expr, hir_module, None);
+                match narrow {
+                    Some((var_id, then_narrow, else_narrow)) => {
+                        let then_expr = &hir_module.exprs[*then_val];
+                        let else_expr = &hir_module.exprs[*else_val];
+                        let then_ty = if matches!(
+                            &then_expr.kind,
+                            hir::ExprKind::Var(v) if *v == var_id
+                        ) {
+                            then_narrow
+                        } else {
+                            self.get_type_of_expr_id(*then_val, hir_module)
+                        };
+                        let else_ty = if matches!(
+                            &else_expr.kind,
+                            hir::ExprKind::Var(v) if *v == var_id
+                        ) {
+                            else_narrow
+                        } else {
+                            self.get_type_of_expr_id(*else_val, hir_module)
+                        };
+                        helpers::union_or_any(then_ty, else_ty)
+                    }
+                    None => {
+                        let then_ty = self.get_type_of_expr_id(*then_val, hir_module);
+                        let else_ty = self.get_type_of_expr_id(*else_val, hir_module);
+                        helpers::union_or_any(then_ty, else_ty)
+                    }
+                }
             }
             hir::ExprKind::List(elements) => {
                 let elem_types: Vec<Type> = elements
@@ -743,13 +779,52 @@ impl<'a> Lowering<'a> {
                 helpers::union_or_any(left_ty, right_ty)
             }
             hir::ExprKind::IfExpr {
-                then_val, else_val, ..
+                cond,
+                then_val,
+                else_val,
             } => {
-                let then_ty =
-                    self.infer_expr_type_inner(&module.exprs[*then_val], module, param_types);
-                let else_ty =
-                    self.infer_expr_type_inner(&module.exprs[*else_val], module, param_types);
-                helpers::union_or_any(then_ty, else_ty)
+                // Apply isinstance narrowing to the ternary branches so
+                // `x if isinstance(x, T) else T(x)` infers `T` instead of
+                // `Union[Any, T]` (§G.13). Without this, unannotated-param
+                // idioms like
+                //     other = other if isinstance(other, Value) else Value(other)
+                // keep `other` as `Any` and subsequent `other.data` fails
+                // with "unknown attribute".
+                let cond_expr = &module.exprs[*cond];
+                let narrow =
+                    self.extract_simple_isinstance_narrowing(cond_expr, module, param_types);
+                match narrow {
+                    Some((var_id, then_narrow, else_narrow)) => {
+                        let mut then_overlay = param_types.cloned().unwrap_or_else(IndexMap::new);
+                        then_overlay.insert(var_id, then_narrow);
+                        let mut else_overlay = param_types.cloned().unwrap_or_else(IndexMap::new);
+                        else_overlay.insert(var_id, else_narrow);
+                        let then_ty = self.infer_expr_type_inner(
+                            &module.exprs[*then_val],
+                            module,
+                            Some(&then_overlay),
+                        );
+                        let else_ty = self.infer_expr_type_inner(
+                            &module.exprs[*else_val],
+                            module,
+                            Some(&else_overlay),
+                        );
+                        helpers::union_or_any(then_ty, else_ty)
+                    }
+                    None => {
+                        let then_ty = self.infer_expr_type_inner(
+                            &module.exprs[*then_val],
+                            module,
+                            param_types,
+                        );
+                        let else_ty = self.infer_expr_type_inner(
+                            &module.exprs[*else_val],
+                            module,
+                            param_types,
+                        );
+                        helpers::union_or_any(then_ty, else_ty)
+                    }
+                }
             }
             hir::ExprKind::List(elements) => {
                 let elem_types: Vec<Type> = elements
@@ -893,6 +968,84 @@ impl<'a> Lowering<'a> {
                 _ => Type::Int,
             },
             _ => expr.ty.clone().unwrap_or(Type::Any),
+        }
+    }
+
+    /// Extract `isinstance(var, T)` (or `not isinstance(var, T)`) narrowing
+    /// info from a condition expression. Returns `(var_id, then_ty, else_ty)`
+    /// with the narrowing applied. Used by the `IfExpr` arm of
+    /// `infer_expr_type_inner` to give ternary branches refined types.
+    ///
+    /// Unlike `narrowing::extract_isinstance_info`, this helper consults the
+    /// supplied `param_types` overlay first so it works during pre-scan
+    /// (before `self.symbols.var_types` is populated for the function
+    /// currently being analysed).
+    fn extract_simple_isinstance_narrowing(
+        &self,
+        cond: &hir::Expr,
+        module: &hir::Module,
+        param_types: Option<&IndexMap<VarId, Type>>,
+    ) -> Option<(VarId, Type, Type)> {
+        let (args, negated) = match &cond.kind {
+            hir::ExprKind::BuiltinCall {
+                builtin: hir::Builtin::Isinstance,
+                args,
+                ..
+            } => (args.as_slice(), false),
+            hir::ExprKind::UnOp {
+                op: hir::UnOp::Not,
+                operand,
+            } => {
+                let inner = &module.exprs[*operand];
+                if let hir::ExprKind::BuiltinCall {
+                    builtin: hir::Builtin::Isinstance,
+                    args,
+                    ..
+                } = &inner.kind
+                {
+                    (args.as_slice(), true)
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        };
+
+        if args.len() < 2 {
+            return None;
+        }
+        let obj_expr = &module.exprs[args[0]];
+        let type_expr = &module.exprs[args[1]];
+
+        let var_id = match &obj_expr.kind {
+            hir::ExprKind::Var(v) => *v,
+            _ => return None,
+        };
+        let checked_type = match &type_expr.kind {
+            hir::ExprKind::TypeRef(ty) => ty.clone(),
+            hir::ExprKind::ClassRef(class_id) => {
+                let class_def = module.class_defs.get(class_id)?;
+                Type::Class {
+                    class_id: *class_id,
+                    name: class_def.name,
+                }
+            }
+            _ => return None,
+        };
+
+        // Resolve the var's current type: overlay first, then the lowering's
+        // symbol table, else default to Any.
+        let original_type = param_types
+            .and_then(|pt| pt.get(&var_id).cloned())
+            .or_else(|| self.get_var_type(&var_id).cloned())
+            .unwrap_or(Type::Any);
+
+        let narrowed = original_type.narrow_to(&checked_type);
+        let excluded = original_type.narrow_excluding(&checked_type);
+        if negated {
+            Some((var_id, excluded, narrowed))
+        } else {
+            Some((var_id, narrowed, excluded))
         }
     }
 }

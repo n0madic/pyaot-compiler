@@ -288,7 +288,11 @@ fn merge_var(
             // Only widen across rebinds when the merge is meaningful:
             // either (a) numeric-tower promotion (Bool ⊂ Int ⊂ Float —
             // the §E.6 headline case `x = 0; x += 0.5`), or (b) tuple-
-            // shape unification (Area D rule). For all other type
+            // shape unification (Area D rule), or (c) the previous type
+            // is `Any`/`HeapAny` and the new type is concrete — §G.13
+            // needs this so unannotated params narrowed via
+            // `x = x if isinstance(x, T) else T(x)` pick up the
+            // concrete `T` instead of staying `Any`. For all other type
             // combinations, preserve the first-write type — this keeps
             // compatibility with the prior "first-write wins" behaviour
             // that Union-aware narrowing and other passes depend on.
@@ -306,9 +310,24 @@ fn merge_var(
                     Type::Tuple(_) | Type::TupleVar(_)
                 )
             );
+            let prev_is_any = matches!(prev, Type::Any | Type::HeapAny);
             if is_numeric_pair || is_tuple_pair {
                 let merged = Type::unify_field_type(&prev, &new_ty);
                 scratch.insert(var_id, merged);
+            } else if prev_is_any {
+                // Concrete rebind over an `Any` seed — adopt the new
+                // type directly (§G.13: unannotated param narrowed via
+                // `x = x if isinstance(x, T) else T(x)` rebind).
+                //
+                // NOTE: narrowing a `Union` seed (e.g. dunder
+                // `other: Union[Self, Int, Float, Bool]` narrowed to
+                // `Self`) is NOT applied here: the MIR local is
+                // allocated once at the signature type, and the caller
+                // already boxed the argument at that width. Changing
+                // the local's type to a narrower member would break
+                // the caller ABI. The dunder-narrowing case needs a
+                // second local + unbox; tracked as a known limitation.
+                scratch.insert(var_id, new_ty);
             }
             if !write_is_loop_scoped {
                 loop_only.shift_remove(&var_id);
