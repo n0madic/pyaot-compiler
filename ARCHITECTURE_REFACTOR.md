@@ -155,23 +155,45 @@ remaining phases depend on. Zero user-visible changes.
 
 Create `bench/` with microbenchmarks covering:
 
-- Integer arithmetic hot loops (`sum(range(10_000_000))`).
-- Float arithmetic (`sum(i * 0.5 for i in range(1_000_000))`).
-- Polymorphic arithmetic (dunder-dispatched, Value-class-like).
-- Dict / list allocation and iteration.
-- String interning / concat.
-- GC stress (allocation-heavy tight loops).
-- Class instantiation + method dispatch.
-- Closure creation + call.
+- **Integer arithmetic** hot loops (`sum(range(10_000_000))`).
+- **Float arithmetic** (`sum(i * 0.5 for i in range(1_000_000))`).
+- **Polymorphic arithmetic** (dunder-dispatched, Value-class-like —
+  the pattern from microgpt's `Value.__add__` / `__mul__`).
+- **Dict / list allocation and iteration** (construct, iterate,
+  mutate).
+- **String interning / concatenation** (loop-building strings,
+  str-interning-hit-rate).
+- **Generator + comprehension iteration**
+  (`sum(x*x for x in range(N))`, nested gen-exprs, `zip`/`enumerate`
+  fused iteration — the §G.3 / §G.10 territory).
+- **Exception handling overhead** (try/except in hot loop, ensuring
+  non-raising path is cheap; raising path is also measured but less
+  critical).
+- **GC stress** (allocation-heavy tight loops, trigger multiple
+  collections, measure collection latency).
+- **Class instantiation + method dispatch** (both direct and
+  polymorphic / vtable dispatch).
+- **Closure creation + call** (lambda defaults, nonlocal capture,
+  higher-order functions like `map`/`filter`).
+- **Startup / module init time** (small-to-medium file end-to-end
+  compile + first-line execution — catches init-path regressions).
 
 Each benchmark:
 - Has a Python source file under `bench/py/`.
-- Has a `cargo bench` target.
-- Records wall-clock time, binary size, and (if possible) max RSS.
-- Establishes a **baseline** recorded in `bench/BASELINE.md`.
+- Has a `cargo bench` target that runs compile + execute, reporting
+  **wall-clock run time**, **binary size**, and (if possible) **max
+  RSS**.
+- Records both **run time** (hot-loop perf) and **end-to-end time**
+  (compile + execute) separately — they can regress independently.
+- Establishes a **baseline** recorded in `bench/BASELINE.md` as a
+  committed data file. Each subsequent phase appends its own
+  column (Phase-1 baseline, Phase-2 baseline, Phase-3 baseline) so
+  regressions are visible historically.
 
 **Exit criterion**: `cargo bench` runs all benchmarks, produces stable
-results (variance < 3% across 5 runs), baseline committed.
+results (variance < 3% across 5 runs for each metric), baseline
+committed. Running `cargo bench --compare` against the committed
+baseline produces diff output suitable for PR review.
 
 ## 0.2 Coverage audit
 
@@ -1087,6 +1109,31 @@ continue to pass; new TypeVar/Generic/Protocol tests added.
 - All generic code is monomorphized before codegen.
 - Protocol tests pass.
 - Property tests (lattice laws) all pass.
+
+## 3.7 Performance gate
+
+Phase 3 is mostly compile-time work, but monomorphization and
+generic dispatch can affect both runtime perf and binary size. A
+blanket regression check is required.
+
+**Exit criteria**:
+
+- Every benchmark from Phase 0.1 is within ±3% of the Phase 2
+  post-merge baseline, or faster.
+- Release-build binary size (`ls -la target/release/pyaot`) is
+  within +20% of the Phase 2 baseline. Monomorphization adds
+  specialized function copies — some growth is expected, but
+  runaway inflation (> 20%) indicates either (a) overly-aggressive
+  monomorphization (same type args producing redundant copies —
+  dedup missing) or (b) generic functions with excessively
+  divergent call-site types (reconsider signature). Both are
+  fix-before-merge conditions.
+- Compile time on a medium-sized input (e.g., `test_types_system.py`,
+  ~900 LOC) is within +30% of Phase 2 baseline. Monomorph adds
+  specialization work but should not dominate.
+
+Record the baseline update in `bench/BASELINE.md` after Phase 3
+merges — this becomes the new reference for any post-refactor work.
 
 ---
 
