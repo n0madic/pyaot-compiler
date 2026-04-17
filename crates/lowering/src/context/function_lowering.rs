@@ -132,10 +132,16 @@ impl<'a> Lowering<'a> {
 
         let func_name = self.interner.resolve(func.name).to_string();
         let is_lambda = func_name.starts_with("__lambda_") || func_name.starts_with("__nested_");
+        // Gen-expr functions receive their captures as implicit leading params
+        // (see `desugar_generator_expression` in frontend-python/comprehensions.rs).
+        // Reuse the lambda capture-type inference path so those params get the
+        // concrete outer-var types instead of defaulting to `Any`, which would
+        // mis-tag raw-int lists as ELEM_HEAP_OBJ in iterator setup.
+        let is_genexp_creator = func_name.starts_with("__genexp_");
         let is_module_init = func_name == "__pyaot_module_init__";
 
-        // For lambdas, try to infer parameter types from the body
-        let inferred_param_types = if is_lambda && !func.body.is_empty() {
+        // For lambdas and gen-expr creators, infer parameter types from captures.
+        let inferred_param_types = if (is_lambda || is_genexp_creator) && !func.body.is_empty() {
             self.infer_lambda_param_types(func, hir_module)
         } else {
             Vec::new()

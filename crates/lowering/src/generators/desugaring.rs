@@ -408,6 +408,30 @@ fn mk_set_local(
     )
 }
 
+/// Emit `SetLocalType(gen, idx, LOCAL_TYPE_PTR)` — marks slot `idx` as a
+/// heap pointer so GC traces it on mark. Call immediately after
+/// `mk_set_local` when the captured value is a heap type (`Type::is_heap()`).
+/// The `type_tag` value (3) must stay in sync with `LOCAL_TYPE_PTR` in
+/// `crates/runtime/src/object.rs`.
+fn mk_set_local_type_ptr(
+    m: &mut hir::Module,
+    gen_obj_var: VarId,
+    idx: u32,
+    span: Span,
+) -> hir::ExprId {
+    let g = mk_var(m, gen_obj_var, Type::HeapAny, span);
+    mk_expr(
+        m,
+        hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::SetLocalType {
+            gen: g,
+            idx,
+            type_tag: 3,
+        }),
+        Some(Type::Int),
+        span,
+    )
+}
+
 /// Allocate a `GeneratorIntrinsic::SetState` expression.
 fn mk_set_state(m: &mut hir::Module, gen_obj_var: VarId, state: i64, span: Span) -> hir::ExprId {
     let g = mk_var(m, gen_obj_var, Type::HeapAny, span);
@@ -557,6 +581,11 @@ fn emit_save_all_vars(
         let vr = mk_var(m, gv.var_id, gv.ty.clone(), span);
         let set = mk_set_local(m, gen_obj_var, gv.gen_local_idx, vr, span);
         body.push(mk_stmt(m, hir::StmtKind::Expr(set), span));
+        // Mark heap-typed captures so GC traces the slot (§G.3).
+        if gv.ty.is_heap() {
+            let set_ty = mk_set_local_type_ptr(m, gen_obj_var, gv.gen_local_idx, span);
+            body.push(mk_stmt(m, hir::StmtKind::Expr(set_ty), span));
+        }
     }
 }
 
@@ -840,6 +869,11 @@ fn build_creator_body(
             let pv = mk_var(m, gv.var_id, gv.ty.clone(), span);
             let set = mk_set_local(m, creator_gen_var, gv.gen_local_idx, pv, span);
             stmts.push(mk_stmt(m, hir::StmtKind::Expr(set), span));
+            // Mark heap-typed captures so GC traces the slot (§G.3).
+            if gv.ty.is_heap() {
+                let set_ty = mk_set_local_type_ptr(m, creator_gen_var, gv.gen_local_idx, span);
+                stmts.push(mk_stmt(m, hir::StmtKind::Expr(set_ty), span));
+            }
         }
     }
 

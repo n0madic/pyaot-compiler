@@ -1148,4 +1148,55 @@ assert _ct_enum == [(0, 3), (1, 1), (2, 4)]
 
 print("Generator-expression tuple-target tests passed!")
 
+# =============================================================================
+# Area G §G.3: Heap-typed closure captures in gen-expr
+#
+# Before Area G, `sum(x for x in a)` where `a` is a function-local or
+# function-param heap value (list/dict/str/class instance) crashed with
+# SIGSEGV: the gen-expr's creator function was synthesized with empty
+# params and the captured VarId resolved to an uninitialised local slot.
+# The fix plumbs captures through `ExprKind::Closure` (same mechanism
+# lambdas use) and marks the gen-expr's local slots as heap via
+# `rt_generator_set_local_type` so GC traces them across resume calls.
+# =============================================================================
+
+
+def _g3_local_list_sum() -> int:
+    a = [1, 2, 3, 4, 5]
+    return sum(x for x in a)
+
+
+assert _g3_local_list_sum() == 15
+
+
+def _g3_param_list_sum(a: list[int]) -> int:
+    return sum(x for x in a)
+
+
+assert _g3_param_list_sum([1, 2, 3]) == 6
+
+
+# Note: `dict.items()` inside a gen-expr (both module-level and function-local)
+# hits a pre-existing type-propagation gap — the tuple unpack `for _k, v in
+# d.items()` doesn't carry the dict value type through to the gen-expr body.
+# Tracked as a separate follow-up; list-based captures are the §G.3 payload.
+
+
+def _g3_stress() -> int:
+    data = list(range(1000))
+    return sum(x * x for x in data)
+
+
+assert _g3_stress() == sum(i * i for i in range(1000))
+
+# Note: nested gen-exprs over captured lists (e.g. the microgpt.py:95
+# `[sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]` pattern) still hit
+# the same type-propagation gap as function-local `dict.items()` captures:
+# the inner zip's tuple elements collapse to Any, so `wi * xi` overflows on
+# pointers. The single-level list-capture payload above is the primary fix
+# and closes the microgpt.py:95 pattern's function-local list capture as
+# long as the multiplication happens at one level.
+
+print("§G.3 heap-captured gen-expr tests passed!")
+
 print("All iteration and comprehension tests passed!")

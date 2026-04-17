@@ -334,7 +334,7 @@ impl AstToHir {
     }
 
     /// Add a target expression to the local scope (handles names, tuples, etc.)
-    fn add_target_to_scope(&self, target: &py::Expr, local_scope: &mut HashSet<String>) {
+    pub(crate) fn add_target_to_scope(&self, target: &py::Expr, local_scope: &mut HashSet<String>) {
         match target {
             py::Expr::Name(name) => {
                 local_scope.insert(name.id.to_string());
@@ -355,7 +355,7 @@ impl AstToHir {
     }
 
     /// Recursively collect free variables from an expression
-    fn collect_free_variables(
+    pub(crate) fn collect_free_variables(
         &self,
         expr: &py::Expr,
         local_params: &HashSet<String>,

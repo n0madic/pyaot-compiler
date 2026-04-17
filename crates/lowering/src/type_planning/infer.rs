@@ -230,6 +230,17 @@ impl<'a> Lowering<'a> {
                 return Some(func_def.return_type.clone().unwrap_or(Type::None));
             }
         }
+        // Immediate Closure call, e.g. `(Closure { __genexp_N, [captures] })()`
+        // emitted by gen-expr desugaring. Return the wrapped function's return
+        // type so downstream `sum`/`min`/`max` dispatch sees `Iterator(...)`.
+        if let hir::ExprKind::Closure { func: func_id, .. } = &func_expr.kind {
+            if let Some(return_type) = self.get_func_return_type(func_id) {
+                return Some(return_type.clone());
+            }
+            if let Some(func_def) = module.func_defs.get(func_id) {
+                return Some(func_def.return_type.clone().unwrap_or(Type::None));
+            }
+        }
         if let hir::ExprKind::Var(var_id) = &func_expr.kind {
             if let Some(Type::Class { class_id, .. }) = self.get_var_type(var_id).cloned().as_ref()
             {

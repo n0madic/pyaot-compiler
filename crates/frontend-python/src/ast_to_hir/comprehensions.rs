@@ -2,9 +2,11 @@ use super::AstToHir;
 use pyaot_diagnostics::Result;
 use pyaot_hir::*;
 use pyaot_types::Type;
+use pyaot_utils::InternedString;
 use pyaot_utils::Span;
 use pyaot_utils::VarId;
 use rustpython_parser::ast as py;
+use std::collections::HashSet;
 
 /// Describes what action to perform at the innermost level of a comprehension loop.
 enum ComprehensionAction<'a> {
@@ -232,53 +234,154 @@ impl AstToHir {
     ) -> Result<ExprId> {
         let genexp_span = Self::span_from(&genexp);
 
-        // 1. Generate unique function name
+        // 1. Collect names introduced by loop targets — these are locals in the
+        //    gen-expr function and must not count as captures.
+        let mut local_scope: HashSet<String> = HashSet::new();
+        for gen in &genexp.generators {
+            self.add_target_to_scope(&gen.target, &mut local_scope);
+        }
+
+        // 2. Collect free variables used in the gen-expr (iters, conditions,
+        //    and the yielded element). Anything that isn't a loop target becomes
+        //    a candidate capture.
+        let mut free_vars: Vec<InternedString> = Vec::new();
+        for gen in &genexp.generators {
+            self.collect_free_variables(&gen.iter, &local_scope, &mut free_vars);
+            for cond in &gen.ifs {
+                self.collect_free_variables(cond, &local_scope, &mut free_vars);
+            }
+        }
+        self.collect_free_variables(&genexp.elt, &local_scope, &mut free_vars);
+
+        // 3. Partition free vars: module globals keep their outer VarId mapping
+        //    (accessed via rt_global_get_*); real captures become implicit
+        //    leading params passed from the call site.
+        //
+        //    `module.globals` is only populated in `finalize_module`, so check
+        //    `scope.module_level_assignments` (progressively populated as each
+        //    module-level assignment completes) plus `module.globals` for
+        //    anything already finalized. Without this, module-level vars would
+        //    be treated as captures, which loses the deep-type propagation the
+        //    global path provides (zip-of-lists → `rt_tuple_get_int`).
+        let (global_propagation, captured_names): (Vec<_>, Vec<_>) =
+            free_vars.into_iter().partition(|name| {
+                if let Some(&var_id) = self.symbols.var_map.get(name) {
+                    self.module.globals.contains(&var_id)
+                        || self.scope.module_level_assignments.contains(&var_id)
+                } else {
+                    false
+                }
+            });
+
+        // 4. Generate unique function name.
         let func_name = format!("__genexp_{}", self.ids.next_comp_id);
         self.ids.next_comp_id += 1;
 
-        // 2. Save outer scope for scope isolation
-        let outer_var_map = self.symbols.var_map.clone();
+        // 5. Save outer scope; build a fresh scope for the gen-expr body.
+        let outer_var_map = std::mem::take(&mut self.symbols.var_map);
+        let outer_global_vars = std::mem::take(&mut self.scope.global_vars);
 
-        // 3. Generate the for-loop body with yield
+        // 5.1 Propagate module globals — they use global storage, not captures.
+        for name in &global_propagation {
+            if let Some(&var_id) = outer_var_map.get(name) {
+                self.symbols.var_map.insert(*name, var_id);
+                self.scope.global_vars.insert(*name);
+            }
+        }
+
+        // 5.2 Build implicit capture params and remap the captured names in the
+        //     new scope so body references resolve to the capture VarIds.
+        let mut params: Vec<Param> = Vec::new();
+        let mut captures_outer_ids: Vec<VarId> = Vec::new();
+        for captured_name in &captured_names {
+            let outer_var_id = outer_var_map
+                .get(captured_name)
+                .copied()
+                .expect("internal error: gen-expr captured variable not found in outer var_map");
+            let capture_param_name = self.interner.intern(&format!(
+                "__capture_{}",
+                self.interner.resolve(*captured_name)
+            ));
+            let param_id = self.ids.alloc_var();
+            self.symbols.var_map.insert(*captured_name, param_id);
+
+            params.push(Param {
+                name: capture_param_name,
+                var: param_id,
+                ty: None,
+                default: None,
+                kind: ParamKind::Regular,
+                span: genexp_span,
+            });
+            captures_outer_ids.push(outer_var_id);
+        }
+
+        // 6. Generate the for-loop body with yield.
         let action = ComprehensionAction::Yield { elt: &genexp.elt };
         let body_stmts =
             self.generate_comprehension_loop(&genexp.generators, 0, &action, genexp_span)?;
 
-        // 4. Restore outer scope
+        // 7. Restore outer scope.
+        self.scope.global_vars = outer_global_vars;
         self.symbols.var_map = outer_var_map;
 
-        // 5. Create the generator function
+        // 8. Create the generator function.
         let func_id = self.ids.alloc_func();
         let func_name_interned = self.interner.intern(&func_name);
 
         let gen_func = Function {
             id: func_id,
             name: func_name_interned,
-            params: vec![],
+            params,
             return_type: None,
             body: body_stmts,
             span: genexp_span,
             cell_vars: std::collections::HashSet::new(),
             nonlocal_vars: std::collections::HashSet::new(),
             is_generator: true,
-            method_kind: MethodKind::default(), // Generator expressions are not methods
-            is_abstract: false,                 // Generator expressions cannot be abstract
+            method_kind: MethodKind::default(),
+            is_abstract: false,
         };
 
-        // 6. Register the function
+        // 9. Register the function.
         self.module.func_defs.insert(func_id, gen_func);
         self.module.functions.push(func_id);
 
-        // 7. Create a call to the generator function: __genexp_N()
-        let func_ref = self.module.exprs.alloc(Expr {
-            kind: ExprKind::FuncRef(func_id),
-            ty: None,
-            span: genexp_span,
-        });
+        // 10. Build call target: `FuncRef` if no captures, otherwise
+        //     `Closure { func, captures }` so lowering plumbs capture types
+        //     through the existing closure mechanism (see `lower_closure_call`
+        //     in `expressions/calls/direct.rs`). That gives each capture param
+        //     the concrete outer-var type instead of defaulting to `Any`.
+        let call_target = if captures_outer_ids.is_empty() {
+            self.module.exprs.alloc(Expr {
+                kind: ExprKind::FuncRef(func_id),
+                ty: None,
+                span: genexp_span,
+            })
+        } else {
+            let capture_exprs: Vec<ExprId> = captures_outer_ids
+                .iter()
+                .map(|outer_id| {
+                    self.module.exprs.alloc(Expr {
+                        kind: ExprKind::Var(*outer_id),
+                        ty: None,
+                        span: genexp_span,
+                    })
+                })
+                .collect();
+            self.module.exprs.alloc(Expr {
+                kind: ExprKind::Closure {
+                    func: func_id,
+                    captures: capture_exprs,
+                },
+                ty: None,
+                span: genexp_span,
+            })
+        };
 
         let call_expr = self.module.exprs.alloc(Expr {
             kind: ExprKind::Call {
-                func: func_ref,
+                func: call_target,
                 args: vec![],
                 kwargs: vec![],
                 kwargs_unpack: None,

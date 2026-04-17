@@ -9,6 +9,7 @@ use pyaot_hir as hir;
 use pyaot_types::Type;
 use pyaot_utils::VarId;
 
+use super::for_loop::detect_for_loop_generator;
 use super::GeneratorVar;
 
 /// Collect all variables used in a generator function
@@ -18,7 +19,15 @@ pub(super) fn collect_generator_vars(
 ) -> Vec<GeneratorVar> {
     let mut vars: Vec<GeneratorVar> = Vec::new();
     let mut var_set: HashSet<VarId> = HashSet::new();
-    let mut next_idx = 0u32;
+    // Reserve slot 0 for the for-loop iterator (see `build_creator_body` /
+    // resume builders in `desugaring.rs` — they hardcode slot 0 for the
+    // iter). Without this reservation, the first generator param would
+    // collide with the iter slot.
+    let mut next_idx = if detect_for_loop_generator(&func.body, hir_module).is_some() {
+        1u32
+    } else {
+        0u32
+    };
 
     // First add all parameters
     for param in &func.params {
