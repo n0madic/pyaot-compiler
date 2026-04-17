@@ -1464,6 +1464,156 @@ If the next session needs to know something that is not in any of
 these three places, the previous session failed the handoff. This is
 a protocol violation, not an optimization opportunity.
 
+### Agent delegation strategy
+
+A single **lead agent** (top-tier model — Opus or equivalent) drives
+each session: reads the spec, makes architectural decisions, writes
+design-sensitive code, coordinates the work. But a session includes
+many mechanical tasks that do not require top-tier reasoning.
+**Delegate these to Sonnet/Haiku subagents** to save cost, reduce
+main-context pollution, and unlock within-session parallelism.
+
+#### Delegate to cheaper subagents (Sonnet / Haiku)
+
+Use the appropriate specialized agent type from the fleet (`Explore`,
+`general-purpose`, `bug-hunter`, `code-reviewer`, `rust-pro`,
+`python-pro`, `docs-research-expert`, etc.). Typical
+delegable categories:
+
+1. **Code exploration** — "where is symbol X defined?", "find all
+   call sites of function Y", "what files in `crates/lowering` use
+   pattern Z?". Best fit: `Explore` agent, Sonnet or Haiku.
+
+2. **Grep-and-verify** — structured searches with clear success
+   criteria: "confirm no references to `prescan_var_types` remain",
+   "list all `extern "C" fn rt_*` signatures that still take
+   `i64`". Runs on Haiku without loss.
+
+3. **Mechanical refactoring** — bulk renames, deletion of a named
+   set of symbols, updating their call sites per a given recipe.
+   Give the subagent the exact transformation and target files;
+   it applies them. Sonnet.
+
+4. **Test suite execution** — run `cargo test --workspace
+   --release`, report the failures in a structured summary (which
+   tests, exit codes, first error line). Keeps raw test output
+   out of the lead agent's context. Haiku.
+
+5. **Benchmark runs** — execute `cargo bench`, collect numbers,
+   compare against `bench/BASELINE.md`, produce a diff report.
+   Haiku or Sonnet.
+
+6. **Documentation drafting** — given a list of "what changed in
+   this session", have a subagent rewrite the relevant section of
+   `COMPILER_STATUS.md` / `INSIGHTS.md` / `.claude/rules/*.md`.
+   The lead agent reviews and edits before committing. Sonnet.
+
+7. **Coverage gap analysis** — run `cargo llvm-cov`, parse the
+   report, list files under the threshold, optionally draft test
+   stubs for the gaps. Sonnet.
+
+8. **Lint/format cleanup** — run `cargo clippy`, address
+   straightforward warnings (unused imports, redundant clones,
+   shadowing). Non-trivial clippy feedback escalates to the lead
+   agent. Haiku for trivial, Sonnet for borderline.
+
+9. **Release-note / changelog drafts** after each milestone. Sonnet.
+
+#### Keep with the lead agent
+
+These **must not** be delegated. They require full spec context and
+non-obvious judgment:
+
+1. **Architectural decisions.** Tag scheme choice, lattice axioms,
+   SSA representation details, Phi encoding, monomorphization
+   deduplication strategy. The lead agent carries the rationale
+   from this document; a subagent starts cold.
+
+2. **Novel algorithm implementation.** Cytron SSA renaming,
+   Cooper-Harvey-Kennedy dominator tree, φ-insertion via iterated
+   dominance frontiers, Tarjan SCC for call graphs, Cytron's own
+   φ-removal for codegen. These require understanding subtleties
+   (edge cases in irreducible CFGs, recursive type substitution,
+   etc.) that a cheaper model is likely to miss silently.
+
+3. **Cross-crate API design.** Any interface touching ≥ 2 crates'
+   public surface. Tradeoffs require awareness of downstream
+   consumers.
+
+4. **Debugging non-obvious regressions.** "Test fails after SSA
+   migration, symptom unclear" — halt and investigate with the
+   lead agent. Do not ask a subagent to "fix the failing test".
+
+5. **Session scope adjudication.** "Is this session too big — do
+   we split?" / "Is this ad-hoc helper acceptable or does it
+   violate Principle 5?". Judgment calls.
+
+6. **Spec amendments.** Changing
+   `ARCHITECTURE_REFACTOR.md`'s milestones requires lead-agent
+   sign-off (see Amendment Protocol). A subagent can draft an
+   amendment, but the lead agent reviews and commits.
+
+#### Parallelism from delegation
+
+Delegation is the primary way to parallelize **within** a session.
+Examples:
+
+- **Session kickoff**: dispatch three subagents in parallel — one
+  maps call sites of the target symbol, one reads prior related
+  `INSIGHTS.md` sections, one runs the current test suite to
+  establish "before" baseline. Lead agent synthesizes into a plan.
+- **Session exit**: dispatch three subagents in parallel — one
+  runs tests, one runs benchmarks, one does grep verification of
+  deletions. Results combine before commit.
+- **Between implementation chunks**: dispatch a subagent to
+  investigate a sub-question while the lead agent continues on
+  the main thread.
+
+Always dispatch independent subagent calls **in a single message**
+with multiple `Agent` tool uses — that is what makes them actually
+run in parallel.
+
+#### Escalation pattern
+
+If a subagent reports "I cannot complete this" or returns
+ambiguous results:
+
+1. **Do not retry the same subagent with the same prompt.** Same
+   model, same context, same failure.
+2. The lead agent decides: either re-scope and re-dispatch (often
+   with more explicit instructions or a smaller chunk), or pull
+   the task in-house.
+3. If a category of task repeatedly fails at the cheap tier,
+   amend this section — it belongs in "keep with lead agent".
+
+#### Delegation anti-patterns
+
+- **Do not delegate the session plan itself.** Planning is
+  core-judgment work. Subagents execute plan fragments, they
+  don't author plans.
+- **Do not ship subagent code unreviewed.** Even mechanical diffs
+  can have subtle errors (missed call sites, wrong grep pattern,
+  merge conflicts). Lead agent reviews every subagent-produced
+  diff before commit.
+- **Do not cascade.** Lead → subagents is fine. Subagent → deeper
+  subagent is not: accountability chain becomes opaque, and the
+  lead agent can't monitor. Keep the tree flat at depth 1.
+- **Do not delegate based on cost alone.** Borderline cases
+  (moderate judgment, unfamiliar code area) stay with the lead
+  agent. Subagent missing a subtle bug erases the cost savings
+  with interest via debugging time.
+- **Do not use a subagent as an excuse to skip reading the spec.**
+  Every session's lead agent reads this document. Delegation is
+  for execution, not for dodging comprehension.
+
+#### Task tracking
+
+Use `TaskCreate` / `TaskUpdate` within the session to track
+progress — independent of who executes each task. A subagent
+returning results flips a task to complete; the lead agent moves
+on. This keeps progress visible in the session transcript even
+when multiple subagents run in parallel.
+
 ---
 
 ## Full Session Inventory
