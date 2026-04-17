@@ -733,9 +733,25 @@ If Python gains (or you discover) another LHS grammar — say, walrus expanded t
 
 ### Known gap: generator expressions with tuple targets
 
-**Closed for literal-typed iterables in Area C §C.6.** `detect_for_loop_generator` now accepts any `BindingTarget`, and `build_for_loop_direct` / `build_for_loop_filtered` emit a recursive `Bind` per iteration. The element type flows through the `IterNextNoExc` HIR annotation, so `lower_binding_target` picks the right `RT_TUPLE_GET_*` runtime call. `sum(x*y for x,y in zip([1,2,3], [4,5,6]))` and `sum(x*y for x,y in [(1,4),(2,5)])` work.
+**Closed in Area C §C.6 via desugar-time `VarTypeMap`.** `detect_for_loop_generator` accepts any `BindingTarget`; `build_for_loop_direct` / `build_for_loop_filtered` emit a recursive `Bind` per iteration; and the element-type probe in `generators/desugaring.rs` walks a module-wide `VarTypeMap` indexing function params, module-level/function-body Bind RHS, and ForBind iter expressions. The `shape_infer_type` helper recursively resolves:
 
-**Still limited**: bare `Var` references to heterogeneous iterables (e.g. `pairs = [(1,4),(2,5)]; sum(x*y for x,y in pairs)`). Type planning runs *after* generator desugaring, so `Var(pairs)` has no type at desugar time; element-type inference falls back to `Int`/`Any` for the tuple target and the generic `rt_tuple_get` can't unbox. The canonical workaround is to use the list-comprehension form (`sum([x*y for x,y in pairs])`) or pass a typed literal inline. A full fix would require a lightweight iter-type pre-pass before generator desugaring (or moving desugaring to run after type planning).
+- Literals (`Int`/`Float`/`Bool`/`Str`/`None`, tuple/list/set/dict literals).
+- `Var(vid)` — param annotation → for-loop iter element type → Bind RHS shape.
+- `BuiltinCall(Zip|Enumerate|Range)` — synthesise `Iterator<Tuple<...>>` / `Iterator<Int>`.
+- `MethodCall(obj.items()/keys()/values())` when obj infers to Dict — returns `List<Tuple<K,V>>` / `List<K>` / `List<V>`.
+- `Attribute { obj, attr }` — walks `class_defs` to find the field type when obj is class-typed.
+
+`infer_yield_type_raw` uses the same probe with an augmented `VarTypeMap` that records tuple-target leaves → corresponding iter element types. This is what makes `max((v, i) for i, v in enumerate([3,1,4,1,5]))` return `(5, 4)` (the yield type shape-infers as `Tuple([Int, Int])`, so `max` dispatches over tuples rather than treating the yield as `Int`).
+
+Working canonical idioms:
+
+- `sum(x * y for x, y in zip([1,2,3], [4,5,6]))` — inline literals.
+- `sum(x * y for x, y in [(1,4), (2,5)])` — list-of-tuples literal.
+- `sum(a * b + c for a, (b, c) in [...])` — nested unpack.
+- `max((v, i) for i, v in enumerate([...]))` — tuple yield, module-level iter.
+- `sum(x * y for x, y in zip(var_a, var_b))` — module-level `list[int]` captures.
+
+**Still limited**: function-scoped closures of heap-typed variables into gen-exprs (e.g. `def f(a): return sum(x for x in a)`, `linear(x, w)` with closure over params). These fail at runtime with SIGSEGV even for the simple single-var `for x in a` form — a pre-existing bug in how the gen-expr resume function marshals heap captures, independent of `§C.6`'s type-inference scope. Workaround: materialise the iterable with a leading `list(...)` or move the gen-expr to module scope. `min()` on gen-expr yielding tuples also has a separate pre-existing bug (returns the first element); `max()` works because its dispatch is through a different runtime path.
 
 ---
 

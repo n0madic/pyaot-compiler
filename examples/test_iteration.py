@@ -1114,10 +1114,9 @@ print("New comprehension tuple-target tests passed!")
 # §C.6 — tuple targets in generator expressions (Area C).
 # `detect_for_loop_generator` now accepts any `BindingTarget`, so tuple /
 # attr / index targets propagate through the optimised resume-loop builder.
-# Currently supported: iter expressions whose element type is computable at
-# desugar time (zip of literal args, enumerate of literals, list / set /
-# tuple literals). Bare `Var` references to heterogeneous iterables still
-# fall back to the legacy `Int` element-type (single-var only).
+# Desugar-time element-type inference covers: zip/enumerate of literals OR
+# Var/attr references, dict `.items()/.keys()/.values()`, module-level
+# bindings, and function-param Vars with annotations.
 # =============================================================================
 
 # zip with literal args
@@ -1129,6 +1128,23 @@ assert sum(x * y for x, y in [(1, 4), (2, 5), (3, 6)]) == 32
 # nested unpack in gen-expr
 _ct_nested_sum = sum(a * b + c for a, (b, c) in [(1, (2, 3)), (4, (5, 6))])
 assert _ct_nested_sum == (1 * 2 + 3) + (4 * 5 + 6)
+
+# max over gen-expr yielding tuples — yield-type must shape-infer as
+# Tuple([Int, Int]) or max() dispatches to Int and returns garbage.
+# NB: min() on gen-expr of tuples still has a separate pre-existing bug
+# where the fold returns the first element; tracked outside §C.6.
+_ct_max = max((v, i) for i, v in enumerate([3, 1, 4, 1, 5]))
+assert _ct_max == (5, 4)
+
+# zip over Var-typed module-level lists (shape-infer via VarTypeMap)
+_ct_wo = [10, 20, 30]
+_ct_xx = [1, 2, 3]
+assert sum(a * b for a, b in zip(_ct_wo, _ct_xx)) == 140
+
+# enumerate over Var-typed module-level list
+_ct_vals = [3, 1, 4]
+_ct_enum = [(i, v) for i, v in enumerate(_ct_vals)]
+assert _ct_enum == [(0, 3), (1, 1), (2, 4)]
 
 print("Generator-expression tuple-target tests passed!")
 
