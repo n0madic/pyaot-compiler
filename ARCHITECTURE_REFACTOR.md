@@ -1338,6 +1338,398 @@ Examples of what does NOT belong here (these are architectural):
 
 ---
 
+# Execution: Claude Code Session Roadmap
+
+This section breaks the refactor into **agent-sized sessions**. A
+session = one planning phase + one implementation phase, starting
+from a clean context and ending with a green test suite plus one or
+more green commits.
+
+## Session Discipline
+
+### Per-session rules (non-negotiable)
+
+1. **One session, one clear deliverable.** A session ends when its
+   stated goal is achieved OR when the session is explicitly
+   aborted and rolled back. It does not end with "made progress,
+   will finish next time" — that leaves the codebase in a broken
+   state. Either merge the work or revert it.
+
+2. **Start with a plan, end with tests green.** Every session
+   begins in plan mode: read the relevant milestone section in this
+   document, confirm scope, identify files, sketch approach, then
+   implement. Every session ends with `cargo test --workspace
+   --release` green, `cargo clippy` clean, `cargo fmt --check` clean.
+   If tests cannot be made green, the session must be rolled back
+   (not left broken "to continue later").
+
+3. **Context boundary.** Each session starts fresh. Do NOT rely on
+   conversation memory from a prior session. All context the next
+   session needs must be either (a) in this document, (b) in the
+   commit history, or (c) in `COMPILER_STATUS.md` / `INSIGHTS.md` /
+   `MEMORY.md`. If a session discovers something the next session
+   needs, it writes it down **before** the session ends.
+
+4. **No cross-session WIP.** A session does not start a change, leave
+   it half-done, and end "to be continued". It finishes or reverts.
+   If a session discovers its scope is too large, the protocol is:
+   (a) identify a smaller valid subgoal, (b) roll back everything
+   else, (c) implement the subgoal, (d) close the session, (e)
+   schedule the remainder as a new session.
+
+5. **Milestone boundary = commit boundary.** A milestone (numbered
+   §N.M in this document) maps to one or more commits **within one
+   session**. No milestone spans multiple sessions unless the
+   session roadmap below explicitly splits it into sub-sessions
+   with named IDs.
+
+6. **Benchmark after every perf-relevant session.** Runtime / GC /
+   codegen sessions end by running `cargo bench` and recording
+   deltas in `bench/BASELINE.md`. Regressions over thresholds in
+   §Non-Negotiable Principle 6 block the session close.
+
+### Session sizing guidance
+
+| Session complexity | Estimated LOC diff | Estimated walltime |
+|--------------------|--------------------|--------------------|
+| Low                | < 300              | 1-3 hours          |
+| Medium             | 300-1000           | 3-6 hours          |
+| High               | 1000-2000          | 6-10 hours         |
+| **Split required** | > 2000             | —                  |
+
+A session trending toward >2000 LOC must split. The split point is
+usually obvious (add-types-first, migrate-callers-second;
+infrastructure-first, consumers-second).
+
+**When in doubt, split.** A smaller well-scoped session is always
+better than a sprawling one. The overhead of planning a new session
+is tiny compared to the risk of a broken commit.
+
+### Session kickoff protocol
+
+Start of every session:
+
+1. Read `ARCHITECTURE_REFACTOR.md` (this document) — at minimum the
+   milestone section and the Non-Negotiable Principles.
+2. Read latest `git log --oneline -20` to understand what landed
+   recently.
+3. Read `COMPILER_STATUS.md` for current capability state.
+4. If the session is implementing an earlier-planned milestone,
+   read that milestone's spec in full.
+5. Plan mode: confirm scope matches the spec. If the spec needs
+   amendment (see §Amendment Protocol), halt implementation and
+   amend the document first.
+6. Begin implementation only after the plan is concrete.
+
+### Session exit protocol
+
+End of every session:
+
+1. `cargo build --workspace --release` — clean.
+2. `cargo fmt --check` — clean.
+3. `cargo clippy --workspace --release -- -D warnings` — clean.
+4. `cargo test --workspace --release` — all green.
+5. For perf-relevant sessions: `cargo bench --workspace` — within
+   gates.
+6. Commits in good shape: squashed where appropriate, messages
+   following `phaseN.M: <milestone>: <verb> <what>` convention.
+7. If the session closes a milestone: update `COMPILER_STATUS.md`
+   and `INSIGHTS.md` accordingly (removing obsolete sections,
+   adding new architecture notes).
+8. If the session discovered a spec gap: amend
+   `ARCHITECTURE_REFACTOR.md` in a dedicated commit.
+9. Write a 2-3 sentence session summary somewhere a future session
+   can find it (either in the milestone's commit message or in a
+   scratch `SESSION_LOG.md` kept as a running journal).
+
+### Context handoff between sessions
+
+Each session starts cold. The handoff between consecutive sessions
+happens **through the git history and this document**, not through
+conversation context. Concretely:
+
+- **Commit messages** carry the "why". Write them like you are
+  explaining to a reviewer who has no prior context.
+- **`COMPILER_STATUS.md`** describes the current state of each
+  feature. After a session, it must reflect reality.
+- **`INSIGHTS.md`** captures non-obvious design decisions. After a
+  session that made such a decision, add an INSIGHTS section;
+  conversely, remove obsolete sections for mechanisms the session
+  deleted.
+- **`ARCHITECTURE_REFACTOR.md`** (this document) describes intent.
+  After a session, if the session diverged from the spec,
+  explicitly amend the spec.
+
+If the next session needs to know something that is not in any of
+these three places, the previous session failed the handoff. This is
+a protocol violation, not an optimization opportunity.
+
+---
+
+## Full Session Inventory
+
+Sessions are numbered with `S<phase>.<idx>`. Dependencies are listed
+explicitly. **"Parallel-safe"** means two sessions could run
+simultaneously on different branches without stepping on each other
+(safe to dispatch to two agents in parallel). **"Serial-only"** means
+the next session must wait for the prior one to merge.
+
+### Phase 0 — Preparation
+
+| ID | Scope | Deps | Complexity | Parallel? |
+|----|-------|------|------------|-----------|
+| S0.1 | Benchmark harness (§0.1): create `bench/` crate, Python sources in `bench/py/`, runner, `BASELINE.md` skeleton and first baseline recorded | — | Medium | Parallel-safe with S0.2, S0.3 |
+| S0.2 | Coverage audit + gap-filling tests (§0.2): run `cargo llvm-cov`, identify <70% areas, add tests | — | Medium-High (scales with gaps) | Parallel-safe with S0.1, S0.3 |
+| S0.3 | Property checker stubs (§0.3 + §0.4): `ssa_check.rs` with no-op for legacy MIR, `lattice_props.rs` with `#[ignore]`d laws | — | Low | Parallel-safe with S0.1, S0.2 |
+
+**Combined ok**: S0.1 and S0.3 can be one session if S0.3 is
+small (each < 300 LOC). S0.2 must be its own session — coverage
+audit often uncovers surprise gaps.
+
+### Phase 1 — SSA MIR + Whole-Program Type Inference
+
+| ID | Scope | Deps | Complexity | Parallel? |
+|----|-------|------|------------|-----------|
+| S1.1 | HIR CFG type definitions (§1.1 prep): add `HirBlock`, `HirBlockId`, `HirTerminator` alongside legacy `StmtKind` — both coexist | S0.* | Low-Medium | — |
+| S1.2 | Frontend HIR-CFG migration (§1.1 main): convert `ast_to_hir/*.rs` to emit CFG; leaves old `StmtKind::If/While/ForBind/Try/Match` as bridge | S1.1 | **HIGH** | — |
+| S1.3 | Downstream consumer migration + legacy StmtKind deletion (§1.1 tail): optimizer, lowering, codegen consume CFG; delete old StmtKind variants | S1.2 | **HIGH** | — |
+| S1.4 | Dominator tree (§1.2): `crates/mir/src/dom_tree.rs`, Cooper-Harvey-Kennedy | S1.3 | Medium | Parallel-safe with S1.10 |
+| S1.5 | Phi MIR instruction + codegen-side block-param support (§1.3 prep) | S1.4 | Medium | — |
+| S1.6 | SSA renaming via Cytron algorithm (§1.3 main): rename all function bodies to SSA, activate SSA checker | S1.5 | **HIGH** | — |
+| S1.7 | `Refine` instruction + isinstance narrowing at CFG successors (§1.4 prep) | S1.6 | Medium | — |
+| S1.8 | Unified `TypeInferencePass` (§1.4 main): replace 3 legacy inference paths with one SSA-based pass | S1.7 | **HIGH** | — |
+| S1.9 | Delete legacy type maps (§1.4 tail): purge `prescan_var_types`, `refined_var_types`, `narrowed_union_vars`, `apply_narrowings`, `restore_types` | S1.8 | Medium | — |
+| S1.10 | Call graph (§1.5): `crates/optimizer/src/call_graph.rs`, SCCs via Tarjan | S1.3 | Medium | Parallel-safe with S1.4-S1.9 |
+| S1.11 | WPA parameter inference (§1.6): fixed-point pass over call graph | S1.9, S1.10 | **HIGH** | — |
+| S1.12 | WPA field inference (§1.7): cross-call field type join | S1.11 | **HIGH** | — |
+| S1.13 | Pass migration: DCE + constfold (§1.8 part 1) | S1.9 | Medium | Parallel-safe with S1.14-S1.15 (different passes) |
+| S1.14 | Pass migration: inlining (§1.8 part 2) | S1.13 | High | Parallel-safe with S1.15 |
+| S1.15 | Pass migration: peephole, devirtualize, flatten_properties (§1.8 part 3) | S1.9 | Medium-High | Parallel-safe with S1.13, S1.14 |
+| S1.16 | Codegen SSA migration (§1.9): MIR Phi → Cranelift block params, delete manual phi emulation | S1.6, S1.15 | Medium-High | — |
+| S1.17 | Phase 1 final cleanup + acceptance (§1.10): grep-verify deletions, benchmark check, docs update | S1.11, S1.12, S1.16 | Low-Medium | — |
+
+**Split triggers**:
+
+- **S1.2** (frontend CFG migration): if a single session exceeds
+  1500 LOC, split along grammar boundaries: S1.2a = `if`/`while`
+  conversion; S1.2b = `for`/`try`/`match`; S1.2c = generators.
+- **S1.6** (SSA renaming): if diff exceeds 1500 LOC, split:
+  S1.6a = straight-line functions; S1.6b = loops + branches;
+  S1.6c = generators + closures + cell-vars.
+- **S1.8** (TypeInferencePass): if coverage audit finds many
+  call-site variations, split: S1.8a = core inference engine;
+  S1.8b = dunder/class dispatch; S1.8c = stdlib edge cases.
+
+**Combined ok (rare)**:
+
+- S1.1 + S1.2 can be one session if the HIR type additions are small
+  (< 200 LOC) and the frontend migration is compact. Otherwise
+  separate.
+- S1.9 (delete legacy maps) can be merged into S1.8 if the migration
+  naturally leaves no call sites. Verify by `grep` before closing
+  the session.
+
+### Phase 2 — Unified Tagged Value Representation
+
+| ID | Scope | Deps | Complexity | Parallel? |
+|----|-------|------|------------|-----------|
+| S2.1 | Tag scheme design + `core-defs/Value` API (§2.1 + §2.2): low-bit tagging constants, `Value` type, constructors, extractors, property tests | Phase 1 merged | Medium | — |
+| S2.2 | Runtime migration: primitives (§2.3 part 1): Int, Bool, None — `rt_make_*` / `rt_unbox_*` replaced by Value methods | S2.1 | Medium | Parallel-safe with nothing (hot path) |
+| S2.3 | Runtime migration: List + basic list ops (§2.3 part 2): drop `ELEM_RAW_INT` / `ELEM_HEAP_OBJ`, store Value uniformly | S2.2 | Medium-High | — |
+| S2.4 | Runtime migration: Dict, Set, Tuple (§2.3 part 3) | S2.3 | Medium | — |
+| S2.5 | Runtime migration: Str, Bytes, Class instances, Generators (§2.3 part 4): remove `heap_field_mask`, `type_tags` usage | S2.4 | Medium | — |
+| S2.6 | GC migration (§2.4): `mark_object(Value)`, remove heap masks | S2.5 | **HIGH** (critical path) | — |
+| S2.7 | Codegen: Value lowering (§2.5 part 1): MIR ops emit uniform I64 Value, remove `ValueKind` enum | S2.6 | High | — |
+| S2.8 | Codegen: arithmetic fast-path inlining (§2.5 part 2): inline tag tests for hot ops based on SSA types | S2.7 | **HIGH** (perf-critical) | — |
+| S2.9 | Pass migration: delete boxing helpers (§2.6): `box_primitive_if_needed`, `promote_to_float_if_needed`, `coerce_to_field_type`, `is_useless_container_ty` | S2.8 | Medium | — |
+| S2.10 | Phase 2 final purge + benchmark acceptance (§2.7): grep verify, run benchmarks, update BASELINE | S2.9 | Low-Medium | — |
+
+**Split triggers**:
+
+- **S2.3** (list migration): if list ops are many (> 30 runtime
+  funcs), split into: S2.3a = list core (push/get/set/len);
+  S2.3b = list methods (sort/reverse/index/count/etc.).
+- **S2.8** (arithmetic fast-path): consider splitting: S2.8a =
+  int+int fast path; S2.8b = mixed numeric fast paths; S2.8c =
+  comparison fast paths.
+
+**Combined ok**:
+
+- S2.1 + S2.2 possible if both fit < 1500 LOC. Usually keep separate
+  because S2.1 is design-heavy and S2.2 touches every `rt_make_*`
+  call site.
+
+### Phase 3 — Type Lattice + Monomorphization
+
+| ID | Scope | Deps | Complexity | Parallel? |
+|----|-------|------|------------|-----------|
+| S3.1 | Lattice trait + `Type` method migration (§3.1): `TypeLattice` impl for `Type`, migrate all callers to `join`/`meet`/`is_subtype_of`/`minus` | Phase 2 merged | Medium-High | — |
+| S3.2 | TypeVar + Generic unification (§3.2): add `Type::Var`, `Type::Generic`; migrate `Type::List`/`Dict`/`Set`/`Tuple`/`TupleVar` to `Generic` representation | S3.1 | **HIGH** (widespread) | — |
+| S3.3 | Monomorphization pass: specialization engine (§3.3 part 1): walk call sites, instantiate, dedup | S3.2 | **HIGH** | — |
+| S3.4 | Monomorphization: codegen integration + stdlib generics rewrite (§3.3 part 2): ensure no `TypeVar` reaches codegen | S3.3 | High | — |
+| S3.5 | Protocol structural typing (§3.4): parse Protocol, structural `is_subtype_of`, runtime type-check function | S3.2 | Medium-High | Parallel-safe with S3.3, S3.4 (different subsystems) |
+| S3.6 | Frontend: TypeVar/Generic/Protocol parsing (§3.5): Python syntax for `T = TypeVar(...)`, `class C(Generic[T])`, `class P(Protocol)`, PEP 695 `def f[T](...)` | S3.5 | Medium | — |
+| S3.7 | Phase 3 final purge + perf gate (§3.6 + §3.7): delete `unify_*`, `narrow_*`; benchmark, binary-size, compile-time gates | S3.4, S3.6 | Low-Medium | — |
+
+**Split triggers**:
+
+- **S3.2** (TypeVar + Generic migration): if `Type::List/Dict/Set/
+  Tuple` call sites exceed ~500 touches, split: S3.2a = add
+  `Generic` variant; S3.2b = migrate List/Dict/Set; S3.2c = migrate
+  Tuple / TupleVar.
+- **S3.3** (monomorphization core): potentially split by function
+  class: S3.3a = free functions; S3.3b = methods; S3.3c = stdlib
+  builtins.
+
+**Combined ok**:
+
+- S3.3 + S3.4 possible if the integration is small. Usually
+  separate — monomorphization is perf-sensitive enough to warrant
+  dedicated codegen attention.
+
+### Post-Refactor: Area F
+
+| ID | Scope | Deps |
+|----|-------|------|
+| SF.1 | Simplify Area F plan in `MICROGPT_PLAN.md` §F for post-refactor architecture (tagged Value, Protocol dispatch, SSA folding) | All 3 phases merged + 1 week stabilization |
+| SF.2 | Implement `rt_format(value: Value, spec: Value) -> Value` + frontend f-string desugar + constant-fold pass | SF.1 |
+| SF.3 | Delete legacy `FmtHex`/`FmtOct`/`FmtBin`/`FmtIntGrouped`/`FmtFloatGrouped`/`Round` (in format ctx); test coverage for all format spec variants | SF.2 |
+
+---
+
+## Parallelism & Combination Rules
+
+### Rules
+
+1. **Cross-phase parallelism is forbidden.** Phase 1 must merge
+   before Phase 2 starts, Phase 2 before Phase 3. Sessions in
+   different phases never run concurrently, even on different
+   branches. This enforces Non-Negotiable Principle 8.
+
+2. **Intra-phase parallelism is narrow.** Within a phase, sessions
+   marked "Parallel-safe" in the table may run concurrently on
+   separate branches. All other sessions are serial — the next
+   session starts only after the previous merges.
+
+3. **Parallel sessions still gate on merge order.** Even
+   parallel-safe sessions must produce independently mergeable
+   branches. If one session's merge breaks the other's branch,
+   rebase and re-test before the second merge.
+
+4. **Combination is a scope reduction, not addition.** Two small
+   sessions may combine into one **only if** the combined scope is
+   still within "Medium" sizing (≤ 1000 LOC, ≤ 6 hours). Combining
+   "Medium + Medium" to save a planning step is a false economy —
+   the combined session becomes High and splits anyway.
+
+5. **Combination follows directed pairs only.** Combine S(N) with
+   S(N+1) if the deliverables are tightly coupled. Never combine
+   S(N) with S(N+2) skipping an intermediate.
+
+### Safe combination patterns
+
+- **"Define + First Use"**: S(N) adds a new type/API; S(N+1) is its
+  first narrow consumer. Often combinable if both are small.
+  Example: S0.1 (benchmark harness) + S0.3 (property checker
+  stubs) if both fit in one Medium session.
+
+- **"Final Purge"**: the last session of a milestone often just
+  deletes obsoleted code and runs grep verification. These close
+  sessions are usually Low complexity and can fold into the
+  preceding session IF the preceding session's scope permits.
+  Example: S1.9 (delete legacy type maps) may fold into S1.8
+  (TypeInferencePass) if the inference migration naturally leaves
+  zero call sites.
+
+### Unsafe combination patterns
+
+- **Never combine "architecture addition" with "legacy deletion".**
+  S1.2 (add CFG) + S1.3 (delete StmtKind) in one session sounds
+  efficient but hides the bridging period where both coexist —
+  that is exactly where bugs are found. Keep them separate.
+
+- **Never combine sessions that touch different crates at
+  critical paths.** S2.6 (GC migration) + S2.7 (Codegen Value
+  lowering) would cross runtime↔codegen in one commit. If a bug
+  is introduced, you can't isolate whether it's runtime or
+  codegen. Keep separate.
+
+- **Never combine "design" with "migration".** S2.1 (Value API
+  design) + S2.2 (migrate rt_make_int) in one session forces the
+  design decisions to harden mid-migration, blocking
+  reconsideration. Close S2.1 first, review the API stand-alone,
+  then open S2.2.
+
+- **Never combine parallel-safe sessions into a serial one just
+  to "simplify scheduling".** Parallelism is an opportunity, not
+  an obligation. But forcing a sequence when the graph allows
+  parallel work wastes walltime without benefit.
+
+---
+
+## Red Flags — Hard Stops
+
+If any of these happen during a session, halt and either split or
+roll back. Do NOT push through.
+
+1. **Test suite is red and you don't know why.** Not "red, but I
+   have a plan" — red and unexplained. Bisect or revert.
+
+2. **The scope has doubled since the session started.** Stop. You
+   hit a genuine sub-problem that deserves its own session. Roll
+   back the current session's work OR land the part that fits and
+   defer the rest to a new session.
+
+3. **You are rewriting code you just wrote in the same session.**
+   Sign of underdesigned scope. Roll back, re-plan from the start.
+
+4. **Tests are "mostly green" with 1-2 failures you plan to come
+   back to.** Not acceptable. All green or roll back.
+
+5. **You are creating a new ad-hoc map/helper to make the session
+   work.** Session-level violation of Non-Negotiable Principle 5.
+   Stop. Either fit into the new abstraction or amend the spec.
+
+6. **You are about to commit with "TODO: fix later" in the code.**
+   Not a commit, not a session close. Either fix now or revert and
+   re-plan.
+
+7. **You have been in plan mode for > 2 hours without starting
+   implementation.** Plan mode should be 10-30 minutes for a
+   well-specified milestone. Extended plan mode means the spec is
+   under-specified (amend the document) or the scope is too large
+   (split the session).
+
+8. **The session is in its 12th hour.** Sessions beyond 10 hours
+   have strongly diminishing returns. Commit what is green, close
+   the session, rest, open a new one.
+
+9. **You are editing `ARCHITECTURE_REFACTOR.md` during
+   implementation to match what the code is doing.** This is
+   backwards. The document drives the code, not the reverse.
+   Halt. Revert the implementation. Plan properly via Amendment
+   Protocol if the document is wrong.
+
+---
+
+## Total Session Count
+
+Phase 0: 2-3 sessions
+Phase 1: 15-20 sessions (17 listed; possible splits in S1.2, S1.6, S1.8)
+Phase 2: 8-12 sessions (10 listed; possible splits in S2.3, S2.8)
+Phase 3: 6-9 sessions (7 listed; possible splits in S3.2, S3.3)
+Post-refactor Area F: 2-3 sessions
+
+**Expected total**: ~33-45 sessions over 14-23 weeks at one
+session per 2-3 days wall-clock.
+
+The session count is an output, not a budget. If halfway through
+you realize the spec was inadequate and requires major amendment,
+the count grows — and the alternative (skipping planned work) is
+worse than the extra sessions.
+
+---
+
 # Amendment Protocol
 
 This document is **authoritative** but not immutable. If during
