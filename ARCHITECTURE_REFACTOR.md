@@ -1212,6 +1212,85 @@ When Phases 0 through 3 are all merged to master:
 
 ---
 
+# Post-Refactor Feature Queue
+
+Feature work that predates this refactor plan or arises during it is
+**not** smuggled into a phase. It queues here and is scheduled after
+all three phases merge to master. This section exists so items are
+not forgotten — not because they are optional.
+
+## Area F — Format Specification Protocol
+
+See `MICROGPT_PLAN.md` §F for the original scoping.
+
+**Why post-refactor, not woven in**:
+
+- Area F's runtime centerpiece is `rt_format(value, spec) -> str`.
+  Before Phase 2, `value` has five legacy representations (raw i64,
+  float-bits, boxed primitive, heap pointer, elem-tagged container
+  member). Writing the dispatch before Phase 2 means writing it
+  twice — once for legacy reps, once for tagged `Value`.
+- User-class `__format__` dispatch (Area F.6) is the canonical
+  case for Phase 3's Protocol structural typing. Writing it
+  pre-Phase-3 means ad-hoc dispatch, re-done via Protocol after.
+- Constant-folding `f"{42:4d}"` → `"   42"` (Area F.5) needs
+  flow-sensitive type info with literal-propagation — exactly
+  what Phase 1's SSA + WPA provides. Pre-Phase-1, it is a
+  special-case heuristic; post-Phase-1, it is a standard SSA
+  constant-fold pass.
+
+**Estimated effort**:
+
+- Without refactor: 1-2 weeks (per §F plan).
+- After all three phases: 3-5 days.
+  - `rt_format(value: Value, spec: Value) -> Value` — uniform
+    tagged dispatch.
+  - `__format__` through Protocol — trivially structural.
+  - F-string desugaring via SSA constant-fold — standard pass.
+  - Removal of `Builtin::FmtHex`/`FmtOct`/`FmtBin`/`FmtIntGrouped`/
+    `FmtFloatGrouped`/`Round` — folds into Phase 3 cleanup.
+
+**When to schedule**: at least 1 stabilization week after Phase 3
+merges. Revisit `MICROGPT_PLAN.md` §F, simplify to reflect the new
+architecture, then implement as an independent feature milestone
+with its own test suite and acceptance criteria.
+
+**Non-negotiable (queue discipline)**:
+
+- Do NOT pull Area F work into any refactor phase, even if it
+  "looks like it would fit". Resist.
+- Do NOT leave the legacy format builtins (`FmtHex`/etc.) in place
+  "for now" during the refactor and plan to remove them in Area F.
+  They are removed by Phase 3 cleanup (legacy builtin deletion is
+  not feature work — it is architectural hygiene). Area F just
+  builds the new `rt_format` on top of the cleaned-up base.
+- If Area F is genuinely blocking a user need before the refactor
+  completes, that is a signal to ship the current best-effort
+  f-string support as a known limitation and still wait for the
+  refactor — not to inline Area F.
+
+## Other Queued Items
+
+As feature requests land during the refactor, document them here.
+Examples of what belongs:
+
+- New stdlib module bindings (json schema validation, http client
+  tuning, etc.) — feature work, post-refactor.
+- Performance-tuning passes that aren't part of architecture
+  (vectorization, auto-parallelization) — post-refactor.
+- User-facing language features not yet supported (`async`/`await`
+  concurrency, decorator factories, `typing.Literal`) — evaluate
+  whether they are "feature work" (post-refactor) or "architectural
+  gap" (amend relevant phase spec).
+
+Examples of what does NOT belong here (these are architectural):
+
+- Bug fixes to type inference — amend Phase 1 spec if discovered.
+- Runtime representation inconsistencies — amend Phase 2 spec.
+- Generic parameter issues — amend Phase 3 spec.
+
+---
+
 # Amendment Protocol
 
 This document is **authoritative** but not immutable. If during
