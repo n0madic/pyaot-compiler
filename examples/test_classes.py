@@ -2241,4 +2241,65 @@ assert abs(weighted_e3.w - 1.5) < 1e-9, f"E.3 weighted.w = {weighted_e3.w}"
 
 print("Cross-site field numeric promotion (§E.3): PASS")
 
+# =============================================================================
+# Comparison dunders with NotImplemented (§E.7)
+# =============================================================================
+# CPython data model: a rich-comparison dunder may return `NotImplemented`
+# to signal "I don't know how to compare against this operand". The
+# caller must then try the reflected dunder on the other side; if that
+# also returns `NotImplemented`, fall back to identity (eq/ne) or
+# TypeError (ordering). Requires boxing bool returns when the signature
+# is `bool | NotImplementedT`.
+
+class _QEq:
+    def __init__(self, v: int):
+        self.v = v
+    def __eq__(self, other):
+        if isinstance(other, _QEq):
+            return self.v == other.v
+        return NotImplemented
+
+_qe1, _qe2, _qe3 = _QEq(1), _QEq(1), _QEq(2)
+assert _qe1 == _qe2, "E.7 __eq__ forward true"
+assert not (_qe1 == _qe3), "E.7 __eq__ forward false"
+assert not (_qe1 == 5), "E.7 __eq__ NI + no reflected → identity → False"
+
+# __lt__ ↔ __gt__ reflection via reflected_dunder_name.
+class _PLt:
+    def __init__(self, v: int):
+        self.v = v
+    def __lt__(self, other):
+        if isinstance(other, _PLt):
+            return self.v < other.v
+        return NotImplemented
+
+_pl1, _pl2 = _PLt(1), _PLt(2)
+assert _pl1 < _pl2, "E.7 __lt__ forward"
+assert _pl2 > _pl1, "E.7 __gt__ via reflected __lt__"
+
+# Ordering between incompatible classes → TypeError.
+class _Other:
+    def __init__(self, v):
+        self.v = v
+
+try:
+    _ = _PLt(1) < _Other(1)
+    assert False, "E.7 ordering NI on both sides should raise"
+except TypeError:
+    pass
+
+# __ne__ auto-derived from __eq__ (existing behaviour) + NI-aware.
+class _Sym:
+    def __init__(self, v):
+        self.v = v
+    def __eq__(self, other):
+        if isinstance(other, _Sym):
+            return self.v == other.v
+        return NotImplemented
+
+assert _Sym(1) != _Sym(2), "E.7 __ne__ derived"
+assert not (_Sym(1) != _Sym(1)), "E.7 __ne__ derived equal"
+
+print("Comparison dunders with NotImplemented (§E.7): PASS")
+
 print("All class tests passed!")

@@ -25,7 +25,22 @@ impl<'a> Lowering<'a> {
             }
             // Bidirectional: propagate function return type into expression
             let expected = self.symbols.current_func_return_type.clone();
-            let operand = self.lower_expr_expecting(expr, expected, hir_module, mir_func)?;
+            let mut operand = self.lower_expr_expecting(expr, expected, hir_module, mir_func)?;
+            // Area E §E.7 — when the function's signature return type is a
+            // Union containing `NotImplementedT` (e.g. comparison dunders
+            // returning `bool | NotImplementedT`) and the actual value is
+            // a raw primitive (`Bool`/`Int`/`Float`/`None`), box it so
+            // the Cranelift-level signature (heap pointer) matches.
+            if let Some(ret_ty) = self.symbols.current_func_return_type.clone() {
+                if ret_ty.is_union()
+                    && matches!(&ret_ty, Type::Union(members) if members.contains(&Type::NotImplementedT))
+                {
+                    let value_ty = self.get_type_of_expr_id(*expr_id, hir_module);
+                    if matches!(value_ty, Type::Bool | Type::Int | Type::Float | Type::None) {
+                        operand = self.box_primitive_if_needed(operand, &value_ty, mir_func);
+                    }
+                }
+            }
             Some(operand)
         } else {
             None

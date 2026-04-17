@@ -756,6 +756,28 @@ impl CmpOp {
             CmpOp::In | CmpOp::NotIn | CmpOp::Is | CmpOp::IsNot => return None,
         })
     }
+
+    /// Reflected dunder name for this rich-comparison op (per Python
+    /// data model: `__lt__` ↔ `__gt__`, `__le__` ↔ `__ge__`; `__eq__`
+    /// and `__ne__` are self-reflected).
+    pub fn reflected_dunder_name(self) -> Option<&'static str> {
+        Some(match self {
+            CmpOp::Eq => "__eq__",
+            CmpOp::NotEq => "__ne__",
+            CmpOp::Lt => "__gt__",
+            CmpOp::LtE => "__ge__",
+            CmpOp::Gt => "__lt__",
+            CmpOp::GtE => "__le__",
+            CmpOp::In | CmpOp::NotIn | CmpOp::Is | CmpOp::IsNot => return None,
+        })
+    }
+
+    /// True for ordering comparisons (`<`, `<=`, `>`, `>=`). Used to
+    /// route the "both sides returned NotImplemented" fallback: equality
+    /// falls back to identity, ordering raises `TypeError`.
+    pub fn is_ordering(self) -> bool {
+        matches!(self, CmpOp::Lt | CmpOp::LtE | CmpOp::Gt | CmpOp::GtE)
+    }
 }
 
 /// Logical operators

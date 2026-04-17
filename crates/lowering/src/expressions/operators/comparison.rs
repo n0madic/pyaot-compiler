@@ -600,35 +600,63 @@ impl<'a> Lowering<'a> {
                         .and_then(|ci| ci.get_dunder_func("__ne__"))
                         .is_none();
 
-                // NOTE: comparison dunders that return `NotImplemented` from
-                // some branch are NOT yet supported — that requires boxing
-                // the bool return at every concrete `return True/False` so
-                // the function signature can be Union[Bool, NotImplementedT].
-                // Until that's wired, comparison dunders must consistently
-                // return a concrete bool (the CPython idiom is to return
-                // `False` for the unhandled case in `__eq__`). The binary
-                // arithmetic path (`__add__` etc.) DOES handle NotImplemented
-                // fully, since arithmetic dunders already return heap values.
+                let may_return_ni = self.func_may_return_not_implemented(func_id, hir_module);
+
+                // Size the dunder result using the function's actual
+                // return type (Bool, or Union[Bool, NotImplementedT]
+                // when the dunder has any `return NotImplemented` arm).
+                let dest = self.alloc_dunder_result(func_id, &Type::Bool, hir_module, mir_func);
+                let boxed_right = self.box_dunder_arg_if_needed(
+                    right_op.clone(),
+                    &right_type,
+                    func_id,
+                    1,
+                    hir_module,
+                    mir_func,
+                );
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest,
+                    func: func_id,
+                    args: vec![left_op.clone(), boxed_right],
+                });
+
+                let bool_result = if may_return_ni {
+                    // §E.7 — dunder may return NotImplemented. Branch on
+                    // identity with the singleton; on NI, dispatch the
+                    // reflected dunder (or identity / TypeError fallback
+                    // when none applies). Otherwise unbox the boxed Bool.
+                    let reflected_name = op.reflected_dunder_name();
+                    let reflected_func = match (&right_type, reflected_name) {
+                        (Type::Class { class_id: r_id, .. }, Some(name)) => self
+                            .get_class_info(r_id)
+                            .and_then(|ci| ci.get_dunder_func(name)),
+                        _ => None,
+                    };
+                    self.emit_comparison_ni_fallback(
+                        dest,
+                        reflected_func,
+                        right_op,
+                        right_type.clone(),
+                        left_op,
+                        left_type.clone(),
+                        op,
+                        hir_module,
+                        mir_func,
+                    )
+                } else {
+                    dest
+                };
+
                 if use_eq_negated {
-                    self.emit_instruction(mir::InstructionKind::CallDirect {
-                        dest: result_local,
-                        func: func_id,
-                        args: vec![left_op, right_op],
-                    });
                     let negated = self.alloc_and_add_local(Type::Bool, mir_func);
                     self.emit_instruction(mir::InstructionKind::UnOp {
                         dest: negated,
                         op: mir::UnOp::Not,
-                        operand: mir::Operand::Local(result_local),
+                        operand: mir::Operand::Local(bool_result),
                     });
                     return Ok(mir::Operand::Local(negated));
                 }
-                self.emit_instruction(mir::InstructionKind::CallDirect {
-                    dest: result_local,
-                    func: func_id,
-                    args: vec![left_op, right_op],
-                });
-                return Ok(mir::Operand::Local(result_local));
+                return Ok(mir::Operand::Local(bool_result));
             }
 
             // No dunder method — fall through to default comparison
@@ -705,5 +733,240 @@ impl<'a> Lowering<'a> {
             });
         }
         Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Emit the §E.7 comparison-dunder NotImplemented fallback.
+    ///
+    /// `forward_result` holds the outcome of the forward dunder, typed
+    /// as `Union[Bool, NotImplementedT]`. Control flow:
+    ///
+    /// ```ignore
+    /// if forward_result is NotImplemented:
+    ///     if reflected_func.is_some():
+    ///         refl = right.__rop__(left)
+    ///         if refl is NotImplemented:
+    ///             <default fallback>
+    ///         else:
+    ///             final = unbox_bool(refl)
+    ///     else:
+    ///         <default fallback>
+    /// else:
+    ///     final = unbox_bool(forward_result)
+    /// ```
+    ///
+    /// Default fallback:
+    ///   - `Eq`  → identity-pointer-eq (`left == right`).
+    ///   - `NotEq` → identity-pointer-ne.
+    ///   - ordering → raise `TypeError`.
+    ///
+    /// Returns the `Bool` local that holds the final comparison result.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::expressions) fn emit_comparison_ni_fallback(
+        &mut self,
+        forward_result: pyaot_utils::LocalId,
+        reflected_func: Option<pyaot_utils::FuncId>,
+        right_op: mir::Operand,
+        right_ty: Type,
+        left_op: mir::Operand,
+        left_ty: Type,
+        op: hir::CmpOp,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> pyaot_utils::LocalId {
+        let final_local = self.alloc_and_add_local(Type::Bool, mir_func);
+
+        // is_ni = forward_result == NotImplementedSingleton (pointer eq).
+        let ni_local = self.alloc_and_add_local(Type::NotImplementedT, mir_func);
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: ni_local,
+            func: mir::RuntimeFunc::Call(
+                &pyaot_core_defs::runtime_func_def::RT_NOT_IMPLEMENTED_SINGLETON,
+            ),
+            args: vec![],
+        });
+        let is_ni = self.alloc_and_add_local(Type::Bool, mir_func);
+        self.emit_instruction(mir::InstructionKind::BinOp {
+            dest: is_ni,
+            op: mir::BinOp::Eq,
+            left: mir::Operand::Local(forward_result),
+            right: mir::Operand::Local(ni_local),
+        });
+
+        let ni_path = self.new_block();
+        let ok_path = self.new_block();
+        let cont = self.new_block();
+        let ni_id = ni_path.id;
+        let ok_id = ok_path.id;
+        let cont_id = cont.id;
+
+        self.current_block_mut().terminator = mir::Terminator::Branch {
+            cond: mir::Operand::Local(is_ni),
+            then_block: ni_id,
+            else_block: ok_id,
+        };
+
+        // `then` (forward returned NI): try reflected, else default fallback.
+        self.push_block(ni_path);
+        match reflected_func {
+            Some(rfunc) => {
+                let boxed_left = self.box_dunder_arg_if_needed(
+                    left_op.clone(),
+                    &left_ty,
+                    rfunc,
+                    1,
+                    hir_module,
+                    mir_func,
+                );
+                let refl_dest = self.alloc_dunder_result(rfunc, &Type::Bool, hir_module, mir_func);
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest: refl_dest,
+                    func: rfunc,
+                    args: vec![right_op.clone(), boxed_left],
+                });
+                let refl_may_ni = self.func_may_return_not_implemented(rfunc, hir_module);
+                if refl_may_ni {
+                    // Second NI check on reflected result.
+                    let ni2 = self.alloc_and_add_local(Type::NotImplementedT, mir_func);
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: ni2,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_NOT_IMPLEMENTED_SINGLETON,
+                        ),
+                        args: vec![],
+                    });
+                    let refl_is_ni = self.alloc_and_add_local(Type::Bool, mir_func);
+                    self.emit_instruction(mir::InstructionKind::BinOp {
+                        dest: refl_is_ni,
+                        op: mir::BinOp::Eq,
+                        left: mir::Operand::Local(refl_dest),
+                        right: mir::Operand::Local(ni2),
+                    });
+                    let both_ni = self.new_block();
+                    let refl_ok = self.new_block();
+                    let both_ni_id = both_ni.id;
+                    let refl_ok_id = refl_ok.id;
+                    self.current_block_mut().terminator = mir::Terminator::Branch {
+                        cond: mir::Operand::Local(refl_is_ni),
+                        then_block: both_ni_id,
+                        else_block: refl_ok_id,
+                    };
+                    self.push_block(both_ni);
+                    self.emit_default_compare_fallback(
+                        final_local,
+                        &left_op,
+                        &left_ty,
+                        &right_op,
+                        &right_ty,
+                        op,
+                        mir_func,
+                    );
+                    self.current_block_mut().terminator = mir::Terminator::Goto(cont_id);
+                    self.push_block(refl_ok);
+                    self.emit_unbox_into_bool(final_local, refl_dest, mir_func);
+                    self.current_block_mut().terminator = mir::Terminator::Goto(cont_id);
+                } else {
+                    self.emit_unbox_into_bool(final_local, refl_dest, mir_func);
+                    self.current_block_mut().terminator = mir::Terminator::Goto(cont_id);
+                }
+            }
+            None => {
+                self.emit_default_compare_fallback(
+                    final_local,
+                    &left_op,
+                    &left_ty,
+                    &right_op,
+                    &right_ty,
+                    op,
+                    mir_func,
+                );
+                self.current_block_mut().terminator = mir::Terminator::Goto(cont_id);
+            }
+        }
+
+        // `else` (forward produced a concrete Bool): unbox.
+        self.push_block(ok_path);
+        self.emit_unbox_into_bool(final_local, forward_result, mir_func);
+        self.current_block_mut().terminator = mir::Terminator::Goto(cont_id);
+
+        self.push_block(cont);
+        final_local
+    }
+
+    /// Unbox a boxed-bool `*mut Obj` into the typed `Bool` local.
+    fn emit_unbox_into_bool(
+        &mut self,
+        dest: pyaot_utils::LocalId,
+        src: pyaot_utils::LocalId,
+        mir_func: &mut mir::Function,
+    ) {
+        let tmp = self.alloc_and_add_local(Type::Bool, mir_func);
+        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            dest: tmp,
+            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL),
+            args: vec![mir::Operand::Local(src)],
+        });
+        self.emit_instruction(mir::InstructionKind::Copy {
+            dest,
+            src: mir::Operand::Local(tmp),
+        });
+    }
+
+    /// Emit the "both sides returned NotImplemented" fallback.
+    /// Equality ops fall back to identity (pointer equality); ordering
+    /// ops raise `TypeError`.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_default_compare_fallback(
+        &mut self,
+        dest: pyaot_utils::LocalId,
+        left_op: &mir::Operand,
+        _left_ty: &Type,
+        right_op: &mir::Operand,
+        _right_ty: &Type,
+        op: hir::CmpOp,
+        _mir_func: &mut mir::Function,
+    ) {
+        if op.is_ordering() {
+            // TypeError — CPython shape: "'<' not supported between
+            // instances of 'X' and 'Y'". We elide the class names here
+            // (not trivially available at lowering time) and emit the
+            // canonical op string.
+            let msg = match op {
+                hir::CmpOp::Lt => "'<' not supported between instances",
+                hir::CmpOp::LtE => "'<=' not supported between instances",
+                hir::CmpOp::Gt => "'>' not supported between instances",
+                hir::CmpOp::GtE => "'>=' not supported between instances",
+                _ => unreachable!(),
+            };
+            let msg_interned = self.interner.intern(msg);
+            self.current_block_mut().terminator = mir::Terminator::Raise {
+                exc_type: pyaot_core_defs::exceptions::BuiltinExceptionKind::TypeError.tag(),
+                message: Some(mir::Operand::Constant(mir::Constant::Str(msg_interned))),
+                cause: None,
+                suppress_context: false,
+            };
+            // Continue codegen in an unreachable block to satisfy the
+            // rest of the fallback's control-flow structure (it
+            // expects to Goto the continuation block).
+            let unreachable_bb = self.new_block();
+            self.push_block(unreachable_bb);
+            // Dead store so `dest` remains typed.
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest,
+                src: mir::Operand::Constant(mir::Constant::Bool(false)),
+            });
+        } else {
+            // Equality: identity pointer comparison.
+            let op_kind = match op {
+                hir::CmpOp::Eq => mir::BinOp::Eq,
+                hir::CmpOp::NotEq => mir::BinOp::NotEq,
+                _ => unreachable!(),
+            };
+            self.emit_instruction(mir::InstructionKind::BinOp {
+                dest,
+                op: op_kind,
+                left: left_op.clone(),
+                right: right_op.clone(),
+            });
+        }
     }
 }
