@@ -181,9 +181,8 @@ pub fn compile_terminator(
 /// current block and load its value. Ordering matches the block-param
 /// declaration order set up in `function.rs`.
 ///
-/// Returns an empty `Vec` when `target` has no leading Phi instructions,
-/// which covers every non-SSA block (the common case today; S1.5 is
-/// preparation for S1.6 when real Phis start being emitted).
+/// Returns an empty `Vec` when `target` has no leading Phi instructions —
+/// blocks with no phi joins still dispatch through here.
 fn phi_branch_args(
     builder: &mut FunctionBuilder,
     ctx: &CodegenContext,
