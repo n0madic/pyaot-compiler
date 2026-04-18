@@ -222,24 +222,24 @@ fn perform_inline(
         caller.locals.insert(new_id, new_local);
     }
 
-    // Remap callee blocks
+    // Remap callee blocks. Replace every `Return` terminator with
+    // `Goto(continuation)` and collect the return-value operand (or
+    // record a void return) per block — instead of emitting a
+    // multi-def `Copy(dest, val)` in each returning block, which would
+    // break SSA now that the pipeline runs `construct_ssa` before the
+    // optimizer (§1.14b-prep).
     let inlined_entry = remapper.remap_block(callee.entry_block);
     let mut inlined_blocks: IndexMap<BlockId, BasicBlock> = IndexMap::new();
+    let mut return_sources: Vec<(BlockId, pyaot_mir::Operand)> = Vec::new();
+    let mut void_return_blocks: Vec<BlockId> = Vec::new();
 
     for block in callee.blocks.values() {
         let mut remapped_block = remapper.remap_block_contents(block);
 
-        // Replace Return terminators with Copy + Goto to continuation
         if let Terminator::Return(ret_val) = &remapped_block.terminator {
-            if let Some(val) = ret_val {
-                // Copy return value to dest (attributed to call site)
-                remapped_block.instructions.push(Instruction {
-                    kind: InstructionKind::Copy {
-                        dest,
-                        src: val.clone(),
-                    },
-                    span: call_span,
-                });
+            match ret_val {
+                Some(val) => return_sources.push((remapped_block.id, val.clone())),
+                None => void_return_blocks.push(remapped_block.id),
             }
             remapped_block.terminator = Terminator::Goto(continuation_block_id);
         }
@@ -264,10 +264,34 @@ fn perform_inline(
     call_block.instructions.extend(param_copies);
     call_block.terminator = Terminator::Goto(inlined_entry);
 
-    // Create continuation block with instructions after + original terminator
+    // Build the continuation block. If the callee has at least one
+    // value-returning path, emit a Phi at the head merging the return
+    // values from each predecessor. Void-returning paths contribute a
+    // `Constant::Int(0)` placeholder (mixed returns are rare in
+    // well-typed code; the placeholder value is never semantically
+    // consumed because callers of genuine-void callees don't read dest).
+    let mut continuation_instructions: Vec<Instruction> = Vec::new();
+    if !return_sources.is_empty() {
+        let mut phi_sources: Vec<(BlockId, pyaot_mir::Operand)> = return_sources.clone();
+        for &vb in &void_return_blocks {
+            phi_sources.push((
+                vb,
+                pyaot_mir::Operand::Constant(pyaot_mir::Constant::Int(0)),
+            ));
+        }
+        continuation_instructions.push(Instruction {
+            kind: InstructionKind::Phi {
+                dest,
+                sources: phi_sources,
+            },
+            span: call_span,
+        });
+    }
+    continuation_instructions.extend(instructions_after);
+
     let continuation_block = BasicBlock {
         id: continuation_block_id,
-        instructions: instructions_after,
+        instructions: continuation_instructions,
         terminator: original_terminator,
     };
 
