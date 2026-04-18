@@ -863,19 +863,6 @@ fn subst_local(id: &mut LocalId, stacks: &HashMap<LocalId, Vec<LocalId>>) {
 }
 
 // ============================================================================
-// Public predicate — "is this function straight-line enough for S1.6a?"
-// ============================================================================
-
-/// Returns `true` if `func` has no `Branch` terminator. Straight-line
-/// functions' dominance frontier is empty, so SSA construction degenerates
-/// to a pure renaming pass with no φ-insertion. Session S1.6a activates the
-/// SSA pass only on these functions; S1.6b lifts the restriction.
-pub fn is_straight_line(func: &Function) -> bool {
-    func.blocks
-        .values()
-        .all(|b| !matches!(b.terminator, Terminator::Branch { .. }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -931,7 +918,6 @@ mod tests {
         });
         func.block_mut(bb0).terminator = Terminator::Return(Some(Operand::Local(l1)));
 
-        assert!(is_straight_line(&func));
         construct_ssa(&mut func);
 
         assert!(func.is_ssa);
@@ -1036,7 +1022,6 @@ mod tests {
 
         func.block_mut(bb3).terminator = Terminator::Return(Some(Operand::Local(l)));
 
-        assert!(!is_straight_line(&func));
         construct_ssa(&mut func);
         assert!(func.is_ssa);
 
