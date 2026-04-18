@@ -1125,11 +1125,11 @@ mod tests {
         construct_ssa(&mut func);
         assert!(func.is_ssa);
 
-        // bb1 should start with a Phi that has exactly two sources — one
-        // from bb0 (entry edge) and one from bb2 (back-edge). With the
-        // post-S1.6e "place Phi for every defined local" rule there may
-        // be multiple leading Phis (one per local with a def anywhere);
-        // find the one specifically for `l` — i.e., the Phi whose
+        // bb1 should start with a Phi that has exactly two sources —
+        // one from bb0 (entry edge) and one from bb2 (back-edge). Only
+        // `l` is multi-def (bb0 init + bb2 update), so after pruned-
+        // SSA only `l` gets a Phi here; `c` and `tmp` are single-def
+        // with dominated uses and skip IDF. Find the Phi whose
         // back-edge source flows from bb2's Copy chain.
         let bb1_block = &func.blocks[&bb1];
         let bb2_block = &func.blocks[&bb2];

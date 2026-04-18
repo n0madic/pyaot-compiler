@@ -77,6 +77,32 @@ impl Default for CompileOptions {
     }
 }
 
+/// Debug-build SSA invariant gate. Walks every function in `module`
+/// and runs `pyaot_mir::ssa_check::check`. On violation, `panic!`s
+/// with the full violation list and the provided `where_` label so
+/// the offending pipeline stage is identifiable. Compiled out of
+/// release builds entirely.
+#[cfg(debug_assertions)]
+fn debug_assert_ssa(module: &pyaot_mir::Module, where_: &str) {
+    for (func_id, func) in &module.functions {
+        if let Err(violations) = pyaot_mir::ssa_check::check(func) {
+            let formatted = violations
+                .iter()
+                .map(|v| format!("  - {}", v))
+                .collect::<Vec<_>>()
+                .join("\n");
+            panic!(
+                "SSA invariant violations ({}) in function {} ({}):\n{}",
+                where_, func_id, func.name, formatted
+            );
+        }
+    }
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+fn debug_assert_ssa(_module: &pyaot_mir::Module, _where_: &str) {}
+
 /// Compile a Python source file to a native executable.
 ///
 /// This runs the full pipeline: parse → semantic analysis → type check →
@@ -215,51 +241,18 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
             println!("Running dead code elimination...");
         }
     }
-    // S1.14b pipeline reorder trial (2026-04-18): SSA construction
-    // moved BEFORE `optimize_module` so optimizer passes see SSA MIR
-    // from the start. This unblocks the SSA-preserving inliner rewrite
-    // and lets devirtualize/flatten_properties consume Refine types
-    // when the TypeTable threads through.
+    // S1.14b-prep pipeline order (2026-04-18): SSA construction runs
+    // BEFORE optimize_module so every optimizer pass sees SSA MIR. A
+    // debug-only SSA check gate fires after each structural mutation
+    // so any future pass that breaks invariance surfaces at its own
+    // site rather than silently.
     for func in mir_module.functions.values_mut() {
         pyaot_mir::ssa_construct::construct_ssa(func);
     }
-
-    // Debug-only SSA invariant gate — run right after construct_ssa
-    // so any future optimizer pass that breaks SSA surfaces where it
-    // happened rather than silently.
-    #[cfg(debug_assertions)]
-    for (func_id, func) in &mir_module.functions {
-        if let Err(violations) = pyaot_mir::ssa_check::check(func) {
-            let formatted = violations
-                .iter()
-                .map(|v| format!("  - {}", v))
-                .collect::<Vec<_>>()
-                .join("\n");
-            panic!(
-                "SSA invariant violations (post-construct_ssa) in function {} ({}):\n{}",
-                func_id, func.name, formatted
-            );
-        }
-    }
+    debug_assert_ssa(&mir_module, "post-construct_ssa");
 
     pyaot_optimizer::optimize_module(&mut mir_module, &opt_config, &mut interner);
-
-    // Second SSA check gate — optimizer passes must preserve SSA.
-    // An SSA-breaking pass caught here is a pass-migration regression.
-    #[cfg(debug_assertions)]
-    for (func_id, func) in &mir_module.functions {
-        if let Err(violations) = pyaot_mir::ssa_check::check(func) {
-            let formatted = violations
-                .iter()
-                .map(|v| format!("  - {}", v))
-                .collect::<Vec<_>>()
-                .join("\n");
-            panic!(
-                "SSA invariant violations (post-optimize) in function {} ({}):\n{}",
-                func_id, func.name, formatted
-            );
-        }
-    }
+    debug_assert_ssa(&mir_module, "post-optimize");
 
     if options.emit_mir {
         println!("MIR: {:#?}", mir_module);
