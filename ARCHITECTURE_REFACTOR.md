@@ -368,9 +368,11 @@ calls and removes the `#[ignore]` attributes.
 2. ⏸ **Benchmarks non-regressed** — deferred to formal close-out
    (S1.17 final). Phase 1 changes are infra-only; no hot-path
    reductions expected.
-3. 🟡 **SSA checker passes** — implemented and exercised by
-   `ssa_construct` tests. Not run as a production-pipeline gate
-   (invoked only from tests).
+3. ✅ **SSA checker passes** — activated 2026-04-18 behind
+   `#[cfg(debug_assertions)]` in `crates/cli/src/lib.rs` after
+   S1.6c/d/e landed all classes of violation fix. Debug builds
+   panic on any violation; release builds skip the check for
+   compile-time performance.
 4. 🟡 **Deletion audit** — 4 legacy maps relocated from
    `SymbolTable` into `HirTypeInference` per S1.9 (dual state with
    `TypeTable`). Full deletion needs §1.4u (HIR→MIR type unification).
@@ -456,16 +458,26 @@ calls and removes the `#[ignore]` attributes.
   that don't dominate it. Tracked as **S1.6e-gen**. All other
   files — match, classes, exceptions, file_io, urllib,
   iteration — are clean.
-- **S1.6e-gen** (new — added 2026-04-18) — fix the generator
-  `$resume` state-setup pattern where block 4 (state setup +
-  initial dispatch) emits `rt_generator_set_local` calls that
-  read from variables (`x`, `y`) defined only in per-yield state
-  blocks (block 10+). Repro: compile a generator with multiple
-  yields inside a while loop. Likely needs per-slot φ at the
-  dispatch block or restructuring the state-save sequence.
-  File: `crates/lowering/src/generators/desugaring.rs`. After
-  S1.6e-gen, activate the checker behind `debug_assertions` in
-  `crates/cli/src/lib.rs`.
+- **S1.6e-gen** (2026-04-18, landed) — generator `$resume` init
+  state (state==0) was emitting `emit_save_all_vars` that touched
+  every gen_var, including ones like `x` and `y` that are only
+  assigned in later yield-state blocks. Reading those vars in
+  init flowed an unbound HIR variable into a MIR LocalId that
+  only gets defined in a non-dominating later block.
+  Fix: add `collect_defined_vars` walking the init_stmts +
+  parameter list, and route `build_while_init` through a new
+  `emit_save_vars_where` filter so init saves only variables
+  that are actually defined at that program point. The generator
+  state slots for yet-to-be-assigned vars stay at Cranelift's
+  zero default; subsequent state blocks properly save them
+  before yielding.
+- **CLI SSA checker activation** (2026-04-18) — scan of every
+  `examples/*.py` now reports zero violations, so the checker
+  was wired into `crates/cli/src/lib.rs` behind
+  `#[cfg(debug_assertions)]`: debug builds panic on any SSA
+  invariant violation; release builds skip the check for
+  compile-time performance. Phase 1 Acceptance item 3 (SSA
+  property checker runs on every function and passes) ✅.
 - **S1.14b** — SSA-preserving inliner rewrite (requires pipeline
   reorder: `construct_ssa` before `optimize`). Pair with full
   codegen `Value`-migration when done.

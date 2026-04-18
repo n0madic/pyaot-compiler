@@ -225,20 +225,29 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
         pyaot_mir::ssa_construct::construct_ssa(func);
     }
 
-    // SSA checker still not activated in the CLI pipeline, but the
-    // violation surface area has shrunk dramatically. S1.6c/d/e landed:
-    //   * void RuntimeCall drift fix (S1.6c)
-    //   * typed zero-default φ-source + GcPush/ExcPushFrame
-    //     reclassification (S1.6d)
-    //   * match-statement binding-emission moved into elements_bb and
-    //     the Cytron single-def shortcut relaxed to always run IDF
-    //     (S1.6e): dropped violations in 11 of 12 example files.
-    // Only `examples/test_generators.py` still reports violations —
-    // the generator `$resume` state-setup block uses values computed
-    // in per-yield state blocks that don't dominate the setup. Tracked
-    // as S1.6e-gen. Activation of the CLI gate waits for S1.6e-gen.
-    // The checker is available via `pyaot_mir::ssa_check::check(func)`
-    // for tests and local diagnostic runs.
+    // SSA property check (Phase 1 §0.3 / §1.10, activated 2026-04-18
+    // after S1.6c/d/e cleared every violation class across
+    // `examples/*.py`: void RuntimeCall drift, undefined-edge
+    // φ-source fallback, Cranelift-synthesized defs, match-pattern
+    // binding placement, Cytron single-def shortcut, and generator
+    // init-state unsafe save). Debug-only guard against SSA-invariant
+    // regressions introduced by future passes. Violations indicate a
+    // compiler bug — panic with the full violation list. Release
+    // builds skip the check for compile-time performance.
+    #[cfg(debug_assertions)]
+    for (func_id, func) in &mir_module.functions {
+        if let Err(violations) = pyaot_mir::ssa_check::check(func) {
+            let formatted = violations
+                .iter()
+                .map(|v| format!("  - {}", v))
+                .collect::<Vec<_>>()
+                .join("\n");
+            panic!(
+                "SSA invariant violations in function {} ({}):\n{}",
+                func_id, func.name, formatted
+            );
+        }
+    }
 
     if options.emit_mir {
         println!("MIR: {:#?}", mir_module);

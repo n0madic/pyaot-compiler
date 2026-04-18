@@ -577,7 +577,31 @@ fn emit_save_all_vars(
     body: &mut Vec<hir::StmtId>,
     span: Span,
 ) {
+    emit_save_vars_where(m, gen_vars, gen_obj_var, body, span, |_| true);
+}
+
+/// Emit save_local calls for the subset of `gen_vars` that pass `keep`.
+///
+/// Used by `build_while_init` (S1.6e-gen fix): init-state saves MUST
+/// skip gen_vars that aren't assigned before the first yield, because
+/// referencing such a var in init reads a LocalId only defined in
+/// later state blocks — the def doesn't dominate the use and
+/// `construct_ssa` reports `UseNotDominated`. The init state's slot
+/// for that var stays at Cranelift's default zero; the first block
+/// that actually assigns the var also saves it before yielding, so
+/// subsequent resumes see the right value.
+fn emit_save_vars_where(
+    m: &mut hir::Module,
+    gen_vars: &[GeneratorVar],
+    gen_obj_var: VarId,
+    body: &mut Vec<hir::StmtId>,
+    span: Span,
+    keep: impl Fn(&GeneratorVar) -> bool,
+) {
     for gv in gen_vars {
+        if !keep(gv) {
+            continue;
+        }
         let vr = mk_var(m, gv.var_id, gv.ty.clone(), span);
         let set = mk_set_local(m, gen_obj_var, gv.gen_local_idx, vr, span);
         body.push(mk_stmt(m, hir::StmtKind::Expr(set), span));
@@ -585,6 +609,70 @@ fn emit_save_all_vars(
         if gv.ty.is_heap() {
             let set_ty = mk_set_local_type_ptr(m, gen_obj_var, gv.gen_local_idx, span);
             body.push(mk_stmt(m, hir::StmtKind::Expr(set_ty), span));
+        }
+    }
+}
+
+/// Collect every VarId bound by a statement list (recursive through
+/// control-flow bodies). Used to decide which gen_vars are safe to
+/// save in the init state.
+fn collect_defined_vars(stmts: &[hir::StmtId], module: &hir::Module, out: &mut HashSet<VarId>) {
+    for sid in stmts {
+        let stmt = &module.stmts[*sid];
+        match &stmt.kind {
+            hir::StmtKind::Bind { target, .. } => {
+                target.for_each_var(&mut |v| {
+                    out.insert(v);
+                });
+            }
+            hir::StmtKind::ForBind {
+                target,
+                body,
+                else_block,
+                ..
+            } => {
+                target.for_each_var(&mut |v| {
+                    out.insert(v);
+                });
+                collect_defined_vars(body, module, out);
+                collect_defined_vars(else_block, module, out);
+            }
+            hir::StmtKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                collect_defined_vars(then_block, module, out);
+                collect_defined_vars(else_block, module, out);
+            }
+            hir::StmtKind::While {
+                body, else_block, ..
+            } => {
+                collect_defined_vars(body, module, out);
+                collect_defined_vars(else_block, module, out);
+            }
+            hir::StmtKind::Try {
+                body,
+                handlers,
+                else_block,
+                finally_block,
+            } => {
+                collect_defined_vars(body, module, out);
+                for h in handlers {
+                    if let Some(v) = h.name {
+                        out.insert(v);
+                    }
+                    collect_defined_vars(&h.body, module, out);
+                }
+                collect_defined_vars(else_block, module, out);
+                collect_defined_vars(finally_block, module, out);
+            }
+            hir::StmtKind::Match { cases, .. } => {
+                for case in cases {
+                    collect_defined_vars(&case.body, module, out);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -1227,8 +1315,26 @@ fn build_while_init(
     // Execute init statements (reuse original HIR)
     body.extend_from_slice(&wg.init_stmts);
 
-    // Save variables
-    emit_save_all_vars(m, gen_vars, gen_obj_var, &mut body, span);
+    // Save only the variables that are actually defined at this point:
+    // parameters (loaded above) and anything bound in init_stmts. Vars
+    // that are only assigned inside later yield sections (e.g. `x`, `y`
+    // in `while i < n: yield i; x = i*2; yield x; ...`) MUST NOT be
+    // saved here — their HIR var is unbound in init, so the lowering
+    // reads a LocalId that gets defined only in a later state block,
+    // producing an SSA `UseNotDominated` violation. Skip them; the
+    // generator state slot stays at Cranelift's zero default, and the
+    // first state block that actually assigns the var saves it before
+    // yielding.
+    let mut defined_in_init: HashSet<VarId> = HashSet::new();
+    for gv in gen_vars {
+        if gv.is_param {
+            defined_in_init.insert(gv.var_id);
+        }
+    }
+    collect_defined_vars(&wg.init_stmts, m, &mut defined_in_init);
+    emit_save_vars_where(m, gen_vars, gen_obj_var, &mut body, span, |gv| {
+        defined_in_init.contains(&gv.var_id)
+    });
 
     // Check condition
     let yield_val = wg.yield_sections[0]
