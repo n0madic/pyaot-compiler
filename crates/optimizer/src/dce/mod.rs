@@ -10,7 +10,7 @@ pub(crate) mod reachability;
 mod tests;
 
 use pyaot_mir::{InstructionKind, Module, Operand, Terminator};
-use pyaot_utils::{BlockId, FuncId, LocalId, StringInterner};
+use pyaot_utils::{FuncId, LocalId, StringInterner};
 
 use crate::pass::OptimizationPass;
 
@@ -107,7 +107,9 @@ pub(crate) fn instruction_dest(kind: &InstructionKind) -> Option<LocalId> {
         | InstructionKind::ExcHasException { dest, .. }
         | InstructionKind::ExcGetCurrent { dest, .. }
         | InstructionKind::ExcCheckType { dest, .. }
-        | InstructionKind::ExcCheckClass { dest, .. } => Some(*dest),
+        | InstructionKind::ExcCheckClass { dest, .. }
+        | InstructionKind::Phi { dest, .. }
+        | InstructionKind::Refine { dest, .. } => Some(*dest),
 
         // These instructions have no destination (side-effect only)
         InstructionKind::GcPush { .. }
@@ -138,6 +140,8 @@ pub(crate) fn instruction_is_pure(kind: &InstructionKind) -> bool {
             | InstructionKind::FloatBits { .. }
             | InstructionKind::IntBitsToFloat { .. }
             | InstructionKind::FloatAbs { .. }
+            | InstructionKind::Phi { .. }
+            | InstructionKind::Refine { .. }
     )
 }
 
@@ -206,6 +210,14 @@ pub(crate) fn instruction_used_locals(kind: &InstructionKind) -> Vec<LocalId> {
         | InstructionKind::ExcCheckClass { .. }
         | InstructionKind::ExcStartHandling
         | InstructionKind::ExcEndHandling => {}
+        InstructionKind::Phi { sources, .. } => {
+            for (_, op) in sources {
+                collect_operand_locals(op, &mut locals);
+            }
+        }
+        InstructionKind::Refine { src, .. } => {
+            collect_operand_locals(src, &mut locals);
+        }
     }
     locals
 }
@@ -246,25 +258,6 @@ pub(crate) fn terminator_used_locals(term: &Terminator) -> Vec<LocalId> {
     locals
 }
 
-/// Extract successor block IDs from a terminator.
-pub(crate) fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
-    match term {
-        Terminator::Goto(b) => vec![*b],
-        Terminator::Branch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::TrySetjmp {
-            try_body,
-            handler_entry,
-            ..
-        } => vec![*try_body, *handler_entry],
-        Terminator::Return(_)
-        | Terminator::Unreachable
-        | Terminator::Raise { .. }
-        | Terminator::RaiseCustom { .. }
-        | Terminator::RaiseInstance { .. }
-        | Terminator::Reraise => vec![],
-    }
-}
+// `terminator_successors` moved to `pyaot_mir::dom_tree` (Phase 1 S1.4) —
+// re-exported from `pyaot_mir::terminator_successors`. The DCE pass now
+// imports it directly from there.

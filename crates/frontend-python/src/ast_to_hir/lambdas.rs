@@ -118,18 +118,22 @@ impl AstToHir {
         });
 
         // 9. Create and register function
+        let body_stmts = vec![return_stmt];
+        let (blocks, entry_block) = cfg_build::build_cfg_from_tree(&body_stmts, &self.module.stmts);
         let function = Function {
             id: func_id,
             name: func_name,
             params,
             return_type: None, // Type inferred during lowering
-            body: vec![return_stmt],
+            body: body_stmts,
             span: lambda_span,
             cell_vars: std::collections::HashSet::new(),
             nonlocal_vars: std::collections::HashSet::new(),
             is_generator: false,                // Lambdas cannot be generators
             method_kind: MethodKind::default(), // Lambdas are not methods
             is_abstract: false,                 // Lambdas cannot be abstract
+            blocks,
+            entry_block,
         };
         self.module.functions.push(func_id);
         self.module.func_defs.insert(func_id, function);

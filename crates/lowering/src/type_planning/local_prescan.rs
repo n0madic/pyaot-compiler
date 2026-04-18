@@ -32,7 +32,7 @@ use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
     /// Walk every function in the module and store per-function pre-scan
-    /// results in `symbols.per_function_prescan_var_types`. Called from
+    /// results in `hir_types.per_function_prescan_var_types`. Called from
     /// `run_type_planning` before return-type inference so that
     /// `return x` can see the unified local type.
     pub(crate) fn precompute_all_local_var_types(&mut self, hir_module: &hir::Module) {
@@ -56,7 +56,7 @@ impl<'a> Lowering<'a> {
                 map.retain(|var_id, _| {
                     !func.cell_vars.contains(var_id) && !func.nonlocal_vars.contains(var_id)
                 });
-                self.symbols
+                self.hir_types
                     .per_function_prescan_var_types
                     .insert(func_id, map);
             }
@@ -65,7 +65,7 @@ impl<'a> Lowering<'a> {
 
     /// Run the local type pre-scan for a single function body.
     ///
-    /// Writes the resulting map to `self.symbols.prescan_var_types`.
+    /// Writes the resulting map to `self.hir_types.prescan_var_types`.
     /// Call this once per function right before parameters are processed
     /// and statements are lowered. `param_seed` should contain the
     /// parameter `VarId → Type` map already computed by the caller.

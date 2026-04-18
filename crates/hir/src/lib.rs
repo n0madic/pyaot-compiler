@@ -4,12 +4,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cfg_build;
+
 use indexmap::IndexMap;
 use indexmap::IndexSet;
 use la_arena::Arena;
 pub use pyaot_core_defs::BuiltinFunctionKind;
 use pyaot_types::{BuiltinExceptionKind, Type};
-use pyaot_utils::{ClassId, FuncId, InternedString, Span, VarId};
+use pyaot_utils::{ClassId, FuncId, HirBlockId, InternedString, Span, VarId};
 use std::collections::HashSet;
 
 /// Method kind for class methods (staticmethod, classmethod, instance method)
@@ -170,6 +172,49 @@ pub struct ClassAttribute {
     pub span: Span,
 }
 
+/// A straight-line basic block in a HIR control-flow graph.
+///
+/// Introduced for Phase 1 §1.1 of `ARCHITECTURE_REFACTOR.md`: HIR functions
+/// will eventually carry an explicit CFG (`Function::blocks` keyed by
+/// `HirBlockId`) instead of nested `Vec<StmtId>` bodies inside `StmtKind::{If,
+/// While, ForBind, Try, Match}`. In S1.1 this type is defined but has no
+/// consumers; S1.2 wires the frontend to emit blocks; S1.3 deletes the legacy
+/// control-flow `StmtKind` variants.
+#[derive(Debug, Clone)]
+pub struct HirBlock {
+    pub id: HirBlockId,
+    /// Linear list of straight-line statements. No control flow lives here —
+    /// that is expressed by `terminator`.
+    pub stmts: Vec<StmtId>,
+    pub terminator: HirTerminator,
+}
+
+/// Control-flow terminator for a `HirBlock`. Every block ends with exactly one
+/// terminator; there is no fallthrough. See `ARCHITECTURE_REFACTOR.md` §1.1.
+#[derive(Debug, Clone)]
+pub enum HirTerminator {
+    /// Unconditional branch to another block.
+    Jump(HirBlockId),
+    /// Two-way conditional branch.
+    Branch {
+        cond: ExprId,
+        then_bb: HirBlockId,
+        else_bb: HirBlockId,
+    },
+    /// `return <expr>` or bare `return`.
+    Return(Option<ExprId>),
+    /// `raise <exc> [from <cause>]`.
+    Raise { exc: ExprId, cause: Option<ExprId> },
+    /// `yield <value>`; control resumes at `resume_bb` when the generator is
+    /// next advanced. Generator desugaring rewrites these into ordinary jumps.
+    Yield {
+        value: ExprId,
+        resume_bb: HirBlockId,
+    },
+    /// Block is statically unreachable (e.g. after an unconditional raise).
+    Unreachable,
+}
+
 /// Function definition
 #[derive(Debug, Clone)]
 pub struct Function {
@@ -189,6 +234,13 @@ pub struct Function {
     pub method_kind: MethodKind,
     /// True if this method is marked with @abstractmethod
     pub is_abstract: bool,
+    /// Control-flow graph built in parallel with `body` during the Phase 1
+    /// S1.2 bridge. See `ARCHITECTURE_REFACTOR.md` §1.1. Not consumed yet —
+    /// optimizer/lowering/codegen switch to it in S1.3, at which point
+    /// `body` and the tree-shaped `StmtKind::{If, While, ForBind, Try,
+    /// Match}` variants are deleted.
+    pub blocks: IndexMap<HirBlockId, HirBlock>,
+    pub entry_block: HirBlockId,
 }
 
 /// Parameter kind distinguishes regular, *args, and **kwargs parameters

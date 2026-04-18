@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod call_graph;
 pub mod constfold;
 pub mod dce;
 pub mod devirtualize;
@@ -17,6 +18,7 @@ pub mod flatten_properties;
 pub mod inline;
 pub mod pass;
 pub mod peephole;
+pub mod type_inference;
 
 use pyaot_mir::Module;
 use pyaot_utils::StringInterner;

@@ -5,16 +5,19 @@
 #![forbid(unsafe_code)]
 
 mod core;
+pub mod dom_tree;
 mod instructions;
 mod kinds;
 mod operands;
 mod operators;
 mod runtime_func;
 pub mod ssa_check;
+pub mod ssa_construct;
 mod terminators;
 
 // Re-export all public types
 pub use core::{BasicBlock, Function, Local, Module, VtableEntry, VtableInfo};
+pub use dom_tree::{terminator_successors, DomTree};
 pub use instructions::{Instruction, InstructionKind};
 pub use kinds::{
     CompareKind, ComparisonOp, ContainerKind, ConversionTypeKind, ElementKind, GetElementKind,

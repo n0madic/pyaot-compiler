@@ -346,7 +346,7 @@ impl<'a> Lowering<'a> {
         // through the numeric tower store via the same coercion path
         // used for class fields (§E.3 Part B).
         let local_ty = self
-            .symbols
+            .hir_types
             .prescan_var_types
             .get(&var_id)
             .cloned()

@@ -170,13 +170,13 @@ impl<'a> Lowering<'a> {
             // `Dict(Any, Any)` tightened to `Dict(Str, Int)` by the
             // empty-container pass is preserved.
             let prescan = self
-                .symbols
+                .hir_types
                 .prescan_var_types
                 .get(&var_id)
                 .cloned()
                 .filter(|ty| !is_useless_container_ty(ty));
             let ty = self
-                .types
+                .hir_types
                 .refined_var_types
                 .get(&var_id)
                 .cloned()

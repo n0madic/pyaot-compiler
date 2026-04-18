@@ -31,6 +31,7 @@ fn main() -> Result<()> {
         verbose: args.verbose,
         emit_hir: args.emit_hir,
         emit_mir: args.emit_mir,
+        emit_types: args.emit_types,
         target: args.target,
     };
 

@@ -7,10 +7,8 @@
 use std::collections::VecDeque;
 
 use indexmap::IndexSet;
-use pyaot_mir::Function;
+use pyaot_mir::{terminator_successors, Function};
 use pyaot_utils::BlockId;
-
-use super::terminator_successors;
 
 /// Remove blocks not reachable from the entry block.
 /// Returns true if any blocks were removed.
@@ -18,7 +16,11 @@ pub fn eliminate_unreachable_blocks(func: &mut Function) -> bool {
     let reachable = compute_reachable_blocks(func);
     let before = func.blocks.len();
     func.blocks.retain(|id, _| reachable.contains(id));
-    func.blocks.len() < before
+    let removed = func.blocks.len() < before;
+    if removed {
+        func.invalidate_dom_tree();
+    }
+    removed
 }
 
 /// BFS from entry_block to find all reachable blocks.

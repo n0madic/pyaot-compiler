@@ -33,6 +33,14 @@ pub struct CodegenSymbols<'a> {
     pub func_param_types: &'a IndexMap<FuncId, Vec<Type>>,
     /// MIR BlockId → Cranelift Block (for branches)
     pub block_map: &'a IndexMap<BlockId, cranelift_codegen::ir::Block>,
+    /// Full MIR block map of the function being compiled. Consulted by
+    /// terminator codegen to forward SSA φ-node sources as block-call args
+    /// on each outgoing edge. Empty Phi-defs mean no augmentation — the
+    /// non-SSA path is unchanged.
+    pub mir_blocks: &'a IndexMap<BlockId, mir::BasicBlock>,
+    /// The MIR BlockId currently being emitted. Terminators use this to
+    /// know which predecessor edge they represent when gathering φ args.
+    pub current_block: BlockId,
 }
 
 /// GC and stack unwinding state for function compilation.

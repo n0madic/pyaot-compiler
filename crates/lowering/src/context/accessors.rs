@@ -56,7 +56,7 @@ impl<'a> Lowering<'a> {
         self.symbols
             .var_types
             .get(var_id)
-            .or_else(|| self.types.refined_var_types.get(var_id))
+            .or_else(|| self.hir_types.refined_var_types.get(var_id))
             .or_else(|| self.symbols.global_var_types.get(var_id))
     }
 
@@ -333,19 +333,19 @@ impl<'a> Lowering<'a> {
 impl<'a> Lowering<'a> {
     /// Get the original Union type for a narrowed variable.
     pub(crate) fn get_narrowed_union_type(&self, var_id: &VarId) -> Option<Type> {
-        self.symbols.narrowed_union_vars.get(var_id).cloned()
+        self.hir_types.narrowed_union_vars.get(var_id).cloned()
     }
 
     /// Track a narrowed Union variable with its original type.
     pub(crate) fn insert_narrowed_union(&mut self, var_id: VarId, original_type: Type) {
-        self.symbols
+        self.hir_types
             .narrowed_union_vars
             .insert(var_id, original_type);
     }
 
     /// Remove a narrowed Union variable tracking.
     pub(crate) fn remove_narrowed_union(&mut self, var_id: &VarId) {
-        self.symbols.narrowed_union_vars.shift_remove(var_id);
+        self.hir_types.narrowed_union_vars.shift_remove(var_id);
     }
 }
 

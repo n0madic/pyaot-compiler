@@ -27,6 +27,10 @@ pub struct Args {
     #[arg(long)]
     pub emit_mir: bool,
 
+    /// Emit TypeInferencePass output (flow-sensitive SSA types + WPA)
+    #[arg(long)]
+    pub emit_types: bool,
+
     /// Path to runtime library
     #[arg(long, default_value = "target/release/libpyaot_runtime.a")]
     pub runtime_lib: PathBuf,

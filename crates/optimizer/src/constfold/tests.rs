@@ -51,6 +51,7 @@ fn make_func(locals: Vec<Local>, instructions: Vec<InstructionKind>) -> Function
         entry_block: block_id,
         span: None,
         is_ssa: false,
+        dom_tree_cache: std::cell::OnceCell::new(),
     }
 }
 
@@ -402,6 +403,7 @@ fn test_constant_branch_simplification() {
         entry_block: block0,
         span: None,
         is_ssa: false,
+        dom_tree_cache: std::cell::OnceCell::new(),
     };
 
     let mut module = make_module(func);

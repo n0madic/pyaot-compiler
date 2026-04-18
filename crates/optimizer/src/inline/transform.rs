@@ -278,5 +278,6 @@ fn perform_inline(
         caller.blocks.insert(id, block);
     }
 
+    caller.invalidate_dom_tree();
     true
 }

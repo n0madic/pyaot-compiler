@@ -1,10 +1,28 @@
 //! Infer mode: bottom-up type synthesis
 //!
-//! Two parallel type inference entry points:
+//! # S1.9 migration surface (Phase 1 §1.4)
+//!
+//! **Two public HIR type-query entry points.** Consumers outside
+//! `type_planning/` must route through exactly one of these:
+//!
+//! - [`Lowering::get_type_of_expr_id`] — the memoized lowering-time
+//!   query. Takes an `ExprId`, caches per-expression results. Nearly
+//!   every caller in `statements/`, `expressions/`, `exceptions.rs`,
+//!   etc. funnels through this path.
+//! - [`Lowering::infer_deep_expr_type`] / [`Lowering::infer_expr_type`]
+//!   — the pre-scan / non-memoized path. Takes an `&hir::Expr`, with
+//!   (`infer_deep_expr_type`) or without (`infer_expr_type`) a
+//!   `param_types` overlay for unassigned parameters.
+//!
+//! Nothing outside `type_planning/` should call `compute_expr_type` or
+//! `infer_expr_type_inner` directly — these are `pub(super)`
+//! implementation details that S1.9b collapses into a single unified
+//! match behind the two wrappers above.
+//!
+//! # Internal structure (deleted in S1.9b)
 //!
 //! - `compute_expr_type` — codegen path (`&mut self`), recurses via
 //!   `get_type_of_expr_id` for memoized sub-expression resolution.
-//!
 //! - `infer_expr_type_inner` — pre-scan path (`&self`), recurses directly
 //!   without memoization. Used by `infer_deep_expr_type` for return type
 //!   inference and lambda/closure analysis before codegen starts.
@@ -493,10 +511,13 @@ impl<'a> Lowering<'a> {
 // =============================================================================
 
 impl<'a> Lowering<'a> {
-    /// Codegen entry point for type inference.
-    /// Called from `get_type_of_expr_id` (memoized) and `get_expr_type`.
+    /// **Internal** — codegen-path implementation of the memoized HIR type
+    /// query. External callers must go through `get_type_of_expr_id`
+    /// (which wraps this with caching). S1.9b merges this with
+    /// [`Self::infer_expr_type_inner`] into a single unified match.
+    ///
     /// Uses `get_type_of_expr_id` for sub-expressions to ensure caching.
-    pub(crate) fn compute_expr_type(&mut self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
+    pub(super) fn compute_expr_type(&mut self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
         match &expr.kind {
             hir::ExprKind::Var(var_id) => self
                 .get_var_type(var_id)
@@ -506,16 +527,7 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::BinOp { op, left, right } => {
                 let left_ty = self.get_type_of_expr_id(*left, hir_module);
                 let right_ty = self.get_type_of_expr_id(*right, hir_module);
-                // Class operands: prefer the dunder's *actual* inferred return
-                // type over the helper's "left_ty if Class" heuristic. Required
-                // because dunders may legitimately return another type
-                // (`__bool__` → bool, `__str__` → str, custom user dunders).
-                if let Some(ty) = self.resolve_class_binop_return(op, &left_ty, &right_ty) {
-                    ty
-                } else {
-                    helpers::resolve_binop_type(op, &left_ty, &right_ty)
-                        .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
-                }
+                self.binop_result_type(op, &left_ty, &right_ty, expr)
             }
             hir::ExprKind::UnOp { op, operand } => match op {
                 hir::UnOp::Not => Type::Bool,
@@ -526,7 +538,7 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::LogicalOp { left, right, .. } => {
                 let left_ty = self.get_type_of_expr_id(*left, hir_module);
                 let right_ty = self.get_type_of_expr_id(*right, hir_module);
-                helpers::union_or_any(left_ty, right_ty)
+                self.logical_op_result_type(left_ty, right_ty)
             }
             hir::ExprKind::IfExpr {
                 cond,
@@ -604,80 +616,43 @@ impl<'a> Lowering<'a> {
                 helpers::infer_set_type(elem_types)
             }
             hir::ExprKind::MethodCall { obj, method, .. } => {
-                let raw_obj_ty = self.get_type_of_expr_id(*obj, hir_module);
-                let method_name = self.resolve(*method);
-                let obj_ty = helpers::unwrap_optional(&raw_obj_ty);
-                self.resolve_method_on_type(&obj_ty, *method, method_name, hir_module)
-                    .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                let obj_ty = self.get_type_of_expr_id(*obj, hir_module);
+                self.method_call_result_type(&obj_ty, *method, hir_module, expr)
             }
             hir::ExprKind::Slice { obj, .. } => self.get_type_of_expr_id(*obj, hir_module),
             hir::ExprKind::Index { obj, index } => {
                 let obj_ty = self.get_type_of_expr_id(*obj, hir_module);
                 let index_expr = &hir_module.exprs[*index];
-                self.resolve_index_with_getitem(&obj_ty, index_expr)
-                    .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                self.index_result_type(&obj_ty, index_expr, expr)
             }
             hir::ExprKind::Call { func, .. } => {
                 let func_expr = &hir_module.exprs[*func];
-                self.resolve_call_target_type(func_expr, hir_module)
-                    .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                self.call_result_type(func_expr, hir_module, expr)
             }
             hir::ExprKind::BuiltinCall { builtin, args, .. } => {
                 let arg_types: Vec<Type> = args
                     .iter()
                     .map(|id| self.get_type_of_expr_id(*id, hir_module))
                     .collect();
-                self.resolve_builtin_with_overrides(builtin, args, &arg_types, hir_module)
-                    .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                self.builtin_call_result_type(builtin, args, &arg_types, hir_module, expr)
             }
             hir::ExprKind::StdlibCall { func, .. } => typespec_to_type(&func.return_type),
             hir::ExprKind::StdlibAttr(attr_def) => typespec_to_type(&attr_def.ty),
             hir::ExprKind::StdlibConst(const_def) => typespec_to_type(&const_def.ty),
             hir::ExprKind::Attribute { obj, attr } => {
                 let obj_ty = self.get_type_of_expr_id(*obj, hir_module);
-                self.resolve_attribute_on_type(&obj_ty, *attr)
-                    .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                self.attribute_result_type(&obj_ty, *attr, expr)
             }
-            hir::ExprKind::ClassRef(class_id) => {
-                if let Some(class_def) = hir_module.class_defs.get(class_id) {
-                    Type::Class {
-                        class_id: *class_id,
-                        name: class_def.name,
-                    }
-                } else {
-                    Type::Any
-                }
-            }
+            hir::ExprKind::ClassRef(class_id) => self.class_ref_type(*class_id, hir_module),
             hir::ExprKind::ClassAttrRef { class_id, attr } => {
-                if let Some(class_info) = self.get_class_info(class_id) {
-                    if let Some(attr_type) = class_info.class_attr_types.get(attr) {
-                        return attr_type.clone();
-                    }
-                }
-                Type::Any
+                self.class_attr_ref_type(*class_id, *attr)
             }
-            hir::ExprKind::Closure { func, .. } => {
-                if let Some(func_def) = hir_module.func_defs.get(func) {
-                    func_def.return_type.clone().unwrap_or(Type::Any)
-                } else {
-                    Type::Any
-                }
-            }
+            hir::ExprKind::Closure { func, .. } => self.closure_result_type(*func, hir_module),
             hir::ExprKind::ModuleAttr { module, attr } => {
                 let attr_name = self.resolve(*attr).to_string();
-                let key = (module.clone(), attr_name);
-                if let Some((_var_id, var_type)) = self.get_module_var_export(&key) {
-                    return var_type.clone();
-                }
-                Type::Any
+                self.module_export_type(module, &attr_name)
             }
-            hir::ExprKind::ImportedRef { module, name } => {
-                let key = (module.clone(), name.clone());
-                if let Some((_var_id, var_type)) = self.get_module_var_export(&key) {
-                    return var_type.clone();
-                }
-                Type::Any
-            }
+            hir::ExprKind::ImportedRef { module, name } => self.module_export_type(module, name),
             // Generator intrinsics have known return types
             hir::ExprKind::GeneratorIntrinsic(intrinsic) => match intrinsic {
                 hir::GeneratorIntrinsic::Create { .. } => Type::Iterator(Box::new(Type::Any)),
@@ -711,7 +686,11 @@ impl<'a> Lowering<'a> {
 // =============================================================================
 
 impl<'a> Lowering<'a> {
-    /// Pre-scan entry point.
+    /// **Public** — pre-scan entry point with a parameter-type overlay.
+    /// Use this from any `type_planning/*` walker that has pre-computed
+    /// types for unassigned parameters (e.g. lambda/closure capture
+    /// analysis, container refinement). Non-memoized — caller pays the
+    /// full sub-expression walk on every call.
     pub(crate) fn infer_deep_expr_type(
         &self,
         expr: &hir::Expr,
@@ -721,10 +700,21 @@ impl<'a> Lowering<'a> {
         self.infer_expr_type_inner(expr, module, Some(param_types))
     }
 
-    /// Pre-scan inference engine. Direct recursion, no memoization.
-    /// Same match arms as `compute_expr_type` but different sub-expression
-    /// resolution and variable lookup strategy.
-    pub(crate) fn infer_expr_type_inner(
+    /// **Public** — pre-scan entry point without any parameter-type
+    /// overlay. Equivalent to `infer_deep_expr_type(expr, module,
+    /// &IndexMap::new())` but avoids the empty-map allocation. Used by
+    /// module-level assignment typing in `context/function_lowering.rs`.
+    pub(crate) fn infer_expr_type(&self, expr: &hir::Expr, module: &hir::Module) -> Type {
+        self.infer_expr_type_inner(expr, module, None)
+    }
+
+    /// **Internal** — pre-scan inference engine. Direct recursion, no
+    /// memoization. External callers must go through
+    /// [`Self::infer_deep_expr_type`] or [`Self::infer_expr_type`]. Same
+    /// match arms as [`Self::compute_expr_type`] but different
+    /// sub-expression resolution and variable lookup strategy — S1.9b
+    /// collapses the two into one.
+    pub(super) fn infer_expr_type_inner(
         &self,
         expr: &hir::Expr,
         module: &hir::Module,
@@ -757,12 +747,7 @@ impl<'a> Lowering<'a> {
                 let left_ty = self.infer_expr_type_inner(&module.exprs[*left], module, param_types);
                 let right_ty =
                     self.infer_expr_type_inner(&module.exprs[*right], module, param_types);
-                if let Some(ty) = self.resolve_class_binop_return(op, &left_ty, &right_ty) {
-                    ty
-                } else {
-                    helpers::resolve_binop_type(op, &left_ty, &right_ty)
-                        .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
-                }
+                self.binop_result_type(op, &left_ty, &right_ty, expr)
             }
             hir::ExprKind::UnOp { op, operand } => match op {
                 hir::UnOp::Not => Type::Bool,
@@ -776,7 +761,7 @@ impl<'a> Lowering<'a> {
                 let left_ty = self.infer_expr_type_inner(&module.exprs[*left], module, param_types);
                 let right_ty =
                     self.infer_expr_type_inner(&module.exprs[*right], module, param_types);
-                helpers::union_or_any(left_ty, right_ty)
+                self.logical_op_result_type(left_ty, right_ty)
             }
             hir::ExprKind::IfExpr {
                 cond,
@@ -863,12 +848,8 @@ impl<'a> Lowering<'a> {
                 helpers::infer_set_type(elem_types)
             }
             hir::ExprKind::MethodCall { obj, method, .. } => {
-                let raw_obj_ty =
-                    self.infer_expr_type_inner(&module.exprs[*obj], module, param_types);
-                let method_name = self.resolve(*method);
-                let obj_ty = helpers::unwrap_optional(&raw_obj_ty);
-                self.resolve_method_on_type(&obj_ty, *method, method_name, module)
-                    .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                let obj_ty = self.infer_expr_type_inner(&module.exprs[*obj], module, param_types);
+                self.method_call_result_type(&obj_ty, *method, module, expr)
             }
             hir::ExprKind::Slice { obj, .. } => {
                 self.infer_expr_type_inner(&module.exprs[*obj], module, param_types)
@@ -876,76 +857,42 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::Index { obj, index } => {
                 let obj_ty = self.infer_expr_type_inner(&module.exprs[*obj], module, param_types);
                 let index_expr = &module.exprs[*index];
-                self.resolve_index_with_getitem(&obj_ty, index_expr)
-                    .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                self.index_result_type(&obj_ty, index_expr, expr)
             }
             hir::ExprKind::Call { func, .. } => {
                 let func_expr = &module.exprs[*func];
-                self.resolve_call_target_type(func_expr, module)
-                    .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                self.call_result_type(func_expr, module, expr)
             }
             hir::ExprKind::BuiltinCall { builtin, args, .. } => {
                 let arg_types: Vec<Type> = args
                     .iter()
                     .map(|id| self.infer_expr_type_inner(&module.exprs[*id], module, param_types))
                     .collect();
-                self.resolve_builtin_with_overrides(builtin, args, &arg_types, module)
-                    .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                self.builtin_call_result_type(builtin, args, &arg_types, module, expr)
             }
             hir::ExprKind::StdlibCall { func, .. } => typespec_to_type(&func.return_type),
             hir::ExprKind::StdlibAttr(attr_def) => typespec_to_type(&attr_def.ty),
             hir::ExprKind::StdlibConst(const_def) => typespec_to_type(&const_def.ty),
             hir::ExprKind::Attribute { obj, attr } => {
                 let obj_ty = self.infer_expr_type_inner(&module.exprs[*obj], module, param_types);
-                self.resolve_attribute_on_type(&obj_ty, *attr)
-                    .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+                self.attribute_result_type(&obj_ty, *attr, expr)
             }
-            hir::ExprKind::ClassRef(class_id) => {
-                if let Some(class_def) = module.class_defs.get(class_id) {
-                    Type::Class {
-                        class_id: *class_id,
-                        name: class_def.name,
-                    }
-                } else {
-                    Type::Any
-                }
-            }
+            hir::ExprKind::ClassRef(class_id) => self.class_ref_type(*class_id, module),
             hir::ExprKind::ClassAttrRef { class_id, attr } => {
-                if let Some(class_info) = self.get_class_info(class_id) {
-                    if let Some(attr_type) = class_info.class_attr_types.get(attr) {
-                        return attr_type.clone();
-                    }
-                }
-                Type::Any
+                self.class_attr_ref_type(*class_id, *attr)
             }
-            hir::ExprKind::Closure { func, .. } => {
-                if let Some(func_def) = module.func_defs.get(func) {
-                    func_def.return_type.clone().unwrap_or(Type::Any)
-                } else {
-                    Type::Any
-                }
-            }
+            hir::ExprKind::Closure { func, .. } => self.closure_result_type(*func, module),
             hir::ExprKind::ModuleAttr {
                 module: mod_name,
                 attr,
             } => {
                 let attr_name = self.resolve(*attr).to_string();
-                let key = (mod_name.clone(), attr_name);
-                if let Some((_var_id, var_type)) = self.get_module_var_export(&key) {
-                    return var_type.clone();
-                }
-                Type::Any
+                self.module_export_type(mod_name, &attr_name)
             }
             hir::ExprKind::ImportedRef {
                 module: mod_name,
                 name,
-            } => {
-                let key = (mod_name.clone(), name.clone());
-                if let Some((_var_id, var_type)) = self.get_module_var_export(&key) {
-                    return var_type.clone();
-                }
-                Type::Any
-            }
+            } => self.module_export_type(mod_name, name),
             // Generator intrinsics have known return types
             hir::ExprKind::GeneratorIntrinsic(intrinsic) => match intrinsic {
                 hir::GeneratorIntrinsic::Create { .. } => Type::Iterator(Box::new(Type::Any)),
@@ -1082,5 +1029,162 @@ pub(crate) fn extract_iterable_first_element_type(ty: &Type) -> Type {
         Type::Bytes => Type::Int,
         Type::Iterator(elem) => (**elem).clone(),
         _ => Type::Any,
+    }
+}
+
+// =============================================================================
+// S1.9b shared result-computation helpers
+// =============================================================================
+//
+// Each helper takes **already-resolved sub-expression types** and produces the
+// parent expression's result type. The helper body is identical to what used
+// to live inline in both `compute_expr_type` and `infer_expr_type_inner`,
+// factored out so the two dispatchers share logic without needing to share
+// sub-expression-recursion strategy.
+//
+// `&self` — safe to call from both the memoized (`&mut self`) and pre-scan
+// (`&self`) paths.
+
+impl<'a> Lowering<'a> {
+    /// Result type of `left op right`. Prefers a class-dunder's inferred
+    /// return type, falls back to the numeric-tower helper, then to the
+    /// HIR-annotated `expr.ty`, then `Any`.
+    pub(super) fn binop_result_type(
+        &self,
+        op: &hir::BinOp,
+        left_ty: &Type,
+        right_ty: &Type,
+        expr: &hir::Expr,
+    ) -> Type {
+        if let Some(ty) = self.resolve_class_binop_return(op, left_ty, right_ty) {
+            ty
+        } else {
+            helpers::resolve_binop_type(op, left_ty, right_ty)
+                .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+        }
+    }
+
+    /// Result type of `left and right` / `left or right`. Python's
+    /// short-circuit ops return one of the operands, not a Bool — the
+    /// conservative upper bound is their union.
+    pub(super) fn logical_op_result_type(&self, left_ty: Type, right_ty: Type) -> Type {
+        helpers::union_or_any(left_ty, right_ty)
+    }
+
+    /// Result type of `obj.method(...)`. Dispatches via
+    /// `resolve_method_on_type`, falling back to `expr.ty` / `Any`.
+    pub(super) fn method_call_result_type(
+        &self,
+        obj_ty: &Type,
+        method: pyaot_utils::InternedString,
+        module: &hir::Module,
+        expr: &hir::Expr,
+    ) -> Type {
+        let unwrapped = helpers::unwrap_optional(obj_ty);
+        let method_name = self.resolve(method);
+        self.resolve_method_on_type(&unwrapped, method, method_name, module)
+            .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+    }
+
+    /// Result type of `obj[index]` via the `__getitem__` resolution
+    /// helper. Falls back to `expr.ty` / `Any`.
+    pub(super) fn index_result_type(
+        &self,
+        obj_ty: &Type,
+        index_expr: &hir::Expr,
+        expr: &hir::Expr,
+    ) -> Type {
+        self.resolve_index_with_getitem(obj_ty, index_expr)
+            .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+    }
+
+    /// Result type of a regular function `Call`. Delegates to
+    /// `resolve_call_target_type`; falls back to `expr.ty` / `Any`.
+    pub(super) fn call_result_type(
+        &self,
+        func_expr: &hir::Expr,
+        module: &hir::Module,
+        expr: &hir::Expr,
+    ) -> Type {
+        self.resolve_call_target_type(func_expr, module)
+            .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+    }
+
+    /// Result type of a `BuiltinCall`. Delegates to
+    /// `resolve_builtin_with_overrides`; falls back to `expr.ty` / `Any`.
+    pub(super) fn builtin_call_result_type(
+        &self,
+        builtin: &hir::Builtin,
+        args: &[hir::ExprId],
+        arg_types: &[Type],
+        module: &hir::Module,
+        expr: &hir::Expr,
+    ) -> Type {
+        self.resolve_builtin_with_overrides(builtin, args, arg_types, module)
+            .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+    }
+
+    /// Result type of `obj.attr`. Delegates to `resolve_attribute_on_type`;
+    /// falls back to `expr.ty` / `Any`.
+    pub(super) fn attribute_result_type(
+        &self,
+        obj_ty: &Type,
+        attr: pyaot_utils::InternedString,
+        expr: &hir::Expr,
+    ) -> Type {
+        self.resolve_attribute_on_type(obj_ty, attr)
+            .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
+    }
+
+    /// `ClassRef(id)` → `Type::Class { id, name }` if the class is
+    /// known in the module; else `Any`.
+    pub(super) fn class_ref_type(
+        &self,
+        class_id: pyaot_utils::ClassId,
+        module: &hir::Module,
+    ) -> Type {
+        match module.class_defs.get(&class_id) {
+            Some(class_def) => Type::Class {
+                class_id,
+                name: class_def.name,
+            },
+            None => Type::Any,
+        }
+    }
+
+    /// `ClassAttrRef { class_id, attr }` — lookup in the class's
+    /// attribute-type table; falls back to `Any`.
+    pub(super) fn class_attr_ref_type(
+        &self,
+        class_id: pyaot_utils::ClassId,
+        attr: pyaot_utils::InternedString,
+    ) -> Type {
+        self.get_class_info(&class_id)
+            .and_then(|info| info.class_attr_types.get(&attr).cloned())
+            .unwrap_or(Type::Any)
+    }
+
+    /// `Closure { func, … }` → the callee function's declared return
+    /// type, or `Any` if unknown.
+    pub(super) fn closure_result_type(
+        &self,
+        func_id: pyaot_utils::FuncId,
+        module: &hir::Module,
+    ) -> Type {
+        module
+            .func_defs
+            .get(&func_id)
+            .and_then(|f| f.return_type.clone())
+            .unwrap_or(Type::Any)
+    }
+
+    /// `ModuleAttr` / `ImportedRef` — look up an exported variable's type
+    /// by (module_path, attribute_name) in the cross-module export
+    /// table. Falls back to `Any` if unresolved.
+    pub(super) fn module_export_type(&self, module_path: &str, attr: &str) -> Type {
+        let key = (module_path.to_string(), attr.to_string());
+        self.get_module_var_export(&key)
+            .map(|(_var, ty)| ty.clone())
+            .unwrap_or(Type::Any)
     }
 }

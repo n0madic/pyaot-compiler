@@ -129,6 +129,14 @@ fn substitute_instruction_operands(
         | InstructionKind::ExcCheckClass { .. }
         | InstructionKind::ExcStartHandling
         | InstructionKind::ExcEndHandling => {}
+        InstructionKind::Phi { sources, .. } => {
+            for (_, op) in sources.iter_mut() {
+                changed |= substitute_operand(op, constants);
+            }
+        }
+        InstructionKind::Refine { src, .. } => {
+            changed |= substitute_operand(src, constants);
+        }
     }
     changed
 }

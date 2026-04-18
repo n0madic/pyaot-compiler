@@ -50,6 +50,7 @@ fn make_func(locals: Vec<Local>, instructions: Vec<InstructionKind>) -> Function
         entry_block: block_id,
         span: None,
         is_ssa: false,
+        dom_tree_cache: std::cell::OnceCell::new(),
     }
 }
 

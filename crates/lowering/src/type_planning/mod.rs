@@ -41,10 +41,10 @@ impl<'a> Lowering<'a> {
     ///
     /// `Var` expressions are NOT cached: their type depends on
     /// `get_var_type` which can change between lookups when type narrowing
-    /// kicks in (`apply_narrowings` / `restore_types`). Caching the
-    /// pre-narrow type would make `len(x)` inside `if isinstance(x, str)`
-    /// incorrectly dispatch through the `Any` fallback. Var lookups go
-    /// straight through `compute_expr_type`, which re-reads `var_types`
+    /// kicks in (`push_narrowing_frame` / `pop_narrowing_frame`). Caching
+    /// the pre-narrow type would make `len(x)` inside `if isinstance(x,
+    /// str)` incorrectly dispatch through the `Any` fallback. Var lookups
+    /// go straight through `compute_expr_type`, which re-reads `var_types`
     /// (including any active narrowings). Recomputation is cheap — it's a
     /// single HashMap lookup.
     pub(crate) fn get_type_of_expr_id(
@@ -130,7 +130,8 @@ impl<'a> Lowering<'a> {
                 // Area E §E.6 — layer in pre-scanned local types so `return x`
                 // sees the unified type for a local that was widened across
                 // multiple writes.
-                if let Some(prescanned) = self.symbols.per_function_prescan_var_types.get(func_id) {
+                if let Some(prescanned) = self.hir_types.per_function_prescan_var_types.get(func_id)
+                {
                     for (var_id, ty) in prescanned {
                         // Don't clobber param types (param annotations win).
                         param_types.entry(*var_id).or_insert_with(|| ty.clone());
@@ -178,7 +179,7 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             let Some(prescanned) = self
-                .symbols
+                .hir_types
                 .per_function_prescan_var_types
                 .get(func_id)
                 .cloned()

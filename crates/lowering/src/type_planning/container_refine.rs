@@ -62,7 +62,7 @@ impl<'a> Lowering<'a> {
                         self.find_dict_types_from_usage(target, &stmts[i + 1..], hir_module);
                     if key_ty != Type::Any || val_ty != Type::Any {
                         let refined = Type::Dict(Box::new(key_ty), Box::new(val_ty));
-                        self.types.refined_var_types.insert(target, refined);
+                        self.hir_types.refined_var_types.insert(target, refined);
                     }
                 } else if is_empty_list || is_empty_set {
                     // Scan subsequent statements for method calls on this variable
@@ -76,7 +76,7 @@ impl<'a> Lowering<'a> {
                             Type::Set(Box::new(elem_ty))
                         };
                         // Store in refined_var_types which persists across function lowerings
-                        self.types.refined_var_types.insert(target, refined);
+                        self.hir_types.refined_var_types.insert(target, refined);
                     }
                 }
             }

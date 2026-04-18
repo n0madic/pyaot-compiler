@@ -627,6 +627,7 @@ impl AstToHir {
 
         let method_is_generator = self.scope.current_func_is_generator;
 
+        let (blocks, entry_block) = cfg_build::build_cfg_from_tree(&body_stmts, &self.module.stmts);
         let function = Function {
             id: func_id,
             name: func_name,
@@ -639,6 +640,8 @@ impl AstToHir {
             is_generator: method_is_generator,
             method_kind: decorators.method_kind,
             is_abstract: decorators.is_abstract,
+            blocks,
+            entry_block,
         };
 
         self.module.functions.push(func_id);

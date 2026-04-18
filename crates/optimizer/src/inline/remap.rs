@@ -204,6 +204,18 @@ impl InlineRemapper {
                 dest: self.remap_local(*dest),
                 builtin: *builtin,
             },
+            InstructionKind::Phi { dest, sources } => InstructionKind::Phi {
+                dest: self.remap_local(*dest),
+                sources: sources
+                    .iter()
+                    .map(|(bb, op)| (self.remap_block(*bb), self.remap_operand(op)))
+                    .collect(),
+            },
+            InstructionKind::Refine { dest, src, ty } => InstructionKind::Refine {
+                dest: self.remap_local(*dest),
+                src: self.remap_operand(src),
+                ty: ty.clone(),
+            },
         };
         Instruction {
             kind,

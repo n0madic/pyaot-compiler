@@ -166,6 +166,20 @@ pub fn compile_instruction(
         mir::InstructionKind::GcPush { .. }
         | mir::InstructionKind::GcPop
         | mir::InstructionKind::GcAlloc { .. } => {}
+
+        // Phi nodes are materialised at block-creation time as Cranelift
+        // block params (see `function.rs::bind_phi_block_params`) and bound
+        // on entry to each block. At per-instruction codegen they are a
+        // no-op — the dest LocalId already points to the block-param value.
+        mir::InstructionKind::Phi { .. } => {}
+
+        // `Refine` is a compile-time type narrowing. At runtime it moves the
+        // same bit pattern from `src` to `dest` — effectively a `Copy` — and
+        // carries no dynamic work. Downstream type inference reads the
+        // `ty` field to specialise dominated uses of `dest`.
+        mir::InstructionKind::Refine { dest, src, .. } => {
+            copy::compile_copy(builder, dest, src, ctx)?;
+        }
     }
     Ok(())
 }

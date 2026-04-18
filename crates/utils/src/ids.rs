@@ -46,6 +46,7 @@ define_id!(FuncId);
 define_id!(TypeId);
 define_id!(VarId);
 define_id!(BlockId);
+define_id!(HirBlockId);
 define_id!(LocalId);
 define_id!(SymbolId);
 define_id!(ClassId);

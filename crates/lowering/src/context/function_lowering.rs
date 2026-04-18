@@ -77,7 +77,7 @@ impl<'a> Lowering<'a> {
         // Reset per-function state
         self.symbols.var_to_local.clear();
         self.symbols.var_types.clear();
-        self.symbols.prescan_var_types.clear();
+        self.hir_types.prescan_var_types.clear();
         self.symbols.var_to_func.clear();
         self.closures.var_to_closure.clear();
         self.closures.var_to_wrapper.clear();
@@ -90,7 +90,7 @@ impl<'a> Lowering<'a> {
         self.codegen.next_local_id = 0;
         self.symbols.cell_vars.clear();
         self.symbols.nonlocal_cells.clear();
-        self.symbols.narrowed_union_vars.clear();
+        self.hir_types.narrowed_union_vars.clear();
         self.codegen.loop_stack.clear();
         self.codegen.expected_type = None;
         self.codegen.pending_varargs_from_unpack = None;
@@ -208,7 +208,7 @@ impl<'a> Lowering<'a> {
         // `lower_assign` consult it to size MIR locals and coerce RHS
         // values through the numeric tower.
         if let Some(prescanned) = self
-            .symbols
+            .hir_types
             .per_function_prescan_var_types
             .get(&func.id)
             .cloned()
@@ -229,7 +229,7 @@ impl<'a> Lowering<'a> {
                     .iter()
                     .any(|p| p.var == var_id && p.ty.is_some());
                 if !is_annotated_param {
-                    self.symbols.prescan_var_types.insert(var_id, ty);
+                    self.hir_types.prescan_var_types.insert(var_id, ty);
                 }
             }
         }
@@ -532,7 +532,10 @@ impl<'a> Lowering<'a> {
                     | hir::ExprKind::None
             );
             if is_literal_shape {
-                let inferred = self.infer_expr_type_inner(value_expr, hir_module, None);
+                // S1.9 unified entry — do not call `infer_expr_type_inner`
+                // directly; it's `pub(super)` to type_planning/. Use the
+                // public no-overlay wrapper instead.
+                let inferred = self.infer_expr_type(value_expr, hir_module);
                 if !matches!(inferred, Type::Any) {
                     self.symbols.global_var_types.insert(target, inferred);
                 }

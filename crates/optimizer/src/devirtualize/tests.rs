@@ -66,6 +66,7 @@ fn make_module_with_vtable(
         entry_block: block_id,
         span: None,
         is_ssa: false,
+        dom_tree_cache: std::cell::OnceCell::new(),
     };
 
     // Create a stub callee function

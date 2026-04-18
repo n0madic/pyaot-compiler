@@ -325,12 +325,12 @@ impl<'a> Lowering<'a> {
             // Set(Any)) — because the RHS-driven inference or later
             // refinement will produce a tighter type.
             let prescan = self
-                .symbols
+                .hir_types
                 .prescan_var_types
                 .get(&target)
                 .cloned()
                 .filter(|ty| !crate::is_useless_container_ty(ty));
-            self.types
+            self.hir_types
                 .refined_var_types
                 .get(&target)
                 .cloned()

@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use super::FuncReturnTypes;
 
 use super::{
-    ClassRegistry, ClosureState, CodeGenState, CrossModuleClassInfo, Lowering, ModuleState,
-    NiAnalysis, SymbolTable, TypeEnvironment,
+    ClassRegistry, ClosureState, CodeGenState, CrossModuleClassInfo, HirTypeInference, Lowering,
+    ModuleState, NiAnalysis, SymbolTable, TypeEnvironment,
 };
 
 impl<'a> Lowering<'a> {
@@ -81,9 +81,6 @@ impl<'a> Lowering<'a> {
                 globals: IndexSet::with_capacity(32),
                 global_var_types: IndexMap::with_capacity(32),
                 var_types: IndexMap::with_capacity(estimated_vars),
-                prescan_var_types: IndexMap::with_capacity(estimated_vars),
-                per_function_prescan_var_types: IndexMap::with_capacity(func_count),
-                narrowed_union_vars: IndexMap::with_capacity(16),
                 cell_vars: IndexSet::with_capacity(16),
                 nonlocal_cells: IndexMap::with_capacity(16),
                 default_value_slots: IndexMap::with_capacity(func_count / 2 + 1),
@@ -92,7 +89,13 @@ impl<'a> Lowering<'a> {
             },
             types: TypeEnvironment {
                 expr_types: HashMap::with_capacity(256),
+            },
+            hir_types: HirTypeInference {
+                prescan_var_types: IndexMap::with_capacity(estimated_vars),
+                per_function_prescan_var_types: IndexMap::with_capacity(func_count),
+                narrowed_union_vars: IndexMap::with_capacity(16),
                 refined_var_types: IndexMap::with_capacity(16),
+                narrowing_stack: Vec::with_capacity(8),
             },
             func_return_types: FuncReturnTypes {
                 inner: IndexMap::with_capacity(func_count),

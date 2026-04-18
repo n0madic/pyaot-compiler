@@ -70,6 +70,7 @@ fn make_trivial_getter(func_id: FuncId, offset: i64, self_type: Type) -> Functio
         entry_block: block_id,
         span: None,
         is_ssa: false,
+        dom_tree_cache: std::cell::OnceCell::new(),
     }
 }
 
@@ -112,6 +113,7 @@ fn make_caller_with_call(caller_id: FuncId, getter_id: FuncId, obj_type: Type) -
         entry_block: block_id,
         span: None,
         is_ssa: false,
+        dom_tree_cache: std::cell::OnceCell::new(),
     }
 }
 
@@ -206,6 +208,7 @@ fn test_skip_non_trivial_getter_multiple_blocks() {
         entry_block: block0,
         span: None,
         is_ssa: false,
+        dom_tree_cache: std::cell::OnceCell::new(),
     };
 
     let caller = make_caller_with_call(caller_id, getter_id, class_type);
@@ -278,6 +281,7 @@ fn test_skip_non_trivial_getter_multiple_instructions() {
         entry_block: block_id,
         span: None,
         is_ssa: false,
+        dom_tree_cache: std::cell::OnceCell::new(),
     };
 
     let caller = make_caller_with_call(caller_id, getter_id, class_type);
@@ -345,6 +349,7 @@ fn test_skip_call_with_multiple_args() {
         entry_block: block_id,
         span: None,
         is_ssa: false,
+        dom_tree_cache: std::cell::OnceCell::new(),
     };
 
     let mut module = Module::new();

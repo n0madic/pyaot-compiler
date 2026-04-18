@@ -6,6 +6,8 @@ use pyaot_utils::{FuncId, LocalId};
 
 use pyaot_utils::Span;
 
+use pyaot_utils::BlockId;
+
 use crate::{BinOp, Constant, Operand, RuntimeFunc, UnOp};
 
 /// MIR Instruction
@@ -167,4 +169,37 @@ pub enum InstructionKind {
     /// Called when exiting an except handler normally (not via raise/reraise).
     /// Clears the saved handling exception since we're done handling.
     ExcEndHandling,
+
+    /// SSA type refinement: `dest = refine(src as ty)`. Runtime-free —
+    /// lowers to a `Copy`, propagating the same bit pattern. The purpose is
+    /// purely compile-time: `dest` carries a narrower static `Type` than
+    /// `src` so downstream passes (flow-sensitive type inference, S1.8) can
+    /// specialise dispatch on dominated uses of `dest`.
+    ///
+    /// Inserted at the entry of a block dominated by an `isinstance`
+    /// success, or anywhere else the type lattice proves a narrower type
+    /// holds along a control-flow edge. See `ARCHITECTURE_REFACTOR.md`
+    /// §1.4. S1.7 introduces the variant; S1.8 starts emitting it.
+    Refine {
+        dest: LocalId,
+        src: Operand,
+        ty: Type,
+    },
+
+    /// SSA φ-node: `dest = φ((src_1 from pred_1), (src_2 from pred_2), …)`.
+    ///
+    /// Phi instructions must appear at the **head** of their basic block —
+    /// that is, before any non-Phi instruction. `sources.len()` must equal
+    /// the number of CFG predecessors of the containing block, and each
+    /// `BlockId` in `sources` must be exactly one of those predecessors
+    /// (no duplicates, no extras). The `crate::ssa_check` module enforces
+    /// both invariants when `Function::is_ssa` is true.
+    ///
+    /// Added in Phase 1 S1.5 (`ARCHITECTURE_REFACTOR.md` §1.3). Before
+    /// S1.6 lands Cytron-style renaming, no function actually emits Phi
+    /// instructions; the codegen path is present but dormant.
+    Phi {
+        dest: LocalId,
+        sources: Vec<(BlockId, Operand)>,
+    },
 }

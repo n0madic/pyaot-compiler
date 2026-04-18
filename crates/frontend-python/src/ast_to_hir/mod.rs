@@ -425,18 +425,22 @@ impl AstToHir {
         let func_id = self.ids.alloc_func();
         let func_name = self.interner.intern("__pyaot_module_init__");
 
+        let body_stmts = self.module.module_init_stmts.clone();
+        let (blocks, entry_block) = cfg_build::build_cfg_from_tree(&body_stmts, &self.module.stmts);
         let function = Function {
             id: func_id,
             name: func_name,
             params: Vec::new(),
             return_type: Some(Type::None),
-            body: self.module.module_init_stmts.clone(),
+            body: body_stmts,
             span: Span::dummy(),
             cell_vars: std::collections::HashSet::new(),
             nonlocal_vars: std::collections::HashSet::new(),
             is_generator: false,
             method_kind: MethodKind::default(), // Module init is not a method
             is_abstract: false,
+            blocks,
+            entry_block,
         };
 
         self.module.functions.push(func_id);

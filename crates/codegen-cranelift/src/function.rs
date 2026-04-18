@@ -174,6 +174,26 @@ pub fn define_function(
         }
     }
 
+    // Declare block params for SSA φ-nodes. Each block's leading Phi
+    // instructions become Cranelift block params in positional order.
+    // Non-SSA blocks (no leading Phis) get no extra params — unchanged.
+    for (block_id, block) in &func.blocks {
+        let cl_block = *block_map.get(block_id).expect("block in map");
+        for inst in &block.instructions {
+            match &inst.kind {
+                mir::InstructionKind::Phi { dest, .. } => {
+                    let ty = func
+                        .locals
+                        .get(dest)
+                        .map(|l| type_to_cranelift(&l.ty))
+                        .expect("phi dest missing local");
+                    builder.append_block_param(cl_block, ty);
+                }
+                _ => break,
+            }
+        }
+    }
+
     // Mark cold blocks (exception handlers, raise paths) for better register allocation
     let cold_blocks = find_cold_blocks(func);
     for cold_block_id in &cold_blocks {
@@ -192,6 +212,8 @@ pub fn define_function(
                 func_name_ids: compiler.func_name_ids,
                 func_param_types: compiler.func_param_types,
                 block_map: &block_map,
+                mir_blocks: &func.blocks,
+                current_block: func.entry_block,
             },
             gc: crate::context::GcState {
                 frame_data: &gc_frame_data,
@@ -214,6 +236,35 @@ pub fn define_function(
                 .expect("internal error: block not in block_map - codegen bug");
             if cl_block != entry_block {
                 builder.switch_to_block(cl_block);
+            }
+            codegen_ctx.symbols.current_block = *block_id;
+
+            // Bind Cranelift block-param values for SSA φ-node destinations.
+            // Block params were declared in pre-pass order; leading Phi
+            // instructions map 1:1. Non-SSA blocks have no leading Phis and
+            // no extra block params, so this loop is a no-op for them.
+            let phi_count = block
+                .instructions
+                .iter()
+                .take_while(|i| matches!(i.kind, mir::InstructionKind::Phi { .. }))
+                .count();
+            if phi_count > 0 {
+                let params: Vec<cranelift_codegen::ir::Value> =
+                    builder.block_params(cl_block).to_vec();
+                // The entry block's first params are function parameters; Phi
+                // block params are appended after them. For non-entry blocks
+                // the full param list is Phi-only.
+                let param_offset = if *block_id == func.entry_block {
+                    func.params.len()
+                } else {
+                    0
+                };
+                for (i, inst) in block.instructions.iter().take(phi_count).enumerate() {
+                    if let mir::InstructionKind::Phi { dest, .. } = &inst.kind {
+                        let value = params[param_offset + i];
+                        codegen_ctx.store_result(&mut builder, dest, value);
+                    }
+                }
             }
 
             // Instructions

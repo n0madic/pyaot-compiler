@@ -98,7 +98,8 @@ pub fn compile_terminator(
                 .block_map
                 .get(target)
                 .expect("internal error: block not in block_map - codegen bug");
-            builder.ins().jump(cl_block, &[]);
+            let args = phi_branch_args(builder, ctx, target);
+            builder.ins().jump(cl_block, &args);
         }
 
         mir::Terminator::Branch {
@@ -124,7 +125,11 @@ pub fn compile_terminator(
                 .block_map
                 .get(else_block)
                 .expect("internal error: block not in block_map - codegen bug");
-            builder.ins().brif(cond_i1, then_cl, &[], else_cl, &[]);
+            let then_args = phi_branch_args(builder, ctx, then_block);
+            let else_args = phi_branch_args(builder, ctx, else_block);
+            builder
+                .ins()
+                .brif(cond_i1, then_cl, &then_args, else_cl, &else_args);
         }
 
         mir::Terminator::Unreachable => {
@@ -168,4 +173,38 @@ pub fn compile_terminator(
         }
     }
     Ok(())
+}
+
+/// Collect the SSA φ-source values a branch from `ctx.symbols.current_block`
+/// to `target` must pass as block-call args. For each leading Phi in
+/// `target`, find the source operand whose predecessor BlockId equals the
+/// current block and load its value. Ordering matches the block-param
+/// declaration order set up in `function.rs`.
+///
+/// Returns an empty `Vec` when `target` has no leading Phi instructions,
+/// which covers every non-SSA block (the common case today; S1.5 is
+/// preparation for S1.6 when real Phis start being emitted).
+fn phi_branch_args(
+    builder: &mut FunctionBuilder,
+    ctx: &CodegenContext,
+    target: &pyaot_utils::BlockId,
+) -> Vec<cranelift_codegen::ir::BlockArg> {
+    let Some(target_block) = ctx.symbols.mir_blocks.get(target) else {
+        return Vec::new();
+    };
+    let pred = ctx.symbols.current_block;
+    let mut args = Vec::new();
+    for inst in &target_block.instructions {
+        let mir::InstructionKind::Phi { sources, .. } = &inst.kind else {
+            break;
+        };
+        let source_op = sources
+            .iter()
+            .find(|(bb, _)| *bb == pred)
+            .map(|(_, op)| op)
+            .expect("phi has no source for predecessor block — arity violation");
+        let value = load_operand(builder, source_op, ctx.symbols.var_map);
+        args.push(cranelift_codegen::ir::BlockArg::Value(value));
+    }
+    args
 }

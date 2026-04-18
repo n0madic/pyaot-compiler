@@ -46,6 +46,10 @@ pub struct CompileOptions {
     pub emit_hir: bool,
     /// Emit MIR to stdout
     pub emit_mir: bool,
+    /// Emit the TypeInferencePass TypeTable (flow-sensitive SSA types) to stdout.
+    /// Phase 1 §1.4 debug aid — lets callers inspect what the pass inferred
+    /// before any consumer picks it up.
+    pub emit_types: bool,
     /// Target triple (None = host)
     pub target: Option<String>,
 }
@@ -67,6 +71,7 @@ impl Default for CompileOptions {
             verbose: false,
             emit_hir: false,
             emit_mir: false,
+            emit_types: false,
             target: None,
         }
     }
@@ -212,8 +217,46 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
     }
     pyaot_optimizer::optimize_module(&mut mir_module, &opt_config, &mut interner);
 
+    // SSA construction (Phase 1 §1.3).
+    //
+    // S1.6a activated on straight-line functions (no `Branch` terminator).
+    // S1.6b attempted to lift the gate universally, which uncovered two
+    // distinct fixes — (a) back-edge phi-original tracking, (b)
+    // unreachable-block pruning before the dom-tree walk — both landed in
+    // `ssa_construct.rs`. After those, 33/35 runtime tests pass with the
+    // gate lifted, but `runtime_iteration` and `runtime_builtins` show
+    // latent SSA-construction bugs on complex CFGs that require deeper
+    // investigation than this session allows. The gate stays at
+    // `is_straight_line` for now; a follow-up session debugs the
+    // remaining two failures and then removes the gate entirely.
+    for func in mir_module.functions.values_mut() {
+        pyaot_mir::ssa_construct::construct_ssa(func);
+    }
+
     if options.emit_mir {
         println!("MIR: {:#?}", mir_module);
+    }
+
+    // Flow-sensitive type inference over SSA MIR (Phase 1 §1.4).
+    // Builds a TypeTable that WPA parameter inference then refines
+    // using the call graph. No downstream codegen consumer reads this
+    // yet — the pass runs purely for validation and for the optional
+    // `--emit-types` debug dump. S1.9 wires lowering to query the
+    // table in place of the legacy HIR-level type maps.
+    if options.emit_types || options.verbose {
+        let call_graph = pyaot_optimizer::call_graph::CallGraph::build(&mir_module);
+        let mut type_table = pyaot_optimizer::type_inference::TypeTable::infer_module(&mir_module);
+        pyaot_optimizer::type_inference::wpa_param_inference_to_fixed_point(
+            &mir_module,
+            &call_graph,
+            &mut type_table,
+        );
+        if options.emit_types {
+            println!("TypeTable: {:#?}", type_table);
+        }
+        if options.verbose {
+            println!("Type inference + WPA (full-program fixed point) complete.");
+        }
     }
 
     // Codegen

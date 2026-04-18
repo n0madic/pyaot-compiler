@@ -1,9 +1,12 @@
 //! Core MIR structures: Module, Function, Local, BasicBlock
 
+use std::cell::OnceCell;
+
 use indexmap::IndexMap;
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, Span};
 
+use crate::dom_tree::DomTree;
 use crate::{Instruction, Terminator};
 
 /// Entry in a class vtable mapping slot to method function
@@ -47,6 +50,16 @@ pub struct Function {
     /// `false`; Phase 1 of the architecture refactor flips individual
     /// functions to `true` after rewriting them in proper SSA form.
     pub is_ssa: bool,
+    /// Lazily-computed dominator tree (Cooper–Harvey–Kennedy). Populated on
+    /// first call to `dom_tree()`. CFG-mutating passes must call
+    /// `invalidate_dom_tree()` to drop a stale cache.
+    ///
+    /// Marked `pub` with `#[doc(hidden)]` so external test crates can
+    /// construct `Function` via struct literal (e.g. `OnceCell::new()`).
+    /// Do not read or write this field directly — use `dom_tree()` and
+    /// `invalidate_dom_tree()`.
+    #[doc(hidden)]
+    pub dom_tree_cache: OnceCell<DomTree>,
 }
 
 /// Local variable in MIR
@@ -115,6 +128,7 @@ impl Function {
             entry_block,
             span,
             is_ssa: false,
+            dom_tree_cache: OnceCell::new(),
         }
     }
 
@@ -126,5 +140,18 @@ impl Function {
 
     pub fn block_mut(&mut self, id: BlockId) -> &mut BasicBlock {
         self.blocks.get_mut(&id).expect("invalid block id")
+    }
+
+    /// Memoised dominator tree over the current CFG. Computed on first call;
+    /// call `invalidate_dom_tree()` after mutating block structure or
+    /// terminators to force recomputation on the next query.
+    pub fn dom_tree(&self) -> &DomTree {
+        self.dom_tree_cache.get_or_init(|| DomTree::compute(self))
+    }
+
+    /// Drop the cached dominator tree. Every pass that adds, removes, or
+    /// re-terminates blocks must call this before handing the function on.
+    pub fn invalidate_dom_tree(&mut self) {
+        self.dom_tree_cache.take();
     }
 }

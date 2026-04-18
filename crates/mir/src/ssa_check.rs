@@ -7,22 +7,21 @@
 //! 2. Every use of a `LocalId` is dominated by its definition.
 //! 3. Every `BasicBlock` has a valid `Terminator` (targets reference blocks
 //!    that actually exist — no dangling jumps, no implicit fallthrough).
-//! 4. Every φ-node has exactly as many incoming values as predecessors.
+//! 4. Every φ-node has exactly as many incoming values as predecessors,
+//!    each source's `BlockId` is an actual predecessor, and Phi instructions
+//!    appear only at the **head** of their basic block (before any non-Phi).
 //!
 //! In Phase 0 the checker is a no-op on legacy MIR: it only runs when
 //! `Function::is_ssa == true`. Phase 1 flips individual functions to SSA one
 //! by one after rewriting them in proper SSA form; the checker is invoked on
 //! those functions and must report zero violations.
-//!
-//! Invariant (4) is currently unreachable because MIR has no `Phi` variant
-//! yet — Phase 1 will introduce it. The check is left here as an explicit
-//! no-op to mark the integration point.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use pyaot_utils::{BlockId, LocalId};
 
+use crate::dom_tree::{terminator_successors, DomTree};
 use crate::{Function, InstructionKind, Operand, Terminator};
 
 /// A single SSA invariant violation.
@@ -50,6 +49,19 @@ pub enum SsaViolation {
 
     /// A terminator references a block that is not present in the function.
     InvalidTerminatorTarget { block: BlockId, target: BlockId },
+
+    /// A φ-node's source list length disagrees with the block's predecessor
+    /// count, or contains a `BlockId` that is not an actual predecessor.
+    PhiArityMismatch {
+        block: BlockId,
+        local: LocalId,
+        expected_preds: Vec<BlockId>,
+        got_preds: Vec<BlockId>,
+    },
+
+    /// A `Phi` instruction appears after a non-Phi instruction in its block.
+    /// Phi nodes must occupy a contiguous prefix of `block.instructions`.
+    PhiNotAtBlockHead { block: BlockId, local: LocalId },
 }
 
 impl fmt::Display for SsaViolation {
@@ -83,6 +95,21 @@ impl fmt::Display for SsaViolation {
                 "SSA violation: terminator of {} jumps to {}, which is not a block in this function",
                 block, target
             ),
+            SsaViolation::PhiArityMismatch {
+                block,
+                local,
+                expected_preds,
+                got_preds,
+            } => write!(
+                f,
+                "SSA violation: φ-node {} in {} has sources {:?} but block predecessors are {:?}",
+                local, block, got_preds, expected_preds
+            ),
+            SsaViolation::PhiNotAtBlockHead { block, local } => write!(
+                f,
+                "SSA violation: φ-node {} in {} appears after a non-Phi instruction; φs must be at block head",
+                local, block
+            ),
         }
     }
 }
@@ -102,10 +129,7 @@ pub fn check(func: &Function) -> Result<(), Vec<SsaViolation>> {
 
     check_terminator_targets(func, &mut violations);
     check_definitions_and_dominance(func, &mut violations);
-    // Phi arity: InstructionKind::Phi does not exist yet. Phase 1 introduces
-    // it; at that point this block will iterate phi nodes and compare
-    // `incoming.len()` to `predecessors(phi_block).len()`. Kept as an
-    // explicit no-op so the integration point is greppable.
+    check_phi_structure(func, &mut violations);
 
     if violations.is_empty() {
         Ok(())
@@ -122,6 +146,50 @@ fn check_terminator_targets(func: &Function, violations: &mut Vec<SsaViolation>)
                     block: bid,
                     target: succ,
                 });
+            }
+        }
+    }
+}
+
+fn check_phi_structure(func: &Function, violations: &mut Vec<SsaViolation>) {
+    // Build the reverse CFG once: block → its predecessors.
+    let mut predecessors: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+    for (&bid, block) in &func.blocks {
+        for succ in terminator_successors(&block.terminator) {
+            predecessors.entry(succ).or_default().push(bid);
+        }
+    }
+
+    for (&bid, block) in &func.blocks {
+        let expected: Vec<BlockId> = predecessors.get(&bid).cloned().unwrap_or_default();
+        let expected_set: HashSet<BlockId> = expected.iter().copied().collect();
+
+        let mut seen_non_phi = false;
+        for inst in &block.instructions {
+            match &inst.kind {
+                InstructionKind::Phi { dest, sources } => {
+                    if seen_non_phi {
+                        violations.push(SsaViolation::PhiNotAtBlockHead {
+                            block: bid,
+                            local: *dest,
+                        });
+                        // Keep scanning — further Phis in the same block also
+                        // belong at the head.
+                    }
+                    let got: Vec<BlockId> = sources.iter().map(|(b, _)| *b).collect();
+                    let got_set: HashSet<BlockId> = got.iter().copied().collect();
+                    if got.len() != expected.len() || got_set != expected_set {
+                        violations.push(SsaViolation::PhiArityMismatch {
+                            block: bid,
+                            local: *dest,
+                            expected_preds: expected.clone(),
+                            got_preds: got,
+                        });
+                    }
+                }
+                _ => {
+                    seen_non_phi = true;
+                }
             }
         }
     }
@@ -154,7 +222,7 @@ fn check_definitions_and_dominance(func: &Function, violations: &mut Vec<SsaViol
         }
     }
 
-    let dominators = compute_dominators(func);
+    let dom = func.dom_tree();
 
     for (&bid, block) in &func.blocks {
         // Locals that have been defined earlier within this block (or, for
@@ -168,30 +236,59 @@ fn check_definitions_and_dominance(func: &Function, violations: &mut Vec<SsaViol
         }
 
         for instr in &block.instructions {
-            for u in instruction_uses(&instr.kind) {
-                check_one_use(
-                    u,
-                    bid,
-                    &def_block,
-                    &defined_in_block,
-                    &dominators,
-                    violations,
-                );
+            // Phi uses are special: each source (pred_bb, op) is semantically
+            // "used at the end of pred_bb", not inside the phi's own block.
+            // Classical SSA dominance requires the defining block to dominate
+            // the predecessor — never the phi block itself, which is often a
+            // merge point that no individual predecessor dominates.
+            if let InstructionKind::Phi { sources, .. } = &instr.kind {
+                for (pred_bb, op) in sources {
+                    if let Operand::Local(local) = op {
+                        check_phi_source_use(*local, *pred_bb, &def_block, dom, violations);
+                    }
+                }
+            } else {
+                for u in instruction_uses(&instr.kind) {
+                    check_one_use(u, bid, &def_block, &defined_in_block, dom, violations);
+                }
             }
             if let Some(d) = instruction_def(&instr.kind) {
                 defined_in_block.insert(d);
             }
         }
         for u in terminator_uses(&block.terminator) {
-            check_one_use(
-                u,
-                bid,
-                &def_block,
-                &defined_in_block,
-                &dominators,
-                violations,
-            );
+            check_one_use(u, bid, &def_block, &defined_in_block, dom, violations);
         }
+    }
+}
+
+/// Phi-source dominance check: the value flows from the end of `pred_block`
+/// into the phi at its merge block. The definition must reach the predecessor
+/// block's terminator — either defined somewhere inside `pred_block` itself,
+/// or in a block that strictly dominates `pred_block`.
+fn check_phi_source_use(
+    local: LocalId,
+    pred_block: BlockId,
+    def_block: &HashMap<LocalId, BlockId>,
+    dom: &DomTree,
+    violations: &mut Vec<SsaViolation>,
+) {
+    let Some(&db) = def_block.get(&local) else {
+        violations.push(SsaViolation::UseWithoutDef {
+            local,
+            use_block: pred_block,
+        });
+        return;
+    };
+    if db == pred_block {
+        return;
+    }
+    if !dom.dominates(db, pred_block) {
+        violations.push(SsaViolation::UseNotDominated {
+            local,
+            def_block: db,
+            use_block: pred_block,
+        });
     }
 }
 
@@ -200,7 +297,7 @@ fn check_one_use(
     use_block: BlockId,
     def_block: &HashMap<LocalId, BlockId>,
     defined_in_block: &HashSet<LocalId>,
-    dominators: &HashMap<BlockId, HashSet<BlockId>>,
+    dom: &DomTree,
     violations: &mut Vec<SsaViolation>,
 ) {
     let Some(&db) = def_block.get(&local) else {
@@ -215,103 +312,12 @@ fn check_one_use(
                 use_block,
             });
         }
-    } else if !dominates(dominators, db, use_block) {
+    } else if !dom.dominates(db, use_block) {
         violations.push(SsaViolation::UseNotDominated {
             local,
             def_block: db,
             use_block,
         });
-    }
-}
-
-fn compute_dominators(func: &Function) -> HashMap<BlockId, HashSet<BlockId>> {
-    let all_blocks: Vec<BlockId> = func.blocks.keys().copied().collect();
-    let all_set: HashSet<BlockId> = all_blocks.iter().copied().collect();
-    let preds = compute_predecessors(func);
-
-    let mut dom: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
-    for &b in &all_blocks {
-        if b == func.entry_block {
-            let mut s = HashSet::new();
-            s.insert(b);
-            dom.insert(b, s);
-        } else {
-            dom.insert(b, all_set.clone());
-        }
-    }
-
-    // Classical iterative data-flow: dom(n) = {n} ∪ (∩ dom(p) for p ∈ preds(n)).
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for &b in &all_blocks {
-            if b == func.entry_block {
-                continue;
-            }
-            let empty = Vec::new();
-            let block_preds = preds.get(&b).unwrap_or(&empty);
-            let mut new_dom: Option<HashSet<BlockId>> = None;
-            for p in block_preds {
-                let p_dom = match dom.get(p) {
-                    Some(d) => d.clone(),
-                    None => continue,
-                };
-                new_dom = Some(match new_dom {
-                    None => p_dom,
-                    Some(existing) => existing.intersection(&p_dom).copied().collect(),
-                });
-            }
-            let mut new_dom = new_dom.unwrap_or_default();
-            new_dom.insert(b);
-            if dom.get(&b) != Some(&new_dom) {
-                dom.insert(b, new_dom);
-                changed = true;
-            }
-        }
-    }
-    dom
-}
-
-fn dominates(
-    dominators: &HashMap<BlockId, HashSet<BlockId>>,
-    dominator: BlockId,
-    dominatee: BlockId,
-) -> bool {
-    dominators
-        .get(&dominatee)
-        .map(|s| s.contains(&dominator))
-        .unwrap_or(false)
-}
-
-fn compute_predecessors(func: &Function) -> HashMap<BlockId, Vec<BlockId>> {
-    let mut preds: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
-    for (&bid, block) in &func.blocks {
-        for succ in terminator_successors(&block.terminator) {
-            preds.entry(succ).or_default().push(bid);
-        }
-    }
-    preds
-}
-
-fn terminator_successors(t: &Terminator) -> Vec<BlockId> {
-    match t {
-        Terminator::Goto(b) => vec![*b],
-        Terminator::Branch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::TrySetjmp {
-            try_body,
-            handler_entry,
-            ..
-        } => vec![*try_body, *handler_entry],
-        Terminator::Return(_)
-        | Terminator::Unreachable
-        | Terminator::Raise { .. }
-        | Terminator::RaiseCustom { .. }
-        | Terminator::Reraise
-        | Terminator::RaiseInstance { .. } => Vec::new(),
     }
 }
 
@@ -383,7 +389,9 @@ fn instruction_def(kind: &InstructionKind) -> Option<LocalId> {
         | ExcHasException { dest }
         | ExcGetCurrent { dest }
         | ExcCheckType { dest, .. }
-        | ExcCheckClass { dest, .. } => Some(*dest),
+        | ExcCheckClass { dest, .. }
+        | Phi { dest, .. }
+        | Refine { dest, .. } => Some(*dest),
         GcPush { .. }
         | GcPop
         | ExcPushFrame { .. }
@@ -443,6 +451,12 @@ fn instruction_uses(kind: &InstructionKind) -> Vec<LocalId> {
         }
         GcPush { frame } => out.push(*frame),
         ExcPushFrame { frame_local } => out.push(*frame_local),
+        Phi { sources, .. } => {
+            for (_, op) in sources {
+                push_op(op, &mut out);
+            }
+        }
+        Refine { src, .. } => push_op(src, &mut out),
     }
     out
 }
@@ -516,6 +530,7 @@ mod tests {
             entry_block: bb0,
             span: None,
             is_ssa: true,
+            dom_tree_cache: std::cell::OnceCell::new(),
         }
     }
 
@@ -598,6 +613,7 @@ mod tests {
             entry_block: bb0,
             span: None,
             is_ssa: true,
+            dom_tree_cache: std::cell::OnceCell::new(),
         };
 
         let err = check(&func).unwrap_err();
@@ -646,6 +662,7 @@ mod tests {
             entry_block: bb0,
             span: None,
             is_ssa: true,
+            dom_tree_cache: std::cell::OnceCell::new(),
         };
 
         let err = check(&func).unwrap_err();
@@ -717,6 +734,7 @@ mod tests {
             entry_block: bb0,
             span: None,
             is_ssa: true,
+            dom_tree_cache: std::cell::OnceCell::new(),
         };
 
         assert_eq!(check(&func), Ok(()));
@@ -788,6 +806,7 @@ mod tests {
             entry_block: bb0,
             span: None,
             is_ssa: true,
+            dom_tree_cache: std::cell::OnceCell::new(),
         };
 
         let err = check(&func).unwrap_err();
@@ -796,5 +815,217 @@ mod tests {
             SsaViolation::UseNotDominated { local, def_block, use_block }
                 if *local == l1 && *def_block == bb1 && *use_block == bb3
         )));
+    }
+
+    /// Diamond CFG with a valid 2-source Phi at the merge block.
+    ///
+    ///    bb0 ──▶ bb1 ──┐
+    ///      \           ▼
+    ///       ──▶ bb2 ──▶ bb3: m = φ((bb1, l1), (bb2, l2)); return m
+    #[test]
+    fn valid_phi_at_diamond_merge_accepts() {
+        let l1 = LocalId::from(1u32);
+        let l2 = LocalId::from(2u32);
+        let m = LocalId::from(3u32);
+        let cond = LocalId::from(4u32);
+        let bb0 = BlockId::from(0u32);
+        let bb1 = BlockId::from(1u32);
+        let bb2 = BlockId::from(2u32);
+        let bb3 = BlockId::from(3u32);
+
+        let mut locals = IndexMap::new();
+        locals.insert(l1, local(1, Type::Int));
+        locals.insert(l2, local(2, Type::Int));
+        locals.insert(m, local(3, Type::Int));
+        locals.insert(cond, local(4, Type::Bool));
+
+        let mut blocks = IndexMap::new();
+        blocks.insert(
+            bb0,
+            BasicBlock {
+                id: bb0,
+                instructions: vec![mk_instr(InstructionKind::Const {
+                    dest: cond,
+                    value: Constant::Bool(true),
+                })],
+                terminator: Terminator::Branch {
+                    cond: Operand::Local(cond),
+                    then_block: bb1,
+                    else_block: bb2,
+                },
+            },
+        );
+        blocks.insert(
+            bb1,
+            BasicBlock {
+                id: bb1,
+                instructions: vec![mk_instr(InstructionKind::Const {
+                    dest: l1,
+                    value: Constant::Int(10),
+                })],
+                terminator: Terminator::Goto(bb3),
+            },
+        );
+        blocks.insert(
+            bb2,
+            BasicBlock {
+                id: bb2,
+                instructions: vec![mk_instr(InstructionKind::Const {
+                    dest: l2,
+                    value: Constant::Int(20),
+                })],
+                terminator: Terminator::Goto(bb3),
+            },
+        );
+        blocks.insert(
+            bb3,
+            BasicBlock {
+                id: bb3,
+                instructions: vec![mk_instr(InstructionKind::Phi {
+                    dest: m,
+                    sources: vec![(bb1, Operand::Local(l1)), (bb2, Operand::Local(l2))],
+                })],
+                terminator: Terminator::Return(Some(Operand::Local(m))),
+            },
+        );
+
+        let func = Function {
+            id: FuncId::from(0u32),
+            name: "test".to_string(),
+            params: Vec::new(),
+            return_type: Type::Int,
+            locals,
+            blocks,
+            entry_block: bb0,
+            span: None,
+            is_ssa: true,
+            dom_tree_cache: std::cell::OnceCell::new(),
+        };
+
+        assert!(check(&func).is_ok());
+    }
+
+    /// Phi with source count that doesn't match predecessor count is rejected.
+    #[test]
+    fn detects_phi_arity_mismatch() {
+        let l1 = LocalId::from(1u32);
+        let m = LocalId::from(2u32);
+        let bb0 = BlockId::from(0u32);
+        let bb1 = BlockId::from(1u32);
+
+        let mut locals = IndexMap::new();
+        locals.insert(l1, local(1, Type::Int));
+        locals.insert(m, local(2, Type::Int));
+
+        let mut blocks = IndexMap::new();
+        blocks.insert(
+            bb0,
+            BasicBlock {
+                id: bb0,
+                instructions: vec![mk_instr(InstructionKind::Const {
+                    dest: l1,
+                    value: Constant::Int(1),
+                })],
+                terminator: Terminator::Goto(bb1),
+            },
+        );
+        // bb1 has one predecessor (bb0) but the Phi lists two sources.
+        blocks.insert(
+            bb1,
+            BasicBlock {
+                id: bb1,
+                instructions: vec![mk_instr(InstructionKind::Phi {
+                    dest: m,
+                    sources: vec![
+                        (bb0, Operand::Local(l1)),
+                        (bb1, Operand::Local(l1)), // spurious
+                    ],
+                })],
+                terminator: Terminator::Return(Some(Operand::Local(m))),
+            },
+        );
+
+        let func = Function {
+            id: FuncId::from(0u32),
+            name: "test".to_string(),
+            params: Vec::new(),
+            return_type: Type::Int,
+            locals,
+            blocks,
+            entry_block: bb0,
+            span: None,
+            is_ssa: true,
+            dom_tree_cache: std::cell::OnceCell::new(),
+        };
+
+        let err = check(&func).unwrap_err();
+        assert!(err
+            .iter()
+            .any(|v| matches!(v, SsaViolation::PhiArityMismatch { local, .. } if *local == m)));
+    }
+
+    /// Phi placed after a non-Phi instruction is rejected.
+    #[test]
+    fn detects_phi_not_at_block_head() {
+        let l1 = LocalId::from(1u32);
+        let l2 = LocalId::from(2u32);
+        let m = LocalId::from(3u32);
+        let bb0 = BlockId::from(0u32);
+        let bb1 = BlockId::from(1u32);
+
+        let mut locals = IndexMap::new();
+        locals.insert(l1, local(1, Type::Int));
+        locals.insert(l2, local(2, Type::Int));
+        locals.insert(m, local(3, Type::Int));
+
+        let mut blocks = IndexMap::new();
+        blocks.insert(
+            bb0,
+            BasicBlock {
+                id: bb0,
+                instructions: vec![mk_instr(InstructionKind::Const {
+                    dest: l1,
+                    value: Constant::Int(1),
+                })],
+                terminator: Terminator::Goto(bb1),
+            },
+        );
+        blocks.insert(
+            bb1,
+            BasicBlock {
+                id: bb1,
+                instructions: vec![
+                    // Non-Phi first…
+                    mk_instr(InstructionKind::Const {
+                        dest: l2,
+                        value: Constant::Int(2),
+                    }),
+                    // …then a Phi — invalid ordering.
+                    mk_instr(InstructionKind::Phi {
+                        dest: m,
+                        sources: vec![(bb0, Operand::Local(l1))],
+                    }),
+                ],
+                terminator: Terminator::Return(Some(Operand::Local(m))),
+            },
+        );
+
+        let func = Function {
+            id: FuncId::from(0u32),
+            name: "test".to_string(),
+            params: Vec::new(),
+            return_type: Type::Int,
+            locals,
+            blocks,
+            entry_block: bb0,
+            span: None,
+            is_ssa: true,
+            dom_tree_cache: std::cell::OnceCell::new(),
+        };
+
+        let err = check(&func).unwrap_err();
+        assert!(err
+            .iter()
+            .any(|v| matches!(v, SsaViolation::PhiNotAtBlockHead { local, .. } if *local == m)));
     }
 }

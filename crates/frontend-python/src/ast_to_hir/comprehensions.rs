@@ -329,6 +329,7 @@ impl AstToHir {
         let func_id = self.ids.alloc_func();
         let func_name_interned = self.interner.intern(&func_name);
 
+        let (blocks, entry_block) = cfg_build::build_cfg_from_tree(&body_stmts, &self.module.stmts);
         let gen_func = Function {
             id: func_id,
             name: func_name_interned,
@@ -341,6 +342,8 @@ impl AstToHir {
             is_generator: true,
             method_kind: MethodKind::default(),
             is_abstract: false,
+            blocks,
+            entry_block,
         };
 
         // 9. Register the function.

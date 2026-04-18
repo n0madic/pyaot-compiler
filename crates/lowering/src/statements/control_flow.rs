@@ -140,24 +140,24 @@ impl<'a> Lowering<'a> {
 
         // Then block - apply then-narrowings
         self.push_block(then_bb);
-        let then_saved = self.apply_narrowings(&narrowing.then_narrowings);
+        self.push_narrowing_frame(&narrowing.then_narrowings);
         for stmt_id in then_block {
             let stmt = &hir_module.stmts[*stmt_id];
             self.lower_stmt(stmt, hir_module, mir_func)?;
         }
-        self.restore_types(then_saved);
+        self.pop_narrowing_frame();
         if !self.current_block_has_terminator() {
             self.current_block_mut().terminator = mir::Terminator::Goto(merge_bb.id);
         }
 
         // Else block - apply else-narrowings
         self.push_block(else_bb);
-        let else_saved = self.apply_narrowings(&narrowing.else_narrowings);
+        self.push_narrowing_frame(&narrowing.else_narrowings);
         for stmt_id in else_block {
             let stmt = &hir_module.stmts[*stmt_id];
             self.lower_stmt(stmt, hir_module, mir_func)?;
         }
-        self.restore_types(else_saved);
+        self.pop_narrowing_frame();
         if !self.current_block_has_terminator() {
             self.current_block_mut().terminator = mir::Terminator::Goto(merge_bb.id);
         }
@@ -228,7 +228,7 @@ impl<'a> Lowering<'a> {
         self.push_block(body_bb);
 
         // Apply then-narrowings for the loop body (condition is truthy)
-        let body_saved = self.apply_narrowings(&narrowing.then_narrowings);
+        self.push_narrowing_frame(&narrowing.then_narrowings);
 
         // Push loop context: break jumps to exit (skipping else), continue goes to header
         self.push_loop(header_id, exit_id);
@@ -242,7 +242,7 @@ impl<'a> Lowering<'a> {
         self.pop_loop();
 
         // Restore types before going back to header
-        self.restore_types(body_saved);
+        self.pop_narrowing_frame();
 
         if !self.current_block_has_terminator() {
             self.current_block_mut().terminator = mir::Terminator::Goto(header_id);

@@ -259,24 +259,11 @@ pub struct SymbolTable {
     pub global_var_types: IndexMap<VarId, Type>,
     /// Track variable types for type inference (cleared per function).
     /// Populated during lowering as assignments are processed.
-    /// Distinct from `TypeEnvironment::refined_var_types` (set during type planning).
+    /// Distinct from `HirTypeInference::refined_var_types` (set during type planning).
     pub var_types: IndexMap<VarId, Type>,
-    /// Pre-scanned unified types for locals (Area E §E.6). Populated by
-    /// `precompute_var_types` before each function's body is lowered. When
-    /// present, `get_or_create_local` uses the pre-scan type to size the
-    /// MIR local so later rebinds with wider numeric / incompatible types
-    /// can still be stored. Cleared per function from
-    /// `per_function_prescan_var_types[func_id]`.
-    pub prescan_var_types: IndexMap<VarId, Type>,
-    /// Per-function pre-scan results (Area E §E.6). Computed during
-    /// `run_type_planning` so that `infer_all_return_types` can see
-    /// unified local types when inferring `return x`. Survives across
-    /// functions; `lower_function` copies the relevant entry into
-    /// `prescan_var_types` for the current function.
-    pub per_function_prescan_var_types: IndexMap<FuncId, IndexMap<VarId, Type>>,
-    /// Track original types of narrowed Union variables (for unboxing during reads).
-    /// Cleared per function.
-    pub narrowed_union_vars: IndexMap<VarId, Type>,
+    // The three legacy pre-scan / narrowing maps (`prescan_var_types`,
+    // `per_function_prescan_var_types`, `narrowed_union_vars`) moved to
+    // `HirTypeInference` in S1.9c (Phase 1 §1.4) — see `Lowering::hir_types`.
     /// Variables that need to be wrapped in cells (used by inner functions via nonlocal)
     pub cell_vars: IndexSet<VarId>,
     /// Map nonlocal variables to their cell local
@@ -293,15 +280,82 @@ pub struct SymbolTable {
 ///
 /// After `run_type_planning()` completes, this struct is only READ by lowering:
 /// - `expr_types`: memoized expression types
-/// - `refined_var_types`: container type refinements from pre-scan
 ///
+/// `refined_var_types` moved to `HirTypeInference::refined_var_types` in
+/// S1.9c (Phase 1 §1.4) along with the three legacy `SymbolTable` maps.
 /// `func_return_types` was moved to `FuncReturnTypes` (separate mutable state)
 /// because it continues to evolve during lowering.
 pub struct TypeEnvironment {
     /// Memoized expression types — persists across functions (ExprIds are unique per-module)
     pub expr_types: HashMap<hir::ExprId, Type>,
-    /// Refined types for variables from empty container analysis (persists across functions)
+}
+
+/// Unified HIR-level type-inference state — Phase 1 §1.4.
+///
+/// Collects the four legacy `SymbolTable` / `TypeEnvironment` maps into one
+/// owned struct on `Lowering` plus the narrowing stack that replaces the
+/// legacy `apply_narrowings` / `restore_types` pair. All five pieces of
+/// HIR-level type-inference state now live here; `Lowering::hir_types` is
+/// the single owner.
+pub struct HirTypeInference {
+    /// Pre-scanned unified types for locals (Area E §E.6). Populated by
+    /// `precompute_var_types` before each function's body is lowered.
+    /// When present, `get_or_create_local` uses the pre-scan type to size
+    /// the MIR local so later rebinds with wider numeric / incompatible
+    /// types can still be stored. Cleared per function from
+    /// `per_function_prescan_var_types[func_id]`.
+    pub prescan_var_types: IndexMap<VarId, Type>,
+    /// Per-function pre-scan results (Area E §E.6). Computed during
+    /// `run_type_planning` so that `infer_all_return_types` can see
+    /// unified local types when inferring `return x`. Survives across
+    /// functions; `lower_function` copies the relevant entry into
+    /// `prescan_var_types` for the current function.
+    pub per_function_prescan_var_types: IndexMap<FuncId, IndexMap<VarId, Type>>,
+    /// Track original types of narrowed Union variables (for unboxing
+    /// during reads). Cleared per function.
+    pub narrowed_union_vars: IndexMap<VarId, Type>,
+    /// Refined types for variables from empty container analysis
+    /// (persists across functions).
     pub refined_var_types: IndexMap<VarId, Type>,
+    /// Stack of active narrowing frames. Pushed by
+    /// `Lowering::push_narrowing_frame` when entering an
+    /// `isinstance`-narrowed branch, popped by
+    /// `Lowering::pop_narrowing_frame` on exit. Replaces the legacy
+    /// `apply_narrowings` / `restore_types` pair that returned and
+    /// consumed an `IndexMap<VarId, Type>` explicitly — S1.9d moves
+    /// that data to this internal stack so callers don't have to thread
+    /// the saved state through their own scope.
+    pub narrowing_stack: Vec<NarrowingFrame>,
+}
+
+/// One narrowing scope's undo information. Produced by
+/// `push_narrowing_frame` and consumed by `pop_narrowing_frame`. Never
+/// inspected by callers — opaque stack entry.
+pub struct NarrowingFrame {
+    /// Original var_types values overwritten by the narrowing — restored
+    /// on pop so post-branch code sees the pre-narrowing type.
+    pub saved_var_types: IndexMap<VarId, Type>,
+    /// Variables whose `narrowed_union_vars` tracking was added by this
+    /// push — removed on pop so later branches see a clean slate.
+    pub added_union_tracking: Vec<VarId>,
+}
+
+impl HirTypeInference {
+    pub fn new() -> Self {
+        Self {
+            prescan_var_types: IndexMap::new(),
+            per_function_prescan_var_types: IndexMap::new(),
+            narrowed_union_vars: IndexMap::new(),
+            refined_var_types: IndexMap::new(),
+            narrowing_stack: Vec::new(),
+        }
+    }
+}
+
+impl Default for HirTypeInference {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Mutable type state that evolves during both type planning and lowering.
@@ -362,6 +416,12 @@ pub struct Lowering<'a> {
     pub(crate) symbols: SymbolTable,
     /// Type inference and expression type cache (immutable after type planning)
     pub(crate) types: TypeEnvironment,
+    /// Unified HIR-level type-inference state (Phase 1 §1.4 / S1.9c).
+    /// Owns the four legacy maps that previously lived on `SymbolTable` /
+    /// `TypeEnvironment`: `prescan_var_types`,
+    /// `per_function_prescan_var_types`, `narrowed_union_vars`, and
+    /// `refined_var_types`.
+    pub(crate) hir_types: HirTypeInference,
     /// Inferred function return types (mutable during lowering)
     pub(crate) func_return_types: FuncReturnTypes,
     /// Inter-procedural `NotImplemented` analysis (filled lazily)
