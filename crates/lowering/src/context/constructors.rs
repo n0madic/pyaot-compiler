@@ -12,7 +12,7 @@ use super::FuncReturnTypes;
 
 use super::{
     ClassRegistry, ClosureState, CodeGenState, CrossModuleClassInfo, HirTypeInference, Lowering,
-    ModuleState, NiAnalysis, SymbolTable, TypeEnvironment,
+    ModuleState, NiAnalysis, SymbolTable,
 };
 
 impl<'a> Lowering<'a> {
@@ -87,15 +87,13 @@ impl<'a> Lowering<'a> {
                 next_default_slot: 0x8000_0000,
                 current_func_return_type: None,
             },
-            types: TypeEnvironment {
-                expr_types: HashMap::with_capacity(256),
-            },
             hir_types: HirTypeInference {
                 prescan_var_types: IndexMap::with_capacity(estimated_vars),
                 per_function_prescan_var_types: IndexMap::with_capacity(func_count),
                 narrowed_union_vars: IndexMap::with_capacity(16),
                 refined_var_types: IndexMap::with_capacity(16),
                 narrowing_stack: Vec::with_capacity(8),
+                expr_types: HashMap::with_capacity(256),
             },
             func_return_types: FuncReturnTypes {
                 inner: IndexMap::with_capacity(func_count),

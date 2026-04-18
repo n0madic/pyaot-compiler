@@ -282,21 +282,16 @@ pub struct SymbolTable {
 /// - `expr_types`: memoized expression types
 ///
 /// `refined_var_types` moved to `HirTypeInference::refined_var_types` in
-/// S1.9c (Phase 1 §1.4) along with the three legacy `SymbolTable` maps.
-/// `func_return_types` was moved to `FuncReturnTypes` (separate mutable state)
-/// because it continues to evolve during lowering.
-pub struct TypeEnvironment {
-    /// Memoized expression types — persists across functions (ExprIds are unique per-module)
-    pub expr_types: HashMap<hir::ExprId, Type>,
-}
-
 /// Unified HIR-level type-inference state — Phase 1 §1.4.
 ///
 /// Collects the four legacy `SymbolTable` / `TypeEnvironment` maps into one
 /// owned struct on `Lowering` plus the narrowing stack that replaces the
-/// legacy `apply_narrowings` / `restore_types` pair. All five pieces of
-/// HIR-level type-inference state now live here; `Lowering::hir_types` is
-/// the single owner.
+/// legacy `apply_narrowings` / `restore_types` pair. §1.4u step 2 folded
+/// the standalone `TypeEnvironment::expr_types` memoization cache into
+/// this struct so there is a single HIR-type-inference owner; access it
+/// via the `lookup(expr_id)` accessor, which is the forward-compatible
+/// API for §1.4u-b (lowering reads exclusively from
+/// `HirTypeInference::lookup`).
 pub struct HirTypeInference {
     /// Pre-scanned unified types for locals (Area E §E.6). Populated by
     /// `precompute_var_types` before each function's body is lowered.
@@ -326,6 +321,12 @@ pub struct HirTypeInference {
     /// that data to this internal stack so callers don't have to thread
     /// the saved state through their own scope.
     pub narrowing_stack: Vec<NarrowingFrame>,
+    /// Memoized expression types — persists across functions (ExprIds
+    /// are unique per-module). Moved here from the deleted
+    /// `TypeEnvironment` in §1.4u step 2. Access via `lookup()` /
+    /// `insert_type()` where possible; direct field access is still
+    /// available for the memoization fast path in `get_type_of_expr_id`.
+    pub expr_types: HashMap<hir::ExprId, Type>,
 }
 
 /// One narrowing scope's undo information. Produced by
@@ -348,7 +349,25 @@ impl HirTypeInference {
             narrowed_union_vars: IndexMap::new(),
             refined_var_types: IndexMap::new(),
             narrowing_stack: Vec::new(),
+            expr_types: HashMap::new(),
         }
+    }
+
+    /// Forward-compatible HIR type-query API — §1.4u-b target. Returns
+    /// the memoized type for `expr_id` if already computed; `None`
+    /// otherwise. Callers that need compute-on-miss semantics must
+    /// continue to use `Lowering::get_type_of_expr_id`. §1.4u-b will
+    /// migrate all ~124 post-planning `get_type_of_expr_id` call sites
+    /// to read exclusively through this accessor once the memoization
+    /// is guaranteed populated by a preceding HIR type pass.
+    pub fn lookup(&self, expr_id: hir::ExprId) -> Option<&Type> {
+        self.expr_types.get(&expr_id)
+    }
+
+    /// Insert a computed type into the memoization cache. Used by the
+    /// lowering-path `compute_expr_type` wrapper to seed the cache.
+    pub fn insert_type(&mut self, expr_id: hir::ExprId, ty: Type) {
+        self.expr_types.insert(expr_id, ty);
     }
 }
 
@@ -400,7 +419,7 @@ pub struct NiAnalysis {
 /// - `classes`: Class metadata and vtables
 /// - `codegen`: MIR construction state
 /// - `symbols`: Variable/function name resolution
-/// - `types`: Type inference and expression type cache
+/// - `hir_types`: HIR type inference state (legacy maps + expr_types cache + narrowing stack)
 pub struct Lowering<'a> {
     pub(crate) interner: &'a mut StringInterner,
     pub(crate) mir_module: mir::Module,
@@ -414,13 +433,11 @@ pub struct Lowering<'a> {
     pub(crate) codegen: CodeGenState,
     /// Variable/function name resolution
     pub(crate) symbols: SymbolTable,
-    /// Type inference and expression type cache (immutable after type planning)
-    pub(crate) types: TypeEnvironment,
-    /// Unified HIR-level type-inference state (Phase 1 §1.4 / S1.9c).
-    /// Owns the four legacy maps that previously lived on `SymbolTable` /
-    /// `TypeEnvironment`: `prescan_var_types`,
-    /// `per_function_prescan_var_types`, `narrowed_union_vars`, and
-    /// `refined_var_types`.
+    /// Unified HIR-level type-inference state (Phase 1 §1.4 / S1.9c /
+    /// §1.4u step 2). Single owner of all HIR-type state: the four
+    /// legacy prescan/narrowing/refinement maps plus the memoized
+    /// `expr_types` cache that previously lived in the separate
+    /// `TypeEnvironment` struct (deleted).
     pub(crate) hir_types: HirTypeInference,
     /// Inferred function return types (mutable during lowering)
     pub(crate) func_return_types: FuncReturnTypes,

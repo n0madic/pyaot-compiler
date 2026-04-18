@@ -56,11 +56,11 @@ impl<'a> Lowering<'a> {
         if matches!(expr.kind, hir::ExprKind::Var(_)) {
             return self.compute_expr_type(expr, hir_module);
         }
-        if let Some(cached) = self.types.expr_types.get(&expr_id).cloned() {
+        if let Some(cached) = self.hir_types.lookup(expr_id).cloned() {
             return cached;
         }
         let result = self.compute_expr_type(expr, hir_module);
-        self.types.expr_types.insert(expr_id, result.clone());
+        self.hir_types.insert_type(expr_id, result.clone());
         result
     }
 
