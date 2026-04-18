@@ -1241,4 +1241,219 @@ mod tests {
         }
         assert!(crate::ssa_check::check(&func).is_ok());
     }
+
+    /// S1.6c regression: a void `RuntimeCall` (runtime function with
+    /// `returns: None`, e.g. `rt_string_builder_append`) must NOT be
+    /// treated as a def. If it were, multiple side-effectful void
+    /// calls that reuse the same LocalId as a placeholder (common in
+    /// loop bodies) would look like SSA multi-defs and the checker
+    /// would flag them. Both `ssa_construct::instruction_def` and
+    /// `ssa_check::instruction_def` must agree via
+    /// `runtime_call_is_void`.
+    #[test]
+    fn void_runtime_call_is_not_treated_as_def() {
+        let mut func = empty_func();
+        let placeholder = LocalId::from(1u32);
+        let builder_local = LocalId::from(2u32);
+        func.locals.insert(placeholder, mk_local(1, Type::Int));
+        func.locals.insert(builder_local, mk_local(2, Type::Int));
+
+        let bb0 = BlockId::from(0u32);
+        // Define `builder_local` so it's a valid operand.
+        func.block_mut(bb0).instructions.push(Instruction {
+            kind: InstructionKind::Const {
+                dest: builder_local,
+                value: crate::Constant::Int(0),
+            },
+            span: None,
+        });
+        // Two void RuntimeCalls in a row both using `placeholder` as
+        // dest — the pre-S1.6c checker would flag this as multi-def.
+        let append_def = &pyaot_core_defs::runtime_func_def::RT_STRING_BUILDER_APPEND;
+        for _ in 0..2 {
+            func.block_mut(bb0).instructions.push(Instruction {
+                kind: InstructionKind::RuntimeCall {
+                    dest: placeholder,
+                    func: crate::RuntimeFunc::Call(append_def),
+                    args: vec![Operand::Local(builder_local), Operand::Local(builder_local)],
+                },
+                span: None,
+            });
+        }
+        func.block_mut(bb0).terminator = Terminator::Return(None);
+
+        construct_ssa(&mut func);
+        assert!(func.is_ssa);
+        assert!(
+            crate::ssa_check::check(&func).is_ok(),
+            "void RuntimeCall with shared dest must not produce multi-def violations"
+        );
+    }
+
+    /// Pruned-SSA regression: a single-def local whose def block does
+    /// NOT dominate all use blocks must still get a φ at the iterated
+    /// dominance frontier. Models the match-statement lowering pattern
+    /// that motivated S1.6e — elements_bb (def) → skip_bb (merge) →
+    /// body (use), where the path `entry → skip_bb → body` bypasses
+    /// elements_bb.
+    #[test]
+    fn pruned_ssa_places_phi_when_single_def_does_not_dominate_use() {
+        let mut func = empty_func();
+        let cond = LocalId::from(1u32);
+        let binding = LocalId::from(2u32);
+        let unused = LocalId::from(3u32);
+        func.locals.insert(cond, mk_local(1, Type::Bool));
+        func.locals.insert(binding, mk_local(2, Type::Int));
+        func.locals.insert(unused, mk_local(3, Type::Int));
+
+        let bb_entry = BlockId::from(0u32);
+        let bb_def = add_block(&mut func, 1, Terminator::Unreachable);
+        let bb_merge = add_block(&mut func, 2, Terminator::Unreachable);
+        let bb_use = add_block(&mut func, 3, Terminator::Unreachable);
+        let bb_exit = add_block(&mut func, 4, Terminator::Unreachable);
+
+        // entry: cond = true; branch bb_def / bb_merge
+        func.block_mut(bb_entry).instructions.push(Instruction {
+            kind: InstructionKind::Const {
+                dest: cond,
+                value: crate::Constant::Bool(true),
+            },
+            span: None,
+        });
+        func.block_mut(bb_entry).terminator = Terminator::Branch {
+            cond: Operand::Local(cond),
+            then_block: bb_def,
+            else_block: bb_merge,
+        };
+
+        // bb_def: binding = 42; goto bb_merge
+        func.block_mut(bb_def).instructions.push(Instruction {
+            kind: InstructionKind::Const {
+                dest: binding,
+                value: crate::Constant::Int(42),
+            },
+            span: None,
+        });
+        func.block_mut(bb_def).terminator = Terminator::Goto(bb_merge);
+
+        // bb_merge: branch bb_use / bb_exit (merge point; no defs here)
+        func.block_mut(bb_merge).terminator = Terminator::Branch {
+            cond: Operand::Local(cond),
+            then_block: bb_use,
+            else_block: bb_exit,
+        };
+
+        // bb_use: unused = binding + 0; return unused  (USE of binding)
+        func.block_mut(bb_use).instructions.push(Instruction {
+            kind: InstructionKind::BinOp {
+                dest: unused,
+                op: crate::BinOp::Add,
+                left: Operand::Local(binding),
+                right: Operand::Constant(crate::Constant::Int(0)),
+            },
+            span: None,
+        });
+        func.block_mut(bb_use).terminator = Terminator::Return(Some(Operand::Local(unused)));
+
+        // bb_exit: return 0
+        func.block_mut(bb_exit).terminator =
+            Terminator::Return(Some(Operand::Constant(crate::Constant::Int(0))));
+
+        construct_ssa(&mut func);
+        assert!(func.is_ssa);
+
+        // Pruned SSA must place a φ for `binding` at bb_merge (def in
+        // bb_def doesn't dominate bb_use because entry → bb_merge
+        // bypasses bb_def). A pre-pruned-SSA (S1.6e) "always place Phi"
+        // rule would pass this test too; a pre-S1.6e "skip all
+        // single-def" rule would fail it.
+        let bb_merge_block = &func.blocks[&bb_merge];
+        let has_phi_for_binding = bb_merge_block
+            .instructions
+            .iter()
+            .any(|i| matches!(&i.kind, InstructionKind::Phi { .. }));
+        assert!(
+            has_phi_for_binding,
+            "bb_merge must have a φ because bb_def doesn't dominate bb_use"
+        );
+        assert!(
+            crate::ssa_check::check(&func).is_ok(),
+            "pruned SSA must produce a checker-clean function"
+        );
+    }
+
+    /// Pruned-SSA invariant: a single-def local whose def block DOES
+    /// dominate every use block must NOT get a φ. Confirms the
+    /// classical Cytron shortcut is still active for the common case.
+    #[test]
+    fn pruned_ssa_skips_phi_when_single_def_dominates_all_uses() {
+        let mut func = empty_func();
+        let x = LocalId::from(1u32);
+        let y = LocalId::from(2u32);
+        func.locals.insert(x, mk_local(1, Type::Int));
+        func.locals.insert(y, mk_local(2, Type::Int));
+
+        let bb_entry = BlockId::from(0u32);
+        let bb_a = add_block(&mut func, 1, Terminator::Unreachable);
+        let bb_b = add_block(&mut func, 2, Terminator::Unreachable);
+        let bb_join = add_block(&mut func, 3, Terminator::Unreachable);
+
+        // entry: x = 5; branch bb_a / bb_b. `x` is defined in entry,
+        // which dominates every other block.
+        func.block_mut(bb_entry).instructions.push(Instruction {
+            kind: InstructionKind::Const {
+                dest: x,
+                value: crate::Constant::Int(5),
+            },
+            span: None,
+        });
+        func.block_mut(bb_entry).terminator = Terminator::Branch {
+            cond: Operand::Constant(crate::Constant::Bool(true)),
+            then_block: bb_a,
+            else_block: bb_b,
+        };
+
+        // bb_a, bb_b: both use x, neither defines x.
+        for &bb in &[bb_a, bb_b] {
+            func.block_mut(bb).instructions.push(Instruction {
+                kind: InstructionKind::BinOp {
+                    dest: y,
+                    op: crate::BinOp::Add,
+                    left: Operand::Local(x),
+                    right: Operand::Constant(crate::Constant::Int(0)),
+                },
+                span: None,
+            });
+            func.block_mut(bb).terminator = Terminator::Goto(bb_join);
+        }
+
+        // bb_join also uses x.
+        func.block_mut(bb_join).terminator = Terminator::Return(Some(Operand::Local(x)));
+
+        construct_ssa(&mut func);
+        assert!(func.is_ssa);
+
+        // `x` has a single def in entry which dominates bb_a, bb_b,
+        // bb_join. Pruned SSA must skip φ insertion for `x`. Since
+        // `y` is multi-def (bb_a + bb_b) it still gets a φ at bb_join
+        // — its φ presence is fine; we're just confirming that `x`
+        // doesn't ALSO get one.
+        let bb_join_block = &func.blocks[&bb_join];
+        let x_phi_count = bb_join_block
+            .instructions
+            .iter()
+            .filter(|i| {
+                matches!(
+                    &i.kind,
+                    InstructionKind::Phi { sources, .. }
+                        if sources.iter().any(|(_, op)| matches!(op, Operand::Local(id) if *id == x))
+                )
+            })
+            .count();
+        assert_eq!(
+            x_phi_count, 0,
+            "x is single-def with dominating def — pruned SSA must skip φ insertion"
+        );
+        assert!(crate::ssa_check::check(&func).is_ok());
+    }
 }
