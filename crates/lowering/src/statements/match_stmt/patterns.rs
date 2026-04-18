@@ -324,7 +324,16 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<PatternCheckResult> {
-        let mut bindings = Vec::new();
+        // Bindings for a sequence pattern are emitted in-place in the
+        // elements_bb (the block where `rt_list_get` values live) so that
+        // each binding's def block dominates its use in the match body.
+        // If the caller's `then_bb` merged back here via a phi on the
+        // success boolean, a path `pre → skip → then_bb` would not pass
+        // through elements_bb, making the binding's def non-dominating
+        // and violating SSA. Emitting here lets Cytron insert a phi at
+        // the merge point (skip_bb) with an undef fallback — semantically
+        // identical, SSA-clean.
+        let bindings: Vec<(pyaot_utils::VarId, mir::Operand, Type)> = Vec::new();
 
         // Find star pattern index if any
         let star_index = patterns
@@ -454,7 +463,15 @@ impl<'a> Lowering<'a> {
                 mir_func,
             )?;
 
-            bindings.extend(elem_bindings);
+            // Commit bindings in this block (elements_bb) — see doc note
+            // at the top of this function.
+            for (var_id, value, ty) in &elem_bindings {
+                let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: local,
+                    src: value.clone(),
+                });
+            }
 
             // Combine with AND
             let combined_local = self.alloc_and_add_local(Type::Bool, mir_func);
@@ -519,7 +536,14 @@ impl<'a> Lowering<'a> {
                         mir_func,
                     );
 
-                    bindings.push((*var_id, mir::Operand::Local(slice_local), star_elem_type));
+                    // Commit star binding in elements_bb — see doc note
+                    // at the top of this function.
+                    let star_local =
+                        self.get_or_create_local_for_var(*var_id, mir_func, &star_elem_type);
+                    self.emit_instruction(mir::InstructionKind::Copy {
+                        dest: star_local,
+                        src: mir::Operand::Local(slice_local),
+                    });
                 }
 
                 // Process patterns after star
@@ -574,7 +598,14 @@ impl<'a> Lowering<'a> {
                         mir_func,
                     )?;
 
-                    bindings.extend(elem_bindings);
+                    // Commit bindings in elements_bb — see doc note.
+                    for (var_id, value, ty) in &elem_bindings {
+                        let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
+                        self.emit_instruction(mir::InstructionKind::Copy {
+                            dest: local,
+                            src: value.clone(),
+                        });
+                    }
 
                     // Combine with AND
                     let combined_local = self.alloc_and_add_local(Type::Bool, mir_func);
@@ -613,7 +644,10 @@ impl<'a> Lowering<'a> {
         ctx: &PatternContext<'_>,
         mir_func: &mut mir::Function,
     ) -> Result<PatternCheckResult> {
-        let mut bindings = Vec::new();
+        // Bindings emitted in-place in the per-key `get_bb` (and in the
+        // `rest` setup block) so their def blocks dominate the match
+        // body. Same rationale as `generate_sequence_pattern_check`.
+        let bindings: Vec<(pyaot_utils::VarId, mir::Operand, Type)> = Vec::new();
 
         // Determine value type from dict type
         let value_type = match ctx.subject_type {
@@ -699,7 +733,15 @@ impl<'a> Lowering<'a> {
                 mir_func,
             )?;
 
-            bindings.extend(pattern_bindings);
+            // Commit bindings in get_bb — see doc note on
+            // `generate_mapping_pattern_check`.
+            for (var_id, value, ty) in &pattern_bindings {
+                let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: local,
+                    src: value.clone(),
+                });
+            }
 
             // Overwrite combined_local with AND(result_cond, pattern_cond) on true path
             self.emit_instruction(mir::InstructionKind::BinOp {
@@ -749,11 +791,15 @@ impl<'a> Lowering<'a> {
                 );
             }
 
-            bindings.push((
-                *rest_var,
-                mir::Operand::Local(rest_local),
-                ctx.subject_type.clone(),
-            ));
+            // Commit rest binding in the current block (pattern dispatch
+            // or last get_bb) — see doc note. Caller merges via the
+            // returned cond; Cytron will insert a phi at the merge.
+            let rest_bind_local =
+                self.get_or_create_local_for_var(*rest_var, mir_func, &ctx.subject_type.clone());
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest: rest_bind_local,
+                src: mir::Operand::Local(rest_local),
+            });
         }
 
         Ok((result_cond, bindings))
@@ -782,7 +828,10 @@ impl<'a> Lowering<'a> {
             ));
         }
 
-        let mut bindings = Vec::new();
+        // Bindings emitted in-place in the isinstance-success path so
+        // their def blocks dominate the match body. Same rationale as
+        // `generate_sequence_pattern_check`.
+        let bindings: Vec<(pyaot_utils::VarId, mir::Operand, Type)> = Vec::new();
 
         // Get class ID from expression
         let cls_expr = &ctx.hir_module.exprs[cls_expr_id];
@@ -895,7 +944,15 @@ impl<'a> Lowering<'a> {
                 mir_func,
             )?;
 
-            bindings.extend(attr_bindings);
+            // Commit bindings in the isinstance-success path — see doc
+            // note on `generate_class_pattern_check`.
+            for (var_id, value, ty) in &attr_bindings {
+                let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: local,
+                    src: value.clone(),
+                });
+            }
 
             // Combine with AND
             let combined_local = self.alloc_and_add_local(Type::Bool, mir_func);

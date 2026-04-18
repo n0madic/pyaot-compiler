@@ -225,26 +225,20 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
         pyaot_mir::ssa_construct::construct_ssa(func);
     }
 
-    // SSA checker still not activated in the CLI pipeline. S1.6c /
-    // S1.6d fixed three classes of violation (void RuntimeCall drift,
-    // undefined-edge φ-source fallback, Cranelift-synthesized defs).
-    // S1.6e investigation (2026-04-18) confirmed four lowering
-    // patterns still produce `UseNotDominated` violations:
-    //
-    //   - match-statement pattern-check (94 violations in test_match.py):
-    //     bindings defined in the elements_bb are used in the body block,
-    //     but elements_bb doesn't dominate body — the CFG merges at a
-    //     skip_bb whose Phi on `sequence_result_local` loses the
-    //     dominance guarantee. Fix requires redesigning the pattern-check
-    //     API to branch directly to the body (no intermediate merge).
-    //   - generator `$resume` functions (test_generators.py): values
-    //     computed in a state block are used in the dispatch block.
-    //   - file_io / urllib exception-chain lowering: defs in earlier
-    //     handler blocks are used in later handler blocks.
-    //
-    // Enabling the CLI gate waits for each of these to be fixed. The
-    // checker is available via `pyaot_mir::ssa_check::check(func)` for
-    // tests and for local diagnostic runs.
+    // SSA checker still not activated in the CLI pipeline, but the
+    // violation surface area has shrunk dramatically. S1.6c/d/e landed:
+    //   * void RuntimeCall drift fix (S1.6c)
+    //   * typed zero-default φ-source + GcPush/ExcPushFrame
+    //     reclassification (S1.6d)
+    //   * match-statement binding-emission moved into elements_bb and
+    //     the Cytron single-def shortcut relaxed to always run IDF
+    //     (S1.6e): dropped violations in 11 of 12 example files.
+    // Only `examples/test_generators.py` still reports violations —
+    // the generator `$resume` state-setup block uses values computed
+    // in per-yield state blocks that don't dominate the setup. Tracked
+    // as S1.6e-gen. Activation of the CLI gate waits for S1.6e-gen.
+    // The checker is available via `pyaot_mir::ssa_check::check(func)`
+    // for tests and local diagnostic runs.
 
     if options.emit_mir {
         println!("MIR: {:#?}", mir_module);

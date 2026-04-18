@@ -426,35 +426,46 @@ calls and removes the `#[ignore]` attributes.
   def lives in a block that does not dominate the use under
   construct_ssa's dominator tree. Tracked as new deferred session
   **S1.6e**.
-- **S1.6e** (2026-04-18, investigation-only) — categorized the
-  four remaining lowering patterns that produce
-  `UseNotDominated` violations. Each requires a targeted lowering
-  fix; not all fit in a single session. Summary:
-  1. **match-statement pattern bindings** (94 violations in
-     `test_match.py`): `generate_sequence_pattern_check` emits
-     element-extraction `rt_list_get` calls in an `elements_bb`
-     that's joined back with the failing-length path at a `skip_bb`.
-     The Phi merge at `skip_bb` loses the dominance guarantee:
-     `elements_bb` does not dominate the match body block even
-     though `skip_bb`'s Phi resolves to "matched" only on the edge
-     from `elements_bb`. Fix: redesign the pattern-check API to
-     branch directly from `elements_bb` to body (success) vs.
-     next-case (failure), with no intermediate merge. File:
-     `crates/lowering/src/statements/match_stmt/patterns.rs`.
-  2. **generator `$resume` dispatch** (8 violations): values
-     computed in a yield-state block are used in the dispatch
-     block. Needs Phi placement at the dispatch block joining
-     entry + each state-block back-edge, or re-extraction on entry.
-     File: `crates/lowering/src/generators/`.
-  3. **urllib request-with-retry** (2 violations): an operand from
-     the main try-body flows into a post-handler block that's
-     reachable via two paths (try-success and handler-return), but
-     only the try-success path defines it.
-  4. **file_io open-or-default** (5 violations): similar to urllib
-     — handler fall-through re-uses operands defined only in the
-     try body.
-  Tracked sessions: **S1.6e-match**, **S1.6e-gen**, **S1.6e-exc**.
-  Activation of the CLI `debug_assertions` gate waits for all three.
+- **S1.6e** (2026-04-18, two fixes landed) — the match /
+  urllib / file_io / classes / exceptions violations were all
+  caused by the same root bug: Cytron's classical single-def
+  optimisation skipped φ-insertion for single-def locals (assuming
+  "the def dominates all uses"), but match-statement lowering
+  emits defs in a pattern-check block whose CFG successor merges
+  with the failing path before the body is reached — the single
+  def does not dominate the use. Two fixes:
+  1. **Move match-pattern bindings into the extraction block**.
+     `generate_sequence_pattern_check`,
+     `generate_mapping_pattern_check`, and
+     `generate_class_pattern_check` now emit the binding Copies
+     in-place (inside their extraction block) instead of returning
+     them up to the caller for emission in the post-branch body
+     block. The caller's bindings list is kept for API shape but
+     ends up empty for these pattern kinds.
+  2. **Relax Cytron's single-def shortcut**. Drop the
+     `if def_blocks.len() < 2 { continue }` guard in
+     `insert_phis`. Every defined local now runs the IDF
+     computation; single-def locals that happen to have their use
+     in a non-dominating block correctly get a pass-through φ at
+     the merge. Cost: extra dead Phis for single-def locals whose
+     def already dominates all uses; DCE cleans them up.
+  Post-fix scan: **only `examples/test_generators.py`** still
+  reports violations (4 of them, in `three_yields_gen$resume` and
+  `multi_yield_expressions$resume`). The generator state-setup
+  block (block 4) uses values computed in per-yield state blocks
+  that don't dominate it. Tracked as **S1.6e-gen**. All other
+  files — match, classes, exceptions, file_io, urllib,
+  iteration — are clean.
+- **S1.6e-gen** (new — added 2026-04-18) — fix the generator
+  `$resume` state-setup pattern where block 4 (state setup +
+  initial dispatch) emits `rt_generator_set_local` calls that
+  read from variables (`x`, `y`) defined only in per-yield state
+  blocks (block 10+). Repro: compile a generator with multiple
+  yields inside a while loop. Likely needs per-slot φ at the
+  dispatch block or restructuring the state-save sequence.
+  File: `crates/lowering/src/generators/desugaring.rs`. After
+  S1.6e-gen, activate the checker behind `debug_assertions` in
+  `crates/cli/src/lib.rs`.
 - **S1.14b** — SSA-preserving inliner rewrite (requires pipeline
   reorder: `construct_ssa` before `optimize`). Pair with full
   codegen `Value`-migration when done.

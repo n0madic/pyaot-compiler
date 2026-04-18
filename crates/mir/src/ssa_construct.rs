@@ -221,8 +221,16 @@ fn insert_phis(func: &mut Function, defs: &HashMap<LocalId, IndexSet<BlockId>>) 
     let mut phis_by_block: HashMap<BlockId, Vec<LocalId>> = HashMap::new();
 
     for (local, def_blocks) in defs {
-        if def_blocks.len() < 2 {
-            // Single-def locals never need a φ: classical Cytron optimisation.
+        // Classical Cytron optimisation: single-def locals skip φ
+        // insertion because "the def dominates all uses". That holds
+        // for well-formed SSA input but NOT for our pre-SSA MIR:
+        // match-statement lowering emits element-extraction/binding
+        // defs in a pattern-check block that merges back with a failing
+        // path before reaching the match body — the def does not
+        // dominate the use. Run the full IDF for every local (including
+        // single-def ones); identity-pass-through Phis are cheap and
+        // DCE cleans them up if genuinely dead.
+        if def_blocks.is_empty() {
             continue;
         }
 
@@ -1072,51 +1080,58 @@ mod tests {
         assert!(func.is_ssa);
 
         // bb1 should start with a Phi that has exactly two sources — one
-        // from bb0 (entry edge) and one from bb2 (back-edge).
+        // from bb0 (entry edge) and one from bb2 (back-edge). With the
+        // post-S1.6e "place Phi for every defined local" rule there may
+        // be multiple leading Phis (one per local with a def anywhere);
+        // find the one specifically for `l` — i.e., the Phi whose
+        // back-edge source flows from bb2's Copy chain.
         let bb1_block = &func.blocks[&bb1];
-        match &bb1_block.instructions[0].kind {
-            InstructionKind::Phi { sources, dest } => {
-                assert_eq!(
-                    sources.len(),
-                    2,
-                    "phi should have 2 sources, got {:?}",
-                    sources
-                );
-                let pred_blocks: Vec<BlockId> = sources.iter().map(|(b, _)| *b).collect();
-                assert!(pred_blocks.contains(&bb0));
-                assert!(pred_blocks.contains(&bb2));
+        let bb2_block = &func.blocks[&bb2];
+        let copy_dest = bb2_block
+            .instructions
+            .iter()
+            .find_map(|i| match &i.kind {
+                InstructionKind::Copy { dest, .. } => Some(*dest),
+                _ => None,
+            })
+            .expect("copy in bb2");
 
-                // The back-edge source must be the renamed `l` produced
-                // inside bb2 — i.e., the `dest` of the Copy at the end
-                // of bb2 — NOT the phi's own dest (which would be the
-                // classic back-edge pitfall).
-                let bb2_block = &func.blocks[&bb2];
-                let copy_dest = bb2_block
-                    .instructions
-                    .iter()
-                    .find_map(|i| match &i.kind {
-                        InstructionKind::Copy { dest, .. } => Some(*dest),
-                        _ => None,
-                    })
-                    .expect("copy in bb2");
-                let back_edge_src = sources
-                    .iter()
-                    .find(|(b, _)| *b == bb2)
-                    .map(|(_, op)| op.clone())
-                    .unwrap();
-                assert_eq!(
-                    back_edge_src,
-                    Operand::Local(copy_dest),
-                    "back-edge phi source should be bb2's latest rename of l, not the phi dest"
-                );
-                assert_ne!(
-                    back_edge_src,
-                    Operand::Local(*dest),
-                    "back-edge phi source must not be the phi's own dest (self-loop bug)"
-                );
-            }
-            other => panic!("expected Phi at bb1 head, got {:?}", other),
-        }
+        // Find the Phi that receives `copy_dest` as its back-edge
+        // source — that is the Phi for `l`.
+        let l_phi = bb1_block
+            .instructions
+            .iter()
+            .find_map(|i| match &i.kind {
+                InstructionKind::Phi { sources, dest } => {
+                    let has_copy_dest_src = sources.iter().any(|(pred, op)| {
+                        *pred == bb2 && matches!(op, Operand::Local(id) if *id == copy_dest)
+                    });
+                    if has_copy_dest_src {
+                        Some((sources.clone(), *dest))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .expect("phi for `l` must receive bb2's copy dest as back-edge source");
+
+        let (sources, dest) = l_phi;
+        assert_eq!(sources.len(), 2, "phi should have 2 sources");
+        let pred_blocks: Vec<BlockId> = sources.iter().map(|(b, _)| *b).collect();
+        assert!(pred_blocks.contains(&bb0));
+        assert!(pred_blocks.contains(&bb2));
+        let back_edge_src = sources
+            .iter()
+            .find(|(b, _)| *b == bb2)
+            .map(|(_, op)| op.clone())
+            .unwrap();
+        assert_eq!(back_edge_src, Operand::Local(copy_dest));
+        assert_ne!(
+            back_edge_src,
+            Operand::Local(dest),
+            "back-edge phi source must not be the phi's own dest (self-loop bug)"
+        );
         assert!(
             crate::ssa_check::check(&func).is_ok(),
             "SSA checker rejected the loop: {:?}",
