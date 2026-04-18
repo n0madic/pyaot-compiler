@@ -1,23 +1,29 @@
 //! Infer mode: bottom-up type synthesis
 //!
-//! # S1.9 migration surface (Phase 1 §1.4)
+//! # Phase 1 §1.4 migration surface (updated 2026-04-18 for §1.4u)
 //!
 //! **Two public HIR type-query entry points.** Consumers outside
 //! `type_planning/` must route through exactly one of these:
 //!
 //! - [`Lowering::get_type_of_expr_id`] — the memoized lowering-time
 //!   query. Takes an `ExprId`, caches per-expression results. Nearly
-//!   every caller in `statements/`, `expressions/`, `exceptions.rs`,
-//!   etc. funnels through this path.
-//! - [`Lowering::infer_deep_expr_type`] / [`Lowering::infer_expr_type`]
-//!   — the pre-scan / non-memoized path. Takes an `&hir::Expr`, with
-//!   (`infer_deep_expr_type`) or without (`infer_expr_type`) a
-//!   `param_types` overlay for unassigned parameters.
+//!   every post-type-planning caller in `statements/`, `expressions/`,
+//!   `exceptions.rs`, etc. funnels through this path (~124 call
+//!   sites per the §1.4u caller audit).
+//! - [`Lowering::infer_deep_expr_type`] — the pre-scan / non-memoized
+//!   path. Takes an `&hir::Expr` and a `param_types` overlay (pass
+//!   `&IndexMap::new()` for no overlay). Used by the 10 prescan
+//!   walkers in `type_planning/*` that need to query types before the
+//!   memoization cache is populated.
 //!
 //! Nothing outside `type_planning/` should call `compute_expr_type` or
 //! `infer_expr_type_inner` directly — these are `pub(super)`
-//! implementation details that S1.9b collapses into a single unified
-//! match behind the two wrappers above.
+//! implementation details. Full unification into a single unified
+//! match (the spec's §1.4u goal) is blocked on the borrow-checker
+//! issue documented below; the two wrappers share 11 `resolve_*`
+//! helpers for complex arms (Method/Call/Builtin/Attribute/Index/
+//! Class/Closure/Module), so the real duplication is limited to the
+//! per-arm sub-expression resolution dispatch.
 //!
 //! # Internal structure (deleted in S1.9b)
 //!
@@ -690,7 +696,10 @@ impl<'a> Lowering<'a> {
     /// Use this from any `type_planning/*` walker that has pre-computed
     /// types for unassigned parameters (e.g. lambda/closure capture
     /// analysis, container refinement). Non-memoized — caller pays the
-    /// full sub-expression walk on every call.
+    /// full sub-expression walk on every call. Pass `&IndexMap::new()`
+    /// when no overlay is needed (the former `infer_expr_type`
+    /// no-overlay wrapper was deleted in §1.4u step 1 since its sole
+    /// caller migrated).
     pub(crate) fn infer_deep_expr_type(
         &self,
         expr: &hir::Expr,
@@ -700,20 +709,13 @@ impl<'a> Lowering<'a> {
         self.infer_expr_type_inner(expr, module, Some(param_types))
     }
 
-    /// **Public** — pre-scan entry point without any parameter-type
-    /// overlay. Equivalent to `infer_deep_expr_type(expr, module,
-    /// &IndexMap::new())` but avoids the empty-map allocation. Used by
-    /// module-level assignment typing in `context/function_lowering.rs`.
-    pub(crate) fn infer_expr_type(&self, expr: &hir::Expr, module: &hir::Module) -> Type {
-        self.infer_expr_type_inner(expr, module, None)
-    }
-
     /// **Internal** — pre-scan inference engine. Direct recursion, no
     /// memoization. External callers must go through
-    /// [`Self::infer_deep_expr_type`] or [`Self::infer_expr_type`]. Same
-    /// match arms as [`Self::compute_expr_type`] but different
-    /// sub-expression resolution and variable lookup strategy — S1.9b
-    /// collapses the two into one.
+    /// [`Self::infer_deep_expr_type`]. Same match arms as
+    /// [`Self::compute_expr_type`] but different sub-expression
+    /// resolution and variable lookup strategy — full unification
+    /// (§1.4u) requires the borrow-checker work documented at the top
+    /// of this file.
     pub(super) fn infer_expr_type_inner(
         &self,
         expr: &hir::Expr,

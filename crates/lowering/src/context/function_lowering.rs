@@ -547,10 +547,11 @@ impl<'a> Lowering<'a> {
                     | hir::ExprKind::None
             );
             if is_literal_shape {
-                // S1.9 unified entry — do not call `infer_expr_type_inner`
-                // directly; it's `pub(super)` to type_planning/. Use the
-                // public no-overlay wrapper instead.
-                let inferred = self.infer_expr_type(value_expr, hir_module);
+                // §1.4u step 1 (2026-04-18): the empty-overlay
+                // wrapper `infer_expr_type` was deleted; callers with
+                // no param overlay pass an empty map directly.
+                let inferred =
+                    self.infer_deep_expr_type(value_expr, hir_module, &indexmap::IndexMap::new());
                 if !matches!(inferred, Type::Any) {
                     self.symbols.global_var_types.insert(target, inferred);
                 }
