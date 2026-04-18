@@ -225,20 +225,26 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
         pyaot_mir::ssa_construct::construct_ssa(func);
     }
 
-    // SSA checker not activated in the CLI pipeline yet. S1.6c fixed
-    // the `ssa_check` / `ssa_construct` drift on void RuntimeCalls.
-    // S1.6d (2026-04-18) landed two further fixes in the construction
-    // pass itself:
-    //   * Emit a typed zero constant as the φ-source on edges where no
-    //     defining version of the variable reaches the predecessor
-    //     (was: self-referential `phi(phi.dest, ...)` that read garbage).
-    //   * Reclassify `GcPush.frame` / `ExcPushFrame.frame_local` as
-    //     defs, not uses — both are Cranelift-synthesized definitions.
-    // A handful of UseNotDominated violations remain (match-statement
-    // lowering, generator resume functions, a few urllib/file_io call
-    // chains). Those are CFG-level lowering bugs tracked as new
-    // deferred session S1.6e — activation of the CLI gate waits for
-    // S1.6e.
+    // SSA checker still not activated in the CLI pipeline. S1.6c /
+    // S1.6d fixed three classes of violation (void RuntimeCall drift,
+    // undefined-edge φ-source fallback, Cranelift-synthesized defs).
+    // S1.6e investigation (2026-04-18) confirmed four lowering
+    // patterns still produce `UseNotDominated` violations:
+    //
+    //   - match-statement pattern-check (94 violations in test_match.py):
+    //     bindings defined in the elements_bb are used in the body block,
+    //     but elements_bb doesn't dominate body — the CFG merges at a
+    //     skip_bb whose Phi on `sequence_result_local` loses the
+    //     dominance guarantee. Fix requires redesigning the pattern-check
+    //     API to branch directly to the body (no intermediate merge).
+    //   - generator `$resume` functions (test_generators.py): values
+    //     computed in a state block are used in the dispatch block.
+    //   - file_io / urllib exception-chain lowering: defs in earlier
+    //     handler blocks are used in later handler blocks.
+    //
+    // Enabling the CLI gate waits for each of these to be fixed. The
+    // checker is available via `pyaot_mir::ssa_check::check(func)` for
+    // tests and for local diagnostic runs.
 
     if options.emit_mir {
         println!("MIR: {:#?}", mir_module);

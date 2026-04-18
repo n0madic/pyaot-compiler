@@ -426,13 +426,35 @@ calls and removes the `#[ignore]` attributes.
   def lives in a block that does not dominate the use under
   construct_ssa's dominator tree. Tracked as new deferred session
   **S1.6e**.
-- **S1.6e** (new — added 2026-04-18) — fix the remaining
-  `UseNotDominated` violations in match-statement lowering,
-  generator `$resume` functions, and a few urllib/file_io call
-  chains. Repro: `./target/release/pyaot examples/test_match.py`
-  with the CLI-side diagnostic re-enabled. After S1.6e, activate
-  the checker behind `debug_assertions` in
-  `crates/cli/src/lib.rs`.
+- **S1.6e** (2026-04-18, investigation-only) — categorized the
+  four remaining lowering patterns that produce
+  `UseNotDominated` violations. Each requires a targeted lowering
+  fix; not all fit in a single session. Summary:
+  1. **match-statement pattern bindings** (94 violations in
+     `test_match.py`): `generate_sequence_pattern_check` emits
+     element-extraction `rt_list_get` calls in an `elements_bb`
+     that's joined back with the failing-length path at a `skip_bb`.
+     The Phi merge at `skip_bb` loses the dominance guarantee:
+     `elements_bb` does not dominate the match body block even
+     though `skip_bb`'s Phi resolves to "matched" only on the edge
+     from `elements_bb`. Fix: redesign the pattern-check API to
+     branch directly from `elements_bb` to body (success) vs.
+     next-case (failure), with no intermediate merge. File:
+     `crates/lowering/src/statements/match_stmt/patterns.rs`.
+  2. **generator `$resume` dispatch** (8 violations): values
+     computed in a yield-state block are used in the dispatch
+     block. Needs Phi placement at the dispatch block joining
+     entry + each state-block back-edge, or re-extraction on entry.
+     File: `crates/lowering/src/generators/`.
+  3. **urllib request-with-retry** (2 violations): an operand from
+     the main try-body flows into a post-handler block that's
+     reachable via two paths (try-success and handler-return), but
+     only the try-success path defines it.
+  4. **file_io open-or-default** (5 violations): similar to urllib
+     — handler fall-through re-uses operands defined only in the
+     try body.
+  Tracked sessions: **S1.6e-match**, **S1.6e-gen**, **S1.6e-exc**.
+  Activation of the CLI `debug_assertions` gate waits for all three.
 - **S1.14b** — SSA-preserving inliner rewrite (requires pipeline
   reorder: `construct_ssa` before `optimize`). Pair with full
   codegen `Value`-migration when done.
