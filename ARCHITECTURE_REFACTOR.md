@@ -327,7 +327,7 @@ calls and removes the `#[ignore]` attributes.
 | §1.9 Codegen migration | ✅ | S1.5 wiring ✅ · S1.16 ✅ (audit: no manual-phi emulation; Variable API is OK under SSA single-def) |
 | §1.10 Final cleanup | 🟡 | S1.17a ✅ (partial acceptance: tests green, microgpt triaged) · S1.17 full ⏳ (blocked on S1.17b + §1.4u) |
 | §1.11 Deferred HIR-tree deletion | ⏳ | S1.17b |
-| §1.4u Single-TypeTable unification | 🟡 | step 1 ✅ (API consolidation) · step 2 ✅ (TypeEnvironment fold) · steps 3+ ⏳ |
+| §1.4u Single-TypeTable unification | 🟡 | step 1 ✅ (API consolidation) · step 2 ✅ (TypeEnvironment fold) · step 3 ✅ (base_var_types + `get_base_var_type`) · step 4 ⏳ (eager cache + reader migration) |
 
 ### Phase 1 Completion Status (as of 2026-04-18, S1.17a partial acceptance)
 
@@ -529,34 +529,40 @@ calls and removes the `#[ignore]` attributes.
     `HirTypeInference::lookup(expr_id)` + `insert_type(...)`
     accessors — the §1.4u-b migration target. Single HIR-type-
     inference owner on `Lowering`.
-  - **§1.4u-b attempt (2026-04-18, deferred)**: an eager HIR type
-    pre-pass that walks every non-Var expression and primes
-    `hir_types.expr_types` via `get_type_of_expr_id` broke the
-    codegen Cranelift verifier on multiple tests (return-type
-    mismatch i64 vs i8, etc.). Root cause: `symbols.var_types` is
-    **cleared at the start of each `lower_function`** and populated
-    incrementally as `Bind` statements fire during lowering. At
-    pre-pass time (end of `run_type_planning`, before ANY function
-    lowers), `var_types` is empty. Any expression whose type
-    recursively depends on a `Var` gets a wrong cached type (typically
-    `Any` where a concrete type would be computed later with proper
-    `var_types`). Reverted. The subagent classification of 98 (A)
-    safe-to-migrate + 12 special cases stands; the migration
-    requires a different cache-population strategy than a single
-    eager pass. Options to explore in a future session:
-      1. **Per-function pre-pass** — populate cache at start of
-         `lower_function` after `prescan_var_types` is loaded. Still
-         has the "var_types empty at pre-pass" issue for non-param
-         locals.
-      2. **Remove the `var_types` dependency from `compute_expr_type`**
-         so non-Var expression types are pure functions of their
-         sub-expressions' types. Top-level `Var` resolution stays
-         live; all compositions become cache-stable. Substantial
-         architectural redesign of the HIR type system.
-      3. **Accept the lazy scheme is the right answer** and close
-         §1.4u-b without a migration — the `lookup()` API sits as a
-         forward-compatible facade that Phase 2's tagged-value
-         redesign will naturally adopt.
+  - **§1.4u-b step 3 (2026-04-19)** — landed the base-type
+    infrastructure: new `HirTypeInference::base_var_types` map
+    persisted per-module, populated once at the end of
+    `run_type_planning` from (a) `per_function_prescan_var_types`
+    (inferred locals + seeded params), (b) every function's
+    annotated params, (c) exception-handler binding types. New
+    `Lowering::get_base_var_type(var_id)` accessor reads a unified
+    chain: `symbols.var_types` → `base_var_types` → `refined_var_types`
+    → `prescan_var_types` → `global_var_types`. `compute_expr_type`'s
+    three V-reading arms (Var, IfExpr narrowing helper, Call's
+    Var-target callable check) now route through this accessor.
+    Behaviour is unchanged: `symbols.var_types` is empty at eager-
+    pass time (giving base lookup) and populated during lowering
+    with narrowing applied (giving effective lookup).
+  - **§1.4u-b step 4 (deferred)** — wire in the eager expression-
+    type pre-pass that walks every `ExprId` via `get_type_of_expr_id`
+    at the end of `run_type_planning`, so post-planning consumers
+    can read `HirTypeInference::lookup(expr_id)` as a pure hit.
+    Empirical testing in this session confirmed the existing
+    narrowing model depends on non-Var composition types being
+    computed live inside the narrowing frame, not served from a
+    pre-narrowing cache. Enabling the eager pass regresses
+    narrowing-sensitive attribute/dispatch tests. The fix requires
+    either:
+      (a) auditing every `get_type_of_expr_id` call site on
+          dispatch paths and switching narrowing-sensitive ones to
+          recompute from operand types instead of reading the
+          cache, or
+      (b) invalidating cache entries that transitively depend on
+          a Var whose type is currently narrowed (via
+          push/pop_narrowing_frame hooks), or
+      (c) accepting the lazy model as the permanent answer — the
+          `lookup` facade and `base_var_types` stay forward-
+          compatible for Phase 2.
   - **next (not started)**: §1.4u-c MIR TypeTable as SSA-rename
     projection; §1.4u-d spec amendment + grep-verify +
     microgpt-case fix.

@@ -327,6 +327,16 @@ pub struct HirTypeInference {
     /// `insert_type()` where possible; direct field access is still
     /// available for the memoization fast path in `get_type_of_expr_id`.
     pub expr_types: HashMap<hir::ExprId, Type>,
+    /// §1.4u-b: persistent per-module map of every variable's **base**
+    /// type. Populated once at the end of `run_type_planning` by the
+    /// eager HIR-type-cache walk, from: every function's annotated
+    /// parameters (`hir::Param::ty`), every function's prescan-inferred
+    /// local types (`per_function_prescan_var_types`), and module-level
+    /// globals. Never mutated during lowering — independent of
+    /// narrowing. Consulted by `get_base_var_type` so `compute_expr_type`
+    /// can be a pure function of HIR + stable state and its results
+    /// can be cached at the module level.
+    pub base_var_types: IndexMap<VarId, Type>,
 }
 
 /// One narrowing scope's undo information. Produced by
@@ -350,6 +360,7 @@ impl HirTypeInference {
             refined_var_types: IndexMap::new(),
             narrowing_stack: Vec::new(),
             expr_types: HashMap::new(),
+            base_var_types: IndexMap::new(),
         }
     }
 

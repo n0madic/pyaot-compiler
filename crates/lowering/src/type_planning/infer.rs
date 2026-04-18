@@ -266,7 +266,11 @@ impl<'a> Lowering<'a> {
             }
         }
         if let hir::ExprKind::Var(var_id) = &func_expr.kind {
-            if let Some(Type::Class { class_id, .. }) = self.get_var_type(var_id).cloned().as_ref()
+            // §1.4u-b: base var type; narrowing never upgrades a variable
+            // to `Type::Class` — a `Var` with a class type is the declared
+            // or prescan-inferred type of that variable.
+            if let Some(Type::Class { class_id, .. }) =
+                self.get_base_var_type(var_id).cloned().as_ref()
             {
                 if let Some(call_func_id) = self
                     .get_class_info(class_id)
@@ -564,7 +568,7 @@ impl<'a> Lowering<'a> {
     pub(super) fn compute_expr_type(&mut self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
         match &expr.kind {
             hir::ExprKind::Var(var_id) => self
-                .get_var_type(var_id)
+                .get_base_var_type(var_id)
                 .cloned()
                 .or_else(|| expr.ty.clone())
                 .unwrap_or(Type::Any),
@@ -996,11 +1000,18 @@ impl<'a> Lowering<'a> {
             _ => return None,
         };
 
-        // Resolve the var's current type: overlay first, then the lowering's
-        // symbol table, else default to Any.
+        // Resolve the var's base type: overlay first, then the lowering's
+        // stable state (refined/prescan/global), else default to Any.
+        // §1.4u-b: this helper is called from `compute_expr_type`'s
+        // IfExpr arm, which must be free of `symbols.var_types` reads so
+        // non-Var expressions can be eagerly cached in `run_type_planning`.
+        // The narrowing heuristic works on the base (pre-narrowing) type
+        // anyway — narrowing INSIDE an isinstance condition is the
+        // outer rule the IfExpr is applying; reading the post-narrowing
+        // value here would just restate the rule.
         let original_type = param_types
             .and_then(|pt| pt.get(&var_id).cloned())
-            .or_else(|| self.get_var_type(&var_id).cloned())
+            .or_else(|| self.get_base_var_type(&var_id).cloned())
             .unwrap_or(Type::Any);
 
         let narrowed = original_type.narrow_to(&checked_type);

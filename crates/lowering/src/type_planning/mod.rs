@@ -35,18 +35,80 @@ impl<'a> Lowering<'a> {
         // `x = 0; x += 0.5; return x` → `Float`, not `Int`).
         self.reinfer_return_types_with_prescan(hir_module);
         self.validate_type_annotations(hir_module);
+        // §1.4u-b step 3 — populate the stable per-module Var→Type
+        // base map. `get_base_var_type` reads this alongside
+        // `symbols.var_types` so the type-query API does not need to
+        // thread a "current function" context. The cache is populated
+        // once from annotated params, prescan locals, and exception-
+        // handler binding types; never mutated afterwards.
+        //
+        // The eager expr_types pre-pass that would pair with this map
+        // (caching every non-Var expression type up front) is NOT
+        // wired in yet — empirical testing showed the existing
+        // narrowing model depends on non-Var composition types being
+        // computed live inside the narrowing frame, not served from a
+        // pre-narrowing cache. Fixing that requires the dispatch-site
+        // audit planned for §1.4u-b step 4.
+        self.populate_base_var_types(hir_module);
+    }
+
+    /// §1.4u-b persistent `base_var_types` builder — populates
+    /// `HirTypeInference::base_var_types` from three stable sources
+    /// without walking any expression:
+    ///
+    /// 1. `per_function_prescan_var_types` — Area E §E.6 prescan
+    ///    output for every function (inferred locals + seeded params).
+    /// 2. `hir_module.func_defs[*].params[*].ty` — declared parameter
+    ///    annotations. Covers empty-body functions that
+    ///    `precompute_all_local_var_types` skipped.
+    /// 3. Exception handler binding names (`except E as name:`) —
+    ///    collected via `collect_handler_binds`.
+    ///
+    /// VarIds are globally unique per HIR module, so cross-function
+    /// flattening is collision-free. The map is never mutated by
+    /// `lower_function` or by narrowing.
+    fn populate_base_var_types(&mut self, hir_module: &hir::Module) {
+        let from_prescan: Vec<(pyaot_utils::VarId, Type)> = self
+            .hir_types
+            .per_function_prescan_var_types
+            .values()
+            .flat_map(|m| m.iter().map(|(k, v)| (*k, v.clone())))
+            .collect();
+        for (var_id, ty) in from_prescan {
+            self.hir_types.base_var_types.insert(var_id, ty);
+        }
+        let from_params: Vec<(pyaot_utils::VarId, Type)> = hir_module
+            .func_defs
+            .values()
+            .flat_map(|f| {
+                f.params
+                    .iter()
+                    .filter_map(|p| p.ty.clone().map(|t| (p.var, t)))
+            })
+            .collect();
+        for (var_id, ty) in from_params {
+            self.hir_types.base_var_types.insert(var_id, ty);
+        }
+        let handler_binds = collect_handler_binds(hir_module);
+        for (var_id, ty) in handler_binds {
+            self.hir_types.base_var_types.insert(var_id, ty);
+        }
     }
 
     /// Get the type of an expression by its ID (memoized).
     ///
-    /// `Var` expressions are NOT cached: their type depends on
-    /// `get_var_type` which can change between lookups when type narrowing
-    /// kicks in (`push_narrowing_frame` / `pop_narrowing_frame`). Caching
-    /// the pre-narrow type would make `len(x)` inside `if isinstance(x,
-    /// str)` incorrectly dispatch through the `Any` fallback. Var lookups
-    /// go straight through `compute_expr_type`, which re-reads `var_types`
-    /// (including any active narrowings). Recomputation is cheap — it's a
-    /// single HashMap lookup.
+    /// Post-§1.4u-b: non-`Var` expression types are pure functions of
+    /// the HIR and F/M (function/module) state. They are cached eagerly
+    /// at the end of `run_type_planning` via `eagerly_populate_expr_types`,
+    /// so this call is typically a pure cache hit during lowering.
+    ///
+    /// `Var` expressions still bypass the cache — their **effective**
+    /// type at a use site may include isinstance narrowing applied via
+    /// `push_narrowing_frame`, and that narrowing only lives in
+    /// `symbols.var_types` which the base-type cache intentionally does
+    /// not read. Callers that care about the effective narrowed type
+    /// must use `get_var_type` at emission time. Callers that want the
+    /// base/declared type can rely on the cache here.
     pub(crate) fn get_type_of_expr_id(
         &mut self,
         expr_id: hir::ExprId,
@@ -333,4 +395,70 @@ impl<'a> Lowering<'a> {
 
     // `infer_deep_expr_type` is now defined in `infer.rs` as part of the
     // unified `infer_expr_type_inner` engine.
+}
+
+/// §1.4u-b helper: walk every `StmtKind::Try` in the module (including
+/// nested function bodies, class bodies, and other control-flow
+/// contexts) and collect `(handler.name, handler.ty)` pairs where
+/// both are present. Used to seed `HirTypeInference::base_var_types`
+/// with exception-handler binding types, which are otherwise only
+/// populated at lowering time via `insert_var_type`.
+fn collect_handler_binds(module: &hir::Module) -> Vec<(VarId, Type)> {
+    let mut out = Vec::new();
+    for func in module.func_defs.values() {
+        collect_handler_binds_in_stmts(&func.body, module, &mut out);
+    }
+    collect_handler_binds_in_stmts(&module.module_init_stmts, module, &mut out);
+    out
+}
+
+fn collect_handler_binds_in_stmts(
+    stmts: &[hir::StmtId],
+    module: &hir::Module,
+    out: &mut Vec<(VarId, Type)>,
+) {
+    for sid in stmts {
+        let stmt = &module.stmts[*sid];
+        match &stmt.kind {
+            hir::StmtKind::Try {
+                body,
+                handlers,
+                else_block,
+                finally_block,
+            } => {
+                collect_handler_binds_in_stmts(body, module, out);
+                for h in handlers {
+                    if let (Some(name), Some(ty)) = (h.name, h.ty.clone()) {
+                        out.push((name, ty));
+                    }
+                    collect_handler_binds_in_stmts(&h.body, module, out);
+                }
+                collect_handler_binds_in_stmts(else_block, module, out);
+                collect_handler_binds_in_stmts(finally_block, module, out);
+            }
+            hir::StmtKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                collect_handler_binds_in_stmts(then_block, module, out);
+                collect_handler_binds_in_stmts(else_block, module, out);
+            }
+            hir::StmtKind::While {
+                body, else_block, ..
+            }
+            | hir::StmtKind::ForBind {
+                body, else_block, ..
+            } => {
+                collect_handler_binds_in_stmts(body, module, out);
+                collect_handler_binds_in_stmts(else_block, module, out);
+            }
+            hir::StmtKind::Match { cases, .. } => {
+                for case in cases {
+                    collect_handler_binds_in_stmts(&case.body, module, out);
+                }
+            }
+            _ => {}
+        }
+    }
 }

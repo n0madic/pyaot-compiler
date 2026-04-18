@@ -60,6 +60,46 @@ impl<'a> Lowering<'a> {
             .or_else(|| self.symbols.global_var_types.get(var_id))
     }
 
+    /// Read a variable's type with full context awareness — effective
+    /// at the current lowering point (including any active narrowing).
+    /// §1.4u-b: `compute_expr_type` consults this instead of
+    /// `get_var_type` so HIR expression types can be cached eagerly
+    /// in `run_type_planning`:
+    ///
+    /// - At eager-pass time (inside `run_type_planning`, no function
+    ///   is lowering), `symbols.var_types` is empty, so the lookup
+    ///   falls through to the stable sources (`base_var_types`,
+    ///   refined, global) and caches the declared/base type.
+    /// - At lowering time, `symbols.var_types` is populated by the
+    ///   function prologue and may hold a narrowed type when a
+    ///   `push_narrowing_frame` is active. Reading it first gives
+    ///   the narrowing-aware effective type.
+    ///
+    /// Fallback chain:
+    /// 1. `symbols.var_types` — per-function active types (empty at
+    ///    eager-pass time; narrowed or non-narrowed at lowering).
+    /// 2. `base_var_types` — persistent per-module map populated by
+    ///    the end of `run_type_planning` from every function's
+    ///    annotated params, prescan locals, and exception-handler
+    ///    binding types.
+    /// 3. `refined_var_types` — empty-container refine output.
+    /// 4. `prescan_var_types` — current function's Area E §E.6 prescan.
+    /// 5. `global_var_types` — module-level globals.
+    ///
+    /// This method is kept separate from `get_var_type` to document
+    /// the §1.4u-b invariant at the type-inference call site, but the
+    /// fallback chain is identical except for the inclusion of
+    /// `base_var_types`. Future sessions may merge them.
+    pub(crate) fn get_base_var_type(&self, var_id: &VarId) -> Option<&Type> {
+        self.symbols
+            .var_types
+            .get(var_id)
+            .or_else(|| self.hir_types.base_var_types.get(var_id))
+            .or_else(|| self.hir_types.refined_var_types.get(var_id))
+            .or_else(|| self.hir_types.prescan_var_types.get(var_id))
+            .or_else(|| self.symbols.global_var_types.get(var_id))
+    }
+
     /// Set the type for a variable.
     /// For global variables, also stores the type in global_var_types for persistence.
     pub(crate) fn insert_var_type(&mut self, var_id: VarId, ty: Type) {

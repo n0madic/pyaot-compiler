@@ -94,6 +94,7 @@ impl<'a> Lowering<'a> {
                 refined_var_types: IndexMap::with_capacity(16),
                 narrowing_stack: Vec::with_capacity(8),
                 expr_types: HashMap::with_capacity(256),
+                base_var_types: IndexMap::with_capacity(estimated_vars),
             },
             func_return_types: FuncReturnTypes {
                 inner: IndexMap::with_capacity(func_count),
