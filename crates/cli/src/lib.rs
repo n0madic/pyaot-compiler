@@ -217,18 +217,16 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
     }
     pyaot_optimizer::optimize_module(&mut mir_module, &opt_config, &mut interner);
 
-    // SSA construction (Phase 1 §1.3).
+    // SSA construction (Phase 1 §1.3). Runs on every function — the
+    // prior `is_straight_line` gate was lifted after S1.6b's back-edge
+    // phi-tracking + unreachable-block-pruning fixes landed.
     //
-    // S1.6a activated on straight-line functions (no `Branch` terminator).
-    // S1.6b attempted to lift the gate universally, which uncovered two
-    // distinct fixes — (a) back-edge phi-original tracking, (b)
-    // unreachable-block pruning before the dom-tree walk — both landed in
-    // `ssa_construct.rs`. After those, 33/35 runtime tests pass with the
-    // gate lifted, but `runtime_iteration` and `runtime_builtins` show
-    // latent SSA-construction bugs on complex CFGs that require deeper
-    // investigation than this session allows. The gate stays at
-    // `is_straight_line` for now; a follow-up session debugs the
-    // remaining two failures and then removes the gate entirely.
+    // Not yet gated by `ssa_check::check` — a 2026-04-18 activation
+    // attempt uncovered pre-existing SSA-construction bugs (e.g.
+    // `greet_all` in `test_functions.py`: `LocalId(9)` gets two defs
+    // in the same block). Activation deferred to a dedicated
+    // SSA-construction debugging session; the checker is still
+    // available via `pyaot_mir::ssa_check::check(func)` for tests.
     for func in mir_module.functions.values_mut() {
         pyaot_mir::ssa_construct::construct_ssa(func);
     }

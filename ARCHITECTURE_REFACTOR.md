@@ -389,6 +389,16 @@ calls and removes the `#[ignore]` attributes.
 
 **Remaining before formal Phase 1 close**:
 
+- **S1.6c** (new) — SSA-construction debug. Attempted checker
+  activation in the CLI pipeline (debug-only gate) on 2026-04-18
+  flagged real violations: `greet_all` in `test_functions.py` ends
+  up with `LocalId(9)` defined twice in the same block after
+  `construct_ssa`. Possible causes: (a) a renaming bug in the Cytron
+  pass when a Phi dest coincides with a later instruction dest in
+  the same block, (b) pre-SSA multi-def surviving the rename.
+  Needs a focused debugging session to reproduce, narrow, and fix;
+  then activate the checker behind `debug_assertions` in
+  `crates/cli/src/lib.rs` after `construct_ssa`.
 - **S1.14b** — SSA-preserving inliner rewrite (requires pipeline
   reorder: `construct_ssa` before `optimize`). Pair with full
   codegen `Value`-migration when done.
