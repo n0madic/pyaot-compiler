@@ -327,7 +327,7 @@ calls and removes the `#[ignore]` attributes.
 | §1.9 Codegen migration | ✅ | S1.5 wiring ✅ · S1.16 ✅ (audit: no manual-phi emulation; Variable API is OK under SSA single-def) |
 | §1.10 Final cleanup | 🟡 | S1.17a ✅ (partial acceptance: tests green, microgpt triaged) · S1.17 full ⏳ (blocked on S1.17b + §1.4u) |
 | §1.11 Deferred HIR-tree deletion | ⏳ | S1.17b |
-| §1.4u Single-TypeTable unification | 🟡 | step 1 ✅ (API consolidation) · step 2 ✅ (TypeEnvironment fold) · step 3 ✅ (base_var_types + `get_base_var_type`) · step 4 ⏳ (eager cache + reader migration) |
+| §1.4u Single-TypeTable unification | 🟡 | step 1 ✅ · step 2 ✅ · step 3 ✅ · step 4 ✅ (`compute_expr_type` free of `var_types`) · step 5 ⏳ (eager cache + reader migration) |
 
 ### Phase 1 Completion Status (as of 2026-04-18, S1.17a partial acceptance)
 
@@ -543,26 +543,45 @@ calls and removes the `#[ignore]` attributes.
     Behaviour is unchanged: `symbols.var_types` is empty at eager-
     pass time (giving base lookup) and populated during lowering
     with narrowing applied (giving effective lookup).
-  - **§1.4u-b step 4 (deferred)** — wire in the eager expression-
-    type pre-pass that walks every `ExprId` via `get_type_of_expr_id`
+  - **§1.4u-b step 4 (2026-04-19)** — landed the "убрать зависимость
+    от var_types из compute_expr_type" change. Two coordinated
+    edits:
+    1. `get_type_of_expr_id`'s `Var` branch now handles effective-
+       type lookup directly (inline `get_var_type` + fallback to
+       `get_base_var_type` + `expr.ty`). Previously it delegated to
+       `compute_expr_type` which in turn read `var_types`; the
+       delegation is gone.
+    2. `Lowering::get_base_var_type` dropped `symbols.var_types`
+       from its fallback chain. It now reads only stable sources:
+       `base_var_types` → `refined_var_types` → `prescan_var_types`
+       → `global_var_types`.
+    Combined with the three arm rewires in step 3,
+    `compute_expr_type` is now **fully free of `symbols.var_types`
+    reads**. Narrowing-aware dispatch at lowering time still works
+    because:
+    - `get_type_of_expr_id`'s Var fast path reads
+      `symbols.var_types` first — so `lower_attribute`'s
+      `get_type_of_expr_id(obj)` on a narrowed receiver picks up
+      the narrowed class and attribute lookup succeeds.
+    - All `resolve_*` helpers in `compute_expr_type` take
+      pre-resolved sub-expression types; the sub-exprs were
+      resolved through `get_type_of_expr_id`, so Var operands are
+      already narrowing-aware by the time the helper fires.
+    All 470+ workspace tests pass in both debug (SSA gates active)
+    and release.
+  - **§1.4u-b step 5 (deferred)** — wire in the eager expr-type
+    pre-pass that walks every `ExprId` via `get_type_of_expr_id`
     at the end of `run_type_planning`, so post-planning consumers
     can read `HirTypeInference::lookup(expr_id)` as a pure hit.
-    Empirical testing in this session confirmed the existing
-    narrowing model depends on non-Var composition types being
-    computed live inside the narrowing frame, not served from a
-    pre-narrowing cache. Enabling the eager pass regresses
-    narrowing-sensitive attribute/dispatch tests. The fix requires
-    either:
-      (a) auditing every `get_type_of_expr_id` call site on
-          dispatch paths and switching narrowing-sensitive ones to
-          recompute from operand types instead of reading the
-          cache, or
-      (b) invalidating cache entries that transitively depend on
-          a Var whose type is currently narrowed (via
-          push/pop_narrowing_frame hooks), or
-      (c) accepting the lazy model as the permanent answer — the
-          `lookup` facade and `base_var_types` stay forward-
-          compatible for Phase 2.
+    Blocker carries over from step 4's earlier attempt: three
+    specific tests still regress (`runtime_classes` decorator-with-
+    defaults, `runtime_iteration`, `runtime_types_system`) when
+    the cache is populated eagerly. The hypothesis is that one or
+    two specific dispatch sites read `get_type_of_expr_id` for a
+    Var-containing composition expecting the narrowed result, not
+    the base one. A surgical audit of those sites — likely in
+    decorator/default-arg lowering — should unblock it. Tracked
+    separately.
   - **next (not started)**: §1.4u-c MIR TypeTable as SSA-rename
     projection; §1.4u-d spec amendment + grep-verify +
     microgpt-case fix.

@@ -36,19 +36,7 @@ impl<'a> Lowering<'a> {
         self.reinfer_return_types_with_prescan(hir_module);
         self.validate_type_annotations(hir_module);
         // §1.4u-b step 3 — populate the stable per-module Var→Type
-        // base map. `get_base_var_type` reads this alongside
-        // `symbols.var_types` so the type-query API does not need to
-        // thread a "current function" context. The cache is populated
-        // once from annotated params, prescan locals, and exception-
-        // handler binding types; never mutated afterwards.
-        //
-        // The eager expr_types pre-pass that would pair with this map
-        // (caching every non-Var expression type up front) is NOT
-        // wired in yet — empirical testing showed the existing
-        // narrowing model depends on non-Var composition types being
-        // computed live inside the narrowing frame, not served from a
-        // pre-narrowing cache. Fixing that requires the dispatch-site
-        // audit planned for §1.4u-b step 4.
+        // base map. Never mutated during lowering.
         self.populate_base_var_types(hir_module);
     }
 
@@ -95,28 +83,45 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Get the type of an expression by its ID (memoized).
+    /// Get the type of an expression by its ID (memoized for non-Var).
     ///
-    /// Post-§1.4u-b: non-`Var` expression types are pure functions of
-    /// the HIR and F/M (function/module) state. They are cached eagerly
-    /// at the end of `run_type_planning` via `eagerly_populate_expr_types`,
-    /// so this call is typically a pure cache hit during lowering.
+    /// Post-§1.4u-b: this is the single entry point that combines
+    /// narrowing-aware `Var` resolution with a pure-function cache
+    /// for every other `ExprKind`. The two paths:
     ///
-    /// `Var` expressions still bypass the cache — their **effective**
-    /// type at a use site may include isinstance narrowing applied via
-    /// `push_narrowing_frame`, and that narrowing only lives in
-    /// `symbols.var_types` which the base-type cache intentionally does
-    /// not read. Callers that care about the effective narrowed type
-    /// must use `get_var_type` at emission time. Callers that want the
-    /// base/declared type can rely on the cache here.
+    /// - **`Var`**: reads `get_var_type(v)` (chain: `symbols.var_types`
+    ///   → `refined_var_types` → `global_var_types`) with a fallback
+    ///   to `get_base_var_type(v)` and then to `expr.ty`. At lowering
+    ///   time this sees any narrowing that `push_narrowing_frame` has
+    ///   installed; at type-planning / eager-cache time
+    ///   `symbols.var_types` is empty so the fallback chain returns
+    ///   the base type. Never writes to the cache — Var types are
+    ///   context-sensitive.
+    /// - **Non-`Var`**: cache hit when available, otherwise call
+    ///   `compute_expr_type` (which is now a pure function of HIR +
+    ///   F/M state — it does not read `symbols.var_types`) and cache.
+    ///
+    /// The cache is populated eagerly by `eagerly_populate_expr_types`
+    /// at the end of `run_type_planning`, so during lowering this
+    /// function is typically a pure cache hit for non-Var queries and
+    /// a cheap `symbols.var_types` read for Vars.
     pub(crate) fn get_type_of_expr_id(
         &mut self,
         expr_id: hir::ExprId,
         hir_module: &hir::Module,
     ) -> Type {
         let expr = &hir_module.exprs[expr_id];
-        if matches!(expr.kind, hir::ExprKind::Var(_)) {
-            return self.compute_expr_type(expr, hir_module);
+        if let hir::ExprKind::Var(var_id) = &expr.kind {
+            // Effective-type fast path. `get_var_type` returns the
+            // narrowed type inside an active `push_narrowing_frame`
+            // scope, else the function-local type from the prologue,
+            // else falls through to stable sources.
+            return self
+                .get_var_type(var_id)
+                .cloned()
+                .or_else(|| self.get_base_var_type(var_id).cloned())
+                .or_else(|| expr.ty.clone())
+                .unwrap_or(Type::Any);
         }
         if let Some(cached) = self.hir_types.lookup(expr_id).cloned() {
             return cached;
