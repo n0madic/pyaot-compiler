@@ -323,7 +323,7 @@ calls and removes the `#[ignore]` attributes.
 | §1.5 Call graph | ✅ | S1.10 ✅ |
 | §1.6 WPA parameter inference | ✅ | S1.11 ✅ (core + full-program fixed point) |
 | §1.7 WPA field inference | ✅ | S1.12 ✅ (params + fields to full-program fixed point) |
-| §1.8 Pass migration | ⏳ | S1.13, S1.14, S1.15 |
+| §1.8 Pass migration | 🟡 | S1.13 ✅ (DCE + constfold) · S1.14, S1.15 ⏳ |
 | §1.9 Codegen migration | 🟡 | S1.5 wiring ✅ · S1.16 ⏳ (manual-phi cleanup) |
 | §1.10 Final cleanup | ⏳ | S1.17 |
 | §1.11 Deferred HIR-tree deletion | ⏳ | S1.17b |
@@ -1419,7 +1419,33 @@ the field type IS `Union[...]` — no "first-write wins" shortcut.
 - Recursive classes (tree nodes, list links) converge.
 - `test_classes.py` field-inference tests pass.
 
-## 1.8 Pass migration ⏳
+## 1.8 Pass migration 🟡 (S1.13 landed 2026-04-18)
+
+**Status**: DCE + constfold migrated (S1.13). Inlining (S1.14) and
+peephole/devirtualize/flatten_properties (S1.15) still pending.
+
+S1.13 findings: the existing DCE pass (`crates/optimizer/src/dce/`) was
+already SSA-style — `liveness.rs` walks uses, marks reachable,
+deletes unreachable. No rework needed beyond leveraging SSA invariants.
+
+Constfold gained:
+
+1. **Unified propagation map** (`build_propagation_map`) — returns
+   `PropValue::{Const, Alias(LocalId)}`. Copy-of-local substitutes the
+   source local; copy-of-constant and direct Const substitute the
+   literal. Transitive alias resolution with cycle guard.
+2. **Phi-all-same-const folding** — when every incoming source of a
+   Phi resolves to the same constant, the Phi collapses to a `Const`.
+3. **Refine-with-constant-src folding** — a `Refine` whose `src` has
+   propagated to a constant collapses to `Const`.
+4. **Dropped the `def_count` filter** from `build_constant_map`
+   (renamed to `build_propagation_map`) — SSA guarantees single-def so
+   the filter was redundant.
+
+6 new unit tests cover copy-alias propagation, copy-chain transitive
+resolution, Phi-all-same-const fold, Phi-distinct-consts stays, Refine
+fold, and Phi-through-propagation fold.
+
 
 **Milestone goal**: every existing optimization pass consumes SSA MIR
 and the new type table.
@@ -2503,7 +2529,7 @@ audit often uncovers surprise gaps.
 | S1.10 ✅ | Call graph (§1.5): `crates/optimizer/src/call_graph.rs`, SCCs via Tarjan | S1.3 | Medium | Parallel-safe with S1.4-S1.9 |
 | S1.11 ✅ | WPA parameter inference (§1.6): fixed-point pass over call graph — core + full-program fixed-point wrapper both landed. | S1.9, S1.10 | **HIGH** | — |
 | S1.12 ✅ | WPA field inference (§1.7): cross-call field type join. Projected class metadata into `mir::Module.class_info`; field inference scans `__init__` `rt_instance_set_field` writes, joins per offset. Paired with params in `wpa_param_and_field_inference_to_fixed_point`. | S1.11 | **HIGH** | — |
-| S1.13 ⏳ | Pass migration: DCE + constfold (§1.8 part 1) | S1.9 | Medium | Parallel-safe with S1.14-S1.15 (different passes) |
+| S1.13 ✅ | Pass migration: DCE + constfold (§1.8 part 1). DCE was already SSA-style. Constfold gained: unified propagation map (constants + copy aliases with transitive resolution), Phi-all-same-const fold, Refine-with-const-src fold. Dropped def_count filter under SSA. 6 new tests. | S1.9 | Medium | Parallel-safe with S1.14-S1.15 (different passes) |
 | S1.14 ⏳ | Pass migration: inlining (§1.8 part 2) | S1.13 | High | Parallel-safe with S1.15 |
 | S1.15 ⏳ | Pass migration: peephole, devirtualize, flatten_properties (§1.8 part 3) | S1.9 | Medium-High | Parallel-safe with S1.13, S1.14 |
 | S1.16 🟡 | Codegen SSA migration (§1.9): MIR Phi → Cranelift block params, delete manual phi emulation. Phi/block-params wiring landed in S1.5 (codegen emits `append_block_param` + `BlockArg::Value`); deletion of the legacy manual-phi-emulation path in codegen is pending. | S1.6, S1.15 | Medium-High | — |
@@ -2755,6 +2781,6 @@ the spec reflecting reality.
 S1.1 / S1.2 / S1.4 / S1.5 / S1.6 / S1.7 / S1.9 / S1.10 / S1.11 ✅;
 S1.8 🟡 (core + rule set, single-match collapse queued as §1.4u);
 S1.16 🟡 (Phi wiring ✅, manual-phi cleanup ⏳); S1.3 ⏳ (folded into
-S1.17b); S1.12 ✅; S1.13 / S1.14 / S1.15 / S1.17 / S1.17b / §1.4u-a-d ⏳.
+S1.17b); S1.12 ✅; S1.13 ✅; S1.14 / S1.15 / S1.17 / S1.17b / §1.4u-a-d ⏳.
 See the Phase-1 status dashboard at the top of §1 and the status
 blocks inside each §1.x milestone for details.*

@@ -174,6 +174,42 @@ fn try_fold_instruction(kind: &mut InstructionKind, interner: &mut StringInterne
             }
             false
         }
+        InstructionKind::Phi { dest, sources } => {
+            // If every incoming source is the same Constant, the phi is
+            // degenerate — replace with a `Const`. Enabled by SSA + const
+            // propagation: propagate may rewrite Local sources to
+            // Constants, after which a diamond CFG producing the same
+            // literal on both arms folds to a single Const.
+            if sources.is_empty() {
+                return false;
+            }
+            let Operand::Constant(first) = &sources[0].1 else {
+                return false;
+            };
+            let first = first.clone();
+            let all_same = sources
+                .iter()
+                .all(|(_, op)| matches!(op, Operand::Constant(c) if *c == first));
+            if !all_same {
+                return false;
+            }
+            let dest = *dest;
+            *kind = InstructionKind::Const { dest, value: first };
+            true
+        }
+        InstructionKind::Refine { dest, src, .. } => {
+            // A Refine carries a type annotation but no value computation —
+            // if propagation has narrowed `src` to a constant, the Refine
+            // collapses to a Const of that literal (the declared type is
+            // implied by the literal).
+            if let Operand::Constant(c) = src {
+                let dest = *dest;
+                let value = c.clone();
+                *kind = InstructionKind::Const { dest, value };
+                return true;
+            }
+            false
+        }
         _ => false,
     }
 }

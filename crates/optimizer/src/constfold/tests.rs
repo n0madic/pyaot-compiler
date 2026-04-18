@@ -417,3 +417,226 @@ fn test_constant_branch_simplification() {
         other => panic!("Expected Goto(block1), got {:?}", other),
     }
 }
+
+// =============================================================================
+// S1.13 — SSA-aware additions: copy propagation + Phi/Refine folding
+// =============================================================================
+
+/// Copy propagation: `_1 = _0` then uses of `_1` should be rewritten to
+/// `_0`. Under SSA, every local has one def so transitive resolution is
+/// safe.
+#[test]
+fn test_copy_alias_propagation() {
+    // _0 = 7
+    // _1 = _0             (Copy)
+    // _2 = _1 + 1         → after propagation _2 = _0 + 1, then folds to 8
+    let locals = vec![
+        make_local(0, Type::Int),
+        make_local(1, Type::Int),
+        make_local(2, Type::Int),
+    ];
+    let instructions = vec![
+        InstructionKind::Const {
+            dest: LocalId::from(0u32),
+            value: Constant::Int(7),
+        },
+        InstructionKind::Copy {
+            dest: LocalId::from(1u32),
+            src: Operand::Local(LocalId::from(0u32)),
+        },
+        InstructionKind::BinOp {
+            dest: LocalId::from(2u32),
+            op: BinOp::Add,
+            left: Operand::Local(LocalId::from(1u32)),
+            right: Operand::Constant(Constant::Int(1)),
+        },
+    ];
+
+    let mut module = make_module(make_func(locals, instructions));
+    let mut interner = StringInterner::new();
+    super::fold_constants(&mut module, &mut interner);
+
+    let insts = get_instructions(&module);
+    // _2 should have folded to Const(Int(8)).
+    let last = &insts.last().unwrap().kind;
+    match last {
+        InstructionKind::Const {
+            value: Constant::Int(8),
+            ..
+        } => {}
+        other => panic!("Expected Const(Int(8)), got {:?}", other),
+    }
+}
+
+/// Transitive copy chain: `_3 = _2 = _1 = _0`. Every use of `_3` should
+/// resolve to `_0`.
+#[test]
+fn test_copy_chain_propagation() {
+    let locals = vec![
+        make_local(0, Type::Int),
+        make_local(1, Type::Int),
+        make_local(2, Type::Int),
+        make_local(3, Type::Int),
+        make_local(4, Type::Int),
+    ];
+    let instructions = vec![
+        InstructionKind::Const {
+            dest: LocalId::from(0u32),
+            value: Constant::Int(42),
+        },
+        InstructionKind::Copy {
+            dest: LocalId::from(1u32),
+            src: Operand::Local(LocalId::from(0u32)),
+        },
+        InstructionKind::Copy {
+            dest: LocalId::from(2u32),
+            src: Operand::Local(LocalId::from(1u32)),
+        },
+        InstructionKind::Copy {
+            dest: LocalId::from(3u32),
+            src: Operand::Local(LocalId::from(2u32)),
+        },
+        InstructionKind::BinOp {
+            dest: LocalId::from(4u32),
+            op: BinOp::Sub,
+            left: Operand::Local(LocalId::from(3u32)),
+            right: Operand::Constant(Constant::Int(2)),
+        },
+    ];
+
+    let mut module = make_module(make_func(locals, instructions));
+    let mut interner = StringInterner::new();
+    super::fold_constants(&mut module, &mut interner);
+
+    let insts = get_instructions(&module);
+    let last = &insts.last().unwrap().kind;
+    match last {
+        InstructionKind::Const {
+            value: Constant::Int(40),
+            ..
+        } => {}
+        other => panic!("Expected Const(Int(40)), got {:?}", other),
+    }
+}
+
+/// Phi whose every source is the same constant folds to Const.
+#[test]
+fn test_phi_all_same_const_folds_to_const() {
+    // Synthetic in-block phi for testing (placement invariants are a
+    // codegen concern; try_fold_instruction is shape-agnostic).
+    let locals = vec![make_local(0, Type::Int)];
+    let instructions = vec![InstructionKind::Phi {
+        dest: LocalId::from(0u32),
+        sources: vec![
+            (BlockId::from(10u32), Operand::Constant(Constant::Int(5))),
+            (BlockId::from(11u32), Operand::Constant(Constant::Int(5))),
+            (BlockId::from(12u32), Operand::Constant(Constant::Int(5))),
+        ],
+    }];
+
+    let mut module = make_module(make_func(locals, instructions));
+    let mut interner = StringInterner::new();
+    super::fold_constants(&mut module, &mut interner);
+
+    let insts = get_instructions(&module);
+    assert_eq!(insts.len(), 1);
+    match &insts[0].kind {
+        InstructionKind::Const {
+            value: Constant::Int(5),
+            ..
+        } => {}
+        other => panic!("Expected Const(Int(5)), got {:?}", other),
+    }
+}
+
+/// Phi with differing constant sources stays as Phi.
+#[test]
+fn test_phi_distinct_consts_stays_as_phi() {
+    let locals = vec![make_local(0, Type::Int)];
+    let instructions = vec![InstructionKind::Phi {
+        dest: LocalId::from(0u32),
+        sources: vec![
+            (BlockId::from(10u32), Operand::Constant(Constant::Int(5))),
+            (BlockId::from(11u32), Operand::Constant(Constant::Int(7))),
+        ],
+    }];
+
+    let mut module = make_module(make_func(locals, instructions));
+    let mut interner = StringInterner::new();
+    super::fold_constants(&mut module, &mut interner);
+
+    let insts = get_instructions(&module);
+    assert!(
+        matches!(insts[0].kind, InstructionKind::Phi { .. }),
+        "expected unchanged Phi, got {:?}",
+        insts[0].kind
+    );
+}
+
+/// Refine carrying a Constant src collapses to Const (the declared type
+/// is implied by the literal itself).
+#[test]
+fn test_refine_with_constant_src_folds_to_const() {
+    let locals = vec![make_local(0, Type::Int)];
+    let instructions = vec![InstructionKind::Refine {
+        dest: LocalId::from(0u32),
+        src: Operand::Constant(Constant::Int(13)),
+        ty: Type::Int,
+    }];
+
+    let mut module = make_module(make_func(locals, instructions));
+    let mut interner = StringInterner::new();
+    super::fold_constants(&mut module, &mut interner);
+
+    let insts = get_instructions(&module);
+    match &insts[0].kind {
+        InstructionKind::Const {
+            value: Constant::Int(13),
+            ..
+        } => {}
+        other => panic!("Expected Const(Int(13)), got {:?}", other),
+    }
+}
+
+/// Phi whose locals all resolve (via propagation) to the same constant
+/// folds across propagation + fold iterations.
+#[test]
+fn test_phi_through_propagation_folds() {
+    // _0 = 9, _1 = 9, phi(_0, _1) → phi(Const 9, Const 9) → Const 9.
+    let locals = vec![
+        make_local(0, Type::Int),
+        make_local(1, Type::Int),
+        make_local(2, Type::Int),
+    ];
+    let instructions = vec![
+        InstructionKind::Const {
+            dest: LocalId::from(0u32),
+            value: Constant::Int(9),
+        },
+        InstructionKind::Const {
+            dest: LocalId::from(1u32),
+            value: Constant::Int(9),
+        },
+        InstructionKind::Phi {
+            dest: LocalId::from(2u32),
+            sources: vec![
+                (BlockId::from(10u32), Operand::Local(LocalId::from(0u32))),
+                (BlockId::from(11u32), Operand::Local(LocalId::from(1u32))),
+            ],
+        },
+    ];
+
+    let mut module = make_module(make_func(locals, instructions));
+    let mut interner = StringInterner::new();
+    super::fold_constants(&mut module, &mut interner);
+
+    let insts = get_instructions(&module);
+    let last = &insts.last().unwrap().kind;
+    match last {
+        InstructionKind::Const {
+            value: Constant::Int(9),
+            ..
+        } => {}
+        other => panic!("Expected Const(Int(9)), got {:?}", other),
+    }
+}

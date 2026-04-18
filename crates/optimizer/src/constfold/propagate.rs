@@ -1,106 +1,173 @@
-//! Constant propagation
+//! Constant and copy propagation.
 //!
-//! Replaces uses of single-definition constant locals with their constant values.
-//! Also simplifies constant branches to unconditional jumps.
+//! Replaces uses of locals that are aliases for a constant or for another
+//! local. Under SSA (§1.3 / S1.6) every local has exactly one definition,
+//! so the single-def restriction is implicit — no `def_count` tracking is
+//! needed. Also simplifies `Branch` on a constant condition to `Goto`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use pyaot_mir::{Constant, Function, InstructionKind, Operand, Terminator};
 use pyaot_utils::LocalId;
 
-/// Build a map of locals that are defined exactly once via a `Const` instruction.
-fn build_constant_map(func: &Function) -> HashMap<LocalId, Constant> {
-    // Count definitions per local
-    let mut def_count: HashMap<LocalId, usize> = HashMap::new();
-    let mut const_defs: HashMap<LocalId, Constant> = HashMap::new();
+/// What a local aliases, if anything. Used by `build_propagation_map`.
+///
+/// * `Const` — local was defined by `Const` (or by `Copy` of a constant);
+///   substitute its literal value.
+/// * `Alias` — local was defined by `Copy { src: Local(s) }`; every use
+///   can be replaced with `s` (possibly itself an alias; resolved
+///   transitively in `resolve_operand`).
+#[derive(Debug, Clone)]
+enum PropValue {
+    Const(Constant),
+    Alias(LocalId),
+}
 
+/// Build the propagation map:
+/// * `Const { dest, value }` → `dest ↦ Const(value)`
+/// * `Copy { dest, src: Local(s) }` → `dest ↦ Alias(s)`
+/// * `Copy { dest, src: Constant(c) }` → `dest ↦ Const(c)`
+///
+/// Under SSA every dest appears at most once, so last-writer-wins
+/// semantics here are safe.
+fn build_propagation_map(func: &Function) -> HashMap<LocalId, PropValue> {
+    let mut props: HashMap<LocalId, PropValue> = HashMap::new();
     for block in func.blocks.values() {
         for inst in &block.instructions {
-            if let Some(dest) = crate::dce::instruction_dest(&inst.kind) {
-                *def_count.entry(dest).or_insert(0) += 1;
-                if let InstructionKind::Const { value, .. } = &inst.kind {
-                    const_defs.insert(dest, value.clone());
+            match &inst.kind {
+                InstructionKind::Const { dest, value } => {
+                    props.insert(*dest, PropValue::Const(value.clone()));
                 }
+                InstructionKind::Copy {
+                    dest,
+                    src: Operand::Constant(c),
+                } => {
+                    props.insert(*dest, PropValue::Const(c.clone()));
+                }
+                InstructionKind::Copy {
+                    dest,
+                    src: Operand::Local(s),
+                } => {
+                    // Self-copies shouldn't occur but guard anyway.
+                    if dest != s {
+                        props.insert(*dest, PropValue::Alias(*s));
+                    }
+                }
+                _ => {}
             }
         }
     }
-
-    // Keep only locals with exactly one definition that is a Const
-    const_defs.retain(|id, _| def_count.get(id) == Some(&1));
-    const_defs
+    props
 }
 
-/// Substitute known constants into an operand. Returns true if changed.
-fn substitute_operand(op: &mut Operand, constants: &HashMap<LocalId, Constant>) -> bool {
-    if let Operand::Local(id) = op {
-        if let Some(c) = constants.get(id) {
-            *op = Operand::Constant(c.clone());
-            return true;
+/// Resolve an operand through the propagation map.
+/// * Returns `Some(Operand::Constant(_))` if the local chain ends at a
+///   constant.
+/// * Returns `Some(Operand::Local(_))` if the local chain ends at a
+///   non-aliased local that differs from the input.
+/// * Returns `None` if the operand is unchanged (constant, or local with
+///   no alias entry).
+///
+/// Cycle guard via a visited set. Cycles shouldn't occur in well-formed
+/// SSA (every Copy's src dominates its dest), but cheap to defend.
+fn resolve_operand(op: &Operand, props: &HashMap<LocalId, PropValue>) -> Option<Operand> {
+    let Operand::Local(mut id) = *op else {
+        return None;
+    };
+    let mut visited: HashSet<LocalId> = HashSet::new();
+    loop {
+        if !visited.insert(id) {
+            return None;
+        }
+        match props.get(&id) {
+            Some(PropValue::Const(c)) => return Some(Operand::Constant(c.clone())),
+            Some(PropValue::Alias(s)) => {
+                id = *s;
+            }
+            None => {
+                return if let Operand::Local(orig) = *op {
+                    if id == orig {
+                        None
+                    } else {
+                        Some(Operand::Local(id))
+                    }
+                } else {
+                    None
+                };
+            }
         }
     }
-    false
 }
 
-/// Run constant propagation on a function. Returns true if any changes were made.
+/// Substitute propagated values into an operand. Returns true if changed.
+fn substitute_operand(op: &mut Operand, props: &HashMap<LocalId, PropValue>) -> bool {
+    if let Some(new_op) = resolve_operand(op, props) {
+        *op = new_op;
+        true
+    } else {
+        false
+    }
+}
+
+/// Run constant + copy propagation on a function. Returns true if any
+/// changes were made.
 pub fn propagate_constants(func: &mut Function) -> bool {
-    let constants = build_constant_map(func);
-    if constants.is_empty() {
+    let props = build_propagation_map(func);
+    if props.is_empty() {
         return false;
     }
 
     let mut changed = false;
 
     for block in func.blocks.values_mut() {
-        // Propagate into instruction operands
         for inst in &mut block.instructions {
-            changed |= substitute_instruction_operands(&mut inst.kind, &constants);
+            changed |= substitute_instruction_operands(&mut inst.kind, &props);
         }
-
-        // Propagate into terminator operands and simplify constant branches
-        changed |= substitute_terminator(&mut block.terminator, &constants);
+        changed |= substitute_terminator(&mut block.terminator, &props);
     }
 
     changed
 }
 
-/// Substitute constants into instruction operands. Returns true if changed.
+/// Substitute propagated values into instruction operands. Returns true
+/// if changed.
 fn substitute_instruction_operands(
     kind: &mut InstructionKind,
-    constants: &HashMap<LocalId, Constant>,
+    props: &HashMap<LocalId, PropValue>,
 ) -> bool {
     let mut changed = false;
     match kind {
         InstructionKind::BinOp { left, right, .. } => {
-            changed |= substitute_operand(left, constants);
-            changed |= substitute_operand(right, constants);
+            changed |= substitute_operand(left, props);
+            changed |= substitute_operand(right, props);
         }
         InstructionKind::UnOp { operand, .. } => {
-            changed |= substitute_operand(operand, constants);
+            changed |= substitute_operand(operand, props);
         }
         InstructionKind::Copy { src, .. } => {
-            changed |= substitute_operand(src, constants);
+            changed |= substitute_operand(src, props);
         }
         InstructionKind::Call { func, args, .. } => {
-            changed |= substitute_operand(func, constants);
+            changed |= substitute_operand(func, props);
             for arg in args {
-                changed |= substitute_operand(arg, constants);
+                changed |= substitute_operand(arg, props);
             }
         }
         InstructionKind::CallDirect { args, .. } | InstructionKind::CallNamed { args, .. } => {
             for arg in args {
-                changed |= substitute_operand(arg, constants);
+                changed |= substitute_operand(arg, props);
             }
         }
         InstructionKind::CallVirtual { obj, args, .. }
         | InstructionKind::CallVirtualNamed { obj, args, .. } => {
-            changed |= substitute_operand(obj, constants);
+            changed |= substitute_operand(obj, props);
             for arg in args {
-                changed |= substitute_operand(arg, constants);
+                changed |= substitute_operand(arg, props);
             }
         }
         InstructionKind::RuntimeCall { args, .. } => {
             for arg in args {
-                changed |= substitute_operand(arg, constants);
+                changed |= substitute_operand(arg, props);
             }
         }
         InstructionKind::FloatToInt { src, .. }
@@ -109,7 +176,7 @@ fn substitute_instruction_operands(
         | InstructionKind::FloatBits { src, .. }
         | InstructionKind::IntBitsToFloat { src, .. }
         | InstructionKind::FloatAbs { src, .. } => {
-            changed |= substitute_operand(src, constants);
+            changed |= substitute_operand(src, props);
         }
 
         // No operands to substitute
@@ -131,30 +198,31 @@ fn substitute_instruction_operands(
         | InstructionKind::ExcEndHandling => {}
         InstructionKind::Phi { sources, .. } => {
             for (_, op) in sources.iter_mut() {
-                changed |= substitute_operand(op, constants);
+                changed |= substitute_operand(op, props);
             }
         }
         InstructionKind::Refine { src, .. } => {
-            changed |= substitute_operand(src, constants);
+            changed |= substitute_operand(src, props);
         }
     }
     changed
 }
 
-/// Substitute constants into terminator operands and simplify constant branches.
-fn substitute_terminator(term: &mut Terminator, constants: &HashMap<LocalId, Constant>) -> bool {
+/// Substitute propagated values into terminator operands and simplify
+/// constant branches.
+fn substitute_terminator(term: &mut Terminator, props: &HashMap<LocalId, PropValue>) -> bool {
     let mut changed = false;
 
     match term {
         Terminator::Return(Some(op)) => {
-            changed |= substitute_operand(op, constants);
+            changed |= substitute_operand(op, props);
         }
         Terminator::Branch {
             cond,
             then_block,
             else_block,
         } => {
-            changed |= substitute_operand(cond, constants);
+            changed |= substitute_operand(cond, props);
 
             // Simplify constant branches to unconditional jumps
             if let Operand::Constant(c) = cond {
@@ -172,11 +240,11 @@ fn substitute_terminator(term: &mut Terminator, constants: &HashMap<LocalId, Con
         }
         Terminator::Raise { message, cause, .. } => {
             if let Some(op) = message {
-                changed |= substitute_operand(op, constants);
+                changed |= substitute_operand(op, props);
             }
             if let Some(c) = cause {
                 if let Some(op) = &mut c.message {
-                    changed |= substitute_operand(op, constants);
+                    changed |= substitute_operand(op, props);
                 }
             }
         }
@@ -184,14 +252,14 @@ fn substitute_terminator(term: &mut Terminator, constants: &HashMap<LocalId, Con
             message, instance, ..
         } => {
             if let Some(op) = message {
-                changed |= substitute_operand(op, constants);
+                changed |= substitute_operand(op, props);
             }
             if let Some(op) = instance {
-                changed |= substitute_operand(op, constants);
+                changed |= substitute_operand(op, props);
             }
         }
         Terminator::RaiseInstance { instance } => {
-            changed |= substitute_operand(instance, constants);
+            changed |= substitute_operand(instance, props);
         }
         Terminator::Return(None)
         | Terminator::Goto(_)
