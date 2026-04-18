@@ -493,6 +493,44 @@ impl<'a> Lowering<'a> {
         None
     }
 
+    /// Resolve the return type of a `GeneratorIntrinsic` expression.
+    ///
+    /// `expr_ty` — the HIR-annotated type on the expression node (`expr.ty`),
+    ///   used as a fallback for `GetLocal` and `IterNextNoExc`.
+    /// `iter_ty` — the already-resolved type of the iterator operand for
+    ///   `IterNextNoExc`; callers resolve it via their own sub-expression
+    ///   strategy before calling this helper (memoized vs. direct recursion).
+    ///
+    /// Both `compute_expr_type` and `infer_expr_type_inner` delegate here
+    /// after resolving `iter_ty` with their respective strategies.
+    fn resolve_generator_intrinsic_type(
+        &self,
+        intrinsic: &hir::GeneratorIntrinsic,
+        expr_ty: Option<&Type>,
+        iter_ty: Type,
+    ) -> Type {
+        match intrinsic {
+            hir::GeneratorIntrinsic::Create { .. } => Type::Iterator(Box::new(Type::Any)),
+            hir::GeneratorIntrinsic::IsExhausted(_)
+            | hir::GeneratorIntrinsic::IterIsExhausted(_) => Type::Bool,
+            // GetLocal: slot storage is type-erased (i64); desugaring annotates
+            // `expr.ty` with the logical Python type stored in the slot.
+            hir::GeneratorIntrinsic::GetLocal { .. } => expr_ty.cloned().unwrap_or(Type::Int),
+            // IterNextNoExc: element type flows from the iterator being advanced.
+            // Prefer the real iterator's element type (via `get_iterable_info`)
+            // so tuple iterators like `zip(a, b)` propagate `Tuple<..>` downstream
+            // even when desugaring couldn't compute it from the raw AST.
+            hir::GeneratorIntrinsic::IterNextNoExc(_) => {
+                if let Some((_k, elem)) = crate::utils::get_iterable_info(&iter_ty) {
+                    elem
+                } else {
+                    expr_ty.cloned().unwrap_or(Type::Int)
+                }
+            }
+            _ => Type::Int,
+        }
+    }
+
     /// Resolve index type with __getitem__ fallback for classes.
     fn resolve_index_with_getitem(&self, obj_ty: &Type, index_expr: &hir::Expr) -> Option<Type> {
         let base = helpers::resolve_index_type(obj_ty, index_expr);
@@ -659,29 +697,16 @@ impl<'a> Lowering<'a> {
                 self.module_export_type(module, &attr_name)
             }
             hir::ExprKind::ImportedRef { module, name } => self.module_export_type(module, name),
-            // Generator intrinsics have known return types
-            hir::ExprKind::GeneratorIntrinsic(intrinsic) => match intrinsic {
-                hir::GeneratorIntrinsic::Create { .. } => Type::Iterator(Box::new(Type::Any)),
-                hir::GeneratorIntrinsic::IsExhausted(_)
-                | hir::GeneratorIntrinsic::IterIsExhausted(_) => Type::Bool,
-                // GetLocal: slot storage is type-erased (i64); desugaring annotates
-                // `expr.ty` with the logical Python type stored in the slot.
-                hir::GeneratorIntrinsic::GetLocal { .. } => expr.ty.clone().unwrap_or(Type::Int),
-                // IterNextNoExc: element type flows from the iterator being
-                // advanced. Prefer the real iterator's element type (via
-                // `get_iterable_info`) so tuple iterators like `zip(a, b)`
-                // propagate `Tuple<..>` downstream even when desugaring
-                // couldn't compute it from the raw AST.
-                hir::GeneratorIntrinsic::IterNextNoExc(iter_id) => {
-                    let iter_ty = self.get_type_of_expr_id(*iter_id, hir_module);
-                    if let Some((_k, elem)) = crate::utils::get_iterable_info(&iter_ty) {
-                        elem
-                    } else {
-                        expr.ty.clone().unwrap_or(Type::Int)
-                    }
-                }
-                _ => Type::Int,
-            },
+            // Generator intrinsics — delegate to shared helper; resolve
+            // iter_ty here via the memoized get_type_of_expr_id path.
+            hir::ExprKind::GeneratorIntrinsic(intrinsic) => {
+                let iter_ty = if let hir::GeneratorIntrinsic::IterNextNoExc(iter_id) = intrinsic {
+                    self.get_type_of_expr_id(*iter_id, hir_module)
+                } else {
+                    Type::Any
+                };
+                self.resolve_generator_intrinsic_type(intrinsic, expr.ty.as_ref(), iter_ty)
+            }
             _ => expr.ty.clone().unwrap_or(Type::Any),
         }
     }
@@ -895,27 +920,16 @@ impl<'a> Lowering<'a> {
                 module: mod_name,
                 name,
             } => self.module_export_type(mod_name, name),
-            // Generator intrinsics have known return types
-            hir::ExprKind::GeneratorIntrinsic(intrinsic) => match intrinsic {
-                hir::GeneratorIntrinsic::Create { .. } => Type::Iterator(Box::new(Type::Any)),
-                hir::GeneratorIntrinsic::IsExhausted(_)
-                | hir::GeneratorIntrinsic::IterIsExhausted(_) => Type::Bool,
-                // GetLocal: slot storage is type-erased (i64); desugaring annotates
-                // `expr.ty` with the logical Python type stored in the slot.
-                hir::GeneratorIntrinsic::GetLocal { .. } => expr.ty.clone().unwrap_or(Type::Int),
-                // IterNextNoExc: element type flows from the iterator. See the
-                // `compute_expr_type` arm for rationale.
-                hir::GeneratorIntrinsic::IterNextNoExc(iter_id) => {
-                    let iter_ty =
-                        self.infer_expr_type_inner(&module.exprs[*iter_id], module, param_types);
-                    if let Some((_k, elem)) = crate::utils::get_iterable_info(&iter_ty) {
-                        elem
-                    } else {
-                        expr.ty.clone().unwrap_or(Type::Int)
-                    }
-                }
-                _ => Type::Int,
-            },
+            // Generator intrinsics — delegate to shared helper; resolve
+            // iter_ty here via the direct (non-memoized) recursion path.
+            hir::ExprKind::GeneratorIntrinsic(intrinsic) => {
+                let iter_ty = if let hir::GeneratorIntrinsic::IterNextNoExc(iter_id) = intrinsic {
+                    self.infer_expr_type_inner(&module.exprs[*iter_id], module, param_types)
+                } else {
+                    Type::Any
+                };
+                self.resolve_generator_intrinsic_type(intrinsic, expr.ty.as_ref(), iter_ty)
+            }
             _ => expr.ty.clone().unwrap_or(Type::Any),
         }
     }
