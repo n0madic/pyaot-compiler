@@ -7,8 +7,9 @@ use pyaot_mir::{
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, FuncId, LocalId};
 
-use super::analysis::{CallGraph, FunctionCost, InlineDecision};
+use super::analysis::{FunctionCost, InlineDecision};
 use super::{inline_functions, InlineConfig};
+use crate::call_graph::CallGraph;
 
 /// Create a simple add function: def add(a, b): return a + b
 fn create_add_function(func_id: FuncId) -> Function {
@@ -127,9 +128,13 @@ fn test_call_graph_build() {
     let call_graph = CallGraph::build(&module);
 
     // caller calls add
-    assert!(call_graph.callees[&caller_id].contains(&add_id));
+    assert!(call_graph.callees[&caller_id]
+        .iter()
+        .any(|s| s.callee == add_id));
     // add is called by caller
-    assert!(call_graph.callers[&add_id].contains(&caller_id));
+    assert!(call_graph.callers[&add_id]
+        .iter()
+        .any(|s| s.caller == caller_id));
     // add doesn't call anything
     assert!(call_graph.callees[&add_id].is_empty());
 }

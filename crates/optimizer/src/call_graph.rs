@@ -182,6 +182,53 @@ impl CallGraph {
     pub fn scc_of(&self, func: FuncId) -> Option<usize> {
         self.sccs.iter().position(|s| s.contains(&func))
     }
+
+    /// Whether `func` participates in a cycle of the (direct) call graph
+    /// — either via direct self-recursion (`f` calls `f`) or indirect
+    /// recursion (`f ∈ SCC of size ≥ 2`). Indirect / virtual edges are
+    /// **not** considered: the canonical over-approximation would mark
+    /// too many functions as recursive for inliner heuristics.
+    ///
+    /// Returns `false` for singleton SCCs without self-loops — the common
+    /// case for leaf helpers that are prime inlining candidates.
+    pub fn is_recursive(&self, func: FuncId) -> bool {
+        // Indirect / virtual edges inflate SCCs spuriously; check only the
+        // direct subgraph.
+        if let Some(callees) = self.callees.get(&func) {
+            if callees
+                .iter()
+                .any(|s| s.callee == func && s.kind == CallKind::Direct)
+            {
+                return true;
+            }
+        }
+        match self.scc_of(func) {
+            Some(idx) => {
+                let scc = &self.sccs[idx];
+                // Non-trivial SCC if ≥ 2 direct-edge members.
+                if scc.len() < 2 {
+                    return false;
+                }
+                // Confirm the SCC edges are direct — Tarjan merged on
+                // every edge kind. Check that at least one direct edge
+                // connects two members.
+                for &a in scc {
+                    if let Some(callees) = self.callees.get(&a) {
+                        for site in callees {
+                            if site.kind == CallKind::Direct
+                                && site.callee != a
+                                && scc.contains(&site.callee)
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                false
+            }
+            None => false,
+        }
+    }
 }
 
 fn collect_address_taken(module: &Module) -> IndexSet<FuncId> {

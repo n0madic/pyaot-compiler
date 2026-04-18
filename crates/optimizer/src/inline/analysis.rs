@@ -1,66 +1,14 @@
-//! Call graph analysis and function cost computation for inlining decisions
+//! Function cost computation for inlining decisions.
+//!
+//! The call graph itself is the canonical `crate::call_graph::CallGraph`
+//! — inlining doesn't keep its own copy. `FunctionCost::compute` takes
+//! the graph as an arg and queries `is_recursive` / direct-callee
+//! iteration through it.
 
-use indexmap::{IndexMap, IndexSet};
-use pyaot_mir::{Function, InstructionKind, Module, Terminator};
-use pyaot_utils::FuncId;
+use pyaot_mir::{Function, InstructionKind, Terminator};
 
 use super::InlineConfig;
-
-/// Call graph tracking caller/callee relationships
-#[derive(Debug, Default)]
-pub struct CallGraph {
-    /// Map from function to set of functions it calls
-    pub callees: IndexMap<FuncId, IndexSet<FuncId>>,
-    /// Map from function to set of functions that call it
-    pub callers: IndexMap<FuncId, IndexSet<FuncId>>,
-}
-
-impl CallGraph {
-    /// Build call graph from MIR module
-    pub fn build(module: &Module) -> Self {
-        let mut graph = CallGraph::default();
-
-        for (func_id, func) in &module.functions {
-            let callees = graph.callees.entry(*func_id).or_default();
-
-            for block in func.blocks.values() {
-                for instr in &block.instructions {
-                    if let InstructionKind::CallDirect { func: callee, .. } = &instr.kind {
-                        callees.insert(*callee);
-                        graph.callers.entry(*callee).or_default().insert(*func_id);
-                    }
-                }
-            }
-        }
-
-        graph
-    }
-
-    /// Check if a function is recursive (directly or indirectly)
-    pub fn is_recursive(&self, func_id: FuncId) -> bool {
-        let mut visited = IndexSet::new();
-        let mut stack = vec![func_id];
-
-        while let Some(current) = stack.pop() {
-            if !visited.insert(current) {
-                continue;
-            }
-
-            if let Some(callees) = self.callees.get(&current) {
-                for &callee in callees {
-                    if callee == func_id {
-                        return true;
-                    }
-                    if !visited.contains(&callee) {
-                        stack.push(callee);
-                    }
-                }
-            }
-        }
-
-        false
-    }
-}
+use crate::call_graph::CallGraph;
 
 /// Cost metrics for a function to determine inlining eligibility
 #[derive(Debug, Clone)]

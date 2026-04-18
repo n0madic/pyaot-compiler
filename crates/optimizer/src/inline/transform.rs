@@ -9,9 +9,10 @@ use indexmap::IndexMap;
 use pyaot_mir::{BasicBlock, Function, Instruction, InstructionKind, Local, Module, Terminator};
 use pyaot_utils::{BlockId, FuncId};
 
-use super::analysis::{CallGraph, FunctionCost, InlineDecision};
+use super::analysis::{FunctionCost, InlineDecision};
 use super::remap::InlineRemapper;
 use super::InlineConfig;
+use crate::call_graph::CallGraph;
 
 /// Perform inlining pass on the module. Returns `true` if any inlining was performed.
 pub fn inline_pass(module: &mut Module, config: &InlineConfig) -> bool {
