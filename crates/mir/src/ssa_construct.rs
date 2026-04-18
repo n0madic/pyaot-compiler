@@ -36,7 +36,12 @@ use crate::{
 /// handled elsewhere (e.g. exception-raising dispatches as a terminator).
 /// Callers use this to decide whether an `InstructionKind::RuntimeCall`
 /// should be treated as defining its `dest` for SSA renaming purposes.
-fn runtime_call_is_void(func: &RuntimeFunc) -> bool {
+///
+/// Visibility note: `pub(crate)` so `ssa_check` shares the exact same
+/// predicate. A mismatch here would cause the checker to flag valid
+/// MIR as invalid (e.g. void `rt_*_set` / `rt_string_builder_append`
+/// that reuse a LocalId as a side-effectful placeholder).
+pub(crate) fn runtime_call_is_void(func: &RuntimeFunc) -> bool {
     match func {
         // Descriptor-based: returns field is authoritative.
         RuntimeFunc::Call(def) => def.returns.is_none(),

@@ -389,16 +389,28 @@ calls and removes the `#[ignore]` attributes.
 
 **Remaining before formal Phase 1 close**:
 
-- **S1.6c** (new) — SSA-construction debug. Attempted checker
-  activation in the CLI pipeline (debug-only gate) on 2026-04-18
-  flagged real violations: `greet_all` in `test_functions.py` ends
-  up with `LocalId(9)` defined twice in the same block after
-  `construct_ssa`. Possible causes: (a) a renaming bug in the Cytron
-  pass when a Phi dest coincides with a later instruction dest in
-  the same block, (b) pre-SSA multi-def surviving the rename.
-  Needs a focused debugging session to reproduce, narrow, and fix;
-  then activate the checker behind `debug_assertions` in
-  `crates/cli/src/lib.rs` after `construct_ssa`.
+- **S1.6c** (2026-04-18) — partial fix. Root cause of the
+  `greet_all` false-positive was drift between `ssa_check` and
+  `ssa_construct`: the checker's `instruction_def` treated every
+  `RuntimeCall` as defining `dest`, but `ssa_construct` correctly
+  uses `runtime_call_is_void` to exclude void calls (e.g.
+  `rt_string_builder_append`). Fix: export `runtime_call_is_void`
+  as `pub(crate)` and have both modules use it. Activating the
+  checker in the CLI pipeline afterwards revealed **additional real
+  violations** (`UseNotDominated` / `UseWithoutDef` patterns,
+  mostly in `__pyaot_module_init__` paths) that are compiler bugs
+  requiring a dedicated pipeline-debugging session (tracked as
+  **S1.6d**). Until S1.6d, the checker stays test-only — no
+  production gate.
+- **S1.6d** (new — added 2026-04-18) — investigate and fix the
+  `UseNotDominated` / `UseWithoutDef` SSA violations surfaced after
+  S1.6c cleared the drift false-positive. Repro: compile
+  `examples/test_control_flow.py` with the checker enabled; see
+  violations in `__pyaot_module_init__`. Likely suspects: inliner
+  leaving multi-def intact when `construct_ssa` misses some edges,
+  or pre-SSA optimizer passes producing CFG shapes that
+  `construct_ssa` doesn't fully cover. After fix, enable the checker
+  behind `debug_assertions` in `crates/cli/src/lib.rs`.
 - **S1.14b** — SSA-preserving inliner rewrite (requires pipeline
   reorder: `construct_ssa` before `optimize`). Pair with full
   codegen `Value`-migration when done.

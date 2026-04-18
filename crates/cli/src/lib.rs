@@ -221,15 +221,19 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
     // prior `is_straight_line` gate was lifted after S1.6b's back-edge
     // phi-tracking + unreachable-block-pruning fixes landed.
     //
-    // Not yet gated by `ssa_check::check` — a 2026-04-18 activation
-    // attempt uncovered pre-existing SSA-construction bugs (e.g.
-    // `greet_all` in `test_functions.py`: `LocalId(9)` gets two defs
-    // in the same block). Activation deferred to a dedicated
-    // SSA-construction debugging session; the checker is still
-    // available via `pyaot_mir::ssa_check::check(func)` for tests.
     for func in mir_module.functions.values_mut() {
         pyaot_mir::ssa_construct::construct_ssa(func);
     }
+
+    // SSA checker not yet activated in the CLI pipeline. S1.6c fixed
+    // the `ssa_check` / `ssa_construct` drift on void RuntimeCalls,
+    // but activating the checker still surfaces genuine `UseNotDominated`
+    // and `UseWithoutDef` violations in other functions (most
+    // `__pyaot_module_init__` paths). Those are real compiler bugs that
+    // require a dedicated pipeline-debugging session (tentative S1.6d).
+    // Until then, the checker is available via
+    // `pyaot_mir::ssa_check::check(func)` for tests and for local
+    // debugging.
 
     if options.emit_mir {
         println!("MIR: {:#?}", mir_module);

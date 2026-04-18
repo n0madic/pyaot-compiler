@@ -366,6 +366,18 @@ fn terminator_uses(t: &Terminator) -> Vec<LocalId> {
 fn instruction_def(kind: &InstructionKind) -> Option<LocalId> {
     use InstructionKind::*;
     match kind {
+        // Void RuntimeCalls use `dest` as a side-effect placeholder;
+        // their codegen leaves the Cranelift slot untouched. Treating
+        // them as defs would flag legitimate multi-use of a placeholder
+        // (e.g. multiple `rt_string_builder_append` calls in a loop
+        // body) as SSA violations.
+        RuntimeCall { dest, func, .. } => {
+            if crate::ssa_construct::runtime_call_is_void(func) {
+                None
+            } else {
+                Some(*dest)
+            }
+        }
         Const { dest, .. }
         | BinOp { dest, .. }
         | UnOp { dest, .. }
@@ -376,7 +388,6 @@ fn instruction_def(kind: &InstructionKind) -> Option<LocalId> {
         | CallVirtualNamed { dest, .. }
         | FuncAddr { dest, .. }
         | BuiltinAddr { dest, .. }
-        | RuntimeCall { dest, .. }
         | Copy { dest, .. }
         | GcAlloc { dest, .. }
         | FloatToInt { dest, .. }
