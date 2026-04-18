@@ -225,15 +225,20 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
         pyaot_mir::ssa_construct::construct_ssa(func);
     }
 
-    // SSA checker not yet activated in the CLI pipeline. S1.6c fixed
-    // the `ssa_check` / `ssa_construct` drift on void RuntimeCalls,
-    // but activating the checker still surfaces genuine `UseNotDominated`
-    // and `UseWithoutDef` violations in other functions (most
-    // `__pyaot_module_init__` paths). Those are real compiler bugs that
-    // require a dedicated pipeline-debugging session (tentative S1.6d).
-    // Until then, the checker is available via
-    // `pyaot_mir::ssa_check::check(func)` for tests and for local
-    // debugging.
+    // SSA checker not activated in the CLI pipeline yet. S1.6c fixed
+    // the `ssa_check` / `ssa_construct` drift on void RuntimeCalls.
+    // S1.6d (2026-04-18) landed two further fixes in the construction
+    // pass itself:
+    //   * Emit a typed zero constant as the φ-source on edges where no
+    //     defining version of the variable reaches the predecessor
+    //     (was: self-referential `phi(phi.dest, ...)` that read garbage).
+    //   * Reclassify `GcPush.frame` / `ExcPushFrame.frame_local` as
+    //     defs, not uses — both are Cranelift-synthesized definitions.
+    // A handful of UseNotDominated violations remain (match-statement
+    // lowering, generator resume functions, a few urllib/file_io call
+    // chains). Those are CFG-level lowering bugs tracked as new
+    // deferred session S1.6e — activation of the CLI gate waits for
+    // S1.6e.
 
     if options.emit_mir {
         println!("MIR: {:#?}", mir_module);

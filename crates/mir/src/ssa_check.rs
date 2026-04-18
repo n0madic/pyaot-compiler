@@ -403,13 +403,10 @@ fn instruction_def(kind: &InstructionKind) -> Option<LocalId> {
         | ExcCheckClass { dest, .. }
         | Phi { dest, .. }
         | Refine { dest, .. } => Some(*dest),
-        GcPush { .. }
-        | GcPop
-        | ExcPushFrame { .. }
-        | ExcPopFrame
-        | ExcClear
-        | ExcStartHandling
-        | ExcEndHandling => None,
+        // Cranelift-synthesized defs — see ssa_construct::instruction_def.
+        GcPush { frame } => Some(*frame),
+        ExcPushFrame { frame_local } => Some(*frame_local),
+        GcPop | ExcPopFrame | ExcClear | ExcStartHandling | ExcEndHandling => None,
     }
 }
 
@@ -460,8 +457,9 @@ fn instruction_uses(kind: &InstructionKind) -> Vec<LocalId> {
                 push_op(a, &mut out);
             }
         }
-        GcPush { frame } => out.push(*frame),
-        ExcPushFrame { frame_local } => out.push(*frame_local),
+        // GcPush / ExcPushFrame define `frame` / `frame_local` rather
+        // than using them — see `instruction_def`. Not uses.
+        GcPush { .. } | ExcPushFrame { .. } => {}
         Phi { sources, .. } => {
             for (_, op) in sources {
                 push_op(op, &mut out);

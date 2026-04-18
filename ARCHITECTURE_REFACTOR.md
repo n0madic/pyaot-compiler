@@ -402,15 +402,37 @@ calls and removes the `#[ignore]` attributes.
   requiring a dedicated pipeline-debugging session (tracked as
   **S1.6d**). Until S1.6d, the checker stays test-only — no
   production gate.
-- **S1.6d** (new — added 2026-04-18) — investigate and fix the
-  `UseNotDominated` / `UseWithoutDef` SSA violations surfaced after
-  S1.6c cleared the drift false-positive. Repro: compile
-  `examples/test_control_flow.py` with the checker enabled; see
-  violations in `__pyaot_module_init__`. Likely suspects: inliner
-  leaving multi-def intact when `construct_ssa` misses some edges,
-  or pre-SSA optimizer passes producing CFG shapes that
-  `construct_ssa` doesn't fully cover. After fix, enable the checker
-  behind `debug_assertions` in `crates/cli/src/lib.rs`.
+- **S1.6d** (2026-04-18) — two fixes landed in `ssa_construct`:
+  1. **φ-source default for undefined edges**: when the rename stack
+     for a variable is empty at a predecessor, emit a typed zero
+     constant (`default_undef_operand`) instead of the self-
+     referential `phi(phi.dest, ...)` that the prior fallback
+     `unwrap_or(original)` produced. Fixed all violations in
+     `test_control_flow.py`, `test_classes.py`, `test_exceptions.py`,
+     most of `test_iteration.py` — the pattern was nested loops with
+     an inner iteration variable that gets a Phi at the outer
+     header.
+  2. **Reclassify `GcPush.frame` / `ExcPushFrame.frame_local` as
+     defs**, not uses. These are Cranelift-synthesized definitions
+     (`def_var(frame, addr)` inside the codegen path) but the MIR
+     treats them as an operand. SSA must know they define to avoid
+     flagging `UseWithoutDef`. Both `ssa_construct` and `ssa_check`
+     updated in lockstep.
+  Post-fix scan: violations remaining in
+  `test_match.py` (94 — match-statement lowering),
+  `test_generators.py` (4 — resume functions),
+  `test_file_io.py` (5), `test_stdlib_urllib.py` (2). All are
+  `UseNotDominated` patterns — CFG-level lowering bugs where the
+  def lives in a block that does not dominate the use under
+  construct_ssa's dominator tree. Tracked as new deferred session
+  **S1.6e**.
+- **S1.6e** (new — added 2026-04-18) — fix the remaining
+  `UseNotDominated` violations in match-statement lowering,
+  generator `$resume` functions, and a few urllib/file_io call
+  chains. Repro: `./target/release/pyaot examples/test_match.py`
+  with the CLI-side diagnostic re-enabled. After S1.6e, activate
+  the checker behind `debug_assertions` in
+  `crates/cli/src/lib.rs`.
 - **S1.14b** — SSA-preserving inliner rewrite (requires pipeline
   reorder: `construct_ssa` before `optimize`). Pair with full
   codegen `Value`-migration when done.

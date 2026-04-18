@@ -197,13 +197,17 @@ fn instruction_def(kind: &InstructionKind) -> Option<LocalId> {
         | ExcCheckClass { dest, .. }
         | Phi { dest, .. }
         | Refine { dest, .. } => Some(*dest),
-        GcPush { .. }
-        | GcPop
-        | ExcPushFrame { .. }
-        | ExcPopFrame
-        | ExcClear
-        | ExcStartHandling
-        | ExcEndHandling => None,
+        // `GcPush.frame` / `ExcPushFrame.frame_local` are Cranelift-level
+        // synthesized definitions: the codegen computes the frame address
+        // from a stack slot and stores it via `def_var(frame, addr)`.
+        // Classically no MIR instruction produces these values, yet they
+        // must be treated as defs for SSA: otherwise the checker sees
+        // `ExcPushFrame` / `GcPush` both as uses-without-defs (since no
+        // def exists) AND as uses that must be dominated by a non-existent
+        // def. Classify them as defining their respective frame local.
+        GcPush { frame } => Some(*frame),
+        ExcPushFrame { frame_local } => Some(*frame_local),
+        GcPop | ExcPopFrame | ExcClear | ExcStartHandling | ExcEndHandling => None,
     }
 }
 
@@ -441,12 +445,11 @@ fn collect_kind_uses(kind: &InstructionKind, out: &mut IndexSet<LocalId>) {
                 push(a, out);
             }
         }
-        GcPush { frame } => {
-            out.insert(*frame);
-        }
-        ExcPushFrame { frame_local } => {
-            out.insert(*frame_local);
-        }
+        // GcPush / ExcPushFrame define their frame_local (Cranelift-
+        // synthesized def_var); see classification in `instruction_def`.
+        // They must NOT appear in collect_kind_uses or the def would
+        // "depend on itself" when computing reachable locals.
+        GcPush { .. } | ExcPushFrame { .. } => {}
         Phi { sources, .. } => {
             for (_, op) in sources {
                 push(op, out);
@@ -564,13 +567,24 @@ fn rename_block(
                 debug_assert!(false, "phi_originals mapped a non-Phi slot");
                 continue;
             };
-            let cur = ctx
-                .stacks
-                .get(&original)
-                .and_then(|s| s.last())
-                .copied()
-                .unwrap_or(original);
-            sources.push((bid, Operand::Local(cur)));
+            // φ-source for the edge `bid → succ`: use the current top of
+            // the rename stack for `original`. If the stack is empty,
+            // the variable has no defining version reaching this edge —
+            // typical for variables defined inside a nested loop whose
+            // outer-header Phi receives "undefined" on the entry edge.
+            //
+            // Pre-SSA Cranelift `declare_var` zero-initialized every
+            // local on entry, so the pre-SSA semantics read zero. Emit
+            // a typed zero-default constant here to preserve those
+            // semantics AND keep the SSA invariant: the prior fallback
+            // (reuse `original` as the source) produced a self-
+            // referential `phi(phi.dest, ...)` that breaks the dominance
+            // rule and was flagged by `ssa_check` as `UseNotDominated`.
+            let cur_operand = match ctx.stacks.get(&original).and_then(|s| s.last()).copied() {
+                Some(cur) => Operand::Local(cur),
+                None => default_undef_operand(ctx, original),
+            };
+            sources.push((bid, cur_operand));
         }
     }
 
@@ -587,6 +601,33 @@ fn rename_block(
         }
     }
     let _ = func; // silence unused-warning in debug builds
+}
+
+/// Default "undefined" operand to use as a φ-source when no definition
+/// of `original` reaches the predecessor edge. Matches pre-SSA Cranelift
+/// `declare_var` zero-initialization: numeric locals get `0`, booleans
+/// get `false`, `None` gets None, heap locals get a null pointer (which
+/// Cranelift encodes as `Int(0)` at the Value level). The concrete value
+/// is never semantically consumed on a well-formed execution path — the
+/// φ dest is dead on this edge — but it must be well-typed for
+/// Cranelift's block-param verifier.
+fn default_undef_operand(ctx: &Renamer, original: LocalId) -> Operand {
+    use crate::Constant;
+    use pyaot_types::Type;
+    let ty = ctx
+        .original_locals
+        .get(&original)
+        .map(|l| &l.ty)
+        .unwrap_or(&Type::Int);
+    let c = match ty {
+        Type::Float => Constant::Float(0.0),
+        Type::Bool => Constant::Bool(false),
+        Type::None => Constant::None,
+        // Int and every heap/pointer type: Cranelift represents both
+        // as i64 at the ABI level, and zero is a valid null pointer.
+        _ => Constant::Int(0),
+    };
+    Operand::Constant(c)
 }
 
 fn alloc_fresh(
@@ -665,8 +706,8 @@ fn rename_uses(kind: &mut InstructionKind, stacks: &HashMap<LocalId, Vec<LocalId
                 subst_operand(a, stacks);
             }
         }
-        GcPush { frame } => subst_local(frame, stacks),
-        ExcPushFrame { frame_local } => subst_local(frame_local, stacks),
+        // Classified as defs, not uses — no rename needed here.
+        GcPush { .. } | ExcPushFrame { .. } => {}
         Phi { .. } => {
             // φ uses are filled in by the predecessor's `rename_block` via
             // `fill_phi_sources`, not here.
@@ -706,13 +747,13 @@ fn rewrite_def(kind: &mut InstructionKind, fresh: LocalId) {
         | Refine { dest, .. } => {
             *dest = fresh;
         }
-        GcPush { .. }
-        | GcPop
-        | ExcPushFrame { .. }
-        | ExcPopFrame
-        | ExcClear
-        | ExcStartHandling
-        | ExcEndHandling => {
+        GcPush { frame } => {
+            *frame = fresh;
+        }
+        ExcPushFrame { frame_local } => {
+            *frame_local = fresh;
+        }
+        GcPop | ExcPopFrame | ExcClear | ExcStartHandling | ExcEndHandling => {
             debug_assert!(false, "rewrite_def called on a defless instruction");
         }
     }
