@@ -327,7 +327,7 @@ calls and removes the `#[ignore]` attributes.
 | §1.9 Codegen migration | ✅ | S1.5 wiring ✅ · S1.16 ✅ (audit: no manual-phi emulation; Variable API is OK under SSA single-def) |
 | §1.10 Final cleanup | 🟡 | S1.17a ✅ (partial acceptance: tests green, microgpt triaged) · S1.17 full ⏳ (blocked on S1.17b + §1.4u) |
 | §1.11 Deferred HIR-tree deletion | ⏳ | S1.17b |
-| §1.4u Single-TypeTable unification | ⏳ | S1.4u-a/b/c/d (planned) |
+| §1.4u Single-TypeTable unification | 🟡 | step 1 ✅ (API consolidation) · step 2 ✅ (TypeEnvironment fold) · steps 3+ ⏳ |
 
 ### Phase 1 Completion Status (as of 2026-04-18, S1.17a partial acceptance)
 
@@ -513,10 +513,27 @@ calls and removes the `#[ignore]` attributes.
   delete `Function.body`, `StmtKind::{If, While, ForBind, Try,
   Match}`, and `crates/hir/src/cfg_build.rs`. Resolve the open
   `HirTerminator` iteration-gap question. 5–10 sessions of work.
-- **§1.4u-a/b/c/d** — unify HIR type inference with MIR TypeTable so
-  the four HirTypeInference maps can be deleted and lowering reads
-  from a single source. Unblocks microgpt.py ternary-rebind case
-  (item 5 above).
+- **§1.4u** — unify HIR type inference with MIR TypeTable so the
+  four HirTypeInference maps can be deleted and lowering reads from
+  a single source. Unblocks microgpt.py ternary-rebind case (item
+  5). Progress this session (2026-04-18):
+  - **step 1 ✅** (commit `828d062`): deleted `infer_expr_type`
+    no-overlay wrapper; sole caller migrated. Public HIR type-query
+    surface: 4 → 3 entry points.
+  - **intermediate ✅** (commit `ecf925b`): extracted
+    `resolve_generator_intrinsic_type` helper, collapsing the last
+    inline-duplicated non-literal arm between `compute_expr_type`
+    and `infer_expr_type_inner`.
+  - **step 2 ✅** (commit `518d5dc`): folded 1-field `TypeEnvironment`
+    into `HirTypeInference`. Added forward-compatible
+    `HirTypeInference::lookup(expr_id)` + `insert_type(...)`
+    accessors — the §1.4u-b migration target. Single HIR-type-
+    inference owner on `Lowering`.
+  - **next (not started)**: §1.4u-b migrate lowering readers through
+    `lookup()` exclusively (requires a pre-lowering eager HIR type
+    pass that populates the cache); §1.4u-c MIR TypeTable as
+    SSA-rename projection; §1.4u-d spec amendment + grep-verify +
+    microgpt-case fix.
 - **S1.17 formal close** — benchmark check + full grep-verified
   deletion; depends on all three above.
 
@@ -3023,6 +3040,6 @@ the spec reflecting reality.
 S1.1 / S1.2 / S1.4 / S1.5 / S1.6 / S1.7 / S1.9 / S1.10 / S1.11 ✅;
 S1.8 🟡 (core + rule set, single-match collapse queued as §1.4u);
 S1.16 🟡 (Phi wiring ✅, manual-phi cleanup ⏳); S1.3 ⏳ (folded into
-S1.17b); S1.12 ✅; S1.13 ✅; S1.14a ✅; S1.14b-prep ✅; S1.14b-inliner ✅; S1.15 ✅; S1.16 ✅; S1.17a ✅; S1.17 full / S1.17b / §1.4u-a-d ⏳.
+S1.17b); S1.12 ✅; S1.13 ✅; S1.14a ✅; S1.14b-prep ✅; S1.14b-inliner ✅; S1.15 ✅; S1.16 ✅; S1.17a ✅; §1.4u step 1 ✅; §1.4u step 2 ✅; S1.17 full / S1.17b / §1.4u-b-d ⏳.
 See the Phase-1 status dashboard at the top of §1 and the status
 blocks inside each §1.x milestone for details.*
