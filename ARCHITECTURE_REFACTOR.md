@@ -529,10 +529,36 @@ calls and removes the `#[ignore]` attributes.
     `HirTypeInference::lookup(expr_id)` + `insert_type(...)`
     accessors — the §1.4u-b migration target. Single HIR-type-
     inference owner on `Lowering`.
-  - **next (not started)**: §1.4u-b migrate lowering readers through
-    `lookup()` exclusively (requires a pre-lowering eager HIR type
-    pass that populates the cache); §1.4u-c MIR TypeTable as
-    SSA-rename projection; §1.4u-d spec amendment + grep-verify +
+  - **§1.4u-b attempt (2026-04-18, deferred)**: an eager HIR type
+    pre-pass that walks every non-Var expression and primes
+    `hir_types.expr_types` via `get_type_of_expr_id` broke the
+    codegen Cranelift verifier on multiple tests (return-type
+    mismatch i64 vs i8, etc.). Root cause: `symbols.var_types` is
+    **cleared at the start of each `lower_function`** and populated
+    incrementally as `Bind` statements fire during lowering. At
+    pre-pass time (end of `run_type_planning`, before ANY function
+    lowers), `var_types` is empty. Any expression whose type
+    recursively depends on a `Var` gets a wrong cached type (typically
+    `Any` where a concrete type would be computed later with proper
+    `var_types`). Reverted. The subagent classification of 98 (A)
+    safe-to-migrate + 12 special cases stands; the migration
+    requires a different cache-population strategy than a single
+    eager pass. Options to explore in a future session:
+      1. **Per-function pre-pass** — populate cache at start of
+         `lower_function` after `prescan_var_types` is loaded. Still
+         has the "var_types empty at pre-pass" issue for non-param
+         locals.
+      2. **Remove the `var_types` dependency from `compute_expr_type`**
+         so non-Var expression types are pure functions of their
+         sub-expressions' types. Top-level `Var` resolution stays
+         live; all compositions become cache-stable. Substantial
+         architectural redesign of the HIR type system.
+      3. **Accept the lazy scheme is the right answer** and close
+         §1.4u-b without a migration — the `lookup()` API sits as a
+         forward-compatible facade that Phase 2's tagged-value
+         redesign will naturally adopt.
+  - **next (not started)**: §1.4u-c MIR TypeTable as SSA-rename
+    projection; §1.4u-d spec amendment + grep-verify +
     microgpt-case fix.
 - **S1.17 formal close** — benchmark check + full grep-verified
   deletion; depends on all three above.
