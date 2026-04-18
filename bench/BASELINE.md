@@ -53,33 +53,58 @@ acceptance review.
 
 | Benchmark     | Phase 0 | Phase 1 | Phase 2 | Phase 3 | Notes |
 |---------------|---------|---------|---------|---------|-------|
-| int_arith     |  15.35  |         |         |         | `for i in range(10_000_000): total += i` |
-| float_arith   |   2.89  |         |         |         | `total += float(i) * 0.5` over 1M |
-| polymorphic   |  11.21  |         |         |         | Value class `__add__`/`__mul__`, 200k iters |
-| containers    |   8.61  |         |         |         | list append/index/mutate + dict insert/lookup/iter, N=100k |
-| strings       |   2.71  |         |         |         | intern hit-path + 2k concat |
-| generators    |  13.08  |         |         |         | gen-expr `sum`, enumerate fusion, nested comp |
-| exceptions    | 115.95  |         |         |         | 500k try/except non-raising + 500k with 4 raises |
-| gc_stress     |   6.37  |         |         |         | 200 chains × 1000 Node instances |
-| classes       |   8.75  |         |         |         | Point.norm + polymorphic Shape.area, 200k each |
-| closures      |   2.13  |         |         |         | closure capture + comprehension reduce |
-| startup       |   1.72  |         |         |         | single `print`, measures binary launch |
+| int_arith     |  15.35  |  15.92  |         |         | `for i in range(10_000_000): total += i` |
+| float_arith   |   2.89  |   2.79  |         |         | `total += float(i) * 0.5` over 1M |
+| polymorphic   |  11.21  |  11.69  |         |         | Value class `__add__`/`__mul__`, 200k iters |
+| containers    |   8.61  |   8.70  |         |         | list append/index/mutate + dict insert/lookup/iter, N=100k |
+| strings       |   2.71  |   2.84  |         |         | intern hit-path + 2k concat |
+| generators    |  13.08  |  13.80  |         |         | gen-expr `sum`, enumerate fusion, nested comp |
+| exceptions    | 115.95  | 116.19  |         |         | 500k try/except non-raising + 500k with 4 raises |
+| gc_stress     |   6.37  |   7.05  |         |         | 200 chains × 1000 Node instances |
+| classes       |   8.75  |   9.09  |         |         | Point.norm + polymorphic Shape.area, 200k each |
+| closures      |   2.13  |   2.22  |         |         | closure capture + comprehension reduce |
+| startup       |   1.72  |   1.77  |         |         | single `print`, measures binary launch |
+
+**Phase 1 preliminary (2026-04-18)**: captured with `cargo bench -p
+pyaot-bench --bench pyaot_bench -- --quick` after S1.14b-inliner. All
+deltas report "No change in performance detected" from Criterion's
+t-test (p > 0.05). Raw median deltas are within the `--quick` noise
+floor (±5%) for every benchmark except `gc_stress` (+10.7%); the
+larger gc_stress spread is expected under `--quick` since that
+benchmark has the highest cross-sample variance in Phase 0's
+measurement. A formal 10-sample / 30s-measurement run is scheduled
+for the §1.10 Phase 1 close-out (S1.17).
 
 ### `end_to_end` — compile + run wall time (ms, median)
 
 | Benchmark     | Phase 0 | Phase 1 | Phase 2 | Phase 3 |
 |---------------|---------|---------|---------|---------|
-| int_arith     | 199.54  |         |         |         |
-| float_arith   | 178.75  |         |         |         |
-| polymorphic   | 184.73  |         |         |         |
-| containers    | 186.25  |         |         |         |
-| strings       | 171.90  |         |         |         |
-| generators    | 200.53  |         |         |         |
-| exceptions    | 337.39  |         |         |         |
-| gc_stress     | 181.82  |         |         |         |
-| classes       | 183.99  |         |         |         |
-| closures      | 178.21  |         |         |         |
-| startup       | 172.36  |         |         |         |
+| int_arith     | 199.54  | 224.32  |         |         |
+| float_arith   | 178.75  |   —     |         |         |
+| polymorphic   | 184.73  | 326.14  |         |         |
+| containers    | 186.25  |   —     |         |         |
+| strings       | 171.90  | 317.69  |         |         |
+| generators    | 200.53  | 329.96  |         |         |
+| exceptions    | 337.39  |   —     |         |         |
+| gc_stress     | 181.82  | 314.79  |         |         |
+| classes       | 183.99  |   —     |         |         |
+| closures      | 178.21  |   —     |         |         |
+| startup       | 172.36  | 175.17  |         |         |
+
+**Phase 1 end_to_end flag** (2026-04-18): `—` entries were missing
+from the sampled `--quick` output; run-column numbers above are the
+sampled subset. Of the recorded end_to_end deltas, **`startup` is
+within ±2%** (pure launch cost unchanged) but every other benchmark's
+compile-phase is 50–85% slower. The likely cause is the S1.6e
+"always place Phi" relaxation of Cytron's single-def optimisation —
+every defined local now runs the iterated dominance frontier
+computation regardless of def count, so `construct_ssa`'s cost grows
+from O(multi-def-locals) to O(all-locals). The `run` column shows
+the runtime-only impact is within noise (±5%), confirming the
+regression is compile-time, not emitted-code. Tracked as a Phase 1
+close-out (S1.17) task: either switch `insert_phis` to pruned SSA
+(place Phi only where a use is not dominated by the single def), or
+accept the compile-time cost as an invariant-safety tradeoff.
 
 ### `binary_size` — release executable size (bytes)
 
