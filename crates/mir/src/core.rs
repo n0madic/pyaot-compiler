@@ -9,6 +9,27 @@ use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, Span};
 use crate::dom_tree::DomTree;
 use crate::{Instruction, Terminator};
 
+/// Class metadata needed by optimizer passes (WPA field inference in
+/// particular). Populated by lowering at the end of HIR→MIR, read — and
+/// in-place refined — by `optimizer::type_inference::wpa_field_inference`.
+/// Strictly a subset of `lowering::LoweredClassInfo`; only the parts the
+/// optimizer needs.
+#[derive(Debug, Clone)]
+pub struct ClassMetadata {
+    pub class_id: ClassId,
+    /// `Some(init_func_id)` when the class defines `__init__`. Optimizer
+    /// sees fields through the init body only.
+    pub init_func_id: Option<FuncId>,
+    /// Field name → storage offset (matches the `Constant::Int` operand
+    /// passed to `rt_instance_set_field`).
+    pub field_offsets: IndexMap<InternedString, usize>,
+    /// Field name → (refinable) type. Starts at whatever lowering wrote;
+    /// WPA field inference joins across all `__init__` call sites.
+    pub field_types: IndexMap<InternedString, Type>,
+    /// Single-inheritance parent, if any.
+    pub base_class: Option<ClassId>,
+}
+
 /// Entry in a class vtable mapping slot to method function
 #[derive(Debug, Clone)]
 pub struct VtableEntry {
@@ -31,6 +52,10 @@ pub struct Module {
     /// Module initialization function order (for multi-module compilation)
     /// Each entry is (module_name, init_func_id)
     pub module_init_order: Vec<(String, FuncId)>,
+    /// Per-class metadata visible to optimizer passes. Populated by
+    /// lowering at end of HIR→MIR; refined in place by
+    /// `wpa_field_inference`.
+    pub class_info: IndexMap<ClassId, ClassMetadata>,
 }
 
 /// MIR Function with CFG
@@ -85,6 +110,7 @@ impl Module {
             functions: IndexMap::new(),
             vtables: Vec::new(),
             module_init_order: Vec::new(),
+            class_info: IndexMap::new(),
         }
     }
 

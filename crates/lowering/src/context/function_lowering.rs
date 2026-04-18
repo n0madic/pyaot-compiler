@@ -64,6 +64,21 @@ impl<'a> Lowering<'a> {
         // Fifth pass: export vtable information
         self.build_vtables();
 
+        // Sixth pass: project per-class metadata into `mir::Module.class_info`
+        // so optimizer passes (WPA field inference) can consume it.
+        for (class_id, info) in self.classes.class_info.iter() {
+            self.mir_module.class_info.insert(
+                *class_id,
+                mir::ClassMetadata {
+                    class_id: *class_id,
+                    init_func_id: info.init_func,
+                    field_offsets: info.field_offsets.clone(),
+                    field_types: info.field_types.clone(),
+                    base_class: info.base_class,
+                },
+            );
+        }
+
         // Return both MIR module and collected warnings
         Ok((self.mir_module, self.warnings))
     }

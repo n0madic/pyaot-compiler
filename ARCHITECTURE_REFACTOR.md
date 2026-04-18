@@ -322,7 +322,7 @@ calls and removes the `#[ignore]` attributes.
 | §1.4 Flow-sensitive type inference | 🟡 | S1.8 🟡 (core + rules) · S1.9 ✅ (legacy deletion) · §1.4u ⏳ (unification plan) |
 | §1.5 Call graph | ✅ | S1.10 ✅ |
 | §1.6 WPA parameter inference | ✅ | S1.11 ✅ (core + full-program fixed point) |
-| §1.7 WPA field inference | ⏳ | S1.12 |
+| §1.7 WPA field inference | ✅ | S1.12 ✅ (params + fields to full-program fixed point) |
 | §1.8 Pass migration | ⏳ | S1.13, S1.14, S1.15 |
 | §1.9 Codegen migration | 🟡 | S1.5 wiring ✅ · S1.16 ⏳ (manual-phi cleanup) |
 | §1.10 Final cleanup | ⏳ | S1.17 |
@@ -1361,7 +1361,25 @@ What S1.11 does **not** yet cover (reserved for later):
   fixed-point wrapper around `wpa_param_inference` is a trivial
   extension when needed.
 
-## 1.7 Whole-program field type inference ⏳
+## 1.7 Whole-program field type inference ✅ (S1.12 landed 2026-04-18)
+
+**Status**: `wpa_field_inference` + `wpa_param_and_field_inference_to_fixed_point`
+landed in `crates/optimizer/src/type_inference.rs`. Class metadata
+projected from `LoweredClassInfo` into `mir::Module.class_info:
+IndexMap<ClassId, ClassMetadata>` at end of lowering; optimizer reads/
+writes through there. Five new unit tests cover single write, numeric-
+tower promotion (Int/Float/Bool → Float), unrelated-type union, no-init
+no-op, and param-type propagation. Exit criterion verified end-to-end:
+`Value(3) / Value(3.5) / Value(True)` → `Value.data: Float`;
+`Box("hi") / Box(42)` → `Box.x: Union[Str, Int]`.
+
+**Deletions deferred**: `scan_stmts_for_self_fields` and
+`infer_field_type_from_rhs` still populate the initial
+`LoweredClassInfo.field_types`; WPA refines after the fact. Codegen
+still reads lowering-time field types (pre-WPA). Full swap to
+`module.class_info` lives with the §1.4u pipeline restructure when the
+lowering→optimizer flow is inverted.
+
 
 **Milestone goal**: class fields get their type from the join of all
 `__init__` argument types across all `ClassName(...)` call sites, not
@@ -2484,7 +2502,7 @@ audit often uncovers surprise gaps.
 | S1.9 ✅ | Delete legacy type maps (§1.4 tail): purge `prescan_var_types`, `refined_var_types`, `narrowed_union_vars`, `apply_narrowings`, `restore_types`. Split into S1.9a (unified public entry points), S1.9b (shared result helpers), S1.9c (maps → `HirTypeInference`), S1.9d (narrowing stack push/pop). All 4 maps + the narrowing helpers deleted or relocated per §1.4 exit criteria; dual-state with `TypeTable` documented for §1.4u resolution. | S1.8 | Medium | — |
 | S1.10 ✅ | Call graph (§1.5): `crates/optimizer/src/call_graph.rs`, SCCs via Tarjan | S1.3 | Medium | Parallel-safe with S1.4-S1.9 |
 | S1.11 ✅ | WPA parameter inference (§1.6): fixed-point pass over call graph — core + full-program fixed-point wrapper both landed. | S1.9, S1.10 | **HIGH** | — |
-| S1.12 ⏳ | WPA field inference (§1.7): cross-call field type join | S1.11 | **HIGH** | — |
+| S1.12 ✅ | WPA field inference (§1.7): cross-call field type join. Projected class metadata into `mir::Module.class_info`; field inference scans `__init__` `rt_instance_set_field` writes, joins per offset. Paired with params in `wpa_param_and_field_inference_to_fixed_point`. | S1.11 | **HIGH** | — |
 | S1.13 ⏳ | Pass migration: DCE + constfold (§1.8 part 1) | S1.9 | Medium | Parallel-safe with S1.14-S1.15 (different passes) |
 | S1.14 ⏳ | Pass migration: inlining (§1.8 part 2) | S1.13 | High | Parallel-safe with S1.15 |
 | S1.15 ⏳ | Pass migration: peephole, devirtualize, flatten_properties (§1.8 part 3) | S1.9 | Medium-High | Parallel-safe with S1.13, S1.14 |
@@ -2737,6 +2755,6 @@ the spec reflecting reality.
 S1.1 / S1.2 / S1.4 / S1.5 / S1.6 / S1.7 / S1.9 / S1.10 / S1.11 ✅;
 S1.8 🟡 (core + rule set, single-match collapse queued as §1.4u);
 S1.16 🟡 (Phi wiring ✅, manual-phi cleanup ⏳); S1.3 ⏳ (folded into
-S1.17b); S1.12 / S1.13 / S1.14 / S1.15 / S1.17 / S1.17b / §1.4u-a-d ⏳.
+S1.17b); S1.12 ✅; S1.13 / S1.14 / S1.15 / S1.17 / S1.17b / §1.4u-a-d ⏳.
 See the Phase-1 status dashboard at the top of §1 and the status
 blocks inside each §1.x milestone for details.*

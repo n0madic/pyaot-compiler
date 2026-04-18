@@ -16,7 +16,7 @@ pub mod ssa_construct;
 mod terminators;
 
 // Re-export all public types
-pub use core::{BasicBlock, Function, Local, Module, VtableEntry, VtableInfo};
+pub use core::{BasicBlock, ClassMetadata, Function, Local, Module, VtableEntry, VtableInfo};
 pub use dom_tree::{terminator_successors, DomTree};
 pub use instructions::{Instruction, InstructionKind};
 pub use kinds::{

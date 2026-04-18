@@ -48,7 +48,7 @@ use std::collections::HashMap;
 use indexmap::IndexMap;
 use pyaot_mir::{Function, InstructionKind, Module, Operand, RuntimeFunc};
 use pyaot_types::Type;
-use pyaot_utils::{FuncId, LocalId};
+use pyaot_utils::{ClassId, FuncId, InternedString, LocalId};
 
 /// Upper bound on TypeInferencePass iterations per function. A well-
 /// formed SSA function reaches a fixed point in 1-2 sweeps; the cap is
@@ -704,6 +704,140 @@ fn constant_type(c: &pyaot_mir::Constant) -> Type {
         Constant::Str(_) => Type::Str,
         Constant::Bytes(_) => Type::Bytes,
         Constant::None => Type::None,
+    }
+}
+
+// =============================================================================
+// WPA field inference (§1.7 / S1.12)
+// =============================================================================
+
+/// Upper bound on outer (param + field) fixed-point iterations. Each cycle
+/// runs param inference to fixed point, then field inference once. Two
+/// cycles suffice when field reads feed into downstream inference
+/// (`rt_instance_get_field` doesn't yet query `class_info.field_types`;
+/// when it does, extra iterations may propagate refined field types back
+/// into call-site arg types).
+const MAX_FIELD_WPA_ITERATIONS: usize = 4;
+
+/// Refine `module.class_info[*].field_types` from the joined types of
+/// every `rt_instance_set_field(self, CONST_OFFSET, value)` write inside
+/// each class's `__init__`. S1.11 has already joined every `__init__`'s
+/// parameter types across all `ClassName(...)` call sites, so the
+/// `TypeTable` entry for the value operand reflects the whole-program
+/// argument distribution — there is no separate call-site walk here.
+///
+/// Returns `true` if any field type changed. Fixed-point loops use this
+/// to decide when to stop re-running param inference.
+pub fn wpa_field_inference(module: &mut Module, type_table: &TypeTable) -> bool {
+    let rt_set_field: *const pyaot_core_defs::RuntimeFuncDef =
+        &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD;
+
+    let mut any_changed = false;
+    let class_ids: Vec<ClassId> = module.class_info.keys().copied().collect();
+
+    for class_id in class_ids {
+        let Some(init_func_id) = module.class_info[&class_id].init_func_id else {
+            continue;
+        };
+        let Some(init_func) = module.functions.get(&init_func_id) else {
+            continue;
+        };
+        let Some(func_types) = type_table.function_types(init_func_id) else {
+            continue;
+        };
+
+        // Reverse lookup: offset → field name. Needed because
+        // `rt_instance_set_field`'s offset operand is the identifier we
+        // have at the MIR level; we have to recover the symbolic name
+        // to key back into `field_types`.
+        let offset_to_name: HashMap<usize, InternedString> = module.class_info[&class_id]
+            .field_offsets
+            .iter()
+            .map(|(name, off)| (*off, *name))
+            .collect();
+
+        let mut joined: IndexMap<InternedString, Type> = IndexMap::new();
+        for block in init_func.blocks.values() {
+            for inst in &block.instructions {
+                let InstructionKind::RuntimeCall { func, args, .. } = &inst.kind else {
+                    continue;
+                };
+                let RuntimeFunc::Call(def) = func else {
+                    continue;
+                };
+                // Pointer-identity match against the canonical static def.
+                // Safer than string compare: fails at compile time if the
+                // static is renamed.
+                if !std::ptr::eq(*def, rt_set_field) {
+                    continue;
+                }
+                // Arg layout: [obj, Constant::Int(offset), value].
+                if args.len() != 3 {
+                    continue;
+                }
+                let Operand::Constant(pyaot_mir::Constant::Int(off)) = &args[1] else {
+                    continue;
+                };
+                let Some(field_name) = offset_to_name.get(&(*off as usize)).copied() else {
+                    continue;
+                };
+                let value_ty = operand_type(&args[2], func_types);
+                let new_ty = match joined.get(&field_name) {
+                    None => value_ty,
+                    Some(prev) => wpa_join_types(prev, &value_ty),
+                };
+                joined.insert(field_name, new_ty);
+            }
+        }
+
+        let meta = module
+            .class_info
+            .get_mut(&class_id)
+            .expect("class_id came from keys()");
+        for (name, new_ty) in joined {
+            let changed = match meta.field_types.get(&name) {
+                Some(old) => *old != new_ty,
+                None => true,
+            };
+            if changed {
+                meta.field_types.insert(name, new_ty);
+                any_changed = true;
+            }
+        }
+    }
+
+    any_changed
+}
+
+/// Run WPA param inference and field inference together to a
+/// whole-program fixed point. Each outer iteration:
+///
+/// 1. Runs [`wpa_param_inference_to_fixed_point`] (which itself iterates
+///    the SCC graph until param types stabilise).
+/// 2. Runs [`wpa_field_inference`] once to refine
+///    `class_info.field_types` from post-param-inference data.
+///
+/// The loop exits when a pass changes no field type. Bounded by
+/// [`MAX_FIELD_WPA_ITERATIONS`] for defensiveness.
+///
+/// When a future `apply_instruction` rule picks up
+/// `rt_instance_get_field` via `class_info.field_types`, refined fields
+/// will flow back into method-body inference and through that into
+/// caller arg types — at which point multiple outer iterations will
+/// actually refine something. Until then, one outer iteration is
+/// typically enough: S1.11 establishes param types; this call derives
+/// fields from them.
+pub fn wpa_param_and_field_inference_to_fixed_point(
+    module: &mut Module,
+    call_graph: &crate::call_graph::CallGraph,
+    type_table: &mut TypeTable,
+) {
+    for _ in 0..MAX_FIELD_WPA_ITERATIONS {
+        wpa_param_inference_to_fixed_point(module, call_graph, type_table);
+        let field_changed = wpa_field_inference(module, type_table);
+        if !field_changed {
+            break;
+        }
     }
 }
 
@@ -1795,5 +1929,205 @@ mod tests {
 
         let types = infer_function(&caller, None);
         assert_eq!(types.get(&result), Some(&Type::Any));
+    }
+
+    // =========================================================================
+    // wpa_field_inference (§1.7 / S1.12)
+    // =========================================================================
+
+    use pyaot_mir::ClassMetadata;
+    use pyaot_utils::{ClassId, InternedString, StringInterner};
+
+    fn mk_init_with_writes(
+        init_id: FuncId,
+        writes: &[(u32, Operand)],
+        param_local: LocalId,
+        param_ty: Type,
+    ) -> Function {
+        use pyaot_mir::RuntimeFunc;
+        let rt_set_field = &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD;
+
+        let self_local = mk_local(param_local.0 as u32, Type::Any);
+        let params = vec![self_local.clone()];
+        let mut f = Function::new(init_id, "__init__".to_string(), params, Type::None, None);
+        // Add the param's Local + a "value" local per write.
+        f.locals
+            .insert(param_local, mk_local(param_local.0 as u32, param_ty));
+
+        let bb0 = f.entry_block;
+        let self_op = Operand::Local(param_local);
+        for (offset, value) in writes {
+            f.block_mut(bb0).instructions.push(Instruction {
+                kind: InstructionKind::RuntimeCall {
+                    dest: LocalId::from(u32::MAX),
+                    func: RuntimeFunc::Call(rt_set_field),
+                    args: vec![
+                        self_op.clone(),
+                        Operand::Constant(Constant::Int(*offset as i64)),
+                        value.clone(),
+                    ],
+                },
+                span: None,
+            });
+        }
+        f.block_mut(bb0).terminator = Terminator::Return(None);
+        f.is_ssa = true;
+        f
+    }
+
+    fn seed_class(
+        module: &mut Module,
+        class_id: ClassId,
+        init_func_id: FuncId,
+        fields: &[(InternedString, usize, Type)],
+    ) {
+        let mut field_offsets = IndexMap::new();
+        let mut field_types = IndexMap::new();
+        for (name, off, ty) in fields {
+            field_offsets.insert(*name, *off);
+            field_types.insert(*name, ty.clone());
+        }
+        module.class_info.insert(
+            class_id,
+            ClassMetadata {
+                class_id,
+                init_func_id: Some(init_func_id),
+                field_offsets,
+                field_types,
+                base_class: None,
+            },
+        );
+    }
+
+    /// Single write with an Int constant → field becomes Int.
+    #[test]
+    fn field_inference_single_int_write() {
+        let mut interner = StringInterner::new();
+        let data = interner.intern("data");
+        let init_id = FuncId::from(10u32);
+        let param = LocalId::from(0u32);
+        let init = mk_init_with_writes(
+            init_id,
+            &[(0, Operand::Constant(Constant::Int(42)))],
+            param,
+            Type::Any,
+        );
+        let mut module = Module::new();
+        module.add_function(init);
+        let class_id = ClassId::from(1u32);
+        seed_class(&mut module, class_id, init_id, &[(data, 0, Type::Any)]);
+
+        let table = TypeTable::infer_module(&module);
+        let changed = wpa_field_inference(&mut module, &table);
+        assert!(changed);
+        assert_eq!(
+            module.class_info[&class_id].field_types.get(&data),
+            Some(&Type::Int)
+        );
+    }
+
+    /// Writes of Int, Float, Bool to the same field → numeric-tower
+    /// promotion yields Float (Area E §E.1).
+    #[test]
+    fn field_inference_numeric_tower_joins_to_float() {
+        let mut interner = StringInterner::new();
+        let data = interner.intern("data");
+        let init_id = FuncId::from(11u32);
+        let param = LocalId::from(0u32);
+        let init = mk_init_with_writes(
+            init_id,
+            &[
+                (0, Operand::Constant(Constant::Int(1))),
+                (0, Operand::Constant(Constant::Float(3.5))),
+                (0, Operand::Constant(Constant::Bool(true))),
+            ],
+            param,
+            Type::Any,
+        );
+        let mut module = Module::new();
+        module.add_function(init);
+        let class_id = ClassId::from(1u32);
+        seed_class(&mut module, class_id, init_id, &[(data, 0, Type::Any)]);
+
+        let table = TypeTable::infer_module(&module);
+        wpa_field_inference(&mut module, &table);
+        assert_eq!(
+            module.class_info[&class_id].field_types.get(&data),
+            Some(&Type::Float)
+        );
+    }
+
+    /// Writes of unrelated types (Str, Int) → join to Union.
+    #[test]
+    fn field_inference_unrelated_types_join_to_union() {
+        let mut interner = StringInterner::new();
+        let data = interner.intern("data");
+        let s_lit = interner.intern("hello");
+        let init_id = FuncId::from(12u32);
+        let param = LocalId::from(0u32);
+        let init = mk_init_with_writes(
+            init_id,
+            &[
+                (0, Operand::Constant(Constant::Str(s_lit))),
+                (0, Operand::Constant(Constant::Int(7))),
+            ],
+            param,
+            Type::Any,
+        );
+        let mut module = Module::new();
+        module.add_function(init);
+        let class_id = ClassId::from(1u32);
+        seed_class(&mut module, class_id, init_id, &[(data, 0, Type::Any)]);
+
+        let table = TypeTable::infer_module(&module);
+        wpa_field_inference(&mut module, &table);
+        let got = module.class_info[&class_id].field_types.get(&data).unwrap();
+        assert!(
+            matches!(got, Type::Union(_)),
+            "expected Union, got {:?}",
+            got
+        );
+    }
+
+    /// Class with no __init__ is left untouched.
+    #[test]
+    fn field_inference_no_init_is_noop() {
+        let mut module = Module::new();
+        let class_id = ClassId::from(1u32);
+        module.class_info.insert(
+            class_id,
+            ClassMetadata {
+                class_id,
+                init_func_id: None,
+                field_offsets: IndexMap::new(),
+                field_types: IndexMap::new(),
+                base_class: None,
+            },
+        );
+        let table = TypeTable::default();
+        let changed = wpa_field_inference(&mut module, &table);
+        assert!(!changed);
+    }
+
+    /// Value operand is a param typed Int via `locals[].ty`; TypeTable
+    /// seed propagates it into the field.
+    #[test]
+    fn field_inference_reads_param_type_from_table() {
+        let mut interner = StringInterner::new();
+        let data = interner.intern("data");
+        let init_id = FuncId::from(13u32);
+        let param = LocalId::from(0u32);
+        let init = mk_init_with_writes(init_id, &[(0, Operand::Local(param))], param, Type::Int);
+        let mut module = Module::new();
+        module.add_function(init);
+        let class_id = ClassId::from(1u32);
+        seed_class(&mut module, class_id, init_id, &[(data, 0, Type::Any)]);
+
+        let table = TypeTable::infer_module(&module);
+        wpa_field_inference(&mut module, &table);
+        assert_eq!(
+            module.class_info[&class_id].field_types.get(&data),
+            Some(&Type::Int)
+        );
     }
 }

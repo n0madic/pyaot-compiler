@@ -246,16 +246,22 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
     if options.emit_types || options.verbose {
         let call_graph = pyaot_optimizer::call_graph::CallGraph::build(&mir_module);
         let mut type_table = pyaot_optimizer::type_inference::TypeTable::infer_module(&mir_module);
-        pyaot_optimizer::type_inference::wpa_param_inference_to_fixed_point(
-            &mir_module,
+        // WPA params + fields together, to a whole-program fixed point
+        // (§1.7 / S1.12). Field inference reads post-param-WPA types
+        // from the TypeTable; param inference re-runs on every outer
+        // iteration so that refined field types (when their consumers
+        // land) can propagate back into caller arg-type observations.
+        pyaot_optimizer::type_inference::wpa_param_and_field_inference_to_fixed_point(
+            &mut mir_module,
             &call_graph,
             &mut type_table,
         );
         if options.emit_types {
             println!("TypeTable: {:#?}", type_table);
+            println!("ClassInfo: {:#?}", mir_module.class_info);
         }
         if options.verbose {
-            println!("Type inference + WPA (full-program fixed point) complete.");
+            println!("Type inference + WPA (params + fields) complete.");
         }
     }
 
