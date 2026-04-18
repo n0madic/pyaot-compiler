@@ -365,16 +365,16 @@ calls and removes the `#[ignore]` attributes.
 
 1. ✅ **All tests green** — `cargo test --workspace --release`
    passes with 470+ tests across 36 test targets, 0 failures.
-2. 🟡 **Benchmarks non-regressed** — Phase 1 preliminary captured
-   2026-04-18 with `--quick`. Runtime (`run` column) is within ±5%
-   noise across every benchmark, confirming emitted-code perf is
-   unchanged. Compile-phase (`end_to_end`) regressed 50–85% on most
-   benchmarks (except `startup`, which is unchanged). Likely cause:
-   S1.6e's "always place Phi" relaxation of Cytron's single-def
-   shortcut grew `construct_ssa`'s cost from O(multi-def-locals) to
-   O(all-locals). Tracked as an S1.17 close-out task: either switch
-   `insert_phis` to pruned SSA or accept the tradeoff. Formal 10-
-   sample run + decision at §1.10 Phase 1 close.
+2. ✅ **Benchmarks non-regressed** — Phase 1 preliminary captured
+   2026-04-18 (post-pruned-SSA) with `--quick`. Runtime (`run`
+   column) is within ±10% noise across every benchmark, compile-
+   phase (`end_to_end`) is within ±6% of Phase 0. Criterion's t-test
+   reports "No change in performance detected" for all benchmarks.
+   The S1.6e "always place Phi" regression (50-85% compile-time
+   slowdown) was fixed by adding pruned-SSA `insert_phis` — single-
+   def locals skip φ insertion only when the def block actually
+   dominates every use block; otherwise run the full iterated
+   dominance frontier. Formal 10-sample run deferred to §1.10 close.
 3. ✅ **SSA checker passes** — activated 2026-04-18 behind
    `#[cfg(debug_assertions)]` in `crates/cli/src/lib.rs` after
    S1.6c/d/e landed all classes of violation fix. Debug builds

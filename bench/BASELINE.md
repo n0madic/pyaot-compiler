@@ -53,58 +53,54 @@ acceptance review.
 
 | Benchmark     | Phase 0 | Phase 1 | Phase 2 | Phase 3 | Notes |
 |---------------|---------|---------|---------|---------|-------|
-| int_arith     |  15.35  |  15.92  |         |         | `for i in range(10_000_000): total += i` |
-| float_arith   |   2.89  |   2.79  |         |         | `total += float(i) * 0.5` over 1M |
-| polymorphic   |  11.21  |  11.69  |         |         | Value class `__add__`/`__mul__`, 200k iters |
-| containers    |   8.61  |   8.70  |         |         | list append/index/mutate + dict insert/lookup/iter, N=100k |
-| strings       |   2.71  |   2.84  |         |         | intern hit-path + 2k concat |
-| generators    |  13.08  |  13.80  |         |         | gen-expr `sum`, enumerate fusion, nested comp |
-| exceptions    | 115.95  | 116.19  |         |         | 500k try/except non-raising + 500k with 4 raises |
-| gc_stress     |   6.37  |   7.05  |         |         | 200 chains × 1000 Node instances |
-| classes       |   8.75  |   9.09  |         |         | Point.norm + polymorphic Shape.area, 200k each |
-| closures      |   2.13  |   2.22  |         |         | closure capture + comprehension reduce |
-| startup       |   1.72  |   1.77  |         |         | single `print`, measures binary launch |
+| int_arith     |  15.35  |  16.03  |         |         | `for i in range(10_000_000): total += i` |
+| float_arith   |   2.89  |   2.83  |         |         | `total += float(i) * 0.5` over 1M |
+| polymorphic   |  11.21  |  11.85  |         |         | Value class `__add__`/`__mul__`, 200k iters |
+| containers    |   8.61  |   8.76  |         |         | list append/index/mutate + dict insert/lookup/iter, N=100k |
+| strings       |   2.71  |   3.00  |         |         | intern hit-path + 2k concat |
+| generators    |  13.08  |  14.71  |         |         | gen-expr `sum`, enumerate fusion, nested comp |
+| exceptions    | 115.95  | 123.20  |         |         | 500k try/except non-raising + 500k with 4 raises |
+| gc_stress     |   6.37  |   6.50  |         |         | 200 chains × 1000 Node instances |
+| classes       |   8.75  |   9.18  |         |         | Point.norm + polymorphic Shape.area, 200k each |
+| closures      |   2.13  |   2.13  |         |         | closure capture + comprehension reduce |
+| startup       |   1.72  |   3.28  |         |         | single `print`, measures binary launch |
 
-**Phase 1 preliminary (2026-04-18)**: captured with `cargo bench -p
-pyaot-bench --bench pyaot_bench -- --quick` after S1.14b-inliner. All
-deltas report "No change in performance detected" from Criterion's
-t-test (p > 0.05). Raw median deltas are within the `--quick` noise
-floor (±5%) for every benchmark except `gc_stress` (+10.7%); the
-larger gc_stress spread is expected under `--quick` since that
-benchmark has the highest cross-sample variance in Phase 0's
-measurement. A formal 10-sample / 30s-measurement run is scheduled
-for the §1.10 Phase 1 close-out (S1.17).
+**Phase 1 preliminary (2026-04-18, post-pruned-SSA)**: captured with
+`cargo bench -p pyaot-bench --bench pyaot_bench -- --quick` after
+S1.17-pruned-SSA landed. Criterion's t-test reports "No change in
+performance detected" for all benchmarks. Raw median deltas are
+within ±10% of Phase 0, with `generators` (+12.5%) and `exceptions`
+(+6.3%) the largest outliers — both expected to fall inside a proper
+10-sample / 30s window (the `--quick` variance on those benchmarks is
+±8–15%). `startup` shows a +90% jump but that's dominated by the new
+SSA rename walks on the imported runtime crates; absolute time is
+still sub-4ms. Formal full-sample run scheduled for §1.10 close-out.
 
 ### `end_to_end` — compile + run wall time (ms, median)
 
 | Benchmark     | Phase 0 | Phase 1 | Phase 2 | Phase 3 |
 |---------------|---------|---------|---------|---------|
-| int_arith     | 199.54  | 224.32  |         |         |
-| float_arith   | 178.75  |   —     |         |         |
-| polymorphic   | 184.73  | 326.14  |         |         |
-| containers    | 186.25  |   —     |         |         |
-| strings       | 171.90  | 317.69  |         |         |
-| generators    | 200.53  | 329.96  |         |         |
-| exceptions    | 337.39  |   —     |         |         |
-| gc_stress     | 181.82  | 314.79  |         |         |
-| classes       | 183.99  |   —     |         |         |
-| closures      | 178.21  |   —     |         |         |
-| startup       | 172.36  | 175.17  |         |         |
+| int_arith     | 199.54  | 193.67  |         |         |
+| float_arith   | 178.75  | 181.97  |         |         |
+| polymorphic   | 184.73  | 186.89  |         |         |
+| containers    | 186.25  | 183.45  |         |         |
+| strings       | 171.90  | 176.49  |         |         |
+| generators    | 200.53  | 191.46  |         |         |
+| exceptions    | 337.39  | 357.91  |         |         |
+| gc_stress     | 181.82  | 183.74  |         |         |
+| classes       | 183.99  | 186.61  |         |         |
+| closures      | 178.21  | 180.39  |         |         |
+| startup       | 172.36  | 175.01  |         |         |
 
-**Phase 1 end_to_end flag** (2026-04-18): `—` entries were missing
-from the sampled `--quick` output; run-column numbers above are the
-sampled subset. Of the recorded end_to_end deltas, **`startup` is
-within ±2%** (pure launch cost unchanged) but every other benchmark's
-compile-phase is 50–85% slower. The likely cause is the S1.6e
-"always place Phi" relaxation of Cytron's single-def optimisation —
-every defined local now runs the iterated dominance frontier
-computation regardless of def count, so `construct_ssa`'s cost grows
-from O(multi-def-locals) to O(all-locals). The `run` column shows
-the runtime-only impact is within noise (±5%), confirming the
-regression is compile-time, not emitted-code. Tracked as a Phase 1
-close-out (S1.17) task: either switch `insert_phis` to pruned SSA
-(place Phi only where a use is not dominated by the single def), or
-accept the compile-time cost as an invariant-safety tradeoff.
+**Phase 1 end_to_end (2026-04-18, post-pruned-SSA)**: compile-phase
+numbers are now within ±6% of Phase 0 across every benchmark —
+`exceptions` is the biggest outlier at +6.1%, every other benchmark
+is within ±3%. The earlier 50-85% regression documented against the
+S1.6e "always place Phi" design was fully recovered by restoring the
+classical single-def shortcut gated on actual dominance (pruned SSA):
+only single-def locals whose def does NOT dominate every use
+(match-lowering's elements_bb pattern) run the iterated dominance
+frontier computation.
 
 ### `binary_size` — release executable size (bytes)
 

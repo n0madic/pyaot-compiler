@@ -86,12 +86,15 @@ pub fn construct_ssa(func: &mut Function) {
     // covered by the rename walk.
     prune_unreachable_blocks(func);
 
-    // Phase 1: collect defining blocks for every local.
+    // Phase 1: collect defining blocks and use-blocks for every local.
     let defs = collect_defs(func);
+    let uses = collect_use_blocks(func);
 
-    // Phase 2: for each multi-def local, compute iterated dominance frontier
-    // and insert φ-nodes at those merge points.
-    insert_phis(func, &defs);
+    // Phase 2: compute iterated dominance frontier for each local and
+    // insert φ-nodes at merge points. Pruned SSA: multi-def locals
+    // always run IDF; single-def locals skip IDF if the def already
+    // dominates every use (classical Cytron optimisation).
+    insert_phis(func, &defs, &uses);
 
     // Phase 3: rename — dominator-tree pre-order walk assigning fresh
     // LocalIds to every def and propagating the current SSA version to
@@ -151,6 +154,29 @@ fn collect_defs(func: &Function) -> HashMap<LocalId, IndexSet<BlockId>> {
         }
     }
     defs
+}
+
+/// Collect, per local, the set of blocks where it is USED (by any
+/// instruction or terminator, including as a Phi source). Used by
+/// `insert_phis` for pruned SSA: single-def locals skip φ-insertion
+/// only when every use block is dominated by the defining block.
+fn collect_use_blocks(func: &Function) -> HashMap<LocalId, IndexSet<BlockId>> {
+    let mut uses: HashMap<LocalId, IndexSet<BlockId>> = HashMap::new();
+    for (&bid, block) in &func.blocks {
+        for inst in &block.instructions {
+            let mut kind_uses: IndexSet<LocalId> = IndexSet::new();
+            collect_kind_uses(&inst.kind, &mut kind_uses);
+            for id in kind_uses {
+                uses.entry(id).or_default().insert(bid);
+            }
+        }
+        let mut term_uses: IndexSet<LocalId> = IndexSet::new();
+        collect_terminator_uses(&block.terminator, &mut term_uses);
+        for id in term_uses {
+            uses.entry(id).or_default().insert(bid);
+        }
+    }
+    uses
 }
 
 fn instruction_def(kind: &InstructionKind) -> Option<LocalId> {
@@ -215,23 +241,43 @@ fn instruction_def(kind: &InstructionKind) -> Option<LocalId> {
 // Phase 2: φ-insertion via iterated dominance frontier
 // ============================================================================
 
-fn insert_phis(func: &mut Function, defs: &HashMap<LocalId, IndexSet<BlockId>>) {
+fn insert_phis(
+    func: &mut Function,
+    defs: &HashMap<LocalId, IndexSet<BlockId>>,
+    uses: &HashMap<LocalId, IndexSet<BlockId>>,
+) {
     let dom = func.dom_tree().clone();
 
     let mut phis_by_block: HashMap<BlockId, Vec<LocalId>> = HashMap::new();
 
     for (local, def_blocks) in defs {
-        // Classical Cytron optimisation: single-def locals skip φ
-        // insertion because "the def dominates all uses". That holds
-        // for well-formed SSA input but NOT for our pre-SSA MIR:
-        // match-statement lowering emits element-extraction/binding
-        // defs in a pattern-check block that merges back with a failing
-        // path before reaching the match body — the def does not
-        // dominate the use. Run the full IDF for every local (including
-        // single-def ones); identity-pass-through Phis are cheap and
-        // DCE cleans them up if genuinely dead.
         if def_blocks.is_empty() {
             continue;
+        }
+
+        // Pruned SSA: restore the classical single-def φ-skip
+        // optimisation, but only when the single def actually
+        // dominates every use block. Multi-def locals always run the
+        // IDF walk. The dominance check catches our match-statement
+        // lowering case (element-extraction in a pattern-check block
+        // whose CFG successor merges before the body) — there the
+        // single def block does NOT dominate the use block, so we
+        // still run IDF and a φ is placed at the merge point.
+        //
+        // S1.6e originally relaxed this to "run IDF for every local"
+        // after discovering the non-dominating case, which grew
+        // `construct_ssa`'s cost from O(multi-def-locals) to
+        // O(all-locals) and cost 50–85% of end_to_end compile time.
+        // Pruned SSA restores the O(multi-def) cost profile while
+        // preserving invariance.
+        if def_blocks.len() == 1 {
+            let def_block = *def_blocks.iter().next().unwrap();
+            let all_dominated = uses
+                .get(local)
+                .is_none_or(|use_blocks| use_blocks.iter().all(|ub| dom.dominates(def_block, *ub)));
+            if all_dominated {
+                continue;
+            }
         }
 
         // Iterated dominance frontier: start worklist with defining blocks;
