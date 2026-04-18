@@ -325,9 +325,84 @@ calls and removes the `#[ignore]` attributes.
 | §1.7 WPA field inference | ✅ | S1.12 ✅ (params + fields to full-program fixed point) |
 | §1.8 Pass migration | 🟡 | S1.13 ✅ · S1.14a ✅ · S1.15 ✅ (peephole idempotents; devirt+flatten already SSA-compatible) · S1.14b ⏳ |
 | §1.9 Codegen migration | ✅ | S1.5 wiring ✅ · S1.16 ✅ (audit: no manual-phi emulation; Variable API is OK under SSA single-def) |
-| §1.10 Final cleanup | ⏳ | S1.17 |
+| §1.10 Final cleanup | 🟡 | S1.17a ✅ (partial acceptance: tests green, microgpt triaged) · S1.17 full ⏳ (blocked on S1.17b + §1.4u) |
 | §1.11 Deferred HIR-tree deletion | ⏳ | S1.17b |
 | §1.4u Single-TypeTable unification | ⏳ | S1.4u-a/b/c/d (planned) |
+
+### Phase 1 Completion Status (as of 2026-04-18, S1.17a partial acceptance)
+
+**What landed** (11 sessions, roughly 80% of the milestone goal):
+
+- **§1.1 HIR CFG types + bridge** (S1.1, S1.2): new `HirBlock` /
+  `HirBlockId` / `HirTerminator`; frontend populates a parallel CFG
+  via `crates/hir/src/cfg_build.rs`; legacy tree stays alive.
+- **§1.2 DomTree** (S1.4): Cooper–Harvey–Kennedy with `OnceCell`
+  cache on `mir::Function`; canonical `terminator_successors`.
+- **§1.3 SSA + Phi + Refine** (S1.5, S1.6, S1.7): Cytron construction
+  activated universally; Cranelift block_params wired; `Refine`
+  instruction landed (isinstance-Refine emission queued — no codegen
+  consumer yet).
+- **§1.5 Call graph** (S1.10): direct / indirect / virtual edges;
+  iterative Tarjan SCCs; `is_recursive` helper for inliner use.
+- **§1.6 WPA parameter inference** (S1.11): SCC-wise fixed point +
+  full-program outer loop; `Never` bottom to avoid `Any`
+  contamination in recursive SCCs.
+- **§1.7 WPA field inference** (S1.12): class metadata in
+  `mir::Module.class_info`; per-field join via `__init__` writes;
+  paired with param inference in
+  `wpa_param_and_field_inference_to_fixed_point`.
+- **§1.8 Pass migration** (S1.13, S1.14a, S1.15): constfold got
+  unified Const+Copy-alias propagation, Phi/Refine folding; inline's
+  CallGraph merged with the canonical graph; peephole gained
+  idempotent `x & x → x` / `x | x → x`. DCE and
+  devirtualize/flatten_properties audits found them already
+  SSA-compatible.
+- **§1.9 Codegen migration** (S1.5 wiring, S1.16 audit): Phi /
+  block-params wired; no manual phi emulation left to delete; the
+  `Variable` API is correct under single-def invariant.
+
+**Acceptance checklist state** (from spec "Phase 1 Acceptance" below):
+
+1. ✅ **All tests green** — `cargo test --workspace --release`
+   passes with 470+ tests across 36 test targets, 0 failures.
+2. ⏸ **Benchmarks non-regressed** — deferred to formal close-out
+   (S1.17 final). Phase 1 changes are infra-only; no hot-path
+   reductions expected.
+3. 🟡 **SSA checker passes** — implemented and exercised by
+   `ssa_construct` tests. Not run as a production-pipeline gate
+   (invoked only from tests).
+4. 🟡 **Deletion audit** — 4 legacy maps relocated from
+   `SymbolTable` into `HirTypeInference` per S1.9 (dual state with
+   `TypeTable`). Full deletion needs §1.4u (HIR→MIR type unification).
+5. 🟡 **microgpt.py diagnostic** (2026-04-18): fails at line 41
+   `return Value(self.data + other.data, ...)` with
+   "unknown attribute 'data'". Prior ternary rebinds `other` via
+   `other if isinstance(other, Value) else Value(other)`; both arms
+   produce `Value`, but the post-ternary type is not narrowed to
+   `Value` at the `other.data` site. Triage: narrowing-through-
+   ternary-rebind gap; lives in HIR-level narrowing
+   (`lowering/src/narrowing.rs` + `type_planning/infer.rs`). Target:
+   §1.4u (unified HIR type pass) — the MIR TypeTable handles this
+   fine, but lowering reads from the pre-unification HIR maps.
+6. ✅ **Spec deviations documented** — per-session status notes and
+   deferred rows capture every divergence.
+
+**Remaining before formal Phase 1 close**:
+
+- **S1.14b** — SSA-preserving inliner rewrite (requires pipeline
+  reorder: `construct_ssa` before `optimize`). Pair with full
+  codegen `Value`-migration when done.
+- **S1.17b** — HIR tree deletion: rewrite ~52 tree consumers across
+  `lowering/` / `semantics/` / `frontend-python/` to walk the CFG;
+  delete `Function.body`, `StmtKind::{If, While, ForBind, Try,
+  Match}`, and `crates/hir/src/cfg_build.rs`. Resolve the open
+  `HirTerminator` iteration-gap question. 5–10 sessions of work.
+- **§1.4u-a/b/c/d** — unify HIR type inference with MIR TypeTable so
+  the four HirTypeInference maps can be deleted and lowering reads
+  from a single source. Unblocks microgpt.py ternary-rebind case
+  (item 5 above).
+- **S1.17 formal close** — benchmark check + full grep-verified
+  deletion; depends on all three above.
 
 **Goal**: make pyaot's type system **flow-sensitive and
 whole-program-aware** by design, not by patching. Every rebind produces
@@ -2831,6 +2906,6 @@ the spec reflecting reality.
 S1.1 / S1.2 / S1.4 / S1.5 / S1.6 / S1.7 / S1.9 / S1.10 / S1.11 ✅;
 S1.8 🟡 (core + rule set, single-match collapse queued as §1.4u);
 S1.16 🟡 (Phi wiring ✅, manual-phi cleanup ⏳); S1.3 ⏳ (folded into
-S1.17b); S1.12 ✅; S1.13 ✅; S1.14a ✅; S1.15 ✅; S1.16 ✅; S1.14b / S1.17 / S1.17b / §1.4u-a-d ⏳.
+S1.17b); S1.12 ✅; S1.13 ✅; S1.14a ✅; S1.15 ✅; S1.16 ✅; S1.17a ✅ (partial acceptance); S1.14b / S1.17 full / S1.17b / §1.4u-a-d ⏳.
 See the Phase-1 status dashboard at the top of §1 and the status
 blocks inside each §1.x milestone for details.*
