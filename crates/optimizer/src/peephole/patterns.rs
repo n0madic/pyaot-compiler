@@ -191,10 +191,13 @@ fn try_simplify_binop(
         }
     }
 
-    // Same operand patterns: x - x → 0, x ^ x → 0 (only for locals, not constants)
+    // Same-operand patterns (SSA makes LocalId identity sufficient for
+    // value equality). For `left == right` locals, apply idempotent or
+    // annihilating reductions. Exception-raising ops (FloorDiv/Mod/Div)
+    // are excluded since they'd require proving `x != 0`.
     if let (Operand::Local(l), Operand::Local(r)) = (left, right) {
         if l == r {
-            return match_binop_same_operand(dest, op);
+            return match_binop_same_operand(dest, op, left);
         }
     }
 
@@ -380,13 +383,26 @@ fn match_binop_left_const(
     }
 }
 
-/// Match patterns where both operands are the same local: x op x
-fn match_binop_same_operand(dest: pyaot_utils::LocalId, op: BinOp) -> Option<InstructionKind> {
+/// Match patterns where both operands are the same local: `x op x`.
+///
+/// `operand` is the shared Operand::Local — used as the Copy src for
+/// idempotent patterns (`x & x → x`, `x | x → x`). SSA guarantees
+/// LocalId identity ⇒ value equality.
+fn match_binop_same_operand(
+    dest: pyaot_utils::LocalId,
+    op: BinOp,
+    operand: &Operand,
+) -> Option<InstructionKind> {
     match op {
-        // x - x → 0, x ^ x → 0
+        // Annihilating: x - x → 0, x ^ x → 0
         BinOp::Sub | BinOp::BitXor => Some(InstructionKind::Const {
             dest,
             value: Constant::Int(0),
+        }),
+        // Idempotent: x & x → x, x | x → x
+        BinOp::BitAnd | BinOp::BitOr => Some(InstructionKind::Copy {
+            dest,
+            src: operand.clone(),
         }),
         _ => None,
     }

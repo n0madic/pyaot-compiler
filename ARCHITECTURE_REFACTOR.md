@@ -323,7 +323,7 @@ calls and removes the `#[ignore]` attributes.
 | §1.5 Call graph | ✅ | S1.10 ✅ |
 | §1.6 WPA parameter inference | ✅ | S1.11 ✅ (core + full-program fixed point) |
 | §1.7 WPA field inference | ✅ | S1.12 ✅ (params + fields to full-program fixed point) |
-| §1.8 Pass migration | 🟡 | S1.13 ✅ · S1.14a ✅ (CallGraph unification) · S1.14b, S1.15 ⏳ |
+| §1.8 Pass migration | 🟡 | S1.13 ✅ · S1.14a ✅ · S1.15 ✅ (peephole idempotents; devirt+flatten already SSA-compatible) · S1.14b ⏳ |
 | §1.9 Codegen migration | 🟡 | S1.5 wiring ✅ · S1.16 ⏳ (manual-phi cleanup) |
 | §1.10 Final cleanup | ⏳ | S1.17 |
 | §1.11 Deferred HIR-tree deletion | ⏳ | S1.17b |
@@ -1419,14 +1419,29 @@ the field type IS `Union[...]` — no "first-write wins" shortcut.
 - Recursive classes (tree nodes, list links) converge.
 - `test_classes.py` field-inference tests pass.
 
-## 1.8 Pass migration 🟡 (S1.13, S1.14a landed 2026-04-18)
+## 1.8 Pass migration 🟡 (S1.13, S1.14a, S1.15 landed 2026-04-18)
 
 **Status**: DCE + constfold migrated (S1.13). Inlining's CallGraph
-unified with the canonical `optimizer::call_graph::CallGraph` (S1.14a);
-the SSA-preserving inliner rewrite is deferred to S1.14b — it requires
-a pipeline reorder (construct_ssa before optimize) and is best paired
-with S1.16. Peephole / devirtualize / flatten_properties (S1.15) still
-pending.
+unified (S1.14a). Peephole/devirtualize/flatten_properties audit +
+SSA-aware idempotent rules (S1.15). The remaining piece is S1.14b
+(SSA-preserving inliner rewrite) — deferred because it requires a
+pipeline reorder (construct_ssa before optimize) and is best paired
+with S1.16.
+
+**S1.15 findings**: all three passes are already SSA-compatible. The
+peephole pass is pure local pattern matching — no multi-def
+assumptions; devirtualize reads `locals[id].ty` (the SSA-preserved
+seed type); flatten_properties matches MIR shape. Added SSA-aware
+idempotent rules to `match_binop_same_operand`: `x & x → Copy(x)` and
+`x | x → Copy(x)`. LocalId identity is sufficient for value equality
+under SSA's single-def invariant.
+
+**Deferred to §1.4u** (requires TypeTable threaded through the
+optimizer pipeline):
+- Devirtualize could consult the TypeTable for Refine-narrowed
+  receivers (e.g. after `isinstance`), not just `locals[id].ty`.
+- Flatten_properties could leverage `module.class_info` directly
+  instead of re-detecting trivial getters via MIR pattern match.
 
 **S1.14a findings**: inlining kept a private `CallGraph` in
 `inline/analysis.rs` with a naïve DFS `is_recursive`. The canonical
@@ -2545,7 +2560,7 @@ audit often uncovers surprise gaps.
 | S1.13 ✅ | Pass migration: DCE + constfold (§1.8 part 1). DCE was already SSA-style. Constfold gained: unified propagation map (constants + copy aliases with transitive resolution), Phi-all-same-const fold, Refine-with-const-src fold. Dropped def_count filter under SSA. 6 new tests. | S1.9 | Medium | Parallel-safe with S1.14-S1.15 (different passes) |
 | S1.14a ✅ | Pass migration: inlining — CallGraph unification. Deleted inline-local `CallGraph` + `is_recursive` in `inline/analysis.rs`; both replaced by `optimizer::call_graph::CallGraph::is_recursive` (SCC-aware, direct-edge only to avoid indirect/virtual over-approximation). `FunctionCost::compute` now takes the canonical graph. | S1.13 | Low-Medium | — |
 | S1.14b ⏳ | Pass migration: inlining — SSA-preserving rewrite. Requires pipeline reorder (construct_ssa → optimize), Phi-based return-value merging at continuation block, TypeTable-aware cost model. Pair with S1.16 (codegen manual-phi cleanup) since both touch the pre-SSA / post-SSA boundary. | S1.14a, S1.16 | High | — |
-| S1.15 ⏳ | Pass migration: peephole, devirtualize, flatten_properties (§1.8 part 3) | S1.9 | Medium-High | Parallel-safe with S1.13, S1.14 |
+| S1.15 ✅ | Pass migration: peephole, devirtualize, flatten_properties (§1.8 part 3). Audit showed all three are already SSA-compatible: peephole is local-pattern, devirtualize reads `locals[id].ty` (seed is preserved under SSA), flatten_properties matches MIR patterns. Added SSA-aware idempotent peephole rules: `x & x → x` and `x | x → x` (keyed on LocalId identity — valid under SSA single-def). 3 new tests. TypeTable-aware devirtualize (post-Refine narrowing) and class_info-aware flatten deferred to §1.4u (pipeline restructure). | S1.9 | Medium-High | Parallel-safe with S1.13, S1.14 |
 | S1.16 🟡 | Codegen SSA migration (§1.9): MIR Phi → Cranelift block params, delete manual phi emulation. Phi/block-params wiring landed in S1.5 (codegen emits `append_block_param` + `BlockArg::Value`); deletion of the legacy manual-phi-emulation path in codegen is pending. | S1.6, S1.15 | Medium-High | — |
 | S1.17 ⏳ | Phase 1 final cleanup + acceptance (§1.10): grep-verify deletions, benchmark check, docs update | S1.11, S1.12, S1.16, S1.17b | Low-Medium | — |
 | S1.17b ⏳ | **Deferred §1.1 tail — HIR tree deletion** (added 2026-04-18): delete `Function.body`, `StmtKind::{If, While, ForBind, Try, Match}`, and the tree→CFG bridge `crates/hir/src/cfg_build.rs`. Rewrite the frontend to emit CFG directly. Resolve the open `HirTerminator` iteration-gap question (§1.1 Open Questions). Can only run after S1.8 lands `TypeInferencePass` and the `refined_var_types` / `prescan_var_types` / `narrowed_union_vars` maps are gone. | S1.8 | High | — |
@@ -2795,6 +2810,6 @@ the spec reflecting reality.
 S1.1 / S1.2 / S1.4 / S1.5 / S1.6 / S1.7 / S1.9 / S1.10 / S1.11 ✅;
 S1.8 🟡 (core + rule set, single-match collapse queued as §1.4u);
 S1.16 🟡 (Phi wiring ✅, manual-phi cleanup ⏳); S1.3 ⏳ (folded into
-S1.17b); S1.12 ✅; S1.13 ✅; S1.14a ✅; S1.14b / S1.15 / S1.17 / S1.17b / §1.4u-a-d ⏳.
+S1.17b); S1.12 ✅; S1.13 ✅; S1.14a ✅; S1.15 ✅; S1.14b / S1.17 / S1.17b / §1.4u-a-d ⏳.
 See the Phase-1 status dashboard at the top of §1 and the status
 blocks inside each §1.x milestone for details.*

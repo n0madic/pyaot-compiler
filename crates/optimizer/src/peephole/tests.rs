@@ -509,3 +509,82 @@ fn test_no_transform_mul_three() {
         InstructionKind::BinOp { op: BinOp::Mul, .. }
     ));
 }
+
+// ==================== Idempotent same-operand (SSA-aware) ====================
+
+/// `x & x → x` (bitwise idempotent). Under SSA, LocalId equality is
+/// sufficient for value equality since each local has a single def.
+#[test]
+fn test_bitand_same_operand_folds_to_copy() {
+    let locals = vec![make_local(0, Type::Int), make_local(1, Type::Int)];
+    let instructions = vec![InstructionKind::BinOp {
+        dest: LocalId::from(1u32),
+        op: BinOp::BitAnd,
+        left: Operand::Local(LocalId::from(0u32)),
+        right: Operand::Local(LocalId::from(0u32)),
+    }];
+
+    let mut module = make_module(make_func(locals, instructions));
+    super::run_peephole(&mut module);
+
+    let insts = get_instructions(&module);
+    match &insts[0].kind {
+        InstructionKind::Copy {
+            src: Operand::Local(id),
+            ..
+        } => assert_eq!(id.0, 0),
+        other => panic!("Expected Copy(Local(0)), got {:?}", other),
+    }
+}
+
+/// `x | x → x` (bitwise idempotent).
+#[test]
+fn test_bitor_same_operand_folds_to_copy() {
+    let locals = vec![make_local(0, Type::Int), make_local(1, Type::Int)];
+    let instructions = vec![InstructionKind::BinOp {
+        dest: LocalId::from(1u32),
+        op: BinOp::BitOr,
+        left: Operand::Local(LocalId::from(0u32)),
+        right: Operand::Local(LocalId::from(0u32)),
+    }];
+
+    let mut module = make_module(make_func(locals, instructions));
+    super::run_peephole(&mut module);
+
+    let insts = get_instructions(&module);
+    match &insts[0].kind {
+        InstructionKind::Copy {
+            src: Operand::Local(id),
+            ..
+        } => assert_eq!(id.0, 0),
+        other => panic!("Expected Copy(Local(0)), got {:?}", other),
+    }
+}
+
+/// Different operands must NOT fire the same-operand rule: `a & b` stays.
+#[test]
+fn test_bitand_different_operands_stays() {
+    let locals = vec![
+        make_local(0, Type::Int),
+        make_local(1, Type::Int),
+        make_local(2, Type::Int),
+    ];
+    let instructions = vec![InstructionKind::BinOp {
+        dest: LocalId::from(2u32),
+        op: BinOp::BitAnd,
+        left: Operand::Local(LocalId::from(0u32)),
+        right: Operand::Local(LocalId::from(1u32)),
+    }];
+
+    let mut module = make_module(make_func(locals, instructions));
+    super::run_peephole(&mut module);
+
+    let insts = get_instructions(&module);
+    assert!(matches!(
+        &insts[0].kind,
+        InstructionKind::BinOp {
+            op: BinOp::BitAnd,
+            ..
+        }
+    ));
+}
