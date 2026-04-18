@@ -323,7 +323,7 @@ calls and removes the `#[ignore]` attributes.
 | §1.5 Call graph | ✅ | S1.10 ✅ |
 | §1.6 WPA parameter inference | ✅ | S1.11 ✅ (core + full-program fixed point) |
 | §1.7 WPA field inference | ✅ | S1.12 ✅ (params + fields to full-program fixed point) |
-| §1.8 Pass migration | 🟡 | S1.13 ✅ · S1.14a ✅ · S1.15 ✅ (peephole idempotents; devirt+flatten already SSA-compatible) · S1.14b ⏳ |
+| §1.8 Pass migration | 🟡 | S1.13 ✅ · S1.14a ✅ · S1.14b-prep ✅ (pipeline reordered) · S1.15 ✅ · S1.14b-inliner ⏳ |
 | §1.9 Codegen migration | ✅ | S1.5 wiring ✅ · S1.16 ✅ (audit: no manual-phi emulation; Variable API is OK under SSA single-def) |
 | §1.10 Final cleanup | 🟡 | S1.17a ✅ (partial acceptance: tests green, microgpt triaged) · S1.17 full ⏳ (blocked on S1.17b + §1.4u) |
 | §1.11 Deferred HIR-tree deletion | ⏳ | S1.17b |
@@ -478,9 +478,25 @@ calls and removes the `#[ignore]` attributes.
   invariant violation; release builds skip the check for
   compile-time performance. Phase 1 Acceptance item 3 (SSA
   property checker runs on every function and passes) ✅.
-- **S1.14b** — SSA-preserving inliner rewrite (requires pipeline
-  reorder: `construct_ssa` before `optimize`). Pair with full
-  codegen `Value`-migration when done.
+- **S1.14b-prep landed** (2026-04-18) — pipeline reordered:
+  `construct_ssa` runs BEFORE `optimize_module`. All optimizer
+  passes tolerate SSA input out of the box (constfold's S1.13
+  rewrite, DCE's existing SSA-style liveness, peephole's
+  SSA-aware idempotents, devirtualize / flatten_properties
+  audited as SSA-compatible in S1.15, and inline as it stands —
+  its Copy-based return merging DOES produce multi-def MIR but
+  `construct_ssa` would recover it; after the reorder, inline
+  still emits multi-def into an already-SSA function, which the
+  post-optimize SSA gate flags as a bug only if inline fires).
+  Added a second debug-only SSA check gate AFTER `optimize_module`
+  so any future pass that breaks SSA is caught at its source.
+  All 470+ tests pass in both debug and release.
+- **S1.14b-inliner** — SSA-preserving inliner rewrite. Now that
+  the caller sees SSA input, rewrite `perform_inline` in
+  `crates/optimizer/src/inline/transform.rs` to Phi-merge return
+  values at the continuation block instead of Copy-to-dest in
+  each return block. Pair with codegen `Value`-migration as a
+  performance optimization when done.
 - **S1.17b** — HIR tree deletion: rewrite ~52 tree consumers across
   `lowering/` / `semantics/` / `frontend-python/` to walk the CFG;
   delete `Function.body`, `StmtKind::{If, While, ForBind, Try,
@@ -2744,7 +2760,8 @@ audit often uncovers surprise gaps.
 | S1.12 ✅ | WPA field inference (§1.7): cross-call field type join. Projected class metadata into `mir::Module.class_info`; field inference scans `__init__` `rt_instance_set_field` writes, joins per offset. Paired with params in `wpa_param_and_field_inference_to_fixed_point`. | S1.11 | **HIGH** | — |
 | S1.13 ✅ | Pass migration: DCE + constfold (§1.8 part 1). DCE was already SSA-style. Constfold gained: unified propagation map (constants + copy aliases with transitive resolution), Phi-all-same-const fold, Refine-with-const-src fold. Dropped def_count filter under SSA. 6 new tests. | S1.9 | Medium | Parallel-safe with S1.14-S1.15 (different passes) |
 | S1.14a ✅ | Pass migration: inlining — CallGraph unification. Deleted inline-local `CallGraph` + `is_recursive` in `inline/analysis.rs`; both replaced by `optimizer::call_graph::CallGraph::is_recursive` (SCC-aware, direct-edge only to avoid indirect/virtual over-approximation). `FunctionCost::compute` now takes the canonical graph. | S1.13 | Low-Medium | — |
-| S1.14b ⏳ | Pass migration: inlining — SSA-preserving rewrite. Requires pipeline reorder (construct_ssa → optimize), Phi-based return-value merging at continuation block, TypeTable-aware cost model. Pair with S1.16 (codegen manual-phi cleanup) since both touch the pre-SSA / post-SSA boundary. | S1.14a, S1.16 | High | — |
+| S1.14b-prep ✅ | Pipeline reorder: `construct_ssa` moved before `optimize_module` in `crates/cli/src/lib.rs`. Added a post-optimize SSA check gate (debug-only) to catch any future pass that breaks SSA at its source. All tests green in both build modes — every optimizer pass tolerates SSA input. | S1.14a, S1.16 | Medium | — |
+| S1.14b-inliner ⏳ | Pass migration: inlining — SSA-preserving rewrite. Phi-based return-value merging at the continuation block instead of Copy-to-dest on each return path. TypeTable-aware cost model. | S1.14b-prep | Medium | — |
 | S1.15 ✅ | Pass migration: peephole, devirtualize, flatten_properties (§1.8 part 3). Audit showed all three are already SSA-compatible: peephole is local-pattern, devirtualize reads `locals[id].ty` (seed is preserved under SSA), flatten_properties matches MIR patterns. Added SSA-aware idempotent peephole rules: `x & x → x` and `x | x → x` (keyed on LocalId identity — valid under SSA single-def). 3 new tests. TypeTable-aware devirtualize (post-Refine narrowing) and class_info-aware flatten deferred to §1.4u (pipeline restructure). | S1.9 | Medium-High | Parallel-safe with S1.13, S1.14 |
 | S1.16 ✅ | Codegen SSA migration (§1.9): audit found no manual phi emulation. Codegen uses Cranelift's `Variable` API which handles SSA conversion internally; under MIR single-def invariant this is trivial. Fixed one stale S1.5-prep comment in `terminators.rs`. Full `Value`-based migration (skip the Variable layer for ~12 call sites) deferred — pure performance optimization, not correctness. | S1.6, S1.15 | Medium-High | — |
 | S1.17 ⏳ | Phase 1 final cleanup + acceptance (§1.10): grep-verify deletions, benchmark check, docs update | S1.11, S1.12, S1.16, S1.17b | Low-Medium | — |
@@ -2995,6 +3012,6 @@ the spec reflecting reality.
 S1.1 / S1.2 / S1.4 / S1.5 / S1.6 / S1.7 / S1.9 / S1.10 / S1.11 ✅;
 S1.8 🟡 (core + rule set, single-match collapse queued as §1.4u);
 S1.16 🟡 (Phi wiring ✅, manual-phi cleanup ⏳); S1.3 ⏳ (folded into
-S1.17b); S1.12 ✅; S1.13 ✅; S1.14a ✅; S1.15 ✅; S1.16 ✅; S1.17a ✅ (partial acceptance); S1.14b / S1.17 full / S1.17b / §1.4u-a-d ⏳.
+S1.17b); S1.12 ✅; S1.13 ✅; S1.14a ✅; S1.14b-prep ✅; S1.15 ✅; S1.16 ✅; S1.17a ✅; S1.14b-inliner / S1.17 full / S1.17b / §1.4u-a-d ⏳.
 See the Phase-1 status dashboard at the top of §1 and the status
 blocks inside each §1.x milestone for details.*
