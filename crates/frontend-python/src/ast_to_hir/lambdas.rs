@@ -119,7 +119,8 @@ impl AstToHir {
 
         // 9. Create and register function
         let body_stmts = vec![return_stmt];
-        let (blocks, entry_block) = cfg_build::build_cfg_from_tree(&body_stmts, &self.module.stmts);
+        let (blocks, entry_block, try_scopes) =
+            cfg_build::build_cfg_from_tree(&body_stmts, &mut self.module);
         let function = Function {
             id: func_id,
             name: func_name,
@@ -134,7 +135,7 @@ impl AstToHir {
             is_abstract: false,                 // Lambdas cannot be abstract
             blocks,
             entry_block,
-            try_scopes: Vec::new(),
+            try_scopes,
         };
         self.module.functions.push(func_id);
         self.module.func_defs.insert(func_id, function);

@@ -856,8 +856,8 @@ impl<'a> Lowering<'a> {
         };
 
         let gen_obj_name = self.interner.intern("__gen_obj");
-        let (resume_blocks, resume_entry_block) =
-            hir::cfg_build::build_cfg_from_tree(&resume_body, &m.stmts);
+        let (resume_blocks, resume_entry_block, resume_try_scopes) =
+            hir::cfg_build::build_cfg_from_tree(&resume_body, m);
         let resume_func = hir::Function {
             id: resume_func_id,
             name: resume_name,
@@ -879,15 +879,15 @@ impl<'a> Lowering<'a> {
             is_abstract: false,
             blocks: resume_blocks,
             entry_block: resume_entry_block,
-            try_scopes: Vec::new(),
+            try_scopes: resume_try_scopes,
         };
         m.func_defs.insert(resume_func_id, resume_func);
         m.functions.push(resume_func_id);
 
         // 5. Replace original function body with creator logic
         let creator_body = build_creator_body(m, &func, &gen_vars, num_locals, span);
-        let (creator_blocks, creator_entry_block) =
-            hir::cfg_build::build_cfg_from_tree(&creator_body, &m.stmts);
+        let (creator_blocks, creator_entry_block, creator_try_scopes) =
+            hir::cfg_build::build_cfg_from_tree(&creator_body, m);
         // Retrieve the already-stored return type (Iterator[elem_type])
         let creator_return_type = self
             .func_return_types
@@ -905,6 +905,7 @@ impl<'a> Lowering<'a> {
         original.return_type = Some(creator_return_type);
         original.blocks = creator_blocks;
         original.entry_block = creator_entry_block;
+        original.try_scopes = creator_try_scopes;
 
         Ok(())
     }

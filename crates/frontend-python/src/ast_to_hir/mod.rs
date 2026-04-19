@@ -426,7 +426,8 @@ impl AstToHir {
         let func_name = self.interner.intern("__pyaot_module_init__");
 
         let body_stmts = self.module.module_init_stmts.clone();
-        let (blocks, entry_block) = cfg_build::build_cfg_from_tree(&body_stmts, &self.module.stmts);
+        let (blocks, entry_block, try_scopes) =
+            cfg_build::build_cfg_from_tree(&body_stmts, &mut self.module);
         let function = Function {
             id: func_id,
             name: func_name,
@@ -441,7 +442,7 @@ impl AstToHir {
             is_abstract: false,
             blocks,
             entry_block,
-            try_scopes: Vec::new(),
+            try_scopes,
         };
 
         self.module.functions.push(func_id);

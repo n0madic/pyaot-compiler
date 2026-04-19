@@ -104,7 +104,8 @@ impl AstToHir {
         let func_cell_vars = std::mem::take(&mut self.scope.current_cell_vars);
         let func_is_generator = self.scope.current_func_is_generator;
 
-        let (blocks, entry_block) = cfg_build::build_cfg_from_tree(&body_stmts, &self.module.stmts);
+        let (blocks, entry_block, try_scopes) =
+            cfg_build::build_cfg_from_tree(&body_stmts, &mut self.module);
         let function = Function {
             id: func_id,
             name: func_name,
@@ -119,7 +120,7 @@ impl AstToHir {
             is_abstract: false,                 // Top-level functions cannot be abstract
             blocks,
             entry_block,
-            try_scopes: Vec::new(),
+            try_scopes,
         };
 
         self.module.functions.push(func_id);

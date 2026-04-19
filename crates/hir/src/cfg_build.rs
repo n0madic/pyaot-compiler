@@ -1,53 +1,63 @@
 //! Tree → CFG conversion for HIR function bodies.
 //!
 //! Phase 1 §1.1 of `ARCHITECTURE_REFACTOR.md` requires every `hir::Function` to
-//! carry an explicit control-flow graph (`blocks` + `entry_block`). During the
-//! S1.2 bridge period the legacy statement-tree representation
-//! (`Function.body: Vec<StmtId>` plus the nested-body `StmtKind::{If, While,
-//! ForBind, Try, Match}` variants) is still the canonical form consumed by
-//! optimizer / lowering / codegen. This module reads that tree and emits a
-//! parallel CFG that consumers will begin using in S1.3.
+//! carry an explicit control-flow graph (`blocks` + `entry_block`). This
+//! module consumes the tree form (`Function.body` + nested-body `StmtKind`
+//! variants) and emits a parallel CFG that consumers read after the §1.11
+//! S1.17b-c/d/e migrations.
 //!
-//! The converter is intentionally a throwaway: S1.3 deletes the tree variants
-//! and each `ast_to_hir` control-flow lowerer emits the CFG directly, making
-//! this file obsolete. Keep it minimal.
+//! ## Rich CFG shape (S1.17b-b enhancement, 2026-04-19)
 //!
-//! ## Simplifications for S1.2
+//! Post-S1.17b-a schema additions (`ExprKind::IterHasNext`,
+//! `StmtKind::IterAdvance`, `ExprKind::MatchPattern`, `Function::try_scopes`,
+//! `ExceptHandler::entry_block`) the bridge now allocates the new arena
+//! entries directly:
 //!
-//! * `ForBind` uses the `iter` expression as a placeholder branch condition.
-//!   The real iteration protocol (has-next / next) is emitted in a later
-//!   session; here we only need the topological shape "header, body, optional
-//!   else, exit".
-//! * `Try` handlers are emitted as standalone blocks that are unreachable
-//!   from the CFG — we do not model exception edges. `raise` becomes a
-//!   `Raise` terminator and bare re-raise collapses to `Unreachable`.
-//! * `Match` cases are chained linearly with a jump from each case to the
-//!   post-match merge block. No pattern-dispatch terminator exists yet.
+//! * `ForBind` — the header block terminates with
+//!   `Branch(IterHasNext(iter), body_entry, else_or_exit)`. `body_entry`
+//!   begins with a new `StmtKind::IterAdvance { iter, target }` to bind the
+//!   next element, then runs the original body statements.
+//! * `Match` — each case block is entered via
+//!   `Branch(MatchPattern(subject, case.pattern), body, next_case)`. Pattern
+//!   capture bindings are emitted as ordinary `StmtKind::Bind` statements at
+//!   the case-body head (Stage 2 emits them via legacy lowering still;
+//!   S1.17b-c moves this in-bridge).
+//! * `Try` — handler `entry_block`s are populated and registered in the
+//!   function's `try_scopes` side map.
 //!
-//! None of these shortcuts affect S1.2 correctness — no consumer reads the
-//! CFG yet.
+//! Because these additions require allocating new arena entries, the bridge
+//! now takes `&mut Module` (not `&Arena<Stmt>`). The 8 call sites in the
+//! frontend + generator desugaring were migrated accordingly.
 
 use indexmap::IndexMap;
-use la_arena::Arena;
-use pyaot_utils::HirBlockId;
+use pyaot_utils::{HirBlockId, Span};
 
-use crate::{HirBlock, HirTerminator, Stmt, StmtId, StmtKind};
+use crate::{
+    BindingTarget, ExceptHandler, Expr, ExprId, ExprKind, HirBlock, HirTerminator, Module, Stmt,
+    StmtId, StmtKind, TryScope,
+};
 
 /// Build a CFG from a straight-through tree-form function body.
 ///
-/// Returns the populated block map and the `entry_block` id. The returned
-/// CFG always has at least one block; if `body` is empty the single entry
-/// block is terminated with `Return(None)`.
+/// Returns the populated block map, the `entry_block` id, and any `TryScope`s
+/// discovered while lowering. The returned CFG always has at least one block;
+/// if `body` is empty the single entry block is terminated with
+/// `Return(None)`.
+///
+/// `module` is borrowed mutably so the bridge can allocate new arena entries
+/// for the rich CFG shape (`ExprKind::IterHasNext`, `StmtKind::IterAdvance`,
+/// `ExprKind::MatchPattern`). None of these allocations are visible through
+/// the legacy tree; consumers walking `Function.body` never see them.
 pub fn build_cfg_from_tree(
     body: &[StmtId],
-    stmts: &Arena<Stmt>,
-) -> (IndexMap<HirBlockId, HirBlock>, HirBlockId) {
+    module: &mut Module,
+) -> (IndexMap<HirBlockId, HirBlock>, HirBlockId, Vec<TryScope>) {
     let mut builder = CfgBuilder::new();
     let entry = builder.new_block();
     builder.enter(entry);
-    builder.lower_stmts(body, stmts);
+    builder.lower_stmts(body, module);
     builder.terminate_if_open(HirTerminator::Return(None));
-    (builder.blocks, entry)
+    (builder.blocks, entry, builder.try_scopes)
 }
 
 struct CfgBuilder {
@@ -59,6 +69,9 @@ struct CfgBuilder {
     current_terminated: bool,
     next_id: u32,
     loop_stack: Vec<LoopCtx>,
+    /// Try-scopes discovered while lowering. The caller merges these into
+    /// `Function::try_scopes` after construction (§1.11 Q2).
+    try_scopes: Vec<TryScope>,
 }
 
 #[derive(Clone, Copy)]
@@ -75,7 +88,50 @@ impl CfgBuilder {
             current_terminated: false,
             next_id: 0,
             loop_stack: Vec::new(),
+            try_scopes: Vec::new(),
         }
+    }
+
+    /// Allocate a fresh `ExprKind::IterHasNext(iter)` bool predicate.
+    fn alloc_iter_has_next(&self, module: &mut Module, iter: ExprId, span: Span) -> ExprId {
+        module.exprs.alloc(Expr {
+            kind: ExprKind::IterHasNext(iter),
+            ty: Some(pyaot_types::Type::Bool),
+            span,
+        })
+    }
+
+    /// Allocate a fresh `StmtKind::IterAdvance { iter, target }` stmt.
+    fn alloc_iter_advance(
+        &self,
+        module: &mut Module,
+        iter: ExprId,
+        target: BindingTarget,
+        span: Span,
+    ) -> StmtId {
+        module.stmts.alloc(Stmt {
+            kind: StmtKind::IterAdvance { iter, target },
+            span,
+        })
+    }
+
+    /// Allocate a fresh `ExprKind::MatchPattern { subject, pattern }` bool
+    /// predicate.
+    fn alloc_match_pattern(
+        &self,
+        module: &mut Module,
+        subject: ExprId,
+        pattern: crate::Pattern,
+        span: Span,
+    ) -> ExprId {
+        module.exprs.alloc(Expr {
+            kind: ExprKind::MatchPattern {
+                subject,
+                pattern: Box::new(pattern),
+            },
+            ty: Some(pyaot_types::Type::Bool),
+            span,
+        })
     }
 
     fn new_block(&mut self) -> HirBlockId {
@@ -125,18 +181,21 @@ impl CfgBuilder {
         }
     }
 
-    fn lower_stmts(&mut self, stmts_list: &[StmtId], stmts: &Arena<Stmt>) {
+    fn lower_stmts(&mut self, stmts_list: &[StmtId], module: &mut Module) {
         for &stmt_id in stmts_list {
             if self.current_terminated {
                 break;
             }
-            self.lower_stmt(stmt_id, stmts);
+            self.lower_stmt(stmt_id, module);
         }
     }
 
-    fn lower_stmt(&mut self, stmt_id: StmtId, stmts: &Arena<Stmt>) {
-        let stmt = &stmts[stmt_id];
-        match &stmt.kind {
+    fn lower_stmt(&mut self, stmt_id: StmtId, module: &mut Module) {
+        // Clone the kind so we can release the shared borrow on `module.stmts`
+        // before recursing into `lower_stmts` with a mutable borrow.
+        let stmt_kind = module.stmts[stmt_id].kind.clone();
+        let stmt_span = module.stmts[stmt_id].span;
+        match stmt_kind {
             StmtKind::Expr(_)
             | StmtKind::Bind { .. }
             | StmtKind::Pass
@@ -148,16 +207,13 @@ impl CfgBuilder {
 
             StmtKind::Return(value) => {
                 let block = self.current;
-                self.set_terminator(block, HirTerminator::Return(*value));
+                self.set_terminator(block, HirTerminator::Return(value));
             }
 
             StmtKind::Raise { exc, cause } => {
                 let block = self.current;
                 let term = match exc {
-                    Some(exc_id) => HirTerminator::Raise {
-                        exc: *exc_id,
-                        cause: *cause,
-                    },
+                    Some(exc_id) => HirTerminator::Raise { exc: exc_id, cause },
                     // Bare `raise` (re-raise) has no expression to attach.
                     // Mark the block Unreachable from a CFG perspective; the
                     // legacy tree still carries the real `Raise` stmt for
@@ -198,18 +254,18 @@ impl CfgBuilder {
                 self.set_terminator(
                     branch_block,
                     HirTerminator::Branch {
-                        cond: *cond,
+                        cond,
                         then_bb,
                         else_bb,
                     },
                 );
 
                 self.enter(then_bb);
-                self.lower_stmts(then_block, stmts);
+                self.lower_stmts(&then_block, module);
                 self.terminate_if_open(HirTerminator::Jump(merge_bb));
 
                 self.enter(else_bb);
-                self.lower_stmts(else_block, stmts);
+                self.lower_stmts(&else_block, module);
                 self.terminate_if_open(HirTerminator::Jump(merge_bb));
 
                 self.enter(merge_bb);
@@ -236,7 +292,7 @@ impl CfgBuilder {
                 self.set_terminator(
                     header_bb,
                     HirTerminator::Branch {
-                        cond: *cond,
+                        cond,
                         then_bb: body_bb,
                         else_bb,
                     },
@@ -247,28 +303,26 @@ impl CfgBuilder {
                     break_bb: exit_bb,
                 });
                 self.enter(body_bb);
-                self.lower_stmts(body, stmts);
+                self.lower_stmts(&body, module);
                 self.terminate_if_open(HirTerminator::Jump(header_bb));
                 self.loop_stack.pop();
 
                 if !else_block.is_empty() {
                     self.enter(else_bb);
-                    self.lower_stmts(else_block, stmts);
+                    self.lower_stmts(&else_block, module);
                     self.terminate_if_open(HirTerminator::Jump(exit_bb));
                 }
 
                 self.enter(exit_bb);
             }
 
+            // §1.11 Q1 Scheme A — emit IterHasNext + IterAdvance.
             StmtKind::ForBind {
-                target: _,
+                target,
                 iter,
                 body,
                 else_block,
             } => {
-                // The iter expression stands in for the branch condition. S1.3
-                // replaces this with a proper has-next / next terminator
-                // schema once the tree representation is retired.
                 let header_bb = self.new_block();
                 let body_bb = self.new_block();
                 let exit_bb = self.new_block();
@@ -281,103 +335,192 @@ impl CfgBuilder {
                 let pre_block = self.current;
                 self.set_terminator(pre_block, HirTerminator::Jump(header_bb));
 
+                // Header: `Branch(IterHasNext(iter), body, else_or_exit)`.
+                let has_next = self.alloc_iter_has_next(module, iter, stmt_span);
                 self.enter(header_bb);
                 self.set_terminator(
                     header_bb,
                     HirTerminator::Branch {
-                        cond: *iter,
+                        cond: has_next,
                         then_bb: body_bb,
                         else_bb,
                     },
                 );
 
+                // Body: prefix with `IterAdvance { iter, target }` then emit
+                // the original body statements. Lowering will recognise the
+                // IterAdvance and emit the runtime iterator-next protocol.
                 self.loop_stack.push(LoopCtx {
                     continue_bb: header_bb,
                     break_bb: exit_bb,
                 });
                 self.enter(body_bb);
-                self.lower_stmts(body, stmts);
+                let advance_stmt = self.alloc_iter_advance(module, iter, target.clone(), stmt_span);
+                self.push_stmt(advance_stmt);
+                self.lower_stmts(&body, module);
                 self.terminate_if_open(HirTerminator::Jump(header_bb));
                 self.loop_stack.pop();
 
                 if !else_block.is_empty() {
                     self.enter(else_bb);
-                    self.lower_stmts(else_block, stmts);
+                    self.lower_stmts(&else_block, module);
                     self.terminate_if_open(HirTerminator::Jump(exit_bb));
                 }
 
                 self.enter(exit_bb);
             }
 
+            // §1.11 Q2 — handlers are registered as a `TryScope`. Handler
+            // entry blocks have no CFG predecessors; runtime unwinding
+            // dispatches into them on a matching raise.
             StmtKind::Try {
                 body,
                 handlers,
                 else_block,
                 finally_block,
             } => {
-                // Body → else → finally → post, chained sequentially. Handlers
-                // are emitted as standalone blocks that are unreachable from
-                // the CFG — exception edges are a later-phase concern.
                 let body_bb = self.new_block();
                 let post_bb = self.new_block();
 
                 let pre_block = self.current;
                 self.set_terminator(pre_block, HirTerminator::Jump(body_bb));
 
-                self.enter(body_bb);
-                self.lower_stmts(body, stmts);
+                // Track blocks emitted inside body / else / finally so the
+                // TryScope can cite them as "guarded by this handler chain".
+                let mut try_blocks_set: Vec<HirBlockId> = Vec::new();
+                let mut else_blocks_set: Vec<HirBlockId> = Vec::new();
+                let mut finally_blocks_set: Vec<HirBlockId> = Vec::new();
 
+                let blocks_before_body = self.next_id;
+                self.enter(body_bb);
+                self.lower_stmts(&body, module);
+                for id in blocks_before_body..self.next_id {
+                    try_blocks_set.push(HirBlockId::new(id));
+                }
+
+                let blocks_before_else = self.next_id;
                 let after_body = if else_block.is_empty() {
                     post_bb
                 } else {
                     let else_bb = self.new_block();
                     self.terminate_if_open(HirTerminator::Jump(else_bb));
                     self.enter(else_bb);
-                    self.lower_stmts(else_block, stmts);
+                    self.lower_stmts(&else_block, module);
                     post_bb
                 };
+                for id in blocks_before_else..self.next_id {
+                    else_blocks_set.push(HirBlockId::new(id));
+                }
 
+                let blocks_before_finally = self.next_id;
                 if !finally_block.is_empty() {
                     let finally_bb = self.new_block();
                     self.terminate_if_open(HirTerminator::Jump(finally_bb));
                     self.enter(finally_bb);
-                    self.lower_stmts(finally_block, stmts);
+                    self.lower_stmts(&finally_block, module);
                     self.terminate_if_open(HirTerminator::Jump(post_bb));
                 } else {
                     self.terminate_if_open(HirTerminator::Jump(after_body));
                 }
+                for id in blocks_before_finally..self.next_id {
+                    finally_blocks_set.push(HirBlockId::new(id));
+                }
 
+                // Emit a CFG block for each handler, populating its
+                // `entry_block`. Each handler's body lives inside the block
+                // (bindings + user-written code); terminator is Jump(post_bb).
+                let mut handlers_out: Vec<ExceptHandler> = Vec::with_capacity(handlers.len());
                 for handler in handlers {
                     let handler_bb = self.new_block();
                     self.enter(handler_bb);
-                    self.lower_stmts(&handler.body, stmts);
+                    self.lower_stmts(&handler.body, module);
                     self.terminate_if_open(HirTerminator::Jump(post_bb));
+                    handlers_out.push(ExceptHandler {
+                        entry_block: handler_bb,
+                        ..handler
+                    });
                 }
+
+                // Register the scope. Consumer migration (S1.17b-c/d) reads
+                // `Function::try_scopes` to find handler chains for each
+                // guarded body block.
+                self.try_scopes.push(TryScope {
+                    try_blocks: try_blocks_set,
+                    else_blocks: else_blocks_set,
+                    handlers: handlers_out,
+                    finally_blocks: finally_blocks_set,
+                    span: stmt_span,
+                });
 
                 self.enter(post_bb);
             }
 
-            StmtKind::Match { subject: _, cases } => {
-                // Linearised case chain: each case body occupies its own block
-                // and jumps to the post-match merge. Pattern dispatch is not
-                // modelled in the CFG for S1.2.
+            // §1.11 Q3 — match desugars to an if/else ladder of
+            // `Branch(MatchPattern(subject, pattern), body, next_case)`.
+            StmtKind::Match { subject, cases } => {
                 let post_bb = self.new_block();
 
                 if cases.is_empty() {
                     let pre_block = self.current;
                     self.set_terminator(pre_block, HirTerminator::Jump(post_bb));
                 } else {
+                    // Allocate one block per case-body plus the "no match"
+                    // fallthrough block used as the else target of the last
+                    // case's predicate branch.
                     let case_bbs: Vec<HirBlockId> =
                         cases.iter().map(|_| self.new_block()).collect();
+                    let fallthrough_bb = self.new_block();
 
+                    // Allocate predicate ExprIds upfront so the loop below
+                    // can freely call `lower_stmts(.. module)`.
+                    let predicates: Vec<ExprId> = cases
+                        .iter()
+                        .map(|case| {
+                            self.alloc_match_pattern(
+                                module,
+                                subject,
+                                case.pattern.clone(),
+                                stmt_span,
+                            )
+                        })
+                        .collect();
+
+                    // Test block N: Branch(MatchPattern(subject, pat_N),
+                    //                      case_body_N,
+                    //                      N+1 < len ? test_block(N+1) : fallthrough)
+                    let test_bbs: Vec<HirBlockId> =
+                        cases.iter().map(|_| self.new_block()).collect();
                     let pre_block = self.current;
-                    self.set_terminator(pre_block, HirTerminator::Jump(case_bbs[0]));
+                    self.set_terminator(pre_block, HirTerminator::Jump(test_bbs[0]));
+                    for (i, (&test_bb, (&case_bb, predicate))) in test_bbs
+                        .iter()
+                        .zip(case_bbs.iter().zip(predicates.iter()))
+                        .enumerate()
+                    {
+                        let next_test = if i + 1 < test_bbs.len() {
+                            test_bbs[i + 1]
+                        } else {
+                            fallthrough_bb
+                        };
+                        self.enter(test_bb);
+                        self.set_terminator(
+                            test_bb,
+                            HirTerminator::Branch {
+                                cond: *predicate,
+                                then_bb: case_bb,
+                                else_bb: next_test,
+                            },
+                        );
+                    }
 
                     for (case, &bb) in cases.iter().zip(&case_bbs) {
                         self.enter(bb);
-                        self.lower_stmts(&case.body, stmts);
+                        self.lower_stmts(&case.body, module);
                         self.terminate_if_open(HirTerminator::Jump(post_bb));
                     }
+
+                    self.enter(fallthrough_bb);
+                    self.terminate_if_open(HirTerminator::Jump(post_bb));
                 }
 
                 self.enter(post_bb);
@@ -389,11 +532,17 @@ impl CfgBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BindingTarget, Expr, ExprKind, Stmt, StmtKind};
-    use pyaot_utils::{Span, VarId};
+    use crate::{BindingTarget, Expr, ExprKind, Module, Stmt, StmtKind};
+    use la_arena::Arena;
+    use pyaot_utils::{Span, StringInterner, VarId};
 
     fn dummy_span() -> Span {
         Span::dummy()
+    }
+
+    fn make_module() -> Module {
+        let mut interner = StringInterner::new();
+        Module::new(interner.intern("test"))
     }
 
     fn alloc_expr(exprs: &mut Arena<Expr>) -> la_arena::Idx<Expr> {
@@ -425,8 +574,8 @@ mod tests {
 
     #[test]
     fn empty_body_returns_single_block_with_return_none() {
-        let stmts = Arena::new();
-        let (blocks, entry) = build_cfg_from_tree(&[], &stmts);
+        let mut module = make_module();
+        let (blocks, entry, _try_scopes) = build_cfg_from_tree(&[], &mut module);
         assert_eq!(blocks.len(), 1);
         let block = &blocks[&entry];
         assert!(block.stmts.is_empty());
@@ -435,13 +584,12 @@ mod tests {
 
     #[test]
     fn straight_line_body_collapses_to_one_block() {
-        let mut stmts = Arena::new();
-        let mut exprs = Arena::new();
-        let s1 = bind_stmt(&mut stmts, &mut exprs);
-        let s2 = bind_stmt(&mut stmts, &mut exprs);
-        let s3 = bind_stmt(&mut stmts, &mut exprs);
+        let mut module = make_module();
+        let s1 = bind_stmt(&mut module.stmts, &mut module.exprs);
+        let s2 = bind_stmt(&mut module.stmts, &mut module.exprs);
+        let s3 = bind_stmt(&mut module.stmts, &mut module.exprs);
 
-        let (blocks, entry) = build_cfg_from_tree(&[s1, s2, s3], &stmts);
+        let (blocks, entry, _try_scopes) = build_cfg_from_tree(&[s1, s2, s3], &mut module);
         assert_eq!(blocks.len(), 1);
         let block = &blocks[&entry];
         assert_eq!(block.stmts, vec![s1, s2, s3]);
@@ -450,13 +598,12 @@ mod tests {
 
     #[test]
     fn if_emits_then_else_merge() {
-        let mut stmts = Arena::new();
-        let mut exprs = Arena::new();
-        let cond = alloc_expr(&mut exprs);
-        let then_stmt = bind_stmt(&mut stmts, &mut exprs);
-        let else_stmt = bind_stmt(&mut stmts, &mut exprs);
+        let mut module = make_module();
+        let cond = alloc_expr(&mut module.exprs);
+        let then_stmt = bind_stmt(&mut module.stmts, &mut module.exprs);
+        let else_stmt = bind_stmt(&mut module.stmts, &mut module.exprs);
         let if_stmt = alloc_stmt(
-            &mut stmts,
+            &mut module.stmts,
             StmtKind::If {
                 cond,
                 then_block: vec![then_stmt],
@@ -464,7 +611,7 @@ mod tests {
             },
         );
 
-        let (blocks, entry) = build_cfg_from_tree(&[if_stmt], &stmts);
+        let (blocks, entry, _try_scopes) = build_cfg_from_tree(&[if_stmt], &mut module);
         // entry(branch) + then + else + merge = 4 blocks.
         assert_eq!(blocks.len(), 4);
         let branch = &blocks[&entry];
@@ -494,14 +641,13 @@ mod tests {
 
     #[test]
     fn while_with_break_continue() {
-        let mut stmts = Arena::new();
-        let mut exprs = Arena::new();
-        let cond = alloc_expr(&mut exprs);
-        let break_stmt = alloc_stmt(&mut stmts, StmtKind::Break);
-        let continue_stmt = alloc_stmt(&mut stmts, StmtKind::Continue);
-        let inner_cond = alloc_expr(&mut exprs);
+        let mut module = make_module();
+        let cond = alloc_expr(&mut module.exprs);
+        let break_stmt = alloc_stmt(&mut module.stmts, StmtKind::Break);
+        let continue_stmt = alloc_stmt(&mut module.stmts, StmtKind::Continue);
+        let inner_cond = alloc_expr(&mut module.exprs);
         let inner_if = alloc_stmt(
-            &mut stmts,
+            &mut module.stmts,
             StmtKind::If {
                 cond: inner_cond,
                 then_block: vec![break_stmt],
@@ -509,7 +655,7 @@ mod tests {
             },
         );
         let while_stmt = alloc_stmt(
-            &mut stmts,
+            &mut module.stmts,
             StmtKind::While {
                 cond,
                 body: vec![inner_if],
@@ -517,7 +663,7 @@ mod tests {
             },
         );
 
-        let (blocks, _entry) = build_cfg_from_tree(&[while_stmt], &stmts);
+        let (blocks, _entry, _try_scopes) = build_cfg_from_tree(&[while_stmt], &mut module);
         // Verify at least one Jump to a header (continue) and at least one
         // Jump to an exit (break) exist — precise block ids are internal.
         let jumps: Vec<HirBlockId> = blocks
@@ -545,13 +691,12 @@ mod tests {
 
     #[test]
     fn return_shortcircuits_remaining_stmts() {
-        let mut stmts = Arena::new();
-        let mut exprs = Arena::new();
-        let pre = bind_stmt(&mut stmts, &mut exprs);
-        let ret = alloc_stmt(&mut stmts, StmtKind::Return(None));
-        let after = bind_stmt(&mut stmts, &mut exprs);
+        let mut module = make_module();
+        let pre = bind_stmt(&mut module.stmts, &mut module.exprs);
+        let ret = alloc_stmt(&mut module.stmts, StmtKind::Return(None));
+        let after = bind_stmt(&mut module.stmts, &mut module.exprs);
 
-        let (blocks, entry) = build_cfg_from_tree(&[pre, ret, after], &stmts);
+        let (blocks, entry, _try_scopes) = build_cfg_from_tree(&[pre, ret, after], &mut module);
         assert_eq!(blocks.len(), 1);
         let block = &blocks[&entry];
         // `after` must not be emitted — it lives past the Return.
@@ -561,18 +706,17 @@ mod tests {
 
     #[test]
     fn raise_with_expr_becomes_raise_terminator() {
-        let mut stmts = Arena::new();
-        let mut exprs = Arena::new();
-        let exc = alloc_expr(&mut exprs);
+        let mut module = make_module();
+        let exc = alloc_expr(&mut module.exprs);
         let raise_stmt = alloc_stmt(
-            &mut stmts,
+            &mut module.stmts,
             StmtKind::Raise {
                 exc: Some(exc),
                 cause: None,
             },
         );
 
-        let (blocks, entry) = build_cfg_from_tree(&[raise_stmt], &stmts);
+        let (blocks, entry, _try_scopes) = build_cfg_from_tree(&[raise_stmt], &mut module);
         assert!(matches!(
             blocks[&entry].terminator,
             HirTerminator::Raise { cause: None, .. }
