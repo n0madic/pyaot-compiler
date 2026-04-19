@@ -522,39 +522,51 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Find if a function returns a closure (for decorator pattern analysis)
-    /// Returns the FuncId of the returned closure if found
+    /// Find if a function returns a closure (for decorator pattern analysis).
+    /// Returns the FuncId of the returned closure if found.
+    ///
+    /// §1.17b-d — reads `Return(Some(expr))` from CFG block terminators.
+    /// The first matching block wins (same semantics as the former tree
+    /// walk's first-Return-stmt). Variable-rebinding search now walks all
+    /// block stmts across the function.
     pub(crate) fn find_returned_closure(
         &self,
         func: &hir::Function,
         hir_module: &hir::Module,
     ) -> Option<FuncId> {
-        // Look through the function body for return statements that return closures
-        for stmt_id in &func.body {
-            let stmt = &hir_module.stmts[*stmt_id];
-            if let hir::StmtKind::Return(Some(expr_id)) = &stmt.kind {
-                let expr = &hir_module.exprs[*expr_id];
-                if let hir::ExprKind::Closure { func, .. } = &expr.kind {
-                    return Some(*func);
-                }
-                // Check if returning a variable that holds a closure (common pattern)
-                if let hir::ExprKind::Var(var_id) = &expr.kind {
-                    // Check if this variable was assigned a closure in this function
-                    for other_stmt_id in &func.body {
-                        let other_stmt = &hir_module.stmts[*other_stmt_id];
-                        let var_assign = match &other_stmt.kind {
-                            hir::StmtKind::Bind {
-                                target: hir::BindingTarget::Var(target_var),
-                                value,
-                                ..
-                            } => Some((*target_var, *value)),
-                            _ => None,
-                        };
-                        if let Some((target, value)) = var_assign {
-                            if target == *var_id {
-                                let value_expr = &hir_module.exprs[value];
-                                if let hir::ExprKind::Closure { func, .. } = &value_expr.kind {
-                                    return Some(*func);
+        for block in func.blocks.values() {
+            let return_expr_id = match &block.terminator {
+                hir::HirTerminator::Return(Some(e)) => Some(*e),
+                _ => None,
+            };
+            let Some(expr_id) = return_expr_id else {
+                continue;
+            };
+            let expr = &hir_module.exprs[expr_id];
+            if let hir::ExprKind::Closure {
+                func: closure_fn, ..
+            } = &expr.kind
+            {
+                return Some(*closure_fn);
+            }
+            // Check if returning a variable that holds a closure (common pattern)
+            if let hir::ExprKind::Var(var_id) = &expr.kind {
+                for search_block in func.blocks.values() {
+                    for &other_stmt_id in &search_block.stmts {
+                        let other_stmt = &hir_module.stmts[other_stmt_id];
+                        if let hir::StmtKind::Bind {
+                            target: hir::BindingTarget::Var(target_var),
+                            value,
+                            ..
+                        } = &other_stmt.kind
+                        {
+                            if target_var == var_id {
+                                let value_expr = &hir_module.exprs[*value];
+                                if let hir::ExprKind::Closure {
+                                    func: closure_fn, ..
+                                } = &value_expr.kind
+                                {
+                                    return Some(*closure_fn);
                                 }
                             }
                         }

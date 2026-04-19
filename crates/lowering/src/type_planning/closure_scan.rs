@@ -573,9 +573,20 @@ impl<'a> Lowering<'a> {
                     overlay.insert(p.var, ty.clone());
                 }
             }
-            for stmt_id in &func.body {
-                self.collect_call_arg_types(
-                    *stmt_id,
+            // §1.17b-d — walk the CFG. Terminators carry exprs (Return /
+            // Branch / Raise) that need scanning for embedded calls.
+            for block in func.blocks.values() {
+                for &stmt_id in &block.stmts {
+                    self.collect_call_arg_types(
+                        stmt_id,
+                        hir_module,
+                        &var_to_func,
+                        &overlay,
+                        &mut accumulators,
+                    );
+                }
+                self.scan_terminator_for_calls(
+                    &block.terminator,
                     hir_module,
                     &var_to_func,
                     &overlay,
@@ -638,6 +649,35 @@ impl<'a> Lowering<'a> {
                 hint.push(final_ty);
             }
             self.insert_lambda_param_type_hints(func_id, hint);
+        }
+    }
+
+    /// Scan a HirTerminator's embedded exprs for resolved calls.
+    fn scan_terminator_for_calls(
+        &self,
+        term: &hir::HirTerminator,
+        hir_module: &hir::Module,
+        var_to_func: &std::collections::HashMap<VarId, (pyaot_utils::FuncId, usize)>,
+        overlay: &IndexMap<VarId, Type>,
+        accumulators: &mut std::collections::HashMap<pyaot_utils::FuncId, Vec<Type>>,
+    ) {
+        use hir::HirTerminator::*;
+        let exprs: Vec<hir::ExprId> = match term {
+            Jump(_) | Unreachable => Vec::new(),
+            Branch { cond, .. } => vec![*cond],
+            Return(Some(e)) | Yield { value: e, .. } => vec![*e],
+            Return(None) => Vec::new(),
+            Raise { exc, cause } => {
+                let mut v = vec![*exc];
+                if let Some(c) = cause {
+                    v.push(*c);
+                }
+                v
+            }
+        };
+        for expr_id in exprs {
+            let expr = &hir_module.exprs[expr_id];
+            self.scan_expr_for_calls(expr, hir_module, var_to_func, overlay, accumulators);
         }
     }
 
