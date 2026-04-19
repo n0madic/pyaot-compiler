@@ -73,6 +73,7 @@ impl<'a> Lowering<'a> {
                 expected_type: None,
                 pending_varargs_from_unpack: None,
                 pending_kwargs_from_unpack: None,
+                iter_cache: IndexMap::new(),
             },
             symbols: SymbolTable {
                 var_to_local: IndexMap::with_capacity(estimated_vars),

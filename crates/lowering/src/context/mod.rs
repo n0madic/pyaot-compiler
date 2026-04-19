@@ -243,6 +243,15 @@ pub struct CodeGenState {
     pub pending_varargs_from_unpack: Option<LocalId>,
     /// Runtime kwargs dict from **kwargs unpacking
     pub pending_kwargs_from_unpack: Option<(LocalId, Type)>,
+    /// §1.17b-c — per-function iterator cache for `ExprKind::IterHasNext`
+    /// / `StmtKind::IterAdvance` lowering. The first reference to a given
+    /// iter ExprId creates the iterator via `rt_iter_X` and stores the
+    /// resulting local here; subsequent IterHasNext / IterAdvance for the
+    /// same ExprId reuse it. Cleared per-function by `lower_function` so
+    /// cache entries don't leak between functions (ExprIds are globally
+    /// unique across the module, but cache lifetime is still per-function
+    /// to keep state tidy).
+    pub iter_cache: IndexMap<pyaot_hir::ExprId, LocalId>,
 }
 
 /// Variable names → local IDs, function references, global tracking, per-function type state
