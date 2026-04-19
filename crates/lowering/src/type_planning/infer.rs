@@ -314,6 +314,19 @@ impl<'a> Lowering<'a> {
                     return Some(func_def.return_type.clone().unwrap_or(Type::None));
                 }
             }
+            // Identity-decorated module-level functions: `@identity def f(): …`
+            // leaves `f` as a Var pointing at the original FuncId (tracked in
+            // `module_var_funcs`, populated by `process_module_decorated_functions`).
+            // Required so eager-cache of Call-expr return types sees the original
+            // function's return type instead of falling through to `Type::Any`.
+            if let Some(func_id) = self.get_module_var_func(var_id) {
+                if let Some(return_type) = self.get_func_return_type(&func_id) {
+                    return Some(return_type.clone());
+                }
+                if let Some(func_def) = module.func_defs.get(&func_id) {
+                    return Some(func_def.return_type.clone().unwrap_or(Type::None));
+                }
+            }
         }
         if let hir::ExprKind::ClassRef(class_id) = &func_expr.kind {
             if let Some(class_def) = module.class_defs.get(class_id) {

@@ -47,6 +47,17 @@ impl AstToHir {
         // 2. Save outer scope for scope isolation
         let outer_var_map = self.symbols.var_map.clone();
 
+        // 2.1 Python 3 comprehension scoping: loop targets introduce
+        // comp-local bindings that MUST NOT share VarIds with outer-
+        // scope names. If an outer `for a, b in …` already mapped
+        // `a`/`b` to VarIds and we reused them, a prescan-driven
+        // union would see the same VarId written twice with
+        // incompatible types (outer + inner) and first-write-wins
+        // would record the wrong type. Forget comp-target names
+        // before the loop is lowered so `bind_target` allocates
+        // fresh VarIds.
+        self.forget_comp_target_names(&comp.generators);
+
         // 3. Create temp variable and register it
         let temp_var_id = self.ids.alloc_var();
         let temp_interned = self.interner.intern(&temp_name);
@@ -113,6 +124,9 @@ impl AstToHir {
         // 2. Save outer scope for scope isolation
         let outer_var_map = self.symbols.var_map.clone();
 
+        // 2.1 Python 3 comp scoping — see list-comp counterpart.
+        self.forget_comp_target_names(&comp.generators);
+
         // 3. Create temp variable and register it
         let temp_var_id = self.ids.alloc_var();
         let temp_interned = self.interner.intern(&temp_name);
@@ -173,6 +187,9 @@ impl AstToHir {
 
         // 2. Save outer scope for scope isolation
         let outer_var_map = self.symbols.var_map.clone();
+
+        // 2.1 Python 3 comp scoping — see list-comp counterpart.
+        self.forget_comp_target_names(&comp.generators);
 
         // 3. Create temp variable and register it
         let temp_var_id = self.ids.alloc_var();
@@ -562,6 +579,23 @@ impl AstToHir {
                 });
                 Ok(vec![yield_stmt])
             }
+        }
+    }
+
+    /// Remove any names that would be introduced by the comprehension's
+    /// `for TARGET in …` clauses from the active `var_map`, so that
+    /// `bind_target` allocates fresh VarIds for each comp-local binding.
+    /// Called right after saving `outer_var_map` in list/dict/set comp
+    /// desugaring; the outer map is restored at the end of the comp, so
+    /// these forgets are transparent to surrounding code.
+    fn forget_comp_target_names(&mut self, generators: &[py::Comprehension]) {
+        let mut target_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for gen in generators {
+            self.add_target_to_scope(&gen.target, &mut target_names);
+        }
+        for name in target_names {
+            let interned = self.interner.intern(&name);
+            self.symbols.var_map.remove(&interned);
         }
     }
 
