@@ -251,6 +251,7 @@ pub struct CodeGenState {
     /// cache entries don't leak between functions (ExprIds are globally
     /// unique across the module, but cache lifetime is still per-function
     /// to keep state tidy).
+    #[allow(dead_code)] // consumed by S1.17b-c CFG walker (follow-up session)
     pub iter_cache: IndexMap<pyaot_hir::ExprId, LocalId>,
 }
 
