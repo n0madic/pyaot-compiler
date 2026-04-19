@@ -38,6 +38,34 @@ impl<'a> Lowering<'a> {
         // §1.4u-b step 3 — populate the stable per-module Var→Type
         // base map. Never mutated during lowering.
         self.populate_base_var_types(hir_module);
+        // §1.4u-b step 5 — eagerly populate the expr-type cache for
+        // every non-Var ExprId. `compute_expr_type` is now a pure
+        // function of HIR + F/M state (step 4), so this is safe.
+        //
+        // DEFERRED: this triggers a latent frontend-scoping bug where
+        // two `for a, b in ...` loops (outer module-level + comp) share
+        // the same VarIds across incompatible element types. Prescan's
+        // first-write-wins policy picks one type; eager caching then
+        // embeds that stale type into cached BinOps. Re-enable once
+        // comprehension/for-loop target VarIds are properly scoped.
+        // self.eagerly_populate_expr_types(hir_module);
+    }
+
+    /// §1.4u-b step 5: walk every `ExprId` in the module and force
+    /// `get_type_of_expr_id` to compute+cache the result. `Var` arms
+    /// skip the cache (effective type is context-sensitive); all
+    /// other arms populate `hir_types.expr_types`.
+    ///
+    /// Currently deferred — enabling this triggers a latent frontend
+    /// scoping bug where two nested `for a, b in …` constructs share
+    /// the same VarIds across incompatible element types. See the
+    /// commented-out call site in `run_type_planning`.
+    #[allow(dead_code)]
+    fn eagerly_populate_expr_types(&mut self, hir_module: &hir::Module) {
+        let ids: Vec<hir::ExprId> = hir_module.exprs.iter().map(|(id, _)| id).collect();
+        for expr_id in ids {
+            let _ = self.get_type_of_expr_id(expr_id, hir_module);
+        }
     }
 
     /// §1.4u-b persistent `base_var_types` builder — populates

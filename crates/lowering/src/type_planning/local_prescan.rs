@@ -347,7 +347,7 @@ fn merge_var(
 /// as untyped.
 fn elem_type_of_iterable(ty: &Type) -> Type {
     match ty {
-        Type::List(e) | Type::Set(e) => (**e).clone(),
+        Type::List(e) | Type::Set(e) | Type::Iterator(e) => (**e).clone(),
         Type::Tuple(types) if !types.is_empty() => Type::normalize_union(types.clone()),
         Type::Tuple(_) => Type::Any,
         Type::TupleVar(e) => (**e).clone(),

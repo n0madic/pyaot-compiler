@@ -327,7 +327,7 @@ calls and removes the `#[ignore]` attributes.
 | §1.9 Codegen migration | ✅ | S1.5 wiring ✅ · S1.16 ✅ (audit: no manual-phi emulation; Variable API is OK under SSA single-def) |
 | §1.10 Final cleanup | 🟡 | S1.17a ✅ (partial acceptance: tests green, microgpt triaged) · S1.17 full ⏳ (blocked on S1.17b + §1.4u) |
 | §1.11 Deferred HIR-tree deletion | ⏳ | S1.17b |
-| §1.4u Single-TypeTable unification | 🟡 | step 1 ✅ · step 2 ✅ · step 3 ✅ · step 4 ✅ (`compute_expr_type` free of `var_types`) · step 5 ⏳ (eager cache + reader migration) |
+| §1.4u Single-TypeTable unification | 🟡 | step 1 ✅ · step 2 ✅ · step 3 ✅ · step 4 ✅ (`compute_expr_type` free of `var_types`) · step 5 ⏳ (eager cache blocked on frontend comp-scoping bug; Iterator prescan arm ✅) |
 
 ### Phase 1 Completion Status (as of 2026-04-18, S1.17a partial acceptance)
 
@@ -569,19 +569,33 @@ calls and removes the `#[ignore]` attributes.
       already narrowing-aware by the time the helper fires.
     All 470+ workspace tests pass in both debug (SSA gates active)
     and release.
-  - **§1.4u-b step 5 (deferred)** — wire in the eager expr-type
-    pre-pass that walks every `ExprId` via `get_type_of_expr_id`
-    at the end of `run_type_planning`, so post-planning consumers
-    can read `HirTypeInference::lookup(expr_id)` as a pure hit.
-    Blocker carries over from step 4's earlier attempt: three
-    specific tests still regress (`runtime_classes` decorator-with-
-    defaults, `runtime_iteration`, `runtime_types_system`) when
-    the cache is populated eagerly. The hypothesis is that one or
-    two specific dispatch sites read `get_type_of_expr_id` for a
-    Var-containing composition expecting the narrowed result, not
-    the base one. A surgical audit of those sites — likely in
-    decorator/default-arg lowering — should unblock it. Tracked
-    separately.
+  - **§1.4u-b step 5 (deferred — frontend scoping blocker)** —
+    method `eagerly_populate_expr_types` is implemented but the
+    call in `run_type_planning` is currently commented out. An
+    initial attempt surfaced two issues:
+      1. `elem_type_of_iterable` in `local_prescan.rs` was
+         missing the `Type::Iterator(e)` arm — fixed as part of
+         this work (a real prescan bug that was masked by the
+         old live-var-types lookup). Dict/list comprehensions
+         now get correct prescan types for their loop target.
+      2. **Remaining blocker — frontend scoping**: when a
+         module-level `for a, b in <iter>` loop and a nested
+         comprehension `[… for a, b in <other iter>]` share the
+         same `a, b` names with incompatible element types (e.g.
+         `Str`/`Str` outer, `Int`/`Int` inner), the frontend
+         reuses the SAME `VarId` across both loops. Prescan's
+         "first-write wins" policy then records a single type
+         for that VarId, and eager caching embeds that stale
+         type into downstream BinOps. Without eager caching the
+         live `symbols.var_types` lookup at lowering time picks
+         up the correct per-loop type. Fix requires giving
+         comprehension for-loop targets distinct `VarId`s at
+         AST→HIR time (`crates/frontend-python/src/ast_to_hir/
+         comprehensions.rs`), independent of §1.4u.
+    Once the scoping fix lands, un-comment the call and the 98
+    mechanical `get_type_of_expr_id` → `hir_types.lookup` call-
+    site migrations (step 3 of the plan) can land as a single
+    follow-up PR.
   - **next (not started)**: §1.4u-c MIR TypeTable as SSA-rename
     projection; §1.4u-d spec amendment + grep-verify +
     microgpt-case fix.
