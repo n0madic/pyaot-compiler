@@ -389,13 +389,7 @@ impl<'a> Lowering<'a> {
         // All three are solvable but each requires its own focused
         // delivery. For now lower_function walks the tree; the CFG
         // walker is dead-code infrastructure ready for follow-up.
-        // §1.17b-c — CFG walker dead-code. 2026-04-19 wire-up with
-        // truthiness conversion added (commit pending) passed Cranelift
-        // verifier but still 29 runtime failures — including segfaults
-        // (exit 139) suggesting iter-advance produces wrong pointer
-        // values for boxed-to-primitive coercion paths, or narrowing
-        // frame placement diverges from tree walker. Further per-test
-        // MIR diffing needed.
+        // Tree walker for diagnostic comparison
         for stmt_id in &func.body {
             let stmt = &hir_module.stmts[*stmt_id];
             self.lower_stmt(stmt, hir_module, &mut mir_func)?;

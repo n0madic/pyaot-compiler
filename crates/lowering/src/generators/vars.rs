@@ -2,6 +2,11 @@
 //!
 //! This module provides functions to collect all variables that need to persist
 //! across yields in a generator function.
+//!
+//! §1.17b-d — migrated to walk `func.blocks` CFG. Previously recursed through
+//! tree-shape `StmtKind::{If, While, ForBind, Try}` variants; now iterates
+//! blocks in IndexMap order (bridge's pre-order DFS) and extracts bound
+//! variables from straight-line `Bind` and `IterAdvance` stmts.
 
 use std::collections::HashSet;
 
@@ -22,7 +27,10 @@ pub(super) fn collect_generator_vars(
     // Reserve slot 0 for the for-loop iterator (see `build_creator_body` /
     // resume builders in `desugaring.rs` — they hardcode slot 0 for the
     // iter). Without this reservation, the first generator param would
-    // collide with the iter slot.
+    // collide with the iter slot. `detect_for_loop_generator` is still
+    // tree-shape (operates on `func.body`); migrating it is a separate
+    // piece since its pattern-matching on `StmtKind::ForBind` is specific
+    // to single-for-loop generators.
     let mut next_idx = if detect_for_loop_generator(&func.body, hir_module).is_some() {
         1u32
     } else {
@@ -43,15 +51,30 @@ pub(super) fn collect_generator_vars(
         }
     }
 
-    // Then collect all assigned variables in the body
-    for stmt_id in &func.body {
-        collect_vars_from_stmt(*stmt_id, hir_module, &mut vars, &mut var_set, &mut next_idx);
+    // Then collect all assigned variables via CFG block iteration.
+    // Bridge allocates blocks in pre-order DFS of the source tree, so
+    // the iteration order matches what the tree-walker saw.
+    for block in func.blocks.values() {
+        for &stmt_id in &block.stmts {
+            collect_vars_from_flat_stmt(
+                stmt_id,
+                hir_module,
+                &mut vars,
+                &mut var_set,
+                &mut next_idx,
+            );
+        }
     }
 
     vars
 }
 
-fn collect_vars_from_stmt(
+/// Extract bound-var info from a single straight-line statement.
+/// Post-bridge, `HirBlock.stmts` only contains non-control-flow variants:
+/// `Bind`, `IterAdvance`, `Expr`, `Return`, `Assert`, `Pass`, `Raise`,
+/// `Break`, `Continue`, `IndexDelete`, `IterSetup`. Of these, only
+/// `Bind` and `IterAdvance` introduce new variable bindings.
+fn collect_vars_from_flat_stmt(
     stmt_id: hir::StmtId,
     hir_module: &hir::Module,
     vars: &mut Vec<GeneratorVar>,
@@ -76,7 +99,12 @@ fn collect_vars_from_stmt(
                 }
             });
         }
-        hir::StmtKind::ForBind { target, body, .. } => {
+        // §1.17b-c — `IterAdvance { iter, target }` replaces tree-form
+        // `ForBind` inside CFG body blocks. Binds the next iter value
+        // to the for-loop target var. Element type is Any (matches the
+        // former ForBind arm which also used Any — per-element typing
+        // happens elsewhere via prescan).
+        hir::StmtKind::IterAdvance { target, .. } => {
             target.for_each_var(&mut |var_id| {
                 if !var_set.contains(&var_id) {
                     vars.push(GeneratorVar {
@@ -89,48 +117,8 @@ fn collect_vars_from_stmt(
                     *next_idx += 1;
                 }
             });
-            for s in body {
-                collect_vars_from_stmt(*s, hir_module, vars, var_set, next_idx);
-            }
         }
-        hir::StmtKind::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            for s in then_block {
-                collect_vars_from_stmt(*s, hir_module, vars, var_set, next_idx);
-            }
-            for s in else_block {
-                collect_vars_from_stmt(*s, hir_module, vars, var_set, next_idx);
-            }
-        }
-        hir::StmtKind::While { body, .. } => {
-            for s in body {
-                collect_vars_from_stmt(*s, hir_module, vars, var_set, next_idx);
-            }
-        }
-        hir::StmtKind::Try {
-            body,
-            handlers,
-            else_block,
-            finally_block,
-        } => {
-            for s in body {
-                collect_vars_from_stmt(*s, hir_module, vars, var_set, next_idx);
-            }
-            for handler in handlers {
-                for s in &handler.body {
-                    collect_vars_from_stmt(*s, hir_module, vars, var_set, next_idx);
-                }
-            }
-            for s in else_block {
-                collect_vars_from_stmt(*s, hir_module, vars, var_set, next_idx);
-            }
-            for s in finally_block {
-                collect_vars_from_stmt(*s, hir_module, vars, var_set, next_idx);
-            }
-        }
+        // All other stmts don't introduce new variable bindings.
         _ => {}
     }
 }
