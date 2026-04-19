@@ -155,8 +155,9 @@ impl<'a> Lowering<'a> {
             })?;
 
         // Emit rt_iter_next_no_exc(iter_local) — returns *mut Obj (raw
-        // primitives like int/bool are boxed by the runtime).
-        let value_local = self.emit_runtime_call(
+        // primitives like int/bool are boxed by the runtime's
+        // `box_if_raw_int_iterator`).
+        let boxed_value_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_NEXT_NO_EXC),
             vec![mir::Operand::Local(iter_local)],
             Type::HeapAny,
@@ -164,19 +165,63 @@ impl<'a> Lowering<'a> {
         );
 
         // Determine the element type from the iterable.
-        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
-        let elem_type = get_iterable_info(&iter_type)
-            .map(|(_, t)| t)
-            .unwrap_or(Type::Any);
+        // Special case for range(): its iter_expr is a BuiltinCall that
+        // get_iterable_info can't classify — the element type is Int.
+        let iter_expr = &hir_module.exprs[iter_id];
+        let elem_type = if matches!(
+            &iter_expr.kind,
+            hir::ExprKind::BuiltinCall {
+                builtin: hir::Builtin::Range,
+                ..
+            }
+        ) {
+            Type::Int
+        } else {
+            let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
+            get_iterable_info(&iter_type)
+                .map(|(_, t)| t)
+                .unwrap_or(Type::Any)
+        };
+
+        // §1.17b-c — unbox the iter-next result for primitive types.
+        // Runtime returns boxed Obj pointers for raw-int/bool iterators
+        // (`box_if_raw_int_iterator`); unbox back to raw i64/f64/i8 so
+        // the bind target (which is declared with the primitive type)
+        // gets the correct representation.
+        let value_operand = match &elem_type {
+            Type::Int => {
+                let unboxed = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&runtime_func_def::RT_UNBOX_INT),
+                    vec![mir::Operand::Local(boxed_value_local)],
+                    Type::Int,
+                    mir_func,
+                );
+                mir::Operand::Local(unboxed)
+            }
+            Type::Float => {
+                let unboxed = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&runtime_func_def::RT_UNBOX_FLOAT),
+                    vec![mir::Operand::Local(boxed_value_local)],
+                    Type::Float,
+                    mir_func,
+                );
+                mir::Operand::Local(unboxed)
+            }
+            Type::Bool => {
+                let unboxed = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&runtime_func_def::RT_UNBOX_BOOL),
+                    vec![mir::Operand::Local(boxed_value_local)],
+                    Type::Bool,
+                    mir_func,
+                );
+                mir::Operand::Local(unboxed)
+            }
+            // Heap types (Str, List, Dict, Class, …) are pointers already.
+            _ => mir::Operand::Local(boxed_value_local),
+        };
 
         // Bind the value to the target via the unified binding-target path.
-        self.lower_binding_target(
-            target,
-            mir::Operand::Local(value_local),
-            &elem_type,
-            hir_module,
-            mir_func,
-        )?;
+        self.lower_binding_target(target, value_operand, &elem_type, hir_module, mir_func)?;
 
         Ok(())
     }
