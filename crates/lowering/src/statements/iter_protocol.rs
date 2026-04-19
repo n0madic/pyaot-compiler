@@ -56,6 +56,29 @@ impl<'a> Lowering<'a> {
         }
 
         let iter_expr = &hir_module.exprs[iter_id];
+
+        // §1.17b-c — special case: `for i in range(...)` uses
+        // `rt_iter_range(start, stop, step)` which takes 3 i64 args,
+        // NOT the generic (iterable → iterator) pattern. Detect and
+        // handle before the generic dispatch below.
+        if let hir::ExprKind::BuiltinCall {
+            builtin: hir::Builtin::Range,
+            args,
+            ..
+        } = &iter_expr.kind
+        {
+            let (start, stop, step) =
+                self.lower_range_args(args, iter_expr.span, hir_module, mir_func)?;
+            let iter_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_RANGE),
+                vec![start, stop, step],
+                Type::HeapAny,
+                mir_func,
+            );
+            self.codegen.iter_cache.insert(iter_id, iter_local);
+            return Ok(());
+        }
+
         let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
 
         // Lower the iterable expression to an operand.
@@ -80,7 +103,7 @@ impl<'a> Lowering<'a> {
             IterableKind::Str => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_STR),
             IterableKind::Bytes => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_BYTES),
             IterableKind::Iterator => {
-                // Generators are already iterators — return as-is.
+                // Generators / existing iterators — return as-is.
                 mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_GENERATOR)
             }
             IterableKind::File => {
@@ -199,6 +222,43 @@ impl<'a> Lowering<'a> {
         });
 
         Ok(mir::Operand::Local(has_next_local))
+    }
+
+    /// Lower `range()` arguments into `(start, stop, step)` i64 operands
+    /// matching Python's range semantics:
+    /// - `range(stop)` → start=0, stop=stop, step=1
+    /// - `range(start, stop)` → step=1
+    /// - `range(start, stop, step)` — all explicit
+    fn lower_range_args(
+        &mut self,
+        args: &[hir::ExprId],
+        span: pyaot_utils::Span,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<(mir::Operand, mir::Operand, mir::Operand)> {
+        let zero = mir::Operand::Constant(mir::Constant::Int(0));
+        let one = mir::Operand::Constant(mir::Constant::Int(1));
+        match args.len() {
+            1 => {
+                let stop = self.lower_expr(&hir_module.exprs[args[0]], hir_module, mir_func)?;
+                Ok((zero, stop, one))
+            }
+            2 => {
+                let start = self.lower_expr(&hir_module.exprs[args[0]], hir_module, mir_func)?;
+                let stop = self.lower_expr(&hir_module.exprs[args[1]], hir_module, mir_func)?;
+                Ok((start, stop, one))
+            }
+            3 => {
+                let start = self.lower_expr(&hir_module.exprs[args[0]], hir_module, mir_func)?;
+                let stop = self.lower_expr(&hir_module.exprs[args[1]], hir_module, mir_func)?;
+                let step = self.lower_expr(&hir_module.exprs[args[2]], hir_module, mir_func)?;
+                Ok((start, stop, step))
+            }
+            n => Err(CompilerError::type_error(
+                format!("range() takes 1-3 arguments, got {}", n),
+                span,
+            )),
+        }
     }
 
     /// Lower `ExprKind::MatchPattern { subject, pattern }` — emit the
