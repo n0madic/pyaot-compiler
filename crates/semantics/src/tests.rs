@@ -17,9 +17,9 @@ fn create_test_module() -> (Module, StringInterner) {
 #[test]
 fn test_analyzer_creation() {
     let interner = StringInterner::new();
-    let analyzer = SemanticAnalyzer::new(&interner);
-    assert_eq!(analyzer.loop_depth, 0);
-    assert_eq!(analyzer.except_depth, 0);
+    let _analyzer = SemanticAnalyzer::new(&interner);
+    // Analyzer no longer carries depth counters (§1.17b-e, 2026-04-19);
+    // per-stmt loop/handler depth comes from `HirBlock` annotations now.
 }
 
 #[test]

@@ -72,6 +72,12 @@ struct CfgBuilder {
     /// Try-scopes discovered while lowering. The caller merges these into
     /// `Function::try_scopes` after construction (§1.11 Q2).
     try_scopes: Vec<TryScope>,
+    /// Current nesting depth inside for/while loop bodies. Written to each
+    /// new block's `loop_depth`.
+    loop_depth: u8,
+    /// Current nesting depth inside exception handler / finally regions.
+    /// Written to each new block's `handler_depth`.
+    handler_depth: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -89,6 +95,8 @@ impl CfgBuilder {
             next_id: 0,
             loop_stack: Vec::new(),
             try_scopes: Vec::new(),
+            loop_depth: 0,
+            handler_depth: 0,
         }
     }
 
@@ -143,6 +151,8 @@ impl CfgBuilder {
                 id,
                 stmts: Vec::new(),
                 terminator: HirTerminator::Unreachable,
+                loop_depth: self.loop_depth,
+                handler_depth: self.handler_depth,
             },
         );
         id
@@ -302,9 +312,14 @@ impl CfgBuilder {
                     continue_bb: header_bb,
                     break_bb: exit_bb,
                 });
+                self.loop_depth += 1;
                 self.enter(body_bb);
+                // Rewrite the block's loop_depth — it was allocated at the
+                // outer depth, but its stmts run inside the loop.
+                self.blocks.get_mut(&body_bb).unwrap().loop_depth = self.loop_depth;
                 self.lower_stmts(&body, module);
                 self.terminate_if_open(HirTerminator::Jump(header_bb));
+                self.loop_depth -= 1;
                 self.loop_stack.pop();
 
                 if !else_block.is_empty() {
@@ -354,11 +369,14 @@ impl CfgBuilder {
                     continue_bb: header_bb,
                     break_bb: exit_bb,
                 });
+                self.loop_depth += 1;
                 self.enter(body_bb);
+                self.blocks.get_mut(&body_bb).unwrap().loop_depth = self.loop_depth;
                 let advance_stmt = self.alloc_iter_advance(module, iter, target.clone(), stmt_span);
                 self.push_stmt(advance_stmt);
                 self.lower_stmts(&body, module);
                 self.terminate_if_open(HirTerminator::Jump(header_bb));
+                self.loop_depth -= 1;
                 self.loop_stack.pop();
 
                 if !else_block.is_empty() {
@@ -416,9 +434,14 @@ impl CfgBuilder {
                 if !finally_block.is_empty() {
                     let finally_bb = self.new_block();
                     self.terminate_if_open(HirTerminator::Jump(finally_bb));
+                    // §1.11 Q2 — `finally` runs in an exception-handler
+                    // context (bare raise is allowed). Bump handler_depth.
+                    self.handler_depth += 1;
                     self.enter(finally_bb);
+                    self.blocks.get_mut(&finally_bb).unwrap().handler_depth = self.handler_depth;
                     self.lower_stmts(&finally_block, module);
                     self.terminate_if_open(HirTerminator::Jump(post_bb));
+                    self.handler_depth -= 1;
                 } else {
                     self.terminate_if_open(HirTerminator::Jump(after_body));
                 }
@@ -429,12 +452,17 @@ impl CfgBuilder {
                 // Emit a CFG block for each handler, populating its
                 // `entry_block`. Each handler's body lives inside the block
                 // (bindings + user-written code); terminator is Jump(post_bb).
+                // §1.11 Q2 — handler bodies run in an exception-handler
+                // context so bare `raise` is allowed. Bump handler_depth.
                 let mut handlers_out: Vec<ExceptHandler> = Vec::with_capacity(handlers.len());
                 for handler in handlers {
                     let handler_bb = self.new_block();
+                    self.handler_depth += 1;
                     self.enter(handler_bb);
+                    self.blocks.get_mut(&handler_bb).unwrap().handler_depth = self.handler_depth;
                     self.lower_stmts(&handler.body, module);
                     self.terminate_if_open(HirTerminator::Jump(post_bb));
+                    self.handler_depth -= 1;
                     handlers_out.push(ExceptHandler {
                         entry_block: handler_bb,
                         ..handler

@@ -5,71 +5,100 @@
 //! - break/continue must be inside loops
 //! - bare raise must be inside except handlers
 //! - cannot instantiate abstract classes
+//!
+//! ## CFG-based analysis (§1.11 S1.17b-e, 2026-04-19)
+//!
+//! The analyzer walks `Function::blocks` (the CFG) directly. `loop_depth`
+//! and `handler_depth` are read from `HirBlock.loop_depth` /
+//! `HirBlock.handler_depth`, populated by `cfg_build` during tree→CFG
+//! conversion. No recursive tree descent.
 
 #![forbid(unsafe_code)]
 
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::{BindingTarget, CallArg, ExprId, ExprKind, Module, StmtId, StmtKind};
+use pyaot_hir::{BindingTarget, CallArg, ExprId, ExprKind, Function, Module, StmtId, StmtKind};
 use pyaot_utils::StringInterner;
 
 /// Semantic analyzer for HIR
 pub struct SemanticAnalyzer<'a> {
-    /// Current loop nesting depth (0 = not in a loop)
-    loop_depth: usize,
-    /// Current except handler nesting depth (0 = not in an except)
-    except_depth: usize,
     /// String interner for resolving symbol names
     interner: &'a StringInterner,
 }
 
 impl<'a> SemanticAnalyzer<'a> {
     pub fn new(interner: &'a StringInterner) -> Self {
-        Self {
-            loop_depth: 0,
-            except_depth: 0,
-            interner,
-        }
+        Self { interner }
     }
 
     /// Analyze a module for semantic errors
     pub fn analyze(&mut self, module: &Module) -> Result<()> {
-        // Analyze all function bodies
+        // Analyze all function bodies via their CFG.
         for func in module.func_defs.values() {
-            self.loop_depth = 0;
-            self.except_depth = 0;
-            self.analyze_stmts(&func.body, module)?;
+            self.analyze_function_cfg(func, module)?;
         }
 
-        // Analyze module-level statements
-        self.loop_depth = 0;
-        self.except_depth = 0;
-        self.analyze_stmts(&module.module_init_stmts, module)?;
+        // Analyze module-level statements. These are not inside a function
+        // body, so they have no containing CFG — walk the flat stmt list
+        // with baseline depths. (Module init can contain control flow only
+        // at the statement level, which the tree already captures; these
+        // flat stmts feed a separate CFG inside `__pyaot_module_init__` at
+        // lowering time, so per-stmt control-flow checks would require the
+        // same logic — reuse the flat walk for now.)
+        for &stmt_id in &module.module_init_stmts {
+            self.analyze_stmt_flat(stmt_id, module, 0, 0)?;
+        }
 
         Ok(())
     }
 
-    /// Analyze a list of statements
-    fn analyze_stmts(&mut self, stmts: &[StmtId], module: &Module) -> Result<()> {
-        for &stmt_id in stmts {
-            self.analyze_stmt(stmt_id, module)?;
+    /// Walk every block of a function's CFG, checking each statement. The
+    /// bridge has already computed per-block `loop_depth` / `handler_depth`,
+    /// so we look them up directly instead of tracking with counters.
+    fn analyze_function_cfg(&mut self, func: &Function, module: &Module) -> Result<()> {
+        for block in func.blocks.values() {
+            for &stmt_id in &block.stmts {
+                self.analyze_stmt_flat(stmt_id, module, block.loop_depth, block.handler_depth)?;
+            }
+            // Analyze the terminator expressions (cond / return value / raise
+            // exc+cause / yield value). The terminator's control flow itself
+            // is structural — nothing to check — but the embedded exprs need
+            // the usual recursive analyzer pass.
+            self.analyze_terminator(
+                &block.terminator,
+                module,
+                block.loop_depth,
+                block.handler_depth,
+            )?;
         }
         Ok(())
     }
 
-    /// Analyze a single statement
-    fn analyze_stmt(&mut self, stmt_id: StmtId, module: &Module) -> Result<()> {
+    /// Analyze a single "flat" statement: straight-line only. Control flow
+    /// statements (`If`, `While`, `ForBind`, `Try`, `Match`, `Break`,
+    /// `Continue`) are handled at the block-terminator level in CFG form —
+    /// we still accept them here during the bridge period because they
+    /// appear inside `module_init_stmts`. When tree deletion (S1.17b-f)
+    /// lands, the control-flow variants disappear and this stays the only
+    /// statement walker.
+    fn analyze_stmt_flat(
+        &mut self,
+        stmt_id: StmtId,
+        module: &Module,
+        loop_depth: u8,
+        handler_depth: u8,
+    ) -> Result<()> {
         let stmt = &module.stmts[stmt_id];
         let span = stmt.span;
 
         match &stmt.kind {
             StmtKind::Break => {
-                if self.loop_depth == 0 {
+                if loop_depth == 0 {
                     return Err(CompilerError::semantic_error("'break' outside loop", span));
                 }
             }
 
             StmtKind::Continue => {
-                if self.loop_depth == 0 {
+                if loop_depth == 0 {
                     return Err(CompilerError::semantic_error(
                         "'continue' not properly in loop",
                         span,
@@ -78,33 +107,38 @@ impl<'a> SemanticAnalyzer<'a> {
             }
 
             StmtKind::Raise { exc, cause } => {
-                // Bare raise (raise without argument) must be inside except handler
-                if exc.is_none() && self.except_depth == 0 {
+                // Bare raise must be inside except handler (or finally).
+                if exc.is_none() && handler_depth == 0 {
                     return Err(CompilerError::semantic_error(
                         "bare 'raise' not inside an exception handler",
                         span,
                     ));
                 }
-                // Check the expression if present
                 if let Some(expr_id) = exc {
                     self.analyze_expr(*expr_id, module)?;
                 }
-                // Check the cause expression if present
                 if let Some(cause_id) = cause {
                     self.analyze_expr(*cause_id, module)?;
                 }
             }
 
+            // Tree-form control flow (remains visible in module_init_stmts
+            // and function bodies during the S1.17b-c/d bridge). Recurse
+            // with carried-through depths; the depths are only consulted
+            // for break/continue/raise emission points, which the bridge
+            // also sees via its own loop_depth tracking.
             StmtKind::While {
                 cond,
                 body,
                 else_block,
             } => {
                 self.analyze_expr(*cond, module)?;
-                self.loop_depth += 1;
-                self.analyze_stmts(body, module)?;
-                self.loop_depth -= 1;
-                self.analyze_stmts(else_block, module)?;
+                for s in body {
+                    self.analyze_stmt_flat(*s, module, loop_depth + 1, handler_depth)?;
+                }
+                for s in else_block {
+                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
+                }
             }
 
             StmtKind::ForBind {
@@ -114,10 +148,12 @@ impl<'a> SemanticAnalyzer<'a> {
                 ..
             } => {
                 self.analyze_expr(*iter, module)?;
-                self.loop_depth += 1;
-                self.analyze_stmts(body, module)?;
-                self.loop_depth -= 1;
-                self.analyze_stmts(else_block, module)?;
+                for s in body {
+                    self.analyze_stmt_flat(*s, module, loop_depth + 1, handler_depth)?;
+                }
+                for s in else_block {
+                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
+                }
             }
 
             StmtKind::If {
@@ -126,8 +162,12 @@ impl<'a> SemanticAnalyzer<'a> {
                 else_block,
             } => {
                 self.analyze_expr(*cond, module)?;
-                self.analyze_stmts(then_block, module)?;
-                self.analyze_stmts(else_block, module)?;
+                for s in then_block {
+                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
+                }
+                for s in else_block {
+                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
+                }
             }
 
             StmtKind::Try {
@@ -136,24 +176,20 @@ impl<'a> SemanticAnalyzer<'a> {
                 else_block,
                 finally_block,
             } => {
-                // Analyze try body (not in except handler)
-                self.analyze_stmts(body, module)?;
-
-                // Analyze except handlers (in except context)
-                for handler in handlers {
-                    self.except_depth += 1;
-                    self.analyze_stmts(&handler.body, module)?;
-                    self.except_depth -= 1;
+                for s in body {
+                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
                 }
-
-                // Analyze else block (not in except handler)
-                self.analyze_stmts(else_block, module)?;
-
-                // Analyze finally block (in except context — CPython allows
-                // bare raise in finally when an exception is active)
-                self.except_depth += 1;
-                self.analyze_stmts(finally_block, module)?;
-                self.except_depth -= 1;
+                for handler in handlers {
+                    for s in &handler.body {
+                        self.analyze_stmt_flat(*s, module, loop_depth, handler_depth + 1)?;
+                    }
+                }
+                for s in else_block {
+                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
+                }
+                for s in finally_block {
+                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth + 1)?;
+                }
             }
 
             StmtKind::Expr(expr_id) => {
@@ -179,7 +215,9 @@ impl<'a> SemanticAnalyzer<'a> {
                     if let Some(guard) = case.guard {
                         self.analyze_expr(guard, module)?;
                     }
-                    self.analyze_stmts(&case.body, module)?;
+                    for s in &case.body {
+                        self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
+                    }
                 }
             }
 
@@ -195,13 +233,40 @@ impl<'a> SemanticAnalyzer<'a> {
                 self.analyze_expr(*value, module)?;
             }
 
-            // §1.11 schema addition — not yet produced by the frontend.
             StmtKind::IterAdvance { iter, target } => {
                 self.analyze_expr(*iter, module)?;
                 self.analyze_binding_target(target, module)?;
             }
         }
 
+        Ok(())
+    }
+
+    /// Analyze the expression embedded in a `HirTerminator`, if any.
+    fn analyze_terminator(
+        &mut self,
+        term: &pyaot_hir::HirTerminator,
+        module: &Module,
+        loop_depth: u8,
+        handler_depth: u8,
+    ) -> Result<()> {
+        use pyaot_hir::HirTerminator::*;
+        match term {
+            Jump(_) | Unreachable => {}
+            Branch { cond, .. } => self.analyze_expr(*cond, module)?,
+            Return(Some(expr_id)) => self.analyze_expr(*expr_id, module)?,
+            Return(None) => {}
+            Raise { exc, cause } => {
+                // A Raise terminator always has `exc`; bare raise becomes
+                // `Unreachable` in the bridge. No depth check needed here.
+                let _ = (loop_depth, handler_depth);
+                self.analyze_expr(*exc, module)?;
+                if let Some(c) = cause {
+                    self.analyze_expr(*c, module)?;
+                }
+            }
+            Yield { value, .. } => self.analyze_expr(*value, module)?,
+        }
         Ok(())
     }
 
@@ -265,7 +330,6 @@ impl<'a> SemanticAnalyzer<'a> {
                 if let ExprKind::ClassRef(class_id) = &func_expr.kind {
                     if let Some(class_def) = module.class_defs.get(class_id) {
                         if !class_def.abstract_methods.is_empty() {
-                            // Collect abstract method names for the error message
                             let method_names: Vec<_> = class_def
                                 .abstract_methods
                                 .iter()
@@ -318,13 +382,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 self.analyze_expr(*else_val, module)?;
             }
 
-            ExprKind::List(items) => {
-                for item in items {
-                    self.analyze_expr(*item, module)?;
-                }
-            }
-
-            ExprKind::Tuple(items) => {
+            ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
                 for item in items {
                     self.analyze_expr(*item, module)?;
                 }
@@ -334,12 +392,6 @@ impl<'a> SemanticAnalyzer<'a> {
                 for (key, value) in pairs {
                     self.analyze_expr(*key, module)?;
                     self.analyze_expr(*value, module)?;
-                }
-            }
-
-            ExprKind::Set(items) => {
-                for item in items {
-                    self.analyze_expr(*item, module)?;
                 }
             }
 
@@ -383,28 +435,24 @@ impl<'a> SemanticAnalyzer<'a> {
             }
 
             ExprKind::Closure { captures, .. } => {
-                // Analyze captured variable expressions
                 for capture in captures {
                     self.analyze_expr(*capture, module)?;
                 }
             }
 
             ExprKind::Yield(value) => {
-                // Analyze yielded value if present
                 if let Some(val) = value {
                     self.analyze_expr(*val, module)?;
                 }
             }
 
             ExprKind::SuperCall { args, .. } => {
-                // Analyze super() call arguments
                 for arg in args {
                     self.analyze_expr(*arg, module)?;
                 }
             }
 
             ExprKind::StdlibCall { args, .. } => {
-                // Analyze stdlib call arguments
                 for arg in args {
                     self.analyze_expr(*arg, module)?;
                 }
@@ -431,7 +479,6 @@ impl<'a> SemanticAnalyzer<'a> {
             | ExprKind::ExcCurrentValue
             | ExprKind::GeneratorIntrinsic(_) => {}
 
-            // §1.11 schema additions — not yet produced by the frontend.
             ExprKind::IterHasNext(iter) => {
                 self.analyze_expr(*iter, module)?;
             }

@@ -187,6 +187,16 @@ pub struct HirBlock {
     /// that is expressed by `terminator`.
     pub stmts: Vec<StmtId>,
     pub terminator: HirTerminator,
+    /// How many loop bodies enclose this block — 0 if not inside any loop.
+    /// Populated by `cfg_build` during tree→CFG conversion. Consumed by the
+    /// semantic analyzer (`break` / `continue` must be inside a loop) and
+    /// by the `local_prescan` post-loop-rebind heuristic (§A.6 #3).
+    pub loop_depth: u8,
+    /// How many exception-handler regions (handler body or `finally`) enclose
+    /// this block — 0 if not inside any handler. Populated by `cfg_build`
+    /// during tree→CFG conversion. Consumed by the semantic analyzer
+    /// (bare `raise` must be inside an exception handler).
+    pub handler_depth: u8,
 }
 
 /// Control-flow terminator for a `HirBlock`. Every block ends with exactly one
