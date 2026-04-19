@@ -205,6 +205,35 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
+    /// Produce a typed default operand matching `ret_ty` — for use when
+    /// a `Return(None)` terminator lands in a function declared with a
+    /// non-None return type (abstract methods, `pass` bodies, implicit
+    /// fall-through). Mirrors the tree walker's post-processing logic
+    /// in `lower_function`.
+    #[allow(dead_code)]
+    fn default_return_operand(
+        &mut self,
+        ret_ty: &pyaot_types::Type,
+        mir_func: &mut mir::Function,
+    ) -> mir::Operand {
+        match ret_ty {
+            pyaot_types::Type::Int => mir::Operand::Constant(mir::Constant::Int(0)),
+            pyaot_types::Type::Float => mir::Operand::Constant(mir::Constant::Float(0.0)),
+            pyaot_types::Type::Bool => mir::Operand::Constant(mir::Constant::Bool(false)),
+            pyaot_types::Type::Str => {
+                let empty_str = self.interner.intern("");
+                let str_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::MakeStr,
+                    vec![mir::Operand::Constant(mir::Constant::Str(empty_str))],
+                    pyaot_types::Type::Str,
+                    mir_func,
+                );
+                mir::Operand::Local(str_local)
+            }
+            _ => mir::Operand::Constant(mir::Constant::None),
+        }
+    }
+
     /// Translate a `HirTerminator` into a `mir::Terminator` and assign it
     /// to the current MIR block. Used by `lower_function_cfg`.
     #[allow(dead_code)]
@@ -250,6 +279,27 @@ impl<'a> Lowering<'a> {
                 // emission shape identical to the tree walker's Return
                 // path, avoiding signature-mismatch Cranelift errors
                 // for `$resume` / Union-returning dunders.
+                //
+                // Special case: bridge emits `Return(None)` for
+                // implicitly-terminated blocks (pass bodies, missing
+                // return, abstract methods). If the function's declared
+                // return type is non-None, the tree walker's
+                // post-processing pass replaces with a typed default.
+                // We replicate that here so the walker's emission
+                // matches the MIR function signature.
+                if opt_expr_id.is_none() {
+                    let ret_ty = self
+                        .symbols
+                        .current_func_return_type
+                        .clone()
+                        .unwrap_or(pyaot_types::Type::None);
+                    if !matches!(ret_ty, pyaot_types::Type::None) {
+                        let default_operand = self.default_return_operand(&ret_ty, mir_func);
+                        self.current_block_mut().terminator =
+                            mir::Terminator::Return(Some(default_operand));
+                        return Ok(());
+                    }
+                }
                 self.lower_return(opt_expr_id.as_ref(), hir_module, mir_func)?;
             }
             hir::HirTerminator::Raise { exc, cause } => {
