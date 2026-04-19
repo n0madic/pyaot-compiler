@@ -90,7 +90,13 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Recursively scan a statement for closure assignments and record capture types
+    /// Scan a single straight-line statement for closure assignments and
+    /// record capture types. §1.17b-d: nested control-flow recursion
+    /// removed — the entry-point now iterates CFG blocks, so every
+    /// logically-nested stmt is visited exactly once via the outer
+    /// `for block in func.blocks.values()` loop. The tree-form variants
+    /// below are still matched because `module_init_stmts` (which has no
+    /// CFG) continues to call this function with a flat tree walker.
     fn scan_stmt_for_closures(
         &mut self,
         stmt_id: hir::StmtId,
@@ -104,6 +110,9 @@ impl<'a> Lowering<'a> {
                 else_block,
                 ..
             } => {
+                // Tree path (module_init only) — CFG path visits these
+                // stmts directly through block iteration, bypassing this
+                // arm entirely.
                 for stmt_id in then_block {
                     self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
                 }
@@ -117,24 +126,13 @@ impl<'a> Lowering<'a> {
                 body,
                 else_block,
             } => {
-                // Scan the iter expression first — it can contain nested
-                // closures (e.g. the list-comp/gen-expr case
-                // `[... for wo in <gen-expr>]`) whose captures need recording.
+                // Tree path (module_init) — scan the iter expression and
+                // propagate loop-target element type into `var_types`.
                 let iter_expr = &hir_module.exprs[*iter];
                 self.scan_expr_for_closures(iter_expr, hir_module, var_types);
-
-                // Propagate the loop-target's element type into `var_types`
-                // so closures **inside** the body (Area G §G.10 gap) see the
-                // concrete type of captured loop targets instead of `Any`.
-                // Without this, a nested gen-expr like
-                //     [sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]
-                // infers `wo` as `Any` when computing the inner closure's
-                // capture types, which cascades into `Tuple([Any, Any])` for
-                // the `zip` yield and raw-pointer tuple unpacks at runtime.
                 let iter_ty = self.infer_deep_expr_type(iter_expr, hir_module, var_types);
                 let elem_ty = extract_iterable_element_type(&iter_ty);
                 insert_target_types(target, &elem_ty, var_types);
-
                 for stmt_id in body {
                     self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
                 }
