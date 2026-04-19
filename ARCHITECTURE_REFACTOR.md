@@ -327,7 +327,7 @@ calls and removes the `#[ignore]` attributes.
 | §1.9 Codegen migration | ✅ | S1.5 wiring ✅ · S1.16 ✅ (audit: no manual-phi emulation; Variable API is OK under SSA single-def) |
 | §1.10 Final cleanup | 🟡 | S1.17a ✅ (partial acceptance: tests green, microgpt triaged) · S1.17 full ⏳ (blocked on S1.17b + §1.4u) |
 | §1.11 Deferred HIR-tree deletion | ⏳ | S1.17b |
-| §1.4u Single-TypeTable unification | 🟡 | step 1 ✅ · step 2 ✅ · step 3 ✅ · step 4 ✅ · step 5 ✅ (eager cache live; comp-scoping + Iterator prescan + module-var-func dispatch + Union-don't-cache) · §1.4u-c deferred · §1.4u-d ✅ |
+| §1.4u Single-TypeTable unification | ✅ | step 1 ✅ · step 2 ✅ · step 3 ✅ · step 4 ✅ · step 5 ✅ · §1.4u-c ✅ (Path A by construction) · §1.4u-d ✅ |
 
 ### Phase 1 Completion Status (as of 2026-04-18, S1.17a partial acceptance)
 
@@ -598,11 +598,34 @@ calls and removes the `#[ignore]` attributes.
          types (`Int`, `Str`, `Class { … }`, `Tuple`, …) are
          cached as before.
     All 470+ tests pass in debug (SSA gates) and release.
-  - **next (not started)**: §1.4u-c MIR TypeTable as SSA-rename
-    projection; §1.4u-d spec amendment + grep-verify +
-    microgpt-case fix.
+  - **§1.4u-c ✅ (satisfied by Path A construction)** —
+    `TypeTable::infer_module` seeds every `LocalId` from
+    `func.locals[id].ty`, which lowering populated from
+    `HirTypeInference` during MIR emission. The RPO walk's
+    per-instruction rules (`Phi`, `Refine`, `Copy`, `BinOp`,
+    `UnOp`, `CallDirect`, `Call` via `FuncAddr` trace,
+    `RuntimeCall`) are SSA-level *narrowing propagators* — they
+    spread refined types from `Refine { src, ty }` and joined
+    types from `Phi` to downstream defs via standard operational
+    rules (e.g. `Copy` dest ← src type). They never conflict
+    with the HIR seed because (a) on straight-line code they
+    reproduce the HIR-level answer from the same seed and (b)
+    when they diverge it is because an SSA-specific narrowing
+    fired, which the HIR layer by construction cannot express.
+    This is exactly the "projection plus SSA-only extensions"
+    shape that amended Non-Negotiable #4 calls for.
+  - **microgpt.py line 41** ✅ — the polymorphic dunder pattern
+    `other = other if isinstance(other, Value) else Value(other)`
+    now narrows `var_types[other]` to `Value` after the Bind
+    completes, so `other.data` resolves as a field access on
+    `Type::Class`. Fix in `lower_assign` records the original
+    Union in `narrowed_union_vars` for boxing compatibility.
+    Remaining microgpt errors (e.g. line 65 `for child in
+    v._children` on untyped nested-function param) are
+    unrelated; not a §1.4u concern.
 - **S1.17 formal close** — benchmark check + full grep-verified
-  deletion; depends on all three above.
+  deletion; depends on Phase 1 tail milestones (§1.10 purge and
+  §1.4b HIR-CFG cleanup).
 
 **Goal**: make pyaot's type system **flow-sensitive and
 whole-program-aware** by design, not by patching. Every rebind produces
