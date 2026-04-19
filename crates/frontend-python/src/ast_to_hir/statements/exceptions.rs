@@ -125,6 +125,7 @@ impl AstToHir {
                                 ty: Some(exc_type),
                                 name,
                                 body: handler_body.clone(),
+                                entry_block: pyaot_utils::HirBlockId::new(0),
                             });
                         }
                     }
@@ -134,6 +135,7 @@ impl AstToHir {
                             ty: Some(exc_type),
                             name,
                             body: handler_body,
+                            entry_block: pyaot_utils::HirBlockId::new(0),
                         });
                     }
                 }
@@ -142,6 +144,7 @@ impl AstToHir {
                     ty: None,
                     name,
                     body: handler_body,
+                    entry_block: pyaot_utils::HirBlockId::new(0),
                 });
             }
         }

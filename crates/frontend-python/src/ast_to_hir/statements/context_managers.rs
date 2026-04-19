@@ -285,6 +285,7 @@ impl AstToHir {
             ty: None,   // catch all exceptions
             name: None, // don't bind exception
             body: except_body,
+            entry_block: pyaot_utils::HirBlockId::new(0),
         };
 
         // 8. Create finally block:

@@ -215,6 +215,27 @@ pub enum HirTerminator {
     Unreachable,
 }
 
+/// Exception-handler scope — per-function side map replacing the exception
+/// edges that the CFG does not model (§1.11 Q2). A `TryScope` groups a set of
+/// HIR blocks that execute under the protection of the same handler chain.
+/// Runtime unwinding (setjmp/longjmp) jumps into a handler's `entry_block`
+/// when a matching exception is raised inside any of the `try_blocks`.
+///
+/// Introduced in S1.17b-a as purely additive — not yet populated or consumed.
+#[derive(Debug, Clone)]
+pub struct TryScope {
+    /// CFG blocks whose statements run inside `try:`.
+    pub try_blocks: Vec<HirBlockId>,
+    /// CFG blocks whose statements run inside the `else:` clause.
+    pub else_blocks: Vec<HirBlockId>,
+    /// Handler bodies; each handler's `entry_block` is an ordinary CFG block
+    /// with no CFG predecessors, entered only via runtime unwinding.
+    pub handlers: Vec<ExceptHandler>,
+    /// CFG blocks whose statements run inside `finally:`.
+    pub finally_blocks: Vec<HirBlockId>,
+    pub span: Span,
+}
+
 /// Function definition
 #[derive(Debug, Clone)]
 pub struct Function {
@@ -241,6 +262,12 @@ pub struct Function {
     /// Match}` variants are deleted.
     pub blocks: IndexMap<HirBlockId, HirBlock>,
     pub entry_block: HirBlockId,
+    /// Exception-handler scopes (§1.11 Q2). Handlers do not have incoming
+    /// CFG edges — runtime unwinding transfers control to the matching
+    /// handler's `entry_block` when an exception is raised inside a block
+    /// listed in `try_blocks`. Introduced additively in S1.17b-a; not yet
+    /// populated by the frontend (Stage 2) or consumed by lowering (Stage 3).
+    pub try_scopes: Vec<TryScope>,
 }
 
 /// Parameter kind distinguishes regular, *args, and **kwargs parameters
@@ -413,6 +440,16 @@ pub enum StmtKind {
         subject: ExprId,
         cases: Vec<MatchCase>,
     },
+
+    /// Advance an iterator and bind the next value to `target`
+    /// (§1.11 Q1 Scheme A). Emitted at the head of a for-loop body block;
+    /// preconditioned by a `Branch(IterHasNext(iter))` in the header. Binds
+    /// through the same `BindingTarget` infrastructure as `Bind` and
+    /// `ForBind`, covering tuple-unpack and starred targets.
+    ///
+    /// Introduced additively in S1.17b-a; not yet emitted by the frontend
+    /// (Stage 2) or consumed by lowering (Stage 3).
+    IterAdvance { iter: ExprId, target: BindingTarget },
 }
 
 /// Match case for match statement
@@ -470,6 +507,11 @@ pub struct ExceptHandler {
     pub ty: Option<Type>,
     pub name: Option<VarId>,
     pub body: Vec<StmtId>,
+    /// CFG entry block for this handler (§1.11). The block has no CFG
+    /// predecessors — runtime unwinding jumps here on a matching exception.
+    /// Introduced additively in S1.17b-a; defaults to `HirBlockId::new(0)`
+    /// for tree-built handlers until Stage 2 populates the real value.
+    pub entry_block: HirBlockId,
 }
 
 /// Generator runtime intrinsics (only present after desugaring pass).
@@ -702,6 +744,28 @@ pub enum ExprKind {
     /// Generator runtime intrinsic (post-desugaring only).
     /// Never created by the frontend — only by the generator desugaring pass.
     GeneratorIntrinsic(GeneratorIntrinsic),
+
+    /// Pure predicate: does `iter` have a next element?
+    /// (§1.11 Q1 Scheme A). Used as the branch condition on a for-loop's
+    /// header block. Cacheable in `HirTypeInference.expr_types` as `Bool`.
+    ///
+    /// Introduced additively in S1.17b-a; not yet emitted by the frontend
+    /// (Stage 2) or consumed by lowering (Stage 3).
+    IterHasNext(ExprId),
+
+    /// Pure predicate: does `subject` match `pattern`?
+    /// (§1.11 Q3). Replaces per-case pattern-dispatch at match-statement
+    /// lowering time; frontend desugaring emits an if/else ladder of
+    /// `Branch(MatchPattern(subject, pattern), case_body, next_case)`.
+    /// Pattern binding writes become `Bind` statements at the case body
+    /// entry block.
+    ///
+    /// Introduced additively in S1.17b-a; not yet emitted by the frontend
+    /// (Stage 2) or consumed by lowering (Stage 3).
+    MatchPattern {
+        subject: ExprId,
+        pattern: Box<Pattern>,
+    },
 }
 
 /// Binary operators

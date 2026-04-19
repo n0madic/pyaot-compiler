@@ -441,6 +441,7 @@ impl AstToHir {
             is_abstract: false,
             blocks,
             entry_block,
+            try_scopes: Vec::new(),
         };
 
         self.module.functions.push(func_id);

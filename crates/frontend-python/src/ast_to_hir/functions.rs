@@ -119,6 +119,7 @@ impl AstToHir {
             is_abstract: false,                 // Top-level functions cannot be abstract
             blocks,
             entry_block,
+            try_scopes: Vec::new(),
         };
 
         self.module.functions.push(func_id);

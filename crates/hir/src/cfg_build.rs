@@ -141,7 +141,8 @@ impl CfgBuilder {
             | StmtKind::Bind { .. }
             | StmtKind::Pass
             | StmtKind::Assert { .. }
-            | StmtKind::IndexDelete { .. } => {
+            | StmtKind::IndexDelete { .. }
+            | StmtKind::IterAdvance { .. } => {
                 self.push_stmt(stmt_id);
             }
 

@@ -1,7 +1,7 @@
 use super::*;
 use indexmap::IndexSet;
 use pyaot_hir::{BindingTarget, ClassDef, ExceptHandler, Expr, Module, Stmt};
-use pyaot_utils::{ClassId, Span, StringInterner, VarId};
+use pyaot_utils::{ClassId, HirBlockId, Span, StringInterner, VarId};
 
 fn dummy_span() -> Span {
     Span { start: 0, end: 0 }
@@ -182,6 +182,7 @@ fn test_bare_raise_inside_except_succeeds() {
                 ty: None,
                 name: None,
                 body: vec![raise_stmt],
+                entry_block: HirBlockId::new(0),
             }],
             else_block: vec![],
             finally_block: vec![],

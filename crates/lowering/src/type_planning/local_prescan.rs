@@ -209,6 +209,9 @@ impl<'a> Lowering<'a> {
             | hir::StmtKind::Pass
             | hir::StmtKind::Assert { .. }
             | hir::StmtKind::IndexDelete { .. } => {}
+            // §1.11 schema addition — binding semantics will be added in
+            // S1.17b-d when this walker ports to CFG traversal.
+            hir::StmtKind::IterAdvance { .. } => {}
         }
     }
 }

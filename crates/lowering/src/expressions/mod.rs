@@ -237,6 +237,16 @@ impl<'a> Lowering<'a> {
 
             // Standard library compile-time constant (math.pi, math.e)
             hir::ExprKind::StdlibConst(const_def) => self.lower_stdlib_const(const_def, mir_func),
+
+            // §1.11 schema additions — not yet produced by the frontend; the
+            // S1.17b-b migration wires these into the for-loop header /
+            // match-statement desugaring paths.
+            hir::ExprKind::IterHasNext(_) | hir::ExprKind::MatchPattern { .. } => {
+                unreachable!(
+                    "ExprKind::IterHasNext / MatchPattern are schema-only in S1.17b-a; \
+                     no frontend path emits them yet"
+                )
+            }
         };
         self.codegen.current_span = prev_span;
         result

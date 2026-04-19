@@ -879,6 +879,7 @@ impl<'a> Lowering<'a> {
             is_abstract: false,
             blocks: resume_blocks,
             entry_block: resume_entry_block,
+            try_scopes: Vec::new(),
         };
         m.func_defs.insert(resume_func_id, resume_func);
         m.functions.push(resume_func_id);

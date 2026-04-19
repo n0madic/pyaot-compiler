@@ -134,6 +134,7 @@ impl AstToHir {
             is_abstract: false,                 // Lambdas cannot be abstract
             blocks,
             entry_block,
+            try_scopes: Vec::new(),
         };
         self.module.functions.push(func_id);
         self.module.func_defs.insert(func_id, function);

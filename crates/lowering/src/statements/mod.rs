@@ -131,6 +131,14 @@ impl<'a> Lowering<'a> {
             } => {
                 self.lower_for_bind(target, *iter, body, else_block, hir_module, mir_func)?;
             }
+
+            // §1.11 schema addition — not yet produced. Frontend emits the
+            // equivalent via `StmtKind::ForBind` until S1.17b-b.
+            hir::StmtKind::IterAdvance { .. } => {
+                unreachable!(
+                    "StmtKind::IterAdvance is schema-only in S1.17b-a; no frontend path emits it yet"
+                );
+            }
         }
         Ok(())
     }

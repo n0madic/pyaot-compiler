@@ -194,6 +194,12 @@ impl<'a> SemanticAnalyzer<'a> {
                 self.analyze_binding_target(target, module)?;
                 self.analyze_expr(*value, module)?;
             }
+
+            // §1.11 schema addition — not yet produced by the frontend.
+            StmtKind::IterAdvance { iter, target } => {
+                self.analyze_expr(*iter, module)?;
+                self.analyze_binding_target(target, module)?;
+            }
         }
 
         Ok(())
@@ -424,6 +430,14 @@ impl<'a> SemanticAnalyzer<'a> {
             | ExprKind::BuiltinRef(_)
             | ExprKind::ExcCurrentValue
             | ExprKind::GeneratorIntrinsic(_) => {}
+
+            // §1.11 schema additions — not yet produced by the frontend.
+            ExprKind::IterHasNext(iter) => {
+                self.analyze_expr(*iter, module)?;
+            }
+            ExprKind::MatchPattern { subject, .. } => {
+                self.analyze_expr(*subject, module)?;
+            }
         }
 
         Ok(())
