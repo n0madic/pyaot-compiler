@@ -238,13 +238,26 @@ impl<'a> Lowering<'a> {
             // Standard library compile-time constant (math.pi, math.e)
             hir::ExprKind::StdlibConst(const_def) => self.lower_stdlib_const(const_def, mir_func),
 
-            // §1.11 schema additions — not yet produced by the frontend; the
-            // S1.17b-b migration wires these into the for-loop header /
-            // match-statement desugaring paths.
-            hir::ExprKind::IterHasNext(_) | hir::ExprKind::MatchPattern { .. } => {
+            // §1.17b-c — generic iterator protocol. Emitted by the bridge
+            // as the cond of a for-loop header's `Branch` terminator; consumed
+            // by the CFG walker. Falls through to `lower_iter_has_next`
+            // which reads the iterator local from `codegen.iter_cache`
+            // (populated by a preceding `IterSetup` in the pre-block).
+            hir::ExprKind::IterHasNext(iter_id) => {
+                self.lower_iter_has_next(*iter_id, hir_module, mir_func)
+            }
+
+            // §1.11 schema addition — match-statement desugaring. Frontend
+            // emits this only when the bridge rewrites `StmtKind::Match`
+            // into an if/else ladder of `Branch(MatchPattern(...), ..)`.
+            // Consumed by the CFG walker; standalone lowering pending the
+            // pattern-predicate factoring from `statements/match_stmt/
+            // patterns.rs`.
+            hir::ExprKind::MatchPattern { .. } => {
                 unreachable!(
-                    "ExprKind::IterHasNext / MatchPattern are schema-only in S1.17b-a; \
-                     no frontend path emits them yet"
+                    "ExprKind::MatchPattern lowering not yet implemented — \
+                     requires factoring pattern predicate from lower_match; \
+                     tree walker still dispatches StmtKind::Match"
                 )
             }
         };

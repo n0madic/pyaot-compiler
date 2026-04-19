@@ -1,0 +1,202 @@
+//! §1.17b-c — Generic iterator protocol lowering for `StmtKind::IterSetup`,
+//! `StmtKind::IterAdvance`, and `ExprKind::IterHasNext`.
+//!
+//! Produced by the `cfg_build` bridge when lowering a tree `ForBind` into
+//! its CFG form:
+//!
+//! ```text
+//!   pre:        ...user stmts...; IterSetup(iter); Jump(header)
+//!   header:     Branch(IterHasNext(iter), body, exit)
+//!   body:       IterAdvance(iter, target); ...user body stmts...; Jump(header)
+//!   exit:       ...
+//! ```
+//!
+//! `IterSetup` must run exactly once in the pre-block (before the loop
+//! enters the header). It calls the appropriate `rt_iter_X` runtime
+//! function based on the iterable type and caches the resulting iterator
+//! local in `CodeGenState::iter_cache` keyed by the `iter: ExprId`.
+//!
+//! `IterHasNext(iter)` and `IterAdvance{iter, target}` both read the
+//! cached iterator local. They NEVER call `rt_iter_X` themselves — that
+//! would reset the iterator each iteration.
+//!
+//! The runtime iterator protocol uses:
+//! - `rt_iter_list` / `rt_iter_tuple` / `rt_iter_dict` / `rt_iter_set` /
+//!   `rt_iter_str` / `rt_iter_bytes` / `rt_iter_generator` — setup (unary)
+//! - `rt_iter_is_exhausted(iter) -> i8` — has-next predicate (boolean)
+//! - `rt_iter_next_no_exc(iter) -> *mut Obj` — advance, returns the next
+//!   element boxed as a heap pointer (raw primitives get boxed by the
+//!   runtime via `box_if_raw_int_iterator`).
+
+use pyaot_core_defs::runtime_func_def;
+use pyaot_diagnostics::{CompilerError, Result};
+use pyaot_hir as hir;
+use pyaot_mir as mir;
+use pyaot_types::Type;
+
+use crate::context::Lowering;
+use crate::utils::{get_iterable_info, IterableKind};
+
+impl<'a> Lowering<'a> {
+    /// Lower `StmtKind::IterSetup { iter }` — call `rt_iter_X` on the
+    /// iterable expression and cache the iterator local. Must run once
+    /// in the pre-block before the for-loop header.
+    pub(crate) fn lower_iter_setup(
+        &mut self,
+        iter_id: hir::ExprId,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<()> {
+        // If the cache already has this iter_expr (shouldn't happen in
+        // well-formed CFGs — bridge emits exactly one IterSetup per
+        // for-loop), skip. Defensive: treat as no-op.
+        if self.codegen.iter_cache.contains_key(&iter_id) {
+            return Ok(());
+        }
+
+        let iter_expr = &hir_module.exprs[iter_id];
+        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
+
+        // Lower the iterable expression to an operand.
+        let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
+
+        // Pick the appropriate rt_iter_X runtime function.
+        let Some((kind, _elem_type)) = get_iterable_info(&iter_type) else {
+            return Err(CompilerError::type_error(
+                format!(
+                    "cannot iterate over type '{:?}' in IterSetup (no iterable info)",
+                    iter_type
+                ),
+                iter_expr.span,
+            ));
+        };
+
+        let rt_func = match kind {
+            IterableKind::List => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_LIST),
+            IterableKind::Tuple => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_TUPLE),
+            IterableKind::Dict => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_DICT),
+            IterableKind::Set => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_SET),
+            IterableKind::Str => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_STR),
+            IterableKind::Bytes => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_BYTES),
+            IterableKind::Iterator => {
+                // Generators are already iterators — return as-is.
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_GENERATOR)
+            }
+            IterableKind::File => {
+                return Err(CompilerError::type_error(
+                    "IterSetup does not yet support file iteration — \
+                     use `for line in f.readlines():` or fall back to tree \
+                     lowering for now"
+                        .to_string(),
+                    iter_expr.span,
+                ));
+            }
+        };
+
+        // Emit iter setup call; the result is a heap iterator pointer.
+        let iter_local =
+            self.emit_runtime_call(rt_func, vec![iter_operand], Type::HeapAny, mir_func);
+
+        // Cache the iterator local for subsequent IterHasNext / IterAdvance
+        // with the same iter ExprId.
+        self.codegen.iter_cache.insert(iter_id, iter_local);
+
+        Ok(())
+    }
+
+    /// Lower `StmtKind::IterAdvance { iter, target }` — read the cached
+    /// iterator local, call `rt_iter_next_no_exc` to advance, bind the
+    /// result to `target`.
+    pub(crate) fn lower_iter_advance(
+        &mut self,
+        iter_id: hir::ExprId,
+        target: &hir::BindingTarget,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<()> {
+        let iter_local = self
+            .codegen
+            .iter_cache
+            .get(&iter_id)
+            .copied()
+            .ok_or_else(|| {
+                CompilerError::type_error(
+                    format!(
+                        "IterAdvance for expr {:?} without preceding IterSetup — \
+                         CFG invariant violation",
+                        iter_id
+                    ),
+                    hir_module.exprs[iter_id].span,
+                )
+            })?;
+
+        // Emit rt_iter_next_no_exc(iter_local) — returns *mut Obj (raw
+        // primitives like int/bool are boxed by the runtime).
+        let value_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_NEXT_NO_EXC),
+            vec![mir::Operand::Local(iter_local)],
+            Type::HeapAny,
+            mir_func,
+        );
+
+        // Determine the element type from the iterable.
+        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
+        let elem_type = get_iterable_info(&iter_type)
+            .map(|(_, t)| t)
+            .unwrap_or(Type::Any);
+
+        // Bind the value to the target via the unified binding-target path.
+        self.lower_binding_target(
+            target,
+            mir::Operand::Local(value_local),
+            &elem_type,
+            hir_module,
+            mir_func,
+        )?;
+
+        Ok(())
+    }
+
+    /// Lower `ExprKind::IterHasNext(iter)` — read the cached iterator local,
+    /// call `rt_iter_is_exhausted`, NOT the result. Returns a bool operand.
+    pub(crate) fn lower_iter_has_next(
+        &mut self,
+        iter_id: hir::ExprId,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
+        let iter_local = self
+            .codegen
+            .iter_cache
+            .get(&iter_id)
+            .copied()
+            .ok_or_else(|| {
+                CompilerError::type_error(
+                    format!(
+                        "IterHasNext for expr {:?} without preceding IterSetup — \
+                         CFG invariant violation",
+                        iter_id
+                    ),
+                    hir_module.exprs[iter_id].span,
+                )
+            })?;
+
+        // Emit rt_iter_is_exhausted(iter_local) → bool (i8).
+        let exhausted_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_IS_EXHAUSTED),
+            vec![mir::Operand::Local(iter_local)],
+            Type::Bool,
+            mir_func,
+        );
+
+        // NOT it: has_next = !exhausted.
+        let has_next_local = self.alloc_and_add_local(Type::Bool, mir_func);
+        self.emit_instruction(mir::InstructionKind::UnOp {
+            dest: has_next_local,
+            op: mir::UnOp::Not,
+            operand: mir::Operand::Local(exhausted_local),
+        });
+
+        Ok(mir::Operand::Local(has_next_local))
+    }
+}

@@ -10,6 +10,7 @@
 mod assert;
 mod assign;
 mod control_flow;
+mod iter_protocol;
 mod loops;
 mod match_stmt;
 
@@ -132,12 +133,16 @@ impl<'a> Lowering<'a> {
                 self.lower_for_bind(target, *iter, body, else_block, hir_module, mir_func)?;
             }
 
-            // §1.11 schema addition — not yet produced. Frontend emits the
-            // equivalent via `StmtKind::ForBind` until S1.17b-b.
-            hir::StmtKind::IterAdvance { .. } => {
-                unreachable!(
-                    "StmtKind::IterAdvance is schema-only in S1.17b-a; no frontend path emits it yet"
-                );
+            // §1.17b-c — new HIR primitives. Emitted by `cfg_build` when
+            // producing a for-loop CFG; consumed by the CFG-walker path
+            // (follow-up work). When lowering still runs via the tree
+            // walker (current default), these never execute — the tree
+            // walker handles `StmtKind::ForBind` via `lower_for_bind`.
+            hir::StmtKind::IterSetup { iter } => {
+                self.lower_iter_setup(*iter, hir_module, mir_func)?;
+            }
+            hir::StmtKind::IterAdvance { iter, target } => {
+                self.lower_iter_advance(*iter, target, hir_module, mir_func)?;
             }
         }
         Ok(())

@@ -179,6 +179,9 @@ impl<'a> Lowering<'a> {
                     "local_prescan: control-flow StmtKind must not appear inside HirBlock.stmts"
                 );
             }
+            // IterSetup is a pre-block iter-protocol initializer — no
+            // local-var binding to absorb.
+            hir::StmtKind::IterSetup { .. } => {}
         }
     }
 }

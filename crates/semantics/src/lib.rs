@@ -237,6 +237,10 @@ impl<'a> SemanticAnalyzer<'a> {
                 self.analyze_expr(*iter, module)?;
                 self.analyze_binding_target(target, module)?;
             }
+
+            StmtKind::IterSetup { iter } => {
+                self.analyze_expr(*iter, module)?;
+            }
         }
 
         Ok(())

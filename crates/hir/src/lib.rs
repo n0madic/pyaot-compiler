@@ -476,6 +476,19 @@ pub enum StmtKind {
     /// Introduced additively in S1.17b-a; not yet emitted by the frontend
     /// (Stage 2) or consumed by lowering (Stage 3).
     IterAdvance { iter: ExprId, target: BindingTarget },
+
+    /// Set up an iterator for a subsequent `IterHasNext` / `IterAdvance`
+    /// pair. Emitted by `cfg_build` in the pre-block (before
+    /// `Jump(header)`) of a for-loop; lowering calls the appropriate
+    /// `rt_iter_X` runtime function and caches the resulting iterator
+    /// local in `CodeGenState::iter_cache` keyed by `iter: ExprId`.
+    /// Subsequent `IterHasNext(iter)` / `IterAdvance{iter, ..}` read
+    /// from the cache.
+    ///
+    /// Must run exactly once per for-loop (in the pre-block, not the
+    /// header) so the iterator's state isn't reset on each header pass.
+    /// See §1.11 critical open issue — resolved by Option A (S1.17b-c).
+    IterSetup { iter: ExprId },
 }
 
 /// Match case for match statement

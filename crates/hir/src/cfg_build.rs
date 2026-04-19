@@ -123,6 +123,16 @@ impl CfgBuilder {
         })
     }
 
+    /// Allocate a fresh `StmtKind::IterSetup { iter }` stmt. Emitted in
+    /// the for-loop's pre-block (before `Jump(header)`) so the iterator
+    /// is created exactly once per loop, not per header-iteration.
+    fn alloc_iter_setup(&self, module: &mut Module, iter: ExprId, span: Span) -> StmtId {
+        module.stmts.alloc(Stmt {
+            kind: StmtKind::IterSetup { iter },
+            span,
+        })
+    }
+
     /// Allocate a fresh `ExprKind::MatchPattern { subject, pattern }` bool
     /// predicate.
     fn alloc_match_pattern(
@@ -211,7 +221,8 @@ impl CfgBuilder {
             | StmtKind::Pass
             | StmtKind::Assert { .. }
             | StmtKind::IndexDelete { .. }
-            | StmtKind::IterAdvance { .. } => {
+            | StmtKind::IterAdvance { .. }
+            | StmtKind::IterSetup { .. } => {
                 self.push_stmt(stmt_id);
             }
 
@@ -346,6 +357,15 @@ impl CfgBuilder {
                 } else {
                     self.new_block()
                 };
+
+                // Pre-block: push IterSetup stmt BEFORE Jump(header). This
+                // evaluates iter_expr exactly once and caches the resulting
+                // iterator local in `CodeGenState::iter_cache` during
+                // lowering — so subsequent IterHasNext (in header) and
+                // IterAdvance (in body) read from the cache without
+                // re-creating the iterator each iteration.
+                let iter_setup_stmt = self.alloc_iter_setup(module, iter, stmt_span);
+                self.push_stmt(iter_setup_stmt);
 
                 let pre_block = self.current;
                 self.set_terminator(pre_block, HirTerminator::Jump(header_bb));
