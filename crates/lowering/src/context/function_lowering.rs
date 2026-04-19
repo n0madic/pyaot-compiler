@@ -387,9 +387,23 @@ impl<'a> Lowering<'a> {
         //    per-function state.
         //
         // All three are solvable but each requires its own focused
-        // delivery. For now lower_function walks the tree; the CFG
-        // walker is dead-code infrastructure ready for follow-up.
-        // Tree walker for diagnostic comparison
+        // delivery. 2026-04-19 latest validation (indexed List/Tuple
+        // dispatch + range + unboxing + truthiness conversion): simple
+        // for-loops (`for x in [1, 2, 3]`) now work end-to-end via the
+        // CFG walker — major progress. Still 29 test failures (28
+        // compile, 1 runtime segfault reduced):
+        //   A. **Narrowing not propagating**: `isinstance(x, T)` →
+        //      `if` then-block reads `x.attr` — walker's per-block
+        //      narrowing precomputation attaches narrowings to the
+        //      then_bb but the subsequent `lower_attribute` doesn't see
+        //      them. Likely a block-ordering issue where
+        //      `push_narrowing_frame` lands AFTER attribute resolution.
+        //   B. **Generator resume return signature mismatch**: walker
+        //      emits a Return terminator that doesn't match the resume
+        //      function's declared return type (i64 for state). Needs
+        //      special-casing `$resume` functions.
+        // For now lower_function walks the tree; walker is dead-code
+        // infrastructure with significantly more pieces (7+) in place.
         for stmt_id in &func.body {
             let stmt = &hir_module.stmts[*stmt_id];
             self.lower_stmt(stmt, hir_module, &mut mir_func)?;

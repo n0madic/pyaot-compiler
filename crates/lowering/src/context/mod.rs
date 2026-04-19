@@ -228,6 +228,47 @@ pub struct ClassRegistry {
     pub class_name_map: IndexMap<String, ClassId>,
 }
 
+/// §1.17b-c — per-iter-expr state stored in `CodeGenState::iter_cache`.
+/// `IterSetup` picks the variant based on the iterable kind and stashes
+/// the relevant locals; `IterHasNext` / `IterAdvance` dispatch on the
+/// variant to emit either the iterator protocol or indexed iteration.
+#[derive(Debug, Clone)]
+pub enum IterState {
+    /// Iterator-protocol dispatch. Used for Dict, Set, Str, Bytes,
+    /// Range, Generator/Iterator. `iter_local` is the heap iterator
+    /// object produced by `rt_iter_X(iterable)`.
+    /// `IterHasNext` emits `rt_iter_is_exhausted(iter_local)` + NOT.
+    /// `IterAdvance` emits `rt_iter_next_no_exc(iter_local)` +
+    /// primitive unbox (for Int/Float/Bool) + bind target.
+    Protocol { iter_local: LocalId },
+    /// Indexed dispatch. Used for List and Tuple — mirrors the
+    /// `lower_for_iterable` fast path which sidesteps the iterator
+    /// object and reads directly via `rt_list_get_typed` /
+    /// `rt_tuple_get_X`. Matches the tree walker's optimized path
+    /// so CFG walker output is semantically equivalent.
+    ///
+    /// `IterHasNext` emits `BinOp::Lt(idx_local, len_local)`.
+    /// `IterAdvance` emits typed get + bind target, then increments
+    /// `idx_local` (the increment must happen AFTER the bind so the
+    /// bound value corresponds to the pre-increment index).
+    Indexed {
+        container_local: LocalId,
+        idx_local: LocalId,
+        len_local: LocalId,
+        elem_type: Type,
+        kind: IterableKindCached,
+    },
+}
+
+/// Subset of `crate::utils::IterableKind` cached in `IterState::Indexed`
+/// to pick the right `rt_X_get` / `rt_X_len` at `IterAdvance` /
+/// `IterHasNext` time. Only List and Tuple reach the indexed path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IterableKindCached {
+    List,
+    Tuple,
+}
+
 /// MIR construction: blocks, instructions, current position
 pub struct CodeGenState {
     pub next_local_id: u32,
@@ -245,15 +286,11 @@ pub struct CodeGenState {
     /// Runtime kwargs dict from **kwargs unpacking
     pub pending_kwargs_from_unpack: Option<(LocalId, Type)>,
     /// §1.17b-c — per-function iterator cache for `ExprKind::IterHasNext`
-    /// / `StmtKind::IterAdvance` lowering. The first reference to a given
-    /// iter ExprId creates the iterator via `rt_iter_X` and stores the
-    /// resulting local here; subsequent IterHasNext / IterAdvance for the
-    /// same ExprId reuse it. Cleared per-function by `lower_function` so
-    /// cache entries don't leak between functions (ExprIds are globally
-    /// unique across the module, but cache lifetime is still per-function
-    /// to keep state tidy).
+    /// / `StmtKind::IterAdvance` lowering. `IterSetup` populates the
+    /// appropriate variant; subsequent IterHasNext / IterAdvance for the
+    /// same ExprId read from the cache.
     #[allow(dead_code)] // consumed by S1.17b-c CFG walker (follow-up session)
-    pub iter_cache: IndexMap<pyaot_hir::ExprId, LocalId>,
+    pub iter_cache: IndexMap<pyaot_hir::ExprId, IterState>,
 }
 
 /// Variable names → local IDs, function references, global tracking, per-function type state

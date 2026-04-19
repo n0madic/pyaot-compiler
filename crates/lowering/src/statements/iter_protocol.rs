@@ -1,4 +1,4 @@
-//! §1.17b-c — Generic iterator protocol lowering for `StmtKind::IterSetup`,
+//! §1.17b-c — Iterator dispatch for `StmtKind::IterSetup`,
 //! `StmtKind::IterAdvance`, and `ExprKind::IterHasNext`, plus the
 //! `ExprKind::MatchPattern` pattern-predicate lowering.
 //!
@@ -13,21 +13,19 @@
 //! ```
 //!
 //! `IterSetup` must run exactly once in the pre-block (before the loop
-//! enters the header). It calls the appropriate `rt_iter_X` runtime
-//! function based on the iterable type and caches the resulting iterator
-//! local in `CodeGenState::iter_cache` keyed by the `iter: ExprId`.
+//! enters the header). It selects a dispatch path based on the iterable
+//! kind and caches the relevant locals in `CodeGenState::iter_cache`:
 //!
-//! `IterHasNext(iter)` and `IterAdvance{iter, target}` both read the
-//! cached iterator local. They NEVER call `rt_iter_X` themselves — that
-//! would reset the iterator each iteration.
-//!
-//! The runtime iterator protocol uses:
-//! - `rt_iter_list` / `rt_iter_tuple` / `rt_iter_dict` / `rt_iter_set` /
-//!   `rt_iter_str` / `rt_iter_bytes` / `rt_iter_generator` — setup (unary)
-//! - `rt_iter_is_exhausted(iter) -> i8` — has-next predicate (boolean)
-//! - `rt_iter_next_no_exc(iter) -> *mut Obj` — advance, returns the next
-//!   element boxed as a heap pointer (raw primitives get boxed by the
-//!   runtime via `box_if_raw_int_iterator`).
+//! - **Indexed** (List / Tuple): `rt_X_len` on setup, `idx` counter,
+//!   `rt_X_get_typed` / `rt_X_get` on advance. Matches the tree walker's
+//!   `lower_for_iterable` fast path — avoids the IteratorObj allocation
+//!   and boxing round-trip for typed lists. `IterHasNext` becomes a
+//!   plain `BinOp::Lt(idx, len)`.
+//! - **Protocol** (Dict / Set / Str / Bytes / Range / Generator): create
+//!   iterator via `rt_iter_X(iterable)` (or `rt_iter_range(start, stop,
+//!   step)` for range). `IterHasNext` calls `rt_iter_is_exhausted` +
+//!   NOT; `IterAdvance` calls `rt_iter_next_no_exc` + primitive unbox
+//!   (Int/Float/Bool) + bind.
 
 use pyaot_core_defs::runtime_func_def;
 use pyaot_diagnostics::{CompilerError, Result};
@@ -35,22 +33,21 @@ use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
 
-use crate::context::Lowering;
+use crate::context::{IterState, IterableKindCached, Lowering};
 use crate::utils::{get_iterable_info, IterableKind};
 
 impl<'a> Lowering<'a> {
-    /// Lower `StmtKind::IterSetup { iter }` — call `rt_iter_X` on the
-    /// iterable expression and cache the iterator local. Must run once
-    /// in the pre-block before the for-loop header.
+    /// Lower `StmtKind::IterSetup { iter }` — pick the dispatch path
+    /// (indexed for List/Tuple, protocol for everything else) and cache
+    /// the relevant locals. Must run once in the pre-block.
     pub(crate) fn lower_iter_setup(
         &mut self,
         iter_id: hir::ExprId,
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
-        // If the cache already has this iter_expr (shouldn't happen in
-        // well-formed CFGs — bridge emits exactly one IterSetup per
-        // for-loop), skip. Defensive: treat as no-op.
+        // Defensive: duplicate IterSetup means a bridge bug or user-code
+        // pattern we haven't seen. No-op to keep first-winner semantics.
         if self.codegen.iter_cache.contains_key(&iter_id) {
             return Ok(());
         }
@@ -59,8 +56,10 @@ impl<'a> Lowering<'a> {
 
         // §1.17b-c — special case: `for i in range(...)` uses
         // `rt_iter_range(start, stop, step)` which takes 3 i64 args,
-        // NOT the generic (iterable → iterator) pattern. Detect and
-        // handle before the generic dispatch below.
+        // NOT the generic (iterable → iterator) pattern. Always goes
+        // through the Protocol dispatch (range iterator yields raw
+        // i64 values that `box_if_raw_int_iterator` boxes at
+        // `rt_iter_next` time).
         if let hir::ExprKind::BuiltinCall {
             builtin: hir::Builtin::Range,
             args,
@@ -75,17 +74,14 @@ impl<'a> Lowering<'a> {
                 Type::HeapAny,
                 mir_func,
             );
-            self.codegen.iter_cache.insert(iter_id, iter_local);
+            self.codegen
+                .iter_cache
+                .insert(iter_id, IterState::Protocol { iter_local });
             return Ok(());
         }
 
         let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
-
-        // Lower the iterable expression to an operand.
-        let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
-
-        // Pick the appropriate rt_iter_X runtime function.
-        let Some((kind, _elem_type)) = get_iterable_info(&iter_type) else {
+        let Some((kind, elem_type)) = get_iterable_info(&iter_type) else {
             return Err(CompilerError::type_error(
                 format!(
                     "cannot iterate over type '{:?}' in IterSetup (no iterable info)",
@@ -95,17 +91,65 @@ impl<'a> Lowering<'a> {
             ));
         };
 
+        // §1.17b-c — indexed dispatch for List and Tuple. Matches
+        // `lower_for_iterable`'s fast path: no IteratorObj, just len()
+        // + get_typed().
+        match kind {
+            IterableKind::List | IterableKind::Tuple => {
+                let container_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
+                let container_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: container_local,
+                    src: container_operand,
+                });
+
+                let len_func = match kind {
+                    IterableKind::List => &runtime_func_def::RT_LIST_LEN,
+                    IterableKind::Tuple => &runtime_func_def::RT_TUPLE_LEN,
+                    _ => unreachable!(),
+                };
+                let len_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(len_func),
+                    vec![mir::Operand::Local(container_local)],
+                    Type::Int,
+                    mir_func,
+                );
+
+                // Initialize idx = 0.
+                let idx_local = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: idx_local,
+                    src: mir::Operand::Constant(mir::Constant::Int(0)),
+                });
+
+                self.codegen.iter_cache.insert(
+                    iter_id,
+                    IterState::Indexed {
+                        container_local,
+                        idx_local,
+                        len_local,
+                        elem_type,
+                        kind: match kind {
+                            IterableKind::List => IterableKindCached::List,
+                            IterableKind::Tuple => IterableKindCached::Tuple,
+                            _ => unreachable!(),
+                        },
+                    },
+                );
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        // §1.17b-c — protocol dispatch for Dict / Set / Str / Bytes /
+        // Iterator (generators). Use the generic iterator protocol.
+        let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
         let rt_func = match kind {
-            IterableKind::List => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_LIST),
-            IterableKind::Tuple => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_TUPLE),
             IterableKind::Dict => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_DICT),
             IterableKind::Set => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_SET),
             IterableKind::Str => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_STR),
             IterableKind::Bytes => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_BYTES),
-            IterableKind::Iterator => {
-                // Generators / existing iterators — return as-is.
-                mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_GENERATOR)
-            }
+            IterableKind::Iterator => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_GENERATOR),
             IterableKind::File => {
                 return Err(CompilerError::type_error(
                     "IterSetup does not yet support file iteration — \
@@ -115,22 +159,18 @@ impl<'a> Lowering<'a> {
                     iter_expr.span,
                 ));
             }
+            IterableKind::List | IterableKind::Tuple => unreachable!("handled above"),
         };
-
-        // Emit iter setup call; the result is a heap iterator pointer.
         let iter_local =
             self.emit_runtime_call(rt_func, vec![iter_operand], Type::HeapAny, mir_func);
-
-        // Cache the iterator local for subsequent IterHasNext / IterAdvance
-        // with the same iter ExprId.
-        self.codegen.iter_cache.insert(iter_id, iter_local);
-
+        self.codegen
+            .iter_cache
+            .insert(iter_id, IterState::Protocol { iter_local });
         Ok(())
     }
 
     /// Lower `StmtKind::IterAdvance { iter, target }` — read the cached
-    /// iterator local, call `rt_iter_next_no_exc` to advance, bind the
-    /// result to `target`.
+    /// `IterState` and dispatch to the appropriate advance path.
     pub(crate) fn lower_iter_advance(
         &mut self,
         iter_id: hir::ExprId,
@@ -138,11 +178,11 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
-        let iter_local = self
+        let state = self
             .codegen
             .iter_cache
             .get(&iter_id)
-            .copied()
+            .cloned()
             .ok_or_else(|| {
                 CompilerError::type_error(
                     format!(
@@ -154,91 +194,164 @@ impl<'a> Lowering<'a> {
                 )
             })?;
 
-        // Emit rt_iter_next_no_exc(iter_local) — returns *mut Obj (raw
-        // primitives like int/bool are boxed by the runtime's
-        // `box_if_raw_int_iterator`).
-        let boxed_value_local = self.emit_runtime_call(
-            mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_NEXT_NO_EXC),
-            vec![mir::Operand::Local(iter_local)],
-            Type::HeapAny,
-            mir_func,
-        );
-
-        // Determine the element type from the iterable.
-        // Special case for range(): its iter_expr is a BuiltinCall that
-        // get_iterable_info can't classify — the element type is Int.
-        let iter_expr = &hir_module.exprs[iter_id];
-        let elem_type = if matches!(
-            &iter_expr.kind,
-            hir::ExprKind::BuiltinCall {
-                builtin: hir::Builtin::Range,
+        match state {
+            IterState::Indexed {
+                container_local,
+                idx_local,
+                elem_type,
+                kind,
                 ..
-            }
-        ) {
-            Type::Int
-        } else {
-            let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
-            get_iterable_info(&iter_type)
-                .map(|(_, t)| t)
-                .unwrap_or(Type::Any)
-        };
+            } => {
+                // Emit typed get (primitive) or generic get (heap).
+                // Mirrors the elem_kind_for_typed dispatch in
+                // `lower_for_iterable`.
+                let elem_kind_for_typed = match (kind, &elem_type) {
+                    (IterableKindCached::List, Type::Int) => Some(mir::GetElementKind::Int),
+                    _ => None,
+                };
 
-        // §1.17b-c — unbox the iter-next result for primitive types.
-        // Runtime returns boxed Obj pointers for raw-int/bool iterators
-        // (`box_if_raw_int_iterator`); unbox back to raw i64/f64/i8 so
-        // the bind target (which is declared with the primitive type)
-        // gets the correct representation.
-        let value_operand = match &elem_type {
-            Type::Int => {
-                let unboxed = self.emit_runtime_call(
-                    mir::RuntimeFunc::Call(&runtime_func_def::RT_UNBOX_INT),
-                    vec![mir::Operand::Local(boxed_value_local)],
-                    Type::Int,
+                let target_type = elem_type.clone();
+                let value_local = self.alloc_and_add_local(target_type.clone(), mir_func);
+
+                if let Some(elem_kind) = elem_kind_for_typed {
+                    let kind_tag =
+                        mir::Operand::Constant(mir::Constant::Int(elem_kind.to_tag() as i64));
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: value_local,
+                        func: mir::RuntimeFunc::Call(&runtime_func_def::RT_LIST_GET_TYPED),
+                        args: vec![
+                            mir::Operand::Local(container_local),
+                            mir::Operand::Local(idx_local),
+                            kind_tag,
+                        ],
+                    });
+                } else {
+                    let get_func = match kind {
+                        IterableKindCached::Tuple => {
+                            crate::type_dispatch::tuple_get_func(&elem_type)
+                        }
+                        IterableKindCached::List => {
+                            mir::RuntimeFunc::Call(&runtime_func_def::RT_LIST_GET)
+                        }
+                    };
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: value_local,
+                        func: get_func,
+                        args: vec![
+                            mir::Operand::Local(container_local),
+                            mir::Operand::Local(idx_local),
+                        ],
+                    });
+                }
+
+                // Bind the value to the target BEFORE incrementing idx,
+                // so the bound value corresponds to the pre-increment
+                // index.
+                self.lower_binding_target(
+                    target,
+                    mir::Operand::Local(value_local),
+                    &target_type,
+                    hir_module,
+                    mir_func,
+                )?;
+
+                // Increment idx: idx = idx + 1.
+                let next_idx = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::BinOp {
+                    dest: next_idx,
+                    op: mir::BinOp::Add,
+                    left: mir::Operand::Local(idx_local),
+                    right: mir::Operand::Constant(mir::Constant::Int(1)),
+                });
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: idx_local,
+                    src: mir::Operand::Local(next_idx),
+                });
+                Ok(())
+            }
+            IterState::Protocol { iter_local } => {
+                // rt_iter_next_no_exc(iter_local) — returns *mut Obj
+                // (raw primitives like int/bool are boxed by the runtime's
+                // `box_if_raw_int_iterator`).
+                let boxed_value_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_NEXT_NO_EXC),
+                    vec![mir::Operand::Local(iter_local)],
+                    Type::HeapAny,
                     mir_func,
                 );
-                mir::Operand::Local(unboxed)
-            }
-            Type::Float => {
-                let unboxed = self.emit_runtime_call(
-                    mir::RuntimeFunc::Call(&runtime_func_def::RT_UNBOX_FLOAT),
-                    vec![mir::Operand::Local(boxed_value_local)],
-                    Type::Float,
-                    mir_func,
-                );
-                mir::Operand::Local(unboxed)
-            }
-            Type::Bool => {
-                let unboxed = self.emit_runtime_call(
-                    mir::RuntimeFunc::Call(&runtime_func_def::RT_UNBOX_BOOL),
-                    vec![mir::Operand::Local(boxed_value_local)],
-                    Type::Bool,
-                    mir_func,
-                );
-                mir::Operand::Local(unboxed)
-            }
-            // Heap types (Str, List, Dict, Class, …) are pointers already.
-            _ => mir::Operand::Local(boxed_value_local),
-        };
 
-        // Bind the value to the target via the unified binding-target path.
-        self.lower_binding_target(target, value_operand, &elem_type, hir_module, mir_func)?;
+                // Determine the element type. Special case for range():
+                // its iter_expr is a BuiltinCall that get_iterable_info
+                // can't classify — elem is Int.
+                let iter_expr = &hir_module.exprs[iter_id];
+                let elem_type = if matches!(
+                    &iter_expr.kind,
+                    hir::ExprKind::BuiltinCall {
+                        builtin: hir::Builtin::Range,
+                        ..
+                    }
+                ) {
+                    Type::Int
+                } else {
+                    let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
+                    get_iterable_info(&iter_type)
+                        .map(|(_, t)| t)
+                        .unwrap_or(Type::Any)
+                };
 
-        Ok(())
+                // Unbox the iter-next result for primitive element types.
+                let value_operand = match &elem_type {
+                    Type::Int => {
+                        let unboxed = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(&runtime_func_def::RT_UNBOX_INT),
+                            vec![mir::Operand::Local(boxed_value_local)],
+                            Type::Int,
+                            mir_func,
+                        );
+                        mir::Operand::Local(unboxed)
+                    }
+                    Type::Float => {
+                        let unboxed = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(&runtime_func_def::RT_UNBOX_FLOAT),
+                            vec![mir::Operand::Local(boxed_value_local)],
+                            Type::Float,
+                            mir_func,
+                        );
+                        mir::Operand::Local(unboxed)
+                    }
+                    Type::Bool => {
+                        let unboxed = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(&runtime_func_def::RT_UNBOX_BOOL),
+                            vec![mir::Operand::Local(boxed_value_local)],
+                            Type::Bool,
+                            mir_func,
+                        );
+                        mir::Operand::Local(unboxed)
+                    }
+                    // Heap types (Str, List, Dict, Class, …) are already
+                    // pointers.
+                    _ => mir::Operand::Local(boxed_value_local),
+                };
+
+                self.lower_binding_target(target, value_operand, &elem_type, hir_module, mir_func)?;
+                Ok(())
+            }
+        }
     }
 
-    /// Lower `ExprKind::IterHasNext(iter)` — read the cached iterator local,
-    /// call `rt_iter_is_exhausted`, NOT the result. Returns a bool operand.
+    /// Lower `ExprKind::IterHasNext(iter)` — read the cached `IterState`
+    /// and emit the dispatch-appropriate predicate. Returns a bool operand.
     pub(crate) fn lower_iter_has_next(
         &mut self,
         iter_id: hir::ExprId,
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let iter_local = self
+        let state = self
             .codegen
             .iter_cache
             .get(&iter_id)
-            .copied()
+            .cloned()
             .ok_or_else(|| {
                 CompilerError::type_error(
                     format!(
@@ -250,23 +363,39 @@ impl<'a> Lowering<'a> {
                 )
             })?;
 
-        // Emit rt_iter_is_exhausted(iter_local) → bool (i8).
-        let exhausted_local = self.emit_runtime_call(
-            mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_IS_EXHAUSTED),
-            vec![mir::Operand::Local(iter_local)],
-            Type::Bool,
-            mir_func,
-        );
-
-        // NOT it: has_next = !exhausted.
-        let has_next_local = self.alloc_and_add_local(Type::Bool, mir_func);
-        self.emit_instruction(mir::InstructionKind::UnOp {
-            dest: has_next_local,
-            op: mir::UnOp::Not,
-            operand: mir::Operand::Local(exhausted_local),
-        });
-
-        Ok(mir::Operand::Local(has_next_local))
+        match state {
+            IterState::Indexed {
+                idx_local,
+                len_local,
+                ..
+            } => {
+                // has_next = idx < len
+                let cmp_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                self.emit_instruction(mir::InstructionKind::BinOp {
+                    dest: cmp_local,
+                    op: mir::BinOp::Lt,
+                    left: mir::Operand::Local(idx_local),
+                    right: mir::Operand::Local(len_local),
+                });
+                Ok(mir::Operand::Local(cmp_local))
+            }
+            IterState::Protocol { iter_local } => {
+                // has_next = !rt_iter_is_exhausted(iter_local)
+                let exhausted_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_IS_EXHAUSTED),
+                    vec![mir::Operand::Local(iter_local)],
+                    Type::Bool,
+                    mir_func,
+                );
+                let has_next_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                self.emit_instruction(mir::InstructionKind::UnOp {
+                    dest: has_next_local,
+                    op: mir::UnOp::Not,
+                    operand: mir::Operand::Local(exhausted_local),
+                });
+                Ok(mir::Operand::Local(has_next_local))
+            }
+        }
     }
 
     /// Lower `range()` arguments into `(start, stop, step)` i64 operands
@@ -318,18 +447,6 @@ impl<'a> Lowering<'a> {
     /// pattern-match outcome is known, causing spurious attribute/index
     /// errors on non-matching subjects. The correct placement is inside
     /// the case-body block (entered only on match success).
-    ///
-    /// The CFG walker (S1.17b-c main loop) must ensure bindings are
-    /// emitted in the case-body block head via one of:
-    /// - Bridge-side: augment `cfg_build` to emit binding extraction as
-    ///   HIR `Bind` statements at the head of each case body block.
-    /// - Walker-side: post-process the Branch emission by calling
-    ///   `generate_pattern_check` again in the success path to emit
-    ///   bindings.
-    ///
-    /// Until one of those lands, `MatchPattern` lowering is correct for
-    /// patterns that don't introduce new captures: `MatchValue`,
-    /// `MatchSingleton`, and `MatchAs { pattern, name: None }` (wildcard).
     pub(crate) fn lower_match_pattern(
         &mut self,
         subject: hir::ExprId,
@@ -341,8 +458,6 @@ impl<'a> Lowering<'a> {
         let subject_operand = self.lower_expr(subject_expr, hir_module, mir_func)?;
         let subject_type = self.get_type_of_expr_id(subject, hir_module);
 
-        // Cache the subject in a local to avoid re-evaluation (matches the
-        // semantics of `lower_match` which stores the subject once up-front).
         let subject_local = self.alloc_and_add_local(subject_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {
             dest: subject_local,
@@ -357,9 +472,6 @@ impl<'a> Lowering<'a> {
             mir_func,
         )?;
 
-        // Bindings are dropped — see doc comment. The bridge must emit
-        // binding-extraction HIR stmts in the case-body block head for
-        // full correctness.
         Ok(cond)
     }
 }
