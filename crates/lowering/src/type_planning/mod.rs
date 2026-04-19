@@ -320,6 +320,11 @@ impl<'a> Lowering<'a> {
     }
 
     /// Scan a function body for return statements and infer the return type.
+    ///
+    /// §1.17b-d — walks the function's CFG (not the legacy tree) via
+    /// `collect_return_types_from_func`; pass the `func` reference when
+    /// available. The `body`-slice overload remains for module-init-stmts
+    /// which don't have a containing CFG function.
     fn infer_return_type_from_body(
         &self,
         body: &[hir::StmtId],
@@ -439,17 +444,26 @@ impl<'a> Lowering<'a> {
     // unified `infer_expr_type_inner` engine.
 }
 
-/// §1.4u-b helper: walk every `StmtKind::Try` in the module (including
-/// nested function bodies, class bodies, and other control-flow
-/// contexts) and collect `(handler.name, handler.ty)` pairs where
-/// both are present. Used to seed `HirTypeInference::base_var_types`
-/// with exception-handler binding types, which are otherwise only
-/// populated at lowering time via `insert_var_type`.
+/// §1.4u-b helper: collect `(handler.name, handler.ty)` pairs where both
+/// are present, for every exception handler in the module. Used to seed
+/// `HirTypeInference::base_var_types` with handler binding types.
+///
+/// §1.17b-d — reads `Function::try_scopes` directly instead of walking
+/// the statement tree. Module-level init statements still walk the tree
+/// (no containing CFG function).
 fn collect_handler_binds(module: &hir::Module) -> Vec<(VarId, Type)> {
     let mut out = Vec::new();
     for func in module.func_defs.values() {
-        collect_handler_binds_in_stmts(&func.body, module, &mut out);
+        for scope in &func.try_scopes {
+            for h in &scope.handlers {
+                if let (Some(name), Some(ty)) = (h.name, h.ty.clone()) {
+                    out.push((name, ty));
+                }
+            }
+        }
     }
+    // Module init stmts are a flat Vec<StmtId>, not a CFG function. Walk
+    // the tree to find `Try`-embedded handlers.
     collect_handler_binds_in_stmts(&module.module_init_stmts, module, &mut out);
     out
 }

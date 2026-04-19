@@ -53,64 +53,33 @@ impl<'a> Lowering<'a> {
 
         self.ni_analysis.cache.insert(func_id, NiState::Computing);
         let mut may_ni = false;
-        for stmt_id in &func.body {
-            if self.scan_stmt_for_ni(*stmt_id, hir_module) {
-                may_ni = true;
-                break;
+        // §1.17b-d — walk the CFG directly. Any `Return(expr)` terminator
+        // whose `expr` can produce `NotImplemented` flags the whole
+        // function. Handler/finally blocks are included because a handler
+        // can itself contain `return NotImplemented`.
+        'outer: for block in func.blocks.values() {
+            // Inspect straight-line statements first (defensive — today
+            // these are always Bind/Expr/Assert/etc.; `Return` lives on
+            // the terminator).
+            for &stmt_id in &block.stmts {
+                let stmt = &hir_module.stmts[stmt_id];
+                if let hir::StmtKind::Return(Some(expr_id)) = &stmt.kind {
+                    if self.scan_return_expr_for_ni(*expr_id, hir_module) {
+                        may_ni = true;
+                        break 'outer;
+                    }
+                }
+            }
+            if let hir::HirTerminator::Return(Some(expr_id)) = &block.terminator {
+                if self.scan_return_expr_for_ni(*expr_id, hir_module) {
+                    may_ni = true;
+                    break 'outer;
+                }
             }
         }
         let final_state = if may_ni { NiState::Yes } else { NiState::No };
         self.ni_analysis.cache.insert(func_id, final_state);
         may_ni
-    }
-
-    /// Recursively scan a statement for any path that may produce
-    /// `NotImplemented`. Descends into nested control flow (if / for /
-    /// while / try / match) and into `Return(expr)` where `expr` is a
-    /// direct `NotImplemented` literal or a tail call to a function that
-    /// itself may return the sentinel.
-    fn scan_stmt_for_ni(&mut self, stmt_id: hir::StmtId, module: &hir::Module) -> bool {
-        let stmt = &module.stmts[stmt_id];
-        match &stmt.kind {
-            hir::StmtKind::Return(Some(expr_id)) => self.scan_return_expr_for_ni(*expr_id, module),
-            hir::StmtKind::Return(None) => false,
-            hir::StmtKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                then_block.iter().any(|s| self.scan_stmt_for_ni(*s, module))
-                    || else_block.iter().any(|s| self.scan_stmt_for_ni(*s, module))
-            }
-            hir::StmtKind::ForBind {
-                body, else_block, ..
-            }
-            | hir::StmtKind::While {
-                body, else_block, ..
-            } => {
-                body.iter().any(|s| self.scan_stmt_for_ni(*s, module))
-                    || else_block.iter().any(|s| self.scan_stmt_for_ni(*s, module))
-            }
-            hir::StmtKind::Try {
-                body,
-                handlers,
-                else_block,
-                finally_block,
-            } => {
-                body.iter().any(|s| self.scan_stmt_for_ni(*s, module))
-                    || handlers
-                        .iter()
-                        .any(|h| h.body.iter().any(|s| self.scan_stmt_for_ni(*s, module)))
-                    || else_block.iter().any(|s| self.scan_stmt_for_ni(*s, module))
-                    || finally_block
-                        .iter()
-                        .any(|s| self.scan_stmt_for_ni(*s, module))
-            }
-            hir::StmtKind::Match { cases, .. } => cases
-                .iter()
-                .any(|c| c.body.iter().any(|s| self.scan_stmt_for_ni(*s, module))),
-            _ => false,
-        }
     }
 
     /// Handle the RHS of `return <expr>`. Recognises:
