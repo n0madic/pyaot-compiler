@@ -45,10 +45,10 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // Lambda body should have a single return statement
-        if let Some(stmt_id) = func.body.first() {
-            let stmt = &hir_module.stmts[*stmt_id];
-            if let hir::StmtKind::Return(Some(expr_id)) = &stmt.kind {
+        // §1.17b-d — lambda bodies are a single CFG block whose terminator
+        // is `Return(Some(expr))`. Walk from `entry_block`.
+        if let Some(entry) = func.blocks.get(&func.entry_block) {
+            if let hir::HirTerminator::Return(Some(expr_id)) = &entry.terminator {
                 let expr = &hir_module.exprs[*expr_id];
                 self.infer_types_from_expr(expr, hir_module, &var_to_index, &mut inferred_types);
             }
@@ -265,11 +265,12 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // Scan all statements for a return statement
-        // (functions may have multiple statements before the return)
-        for stmt_id in &func.body {
-            let stmt = &hir_module.stmts[*stmt_id];
-            if let hir::StmtKind::Return(Some(expr_id)) = &stmt.kind {
+        // §1.17b-d — scan the CFG for any `Return(Some(expr))` terminator
+        // and infer from its expr. The first matching block wins (same
+        // semantics as the former tree walk). Blocks without a Return
+        // terminator fall through and the function returns `None`.
+        for block in func.blocks.values() {
+            if let hir::HirTerminator::Return(Some(expr_id)) = &block.terminator {
                 let expr = &hir_module.exprs[*expr_id];
                 return self.infer_deep_expr_type(expr, hir_module, &param_type_map);
             }
