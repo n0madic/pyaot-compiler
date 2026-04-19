@@ -244,14 +244,13 @@ impl<'a> Lowering<'a> {
                 };
             }
             hir::HirTerminator::Return(opt_expr_id) => {
-                let operand = match opt_expr_id {
-                    Some(expr_id) => {
-                        let expr = &hir_module.exprs[*expr_id];
-                        Some(self.lower_expr(expr, hir_module, mir_func)?)
-                    }
-                    None => None,
-                };
-                self.current_block_mut().terminator = mir::Terminator::Return(operand);
+                // §1.17b-c — delegate to `lower_return` which applies
+                // the §E.7 NotImplementedT boxing + type coercion via
+                // `lower_expr_expecting`. Using `lower_return` keeps
+                // emission shape identical to the tree walker's Return
+                // path, avoiding signature-mismatch Cranelift errors
+                // for `$resume` / Union-returning dunders.
+                self.lower_return(opt_expr_id.as_ref(), hir_module, mir_func)?;
             }
             hir::HirTerminator::Raise { exc, cause } => {
                 // Delegate to `emit_raise_terminator` — the factored

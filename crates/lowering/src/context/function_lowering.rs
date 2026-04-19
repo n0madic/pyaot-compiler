@@ -402,11 +402,9 @@ impl<'a> Lowering<'a> {
         //      emits a Return terminator that doesn't match the resume
         //      function's declared return type (i64 for state). Needs
         //      special-casing `$resume` functions.
-        // Walker stays dead-code. 2026-04-19 post-narrowing-fix run
-        // still 29 failures — next class is Return signature mismatch
-        // (walker emits Return operand type != function declared type
-        // for some methods; tree walker has type coercion that walker
-        // misses).
+        // Walker dead-code. 2026-04-19 post-Return-coerce run: 28
+        // failures (was 29 — net +1). Remaining signature-mismatch
+        // errors at specific functions need deeper per-test MIR diff.
         for stmt_id in &func.body {
             let stmt = &hir_module.stmts[*stmt_id];
             self.lower_stmt(stmt, hir_module, &mut mir_func)?;
