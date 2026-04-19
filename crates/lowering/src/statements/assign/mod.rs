@@ -405,6 +405,34 @@ impl<'a> Lowering<'a> {
             });
         }
 
+        // Persistent Bind-narrowing: when the declared `var_type` is a
+        // Union that contains the inferred RHS `value_type` as a proper
+        // member (e.g. polymorphic operator-dunder `other: Union[Self,
+        // Int, Float, Bool]` rebound via `other = other if isinstance(
+        // other, Self) else Self(other)` where both ternary branches
+        // yield `Self`), update `var_types[target]` to the narrower
+        // type so subsequent reads of `target` see the concrete class
+        // and attribute access / method dispatch works. The MIR local
+        // stays allocated at the wider Union type (heap pointer), and
+        // `narrowed_union_vars[target]` preserves the original Union
+        // so downstream boxing logic (comparison, literal coercion)
+        // continues to treat `target` as a Union-widened slot.
+        //
+        // Only applies to heap-to-heap narrowings (Union of Class +
+        // primitives → Class). Primitive narrowings go through the
+        // regular `push_narrowing_frame` / `insert_narrowed_union`
+        // path from `If`/`While`-driven isinstance analysis.
+        if var_type.is_union() && original_union_type.is_none() {
+            if let Type::Class { .. } = &value_type {
+                if let Type::Union(members) = &var_type {
+                    if members.iter().any(|m| m == &value_type) {
+                        self.insert_narrowed_union(target, var_type.clone());
+                        self.insert_var_type(target, value_type.clone());
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 }
