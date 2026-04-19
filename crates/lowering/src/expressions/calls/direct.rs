@@ -403,6 +403,40 @@ impl<'a> Lowering<'a> {
         }
 
         if let hir::ExprKind::FuncRef(func_id) = &func_expr.kind {
+            // Closure-recursion detection: when a nested function with
+            // captured variables is referenced by `FuncRef` inside its
+            // own body (recursive call), the frontend emits
+            // `FuncRef(func_id)` rather than a fresh `Closure { … }`
+            // to avoid a circular capture reference. The callee's
+            // parameter list then has leading `__capture_*` entries
+            // that the AST-level call (`build_topo(v)`) never supplies.
+            // Forward them from the enclosing function's own
+            // like-named `__capture_*` params, which are already in
+            // scope as MIR locals.
+            let forwarded_captures: Vec<mir::Operand> =
+                if let Some(func_def) = hir_module.func_defs.get(func_id) {
+                    let capture_count = func_def
+                        .params
+                        .iter()
+                        .take_while(|p| self.resolve(p.name).starts_with("__capture_"))
+                        .count();
+                    func_def
+                        .params
+                        .iter()
+                        .take(capture_count)
+                        .map(|p| {
+                            let local = self.get_var_local(&p.var);
+                            match local {
+                                Some(l) => mir::Operand::Local(l),
+                                None => mir::Operand::Constant(mir::Constant::None),
+                            }
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            let has_forwarded_captures = !forwarded_captures.is_empty();
+
             // Type check: validate arg count and types against function signature
             let regular_arg_ids: Vec<hir::ExprId> = args
                 .iter()
@@ -422,7 +456,14 @@ impl<'a> Lowering<'a> {
                 // No args at all — use func expression span
                 func_expr.span
             };
-            self.check_call_args(func_id, &regular_arg_ids, kwargs, call_span, hir_module);
+            // Skip the validator when we're forwarding captures —
+            // `check_call_args` compares against the full param list
+            // (captures + user params) but the user's call site only
+            // supplies the user-facing args. Validation after capture
+            // prepending would accept the synthetic operands anyway.
+            if !has_forwarded_captures {
+                self.check_call_args(func_id, &regular_arg_ids, kwargs, call_span, hir_module);
+            }
 
             // Get function definition to access parameter names and defaults
             let func_def = hir_module.func_defs.get(func_id);
@@ -439,22 +480,54 @@ impl<'a> Lowering<'a> {
                 })
                 .unwrap_or(expr.span);
 
-            let arg_operands = if let Some(func_def) = func_def {
-                // Resolve arguments using helper (handles kwargs and defaults)
-                self.resolve_call_args(
-                    args,
-                    kwargs,
-                    &func_def.params,
-                    Some(*func_id),
-                    0, // No offset for regular function calls
-                    call_site_span,
-                    hir_module,
-                    mir_func,
-                )?
+            let mut arg_operands = if let Some(func_def) = func_def {
+                if has_forwarded_captures {
+                    // Pass only the non-capture suffix to `resolve_call_args`,
+                    // with `capture_count` as the offset so defaults /
+                    // mutable-default-slot bookkeeping keep indexing into
+                    // the original param list correctly.
+                    let capture_count = forwarded_captures.len();
+                    let non_capture_params: Vec<hir::Param> = func_def
+                        .params
+                        .iter()
+                        .skip(capture_count)
+                        .cloned()
+                        .collect();
+                    self.resolve_call_args(
+                        args,
+                        kwargs,
+                        &non_capture_params,
+                        Some(*func_id),
+                        capture_count,
+                        call_site_span,
+                        hir_module,
+                        mir_func,
+                    )?
+                } else {
+                    // Resolve arguments using helper (handles kwargs and defaults)
+                    self.resolve_call_args(
+                        args,
+                        kwargs,
+                        &func_def.params,
+                        Some(*func_id),
+                        0, // No offset for regular function calls
+                        call_site_span,
+                        hir_module,
+                        mir_func,
+                    )?
+                }
             } else {
                 // Fallback: lower args with runtime unpacking support
                 self.lower_expanded_args(args, hir_module, mir_func)?
             };
+
+            // Prepend the synthesized captures so the CallDirect's arg
+            // list matches the callee's full param arity.
+            if has_forwarded_captures {
+                let mut combined = forwarded_captures;
+                combined.append(&mut arg_operands);
+                arg_operands = combined;
+            }
 
             // Create a destination local for the result
             // Check inferred return types first (for generators), then HIR definition

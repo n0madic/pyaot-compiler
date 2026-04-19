@@ -28,6 +28,7 @@ impl<'a> Lowering<'a> {
         self.precompute_closure_capture_types(hir_module);
         self.process_module_decorated_functions(hir_module);
         self.refine_empty_container_types(hir_module);
+        self.infer_nested_function_param_types(hir_module);
         self.infer_all_return_types(hir_module);
         self.precompute_all_local_var_types(hir_module);
         // Area E §E.6 — re-infer return types for unannotated functions

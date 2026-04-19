@@ -429,6 +429,451 @@ impl<'a> Lowering<'a> {
         param_hints.extend(make_hints(elem_type));
         self.insert_lambda_param_type_hints(func_id, param_hints);
     }
+
+    // ==================== Nested Function Parameter Inference ====================
+
+    /// Infer parameter types for nested / closure functions that lack
+    /// explicit annotations, by joining the argument types observed at
+    /// their call sites within the module.
+    ///
+    /// Target pattern (microgpt.py style):
+    /// ```text
+    /// def outer(root: Value):
+    ///     def inner(v):           # no annotation, implicit `v: Any`
+    ///         for child in v._children:
+    ///             inner(child)
+    ///     inner(root)             # call site #1 — v := Value
+    /// ```
+    ///
+    /// Without this pass `v` stays `Any` and `v._children` fails with
+    /// "cannot iterate over type 'Any'". With it, the call-site scan
+    /// sees `inner(root)` passes `Value`, records a hint for `v`, and
+    /// downstream prescan / return-type inference / lowering all see
+    /// the concrete type.
+    ///
+    /// Algorithm:
+    /// 1. First pass — scan the whole module and record, for every
+    ///    `Bind { target: Var(v), value: Closure | FuncRef }`, the
+    ///    mapping `VarId → (FuncId, capture-count)`. This lets step 2
+    ///    resolve indirect `Call { func: Var(v), … }` back to the
+    ///    underlying `FuncId`.
+    /// 2. Second pass — scan every `Call` expression. For each call
+    ///    whose target resolves (direct `FuncRef`, inline `Closure`,
+    ///    or `Var` via the map from step 1), compute the inferred
+    ///    type of every positional argument (using
+    ///    `infer_deep_expr_type` with a param-overlay built from the
+    ///    enclosing function's annotated parameters) and union it
+    ///    into a per-`FuncId` accumulator keyed by positional index.
+    /// 3. Finalisation — for every `FuncId` with collected types and
+    ///    no existing `lambda_param_type_hints` entry AND no explicit
+    ///    annotation on the target param, emit a `Vec<Type>` of
+    ///    `capture-slots + inferred-arg-types`. The capture slots are
+    ///    already carried by `closure_capture_types`; the hint covers
+    ///    the non-capture positional params.
+    ///
+    /// Skipped intentionally:
+    /// - Functions that already have explicit annotations on every
+    ///   non-capture param (no win there).
+    /// - Functions that already have a `lambda_param_type_hints`
+    ///   entry from the HOF scan (map/filter/reduce) — those are
+    ///   authoritative and this pass must not clobber them.
+    /// - Starred / keyword / unpacked arguments (too fragile at this
+    ///   stage; fall back to `Any`).
+    pub(crate) fn infer_nested_function_param_types(&mut self, hir_module: &hir::Module) {
+        use std::collections::HashMap;
+        // 1. Build `var_to_func`: Bind-target VarIds that hold a Closure or
+        //    FuncRef. Captures are stored so step 2 can offset past them.
+        let mut var_to_func: HashMap<VarId, (pyaot_utils::FuncId, usize)> = HashMap::new();
+        for (_stmt_id, stmt) in hir_module.stmts.iter() {
+            let hir::StmtKind::Bind { target, value, .. } = &stmt.kind else {
+                continue;
+            };
+            let hir::BindingTarget::Var(var_id) = target else {
+                continue;
+            };
+            let value_expr = &hir_module.exprs[*value];
+            match &value_expr.kind {
+                hir::ExprKind::Closure { func, captures } => {
+                    var_to_func.insert(*var_id, (*func, captures.len()));
+                }
+                hir::ExprKind::FuncRef(func_id) => {
+                    var_to_func.insert(*var_id, (*func_id, 0));
+                }
+                _ => {}
+            }
+        }
+
+        // 2. Walk every function body plus module-init, collecting per-FuncId
+        //    positional arg-type accumulators.
+        let mut accumulators: HashMap<pyaot_utils::FuncId, Vec<Type>> = HashMap::new();
+
+        for (_fid, func) in hir_module.func_defs.iter() {
+            // Build a param-overlay for the enclosing function — the
+            // arg-type inference uses it so that `inner(self)` where
+            // `self: Value` resolves the arg as `Value`, not `Any`.
+            let mut overlay: IndexMap<VarId, Type> = IndexMap::new();
+            for p in &func.params {
+                if let Some(ref ty) = p.ty {
+                    overlay.insert(p.var, ty.clone());
+                }
+            }
+            for stmt_id in &func.body {
+                self.collect_call_arg_types(
+                    *stmt_id,
+                    hir_module,
+                    &var_to_func,
+                    &overlay,
+                    &mut accumulators,
+                );
+            }
+        }
+        for stmt_id in &hir_module.module_init_stmts {
+            self.collect_call_arg_types(
+                *stmt_id,
+                hir_module,
+                &var_to_func,
+                &IndexMap::new(),
+                &mut accumulators,
+            );
+        }
+
+        // 3. Commit hints for eligible functions.
+        for (func_id, inferred) in accumulators {
+            if self.get_lambda_param_type_hints(&func_id).is_some() {
+                continue;
+            }
+            let Some(func_def) = hir_module.func_defs.get(&func_id) else {
+                continue;
+            };
+            let capture_count = self
+                .get_closure_capture_types(&func_id)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            let non_capture_params = func_def.params.len().saturating_sub(capture_count);
+            if inferred.is_empty() || non_capture_params == 0 {
+                continue;
+            }
+            // Skip if every non-capture param already carries an
+            // explicit annotation — the user's types win.
+            let all_annotated = func_def
+                .params
+                .iter()
+                .skip(capture_count)
+                .all(|p| p.ty.is_some());
+            if all_annotated {
+                continue;
+            }
+            let mut hint = Vec::with_capacity(func_def.params.len());
+            if let Some(capture_types) = self.get_closure_capture_types(&func_id).cloned() {
+                hint.extend(capture_types);
+            } else {
+                for _ in 0..capture_count {
+                    hint.push(Type::Any);
+                }
+            }
+            for i in 0..non_capture_params {
+                let ty = inferred.get(i).cloned().unwrap_or(Type::Any);
+                // Explicit annotation on this specific param still wins.
+                let final_ty = func_def
+                    .params
+                    .get(capture_count + i)
+                    .and_then(|p| p.ty.clone())
+                    .unwrap_or(ty);
+                hint.push(final_ty);
+            }
+            self.insert_lambda_param_type_hints(func_id, hint);
+        }
+    }
+
+    /// Recursively scan a statement for `Call` expressions, resolving
+    /// each to a target `FuncId` via direct `FuncRef`, inline
+    /// `Closure`, or `Var`-through-`var_to_func`. For every resolved
+    /// call, infer each positional-arg type (via
+    /// `infer_deep_expr_type` with `overlay`) and union it into
+    /// `accumulators[func_id][positional_index]`.
+    fn collect_call_arg_types(
+        &self,
+        stmt_id: hir::StmtId,
+        hir_module: &hir::Module,
+        var_to_func: &std::collections::HashMap<VarId, (pyaot_utils::FuncId, usize)>,
+        overlay: &IndexMap<VarId, Type>,
+        accumulators: &mut std::collections::HashMap<pyaot_utils::FuncId, Vec<Type>>,
+    ) {
+        let stmt = &hir_module.stmts[stmt_id];
+        match &stmt.kind {
+            hir::StmtKind::Expr(expr_id) | hir::StmtKind::Return(Some(expr_id)) => {
+                let expr = &hir_module.exprs[*expr_id];
+                self.scan_expr_for_calls(expr, hir_module, var_to_func, overlay, accumulators);
+            }
+            hir::StmtKind::Bind { value, .. } => {
+                let expr = &hir_module.exprs[*value];
+                self.scan_expr_for_calls(expr, hir_module, var_to_func, overlay, accumulators);
+            }
+            hir::StmtKind::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                let cond_expr = &hir_module.exprs[*cond];
+                self.scan_expr_for_calls(cond_expr, hir_module, var_to_func, overlay, accumulators);
+                for s in then_block {
+                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
+                }
+                for s in else_block {
+                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
+                }
+            }
+            hir::StmtKind::While {
+                body, else_block, ..
+            } => {
+                for s in body {
+                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
+                }
+                for s in else_block {
+                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
+                }
+            }
+            hir::StmtKind::ForBind {
+                body, else_block, ..
+            } => {
+                for s in body {
+                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
+                }
+                for s in else_block {
+                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
+                }
+            }
+            hir::StmtKind::Try {
+                body,
+                handlers,
+                else_block,
+                finally_block,
+            } => {
+                for s in body {
+                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
+                }
+                for h in handlers {
+                    for s in &h.body {
+                        self.collect_call_arg_types(
+                            *s,
+                            hir_module,
+                            var_to_func,
+                            overlay,
+                            accumulators,
+                        );
+                    }
+                }
+                for s in else_block {
+                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
+                }
+                for s in finally_block {
+                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
+                }
+            }
+            hir::StmtKind::Match { cases, .. } => {
+                for case in cases {
+                    for s in &case.body {
+                        self.collect_call_arg_types(
+                            *s,
+                            hir_module,
+                            var_to_func,
+                            overlay,
+                            accumulators,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn scan_expr_for_calls(
+        &self,
+        expr: &hir::Expr,
+        hir_module: &hir::Module,
+        var_to_func: &std::collections::HashMap<VarId, (pyaot_utils::FuncId, usize)>,
+        overlay: &IndexMap<VarId, Type>,
+        accumulators: &mut std::collections::HashMap<pyaot_utils::FuncId, Vec<Type>>,
+    ) {
+        if let hir::ExprKind::Call { func, args, .. } = &expr.kind {
+            let func_expr = &hir_module.exprs[*func];
+            let resolved = match &func_expr.kind {
+                hir::ExprKind::FuncRef(fid) => Some((*fid, 0)),
+                hir::ExprKind::Closure {
+                    func: fid,
+                    captures,
+                } => Some((*fid, captures.len())),
+                hir::ExprKind::Var(v) => var_to_func.get(v).copied(),
+                _ => None,
+            };
+            if let Some((fid, capture_offset)) = resolved {
+                let mut positional_tys: Vec<Type> = Vec::with_capacity(args.len());
+                let mut skip = false;
+                for call_arg in args {
+                    match call_arg {
+                        hir::CallArg::Regular(arg_id) => {
+                            let arg_expr = &hir_module.exprs[*arg_id];
+                            let ty = self.infer_deep_expr_type(arg_expr, hir_module, overlay);
+                            positional_tys.push(ty);
+                        }
+                        hir::CallArg::Starred(_) => {
+                            // Skip — starred args unpack variably.
+                            skip = true;
+                            break;
+                        }
+                    }
+                }
+                if !skip {
+                    // Accumulator is per-positional-arg (0-indexed
+                    // over the NON-capture positional params).
+                    // `capture_offset` is tracked elsewhere via
+                    // `get_closure_capture_types`; at the call site
+                    // only positional args matter.
+                    let _ = capture_offset;
+                    let entry = accumulators
+                        .entry(fid)
+                        .or_insert_with(|| vec![Type::Never; positional_tys.len()]);
+                    if entry.len() < positional_tys.len() {
+                        entry.resize(positional_tys.len(), Type::Never);
+                    }
+                    for (i, ty) in positional_tys.into_iter().enumerate() {
+                        // Join concrete observations; `Any` is a no-op
+                        // so the first concrete arg-type wins over
+                        // later `Any`s.
+                        let existing = std::mem::replace(&mut entry[i], Type::Never);
+                        entry[i] = join_nested_arg_ty(existing, ty);
+                    }
+                }
+            }
+            // Recurse into args so nested Calls get scanned too.
+            for call_arg in args {
+                let arg_id = match call_arg {
+                    hir::CallArg::Regular(id) | hir::CallArg::Starred(id) => id,
+                };
+                let arg_expr = &hir_module.exprs[*arg_id];
+                self.scan_expr_for_calls(arg_expr, hir_module, var_to_func, overlay, accumulators);
+            }
+            // Recurse into the func expression itself (for nested
+            // closure factories).
+            self.scan_expr_for_calls(func_expr, hir_module, var_to_func, overlay, accumulators);
+            return;
+        }
+        // Generic recursion into sub-expressions for any other kind.
+        match &expr.kind {
+            hir::ExprKind::BinOp { left, right, .. }
+            | hir::ExprKind::Compare { left, right, .. } => {
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*left],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*right],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+            }
+            hir::ExprKind::UnOp { operand, .. } => {
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*operand],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+            }
+            hir::ExprKind::LogicalOp { left, right, .. } => {
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*left],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*right],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+            }
+            hir::ExprKind::IfExpr {
+                cond,
+                then_val,
+                else_val,
+            } => {
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*cond],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*then_val],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*else_val],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+            }
+            hir::ExprKind::MethodCall { obj, args, .. } => {
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*obj],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+                for a in args {
+                    self.scan_expr_for_calls(
+                        &hir_module.exprs[*a],
+                        hir_module,
+                        var_to_func,
+                        overlay,
+                        accumulators,
+                    );
+                }
+            }
+            hir::ExprKind::BuiltinCall { args, .. } => {
+                for a in args {
+                    self.scan_expr_for_calls(
+                        &hir_module.exprs[*a],
+                        hir_module,
+                        var_to_func,
+                        overlay,
+                        accumulators,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Join two observed arg-types for the same positional slot across
+/// distinct call sites. `Never` is the accumulator's empty seed.
+/// `Any` provides no new information and is ignored. Otherwise pick
+/// the concrete type; if they differ, fall back to `Any` (conservative).
+fn join_nested_arg_ty(a: Type, b: Type) -> Type {
+    match (a, b) {
+        (Type::Never, x) | (x, Type::Never) => x,
+        (Type::Any, x) | (x, Type::Any) => x,
+        (a, b) if a == b => a,
+        _ => Type::Any,
+    }
 }
 
 /// Recursively walk a `BindingTarget`, inserting the destructured element

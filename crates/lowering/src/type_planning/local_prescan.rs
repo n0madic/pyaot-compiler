@@ -42,11 +42,26 @@ impl<'a> Lowering<'a> {
                 if func.body.is_empty() {
                     continue;
                 }
-                let param_seed: IndexMap<VarId, Type> = func
-                    .params
-                    .iter()
-                    .filter_map(|p| p.ty.clone().map(|t| (p.var, t)))
-                    .collect();
+                // Seed from annotations, then layer in any
+                // `lambda_param_type_hints` produced by
+                // `infer_nested_function_param_types` /
+                // HOF scanning — hints fill in types for otherwise
+                // unannotated lambda / nested-function params so
+                // prescan-visible body observations see the inferred
+                // type for call-site-derived parameters.
+                let hints = self.get_lambda_param_type_hints(&func_id).cloned();
+                let mut param_seed: IndexMap<VarId, Type> = IndexMap::new();
+                for (i, p) in func.params.iter().enumerate() {
+                    if let Some(ty) = p.ty.clone() {
+                        param_seed.insert(p.var, ty);
+                    } else if let Some(ref h) = hints {
+                        if let Some(ty) = h.get(i).cloned() {
+                            if !matches!(ty, Type::Any) {
+                                param_seed.insert(p.var, ty);
+                            }
+                        }
+                    }
+                }
                 let mut map = self.precompute_var_types(func, hir_module, &param_seed);
                 // Drop entries for cell / nonlocal variables — those
                 // are accessed via cell storage, not as plain locals,
