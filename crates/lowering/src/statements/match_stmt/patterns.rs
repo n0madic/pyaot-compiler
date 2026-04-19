@@ -15,7 +15,12 @@ use super::{PatternCheckResult, PatternContext};
 impl<'a> Lowering<'a> {
     /// Generate code to check if a pattern matches and collect variable bindings.
     /// Returns (condition_operand, bindings) where bindings are (VarId, Operand, Type).
-    pub(super) fn generate_pattern_check(
+    ///
+    /// §1.17b-c — promoted from `pub(super)` to `pub(crate)` so the
+    /// `iter_protocol.rs::lower_match_pattern` entry point (used by
+    /// `ExprKind::MatchPattern` lowering) can reuse the same predicate
+    /// logic as `lower_match_cases`.
+    pub(crate) fn generate_pattern_check(
         &mut self,
         pattern: &hir::Pattern,
         subject: mir::Operand,

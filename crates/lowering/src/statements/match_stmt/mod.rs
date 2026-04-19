@@ -20,7 +20,7 @@ use crate::context::Lowering;
 
 /// Result type for pattern check: (condition_operand, bindings)
 /// Bindings are (VarId, Operand, Type) tuples to be assigned
-pub(super) type PatternCheckResult = (mir::Operand, Vec<(pyaot_utils::VarId, mir::Operand, Type)>);
+pub(crate) type PatternCheckResult = (mir::Operand, Vec<(pyaot_utils::VarId, mir::Operand, Type)>);
 
 /// Context for pattern checking, grouping common parameters
 pub(super) struct PatternContext<'a> {

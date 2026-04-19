@@ -1,5 +1,6 @@
 //! §1.17b-c — Generic iterator protocol lowering for `StmtKind::IterSetup`,
-//! `StmtKind::IterAdvance`, and `ExprKind::IterHasNext`.
+//! `StmtKind::IterAdvance`, and `ExprKind::IterHasNext`, plus the
+//! `ExprKind::MatchPattern` pattern-predicate lowering.
 //!
 //! Produced by the `cfg_build` bridge when lowering a tree `ForBind` into
 //! its CFG form:
@@ -198,5 +199,62 @@ impl<'a> Lowering<'a> {
         });
 
         Ok(mir::Operand::Local(has_next_local))
+    }
+
+    /// Lower `ExprKind::MatchPattern { subject, pattern }` — emit the
+    /// pattern predicate and return a bool operand. Delegates to the
+    /// existing `generate_pattern_check` which is the authoritative
+    /// pattern-predicate implementation (used by `lower_match_cases`).
+    ///
+    /// **Binding limitation (follow-up)**: the bindings produced by
+    /// `generate_pattern_check` (captured variables like `x` in `case
+    /// Point(x, y)`) are intentionally dropped here. Emitting them in the
+    /// current block (the "test block") would run them before the
+    /// pattern-match outcome is known, causing spurious attribute/index
+    /// errors on non-matching subjects. The correct placement is inside
+    /// the case-body block (entered only on match success).
+    ///
+    /// The CFG walker (S1.17b-c main loop) must ensure bindings are
+    /// emitted in the case-body block head via one of:
+    /// - Bridge-side: augment `cfg_build` to emit binding extraction as
+    ///   HIR `Bind` statements at the head of each case body block.
+    /// - Walker-side: post-process the Branch emission by calling
+    ///   `generate_pattern_check` again in the success path to emit
+    ///   bindings.
+    ///
+    /// Until one of those lands, `MatchPattern` lowering is correct for
+    /// patterns that don't introduce new captures: `MatchValue`,
+    /// `MatchSingleton`, and `MatchAs { pattern, name: None }` (wildcard).
+    pub(crate) fn lower_match_pattern(
+        &mut self,
+        subject: hir::ExprId,
+        pattern: &hir::Pattern,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
+        let subject_expr = &hir_module.exprs[subject];
+        let subject_operand = self.lower_expr(subject_expr, hir_module, mir_func)?;
+        let subject_type = self.get_type_of_expr_id(subject, hir_module);
+
+        // Cache the subject in a local to avoid re-evaluation (matches the
+        // semantics of `lower_match` which stores the subject once up-front).
+        let subject_local = self.alloc_and_add_local(subject_type.clone(), mir_func);
+        self.emit_instruction(mir::InstructionKind::Copy {
+            dest: subject_local,
+            src: subject_operand,
+        });
+
+        let (cond, _bindings) = self.generate_pattern_check(
+            pattern,
+            mir::Operand::Local(subject_local),
+            &subject_type,
+            hir_module,
+            mir_func,
+        )?;
+
+        // Bindings are dropped — see doc comment. The bridge must emit
+        // binding-extraction HIR stmts in the case-body block head for
+        // full correctness.
+        Ok(cond)
     }
 }

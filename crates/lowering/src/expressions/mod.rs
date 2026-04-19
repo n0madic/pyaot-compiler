@@ -247,18 +247,15 @@ impl<'a> Lowering<'a> {
                 self.lower_iter_has_next(*iter_id, hir_module, mir_func)
             }
 
-            // §1.11 schema addition — match-statement desugaring. Frontend
-            // emits this only when the bridge rewrites `StmtKind::Match`
-            // into an if/else ladder of `Branch(MatchPattern(...), ..)`.
-            // Consumed by the CFG walker; standalone lowering pending the
-            // pattern-predicate factoring from `statements/match_stmt/
-            // patterns.rs`.
-            hir::ExprKind::MatchPattern { .. } => {
-                unreachable!(
-                    "ExprKind::MatchPattern lowering not yet implemented — \
-                     requires factoring pattern predicate from lower_match; \
-                     tree walker still dispatches StmtKind::Match"
-                )
+            // §1.17b-c — match-statement desugaring. Bridge emits this as
+            // the cond of each test block's `Branch` terminator when
+            // rewriting `StmtKind::Match` into an if/else ladder.
+            // Delegates to `lower_match_pattern` which reuses the
+            // authoritative `generate_pattern_check` from lower_match.
+            // See the doc comment on `lower_match_pattern` for the
+            // bindings-placement limitation.
+            hir::ExprKind::MatchPattern { subject, pattern } => {
+                self.lower_match_pattern(*subject, pattern, hir_module, mir_func)
             }
         };
         self.codegen.current_span = prev_span;
