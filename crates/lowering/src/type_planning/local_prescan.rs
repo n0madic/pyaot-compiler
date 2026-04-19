@@ -84,39 +84,40 @@ impl<'a> Lowering<'a> {
     /// Call this once per function right before parameters are processed
     /// and statements are lowered. `param_seed` should contain the
     /// parameter `VarId → Type` map already computed by the caller.
+    ///
+    /// §1.17b-d — walks the CFG (not the legacy tree). Blocks are iterated
+    /// in IndexMap insertion order, which is the bridge's allocation
+    /// order — a pre-order DFS over the source-form statements. This
+    /// preserves the semantics of the tree-walker: for-body stmts are
+    /// visited before post-loop stmts, so the post-loop rebind heuristic
+    /// (§A.6 #3) sees the loop-only write before the outer-scope rebind.
+    /// `loop_depth` comes from `HirBlock.loop_depth` directly (populated
+    /// by `cfg_build`).
     pub(crate) fn precompute_var_types(
         &self,
         func: &hir::Function,
         hir_module: &hir::Module,
         param_seed: &IndexMap<VarId, Type>,
     ) -> IndexMap<VarId, Type> {
-        // Single linear pass. In straight-line code every write is
-        // preceded by the prior value in source order, so types
-        // accumulate monotonically. The post-loop rebind heuristic
-        // would fight a fixed-point re-iteration (each subsequent
-        // visit to the for-loop would re-widen the variable), so we
-        // stop after one walk.
         let mut scratch: IndexMap<VarId, Type> = param_seed.clone();
         let mut loop_only: IndexSet<VarId> = IndexSet::new();
-        self.walk_body(&func.body, hir_module, &mut scratch, &mut loop_only, 0);
+        for block in func.blocks.values() {
+            let loop_depth = block.loop_depth as usize;
+            for &stmt_id in &block.stmts {
+                let stmt = &hir_module.stmts[stmt_id];
+                self.walk_flat_stmt(stmt, hir_module, &mut scratch, &mut loop_only, loop_depth);
+            }
+        }
         scratch
     }
 
-    fn walk_body(
-        &self,
-        stmts: &[hir::StmtId],
-        hir_module: &hir::Module,
-        scratch: &mut IndexMap<VarId, Type>,
-        loop_only: &mut IndexSet<VarId>,
-        loop_depth: usize,
-    ) {
-        for stmt_id in stmts {
-            let stmt = &hir_module.stmts[*stmt_id];
-            self.walk_stmt(stmt, hir_module, scratch, loop_only, loop_depth);
-        }
-    }
-
-    fn walk_stmt(
+    /// Walk a single straight-line statement (no tree-form control flow).
+    /// The only binding-producing kinds that appear inside a `HirBlock.stmts`
+    /// list are `Bind`, `IterAdvance`, and the tree-form variants that the
+    /// bridge leaves behind until S1.17b-f (If/While/ForBind/Try/Match);
+    /// the latter are never emitted into blocks by `cfg_build`, so we
+    /// treat any occurrence as a programming error.
+    fn walk_flat_stmt(
         &self,
         stmt: &hir::Stmt,
         hir_module: &hir::Module,
@@ -134,11 +135,7 @@ impl<'a> Lowering<'a> {
                 // `def inner(): ...` becomes a Bind with a FuncRef or
                 // Closure value — those synthesize the enclosing
                 // function's *return* type under `infer_expr_type_inner`,
-                // which is nonsense for the binding target (which holds
-                // a function pointer, not the call result). Skip them —
-                // the handler path in `lower_assign` tracks these
-                // bindings via `var_to_func` / `var_to_closure`, not
-                // through the generic var_types/local machinery.
+                // which is nonsense for the binding target.
                 if matches!(
                     rhs_expr.kind,
                     hir::ExprKind::FuncRef(_) | hir::ExprKind::Closure { .. }
@@ -147,60 +144,21 @@ impl<'a> Lowering<'a> {
                 }
                 // Explicit annotation wins — `x: T = value` establishes
                 // the declared type irrespective of the value's inferred
-                // type. Prevents the prescan from narrowing `x: int |
-                // None = 42` to `Int` and stripping the `None` arm.
+                // type.
                 let rhs_ty = match type_hint {
                     Some(ann) => ann.clone(),
                     None => self.infer_deep_expr_type(rhs_expr, hir_module, scratch),
                 };
                 absorb_into_targets(target, &rhs_ty, scratch, loop_only, loop_depth, false);
             }
-            hir::StmtKind::ForBind {
-                target,
-                iter,
-                body,
-                else_block,
-            } => {
+            hir::StmtKind::IterAdvance { iter, target } => {
+                // For-loop target binding: element type of the iterable.
                 let iter_expr = &hir_module.exprs[*iter];
                 let iter_ty = self.infer_deep_expr_type(iter_expr, hir_module, scratch);
                 let elem_ty = elem_type_of_iterable(&iter_ty);
                 absorb_into_targets(target, &elem_ty, scratch, loop_only, loop_depth, true);
-                self.walk_body(body, hir_module, scratch, loop_only, loop_depth + 1);
-                self.walk_body(else_block, hir_module, scratch, loop_only, loop_depth);
             }
-            hir::StmtKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                self.walk_body(then_block, hir_module, scratch, loop_only, loop_depth);
-                self.walk_body(else_block, hir_module, scratch, loop_only, loop_depth);
-            }
-            hir::StmtKind::While {
-                body, else_block, ..
-            } => {
-                self.walk_body(body, hir_module, scratch, loop_only, loop_depth + 1);
-                self.walk_body(else_block, hir_module, scratch, loop_only, loop_depth);
-            }
-            hir::StmtKind::Try {
-                body,
-                handlers,
-                else_block,
-                finally_block,
-            } => {
-                self.walk_body(body, hir_module, scratch, loop_only, loop_depth);
-                for h in handlers {
-                    self.walk_body(&h.body, hir_module, scratch, loop_only, loop_depth);
-                }
-                self.walk_body(else_block, hir_module, scratch, loop_only, loop_depth);
-                self.walk_body(finally_block, hir_module, scratch, loop_only, loop_depth);
-            }
-            hir::StmtKind::Match { cases, .. } => {
-                for case in cases {
-                    self.walk_body(&case.body, hir_module, scratch, loop_only, loop_depth);
-                }
-            }
-            // No binding targets — nothing to absorb.
+            // Nothing to absorb for straight-line non-binding stmts.
             hir::StmtKind::Expr(_)
             | hir::StmtKind::Return(_)
             | hir::StmtKind::Break
@@ -209,9 +167,18 @@ impl<'a> Lowering<'a> {
             | hir::StmtKind::Pass
             | hir::StmtKind::Assert { .. }
             | hir::StmtKind::IndexDelete { .. } => {}
-            // §1.11 schema addition — binding semantics will be added in
-            // S1.17b-d when this walker ports to CFG traversal.
-            hir::StmtKind::IterAdvance { .. } => {}
+            // These should never appear inside a HirBlock.stmts list — the
+            // bridge terminates blocks at control-flow boundaries.
+            hir::StmtKind::If { .. }
+            | hir::StmtKind::While { .. }
+            | hir::StmtKind::ForBind { .. }
+            | hir::StmtKind::Try { .. }
+            | hir::StmtKind::Match { .. } => {
+                debug_assert!(
+                    false,
+                    "local_prescan: control-flow StmtKind must not appear inside HirBlock.stmts"
+                );
+            }
         }
     }
 }
