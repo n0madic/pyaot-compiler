@@ -242,9 +242,8 @@ impl<'a> Lowering<'a> {
                     }
                 }
 
-                // Scan body for return statements
-                let return_type =
-                    self.infer_return_type_from_body(&func.body, hir_module, &param_types);
+                // Scan body for return statements (§1.17b-d — CFG-based)
+                let return_type = self.infer_return_type_from_func(func, hir_module, &param_types);
 
                 // Check for closure-returning functions (decorators)
                 let return_type = if return_type == Type::None {
@@ -305,7 +304,7 @@ impl<'a> Lowering<'a> {
             for (var_id, ty) in prescanned {
                 param_types.entry(var_id).or_insert(ty);
             }
-            let new_rt = self.infer_return_type_from_body(&func.body, hir_module, &param_types);
+            let new_rt = self.infer_return_type_from_func(func, hir_module, &param_types);
             let final_rt = if new_rt == Type::None {
                 if self.find_returned_closure(func, hir_module).is_some() {
                     Type::Any
@@ -319,31 +318,50 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Scan a function body for return statements and infer the return type.
-    ///
-    /// §1.17b-d — walks the function's CFG (not the legacy tree) via
-    /// `collect_return_types_from_func`; pass the `func` reference when
-    /// available. The `body`-slice overload remains for module-init-stmts
-    /// which don't have a containing CFG function.
-    fn infer_return_type_from_body(
+    /// Scan a function's CFG for return terminators/statements and infer
+    /// the joined return type. §1.17b-d — prefers `func.blocks` over the
+    /// legacy tree walker.
+    fn infer_return_type_from_func(
         &self,
-        body: &[hir::StmtId],
+        func: &hir::Function,
         module: &hir::Module,
         param_types: &IndexMap<VarId, Type>,
     ) -> Type {
         let mut return_types = Vec::new();
-
-        for stmt_id in body {
-            self.collect_return_types(*stmt_id, module, param_types, &mut return_types);
+        for block in func.blocks.values() {
+            // `Return(expr)` can appear as a block terminator (normal path)
+            // or as a straight-line stmt (defensive — the bridge always
+            // lifts `Return` to the terminator).
+            match &block.terminator {
+                hir::HirTerminator::Return(Some(expr_id)) => {
+                    let expr = &module.exprs[*expr_id];
+                    return_types.push(self.infer_deep_expr_type(expr, module, param_types));
+                }
+                hir::HirTerminator::Return(None) => {
+                    return_types.push(Type::None);
+                }
+                _ => {}
+            }
+            for &stmt_id in &block.stmts {
+                let stmt = &module.stmts[stmt_id];
+                match &stmt.kind {
+                    hir::StmtKind::Return(Some(expr_id)) => {
+                        let expr = &module.exprs[*expr_id];
+                        return_types.push(self.infer_deep_expr_type(expr, module, param_types));
+                    }
+                    hir::StmtKind::Return(None) => {
+                        return_types.push(Type::None);
+                    }
+                    _ => {}
+                }
+            }
         }
+        Self::join_return_types(return_types)
+    }
 
-        // `NotImplemented` is a control-flow sentinel. We KEEP it in the
-        // return-type union so the compiled function's Cranelift signature
-        // returns a pointer (NotImplementedT is heap-allocated) and the
-        // operator dispatch can identity-compare the result against the
-        // singleton. Without this, a dunder that ONLY returns NotImplemented
-        // would have signature returning `None` (i8) and the i64 pointer
-        // would be silently truncated.
+    /// Shared return-type joiner. See `infer_return_type_from_body` for
+    /// rationale on keeping `NotImplemented` / `Any` handling.
+    fn join_return_types(return_types: Vec<Type>) -> Type {
         if return_types.is_empty() {
             Type::None
         } else if return_types.len() == 1 {
@@ -352,7 +370,6 @@ impl<'a> Lowering<'a> {
                 .next()
                 .expect("checked: return_types.len() == 1")
         } else {
-            // Multiple return types — union concrete types
             let concrete: Vec<Type> = return_types
                 .into_iter()
                 .filter(|t| *t != Type::Any)
@@ -362,81 +379,6 @@ impl<'a> Lowering<'a> {
             } else {
                 Type::normalize_union(concrete)
             }
-        }
-    }
-
-    /// Recursively collect return types from statements.
-    fn collect_return_types(
-        &self,
-        stmt_id: hir::StmtId,
-        module: &hir::Module,
-        param_types: &IndexMap<VarId, Type>,
-        return_types: &mut Vec<Type>,
-    ) {
-        let stmt = &module.stmts[stmt_id];
-        match &stmt.kind {
-            hir::StmtKind::Return(Some(expr_id)) => {
-                let expr = &module.exprs[*expr_id];
-                let ty = self.infer_deep_expr_type(expr, module, param_types);
-                return_types.push(ty);
-            }
-            hir::StmtKind::Return(None) => {
-                return_types.push(Type::None);
-            }
-            hir::StmtKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                for s in then_block {
-                    self.collect_return_types(*s, module, param_types, return_types);
-                }
-                for s in else_block {
-                    self.collect_return_types(*s, module, param_types, return_types);
-                }
-            }
-            hir::StmtKind::ForBind {
-                body, else_block, ..
-            }
-            | hir::StmtKind::While {
-                body, else_block, ..
-            } => {
-                for s in body {
-                    self.collect_return_types(*s, module, param_types, return_types);
-                }
-                for s in else_block {
-                    self.collect_return_types(*s, module, param_types, return_types);
-                }
-            }
-            hir::StmtKind::Try {
-                body,
-                handlers,
-                else_block,
-                finally_block,
-            } => {
-                for s in body {
-                    self.collect_return_types(*s, module, param_types, return_types);
-                }
-                for handler in handlers {
-                    for s in &handler.body {
-                        self.collect_return_types(*s, module, param_types, return_types);
-                    }
-                }
-                for s in else_block {
-                    self.collect_return_types(*s, module, param_types, return_types);
-                }
-                for s in finally_block {
-                    self.collect_return_types(*s, module, param_types, return_types);
-                }
-            }
-            hir::StmtKind::Match { cases, .. } => {
-                for case in cases {
-                    for s in &case.body {
-                        self.collect_return_types(*s, module, param_types, return_types);
-                    }
-                }
-            }
-            _ => {}
         }
     }
 
