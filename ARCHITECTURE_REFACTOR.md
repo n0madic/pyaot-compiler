@@ -326,7 +326,7 @@ calls and removes the `#[ignore]` attributes.
 | §1.8 Pass migration | ✅ | S1.13 ✅ · S1.14a ✅ · S1.14b-prep ✅ · S1.14b-inliner ✅ · S1.15 ✅ |
 | §1.9 Codegen migration | ✅ | S1.5 wiring ✅ · S1.16 ✅ (audit: no manual-phi emulation; Variable API is OK under SSA single-def) |
 | §1.10 Final cleanup | 🟡 | S1.17a ✅ (partial acceptance: tests green, microgpt triaged) · S1.17 full ⏳ (blocked on S1.17b) |
-| §1.11 Deferred HIR-tree deletion | ⏳ | S1.17b |
+| §1.11 Deferred HIR-tree deletion | ⏳ | scoped 2026-04-19 · S1.17b-a..f (6 sub-sessions) |
 | §1.4u Single-TypeTable unification | ✅ | step 1 ✅ · step 2 ✅ · step 3 ✅ · step 4 ✅ · step 5 ✅ · §1.4u-c ✅ (Path A by construction) · §1.4u-d ✅ |
 
 ### Phase 1 Completion Status (as of 2026-04-18, S1.17a partial acceptance)
@@ -1897,6 +1897,409 @@ remove the definition; remove related state from constructors.
 
 **Exit criterion**: `grep -rn 'prescan_var_types\|narrowed_union_vars\|refined_var_types\|apply_narrowings\|restore_types' crates/ | wc -l` returns `0`.
 
+## 1.11 Deferred HIR-tree deletion — S1.17b scope ⏳
+
+**Milestone goal**: delete `Function.body: Vec<StmtId>`,
+`StmtKind::{If, While, ForBind, Try, Match}`, and the tree→CFG bridge
+`crates/hir/src/cfg_build.rs`. After this milestone, HIR carries **only**
+a CFG — the legacy statement-tree is gone.
+
+**Current state (2026-04-19 scoping audit)**:
+
+- `Function.blocks: IndexMap<HirBlockId, HirBlock>` + `entry_block:
+  HirBlockId` are populated at every function-construction site via
+  `cfg_build::build_cfg_from_tree` (6 frontend call sites:
+  `ast_to_hir/{mod,functions,classes,lambdas,comprehensions,statements/
+  nested_functions}.rs` + 2 generator call sites in
+  `lowering/src/generators/desugaring.rs`). No consumer reads this CFG;
+  it is dead weight carried alongside the legacy tree.
+- `Function.body` is the canonical source. It is read by **24 files**
+  across frontend, lowering, semantics, and generator desugaring — 114
+  `StmtKind::{If|While|ForBind|Try|Match}` match arms + 43 direct
+  `.body` accessors.
+- The tree→CFG bridge (`cfg_build.rs`) uses three deliberate
+  simplifications that prevent any consumer from using the CFG
+  meaningfully:
+  1. `ForBind` uses `iter` as a placeholder branch cond — no has-next /
+     next primitive.
+  2. `Try` handlers are emitted as unreachable blocks — no exception
+     edges.
+  3. `Match` cases are linearised — no pattern-dispatch terminator.
+
+**§1.1 open questions — scoping resolutions**:
+
+### Q1. ForBind iteration primitive
+
+Three options considered:
+
+| Option | Description | Verdict |
+|---|---|---|
+| **A** | New `ExprKind::IterHasNext(ExprId)` (pure) + `StmtKind::IterAdvance { iter, target }` (binds next value). For-loop header branches on `IterHasNext`; body is prefixed by `IterAdvance`. | **chosen** |
+| B | New `HirTerminator::Iterate { iter, target, body_bb, exit_bb }` fused terminator. | deferred (special-cases every consumer) |
+| C | Explicit `next()` call that throws `StopIteration`, caught by an exception edge. | rejected (requires modelling exception edges, Q2) |
+
+Chosen: **A**. Rationale: (i) terminator set stays minimal (`Jump, Branch,
+Return, Raise, Yield, Unreachable`); (ii) matches existing MIR emission
+which already emits separate `rt_iter_has_next` / `rt_iter_next` runtime
+calls today — zero lowering semantic drift; (iii) `IterHasNext` is a pure
+expression cacheable in `HirTypeInference.expr_types`; (iv)
+`IterAdvance` is a straight-line binding statement fitting cleanly into
+`HirBlock.stmts`. Tuple-unpack / starred targets in for-loops continue to
+use the existing `BindingTarget` infrastructure.
+
+For-loop CFG shape under Scheme A:
+
+```
+  pre:     ... ; Goto(header)
+  header:  Branch(IterHasNext(iter) ? body_enter : else_or_exit)
+  body_enter: IterAdvance { iter, target }; <body stmts>; Goto(header)
+  else:    <else stmts>; Goto(exit)       # only if for-else present
+  exit:    ...
+```
+
+### Q2. Exception edges
+
+**Decision**: keep exception edges **implicit** — handlers are tracked
+per-function in a new side map, not as CFG edges. Rationale:
+
+- The runtime already uses setjmp/longjmp for exception dispatch;
+  modelling exception edges in the CFG would require per-call shadow
+  edges to the handler, exploding predecessor counts and polluting
+  SSA / dom-tree analyses with noise.
+- S1.2 already treats handlers as unreachable CFG blocks; no consumer
+  relies on exception edges. Blessing this design explicitly is
+  zero-work for the existing pipeline.
+- Lowering's `ExcPushFrame` / `ExcPopFrame` markers are sufficient to
+  connect runtime unwinding to handler bodies without CFG involvement.
+
+Representation change: add
+
+```rust
+pub struct TryScope {
+    pub try_blocks: Vec<HirBlockId>,    // body blocks guarded by handlers
+    pub else_blocks: Vec<HirBlockId>,   // also guarded
+    pub handlers: Vec<ExceptHandler>,   // handler bodies (reuse existing struct)
+    pub finally_blocks: Vec<HirBlockId>, // runs on every exit path
+    pub span: Span,
+}
+
+pub struct Function {
+    // ... existing fields except `body` ...
+    pub try_scopes: Vec<TryScope>,      // NEW — source-order, may nest
+}
+```
+
+`ExceptHandler.body: Vec<StmtId>` is replaced by `entry_block:
+HirBlockId`; the handler entry block is an ordinary CFG block (with no
+predecessor edges from the CFG, entered only via runtime unwinding).
+
+### Q3. Match statement
+
+**Decision**: desugar to an if/else ladder at HIR construction time.
+No `HirTerminator::Switch` variant.
+
+Rationale: pattern matching already has its own complex `Pattern` AST
+whose runtime checks today produce multiple control-flow predicates.
+Desugaring to `Branch(cond)` lets every consumer use the same
+terminator primitive. The desugaring moves out of lowering and into
+`frontend-python/ast_to_hir/statements/match_stmt.rs`, where it
+becomes a ladder of `Branch(IsMatchPattern(subject, pattern), body_bb,
+next_case_bb)` with one final `Jump(merge_bb)` at the end of each case.
+Pattern binding writes (`MatchAs { name: Some(v) }`, `MatchStar`, ...)
+become straight-line `StmtKind::Bind` statements at the head of the
+case body block.
+
+One new HIR primitive is required: `ExprKind::MatchPattern { subject,
+pattern }: bool` — a pure boolean predicate encoding "does `subject`
+match `pattern`". Lowering for `MatchPattern` is existing work from
+`lowering/src/statements/match_stmt/mod.rs`, repackaged as expression
+emission.
+
+### Schema changes summary
+
+| Addition | Where | Purpose |
+|---|---|---|
+| `ExprKind::IterHasNext(ExprId)` | `hir/lib.rs` | For-loop header test |
+| `StmtKind::IterAdvance { iter, target }` | `hir/lib.rs` | Advance + bind loop target |
+| `ExprKind::MatchPattern { subject, pattern }` | `hir/lib.rs` | Per-case match predicate |
+| `Function::try_scopes: Vec<TryScope>` | `hir/lib.rs` | Handler side map |
+| `ExceptHandler::entry_block: HirBlockId` | `hir/lib.rs` | Replace `body: Vec<StmtId>` |
+
+| Deletion | Where |
+|---|---|
+| `Function::body: Vec<StmtId>` | `hir/lib.rs` |
+| `StmtKind::If` | `hir/lib.rs` |
+| `StmtKind::While` | `hir/lib.rs` |
+| `StmtKind::ForBind` | `hir/lib.rs` |
+| `StmtKind::Try` | `hir/lib.rs` |
+| `StmtKind::Match` | `hir/lib.rs` |
+| `MatchCase::body: Vec<StmtId>` | `hir/lib.rs` (replaced by `entry_block`) |
+| `ExceptHandler::body: Vec<StmtId>` | `hir/lib.rs` (replaced by `entry_block`) |
+| `crates/hir/src/cfg_build.rs` | whole file |
+| `pub mod cfg_build;` declaration | `hir/lib.rs:7` |
+
+### Consumer inventory
+
+114 `StmtKind::{If|While|ForBind|Try|Match}` match arms + 43 `.body`
+accessors, spread across four migration domains:
+
+**A. Frontend emitters** (construct the HIR; must emit CFG directly):
+
+| File | Lines | Tree uses |
+|---|---|---|
+| `frontend-python/src/ast_to_hir/statements/control_flow.rs` | 166 | `If`, `While` |
+| `frontend-python/src/ast_to_hir/statements/loops.rs` | 47 | `ForBind` |
+| `frontend-python/src/ast_to_hir/statements/exceptions.rs` | 177 | `Try` |
+| `frontend-python/src/ast_to_hir/statements/match_stmt.rs` | 290 | `Match` (desugar to if/else) |
+| `frontend-python/src/ast_to_hir/statements/context_managers.rs` | 374 | `If` + `Try` (with-stmt desugar) |
+| `frontend-python/src/ast_to_hir/statements/mod.rs` | — | dispatch |
+| `frontend-python/src/ast_to_hir/comprehensions.rs` | — | `If` + `ForBind` (list/dict/set comp desugar) |
+| `frontend-python/src/ast_to_hir/expressions/mod.rs` | — | `ForBind` (gen-expr desugar) |
+| 6 frontend `cfg_build::build_cfg_from_tree` callers | — | retire these |
+
+**B. Generator desugaring** (synthesizes StmtKind from scratch):
+
+| File | Lines | Tree uses |
+|---|---|---|
+| `lowering/src/generators/desugaring.rs` | 1808 | 17 matches + 7 `.body` |
+| `lowering/src/generators/for_loop.rs` | — | `ForBind` detection |
+| `lowering/src/generators/while_loop.rs` | — | `While` detection |
+| `lowering/src/generators/vars.rs` | — | 4 matches + 2 `.body` |
+| `lowering/src/generators/utils.rs` | — | 3 matches |
+
+**C. Lowering core** (tree → MIR; must consume HIR CFG blocks 1:1):
+
+| File | Lines | Tree uses |
+|---|---|---|
+| `lowering/src/statements/mod.rs` | 138 | dispatch (5 matches) |
+| `lowering/src/statements/match_stmt/mod.rs` | 217 | `Match` pattern expansion (moves to frontend) |
+| `lowering/src/statements/loops/bind.rs` | 378 | `lower_for_bind` |
+| `lowering/src/exceptions.rs` | 896 | `lower_try` (4 matches) |
+| `lowering/src/expressions/builtins/mod.rs` | — | 1 match |
+
+**D. Type-planning dataflow walkers** (order-dependent; must port to CFG
+traversal with dominance-aware state):
+
+| File | Lines | Tree uses | Order-dep? |
+|---|---|---|---|
+| `lowering/src/type_planning/mod.rs` | 507 | 11 matches (`collect_return_types`, `collect_handler_binds_in_stmts`) | no — pure collection |
+| `lowering/src/type_planning/container_refine.rs` | 462 | 14 matches | **yes** — "Bind `x = []` before `x.append(e)`" needs RPO sequence |
+| `lowering/src/type_planning/closure_scan.rs` | 923 | 10 matches | **yes** — loop-body closures see loop-target types |
+| `lowering/src/type_planning/local_prescan.rs` | 374 | 5 matches | **yes** — `loop_depth` heuristic (§A.6 #3 post-loop rebind) |
+| `lowering/src/type_planning/ni_analysis.rs` | 213 | 5 matches | no — any-path reachability |
+| `lowering/src/type_planning/lambda_inference.rs` | 279 | via `.body` | no — signature-only |
+
+**E. Semantic analyzer**:
+
+| File | Lines | Tree uses |
+|---|---|---|
+| `semantics/src/lib.rs` | 434 | 5 matches (`loop_depth` / `except_depth` counters) |
+| `semantics/src/tests.rs` | — | 6 matches (test fixtures — rewrite to use CFG builders) |
+
+### Migration stages
+
+The tree deletion must retire consumers in order: CFG schema → emitters
+→ consumers → deletion. Each stage is a session; each session is gated
+by passing `cargo test --workspace --release` + SSA checks on all 470+
+tests + all `examples/*.py` compiling bit-identically.
+
+**Stage 1 — HIR schema extension (S1.17b-a)**
+- Add `ExprKind::IterHasNext`, `ExprKind::MatchPattern`,
+  `StmtKind::IterAdvance`.
+- Add `Function::try_scopes`, `TryScope` struct, and
+  `ExceptHandler::entry_block` alongside existing `body`.
+- Keep the legacy `StmtKind::{If, While, ForBind, Try, Match}` and
+  `Function::body` intact. No consumer change.
+- Update `Stmt`/`Expr` pretty-printers for debug.
+- Estimated +400 LOC, 0 deletions. Complexity: Low. Risk: Low (pure
+  additive).
+- **Exit gate**: build + tests clean.
+
+**Stage 2 — Frontend emits CFG directly (S1.17b-b)**
+- Rewrite each of `control_flow.rs`, `loops.rs`, `exceptions.rs`,
+  `match_stmt.rs`, `context_managers.rs`, `comprehensions.rs`,
+  `expressions/mod.rs` to directly allocate `HirBlock`s + terminators
+  and no longer produce the legacy `StmtKind::{If, While, ForBind, Try,
+  Match}` variants.
+- Match statement: desugar to if/else ladder using `MatchPattern`
+  predicate; emit bindings into case entry blocks.
+- For-loops: emit header (`Branch(IterHasNext(iter))`) + body-entry
+  (`IterAdvance`) + exit shape.
+- Try: build body/else/finally blocks; register `TryScope` on the
+  enclosing function; handler `entry_block` is an ordinary block with
+  no CFG predecessors.
+- During this stage the legacy tree is still built in parallel (via
+  `build_cfg_from_tree` on each emitted stmt list) as a bridge for
+  stages 3–5; consumers read from whichever form they want.
+- **Invariant test**: the CFG emitted directly equals the CFG emitted
+  by `build_cfg_from_tree` on an equivalent legacy tree. Add 10–15
+  fixtures. Gated by a `debug_assert_eq!` in a `#[cfg(test)]` helper.
+- Retire the 6 `cfg_build::build_cfg_from_tree` frontend call sites;
+  keep the 2 generator call sites until Stage 4.
+- Estimated +1500 / -800 LOC. Complexity: High. Risk: High (behavioral
+  parity).
+- **Exit gate**: tests + SSA checks clean; parity test passes on all
+  frontend fixtures.
+
+**Stage 3 — Lowering core consumes HIR CFG (S1.17b-c)**
+- Rewrite `lowering/src/statements/mod.rs` dispatch to iterate blocks
+  in RPO and emit one MIR block per HIR block, with the terminator
+  translating directly.
+- Delete `lower_if`, `lower_while`, `lower_for_bind`, `lower_try`,
+  `lower_match` — their functionality collapses into straight-line
+  statement lowering + terminator translation.
+- `lowering/src/exceptions.rs` reads `Function::try_scopes` for
+  `ExcPushFrame` / `ExcPopFrame` placement.
+- Pattern lowering from `statements/match_stmt/` becomes
+  `ExprKind::MatchPattern` emission (the predicate functions are what
+  remain; case chaining is gone — done by frontend).
+- `lower_for_bind`'s iter-protocol plumbing (`rt_iter_has_next`,
+  `rt_iter_next`) becomes the standard lowering of `IterHasNext` and
+  `IterAdvance`.
+- Estimated +600 / -1200 LOC. Complexity: High. Risk: High (codegen
+  correctness).
+- **Exit gate**: tests + SSA checks clean; all `examples/*.py` compile
+  and run bit-identically; Cranelift verifier passes.
+
+**Stage 4 — Type planning walkers + generator desugar (S1.17b-d)**
+- `ni_analysis.rs`, `lambda_inference.rs`,
+  `type_planning/mod.rs::{collect_return_types, collect_handler_binds}`
+  — pure forward-walk; port to BFS over CFG blocks.
+- `container_refine.rs` — rewrite the "find `x = []`, then
+  `x.append(e)`" pattern as a per-block linear scan, joined at merge
+  points in RPO order. An empty-list bind that is refined by an
+  append in a dominated block keeps the refinement; a refinement on a
+  branch that merges loses refinement (same semantics as today when
+  the append is inside an `if`). Use `DomTree`-like structure (HIR
+  has no dom tree today; add one or reuse via a `hir_blocks_rpo()`
+  helper).
+- `local_prescan.rs` — `loop_depth` replaces with "inside a block
+  reachable from a back-edge". Add a `hir_loop_depth(block_id)`
+  helper computed once per function via natural-loop detection on the
+  CFG. §A.6 #3 post-loop rebind: "variable was first written in a
+  block with loop_depth > 0 and then in a block with loop_depth == 0"
+  — semantics unchanged.
+- `closure_scan.rs` — loop-target types reach body closures via RPO
+  walk with per-block variable-type carry; merges at join blocks
+  use `Type::unify_field_type` (same as today).
+- `generators/desugaring.rs` + `vars.rs` + `for_loop.rs` +
+  `while_loop.rs` + `utils.rs`: `VarTypeMap::build`, `collect_yield_info`,
+  `detect_for_loop_generator`, `detect_while_loop_generator`,
+  `collect_generator_vars` — convert to walk `Function::blocks` +
+  terminators. The generator state machine synthesizes `HirBlock`s
+  directly; the 2 `build_cfg_from_tree` calls in `desugaring.rs`
+  retire.
+- Estimated +1200 / -1500 LOC. Complexity: High. Risk: High (dataflow
+  subtleties for refinement / prescan; the post-loop-rebind heuristic
+  in particular is a pragmatic divergence from strict Python
+  semantics that must be preserved).
+- **Exit gate**: tests + SSA checks clean; microgpt.py triage status
+  unchanged or improved; all existing narrowing / refinement
+  regression fixtures pass.
+
+**Stage 5 — Semantic analyzer (S1.17b-e)**
+- `semantics/src/lib.rs`: swap the `loop_depth` / `except_depth`
+  counters for "is this block inside a loop / handler region" queries
+  computed from the CFG + `Function::try_scopes`.
+- `semantics/src/tests.rs`: update fixtures to use `HirBlock` builders
+  (or call into `cfg_build::build_cfg_from_tree` as a test convenience
+  — but note: Stage 6 deletes that helper, so these tests must be
+  migrated to emit CFG directly before Stage 6).
+- Estimated +200 / -150 LOC. Complexity: Low-Medium. Risk: Low.
+- **Exit gate**: tests clean.
+
+**Stage 6 — Delete tree (S1.17b-f)**
+- Remove `Function::body`, `StmtKind::{If, While, ForBind, Try, Match}`,
+  `MatchCase::body`, `ExceptHandler::body`.
+- Delete `crates/hir/src/cfg_build.rs` + `pub mod cfg_build;`
+  declaration.
+- Grep verify: `grep -rn 'StmtKind::\(If\|While\|ForBind\|Try\|Match\)\|build_cfg_from_tree\|Function.*\.body' crates/` returns only the removal diff itself.
+- Update `CLAUDE.md`, `.claude/rules/architecture.md`, `INSIGHTS.md`
+  "Unified Binding Targets" section, and this doc's §1.11 dashboard
+  row.
+- Estimated -500 / -580 LOC net (delete cfg_build.rs).
+  Complexity: Low. Risk: Low (dead-code removal).
+- **Exit gate**: grep clean; tests + SSA + benchmarks within ±3%.
+
+### Aggregate estimates
+
+| Stage | LOC + | LOC − | Net | Risk |
+|---|---|---|---|---|
+| S1.17b-a schema | +400 | 0 | +400 | Low |
+| S1.17b-b frontend | +1500 | -800 | +700 | High |
+| S1.17b-c lowering core | +600 | -1200 | -600 | High |
+| S1.17b-d walkers + gen | +1200 | -1500 | -300 | High |
+| S1.17b-e semantics | +200 | -150 | +50 | Low-Medium |
+| S1.17b-f delete | 0 | -1080 | -1080 | Low |
+| **Total** | **+3900** | **-4730** | **-830** | — |
+
+Six sessions. Each session ≤ 1500 LOC changed per the session-split
+trigger rule. Deletion is net progress in LOC terms (−830) and
+removes one entire module (`cfg_build.rs`).
+
+### Readiness gate for S1.17b-a start
+
+- [x] §1.4u ✅ (landed 2026-04-19)
+- [x] S1.9 ✅ (HirTypeInference owns all type maps)
+- [x] SSA gates active in debug builds
+- [ ] **Final prerequisite**: benchmark baseline re-captured with 10
+  samples to lock Phase 1 floor before the refactor churn starts.
+  Runs as the first task of S1.17b-a.
+
+### Risk registry
+
+1. **Post-loop rebind heuristic drift.**
+   `local_prescan.rs` currently detects "first-written inside a loop,
+   later rebound outside" via tree nesting. The CFG port must detect
+   the same scenario via natural-loop detection. Drift here silently
+   changes generated code for idioms like `for _, c in pairs: ...;
+   c = Class()`. Gate: include the existing
+   `examples/test_classes.py` §G.13 fixtures in stage-4 acceptance.
+
+2. **Container-refinement ordering.**
+   Today the refinement walks `stmts[i+1..]` in source order. In CFG
+   form, the `stmts[i+1..]` scan becomes "successors of the current
+   block, bounded to blocks that still have `x = []` as the current
+   binding". Merge points must keep the refinement only if all
+   predecessors agree. Drift risk: list/set/dict types regress from
+   concrete to `Any` under if/else branching, breaking runtime elem-tag
+   dispatch. Gate: `examples/test_collections.py` +
+   microgpt's topo-sort refinement pattern.
+
+3. **Generator state-machine emission.**
+   `generators/desugaring.rs` synthesizes StmtKind trees and then feeds
+   them through `cfg_build::build_cfg_from_tree`. Stage 4 emits the
+   CFG directly, bypassing the bridge. Drift risk: yield-resume block
+   boundaries, `gen_var` liveness, and SSA-consistent slot assignment.
+   The existing `examples/test_generators.py` + `test_iteration.py`
+   coverage is sufficient if (and only if) all 13 generator fixtures
+   stay green through the stage.
+
+4. **Cranelift verifier violations from changed block shape.**
+   MIR blocks map 1:1 from HIR blocks post-Stage 3. If the HIR CFG has
+   degenerate shapes (e.g. empty blocks, back-to-back Jumps) that the
+   tree→CFG bridge accidentally avoided, the Cranelift verifier may
+   surface them. Fallback: add a MIR-level block-simplification pass
+   before codegen (eliminate empty Jump-only blocks) — this is
+   standard optimiser hygiene anyway.
+
+5. **Scope of semantics::tests.rs fixtures.**
+   The test file uses hand-built tree fixtures. Migrating them to
+   CFG-form is ~300 LOC of test-only code but risks masking
+   regressions if done carelessly. Mitigation: keep the semantic
+   checks as "run analyzer on module, expect Err(X)"; swap the fixture
+   builder under the hood.
+
+### Deletion verification command
+
+Final grep gate at the end of S1.17b-f:
+
+```
+grep -rn 'StmtKind::\(If\|While\|ForBind\|Try\|Match\)\|build_cfg_from_tree\|Function::body\|\.body: Vec<StmtId>' crates/ examples/ tests/ | grep -v '^Binary'
+```
+
+Must return zero non-diff lines.
+
 ## Phase 1 Acceptance
 
 Before merging Phase 1's long-lived branch to master:
@@ -2907,7 +3310,13 @@ audit often uncovers surprise gaps.
 | S1.15 ✅ | Pass migration: peephole, devirtualize, flatten_properties (§1.8 part 3). Audit showed all three are already SSA-compatible: peephole is local-pattern, devirtualize reads `locals[id].ty` (seed is preserved under SSA), flatten_properties matches MIR patterns. Added SSA-aware idempotent peephole rules: `x & x → x` and `x | x → x` (keyed on LocalId identity — valid under SSA single-def). 3 new tests. TypeTable-aware devirtualize (post-Refine narrowing) and class_info-aware flatten deferred to §1.4u (pipeline restructure). | S1.9 | Medium-High | Parallel-safe with S1.13, S1.14 |
 | S1.16 ✅ | Codegen SSA migration (§1.9): audit found no manual phi emulation. Codegen uses Cranelift's `Variable` API which handles SSA conversion internally; under MIR single-def invariant this is trivial. Fixed one stale S1.5-prep comment in `terminators.rs`. Full `Value`-based migration (skip the Variable layer for ~12 call sites) deferred — pure performance optimization, not correctness. | S1.6, S1.15 | Medium-High | — |
 | S1.17 ⏳ | Phase 1 final cleanup + acceptance (§1.10): grep-verify deletions, benchmark check, docs update | S1.11, S1.12, S1.16, S1.17b | Low-Medium | — |
-| S1.17b ⏳ | **Deferred §1.1 tail — HIR tree deletion** (added 2026-04-18): delete `Function.body`, `StmtKind::{If, While, ForBind, Try, Match}`, and the tree→CFG bridge `crates/hir/src/cfg_build.rs`. Rewrite the frontend to emit CFG directly. Resolve the open `HirTerminator` iteration-gap question (§1.1 Open Questions). Can only run after S1.8 lands `TypeInferencePass` and the `refined_var_types` / `prescan_var_types` / `narrowed_union_vars` maps are gone. | S1.8 | High | — |
+| S1.17b ⏳ | **Deferred §1.1 tail — HIR tree deletion umbrella** (scoped 2026-04-19 per §1.11). Split into six sub-sessions below; tracks ~4,730 LOC deleted + ~3,900 added, net −830. Design questions (HirTerminator iteration gap, exception edges, match desugar) resolved in §1.11. Prerequisites: §1.4u ✅, S1.9 ✅. | S1.8 | High | — |
+| S1.17b-a ⏳ | HIR schema extension (§1.11 Stage 1): add `ExprKind::IterHasNext`, `ExprKind::MatchPattern`, `StmtKind::IterAdvance`, `Function::try_scopes`, `TryScope`, `ExceptHandler::entry_block` alongside legacy variants. Pure additive; no consumer change. | §1.4u | Low | — |
+| S1.17b-b ⏳ | Frontend emits CFG directly (§1.11 Stage 2): rewrite `ast_to_hir/statements/{control_flow,loops,exceptions,match_stmt,context_managers}.rs` + `comprehensions.rs` + `expressions/mod.rs` to allocate `HirBlock`s + terminators without emitting `StmtKind::{If, While, ForBind, Try, Match}`. Match desugars to if/else ladder via `MatchPattern`. Retire 6 frontend `cfg_build::build_cfg_from_tree` call sites. Parity test: new CFG equals bridge output. Legacy tree still built as bridge. | S1.17b-a | **HIGH** | — |
+| S1.17b-c ⏳ | Lowering core consumes HIR CFG (§1.11 Stage 3): rewrite `lowering/src/statements/mod.rs` dispatch for per-block RPO emission; delete `lower_if/while/for_bind/try/match`; port `exceptions.rs` to read `Function::try_scopes`; repackage pattern predicates from `statements/match_stmt/mod.rs` as `ExprKind::MatchPattern` emission. | S1.17b-b | **HIGH** | — |
+| S1.17b-d ⏳ | Walkers + generator desugar (§1.11 Stage 4): port `ni_analysis.rs`, `lambda_inference.rs`, `type_planning/mod.rs::{collect_return_types, collect_handler_binds}`, `container_refine.rs`, `closure_scan.rs`, `local_prescan.rs` to walk HIR CFG with dominance/loop-aware state. Rewrite `generators/desugaring.rs` + siblings to synthesize `HirBlock`s directly; retire the 2 generator `build_cfg_from_tree` call sites. | S1.17b-c | **HIGH** | — |
+| S1.17b-e ⏳ | Semantics (§1.11 Stage 5): replace `loop_depth` / `except_depth` counters in `semantics/src/lib.rs` with CFG queries; migrate `semantics/src/tests.rs` fixtures to CFG builders. | S1.17b-d | Low-Medium | Parallel-safe with S1.17b-f prep |
+| S1.17b-f ⏳ | Delete tree (§1.11 Stage 6): remove `Function::body`, `StmtKind::{If, While, ForBind, Try, Match}`, `MatchCase::body`, `ExceptHandler::body`; delete `crates/hir/src/cfg_build.rs`; grep-verify zero residue; update `CLAUDE.md` / `.claude/rules/architecture.md` / `INSIGHTS.md`. Final deletion diff. | S1.17b-e | Low | — |
 
 **Split triggers**:
 
@@ -3150,10 +3559,10 @@ the spec reflecting reality.
 
 ---
 
-*Last updated: 2026-04-18. Phase 0 complete. Phase 1 ~60 % landed:
+*Last updated: 2026-04-19. Phase 0 complete. Phase 1 ~60 % landed:
 S1.1 / S1.2 / S1.4 / S1.5 / S1.6 / S1.7 / S1.9 / S1.10 / S1.11 ✅;
 S1.8 🟡 (core + rule set, single-match collapse queued as §1.4u);
 S1.16 🟡 (Phi wiring ✅, manual-phi cleanup ⏳); S1.3 ⏳ (folded into
-S1.17b); S1.12 ✅; S1.13 ✅; S1.14a ✅; S1.14b-prep ✅; S1.14b-inliner ✅; S1.15 ✅; S1.16 ✅; S1.17a ✅; §1.4u ✅ (all 4 steps + §1.4u-c/d); S1.17 full / S1.17b ⏳.
+S1.17b); S1.12 ✅; S1.13 ✅; S1.14a ✅; S1.14b-prep ✅; S1.14b-inliner ✅; S1.15 ✅; S1.16 ✅; S1.17a ✅; §1.4u ✅ (all 4 steps + §1.4u-c/d); §1.11 scoped 2026-04-19 (S1.17b split into 6 sub-sessions S1.17b-{a..f}); S1.17 full / S1.17b ⏳.
 See the Phase-1 status dashboard at the top of §1 and the status
 blocks inside each §1.x milestone for details.*
