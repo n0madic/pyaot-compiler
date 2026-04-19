@@ -319,13 +319,13 @@ calls and removes the `#[ignore]` attributes.
 | §1.1 HIR → CFG conversion | 🟡 | S1.1 ✅ · S1.2 ✅ · S1.3 ⏳ (folded into S1.17b) |
 | §1.2 DomTree | ✅ | S1.4 ✅ |
 | §1.3 SSA + φ + Refine | ✅ | S1.5 ✅ · S1.6 ✅ · S1.7 ✅ |
-| §1.4 Flow-sensitive type inference | 🟡 | S1.8 🟡 (core + rules) · S1.9 ✅ (legacy deletion) · §1.4u 🟡 (Path A amended: steps 1-4 ✅; step 5 ⏳ blocked on comp-scoping; §1.4u-c deferred; §1.4u-d ✅ spec amended) |
+| §1.4 Flow-sensitive type inference | ✅ | S1.8 ✅ (core + rules) · S1.9 ✅ (legacy deletion) · §1.4u ✅ (Path A — see row below) |
 | §1.5 Call graph | ✅ | S1.10 ✅ |
 | §1.6 WPA parameter inference | ✅ | S1.11 ✅ (core + full-program fixed point) |
 | §1.7 WPA field inference | ✅ | S1.12 ✅ (params + fields to full-program fixed point) |
 | §1.8 Pass migration | ✅ | S1.13 ✅ · S1.14a ✅ · S1.14b-prep ✅ · S1.14b-inliner ✅ · S1.15 ✅ |
 | §1.9 Codegen migration | ✅ | S1.5 wiring ✅ · S1.16 ✅ (audit: no manual-phi emulation; Variable API is OK under SSA single-def) |
-| §1.10 Final cleanup | 🟡 | S1.17a ✅ (partial acceptance: tests green, microgpt triaged) · S1.17 full ⏳ (blocked on S1.17b + §1.4u) |
+| §1.10 Final cleanup | 🟡 | S1.17a ✅ (partial acceptance: tests green, microgpt triaged) · S1.17 full ⏳ (blocked on S1.17b) |
 | §1.11 Deferred HIR-tree deletion | ⏳ | S1.17b |
 | §1.4u Single-TypeTable unification | ✅ | step 1 ✅ · step 2 ✅ · step 3 ✅ · step 4 ✅ · step 5 ✅ · §1.4u-c ✅ (Path A by construction) · §1.4u-d ✅ |
 
@@ -3154,6 +3154,6 @@ the spec reflecting reality.
 S1.1 / S1.2 / S1.4 / S1.5 / S1.6 / S1.7 / S1.9 / S1.10 / S1.11 ✅;
 S1.8 🟡 (core + rule set, single-match collapse queued as §1.4u);
 S1.16 🟡 (Phi wiring ✅, manual-phi cleanup ⏳); S1.3 ⏳ (folded into
-S1.17b); S1.12 ✅; S1.13 ✅; S1.14a ✅; S1.14b-prep ✅; S1.14b-inliner ✅; S1.15 ✅; S1.16 ✅; S1.17a ✅; §1.4u step 1 ✅; §1.4u step 2 ✅; S1.17 full / S1.17b / §1.4u-b-d ⏳.
+S1.17b); S1.12 ✅; S1.13 ✅; S1.14a ✅; S1.14b-prep ✅; S1.14b-inliner ✅; S1.15 ✅; S1.16 ✅; S1.17a ✅; §1.4u ✅ (all 4 steps + §1.4u-c/d); S1.17 full / S1.17b ⏳.
 See the Phase-1 status dashboard at the top of §1 and the status
 blocks inside each §1.x milestone for details.*
