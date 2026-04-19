@@ -158,8 +158,18 @@ impl<'a> Lowering<'a> {
             pending_blocks.insert(block.id, block);
         }
 
-        // Precompute narrowings for each block.
-        let narrowings = self.precompute_block_narrowings(func, hir_module);
+        // Narrowings computed just-in-time: when a block's terminator
+        // is `Branch(cond)`, we analyze `cond` after its stmts have
+        // lowered and record the then/else narrowings in this map for
+        // the successor blocks to pick up. Pre-computing up-front
+        // doesn't work because `var_types` for LOCAL variables only
+        // gets populated once their Bind stmt is lowered — so
+        // `analyze_condition_for_narrowing` returns None because
+        // `get_var_type` sees no entry for an as-yet-unbound local.
+        // Tree walker's `lower_if` didn't hit this because it runs
+        // AFTER the containing stmts have lowered.
+        let mut narrowings: IndexMap<HirBlockId, Vec<crate::narrowing::TypeNarrowingInfo>> =
+            IndexMap::new();
 
         // Walk HIR blocks in IndexMap order, pushing MIR blocks as we go.
         for (hir_id, hir_block) in &func.blocks {
@@ -188,6 +198,27 @@ impl<'a> Lowering<'a> {
             for &stmt_id in &hir_block.stmts {
                 let stmt = &hir_module.stmts[stmt_id];
                 self.lower_stmt(stmt, hir_module, mir_func)?;
+            }
+
+            // §1.17b-c — just-in-time narrowing analysis. After the
+            // block's stmts have lowered (populating var_types with
+            // local bindings), analyze the Branch terminator's cond
+            // and record narrowings for the successor then/else
+            // blocks to pick up on their visits.
+            if let hir::HirTerminator::Branch {
+                cond,
+                then_bb,
+                else_bb,
+            } = &hir_block.terminator
+            {
+                let cond_expr = &hir_module.exprs[*cond];
+                let analysis = self.analyze_condition_for_narrowing(cond_expr, hir_module);
+                if !analysis.then_narrowings.is_empty() {
+                    narrowings.insert(*then_bb, analysis.then_narrowings);
+                }
+                if !analysis.else_narrowings.is_empty() {
+                    narrowings.insert(*else_bb, analysis.else_narrowings);
+                }
             }
 
             // Emit MIR terminator WHILE narrowing is still active, so

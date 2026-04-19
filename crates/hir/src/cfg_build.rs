@@ -533,16 +533,30 @@ impl CfgBuilder {
                         })
                         .collect();
 
-                    // Test block N: Branch(MatchPattern(subject, pat_N),
-                    //                      case_body_N,
-                    //                      N+1 < len ? test_block(N+1) : fallthrough)
+                    // Test block N: if case has a guard, split into
+                    //   test_bb → Branch(pattern, guard_bb, next_test)
+                    //   guard_bb → Branch(guard_expr, case_body, next_test)
+                    // Otherwise:
+                    //   test_bb → Branch(pattern, case_body, next_test)
+                    // Guard block allocated only when case has a guard.
                     let test_bbs: Vec<HirBlockId> =
                         cases.iter().map(|_| self.new_block()).collect();
+                    let guard_bbs: Vec<Option<HirBlockId>> = cases
+                        .iter()
+                        .map(|case| {
+                            if case.guard.is_some() {
+                                Some(self.new_block())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
                     let pre_block = self.current;
                     self.set_terminator(pre_block, HirTerminator::Jump(test_bbs[0]));
-                    for (i, (&test_bb, (&case_bb, predicate))) in test_bbs
+                    for (i, ((&test_bb, &case_bb), predicate)) in test_bbs
                         .iter()
-                        .zip(case_bbs.iter().zip(predicates.iter()))
+                        .zip(case_bbs.iter())
+                        .zip(predicates.iter())
                         .enumerate()
                     {
                         let next_test = if i + 1 < test_bbs.len() {
@@ -550,15 +564,34 @@ impl CfgBuilder {
                         } else {
                             fallthrough_bb
                         };
+                        // If this case has a guard, branch to guard_bb
+                        // on pattern match; otherwise straight to case
+                        // body.
+                        let then_target = guard_bbs[i].unwrap_or(case_bb);
                         self.enter(test_bb);
                         self.set_terminator(
                             test_bb,
                             HirTerminator::Branch {
                                 cond: *predicate,
-                                then_bb: case_bb,
+                                then_bb: then_target,
                                 else_bb: next_test,
                             },
                         );
+                        // If there's a guard, emit the guard check
+                        // block: Branch(guard_expr, case_body, next_test).
+                        if let (Some(guard_bb), Some(guard_expr_id)) =
+                            (guard_bbs[i], cases[i].guard)
+                        {
+                            self.enter(guard_bb);
+                            self.set_terminator(
+                                guard_bb,
+                                HirTerminator::Branch {
+                                    cond: guard_expr_id,
+                                    then_bb: case_bb,
+                                    else_bb: next_test,
+                                },
+                            );
+                        }
                     }
 
                     for (case, &bb) in cases.iter().zip(&case_bbs) {

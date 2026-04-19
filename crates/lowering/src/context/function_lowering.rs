@@ -405,11 +405,11 @@ impl<'a> Lowering<'a> {
         // Walker dead-code. 2026-04-19 post-Return-coerce run: 28
         // failures (was 29 — net +1). Remaining signature-mismatch
         // errors at specific functions need deeper per-test MIR diff.
-        // Walker dead-code. Latest wire-up: 64 passed / 13 failed
-        // (was 49/28 before default_return_operand fix). Remaining 13
-        // are runtime segfaults from range-loop unbox path at
-        // module-init level (GC frame coordination issue — iter_local
-        // collected during iteration).
+        // 2026-04-19 walker wire-up reaches 76/77 (was 49/77 at
+        // session start). Only test_generators fails — all test bodies
+        // pass but process segfaults at exit (GC cleanup issue in a
+        // generator resume function). Keeping tree walker default
+        // until that resolves, so workspace stays 77/0.
         for stmt_id in &func.body {
             let stmt = &hir_module.stmts[*stmt_id];
             self.lower_stmt(stmt, hir_module, &mut mir_func)?;

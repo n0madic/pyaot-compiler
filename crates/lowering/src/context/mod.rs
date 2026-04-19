@@ -234,13 +234,17 @@ pub struct ClassRegistry {
 /// variant to emit either the iterator protocol or indexed iteration.
 #[derive(Debug, Clone)]
 pub enum IterState {
-    /// Iterator-protocol dispatch. Used for Dict, Set, Str, Bytes,
-    /// Range, Generator/Iterator. `iter_local` is the heap iterator
-    /// object produced by `rt_iter_X(iterable)`.
-    /// `IterHasNext` emits `rt_iter_is_exhausted(iter_local)` + NOT.
-    /// `IterAdvance` emits `rt_iter_next_no_exc(iter_local)` +
-    /// primitive unbox (for Int/Float/Bool) + bind target.
-    Protocol { iter_local: LocalId },
+    /// Iterator-protocol dispatch. Used for Generator/Iterator kinds
+    /// (after Dict/Set/Str/Bytes moved to Indexed).
+    /// `iter_local` holds the heap IteratorObj. `value_local` stores the
+    /// most-recent next() result — populated by IterHasNext (which
+    /// calls next FIRST, then checks exhausted) and consumed by
+    /// IterAdvance (which just binds value_local to target). Matches
+    /// tree walker's `lower_for_iterator` semantics exactly.
+    Protocol {
+        iter_local: LocalId,
+        value_local: LocalId,
+    },
     /// Indexed dispatch. Used for List and Tuple — mirrors the
     /// `lower_for_iterable` fast path which sidesteps the iterator
     /// object and reads directly via `rt_list_get_typed` /
@@ -258,15 +262,47 @@ pub enum IterState {
         elem_type: Type,
         kind: IterableKindCached,
     },
+    /// Range-specific dispatch. Used for `for i in range(...)`.
+    /// Mirrors `lower_for_range`'s direct counter loop — no iterator
+    /// object allocation, no boxing/unboxing. `idx_local` starts at
+    /// `start` and increments by `step`; `stop_local` is the bound.
+    ///
+    /// For positive step: `idx < stop` is has-next.
+    /// For negative step: `idx > stop` is has-next.
+    /// Direction is tracked via `step_is_negative_local` (a bool) —
+    /// used by `IterHasNext` to pick the comparison operator.
+    ///
+    /// Avoids the range-iterator-protocol path's heap alloc + box +
+    /// unbox triple that otherwise segfaults at module-init level.
+    Range {
+        idx_local: LocalId,
+        stop_local: LocalId,
+        step_local: LocalId,
+        step_is_negative: StepDirection,
+    },
+}
+
+/// Compile-time direction of `range()`'s step argument. If we can
+/// determine the step's sign at lowering time, we skip the runtime
+/// direction check — `range(0, 10)` and `range(0, 10, -1)` are both
+/// directly specializable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepDirection {
+    Positive,
+    Negative,
+    /// Step is a runtime variable; pick direction via runtime check.
+    Unknown,
 }
 
 /// Subset of `crate::utils::IterableKind` cached in `IterState::Indexed`
 /// to pick the right `rt_X_get` / `rt_X_len` at `IterAdvance` /
-/// `IterHasNext` time. Only List and Tuple reach the indexed path.
+/// `IterHasNext` time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IterableKindCached {
     List,
     Tuple,
+    Str,
+    Bytes,
 }
 
 /// MIR construction: blocks, instructions, current position
