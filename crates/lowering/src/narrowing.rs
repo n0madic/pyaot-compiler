@@ -575,6 +575,51 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// §1.17b-c — precompute per-block narrowings for the CFG walker.
+    ///
+    /// For each HIR block whose terminator is `Branch{cond, then_bb, else_bb}`,
+    /// analyze `cond` via `analyze_condition_for_narrowing` and record:
+    /// - `then_bb → n.then_narrowings`
+    /// - `else_bb → n.else_narrowings`
+    ///
+    /// The CFG walker wraps each block's statement lowering with
+    /// `push_narrowing_frame` / `pop_narrowing_frame` using the
+    /// narrowings recorded for that block. Blocks that are the target of
+    /// a Jump (merge blocks, loop bodies) have no narrowing applied.
+    ///
+    /// Bridge-produced CFG has unique then/else targets per Branch — each
+    /// narrowable block has at most one dominating Branch — so this
+    /// per-target assignment is well-defined. If a block were reachable
+    /// via multiple Branches with conflicting narrowings, the IndexMap
+    /// insert would overwrite and one set would win; this doesn't occur
+    /// in practice for the current bridge output shape.
+    #[allow(dead_code)] // consumed by S1.17b-c CFG walker (follow-up piece)
+    pub(crate) fn precompute_block_narrowings(
+        &self,
+        func: &hir::Function,
+        hir_module: &hir::Module,
+    ) -> IndexMap<pyaot_utils::HirBlockId, Vec<TypeNarrowingInfo>> {
+        let mut narrowings_by_block = IndexMap::new();
+        for block in func.blocks.values() {
+            if let hir::HirTerminator::Branch {
+                cond,
+                then_bb,
+                else_bb,
+            } = &block.terminator
+            {
+                let cond_expr = &hir_module.exprs[*cond];
+                let analysis = self.analyze_condition_for_narrowing(cond_expr, hir_module);
+                if !analysis.then_narrowings.is_empty() {
+                    narrowings_by_block.insert(*then_bb, analysis.then_narrowings);
+                }
+                if !analysis.else_narrowings.is_empty() {
+                    narrowings_by_block.insert(*else_bb, analysis.else_narrowings);
+                }
+            }
+        }
+        narrowings_by_block
+    }
+
     /// Extract isinstance information from an isinstance expression for dead code detection.
     /// This is a public wrapper for use by control_flow.rs.
     pub(crate) fn extract_isinstance_info_from_expr(
