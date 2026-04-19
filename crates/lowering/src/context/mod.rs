@@ -8,6 +8,7 @@
 //! - `accessors`: Getter/setter methods for internal state
 
 mod accessors;
+mod cfg_walker;
 mod constructors;
 mod function_lowering;
 mod helpers;
