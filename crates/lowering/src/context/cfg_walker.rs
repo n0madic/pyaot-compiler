@@ -42,7 +42,76 @@ use pyaot_utils::{BlockId, HirBlockId};
 
 use crate::context::Lowering;
 
+/// Return true if the pattern (or any nested pattern) binds a capture name.
+/// Used by `is_cfg_walker_eligible` — patterns with captures have their
+/// bindings dropped by the current `lower_match_pattern`, so functions
+/// containing them must fall back to the tree walker until case-body
+/// binding emission is implemented.
+#[allow(dead_code)] // consumed by `is_cfg_walker_eligible`; both pending wire-up
+fn pattern_has_capture(pattern: &hir::Pattern) -> bool {
+    match pattern {
+        hir::Pattern::MatchValue(_) | hir::Pattern::MatchSingleton(_) => false,
+        hir::Pattern::MatchAs { pattern, name } => {
+            if name.is_some() {
+                return true;
+            }
+            pattern
+                .as_ref()
+                .map(|p| pattern_has_capture(p))
+                .unwrap_or(false)
+        }
+        hir::Pattern::MatchSequence { patterns } => patterns.iter().any(pattern_has_capture),
+        hir::Pattern::MatchStar(name) => name.is_some(),
+        hir::Pattern::MatchOr(alternatives) => alternatives.iter().any(pattern_has_capture),
+        hir::Pattern::MatchMapping { patterns, rest, .. } => {
+            rest.is_some() || patterns.iter().any(pattern_has_capture)
+        }
+        hir::Pattern::MatchClass {
+            patterns,
+            kwd_patterns,
+            ..
+        } => {
+            patterns.iter().any(pattern_has_capture) || kwd_patterns.iter().any(pattern_has_capture)
+        }
+    }
+}
+
 impl<'a> Lowering<'a> {
+    /// Check whether a function is eligible for CFG-walker lowering.
+    /// Returns `false` for functions that hit CFG walker limitations:
+    /// - Non-empty `try_scopes` (exception-frame emission pending)
+    /// - `MatchPattern` exprs with capturing patterns (binding extraction
+    ///   pending — bindings would be dropped, breaking capture semantics)
+    ///
+    /// Current additional limitations discovered during 2026-04-19
+    /// validation (before wire-up):
+    /// - range()/enumerate() special-cased paths missing
+    /// - primitive-list iter unboxing not plumbed through
+    /// - generator resume function state-machine coordination missing
+    #[allow(dead_code)] // wire-up pending additional iter-protocol work
+    pub(crate) fn is_cfg_walker_eligible(
+        &self,
+        func: &hir::Function,
+        hir_module: &hir::Module,
+    ) -> bool {
+        if !func.try_scopes.is_empty() {
+            return false;
+        }
+        // Scan every block's terminator for `Branch(MatchPattern(..), ..)`
+        // with a capturing pattern.
+        for block in func.blocks.values() {
+            if let hir::HirTerminator::Branch { cond, .. } = &block.terminator {
+                let cond_expr = &hir_module.exprs[*cond];
+                if let hir::ExprKind::MatchPattern { pattern, .. } = &cond_expr.kind {
+                    if pattern_has_capture(pattern) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
     /// Lower a function's body via CFG walking instead of tree iteration.
     ///
     /// Caller contract: the MIR entry block is already pushed onto

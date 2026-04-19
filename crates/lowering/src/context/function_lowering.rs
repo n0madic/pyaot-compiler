@@ -359,6 +359,36 @@ impl<'a> Lowering<'a> {
             self.emit_class_attr_initializations(hir_module, &mut mir_func)?;
         }
 
+        // §1.17b-c — CFG walker available (`lower_function_cfg`) but
+        // not yet wired as default: 2026-04-19 validation run against
+        // the workspace test suite exposed three classes of limitation
+        // requiring additional work before the walker can replace the
+        // tree walker:
+        //
+        // 1. **Iter-protocol optimized paths missing**: `for x in
+        //    range(n)` uses `lower_for_range` (direct counter loop,
+        //    no iterator object) in the tree walker. The CFG walker's
+        //    `lower_iter_setup` falls through to `rt_iter_generator`
+        //    for `Type::Iterator(...)` which doesn't handle range/
+        //    enumerate specially — produces empty iterations or type
+        //    mismatches. Needs per-builtin dispatch in IterSetup or
+        //    bridge-level detection of range()/enumerate()/etc.
+        // 2. **Iter return-value unboxing**: `rt_iter_next_no_exc`
+        //    returns `*mut Obj` (boxed); typed-list lowering today
+        //    uses `rt_list_get_typed` which returns raw i64/f64/i8.
+        //    The CFG walker's `lower_iter_advance` delegates to
+        //    `lower_binding_target` with `HeapAny` — mismatches the
+        //    target's declared type for primitive lists.
+        // 3. **Generator resume functions**: the generator desugaring
+        //    emits a resume function whose CFG includes state-machine
+        //    control flow that interacts with `$resume`-specific
+        //    lowering (`gen_var` tracking, `rt_generator_set_local`
+        //    emission). Walker needs to coordinate with that
+        //    per-function state.
+        //
+        // All three are solvable but each requires its own focused
+        // delivery. For now lower_function walks the tree; the CFG
+        // walker is dead-code infrastructure ready for follow-up.
         for stmt_id in &func.body {
             let stmt = &hir_module.stmts[*stmt_id];
             self.lower_stmt(stmt, hir_module, &mut mir_func)?;
