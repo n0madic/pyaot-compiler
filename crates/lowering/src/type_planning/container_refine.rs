@@ -17,18 +17,23 @@ use crate::Lowering;
 impl<'a> Lowering<'a> {
     /// Refine types of empty containers by scanning for subsequent method calls.
     /// Must run before lowering so that `get_var_type` returns the refined type.
+    ///
+    /// §1.17b-d — function bodies iterate `func.blocks.values()` in bridge
+    /// allocation order (pre-order DFS of the source tree). Each block is
+    /// treated as a flat stmt list; "subsequent uses" inside the block are
+    /// read from `block.stmts[i+1..]`. Uses in separate blocks are visited
+    /// by their own block scan — this preserves the original tree-walker's
+    /// per-scope discipline (an `x = []` at the module level only sees uses
+    /// at the module level; nested-block uses are handled when the walker
+    /// recurses into that block, now represented as a separate CFG block).
+    /// Module init stmts are still flat-walked (no containing CFG function).
     pub(crate) fn refine_empty_container_types(&mut self, hir_module: &hir::Module) {
-        // Scan module-level statements — module-init uses a flat
-        // overlay of already-captured module-var types.
         let module_overlay: IndexMap<VarId, Type> = IndexMap::new();
         self.refine_empty_containers_in_block(
             &hir_module.module_init_stmts,
             hir_module,
             &module_overlay,
         );
-        // Scan function bodies — each function gets its own
-        // prescan-derived overlay so method-call arg types resolve
-        // against the function-local vars, not just module globals.
         for func_id in hir_module.functions.iter() {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 let overlay = self
@@ -37,7 +42,13 @@ impl<'a> Lowering<'a> {
                     .get(func_id)
                     .cloned()
                     .unwrap_or_default();
-                self.refine_empty_containers_in_block(&func.body, hir_module, &overlay);
+                // Collect block stmt-lists first (avoid borrow conflict with
+                // self.refine_empty_containers_in_block's &mut self).
+                let block_stmt_lists: Vec<Vec<hir::StmtId>> =
+                    func.blocks.values().map(|b| b.stmts.clone()).collect();
+                for stmts in &block_stmt_lists {
+                    self.refine_empty_containers_in_block(stmts, hir_module, &overlay);
+                }
             }
         }
     }
