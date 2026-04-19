@@ -342,6 +342,32 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
+        self.emit_raise_terminator(exc, cause, hir_module, mir_func)?;
+        // Create a new unreachable block after raise (for dead code)
+        let unreachable_bb = self.new_block();
+        self.push_block(unreachable_bb);
+        Ok(())
+    }
+
+    /// §1.17b-c — emit the `Raise` / `RaiseInstance` / `RaiseCustom` /
+    /// `Reraise` MIR terminator on the current block WITHOUT pushing a
+    /// dead-code block after it. Used by the CFG walker where each HIR
+    /// block maps to exactly one MIR block (no dead-code block needed).
+    ///
+    /// The tree-walking `lower_raise` wraps this with a push of an
+    /// unreachable block because `Raise` is a `StmtKind` inside a
+    /// function body that may have subsequent stmts after it (those
+    /// stmts are dead code but the tree walker still emits them into
+    /// an unreachable block to keep IDs consistent). In CFG form the
+    /// bridge lifts Raise to a block terminator, so no dead-code block
+    /// is needed.
+    pub(crate) fn emit_raise_terminator(
+        &mut self,
+        exc: &Option<hir::ExprId>,
+        cause: &Option<hir::ExprId>,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<()> {
         if let Some(exc_expr_id) = exc {
             let exc_expr = &hir_module.exprs[*exc_expr_id];
             let exc_info = self.extract_exc_info(exc_expr, hir_module, mir_func)?;
@@ -410,10 +436,6 @@ impl<'a> Lowering<'a> {
             // Bare raise - re-raise current exception
             self.current_block_mut().terminator = mir::Terminator::Reraise;
         }
-
-        // Create a new unreachable block after raise (for dead code)
-        let unreachable_bb = self.new_block();
-        self.push_block(unreachable_bb);
 
         Ok(())
     }

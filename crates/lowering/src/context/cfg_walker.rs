@@ -170,18 +170,14 @@ impl<'a> Lowering<'a> {
                 };
                 self.current_block_mut().terminator = mir::Terminator::Return(operand);
             }
-            hir::HirTerminator::Raise { .. } => {
-                // Raise terminator requires full `rt_exc_raise` dispatch
-                // with exception-type tag + message + cause handling —
-                // same complexity as `lower_raise`. Leave as a TODO
-                // guarded by the try-scope skip above (functions without
-                // try/except can still raise, but those typically go
-                // through straight-line `StmtKind::Raise` which becomes
-                // a Raise terminator in the bridge). Follow-up work.
-                return Err(CompilerError::type_error(
-                    "lower_function_cfg: Raise terminator emission not yet implemented".to_string(),
-                    pyaot_utils::Span::dummy(),
-                ));
+            hir::HirTerminator::Raise { exc, cause } => {
+                // Delegate to `emit_raise_terminator` — the factored
+                // entry point shared with the tree walker's `lower_raise`.
+                // Sets the current block's MIR terminator directly
+                // (Raise / RaiseInstance / RaiseCustom depending on the
+                // exception kind) without pushing a dead-code block.
+                let exc_opt = Some(*exc);
+                self.emit_raise_terminator(&exc_opt, cause, hir_module, mir_func)?;
             }
             hir::HirTerminator::Unreachable => {
                 // MIR block's default terminator is already Unreachable.
