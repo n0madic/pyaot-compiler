@@ -39,7 +39,7 @@ impl<'a> Lowering<'a> {
         let func_ids = hir_module.functions.clone();
         for func_id in func_ids {
             if let Some(func) = hir_module.func_defs.get(&func_id) {
-                if func.body.is_empty() {
+                if func.has_no_body_stmts() {
                     continue;
                 }
                 // Seed from annotations, then layer in any

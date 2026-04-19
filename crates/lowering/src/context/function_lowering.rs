@@ -156,7 +156,8 @@ impl<'a> Lowering<'a> {
         let is_module_init = func_name == "__pyaot_module_init__";
 
         // For lambdas and gen-expr creators, infer parameter types from captures.
-        let inferred_param_types = if (is_lambda || is_genexp_creator) && !func.body.is_empty() {
+        let inferred_param_types = if (is_lambda || is_genexp_creator) && !func.has_no_body_stmts()
+        {
             self.infer_lambda_param_types(func, hir_module)
         } else {
             Vec::new()
@@ -255,7 +256,7 @@ impl<'a> Lowering<'a> {
         // Only infer when there's no explicit annotation (None or Some(Type::None))
         let has_explicit_return_type =
             func.return_type.is_some() && func.return_type.as_ref() != Some(&Type::None);
-        let needs_return_type_inference = !func.body.is_empty() && !has_explicit_return_type;
+        let needs_return_type_inference = !func.has_no_body_stmts() && !has_explicit_return_type;
         let return_type = if needs_return_type_inference {
             // Prefer the return type already inferred by the type-planning
             // pass (`infer_all_return_types`), which walks the full body

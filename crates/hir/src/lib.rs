@@ -280,6 +280,22 @@ pub struct Function {
     pub try_scopes: Vec<TryScope>,
 }
 
+impl Function {
+    /// `true` if the function has no executable statements — either the
+    /// legacy tree `body` is empty OR every CFG block has an empty stmt
+    /// list and the entry block terminates with `Return(None)`. Used by
+    /// prescan / return-type inference passes to skip empty bodies
+    /// (abstract methods, `pass`-only bodies). §1.17b-d: introduced to
+    /// abstract away the tree vs. CFG distinction.
+    pub fn has_no_body_stmts(&self) -> bool {
+        self.blocks.values().all(|b| b.stmts.is_empty())
+            && self
+                .blocks
+                .get(&self.entry_block)
+                .is_none_or(|b| matches!(b.terminator, HirTerminator::Return(None)))
+    }
+}
+
 /// Parameter kind distinguishes regular, *args, and **kwargs parameters
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamKind {
