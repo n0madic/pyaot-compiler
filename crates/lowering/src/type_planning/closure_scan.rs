@@ -18,28 +18,73 @@ impl<'a> Lowering<'a> {
     /// Pre-compute closure capture types from module-level statements and function bodies.
     /// This must run before lowering functions so that lambda/closure type inference
     /// can use the captured variable types.
+    ///
+    /// §1.17b-d — function bodies iterate `func.blocks.values()` in bridge
+    /// allocation order (pre-order DFS of the source tree). Module init
+    /// stmts are still a flat list (no containing CFG function) and keep
+    /// the tree walker.
     pub(crate) fn precompute_closure_capture_types(&mut self, hir_module: &hir::Module) {
         // Track module-level variable types as we scan statements
         let mut module_var_types: IndexMap<VarId, Type> = IndexMap::new();
 
-        // First, scan module-level statements
+        // First, scan module-level statements (no containing CFG — flat walk)
         for stmt_id in &hir_module.module_init_stmts {
             self.scan_stmt_for_closures(*stmt_id, hir_module, &mut module_var_types);
         }
 
-        // Then, scan all function bodies
+        // Then, scan all function bodies via their CFG blocks.
         for func_id in &hir_module.functions {
             if let Some(func) = hir_module.func_defs.get(func_id) {
-                // Build variable types from function parameters
                 let mut func_var_types: IndexMap<VarId, Type> = IndexMap::new();
                 for param in &func.params {
                     if let Some(ref ty) = param.ty {
                         func_var_types.insert(param.var, ty.clone());
                     }
                 }
-                // Scan function body for closures
-                for stmt_id in &func.body {
-                    self.scan_stmt_for_closures(*stmt_id, hir_module, &mut func_var_types);
+                for block in func.blocks.values() {
+                    for &stmt_id in &block.stmts {
+                        self.scan_stmt_for_closures(stmt_id, hir_module, &mut func_var_types);
+                    }
+                    // Terminators carry exprs (cond / return value / raise
+                    // exc+cause / yield value / iter-has-next) that can
+                    // contain inline closures — scan them so
+                    // `[x for x in <closure-producing expr>]` records its
+                    // capture types.
+                    self.scan_terminator_for_closures(
+                        &block.terminator,
+                        hir_module,
+                        &mut func_var_types,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Scan a HirTerminator for inline closures in any embedded exprs.
+    fn scan_terminator_for_closures(
+        &mut self,
+        term: &hir::HirTerminator,
+        hir_module: &hir::Module,
+        var_types: &mut IndexMap<VarId, Type>,
+    ) {
+        use hir::HirTerminator::*;
+        match term {
+            Jump(_) | Unreachable => {}
+            Branch { cond, .. } => {
+                let expr = &hir_module.exprs[*cond];
+                self.scan_expr_for_closures(expr, hir_module, var_types);
+            }
+            Return(Some(expr_id)) | Yield { value: expr_id, .. } => {
+                let expr = &hir_module.exprs[*expr_id];
+                self.scan_expr_for_closures(expr, hir_module, var_types);
+            }
+            Return(None) => {}
+            Raise { exc, cause } => {
+                let expr = &hir_module.exprs[*exc];
+                self.scan_expr_for_closures(expr, hir_module, var_types);
+                if let Some(c) = cause {
+                    let c_expr = &hir_module.exprs[*c];
+                    self.scan_expr_for_closures(c_expr, hir_module, var_types);
                 }
             }
         }
@@ -207,6 +252,17 @@ impl<'a> Lowering<'a> {
                 // Scan return expressions for inline closures
                 let expr = &hir_module.exprs[*expr_id];
                 self.scan_expr_for_closures(expr, hir_module, var_types);
+            }
+            // §1.17b-d — `IterAdvance` replaces `ForBind` inside CFG blocks.
+            // Preserve the Area G §G.10 loop-target element-type
+            // propagation so closures **inside** the loop body see the
+            // concrete type of the captured loop target (not `Any`).
+            hir::StmtKind::IterAdvance { iter, target } => {
+                let iter_expr = &hir_module.exprs[*iter];
+                self.scan_expr_for_closures(iter_expr, hir_module, var_types);
+                let iter_ty = self.infer_deep_expr_type(iter_expr, hir_module, var_types);
+                let elem_ty = extract_iterable_element_type(&iter_ty);
+                insert_target_types(target, &elem_ty, var_types);
             }
             // Other statement types don't contain nested closures
             _ => {}
