@@ -173,6 +173,12 @@ impl<'a> Lowering<'a> {
             }
 
             // Apply narrowing frame for this block's entry type-info.
+            // CRITICAL: narrowing must stay active while lowering the
+            // TERMINATOR too — Return(expr) / Branch(cond) / Raise(exc)
+            // evaluate exprs that read var types. Popping before
+            // terminator emission produces "unknown attribute" errors
+            // on narrowed Var accesses (e.g. `return other.x` where
+            // `other` was narrowed to a class).
             let narrow = narrowings.get(hir_id).cloned();
             if let Some(ref n) = narrow {
                 self.push_narrowing_frame(n);
@@ -184,15 +190,15 @@ impl<'a> Lowering<'a> {
                 self.lower_stmt(stmt, hir_module, mir_func)?;
             }
 
-            // Pop narrowing frame.
-            if narrow.is_some() {
-                self.pop_narrowing_frame();
-            }
-
-            // Emit MIR terminator if the block isn't already terminated
-            // (e.g., by a Return stmt inside the block).
+            // Emit MIR terminator WHILE narrowing is still active, so
+            // embedded exprs see the narrowed types.
             if !self.current_block_has_terminator() {
                 self.emit_hir_terminator(&hir_block.terminator, &hir_to_mir, hir_module, mir_func)?;
+            }
+
+            // Pop narrowing frame AFTER terminator emission.
+            if narrow.is_some() {
+                self.pop_narrowing_frame();
             }
         }
 
