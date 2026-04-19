@@ -319,7 +319,7 @@ calls and removes the `#[ignore]` attributes.
 | §1.1 HIR → CFG conversion | 🟡 | S1.1 ✅ · S1.2 ✅ · S1.3 ⏳ (folded into S1.17b) |
 | §1.2 DomTree | ✅ | S1.4 ✅ |
 | §1.3 SSA + φ + Refine | ✅ | S1.5 ✅ · S1.6 ✅ · S1.7 ✅ |
-| §1.4 Flow-sensitive type inference | 🟡 | S1.8 🟡 (core + rules) · S1.9 ✅ (legacy deletion) · §1.4u ⏳ (unification plan) |
+| §1.4 Flow-sensitive type inference | 🟡 | S1.8 🟡 (core + rules) · S1.9 ✅ (legacy deletion) · §1.4u 🟡 (Path A amended: steps 1-4 ✅; step 5 ⏳ blocked on comp-scoping; §1.4u-c deferred; §1.4u-d ✅ spec amended) |
 | §1.5 Call graph | ✅ | S1.10 ✅ |
 | §1.6 WPA parameter inference | ✅ | S1.11 ✅ (core + full-program fixed point) |
 | §1.7 WPA field inference | ✅ | S1.12 ✅ (params + fields to full-program fixed point) |
@@ -1020,18 +1020,42 @@ sensitive type assigned by a dedicated pass.
 - `refined_var_types` map (refinement is an SSA version now).
 - `prescan_var_types` + `per_function_prescan_var_types`.
 
-**Non-negotiable**: all type queries go through the single pass output.
-No imperative `insert_var_type` during lowering. If a later pass needs
-to update a type, it invalidates and reruns the pass on the affected
-region.
+**Non-negotiable** (amended 2026-04-19, §1.4u-d):
+Lowering has **one** canonical source of truth for expression types —
+`HirTypeInference` — and every lowering-side query goes through
+`Lowering::get_type_of_expr_id` → `HirTypeInference::lookup`. The
+MIR-level `TypeTable` (`pyaot_optimizer::type_inference`) is a
+**post-SSA projection** of this source: it seeds every `LocalId`
+from `func.locals[id].ty` (which lowering populated from
+`HirTypeInference`) and extends with the SSA-specific
+`Phi`/`Refine`/WPA refinements that the HIR layer cannot express.
+
+Lowering-time mutation of `symbols.var_types` via `insert_var_type`
+is permitted as a **narrowing overlay only** — it represents the
+effective type of a `Var` expression in the current control-flow
+scope (e.g. inside an `isinstance` branch). It does not change the
+base type stored in `HirTypeInference`, which remains the pure
+function of HIR + F/M state produced by the unified pass. If a
+later pass needs to update a base type, it invalidates and reruns
+the affected region of the unified pass.
+
+The spec's original literal formulation ("single `TypeTable` that
+is a pure function of the SSA IR") describes Path B (full MIR-
+level unification); Phase 1 ships Path A (HIR-level unification
+with SSA-derived MIR view). Path B lands naturally in Phase 2
+when tagged `Value` + post-SSA specialization remove the need for
+lowering-time types.
 
 **Exit criteria**:
 
 - Every existing type-dependent test passes.
-- All 4 legacy type maps deleted from `SymbolTable`.
-- `apply_narrowings` / `restore_types` deleted.
-- Type queries use a single `TypeTable` that is a pure function of
-  the SSA IR.
+- All 4 legacy type maps deleted from `SymbolTable` (Phase 1 exits
+  with them renamed into `HirTypeInference`; Phase 3 lattice join
+  deletes the last two).
+- `apply_narrowings` / `restore_types` deleted (§1.4u step 5+).
+- Type queries use **one** canonical HIR-level source
+  (`HirTypeInference`) plus **one** SSA-level projection
+  (`TypeTable`) that seeds from it.
 
 **Status (2026-04-18, S1.8a landed — TypeInferencePass core engine)**:
 `crates/optimizer/src/type_inference.rs` implements the classical RPO
