@@ -27,6 +27,10 @@ impl<'a> Lowering<'a> {
     pub(crate) fn run_type_planning(&mut self, hir_module: &hir::Module) {
         self.precompute_closure_capture_types(hir_module);
         self.process_module_decorated_functions(hir_module);
+        // First-pass refinement — handles `x = [1, 2, 3]` /
+        // `x = {k: v, …}` literal cases that need no var-type
+        // context. Runs before prescan so prescan sees the refined
+        // type when walking `x.append(…)`.
         self.refine_empty_container_types(hir_module);
         self.infer_nested_function_param_types(hir_module);
         self.infer_all_return_types(hir_module);
@@ -35,6 +39,13 @@ impl<'a> Lowering<'a> {
         // after prescan has widened any numeric locals (e.g.
         // `x = 0; x += 0.5; return x` → `Float`, not `Int`).
         self.reinfer_return_types_with_prescan(hir_module);
+        // Second-pass refinement — re-runs after prescan so
+        // `topo = []; topo.append(root)` where `root`'s type comes
+        // from prescan (not the declared HIR annotation) can still
+        // refine `topo` to `List[Value]`. The underlying scan uses
+        // `infer_deep_expr_type` with a prescan-sourced overlay so
+        // any intermediate local gets resolved.
+        self.refine_empty_container_types(hir_module);
         self.validate_type_annotations(hir_module);
         // §1.4u-b step 3 — populate the stable per-module Var→Type
         // base map. Never mutated during lowering.
