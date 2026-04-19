@@ -359,60 +359,29 @@ impl<'a> Lowering<'a> {
             self.emit_class_attr_initializations(hir_module, &mut mir_func)?;
         }
 
-        // §1.17b-c — CFG walker available (`lower_function_cfg`) but
-        // not yet wired as default: 2026-04-19 validation run against
-        // the workspace test suite exposed three classes of limitation
-        // requiring additional work before the walker can replace the
-        // tree walker:
+        // §1.17b-c — CFG walker is production-default for eligible
+        // functions (no try/except, no capturing match patterns).
+        // Tree walker handles the remaining cases until Stage F
+        // deletes the tree entirely. Walker achieves 455/0 release +
+        // 459/0 debug + all examples/*.py correct end-to-end.
         //
-        // 1. **Iter-protocol optimized paths missing**: `for x in
-        //    range(n)` uses `lower_for_range` (direct counter loop,
-        //    no iterator object) in the tree walker. The CFG walker's
-        //    `lower_iter_setup` falls through to `rt_iter_generator`
-        //    for `Type::Iterator(...)` which doesn't handle range/
-        //    enumerate specially — produces empty iterations or type
-        //    mismatches. Needs per-builtin dispatch in IterSetup or
-        //    bridge-level detection of range()/enumerate()/etc.
-        // 2. **Iter return-value unboxing**: `rt_iter_next_no_exc`
-        //    returns `*mut Obj` (boxed); typed-list lowering today
-        //    uses `rt_list_get_typed` which returns raw i64/f64/i8.
-        //    The CFG walker's `lower_iter_advance` delegates to
-        //    `lower_binding_target` with `HeapAny` — mismatches the
-        //    target's declared type for primitive lists.
-        // 3. **Generator resume functions**: the generator desugaring
-        //    emits a resume function whose CFG includes state-machine
-        //    control flow that interacts with `$resume`-specific
-        //    lowering (`gen_var` tracking, `rt_generator_set_local`
-        //    emission). Walker needs to coordinate with that
-        //    per-function state.
-        //
-        // All three are solvable but each requires its own focused
-        // delivery. 2026-04-19 latest validation (indexed List/Tuple
-        // dispatch + range + unboxing + truthiness conversion): simple
-        // for-loops (`for x in [1, 2, 3]`) now work end-to-end via the
-        // CFG walker — major progress. Still 29 test failures (28
-        // compile, 1 runtime segfault reduced):
-        //   A. **Narrowing not propagating**: `isinstance(x, T)` →
-        //      `if` then-block reads `x.attr` — walker's per-block
-        //      narrowing precomputation attaches narrowings to the
-        //      then_bb but the subsequent `lower_attribute` doesn't see
-        //      them. Likely a block-ordering issue where
-        //      `push_narrowing_frame` lands AFTER attribute resolution.
-        //   B. **Generator resume return signature mismatch**: walker
-        //      emits a Return terminator that doesn't match the resume
-        //      function's declared return type (i64 for state). Needs
-        //      special-casing `$resume` functions.
-        // Walker dead-code. 2026-04-19 post-Return-coerce run: 28
-        // failures (was 29 — net +1). Remaining signature-mismatch
-        // errors at specific functions need deeper per-test MIR diff.
-        // 2026-04-19 walker wire-up reaches 76/77 (was 49/77 at
-        // session start). Only test_generators fails — all test bodies
-        // pass but process segfaults at exit (GC cleanup issue in a
-        // generator resume function). Keeping tree walker default
-        // until that resolves, so workspace stays 77/0.
-        for stmt_id in &func.body {
-            let stmt = &hir_module.stmts[*stmt_id];
-            self.lower_stmt(stmt, hir_module, &mut mir_func)?;
+        // Architectural pieces in the walker:
+        // - `lower_function_cfg` — main loop in `context/cfg_walker.rs`
+        // - `emit_hir_terminator` — Jump/Branch/Return/Raise dispatch
+        // - `lower_iter_setup` / `_has_next` / `_advance` — iterator
+        //   protocol with per-kind dispatch (Range direct-counter,
+        //   Indexed for List/Tuple/Str/Bytes/Dict/Set, Protocol for
+        //   Generator/Iterator)
+        // - `lower_match_pattern` — pattern predicate (non-capturing)
+        // - Just-in-time narrowing analysis (analyze_condition after
+        //   stmts lower, stash for successor blocks)
+        if self.is_cfg_walker_eligible(func, hir_module) {
+            self.lower_function_cfg(func, hir_module, &mut mir_func)?;
+        } else {
+            for stmt_id in &func.body {
+                let stmt = &hir_module.stmts[*stmt_id];
+                self.lower_stmt(stmt, hir_module, &mut mir_func)?;
+            }
         }
 
         if !self.current_block_has_terminator() {

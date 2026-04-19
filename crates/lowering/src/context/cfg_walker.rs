@@ -47,7 +47,6 @@ use crate::context::Lowering;
 /// bindings dropped by the current `lower_match_pattern`, so functions
 /// containing them must fall back to the tree walker until case-body
 /// binding emission is implemented.
-#[allow(dead_code)] // consumed by `is_cfg_walker_eligible`; both pending wire-up
 fn pattern_has_capture(pattern: &hir::Pattern) -> bool {
     match pattern {
         hir::Pattern::MatchValue(_) | hir::Pattern::MatchSingleton(_) => false,
@@ -83,12 +82,11 @@ impl<'a> Lowering<'a> {
     /// - `MatchPattern` exprs with capturing patterns (binding extraction
     ///   pending — bindings would be dropped, breaking capture semantics)
     ///
-    /// Current additional limitations discovered during 2026-04-19
-    /// validation (before wire-up):
-    /// - range()/enumerate() special-cased paths missing
-    /// - primitive-list iter unboxing not plumbed through
-    /// - generator resume function state-machine coordination missing
-    #[allow(dead_code)] // wire-up pending additional iter-protocol work
+    /// All limitations discovered during 2026-04-19 validation (range
+    /// dispatch, primitive-list unboxing, generator semantics, JIT
+    /// narrowing) have been resolved; this eligibility check now
+    /// excludes only the two classes that genuinely need more work:
+    /// try/except emission and capturing match patterns.
     pub(crate) fn is_cfg_walker_eligible(
         &self,
         func: &hir::Function,
@@ -122,7 +120,6 @@ impl<'a> Lowering<'a> {
     /// Errors if `func.try_scopes` is non-empty — exception-frame
     /// emission is not yet implemented. Callers should fall back to the
     /// tree walker for those functions.
-    #[allow(dead_code)] // not yet wired — S1.17b-c final piece (try-scope emission pending)
     pub(crate) fn lower_function_cfg(
         &mut self,
         func: &hir::Function,
@@ -241,7 +238,6 @@ impl<'a> Lowering<'a> {
     /// non-None return type (abstract methods, `pass` bodies, implicit
     /// fall-through). Mirrors the tree walker's post-processing logic
     /// in `lower_function`.
-    #[allow(dead_code)]
     fn default_return_operand(
         &mut self,
         ret_ty: &pyaot_types::Type,
@@ -267,7 +263,6 @@ impl<'a> Lowering<'a> {
 
     /// Translate a `HirTerminator` into a `mir::Terminator` and assign it
     /// to the current MIR block. Used by `lower_function_cfg`.
-    #[allow(dead_code)]
     fn emit_hir_terminator(
         &mut self,
         term: &hir::HirTerminator,

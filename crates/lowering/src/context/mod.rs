@@ -325,7 +325,6 @@ pub struct CodeGenState {
     /// / `StmtKind::IterAdvance` lowering. `IterSetup` populates the
     /// appropriate variant; subsequent IterHasNext / IterAdvance for the
     /// same ExprId read from the cache.
-    #[allow(dead_code)] // consumed by S1.17b-c CFG walker (follow-up session)
     pub iter_cache: IndexMap<pyaot_hir::ExprId, IterState>,
 }
 

@@ -452,46 +452,32 @@ impl<'a> Lowering<'a> {
                 // §1.17b-c — Protocol's IterAdvance just reads the cached
                 // value_local populated by IterHasNext (tree-walker
                 // semantics: next is called BEFORE has-next check).
-                // Raw primitives like int/bool were boxed by the runtime
-                // via `box_if_raw_int_iterator`; unbox here to match
-                // the target's declared type.
+                //
+                // `rt_iter_next_no_exc` returns different shapes
+                // depending on the iterator kind:
+                // - Generators (Type::Iterator): `rt_generator_next`
+                //   returns the yielded value DIRECTLY as raw i64 —
+                //   no boxing applied. This matches tree walker's
+                //   `lower_for_iterator` which types next_local as
+                //   Int/Str/etc and copies directly.
+                // - Non-generator iterators (shouldn't reach here
+                //   post-Indexed-extension — List/Tuple/Dict/Set/Str/
+                //   Bytes all go through Indexed now).
+                //
+                // So we DON'T unbox for the Protocol path — the value
+                // is already in the target's representation.
                 let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
                 let elem_type = get_iterable_info(&iter_type)
                     .map(|(_, t)| t)
                     .unwrap_or(Type::Any);
 
-                let value_operand = match &elem_type {
-                    Type::Int => {
-                        let unboxed = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(&runtime_func_def::RT_UNBOX_INT),
-                            vec![mir::Operand::Local(value_local)],
-                            Type::Int,
-                            mir_func,
-                        );
-                        mir::Operand::Local(unboxed)
-                    }
-                    Type::Float => {
-                        let unboxed = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(&runtime_func_def::RT_UNBOX_FLOAT),
-                            vec![mir::Operand::Local(value_local)],
-                            Type::Float,
-                            mir_func,
-                        );
-                        mir::Operand::Local(unboxed)
-                    }
-                    Type::Bool => {
-                        let unboxed = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(&runtime_func_def::RT_UNBOX_BOOL),
-                            vec![mir::Operand::Local(value_local)],
-                            Type::Bool,
-                            mir_func,
-                        );
-                        mir::Operand::Local(unboxed)
-                    }
-                    _ => mir::Operand::Local(value_local),
-                };
-
-                self.lower_binding_target(target, value_operand, &elem_type, hir_module, mir_func)?;
+                self.lower_binding_target(
+                    target,
+                    mir::Operand::Local(value_local),
+                    &elem_type,
+                    hir_module,
+                    mir_func,
+                )?;
                 self.sync_global_if_needed(target, &elem_type, mir_func);
                 Ok(())
             }
