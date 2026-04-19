@@ -219,12 +219,20 @@ impl<'a> Lowering<'a> {
                 then_bb,
                 else_bb,
             } => {
+                // Truthiness conversion: the MIR `Branch` expects an i8
+                // bool operand. If the HIR cond type isn't already Bool,
+                // delegate to `convert_to_bool` (Int → !=0, Float → !=0.0,
+                // Str/collections → len>0, None → false, Union/Any →
+                // rt_is_truthy). Mirrors what `lower_if`/`lower_while` do.
                 let cond_expr = &hir_module.exprs[*cond];
+                let cond_type = self.get_type_of_expr_id(*cond, hir_module);
                 let cond_operand = self.lower_expr(cond_expr, hir_module, mir_func)?;
+                let cond_bool =
+                    self.emit_truthiness_conversion_if_needed(cond_operand, &cond_type, mir_func);
                 let mir_then = hir_to_mir[then_bb];
                 let mir_else = hir_to_mir[else_bb];
                 self.current_block_mut().terminator = mir::Terminator::Branch {
-                    cond: cond_operand,
+                    cond: cond_bool,
                     then_block: mir_then,
                     else_block: mir_else,
                 };
