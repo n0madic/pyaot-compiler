@@ -2,7 +2,7 @@
 
 use super::super::AstToHir;
 use pyaot_diagnostics::Result;
-use pyaot_hir::*;
+use pyaot_hir::{cfg_build::CfgStmt, *};
 use pyaot_types::Type;
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;
@@ -146,7 +146,7 @@ impl AstToHir {
                     },
                     span: expr_span,
                 });
-                self.scope.pending_stmts.push(assign_stmt);
+                self.scope.pending_stmts.push(CfgStmt::stmt(assign_stmt));
 
                 converted_operands.push((expr_id, Some(temp_var_id)));
             } else {

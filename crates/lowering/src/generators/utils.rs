@@ -10,10 +10,7 @@ use super::YieldInfo;
 /// Collect yield information from the function body (in order).
 /// Returns YieldInfo for each yield, including assignment targets.
 /// Pure HIR analysis — no Lowering state needed.
-pub(crate) fn collect_yield_info(
-    func: &hir::Function,
-    hir_module: &hir::Module,
-) -> Vec<YieldInfo> {
+pub(crate) fn collect_yield_info(func: &hir::Function, hir_module: &hir::Module) -> Vec<YieldInfo> {
     let mut yields = Vec::new();
     for block in func.blocks.values() {
         for &stmt_id in &block.stmts {
@@ -66,9 +63,9 @@ fn collect_yields_from_terminator(
             collect_yields_from_expr_with_target(*cond, None, hir_module, yields);
         }
         hir::HirTerminator::Return(Some(expr_id))
-        | hir::HirTerminator::Yield {
-            value: expr_id, ..
-        } => collect_yields_from_expr_with_target(*expr_id, None, hir_module, yields),
+        | hir::HirTerminator::Yield { value: expr_id, .. } => {
+            collect_yields_from_expr_with_target(*expr_id, None, hir_module, yields)
+        }
         hir::HirTerminator::Raise { exc, cause } => {
             collect_yields_from_expr_with_target(*exc, None, hir_module, yields);
             if let Some(cause) = cause {

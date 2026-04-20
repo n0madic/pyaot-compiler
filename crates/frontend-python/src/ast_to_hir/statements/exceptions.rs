@@ -2,7 +2,7 @@
 
 use super::AstToHir;
 use pyaot_diagnostics::Result;
-use pyaot_hir::*;
+use pyaot_hir::{cfg_build::CfgExceptHandler, cfg_build::CfgStmt, *};
 use pyaot_types::{BuiltinExceptionKind, Type};
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;
@@ -71,14 +71,18 @@ impl AstToHir {
         }))
     }
 
-    pub(crate) fn convert_try(&mut self, try_stmt: py::StmtTry, stmt_span: Span) -> Result<StmtId> {
+    pub(crate) fn convert_try(
+        &mut self,
+        try_stmt: py::StmtTry,
+        stmt_span: Span,
+    ) -> Result<CfgStmt> {
         // Convert try body
         let mut body = Vec::new();
         for stmt in try_stmt.body {
-            let stmt_id = self.convert_stmt(stmt)?;
+            let stmt = self.convert_stmt(stmt)?;
             let pending = self.take_pending_stmts();
             body.extend(pending);
-            body.push(stmt_id);
+            body.push(stmt);
         }
 
         // Convert exception handlers
@@ -105,10 +109,10 @@ impl AstToHir {
             // Convert handler body (now the exception variable is in scope)
             let mut handler_body = Vec::new();
             for stmt in h.body {
-                let stmt_id = self.convert_stmt(stmt)?;
+                let stmt = self.convert_stmt(stmt)?;
                 let pending = self.take_pending_stmts();
                 handler_body.extend(pending);
-                handler_body.push(stmt_id);
+                handler_body.push(stmt);
             }
 
             // Convert exception type (if specified)
@@ -121,30 +125,27 @@ impl AstToHir {
                         // Expand into multiple handlers with the same body and name
                         for elt in &tuple.elts {
                             let exc_type = self.resolve_exception_type(elt);
-                            handlers.push(ExceptHandler {
+                            handlers.push(CfgExceptHandler {
                                 ty: Some(exc_type),
                                 name,
                                 body: handler_body.clone(),
-                                entry_block: pyaot_utils::HirBlockId::new(0),
                             });
                         }
                     }
                     _ => {
                         let exc_type = self.resolve_exception_type(&type_expr);
-                        handlers.push(ExceptHandler {
+                        handlers.push(CfgExceptHandler {
                             ty: Some(exc_type),
                             name,
                             body: handler_body,
-                            entry_block: pyaot_utils::HirBlockId::new(0),
                         });
                     }
                 }
             } else {
-                handlers.push(ExceptHandler {
+                handlers.push(CfgExceptHandler {
                     ty: None,
                     name,
                     body: handler_body,
-                    entry_block: pyaot_utils::HirBlockId::new(0),
                 });
             }
         }
@@ -152,29 +153,27 @@ impl AstToHir {
         // Convert else block (runs if no exception raised in try body)
         let mut else_block = Vec::new();
         for stmt in try_stmt.orelse {
-            let stmt_id = self.convert_stmt(stmt)?;
+            let stmt = self.convert_stmt(stmt)?;
             let pending = self.take_pending_stmts();
             else_block.extend(pending);
-            else_block.push(stmt_id);
+            else_block.push(stmt);
         }
 
         // Convert finally block
         let mut finally_block = Vec::new();
         for stmt in try_stmt.finalbody {
-            let stmt_id = self.convert_stmt(stmt)?;
+            let stmt = self.convert_stmt(stmt)?;
             let pending = self.take_pending_stmts();
             finally_block.extend(pending);
-            finally_block.push(stmt_id);
+            finally_block.push(stmt);
         }
 
-        Ok(self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Try {
-                body,
-                handlers,
-                else_block,
-                finally_block,
-            },
+        Ok(CfgStmt::Try {
+            body,
+            handlers,
+            else_body: else_block,
+            finally_body: finally_block,
             span: stmt_span,
-        }))
+        })
     }
 }

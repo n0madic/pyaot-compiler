@@ -2,7 +2,10 @@
 
 use super::AstToHir;
 use pyaot_diagnostics::Result;
-use pyaot_hir::*;
+use pyaot_hir::{
+    cfg_build::{CfgExceptHandler, CfgStmt},
+    *,
+};
 use pyaot_types::Type;
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;
@@ -12,7 +15,7 @@ impl AstToHir {
         &mut self,
         with_stmt: py::StmtWith,
         _stmt_span: Span,
-    ) -> Result<StmtId> {
+    ) -> Result<CfgStmt> {
         self.convert_with_stmt(with_stmt)
     }
 
@@ -40,7 +43,7 @@ impl AstToHir {
     ///     if not __ctx_had_exc:
     ///         __ctx_mgr.__exit__(None, None, None)
     /// ```
-    fn convert_with_stmt(&mut self, with_stmt: py::StmtWith) -> Result<StmtId> {
+    fn convert_with_stmt(&mut self, with_stmt: py::StmtWith) -> Result<CfgStmt> {
         let with_span = Self::span_from(&with_stmt);
 
         // Handle multiple items by nesting: with A, B: body → with A: with B: body
@@ -177,10 +180,10 @@ impl AstToHir {
         // 6. Convert body statements
         let mut body = Vec::new();
         for stmt in with_stmt.body {
-            let stmt_id = self.convert_stmt(stmt)?;
+            let stmt = self.convert_stmt(stmt)?;
             let pending = self.take_pending_stmts();
             body.extend(pending);
-            body.push(stmt_id);
+            body.push(stmt);
         }
 
         // 7. Create except handler body:
@@ -269,23 +272,24 @@ impl AstToHir {
             }, // Bare raise re-raises current exception
             span: with_span,
         });
-        let if_not_suppress = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::If {
-                cond: not_suppress,
-                then_block: vec![raise_stmt],
-                else_block: vec![],
-            },
+        let if_not_suppress = CfgStmt::If {
+            cond: not_suppress,
+            then_body: vec![CfgStmt::stmt(raise_stmt)],
+            else_body: vec![],
             span: with_span,
-        });
+        };
 
-        let except_body = vec![ctx_had_exc_set, ctx_suppress_assign, if_not_suppress];
+        let except_body = vec![
+            CfgStmt::stmt(ctx_had_exc_set),
+            CfgStmt::stmt(ctx_suppress_assign),
+            if_not_suppress,
+        ];
 
         // Create except handler (catches all exceptions)
-        let handler = ExceptHandler {
+        let handler = CfgExceptHandler {
             ty: None,   // catch all exceptions
             name: None, // don't bind exception
             body: except_body,
-            entry_block: pyaot_utils::HirBlockId::new(0),
         };
 
         // 8. Create finally block:
@@ -341,34 +345,32 @@ impl AstToHir {
             span: with_span,
         });
 
-        let if_not_had_exc = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::If {
-                cond: not_had_exc,
-                then_block: vec![exit_stmt_finally],
-                else_block: vec![],
-            },
+        let if_not_had_exc = CfgStmt::If {
+            cond: not_had_exc,
+            then_body: vec![CfgStmt::stmt(exit_stmt_finally)],
+            else_body: vec![],
             span: with_span,
-        });
+        };
 
         // 9. Create try/except/finally
-        let try_stmt = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::Try {
-                body,
-                handlers: vec![handler],
-                else_block: vec![],
-                finally_block: vec![if_not_had_exc],
-            },
+        let try_stmt = CfgStmt::Try {
+            body,
+            handlers: vec![handler],
+            else_body: vec![],
+            finally_body: vec![if_not_had_exc],
             span: with_span,
-        });
+        };
 
         // 10. Build statement sequence: return first, add rest to pending
         // The pending_stmts mechanism injects statements before the returned one
-        self.scope.pending_stmts.push(ctx_mgr_assign);
-        self.scope.pending_stmts.push(ctx_val_assign);
+        self.scope.pending_stmts.push(CfgStmt::stmt(ctx_mgr_assign));
+        self.scope.pending_stmts.push(CfgStmt::stmt(ctx_val_assign));
         if let Some(assign) = target_assign {
-            self.scope.pending_stmts.push(assign);
+            self.scope.pending_stmts.push(CfgStmt::stmt(assign));
         }
-        self.scope.pending_stmts.push(ctx_had_exc_init);
+        self.scope
+            .pending_stmts
+            .push(CfgStmt::stmt(ctx_had_exc_init));
 
         Ok(try_stmt)
     }

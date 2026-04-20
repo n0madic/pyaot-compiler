@@ -2,7 +2,7 @@
 
 use super::AstToHir;
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::*;
+use pyaot_hir::{cfg_build::CfgStmt, *};
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;
 
@@ -24,76 +24,72 @@ impl AstToHir {
         }))
     }
 
-    pub(crate) fn convert_if(&mut self, if_stmt: py::StmtIf, stmt_span: Span) -> Result<StmtId> {
+    pub(crate) fn convert_if(&mut self, if_stmt: py::StmtIf, stmt_span: Span) -> Result<CfgStmt> {
         let cond = self.convert_expr(*if_stmt.test)?;
         // Save pending statements from condition (will be prepended by parent)
         let cond_pending = self.take_pending_stmts();
 
         let mut then_block = Vec::new();
         for stmt in if_stmt.body {
-            let stmt_id = self.convert_stmt(stmt)?;
+            let stmt = self.convert_stmt(stmt)?;
             let pending = self.take_pending_stmts();
             then_block.extend(pending);
-            then_block.push(stmt_id);
+            then_block.push(stmt);
         }
 
         let mut else_block = Vec::new();
         for stmt in if_stmt.orelse {
-            let stmt_id = self.convert_stmt(stmt)?;
+            let stmt = self.convert_stmt(stmt)?;
             let pending = self.take_pending_stmts();
             else_block.extend(pending);
-            else_block.push(stmt_id);
+            else_block.push(stmt);
         }
 
         // Restore condition's pending statements for parent to handle
         self.scope.pending_stmts = cond_pending;
 
-        Ok(self.module.stmts.alloc(Stmt {
-            kind: StmtKind::If {
-                cond,
-                then_block,
-                else_block,
-            },
+        Ok(CfgStmt::If {
+            cond,
+            then_body: then_block,
+            else_body: else_block,
             span: stmt_span,
-        }))
+        })
     }
 
     pub(crate) fn convert_while(
         &mut self,
         while_stmt: py::StmtWhile,
         stmt_span: Span,
-    ) -> Result<StmtId> {
+    ) -> Result<CfgStmt> {
         let cond = self.convert_expr(*while_stmt.test)?;
         // Save pending statements from condition (will be prepended by parent)
         let cond_pending = self.take_pending_stmts();
 
         let mut body = Vec::new();
         for stmt in while_stmt.body {
-            let stmt_id = self.convert_stmt(stmt)?;
+            let stmt = self.convert_stmt(stmt)?;
             let pending = self.take_pending_stmts();
             body.extend(pending);
-            body.push(stmt_id);
+            body.push(stmt);
         }
 
         let mut else_block = Vec::new();
         for stmt in while_stmt.orelse {
-            let stmt_id = self.convert_stmt(stmt)?;
+            let stmt = self.convert_stmt(stmt)?;
             let pending = self.take_pending_stmts();
             else_block.extend(pending);
-            else_block.push(stmt_id);
+            else_block.push(stmt);
         }
 
         // Restore condition's pending statements for parent to handle
         self.scope.pending_stmts = cond_pending;
 
-        Ok(self.module.stmts.alloc(Stmt {
-            kind: StmtKind::While {
-                cond,
-                body,
-                else_block,
-            },
+        Ok(CfgStmt::While {
+            cond,
+            body,
+            else_body: else_block,
             span: stmt_span,
-        }))
+        })
     }
 
     pub(crate) fn convert_break(&mut self, stmt_span: Span) -> Result<StmtId> {
@@ -136,7 +132,7 @@ impl AstToHir {
         // Generate IndexDelete for each subscript target
         for target in targets.iter().take(targets.len().saturating_sub(1)) {
             let stmt = self.convert_delete_target(target, stmt_span)?;
-            self.scope.pending_stmts.push(stmt);
+            self.scope.pending_stmts.push(CfgStmt::stmt(stmt));
         }
 
         // Last target is returned directly

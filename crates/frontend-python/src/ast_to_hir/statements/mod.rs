@@ -22,13 +22,13 @@ mod scope;
 
 use super::AstToHir;
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::*;
+use pyaot_hir::{cfg_build::CfgStmt, *};
 use rustpython_parser::ast as py;
 
 impl AstToHir {
-    pub(crate) fn convert_stmt(&mut self, stmt: py::Stmt) -> Result<StmtId> {
+    pub(crate) fn convert_stmt(&mut self, stmt: py::Stmt) -> Result<CfgStmt> {
         let stmt_span = Self::span_from(&stmt);
-        let kind = match stmt {
+        let simple_stmt = match stmt {
             // Inline simple statements
             py::Stmt::Expr(expr_stmt) => {
                 // Special case: yield from as a statement — desugar directly to For loop
@@ -61,13 +61,13 @@ impl AstToHir {
                         span: stmt_span,
                     });
 
-                    // Return ForBind directly (no trailing Expr(None))
-                    StmtKind::ForBind {
+                    return Ok(CfgStmt::For {
                         target: BindingTarget::Var(temp_var),
                         iter: iter_expr_id,
-                        body: vec![yield_stmt],
-                        else_block: vec![],
-                    }
+                        body: vec![CfgStmt::stmt(yield_stmt)],
+                        else_body: vec![],
+                        span: stmt_span,
+                    });
                 } else {
                     let expr_id = self.convert_expr(*expr_stmt.value)?;
                     StmtKind::Expr(expr_id)
@@ -85,16 +85,20 @@ impl AstToHir {
 
             // Dispatch to submodules
             py::Stmt::Assign(assign) => {
-                return self.convert_assign(assign, stmt_span);
+                return Ok(CfgStmt::stmt(self.convert_assign(assign, stmt_span)?));
             }
             py::Stmt::AnnAssign(ann_assign) => {
-                return self.convert_ann_assign(ann_assign, stmt_span);
+                return Ok(CfgStmt::stmt(
+                    self.convert_ann_assign(ann_assign, stmt_span)?,
+                ));
             }
             py::Stmt::AugAssign(aug_assign) => {
-                return self.convert_aug_assign(aug_assign, stmt_span);
+                return Ok(CfgStmt::stmt(
+                    self.convert_aug_assign(aug_assign, stmt_span)?,
+                ));
             }
             py::Stmt::Return(ret) => {
-                return self.convert_return(ret, stmt_span);
+                return Ok(CfgStmt::stmt(self.convert_return(ret, stmt_span)?));
             }
             py::Stmt::If(if_stmt) => {
                 return self.convert_if(if_stmt, stmt_span);
@@ -103,13 +107,13 @@ impl AstToHir {
                 return self.convert_while(while_stmt, stmt_span);
             }
             py::Stmt::Break(_) => {
-                return self.convert_break(stmt_span);
+                return Ok(CfgStmt::stmt(self.convert_break(stmt_span)?));
             }
             py::Stmt::Continue(_) => {
-                return self.convert_continue(stmt_span);
+                return Ok(CfgStmt::stmt(self.convert_continue(stmt_span)?));
             }
             py::Stmt::Pass(_) => {
-                return self.convert_pass(stmt_span);
+                return Ok(CfgStmt::stmt(self.convert_pass(stmt_span)?));
             }
             py::Stmt::For(for_stmt) => {
                 return self.convert_for(for_stmt, stmt_span);
@@ -118,22 +122,26 @@ impl AstToHir {
                 return self.convert_nested_function_def(func_def, stmt_span);
             }
             py::Stmt::ImportFrom(import_from) => {
-                return self.convert_import_from(import_from, stmt_span);
+                return Ok(CfgStmt::stmt(
+                    self.convert_import_from(import_from, stmt_span)?,
+                ));
             }
             py::Stmt::Import(import_stmt) => {
-                return self.convert_import(import_stmt, stmt_span);
+                return Ok(CfgStmt::stmt(self.convert_import(import_stmt, stmt_span)?));
             }
             py::Stmt::Raise(raise_stmt) => {
-                return self.convert_raise(raise_stmt, stmt_span);
+                return Ok(CfgStmt::stmt(self.convert_raise(raise_stmt, stmt_span)?));
             }
             py::Stmt::Try(try_stmt) => {
                 return self.convert_try(try_stmt, stmt_span);
             }
             py::Stmt::Global(global_stmt) => {
-                return self.convert_global(global_stmt, stmt_span);
+                return Ok(CfgStmt::stmt(self.convert_global(global_stmt, stmt_span)?));
             }
             py::Stmt::Nonlocal(nonlocal_stmt) => {
-                return self.convert_nonlocal(nonlocal_stmt, stmt_span);
+                return Ok(CfgStmt::stmt(
+                    self.convert_nonlocal(nonlocal_stmt, stmt_span)?,
+                ));
             }
             py::Stmt::With(with_stmt) => {
                 return self.convert_with(with_stmt, stmt_span);
@@ -142,15 +150,15 @@ impl AstToHir {
                 return self.convert_match(match_stmt, stmt_span);
             }
             py::Stmt::Delete(delete_stmt) => {
-                return self.convert_delete(delete_stmt, stmt_span);
+                return Ok(CfgStmt::stmt(self.convert_delete(delete_stmt, stmt_span)?));
             }
             py::Stmt::TypeAlias(ta) => {
                 // PEP 695: type MyType = int (inside function scope)
                 self.convert_type_alias_stmt(ta, stmt_span)?;
-                return Ok(self.module.stmts.alloc(Stmt {
+                return Ok(CfgStmt::stmt(self.module.stmts.alloc(Stmt {
                     kind: StmtKind::Pass,
                     span: stmt_span,
-                }));
+                })));
             }
             _ => {
                 return Err(CompilerError::parse_error(
@@ -160,9 +168,9 @@ impl AstToHir {
             }
         };
 
-        Ok(self.module.stmts.alloc(Stmt {
-            kind,
+        Ok(CfgStmt::stmt(self.module.stmts.alloc(Stmt {
+            kind: simple_stmt,
             span: stmt_span,
-        }))
+        })))
     }
 }

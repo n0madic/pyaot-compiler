@@ -1,7 +1,10 @@
 use super::AstToHir;
 use indexmap::{IndexMap, IndexSet};
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::{cfg_build::CfgBuilder, *};
+use pyaot_hir::{
+    cfg_build::{materialize_legacy_body, CfgBuilder, CfgStmt},
+    *,
+};
 use pyaot_types::dunders::{dunder_kind, polymorphic_other_type};
 use pyaot_types::{exception_name_to_tag, Type};
 use pyaot_utils::{FuncId, InternedString, Span};
@@ -343,7 +346,7 @@ impl AstToHir {
                             },
                             span: method_span,
                         });
-                        self.module.module_init_stmts.push(assign_stmt);
+                        self.module_init_stmts.push(CfgStmt::stmt(assign_stmt));
 
                         // Remove from func_map so method calls go through var_map
                         self.symbols.func_map.remove(&var_name);
@@ -618,19 +621,20 @@ impl AstToHir {
         // Convert function body
         let mut body_stmts = Vec::new();
         for stmt in func_def.body {
-            let stmt_id = self.convert_stmt(stmt)?;
+            let stmt = self.convert_stmt(stmt)?;
             // Inject any pending statements from comprehensions before this statement
             let pending = self.take_pending_stmts();
             body_stmts.extend(pending);
-            body_stmts.push(stmt_id);
+            body_stmts.push(stmt);
         }
 
         let method_is_generator = self.scope.current_func_is_generator;
 
+        let legacy_body = materialize_legacy_body(&body_stmts, &mut self.module);
         let mut cfg = CfgBuilder::new();
         let entry_block = cfg.new_block();
         cfg.enter(entry_block);
-        cfg.lower_stmts(&body_stmts, &mut self.module);
+        cfg.lower_cfg_stmts(&body_stmts, &mut self.module);
         cfg.terminate_if_open(HirTerminator::Return(None));
         let (blocks, entry_block, try_scopes) = cfg.finish(entry_block);
         let function = Function {
@@ -638,7 +642,7 @@ impl AstToHir {
             name: func_name,
             params,
             return_type,
-            body: body_stmts,
+            body: legacy_body,
             span: method_span,
             cell_vars: HashSet::new(),
             nonlocal_vars: HashSet::new(),

@@ -15,7 +15,7 @@ mod names;
 
 use super::AstToHir;
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::*;
+use pyaot_hir::{cfg_build::CfgStmt, *};
 use pyaot_types::Type;
 use rustpython_parser::ast as py;
 
@@ -166,16 +166,13 @@ impl AstToHir {
                     kind: StmtKind::Expr(yield_expr_id),
                     span: expr_span,
                 });
-                let for_stmt = self.module.stmts.alloc(Stmt {
-                    kind: StmtKind::ForBind {
-                        target: BindingTarget::Var(temp_var),
-                        iter: iter_expr_id,
-                        body: vec![yield_stmt],
-                        else_block: vec![],
-                    },
+                self.scope.pending_stmts.push(CfgStmt::For {
+                    target: BindingTarget::Var(temp_var),
+                    iter: iter_expr_id,
+                    body: vec![CfgStmt::stmt(yield_stmt)],
+                    else_body: vec![],
                     span: expr_span,
                 });
-                self.scope.pending_stmts.push(for_stmt);
 
                 ExprKind::None
             }
@@ -193,7 +190,7 @@ impl AstToHir {
                     },
                     span: expr_span,
                 });
-                self.scope.pending_stmts.push(assign_stmt);
+                self.scope.pending_stmts.push(CfgStmt::stmt(assign_stmt));
 
                 ExprKind::Var(target_var)
             }

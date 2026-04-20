@@ -34,8 +34,8 @@ use pyaot_types::Type;
 use pyaot_utils::{HirBlockId, Span, VarId};
 
 use crate::{
-    BindingTarget, ExceptHandler, Expr, ExprId, ExprKind, HirBlock, HirTerminator, Module, Stmt,
-    StmtId, StmtKind, TryScope,
+    BindingTarget, ExceptHandler, Expr, ExprId, ExprKind, HirBlock, HirTerminator, MatchCase,
+    Module, Stmt, StmtId, StmtKind, TryScope,
 };
 
 /// Temporary nested statement tree used only while constructing a CFG.
@@ -98,6 +98,128 @@ pub struct CfgExceptHandler {
     pub ty: Option<Type>,
     pub name: Option<VarId>,
     pub body: Vec<CfgStmt>,
+}
+
+/// Materialize a temporary `CfgStmt` tree back into the legacy HIR stmt tree.
+///
+/// This is an interim shim while the remaining lowering/type-planning paths
+/// are still being migrated off `Function::body` and `module_init_stmts`.
+/// Once Stage 6 finishes, both this helper and the legacy HIR control-flow
+/// variants are deleted together.
+pub fn materialize_legacy_body(stmts: &[CfgStmt], module: &mut Module) -> Vec<StmtId> {
+    stmts
+        .iter()
+        .map(|stmt| materialize_legacy_stmt(stmt, module))
+        .collect()
+}
+
+fn materialize_legacy_stmt(stmt: &CfgStmt, module: &mut Module) -> StmtId {
+    match stmt {
+        CfgStmt::Stmt(stmt_id) => *stmt_id,
+        CfgStmt::If {
+            cond,
+            then_body,
+            else_body,
+            span,
+        } => {
+            let then_block = materialize_legacy_body(then_body, module);
+            let else_block = materialize_legacy_body(else_body, module);
+            module.stmts.alloc(Stmt {
+                kind: StmtKind::If {
+                    cond: *cond,
+                    then_block,
+                    else_block,
+                },
+                span: *span,
+            })
+        }
+        CfgStmt::While {
+            cond,
+            body,
+            else_body,
+            span,
+        } => {
+            let body = materialize_legacy_body(body, module);
+            let else_block = materialize_legacy_body(else_body, module);
+            module.stmts.alloc(Stmt {
+                kind: StmtKind::While {
+                    cond: *cond,
+                    body,
+                    else_block,
+                },
+                span: *span,
+            })
+        }
+        CfgStmt::For {
+            target,
+            iter,
+            body,
+            else_body,
+            span,
+        } => {
+            let body = materialize_legacy_body(body, module);
+            let else_block = materialize_legacy_body(else_body, module);
+            module.stmts.alloc(Stmt {
+                kind: StmtKind::ForBind {
+                    target: target.clone(),
+                    iter: *iter,
+                    body,
+                    else_block,
+                },
+                span: *span,
+            })
+        }
+        CfgStmt::Try {
+            body,
+            handlers,
+            else_body,
+            finally_body,
+            span,
+        } => {
+            let body = materialize_legacy_body(body, module);
+            let handlers = handlers
+                .iter()
+                .map(|handler| ExceptHandler {
+                    ty: handler.ty.clone(),
+                    name: handler.name,
+                    body: materialize_legacy_body(&handler.body, module),
+                    entry_block: HirBlockId::new(0),
+                })
+                .collect();
+            let else_block = materialize_legacy_body(else_body, module);
+            let finally_block = materialize_legacy_body(finally_body, module);
+            module.stmts.alloc(Stmt {
+                kind: StmtKind::Try {
+                    body,
+                    handlers,
+                    else_block,
+                    finally_block,
+                },
+                span: *span,
+            })
+        }
+        CfgStmt::Match {
+            subject,
+            cases,
+            span,
+        } => {
+            let cases = cases
+                .iter()
+                .map(|case| MatchCase {
+                    pattern: case.pattern.clone(),
+                    guard: case.guard,
+                    body: materialize_legacy_body(&case.body, module),
+                })
+                .collect();
+            module.stmts.alloc(Stmt {
+                kind: StmtKind::Match {
+                    subject: *subject,
+                    cases,
+                },
+                span: *span,
+            })
+        }
+    }
 }
 
 /// Reusable HIR CFG builder used by the legacy tree bridge and by direct
@@ -828,8 +950,7 @@ impl CfgBuilder {
                 self.push_loop(header_bb, exit_bb);
                 self.enter(body_bb);
                 self.blocks.get_mut(&body_bb).unwrap().loop_depth = self.loop_depth;
-                let advance_stmt =
-                    self.alloc_iter_advance(module, *iter, target.clone(), *span);
+                let advance_stmt = self.alloc_iter_advance(module, *iter, target.clone(), *span);
                 self.push_stmt(advance_stmt);
                 self.lower_cfg_stmts(body, module);
                 self.terminate_if_open(HirTerminator::Jump(header_bb));
@@ -944,12 +1065,7 @@ impl CfgBuilder {
                     let predicates: Vec<ExprId> = cases
                         .iter()
                         .map(|case| {
-                            self.alloc_match_pattern(
-                                module,
-                                *subject,
-                                case.pattern.clone(),
-                                *span,
-                            )
+                            self.alloc_match_pattern(module, *subject, case.pattern.clone(), *span)
                         })
                         .collect();
 

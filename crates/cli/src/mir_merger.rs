@@ -606,7 +606,11 @@ impl MirMerger {
     }
 
     /// Find the type of a variable from its assignment in module_init_stmts
-    fn find_var_type_in_func(var_id: VarId, func: &hir::Function, hir_module: &hir::Module) -> Type {
+    fn find_var_type_in_func(
+        var_id: VarId,
+        func: &hir::Function,
+        hir_module: &hir::Module,
+    ) -> Type {
         for block in func.blocks.values() {
             let ty = Self::find_var_type_in_stmts(var_id, &block.stmts, hir_module);
             if ty != Type::Any {

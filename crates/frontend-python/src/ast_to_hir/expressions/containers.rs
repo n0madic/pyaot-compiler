@@ -2,7 +2,7 @@
 
 use super::super::AstToHir;
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::*;
+use pyaot_hir::{cfg_build::CfgStmt, *};
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;
 
@@ -110,7 +110,7 @@ impl AstToHir {
             },
             span: expr_span,
         });
-        self.scope.pending_stmts.push(init_stmt);
+        self.scope.pending_stmts.push(CfgStmt::stmt(init_stmt));
 
         // 4. Process remaining items
         let remaining = items.split_off(start_idx);
@@ -138,7 +138,7 @@ impl AstToHir {
                     },
                     span: expr_span,
                 });
-                self.scope.pending_stmts.push(assign_stmt);
+                self.scope.pending_stmts.push(CfgStmt::stmt(assign_stmt));
             } else {
                 // Unpacking: __dict_N.update(value)
                 let value_expr = self.convert_expr(value)?;
@@ -156,7 +156,7 @@ impl AstToHir {
                     kind: StmtKind::Expr(call_expr),
                     span: expr_span,
                 });
-                self.scope.pending_stmts.push(call_stmt);
+                self.scope.pending_stmts.push(CfgStmt::stmt(call_stmt));
             }
         }
 

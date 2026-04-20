@@ -5,7 +5,7 @@
 
 use crate::ast_to_hir::AstToHir;
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::*;
+use pyaot_hir::{cfg_build::CfgMatchCase, cfg_build::CfgStmt, *};
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;
 
@@ -15,7 +15,7 @@ impl AstToHir {
         &mut self,
         match_stmt: py::StmtMatch,
         stmt_span: Span,
-    ) -> Result<StmtId> {
+    ) -> Result<CfgStmt> {
         // Convert the subject expression
         let subject = self.convert_expr(*match_stmt.subject)?;
 
@@ -26,15 +26,15 @@ impl AstToHir {
             cases.push(hir_case);
         }
 
-        let stmt = Stmt {
-            kind: StmtKind::Match { subject, cases },
+        Ok(CfgStmt::Match {
+            subject,
+            cases,
             span: stmt_span,
-        };
-        Ok(self.module.stmts.alloc(stmt))
+        })
     }
 
     /// Convert a match case to HIR
-    fn convert_match_case(&mut self, case: py::MatchCase) -> Result<MatchCase> {
+    fn convert_match_case(&mut self, case: py::MatchCase) -> Result<CfgMatchCase> {
         // Collect pattern bindings first (creates variables in scope)
         self.collect_pattern_bindings(&case.pattern)?;
 
@@ -51,11 +51,13 @@ impl AstToHir {
         // Convert the body statements
         let mut body = Vec::with_capacity(case.body.len());
         for stmt in case.body {
-            let stmt_id = self.convert_stmt(stmt)?;
-            body.push(stmt_id);
+            let stmt = self.convert_stmt(stmt)?;
+            let pending = self.take_pending_stmts();
+            body.extend(pending);
+            body.push(stmt);
         }
 
-        Ok(MatchCase {
+        Ok(CfgMatchCase {
             pattern,
             guard,
             body,

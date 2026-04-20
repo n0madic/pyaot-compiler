@@ -2,7 +2,10 @@
 
 use super::AstToHir;
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::{cfg_build::CfgBuilder, *};
+use pyaot_hir::{
+    cfg_build::{materialize_legacy_body, CfgBuilder, CfgStmt},
+    *,
+};
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;
 
@@ -11,7 +14,7 @@ impl AstToHir {
         &mut self,
         func_def: py::StmtFunctionDef,
         stmt_span: Span,
-    ) -> Result<StmtId> {
+    ) -> Result<CfgStmt> {
         // Nested function definition - treat like a closure
         // Similar to lambda, but with statement body and explicit name
 
@@ -182,10 +185,10 @@ impl AstToHir {
         // 7. Convert function body
         let mut body_stmts = Vec::new();
         for stmt in func_def.body {
-            let stmt_id = self.convert_stmt(stmt)?;
+            let stmt = self.convert_stmt(stmt)?;
             let pending = self.take_pending_stmts();
             body_stmts.extend(pending);
-            body_stmts.push(stmt_id);
+            body_stmts.push(stmt);
         }
 
         // 8. Create and register function
@@ -202,10 +205,11 @@ impl AstToHir {
         let nested_cell_vars = std::mem::take(&mut self.scope.current_cell_vars);
         let nested_is_generator = self.scope.current_func_is_generator;
 
+        let legacy_body = materialize_legacy_body(&body_stmts, &mut self.module);
         let mut cfg = CfgBuilder::new();
         let entry_block = cfg.new_block();
         cfg.enter(entry_block);
-        cfg.lower_stmts(&body_stmts, &mut self.module);
+        cfg.lower_cfg_stmts(&body_stmts, &mut self.module);
         cfg.terminate_if_open(HirTerminator::Return(None));
         let (blocks, entry_block, try_scopes) = cfg.finish(entry_block);
         let function = Function {
@@ -213,7 +217,7 @@ impl AstToHir {
             name: internal_func_name,
             params,
             return_type,
-            body: body_stmts,
+            body: legacy_body,
             span: stmt_span,
             cell_vars: nested_cell_vars,
             nonlocal_vars: nested_nonlocal_vars,
@@ -287,13 +291,13 @@ impl AstToHir {
         });
 
         // 14. Return an assignment statement: nested_func_name = closure
-        Ok(self.module.stmts.alloc(Stmt {
+        Ok(CfgStmt::stmt(self.module.stmts.alloc(Stmt {
             kind: StmtKind::Bind {
                 target: BindingTarget::Var(nested_var_id),
                 value: closure_expr,
                 type_hint: None,
             },
             span: stmt_span,
-        }))
+        })))
     }
 }

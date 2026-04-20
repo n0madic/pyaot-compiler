@@ -123,7 +123,10 @@ pub(crate) fn detect_for_loop_generator(
     let mut trailing_yields = Vec::new();
     let exit = func.blocks.get(&exit_bb)?;
     for &stmt_id in &exit.stmts {
-        trailing_yields.push(yield_expr_from_stmt(&hir_module.stmts[stmt_id], hir_module)?);
+        trailing_yields.push(yield_expr_from_stmt(
+            &hir_module.stmts[stmt_id],
+            hir_module,
+        )?);
     }
     if !matches!(exit.terminator, hir::HirTerminator::Return(None)) {
         return None;

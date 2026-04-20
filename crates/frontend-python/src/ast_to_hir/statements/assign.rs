@@ -2,7 +2,7 @@
 
 use super::AstToHir;
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::*;
+use pyaot_hir::{cfg_build::CfgStmt, *};
 use pyaot_types::Type;
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;
@@ -432,7 +432,7 @@ impl AstToHir {
             },
             span: stmt_span,
         });
-        self.scope.pending_stmts.push(temp_assign);
+        self.scope.pending_stmts.push(CfgStmt::stmt(temp_assign));
 
         // Assign to each target right-to-left
         // Python: a = b = 42 → targets = [a, b], value = 42
@@ -446,7 +446,7 @@ impl AstToHir {
                 span: stmt_span,
             });
             let assign_stmt = self.assign_to_target(target, temp_ref, stmt_span)?;
-            self.scope.pending_stmts.push(assign_stmt);
+            self.scope.pending_stmts.push(CfgStmt::stmt(assign_stmt));
         }
 
         // First (leftmost) target is the returned statement

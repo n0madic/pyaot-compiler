@@ -519,19 +519,19 @@ impl<'a> Lowering<'a> {
 
         for block in init_func.blocks.values() {
             if let hir::HirTerminator::Branch { cond, .. } = block.terminator {
-                if let hir::ExprKind::MatchPattern { subject, pattern } = &hir_module.exprs[cond].kind
+                if let hir::ExprKind::MatchPattern { subject, pattern } =
+                    &hir_module.exprs[cond].kind
                 {
-                    let subject_type = if let hir::ExprKind::Var(var_id) =
-                        &hir_module.exprs[*subject].kind
-                    {
-                        self.symbols
-                            .global_var_types
-                            .get(var_id)
-                            .cloned()
-                            .unwrap_or(Type::Any)
-                    } else {
-                        hir_module.exprs[*subject].ty.clone().unwrap_or(Type::Any)
-                    };
+                    let subject_type =
+                        if let hir::ExprKind::Var(var_id) = &hir_module.exprs[*subject].kind {
+                            self.symbols
+                                .global_var_types
+                                .get(var_id)
+                                .cloned()
+                                .unwrap_or(Type::Any)
+                        } else {
+                            hir_module.exprs[*subject].ty.clone().unwrap_or(Type::Any)
+                        };
                     Self::scan_match_pattern_global_types(
                         pattern,
                         &subject_type,
@@ -578,8 +578,11 @@ impl<'a> Lowering<'a> {
                         | hir::ExprKind::None
                 );
                 if is_literal_shape {
-                    let inferred =
-                        self.infer_deep_expr_type(value_expr, hir_module, &indexmap::IndexMap::new());
+                    let inferred = self.infer_deep_expr_type(
+                        value_expr,
+                        hir_module,
+                        &indexmap::IndexMap::new(),
+                    );
                     if !matches!(inferred, Type::Any) {
                         self.symbols.global_var_types.insert(target, inferred);
                     }

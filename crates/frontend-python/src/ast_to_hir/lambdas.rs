@@ -1,6 +1,9 @@
 use super::AstToHir;
 use pyaot_diagnostics::Result;
-use pyaot_hir::{cfg_build::CfgBuilder, *};
+use pyaot_hir::{
+    cfg_build::{materialize_legacy_body, CfgBuilder, CfgStmt},
+    *,
+};
 use pyaot_utils::InternedString;
 use rustpython_parser::ast as py;
 use std::collections::HashSet;
@@ -118,11 +121,12 @@ impl AstToHir {
         });
 
         // 9. Create and register function
-        let body_stmts = vec![return_stmt];
+        let body_stmts = vec![CfgStmt::stmt(return_stmt)];
+        let legacy_body = materialize_legacy_body(&body_stmts, &mut self.module);
         let mut cfg = CfgBuilder::new();
         let entry_block = cfg.new_block();
         cfg.enter(entry_block);
-        cfg.lower_stmts(&body_stmts, &mut self.module);
+        cfg.lower_cfg_stmts(&body_stmts, &mut self.module);
         cfg.terminate_if_open(HirTerminator::Return(None));
         let (blocks, entry_block, try_scopes) = cfg.finish(entry_block);
         let function = Function {
@@ -130,7 +134,7 @@ impl AstToHir {
             name: func_name,
             params,
             return_type: None, // Type inferred during lowering
-            body: body_stmts,
+            body: legacy_body,
             span: lambda_span,
             cell_vars: std::collections::HashSet::new(),
             nonlocal_vars: std::collections::HashSet::new(),

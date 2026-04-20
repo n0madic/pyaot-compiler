@@ -1,7 +1,10 @@
 //! Convert Python AST to HIR
 
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::{cfg_build::CfgBuilder, *};
+use pyaot_hir::{
+    cfg_build::{materialize_legacy_body, CfgBuilder, CfgStmt},
+    *,
+};
 use pyaot_stdlib_defs;
 use pyaot_types::Type;
 use pyaot_utils::{ClassId, FuncId, InternedString, Span, StringInterner, VarId};
@@ -162,7 +165,7 @@ pub(crate) struct ScopeContext {
     /// Whether the current function contains yield (is a generator)
     pub(crate) current_func_is_generator: bool,
     /// Pending statements from comprehension desugaring
-    pub(crate) pending_stmts: Vec<StmtId>,
+    pub(crate) pending_stmts: Vec<CfgStmt>,
     /// Variables explicitly assigned at module level (via Assign/AnnAssign)
     pub(crate) module_level_assignments: HashSet<VarId>,
 }
@@ -233,6 +236,7 @@ impl TypeContext {
 pub struct AstToHir {
     pub(crate) interner: StringInterner,
     pub(crate) module: Module,
+    pub(crate) module_init_stmts: Vec<CfgStmt>,
     pub(crate) ids: IdAllocator,
     pub(crate) symbols: SymbolTable,
     pub(crate) scope: ScopeContext,
@@ -249,6 +253,7 @@ impl AstToHir {
         Self {
             interner,
             module,
+            module_init_stmts: Vec::new(),
             ids: IdAllocator::new(),
             symbols: SymbolTable::new(),
             scope: ScopeContext::new(),
@@ -393,7 +398,7 @@ impl AstToHir {
                     HashSet::new()
                 };
 
-                let stmt_id = self.convert_stmt(stmt)?;
+                let stmt = self.convert_stmt(stmt)?;
 
                 // Mark the target variable as a module-level assignment
                 if is_assignment {
@@ -417,8 +422,8 @@ impl AstToHir {
                 // Inject any pending statements from comprehensions before this statement
                 let pending = self.take_pending_stmts();
                 std::mem::swap(&mut self.symbols.var_map, &mut self.symbols.module_var_map);
-                self.module.module_init_stmts.extend(pending);
-                self.module.module_init_stmts.push(stmt_id);
+                self.module_init_stmts.extend(pending);
+                self.module_init_stmts.push(stmt);
             }
         }
         Ok(())
@@ -437,18 +442,19 @@ impl AstToHir {
             }
         }
 
-        if self.module.module_init_stmts.is_empty() {
+        if self.module_init_stmts.is_empty() {
             return;
         }
 
         let func_id = self.ids.alloc_func();
         let func_name = self.interner.intern("__pyaot_module_init__");
 
-        let body_stmts = self.module.module_init_stmts.clone();
+        let body_stmts = self.module_init_stmts.clone();
+        let legacy_body = materialize_legacy_body(&body_stmts, &mut self.module);
         let mut cfg = CfgBuilder::new();
         let entry_block = cfg.new_block();
         cfg.enter(entry_block);
-        cfg.lower_stmts(&body_stmts, &mut self.module);
+        cfg.lower_cfg_stmts(&body_stmts, &mut self.module);
         cfg.terminate_if_open(HirTerminator::Return(None));
         let (blocks, entry_block, try_scopes) = cfg.finish(entry_block);
         let function = Function {
@@ -456,7 +462,7 @@ impl AstToHir {
             name: func_name,
             params: Vec::new(),
             return_type: Some(Type::None),
-            body: body_stmts,
+            body: legacy_body.clone(),
             span: Span::dummy(),
             cell_vars: std::collections::HashSet::new(),
             nonlocal_vars: std::collections::HashSet::new(),
@@ -469,11 +475,12 @@ impl AstToHir {
         };
 
         self.module.functions.push(func_id);
+        self.module.module_init_stmts = legacy_body;
         self.module.module_init_func = Some(func_id);
         self.module.func_defs.insert(func_id, function);
     }
 
-    pub(crate) fn take_pending_stmts(&mut self) -> Vec<StmtId> {
+    pub(crate) fn take_pending_stmts(&mut self) -> Vec<CfgStmt> {
         std::mem::take(&mut self.scope.pending_stmts)
     }
 

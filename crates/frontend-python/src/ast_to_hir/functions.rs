@@ -1,6 +1,9 @@
 use super::AstToHir;
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::{cfg_build::CfgBuilder, *};
+use pyaot_hir::{
+    cfg_build::{materialize_legacy_body, CfgBuilder, CfgStmt},
+    *,
+};
 use pyaot_types::Type;
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;
@@ -93,21 +96,22 @@ impl AstToHir {
         // Convert function body
         let mut body_stmts = Vec::new();
         for stmt in func_def.body {
-            let stmt_id = self.convert_stmt(stmt)?;
+            let stmt = self.convert_stmt(stmt)?;
             // Inject any pending statements from comprehensions before this statement
             let pending = self.take_pending_stmts();
             body_stmts.extend(pending);
-            body_stmts.push(stmt_id);
+            body_stmts.push(stmt);
         }
 
         // Take the cell_vars collected during function body processing
         let func_cell_vars = std::mem::take(&mut self.scope.current_cell_vars);
         let func_is_generator = self.scope.current_func_is_generator;
 
+        let legacy_body = materialize_legacy_body(&body_stmts, &mut self.module);
         let mut cfg = CfgBuilder::new();
         let entry_block = cfg.new_block();
         cfg.enter(entry_block);
-        cfg.lower_stmts(&body_stmts, &mut self.module);
+        cfg.lower_cfg_stmts(&body_stmts, &mut self.module);
         cfg.terminate_if_open(HirTerminator::Return(None));
         let (blocks, entry_block, try_scopes) = cfg.finish(entry_block);
         let function = Function {
@@ -115,7 +119,7 @@ impl AstToHir {
             name: func_name,
             params,
             return_type,
-            body: body_stmts,
+            body: legacy_body,
             span: func_span,
             cell_vars: func_cell_vars,
             nonlocal_vars: std::collections::HashSet::new(), // Top-level functions don't have nonlocal
@@ -158,7 +162,7 @@ impl AstToHir {
                 },
                 span: func_span,
             });
-            self.module.module_init_stmts.push(assign_stmt);
+            self.module_init_stmts.push(CfgStmt::stmt(assign_stmt));
 
             // Remove from func_map so calls go through var_map
             self.symbols.func_map.remove(&func_name);

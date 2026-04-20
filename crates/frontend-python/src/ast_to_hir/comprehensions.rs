@@ -1,6 +1,9 @@
 use super::AstToHir;
 use pyaot_diagnostics::Result;
-use pyaot_hir::{cfg_build::CfgBuilder, *};
+use pyaot_hir::{
+    cfg_build::{materialize_legacy_body, CfgBuilder, CfgStmt},
+    *,
+};
 use pyaot_types::Type;
 use pyaot_utils::InternedString;
 use pyaot_utils::Span;
@@ -92,7 +95,7 @@ impl AstToHir {
             self.generate_comprehension_loop(&comp.generators, 0, &action, comp_span)?;
 
         // 6. Add init statement and loop statements to pending_stmts
-        self.scope.pending_stmts.push(init_stmt);
+        self.scope.pending_stmts.push(CfgStmt::stmt(init_stmt));
         self.scope.pending_stmts.extend(loop_stmts);
 
         // 7. Restore outer scope but keep temp var visible
@@ -157,7 +160,7 @@ impl AstToHir {
             self.generate_comprehension_loop(&comp.generators, 0, &action, comp_span)?;
 
         // 6. Add init statement and loop statements to pending_stmts
-        self.scope.pending_stmts.push(init_stmt);
+        self.scope.pending_stmts.push(CfgStmt::stmt(init_stmt));
         self.scope.pending_stmts.extend(loop_stmts);
 
         // 7. Restore outer scope but keep temp var visible
@@ -224,7 +227,7 @@ impl AstToHir {
             self.generate_comprehension_loop(&comp.generators, 0, &action, comp_span)?;
 
         // 6. Add init statement and loop statements to pending_stmts
-        self.scope.pending_stmts.push(init_stmt);
+        self.scope.pending_stmts.push(CfgStmt::stmt(init_stmt));
         self.scope.pending_stmts.extend(loop_stmts);
 
         // 7. Restore outer scope but keep temp var visible
@@ -346,10 +349,11 @@ impl AstToHir {
         let func_id = self.ids.alloc_func();
         let func_name_interned = self.interner.intern(&func_name);
 
+        let legacy_body = materialize_legacy_body(&body_stmts, &mut self.module);
         let mut cfg = CfgBuilder::new();
         let entry_block = cfg.new_block();
         cfg.enter(entry_block);
-        cfg.lower_stmts(&body_stmts, &mut self.module);
+        cfg.lower_cfg_stmts(&body_stmts, &mut self.module);
         cfg.terminate_if_open(HirTerminator::Return(None));
         let (blocks, entry_block, try_scopes) = cfg.finish(entry_block);
         let gen_func = Function {
@@ -357,7 +361,7 @@ impl AstToHir {
             name: func_name_interned,
             params,
             return_type: None,
-            body: body_stmts,
+            body: legacy_body,
             span: genexp_span,
             cell_vars: std::collections::HashSet::new(),
             nonlocal_vars: std::collections::HashSet::new(),
@@ -427,7 +431,7 @@ impl AstToHir {
         gen_idx: usize,
         action: &ComprehensionAction<'_>,
         comp_span: Span,
-    ) -> Result<Vec<StmtId>> {
+    ) -> Result<Vec<CfgStmt>> {
         if gen_idx >= generators.len() {
             return self.generate_comprehension_base_case(action, comp_span);
         }
@@ -451,15 +455,12 @@ impl AstToHir {
         // Wrap in if conditions (innermost to outermost)
         for cond in gen.ifs.iter().rev() {
             let cond_expr = self.convert_expr(cond.clone())?;
-            let if_stmt = self.module.stmts.alloc(Stmt {
-                kind: StmtKind::If {
-                    cond: cond_expr,
-                    then_block: inner_body,
-                    else_block: vec![],
-                },
+            inner_body = vec![CfgStmt::If {
+                cond: cond_expr,
+                then_body: inner_body,
+                else_body: vec![],
                 span: comp_span,
-            });
-            inner_body = vec![if_stmt];
+            }];
         }
 
         // Emit the unified `ForBind` directly with the binding target.
@@ -478,17 +479,13 @@ impl AstToHir {
         // resume builder to emit tuple unpacking with proper element-type
         // inference across `zip()`/`enumerate()` and friends — tracked as a
         // follow-up to the overall BindingTarget migration.
-        let for_stmt = self.module.stmts.alloc(Stmt {
-            kind: StmtKind::ForBind {
-                target,
-                iter: iter_expr,
-                body: inner_body,
-                else_block: Vec::new(),
-            },
+        Ok(vec![CfgStmt::For {
+            target,
+            iter: iter_expr,
+            body: inner_body,
+            else_body: Vec::new(),
             span: comp_span,
-        });
-
-        Ok(vec![for_stmt])
+        }])
     }
 
     /// Generate the base case statements for a comprehension's innermost body.
@@ -496,7 +493,7 @@ impl AstToHir {
         &mut self,
         action: &ComprehensionAction<'_>,
         comp_span: Span,
-    ) -> Result<Vec<StmtId>> {
+    ) -> Result<Vec<CfgStmt>> {
         match action {
             ComprehensionAction::ListAppend { elt, result_var } => {
                 let elt_id = self.convert_expr((*elt).clone())?;
@@ -520,7 +517,7 @@ impl AstToHir {
                     kind: StmtKind::Expr(append_call),
                     span: comp_span,
                 });
-                Ok(vec![append_stmt])
+                Ok(vec![CfgStmt::stmt(append_stmt)])
             }
             ComprehensionAction::DictSet {
                 key,
@@ -546,7 +543,7 @@ impl AstToHir {
                     },
                     span: comp_span,
                 });
-                Ok(vec![set_stmt])
+                Ok(vec![CfgStmt::stmt(set_stmt)])
             }
             ComprehensionAction::SetAdd { elt, result_var } => {
                 let elem_id = self.convert_expr((*elt).clone())?;
@@ -570,7 +567,7 @@ impl AstToHir {
                     kind: StmtKind::Expr(method_call),
                     span: comp_span,
                 });
-                Ok(vec![add_stmt])
+                Ok(vec![CfgStmt::stmt(add_stmt)])
             }
             ComprehensionAction::Yield { elt } => {
                 let yield_value = self.convert_expr((*elt).clone())?;
@@ -583,7 +580,7 @@ impl AstToHir {
                     kind: StmtKind::Expr(yield_expr_id),
                     span: comp_span,
                 });
-                Ok(vec![yield_stmt])
+                Ok(vec![CfgStmt::stmt(yield_stmt)])
             }
         }
     }
