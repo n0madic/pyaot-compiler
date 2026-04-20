@@ -27,7 +27,7 @@
 //!   NOT; `IterAdvance` calls `rt_iter_next_no_exc` + primitive unbox
 //!   (Int/Float/Bool) + bind.
 
-use pyaot_core_defs::runtime_func_def;
+use pyaot_core_defs::{runtime_func_def, BuiltinExceptionKind};
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir as hir;
 use pyaot_mir as mir;
@@ -145,6 +145,48 @@ impl<'a> Lowering<'a> {
         }
 
         let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
+        if let Type::Class { class_id, .. } = &iter_type {
+            let class_info = self.get_class_info(class_id).ok_or_else(|| {
+                CompilerError::type_error(
+                    format!("missing class info for iterator type '{:?}'", iter_type),
+                    iter_expr.span,
+                )
+            })?;
+            let iter_func_id = class_info.get_dunder_func("__iter__").ok_or_else(|| {
+                CompilerError::type_error(
+                    format!("cannot iterate over type '{:?}'", iter_type),
+                    iter_expr.span,
+                )
+            })?;
+            let next_func_id = class_info.get_dunder_func("__next__").ok_or_else(|| {
+                CompilerError::type_error(
+                    format!("iterator type '{:?}' is missing __next__", iter_type),
+                    iter_expr.span,
+                )
+            })?;
+            let elem_type = self
+                .get_func_return_type(&next_func_id)
+                .cloned()
+                .unwrap_or(Type::Any);
+            let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
+            let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
+            self.emit_instruction(mir::InstructionKind::CallDirect {
+                dest: iter_local,
+                func: iter_func_id,
+                args: vec![iter_operand],
+            });
+            let value_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
+            self.codegen.iter_cache.insert(
+                iter_id,
+                IterState::Class {
+                    iter_local,
+                    value_local,
+                    elem_type,
+                    next_func_id,
+                },
+            );
+            return Ok(());
+        }
         let Some((kind, elem_type)) = get_iterable_info(&iter_type) else {
             return Err(CompilerError::type_error(
                 format!(
@@ -258,6 +300,42 @@ impl<'a> Lowering<'a> {
                 );
                 return Ok(());
             }
+            IterableKind::File => {
+                let file_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
+                let file_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: file_local,
+                    src: file_operand,
+                });
+                let lines_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&runtime_func_def::RT_FILE_READLINES),
+                    vec![mir::Operand::Local(file_local)],
+                    Type::List(Box::new(elem_type.clone())),
+                    mir_func,
+                );
+                let len_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&runtime_func_def::RT_LIST_LEN),
+                    vec![mir::Operand::Local(lines_local)],
+                    Type::Int,
+                    mir_func,
+                );
+                let idx_local = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: idx_local,
+                    src: mir::Operand::Constant(mir::Constant::Int(0)),
+                });
+                self.codegen.iter_cache.insert(
+                    iter_id,
+                    IterState::Indexed {
+                        container_local: lines_local,
+                        idx_local,
+                        len_local,
+                        elem_type,
+                        kind: IterableKindCached::List,
+                    },
+                );
+                return Ok(());
+            }
             _ => {}
         }
 
@@ -270,15 +348,7 @@ impl<'a> Lowering<'a> {
             IterableKind::Str => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_STR),
             IterableKind::Bytes => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_BYTES),
             IterableKind::Iterator => mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_GENERATOR),
-            IterableKind::File => {
-                return Err(CompilerError::type_error(
-                    "IterSetup does not yet support file iteration — \
-                     use `for line in f.readlines():` or fall back to tree \
-                     lowering for now"
-                        .to_string(),
-                    iter_expr.span,
-                ));
-            }
+            IterableKind::File => unreachable!("handled above"),
             IterableKind::List | IterableKind::Tuple => unreachable!("handled above"),
         };
         let iter_local =
@@ -292,6 +362,7 @@ impl<'a> Lowering<'a> {
             IterState::Protocol {
                 iter_local,
                 value_local,
+                elem_type,
             },
         );
         Ok(())
@@ -448,7 +519,11 @@ impl<'a> Lowering<'a> {
                 });
                 Ok(())
             }
-            IterState::Protocol { value_local, .. } => {
+            IterState::Protocol {
+                value_local,
+                elem_type,
+                ..
+            } => {
                 // §1.17b-c — Protocol's IterAdvance just reads the cached
                 // value_local populated by IterHasNext (tree-walker
                 // semantics: next is called BEFORE has-next check).
@@ -466,11 +541,21 @@ impl<'a> Lowering<'a> {
                 //
                 // So we DON'T unbox for the Protocol path — the value
                 // is already in the target's representation.
-                let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
-                let elem_type = get_iterable_info(&iter_type)
-                    .map(|(_, t)| t)
-                    .unwrap_or(Type::Any);
-
+                self.lower_binding_target(
+                    target,
+                    mir::Operand::Local(value_local),
+                    &elem_type,
+                    hir_module,
+                    mir_func,
+                )?;
+                self.sync_global_if_needed(target, &elem_type, mir_func);
+                Ok(())
+            }
+            IterState::Class {
+                value_local,
+                elem_type,
+                ..
+            } => {
                 self.lower_binding_target(
                     target,
                     mir::Operand::Local(value_local),
@@ -551,6 +636,7 @@ impl<'a> Lowering<'a> {
             IterState::Protocol {
                 iter_local,
                 value_local,
+                ..
             } => {
                 // §1.17b-c — call next FIRST, then check exhausted.
                 // Matches tree walker's `lower_for_iterator`: the
@@ -581,6 +667,67 @@ impl<'a> Lowering<'a> {
                     op: mir::UnOp::Not,
                     operand: mir::Operand::Local(exhausted_local),
                 });
+                Ok(mir::Operand::Local(has_next_local))
+            }
+            IterState::Class {
+                iter_local,
+                value_local,
+                next_func_id,
+                ..
+            } => {
+                let has_next_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                let frame_local = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::ExcPushFrame { frame_local });
+
+                let try_next_bb = self.new_block();
+                let handler_bb = self.new_block();
+                let stop_iter_bb = self.new_block();
+                let merge_bb = self.new_block();
+                let reraise_bb = self.new_block();
+
+                self.current_block_mut().terminator = mir::Terminator::TrySetjmp {
+                    frame_local,
+                    try_body: try_next_bb.id,
+                    handler_entry: handler_bb.id,
+                };
+
+                self.push_block(try_next_bb);
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest: value_local,
+                    func: next_func_id,
+                    args: vec![mir::Operand::Local(iter_local)],
+                });
+                self.emit_instruction(mir::InstructionKind::ExcPopFrame);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: has_next_local,
+                    src: mir::Operand::Constant(mir::Constant::Bool(true)),
+                });
+                self.current_block_mut().terminator = mir::Terminator::Goto(merge_bb.id);
+
+                self.push_block(handler_bb);
+                let stop_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                self.emit_instruction(mir::InstructionKind::ExcCheckClass {
+                    dest: stop_local,
+                    class_id: BuiltinExceptionKind::StopIteration.tag(),
+                });
+                self.current_block_mut().terminator = mir::Terminator::Branch {
+                    cond: mir::Operand::Local(stop_local),
+                    then_block: stop_iter_bb.id,
+                    else_block: reraise_bb.id,
+                };
+
+                self.push_block(stop_iter_bb);
+                self.emit_instruction(mir::InstructionKind::ExcClear);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: has_next_local,
+                    src: mir::Operand::Constant(mir::Constant::Bool(false)),
+                });
+                self.current_block_mut().terminator = mir::Terminator::Goto(merge_bb.id);
+
+                self.push_block(reraise_bb);
+                self.current_block_mut().terminator = mir::Terminator::Reraise;
+
+                self.push_block(merge_bb);
                 Ok(mir::Operand::Local(has_next_local))
             }
         }

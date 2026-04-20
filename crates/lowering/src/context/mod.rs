@@ -244,6 +244,17 @@ pub enum IterState {
     Protocol {
         iter_local: LocalId,
         value_local: LocalId,
+        elem_type: Type,
+    },
+    /// Class iterator dispatch. `iter_local` holds the result of
+    /// `__iter__()`, `value_local` caches the most-recent `__next__()`
+    /// result, and `next_func_id` is called behind a small
+    /// `TrySetjmp`/`StopIteration` shim in `IterHasNext`.
+    Class {
+        iter_local: LocalId,
+        value_local: LocalId,
+        elem_type: Type,
+        next_func_id: FuncId,
     },
     /// Indexed dispatch. Used for List and Tuple — mirrors the
     /// `lower_for_iterable` fast path which sidesteps the iterator

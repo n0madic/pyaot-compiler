@@ -43,12 +43,9 @@ use pyaot_utils::{BlockId, HirBlockId, LocalId, VarId};
 
 use crate::context::Lowering;
 use crate::exceptions::get_exc_type_tag_from_type;
-use crate::utils::{get_iterable_info, IterableKind};
 
 // ---------------------------------------------------------------------------
-// Pattern capture helper (used by is_cfg_walker_eligible — now unused since
-// capturing patterns are handled via case_body_bindings pre-pass, but kept
-// for documentation purposes).
+// Pattern capture helper
 // ---------------------------------------------------------------------------
 
 /// Return true if the pattern (or any nested pattern) binds a capture name.
@@ -165,34 +162,6 @@ impl TryScopeCtx {
 }
 
 impl<'a> Lowering<'a> {
-    /// Check whether a function is eligible for CFG-walker lowering.
-    ///
-    /// All other constructs — plain `try/except`, `try/except/else`,
-    /// match patterns (including capturing), iterators, generators, range
-    /// dispatch, narrowing — are handled correctly by the walker.
-    pub(crate) fn is_cfg_walker_eligible(
-        &mut self,
-        func: &hir::Function,
-        hir_module: &hir::Module,
-    ) -> bool {
-        for block in func.blocks.values() {
-            for &stmt_id in &block.stmts {
-                let stmt = &hir_module.stmts[stmt_id];
-                let hir::StmtKind::IterSetup { iter } = stmt.kind else {
-                    continue;
-                };
-                let iter_type = self.get_type_of_expr_id(iter, hir_module);
-                if matches!(iter_type, Type::Class { .. }) {
-                    return false;
-                }
-                if matches!(get_iterable_info(&iter_type), Some((IterableKind::File, _))) {
-                    return false;
-                }
-            }
-        }
-        true
-    }
-
     /// Build a map from case-body `HirBlockId` to `(subject ExprId, Pattern)`
     /// for all match cases with capturing patterns.  Used by the main loop to
     /// emit pattern-variable bindings at the head of each case-body block.

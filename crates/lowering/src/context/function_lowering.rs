@@ -162,8 +162,7 @@ impl<'a> Lowering<'a> {
         let is_module_init = func_name == "__pyaot_module_init__";
 
         // For lambdas and gen-expr creators, infer parameter types from captures.
-        let inferred_param_types = if (is_lambda || is_genexp_creator) && !func.has_no_body_stmts()
-        {
+        let inferred_param_types = if (is_lambda || is_genexp_creator) && !func.has_no_blocks() {
             self.infer_lambda_param_types(func, hir_module)
         } else {
             Vec::new()
@@ -262,7 +261,7 @@ impl<'a> Lowering<'a> {
         // Only infer when there's no explicit annotation (None or Some(Type::None))
         let has_explicit_return_type =
             func.return_type.is_some() && func.return_type.as_ref() != Some(&Type::None);
-        let needs_return_type_inference = !func.has_no_body_stmts() && !has_explicit_return_type;
+        let needs_return_type_inference = !func.has_no_blocks() && !has_explicit_return_type;
         let return_type = if needs_return_type_inference {
             // Prefer the return type already inferred by the type-planning
             // pass (`infer_all_return_types`), which walks the full body
@@ -365,11 +364,8 @@ impl<'a> Lowering<'a> {
             self.emit_class_attr_initializations(hir_module, &mut mir_func)?;
         }
 
-        // §1.17b-c — CFG walker is production-default for eligible
-        // functions (no try/except, no capturing match patterns).
-        // Tree walker handles the remaining cases until Stage F
-        // deletes the tree entirely. Walker achieves 455/0 release +
-        // 459/0 debug + all examples/*.py correct end-to-end.
+        // Stage 6 — HIR is CFG-only, so all function lowering goes
+        // through the CFG walker.
         //
         // Architectural pieces in the walker:
         // - `lower_function_cfg` — main loop in `context/cfg_walker.rs`
@@ -381,14 +377,7 @@ impl<'a> Lowering<'a> {
         // - `lower_match_pattern` — pattern predicate (non-capturing)
         // - Just-in-time narrowing analysis (analyze_condition after
         //   stmts lower, stash for successor blocks)
-        if self.is_cfg_walker_eligible(func, hir_module) {
-            self.lower_function_cfg(func, hir_module, &mut mir_func)?;
-        } else {
-            for stmt_id in &func.body {
-                let stmt = &hir_module.stmts[*stmt_id];
-                self.lower_stmt(stmt, hir_module, &mut mir_func)?;
-            }
-        }
+        self.lower_function_cfg(func, hir_module, &mut mir_func)?;
 
         if !self.current_block_has_terminator() {
             // Create a default return value that matches the function's return type
