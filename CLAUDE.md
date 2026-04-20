@@ -48,7 +48,12 @@ cargo fmt && cargo clippy --workspace  # Format and lint
 Python → AST → HIR → [generator desugaring] → MIR → Cranelift → Object → Executable
 ```
 
-Generator functions are desugared at HIR level (before lowering) into regular functions using `GeneratorIntrinsic` expressions. Detailed structure in `.claude/rules/architecture.md`. Key APIs in `.claude/rules/api-reference.md`.
+HIR is CFG-only: functions carry `blocks`, `entry_block`, and `try_scopes`,
+with structured control flow represented by `HirTerminator` rather than
+nested statement trees. Generator functions are desugared at HIR level
+(before lowering) into regular functions using `GeneratorIntrinsic`
+expressions. Detailed structure in `.claude/rules/architecture.md`. Key
+APIs in `.claude/rules/api-reference.md`.
 
 ## Third-Party Packages
 

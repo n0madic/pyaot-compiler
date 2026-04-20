@@ -326,7 +326,7 @@ calls and removes the `#[ignore]` attributes.
 | §1.8 Pass migration | ✅ | S1.13 ✅ · S1.14a ✅ · S1.14b-prep ✅ · S1.14b-inliner ✅ · S1.15 ✅ |
 | §1.9 Codegen migration | ✅ | S1.5 wiring ✅ · S1.16 ✅ (audit: no manual-phi emulation; Variable API is OK under SSA single-def) |
 | §1.10 Final cleanup | 🟡 | S1.17a ✅ (partial acceptance: tests green, microgpt triaged) · S1.17 full ⏳ (blocked on S1.17b) |
-| §1.11 Deferred HIR-tree deletion | 🟡 | S1.17b-a ✅ · S1.17b-b ✅ · S1.17b-e ✅ · S1.17b-d 🟡 major (7 walkers migrated: ni_analysis, collect_handler_binds, local_prescan, closure_scan, lambda_inference, container_refine entry, return-type inference) · S1.17b-c / remaining D / S1.17b-f ⏳ |
+| §1.11 Deferred HIR-tree deletion | ✅ | S1.17b-a ✅ · S1.17b-b ✅ · S1.17b-c ✅ · S1.17b-d ✅ · S1.17b-e ✅ · S1.17b-f ✅ (2026-04-20, 2f49dc0) |
 | §1.4u Single-TypeTable unification | ✅ | step 1 ✅ · step 2 ✅ · step 3 ✅ · step 4 ✅ · step 5 ✅ · §1.4u-c ✅ (Path A by construction) · §1.4u-d ✅ |
 
 ### Phase 1 Completion Status (as of 2026-04-18, S1.17a partial acceptance)
@@ -2208,18 +2208,22 @@ tests + all `examples/*.py` compiling bit-identically.
 - Estimated +200 / -150 LOC. Complexity: Low-Medium. Risk: Low.
 - **Exit gate**: tests clean.
 
-**Stage 6 — Delete tree (S1.17b-f)**
-- Remove `Function::body`, `StmtKind::{If, While, ForBind, Try, Match}`,
-  `MatchCase::body`, `ExceptHandler::body`.
-- Delete `crates/hir/src/cfg_build.rs` + `pub mod cfg_build;`
-  declaration.
-- Grep verify: `grep -rn 'StmtKind::\(If\|While\|ForBind\|Try\|Match\)\|build_cfg_from_tree\|Function.*\.body' crates/` returns only the removal diff itself.
-- Update `CLAUDE.md`, `.claude/rules/architecture.md`, `INSIGHTS.md`
-  "Unified Binding Targets" section, and this doc's §1.11 dashboard
-  row.
+**Stage 6 — Delete tree (S1.17b-f, landed 2026-04-20 in `2f49dc0`)**
+- Removed `Function::body`, `StmtKind::{If, While, ForBind, Try, Match}`,
+  `MatchCase::body`, `ExceptHandler::body`, and the module-init stmt-list
+  fallback.
+- Deleted the bridge entrypoint, renamed `crates/hir/src/cfg_build.rs` to
+  `crates/hir/src/cfg_builder.rs`, and kept the reusable builder API plus
+  CFG-fixture tests.
+- Rewrote the remaining frontend and generator-desugaring callers to build
+  CFGs directly through `CfgBuilder`/`CfgStmt`; all downstream consumers now
+  walk `Function::{blocks, entry_block, try_scopes}` exclusively.
+- Updated `CLAUDE.md`, `.claude/rules/architecture.md`, `INSIGHTS.md`
+  ("Unified Binding Targets"), and this doc's §1.11 dashboard row.
 - Estimated -500 / -580 LOC net (delete cfg_build.rs).
-  Complexity: Low. Risk: Low (dead-code removal).
-- **Exit gate**: grep clean; tests + SSA + benchmarks within ±3%.
+  Actual deletion commit: -2103 LOC net (`338` insertions / `2441` deletions).
+- **Exit gate**: grep clean; tests + SSA clean; benchmark acceptance tracked
+  in the session report.
 
 ### Aggregate estimates
 
@@ -3314,9 +3318,9 @@ audit often uncovers surprise gaps.
 | S1.17b-a ✅ (2026-04-19) | HIR schema extension (§1.11 Stage 1): added `ExprKind::IterHasNext`, `ExprKind::MatchPattern`, `StmtKind::IterAdvance`, `Function::try_scopes`, `TryScope`, `ExceptHandler::entry_block` alongside legacy variants. Pure additive; consumer match sites guarded with `unreachable!()` until emitted. | §1.4u | Low | — |
 | S1.17b-b ✅ (2026-04-19, scope pivoted) | **Bridge produces rich CFG** — the original plan (rewrite frontend to emit CFG directly) was pivoted: the frontend still emits tree, but `cfg_build::build_cfg_from_tree` now allocates new arena entries (`&mut Module` signature) and produces the rich shape: ForBind as `Branch(IterHasNext) → IterAdvance`, Match as if/else ladder via `MatchPattern`, Try registers `Function::try_scopes` with populated handler `entry_block`s. All 8 call sites migrated (6 frontend + 2 generator desugar). Rationale: pivot avoids duplicated frontend emission during the S1.17b-c/d/e migration window. Final deletion (S1.17b-f) rewrites frontend CFG-direct and deletes the bridge. | S1.17b-a | High | — |
 | S1.17b-c ⏳ | Lowering core consumes HIR CFG (§1.11 Stage 3): rewrite `lowering/src/statements/mod.rs` dispatch for per-block RPO emission; delete `lower_if/while/for_bind/try/match`; port `exceptions.rs` to read `Function::try_scopes`; repackage pattern predicates from `statements/match_stmt/mod.rs` as `ExprKind::MatchPattern` emission. | S1.17b-b | **HIGH** | — |
-| S1.17b-d 🟡 (major progress 2026-04-19) | Walkers + generator desugar (§1.11 Stage 4). **Migrated to CFG**: `ni_analysis::func_may_return_not_implemented`, `collect_handler_binds` (reads `try_scopes`), `local_prescan::precompute_var_types` (reads `HirBlock.loop_depth`), `closure_scan::precompute_closure_capture_types` (handles `IterAdvance` loop-target propagation), `lambda_inference::infer_lambda_param_types` + `infer_function_return_type` (read Return terminators), `container_refine::refine_empty_container_types` (iterates CFG blocks; inner recursion into If/While/etc. kept as idempotent cleanup for S1.17b-f), `type_planning::infer_return_type_from_func` (+ deleted tree walker). **Still tree-walking**: `generators/desugaring.rs` (builds tree, feeds to bridge — works fine; migration deferred to S1.17b-f), `generators/vars.rs::collect_generator_vars`, `class_metadata::scan_stmts_for_self_fields`. | S1.17b-c | **HIGH** | — |
-| S1.17b-e ✅ (2026-04-19) | Semantics walks CFG. `SemanticAnalyzer` reads `HirBlock.loop_depth` / `handler_depth` (new annotations populated by `cfg_build`) instead of counter fields. Each function body goes through `analyze_function_cfg` (CFG walk); module_init_stmts still use the flat walker. | S1.17b-d | Low-Medium | Parallel-safe with S1.17b-f prep |
-| S1.17b-f ⏳ | Delete tree (§1.11 Stage 6): remove `Function::body`, `StmtKind::{If, While, ForBind, Try, Match}`, `MatchCase::body`, `ExceptHandler::body`; delete `crates/hir/src/cfg_build.rs`; grep-verify zero residue; update `CLAUDE.md` / `.claude/rules/architecture.md` / `INSIGHTS.md`. Final deletion diff. | S1.17b-e | Low | — |
+| S1.17b-d ✅ (2026-04-20, 2f49dc0) | Walkers + generator desugar (§1.11 Stage 4). All remaining CFG-portable consumers now walk blocks directly: `generators/desugaring.rs` builds creator/resume CFGs via `CfgBuilder`, `generators/vars.rs` and the type-planning passes consume `Bind` / `IterAdvance` in CFG order, and the last tree-only cleanup paths were deleted. | S1.17b-c | **HIGH** | — |
+| S1.17b-e ✅ (2026-04-19) | Semantics walks CFG. `SemanticAnalyzer` reads `HirBlock.loop_depth` / `handler_depth` populated during CFG construction instead of counter fields. Each function body goes through `analyze_function_cfg`; the remaining module-init fallback was deleted in S1.17b-f. | S1.17b-d | Low-Medium | Parallel-safe with S1.17b-f prep |
+| S1.17b-f ✅ (2026-04-20, 2f49dc0) | Delete tree (§1.11 Stage 6): removed `Function::body`, `StmtKind::{If, While, ForBind, Try, Match}`, `MatchCase::body`, `ExceptHandler::body`, and the module-init stmt fallback; renamed `cfg_build.rs` to `cfg_builder.rs` and kept only the reusable builder API + tests; grep-cleaned the codebase and updated the HIR docs. | S1.17b-e | Low | — |
 
 **Split triggers**:
 

@@ -665,7 +665,7 @@ Tuple indexing (`t[0]`) promotes `Type::Any` elements to `Type::HeapAny` when th
 
 ## Cross-Module Placeholder ClassIds Must Not Be Offset in First Pass
 
-The frontend allocates placeholder `ClassId`s from the top of `u32` space (`u32::MAX - N`) for imported user classes whose real ids are only known after `mir_merger`'s second pass. The first pass in `MirMerger::compile_modules` scans `module_init_stmts` for variable types and calls `type_to_raw` — if a module-level variable carries a `Type::Class` with a placeholder id (e.g., `anno_local: Point = ...`), adding `class_id_offset` to `u32::MAX` wraps and panics with "attempt to add with overflow".
+The frontend allocates placeholder `ClassId`s from the top of `u32` space (`u32::MAX - N`) for imported user classes whose real ids are only known after `mir_merger`'s second pass. The first pass in `MirMerger::compile_modules` scans the synthetic module-init function CFG for variable types and calls `type_to_raw` — if a module-level variable carries a `Type::Class` with a placeholder id (e.g., `anno_local: Point = ...`), adding `class_id_offset` to `u32::MAX` wraps and panics with "attempt to add with overflow".
 
 Fix: `type_to_raw` uses `checked_add` and falls back to `RawType::Any` on overflow. The placeholder will be resolved to the real class id during the second pass when `resolve_external_class_refs` rewrites all `Type::Class` references in the HIR.
 
@@ -673,11 +673,18 @@ Fix: `type_to_raw` uses `checked_add` and falls back to `RawType::Any` on overfl
 
 ## Unified Binding Targets — One Enum for Every LHS
 
-Every Python binding site (`x = ...`, `for x in ...`, `with f() as x:`, comprehension `for x in ...`) historically had its own helpers and its own HIR statement variant. The fragmentation meant `[a+b for a, b in pairs]` rejected at parse time while `for a, b in pairs:` worked — same grammar, different frontend path. The `BindingTarget` refactor collapses all of it to a single type.
+Every Python binding site (`x = ...`, `for x in ...`, `with f() as x:`,
+comprehension `for x in ...`) historically had its own helpers and its own
+HIR statement variant. The fragmentation meant `[a+b for a, b in pairs]`
+rejected at parse time while `for a, b in pairs:` worked, even though both
+spell the same target grammar. The `BindingTarget` refactor collapses all of
+that to a single type, and the later HIR CFG migration removed the last
+tree-only control-flow variants around it.
 
 ### HIR shape
 
-`crates/hir/src/lib.rs` — one enum covers every valid Python LHS:
+`crates/hir/src/lib.rs` — one enum covers every valid Python LHS, while
+functions are CFG-only:
 
 ```rust
 pub enum BindingTarget {
@@ -689,14 +696,34 @@ pub enum BindingTarget {
     Starred { inner: Box<BindingTarget>, span: Span },
 }
 
+pub struct Function {
+    pub blocks: IndexMap<HirBlockId, HirBlock>,
+    pub entry_block: HirBlockId,
+    pub try_scopes: Vec<TryScope>,
+    // ...
+}
+
+pub struct HirBlock {
+    pub stmts: Vec<StmtId>,
+    pub terminator: HirTerminator,
+    // ...
+}
+
 pub enum StmtKind {
     Bind { target: BindingTarget, value: ExprId, type_hint: Option<Type> },
-    ForBind { target: BindingTarget, iter: ExprId, body: Vec<StmtId>, else_block: Vec<StmtId> },
-    // ... other variants
+    IterSetup { iter: ExprId },
+    IterAdvance { iter: ExprId, target: BindingTarget },
+    // ... other straight-line variants
 }
 ```
 
-Nine legacy variants (`Assign`, `UnpackAssign`, `NestedUnpackAssign`, `FieldAssign`, `IndexAssign`, `ClassAttrAssign`, `For`, `ForUnpack`, `ForUnpackStarred`) and `UnpackTarget` are gone. Adding a new Python feature that binds names — e.g. pattern guards extending match scope — plugs into the existing `BindingTarget` instead of spawning its own `StmtKind`.
+Nine legacy binding variants (`Assign`, `UnpackAssign`,
+`NestedUnpackAssign`, `FieldAssign`, `IndexAssign`, `ClassAttrAssign`,
+`For`, `ForUnpack`, `ForUnpackStarred`) and `UnpackTarget` are gone. The
+later tree-shaped control-flow variants (`If`, `While`, `ForBind`, `Try`,
+`Match`) are gone too. Adding a new Python feature that binds names plugs
+into the existing `BindingTarget`; CFG topology and `HirTerminator` handle
+the control-flow shape.
 
 ### Frontend contract
 
@@ -711,29 +738,48 @@ Bespoke paths remain intentionally for grammatically-restricted sites: walrus (`
 
 ### Lowering contract
 
-`crates/lowering/src/statements/assign/bind.rs::lower_binding_target` is the single recursive MIR-emission entry point:
+`crates/lowering/src/statements/assign/bind.rs::lower_binding_target` is the
+single recursive MIR-emission entry point:
 
 - Dispatches on the target variant; leaves call small operand-taking helpers (`bind_var_op`, `bind_attr_op`, `bind_index_op`, `bind_class_attr_op`).
 - `Tuple { elts }` recurses via `lower_tuple_pattern` which handles both the no-star and one-star branches with identical element-type inference (`uses_heap_obj` promotion for `Any → HeapAny` on heap-obj-backed tuples).
-- For-loops go through `loops/bind.rs::lower_for_bind`, a true single entry point — range fast-path, class-iterator (`__iter__`), general iterable, enumerate optimisation, and flat starred unpack all dispatch directly from it. No legacy wrapper indirection.
+- CFG walking handles structured flow. For-loops materialize as `IterSetup`
+  plus `IterAdvance` inside HIR blocks, and
+  `lowering/src/statements/iter_protocol.rs` routes each loop target through
+  the same `BindingTarget` lowering path.
+- Match predicates live in `ExprKind::MatchPattern`; try/except structure
+  lives in `Function::try_scopes`. No dedicated tree-form binding statement
+  remains.
 
 ### Shared walker
 
-`BindingTarget::for_each_var<F: FnMut(VarId)>` recurses through `Tuple` and `Starred`, invoking the closure on every `Var` leaf (skipping Attr/Index/ClassAttr — they don't bind a new name). Used everywhere downstream needs the set of variables a statement binds:
+`BindingTarget::for_each_var<F: FnMut(VarId)>` recurses through `Tuple` and
+`Starred`, invoking the closure on every `Var` leaf (skipping
+Attr/Index/ClassAttr — they don't bind a new name). Used everywhere
+downstream needs the set of variables a CFG statement binds:
 
-- `lowering/src/exceptions.rs::collect_assigned_vars`
-- `lowering/src/type_planning/{closure_scan, container_refine}.rs`
-- `lowering/src/generators/{vars, utils}.rs`
+- `lowering/src/context/cfg_walker.rs`
+- `lowering/src/type_planning/closure_scan.rs`
+- `lowering/src/generators/{desugaring, vars}.rs`
 
 New code should use the walker rather than pattern-matching each binding shape separately.
 
 ### Adding a new binding site
 
-If Python gains (or you discover) another LHS grammar — say, walrus expanded to accept attributes — extend `bind_target_inner` in `variables.rs`. No new HIR variant, no new lowering helper, no new downstream match arms. The whole pipeline flows through the existing `Bind` / `ForBind`.
+If Python gains (or you discover) another LHS grammar — say, walrus expanded
+to accept attributes — extend `bind_target_inner` in `variables.rs`. No new
+HIR variant, no new lowering helper, no new downstream match arms. The whole
+pipeline flows through the existing `Bind` / `IterAdvance` lowering path.
 
 ### Known gap: generator expressions with tuple targets
 
-**Closed in Area C §C.6 via desugar-time `VarTypeMap`.** `detect_for_loop_generator` accepts any `BindingTarget`; `build_for_loop_direct` / `build_for_loop_filtered` emit a recursive `Bind` per iteration; and the element-type probe in `generators/desugaring.rs` walks a module-wide `VarTypeMap` indexing function params, module-level/function-body Bind RHS, and ForBind iter expressions. The `shape_infer_type` helper recursively resolves:
+**Closed in Area C §C.6 via desugar-time `VarTypeMap`.**
+`detect_for_loop_generator` accepts any `BindingTarget`;
+`build_for_loop_direct` / `build_for_loop_filtered` emit a recursive `Bind`
+per iteration; and the element-type probe in `generators/desugaring.rs`
+walks a module-wide `VarTypeMap` indexing function params, module-level /
+function-body `Bind` RHS values, and loop-target element types discovered
+from `IterAdvance`. The `shape_infer_type` helper recursively resolves:
 
 - Literals (`Int`/`Float`/`Bool`/`Str`/`None`, tuple/list/set/dict literals).
 - `Var(vid)` — param annotation → for-loop iter element type → Bind RHS shape.
@@ -909,8 +955,9 @@ the bit-pattern of `1_i64` — read back as `5e-324`.
 ### 3. Locals: pre-scan + consumer priority (§E.6)
 
 `type_planning/local_prescan.rs` runs once per function after
-return-type inference. Walks `Bind` / `ForBind` / control-flow bodies,
-skipping nested function defs. Per-VarId it records the merged type in
+return-type inference. Walks straight-line CFG statements (`Bind`,
+`IterAdvance`, etc.) block by block, skipping nested function defs.
+Per-VarId it records the merged type in
 `per_function_prescan_var_types[func_id]`. A few special rules:
 
 1. **Scope filter.** `FuncRef` / `Closure` RHS values are skipped —
@@ -1055,9 +1102,9 @@ Mirror the lambda capture pattern in
 The naive §G.3 implementation left two cascading gaps for nested
 gen-exprs like `[sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]`:
 
-1. `precompute_closure_capture_types` recursed into `ForBind` bodies
-   without inserting the loop-target's element type into its
-   `var_types` map. Nested closures capturing loop targets (`wo`)
+1. `precompute_closure_capture_types` used to recurse through loop bodies
+   without first inserting the `IterAdvance` target's element type into
+   its `var_types` map. Nested closures capturing loop targets (`wo`)
    therefore saw `Any`. Fixed in `closure_scan.rs::scan_stmt_for_closures`
    by destructuring the target against
    `extract_iterable_element_type(iter)` before recursing.
