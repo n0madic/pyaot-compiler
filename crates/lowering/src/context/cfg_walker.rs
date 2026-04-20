@@ -16,19 +16,20 @@
 //!   `ExcPushFrame` / `TrySetjmp` at try-predecessor blocks,
 //!   `ExcPopFrame` at try-body exits, handler preambles/exits, and
 //!   handler-dispatch + finally infrastructure blocks post-loop.
-//!   Functions with `finally_blocks` fall back to the tree walker
-//!   (finally semantics require additional inter-block state).
+//!   Finally scopes are lowered by routing exception/handler exits into the
+//!   CFG-emitted finally blocks, then branching on a per-scope
+//!   `propagating` flag at the end of the finally region.
 //! - Match capturing-pattern bindings — `case_body_bindings` pre-pass
 //!   emits bindings at the head of case-body blocks so `case Point(x,y)`
 //!   correctly binds `x` and `y`.
 //!
 //! **Remaining limitations (follow-up needed for full tree deletion)**:
 //!
-//! - **Try/finally** — functions with `try_scopes` where any scope has
-//!   non-empty `finally_blocks` fall back to the tree walker. Finally
-//!   semantics require threading a `propagating` flag through blocks
-//!   that may not be known until flow analysis is done. Follow-up: model
-//!   finally via a duplicated finally-body block per entry path.
+//! - **Try/finally edge cases** — common try/except/finally shapes are
+//!   handled in CFG form, but exotic cases (e.g. nested handler-body CFG
+//!   blocks with their own exits, `return` from within a finally region)
+//!   still rely on the HIR not constructing those shapes in the current
+//!   fixtures. Follow-up: track full handler/finally regions explicitly.
 //! - **Yield terminator** — generator desugaring replaces Yield with
 //!   regular flow before lowering, so this never occurs at lowering
 //!   time. The walker panics if it encounters one.
@@ -42,6 +43,7 @@ use pyaot_utils::{BlockId, HirBlockId, LocalId, VarId};
 
 use crate::context::Lowering;
 use crate::exceptions::get_exc_type_tag_from_type;
+use crate::utils::{get_iterable_info, IterableKind};
 
 // ---------------------------------------------------------------------------
 // Pattern capture helper (used by is_cfg_walker_eligible — now unused since
@@ -115,7 +117,8 @@ struct TryScopeEmission {
     propagating_local: LocalId,
     /// MIR-only block: ExcCheckClass dispatch chain for this scope's handlers.
     handler_dispatch_mir_id: BlockId,
-    /// MIR-only block: jumps straight to `finally_body_mir_id`.
+    /// MIR-only block: enters the real finally CFG (if present) or falls
+    /// straight through to `finally_body_mir_id`.
     finally_dispatch_mir_id: BlockId,
     /// MIR-only block: propagating-flag check → reraise | normal_exit.
     finally_body_mir_id: BlockId,
@@ -125,7 +128,9 @@ struct TryScopeEmission {
     normal_exit_mir_id: BlockId,
     /// MIR block that corresponds to the HIR post_bb (block after the try).
     post_bb_mir_id: Option<BlockId>,
-    has_handlers: bool,
+    /// MIR block for the first HIR finally block, if the scope has a
+    /// `finally:` clause.
+    first_finally_mir_id: Option<BlockId>,
 }
 
 /// Context built in the pre-pass; consumed by the main walk.
@@ -141,6 +146,8 @@ struct TryScopeCtx {
     try_body_blocks: IndexMap<HirBlockId, Vec<usize>>,
     /// Handler `entry_block` → (scope_idx, handler_idx).
     handler_entry_map: IndexMap<HirBlockId, (usize, usize)>,
+    /// HIR blocks that belong to a scope's `finally:` region.
+    finally_blocks_map: IndexMap<HirBlockId, usize>,
 }
 
 type ScopeCellData = IndexMap<usize, (IndexMap<VarId, LocalId>, IndexMap<VarId, LocalId>)>;
@@ -152,6 +159,7 @@ impl TryScopeCtx {
             try_entry_map: IndexMap::new(),
             try_body_blocks: IndexMap::new(),
             handler_entry_map: IndexMap::new(),
+            finally_blocks_map: IndexMap::new(),
         }
     }
 }
@@ -159,22 +167,27 @@ impl TryScopeCtx {
 impl<'a> Lowering<'a> {
     /// Check whether a function is eligible for CFG-walker lowering.
     ///
-    /// Returns `false` for functions that hit CFG walker limitations:
-    /// - `try_scopes` with non-empty `finally_blocks` (finally emission
-    ///   requires duplication / inter-block state not yet implemented).
-    ///
     /// All other constructs — plain `try/except`, `try/except/else`,
     /// match patterns (including capturing), iterators, generators, range
     /// dispatch, narrowing — are handled correctly by the walker.
     pub(crate) fn is_cfg_walker_eligible(
-        &self,
+        &mut self,
         func: &hir::Function,
-        _hir_module: &hir::Module,
+        hir_module: &hir::Module,
     ) -> bool {
-        // Only fall back for try-scopes that have finally blocks.
-        for scope in &func.try_scopes {
-            if !scope.finally_blocks.is_empty() {
-                return false;
+        for block in func.blocks.values() {
+            for &stmt_id in &block.stmts {
+                let stmt = &hir_module.stmts[stmt_id];
+                let hir::StmtKind::IterSetup { iter } = stmt.kind else {
+                    continue;
+                };
+                let iter_type = self.get_type_of_expr_id(iter, hir_module);
+                if matches!(iter_type, Type::Class { .. }) {
+                    return false;
+                }
+                if matches!(get_iterable_info(&iter_type), Some((IterableKind::File, _))) {
+                    return false;
+                }
             }
         }
         true
@@ -290,12 +303,22 @@ impl<'a> Lowering<'a> {
             // finally-free scopes handled by this walker, but kept as
             // a safety net).
             let post_bb_mir_id = scope
-                .handlers
-                .first()
-                .and_then(|h| func.blocks.get(&h.entry_block))
+                .finally_blocks
+                .last()
+                .and_then(|&last| func.blocks.get(&last))
                 .and_then(|blk| match blk.terminator {
                     hir::HirTerminator::Jump(t) => hir_to_mir.get(&t).copied(),
                     _ => None,
+                })
+                .or_else(|| {
+                    scope
+                        .handlers
+                        .first()
+                        .and_then(|h| func.blocks.get(&h.entry_block))
+                        .and_then(|blk| match blk.terminator {
+                            hir::HirTerminator::Jump(t) => hir_to_mir.get(&t).copied(),
+                            _ => None,
+                        })
                 })
                 .or_else(|| {
                     scope
@@ -308,6 +331,11 @@ impl<'a> Lowering<'a> {
                         })
                 });
 
+            let first_finally_mir_id = scope
+                .finally_blocks
+                .first()
+                .and_then(|hid| hir_to_mir.get(hid).copied());
+
             let emi = TryScopeEmission {
                 frame_local,
                 propagating_local,
@@ -317,7 +345,7 @@ impl<'a> Lowering<'a> {
                 reraise_mir_id,
                 normal_exit_mir_id,
                 post_bb_mir_id,
-                has_handlers: !scope.handlers.is_empty(),
+                first_finally_mir_id,
             };
 
             if let Some(try_entry) = try_entry_opt {
@@ -334,6 +362,9 @@ impl<'a> Lowering<'a> {
                 try_ctx
                     .handler_entry_map
                     .insert(handler.entry_block, (scope_idx, h_idx));
+            }
+            for &hid in &scope.finally_blocks {
+                try_ctx.finally_blocks_map.insert(hid, scope_idx);
             }
 
             try_ctx.scopes.push(emi);
@@ -560,6 +591,26 @@ impl<'a> Lowering<'a> {
                                 )?;
                             }
                         }
+                    } else if let Some(&scope_idx) = try_ctx.finally_blocks_map.get(hir_id) {
+                        let scope = &func.try_scopes[scope_idx];
+                        let exits_finally = match &hir_block.terminator {
+                            hir::HirTerminator::Jump(target) => {
+                                !scope.finally_blocks.contains(target)
+                            }
+                            _ => false,
+                        };
+                        if exits_finally {
+                            self.current_block_mut().terminator = mir::Terminator::Goto(
+                                try_ctx.scopes[scope_idx].finally_body_mir_id,
+                            );
+                        } else {
+                            self.emit_hir_terminator(
+                                &hir_block.terminator,
+                                &hir_to_mir,
+                                hir_module,
+                                mir_func,
+                            )?;
+                        }
                     } else {
                         // Normal terminator emission (with narrowing still active).
                         self.emit_hir_terminator(
@@ -595,23 +646,20 @@ impl<'a> Lowering<'a> {
             self.push_block(handler_dispatch_blk);
             self.emit_cfg_handler_dispatch(scope, emi, &hir_to_mir, mir_func);
 
-            // — Finally dispatch: just Goto(finally_body) —
+            // — Finally dispatch: enter real finally CFG if present, else
+            //   fall through to the synthetic finally decision block. —
             self.push_block(finally_dispatch_blk);
-            self.current_block_mut().terminator = mir::Terminator::Goto(emi.finally_body_mir_id);
+            self.current_block_mut().terminator =
+                mir::Terminator::Goto(emi.first_finally_mir_id.unwrap_or(emi.finally_body_mir_id));
 
-            // — Finally body: propagating check —
+            // — Finally body: propagating check after the real finally CFG
+            //   has completed (or immediately, for finally-free scopes). —
             self.push_block(finally_body_blk);
-            if emi.has_handlers {
-                // Branch on propagating flag: true → reraise, false → normal_exit
-                self.current_block_mut().terminator = mir::Terminator::Branch {
-                    cond: mir::Operand::Local(emi.propagating_local),
-                    then_block: emi.reraise_mir_id,
-                    else_block: emi.normal_exit_mir_id,
-                };
-            } else {
-                // No handlers → propagating is never set true, go straight to exit.
-                self.current_block_mut().terminator = mir::Terminator::Goto(emi.normal_exit_mir_id);
-            }
+            self.current_block_mut().terminator = mir::Terminator::Branch {
+                cond: mir::Operand::Local(emi.propagating_local),
+                then_block: emi.reraise_mir_id,
+                else_block: emi.normal_exit_mir_id,
+            };
 
             // — Reraise —
             self.push_block(reraise_blk);
