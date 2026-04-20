@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
+use pyaot_hir::cfg_build::{materialize_legacy_body, CfgBuilder, CfgStmt};
 use pyaot_types::Type;
 use pyaot_utils::{FuncId, Span, StringInterner, VarId, RESUME_FUNC_ID_OFFSET};
 
@@ -26,6 +27,8 @@ use crate::utils::get_iterable_info;
 /// Offset added to the module's max VarId for synthetic generator variables.
 const GEN_VAR_ID_OFFSET: u32 = 20000;
 
+type GenStmt = CfgStmt;
+
 // ============================================================================
 // Arena allocation helpers (free functions, avoid closure borrow issues)
 // ============================================================================
@@ -36,6 +39,14 @@ fn mk_expr(m: &mut hir::Module, kind: hir::ExprKind, ty: Option<Type>, span: Spa
 
 fn mk_stmt(m: &mut hir::Module, kind: hir::StmtKind, span: Span) -> hir::StmtId {
     m.stmts.alloc(hir::Stmt { kind, span })
+}
+
+fn mk_leaf_stmt(m: &mut hir::Module, kind: hir::StmtKind, span: Span) -> GenStmt {
+    GenStmt::stmt(mk_stmt(m, kind, span))
+}
+
+fn wrap_stmt_ids(stmts: &[hir::StmtId]) -> Vec<GenStmt> {
+    stmts.iter().copied().map(GenStmt::stmt).collect()
 }
 
 /// Allocate a `Var(var_id)` expression referencing the given variable.
@@ -430,7 +441,7 @@ fn clone_expr(m: &mut hir::Module, eid: hir::ExprId) -> hir::ExprId {
 }
 
 /// Build: `__gen_set_exhausted(gen_obj); return 0`
-fn mk_exhaust_block(m: &mut hir::Module, gen_obj_var: VarId, span: Span) -> Vec<hir::StmtId> {
+fn mk_exhaust_block(m: &mut hir::Module, gen_obj_var: VarId, span: Span) -> Vec<GenStmt> {
     let g = mk_var(m, gen_obj_var, Type::HeapAny, span);
     let set_exhausted = mk_expr(
         m,
@@ -438,9 +449,9 @@ fn mk_exhaust_block(m: &mut hir::Module, gen_obj_var: VarId, span: Span) -> Vec<
         Some(Type::Int),
         span,
     );
-    let s1 = mk_stmt(m, hir::StmtKind::Expr(set_exhausted), span);
+    let s1 = mk_leaf_stmt(m, hir::StmtKind::Expr(set_exhausted), span);
     let zero = mk_expr(m, hir::ExprKind::Int(0), Some(Type::Int), span);
-    let s2 = mk_stmt(m, hir::StmtKind::Return(Some(zero)), span);
+    let s2 = mk_leaf_stmt(m, hir::StmtKind::Return(Some(zero)), span);
     vec![s1, s2]
 }
 
@@ -452,7 +463,7 @@ fn mk_resume_preamble(
     gen_obj_var: VarId,
     state_var: VarId,
     span: Span,
-) -> Vec<hir::StmtId> {
+) -> Vec<GenStmt> {
     let mut stmts = Vec::new();
     // state = __gen_get_state(gen_obj)
     let g1 = mk_var(m, gen_obj_var, Type::HeapAny, span);
@@ -462,7 +473,7 @@ fn mk_resume_preamble(
         Some(Type::Int),
         span,
     );
-    stmts.push(mk_stmt(
+    stmts.push(mk_leaf_stmt(
         m,
         hir::StmtKind::Bind {
             target: hir::BindingTarget::Var(state_var),
@@ -481,16 +492,13 @@ fn mk_resume_preamble(
         span,
     );
     let zero = mk_expr(m, hir::ExprKind::Int(0), Some(Type::Int), span);
-    let ret = mk_stmt(m, hir::StmtKind::Return(Some(zero)), span);
-    stmts.push(mk_stmt(
-        m,
-        hir::StmtKind::If {
-            cond: is_exhausted,
-            then_block: vec![ret],
-            else_block: vec![],
-        },
+    let ret = mk_leaf_stmt(m, hir::StmtKind::Return(Some(zero)), span);
+    stmts.push(GenStmt::If {
+        cond: is_exhausted,
+        then_body: vec![ret],
+        else_body: vec![],
         span,
-    ));
+    });
 
     stmts
 }
@@ -500,10 +508,10 @@ fn mk_state_check(
     m: &mut hir::Module,
     state_var: VarId,
     state_val: i64,
-    then_block: Vec<hir::StmtId>,
-    else_block: Vec<hir::StmtId>,
+    then_body: Vec<GenStmt>,
+    else_body: Vec<GenStmt>,
     span: Span,
-) -> hir::StmtId {
+) -> GenStmt {
     let sr = mk_var(m, state_var, Type::Int, span);
     let sc = mk_expr(m, hir::ExprKind::Int(state_val), Some(Type::Int), span);
     let cmp = mk_expr(
@@ -516,15 +524,13 @@ fn mk_state_check(
         Some(Type::Bool),
         span,
     );
-    mk_stmt(
-        m,
-        hir::StmtKind::If {
-            cond: cmp,
-            then_block,
-            else_block,
-        },
+    let _ = m;
+    GenStmt::If {
+        cond: cmp,
+        then_body,
+        else_body,
         span,
-    )
+    }
 }
 
 /// Emit: load all gen_vars from generator locals into HIR variables.
@@ -532,12 +538,12 @@ fn emit_load_all_vars(
     m: &mut hir::Module,
     gen_vars: &[GeneratorVar],
     gen_obj_var: VarId,
-    body: &mut Vec<hir::StmtId>,
+    body: &mut Vec<GenStmt>,
     span: Span,
 ) {
     for gv in gen_vars {
         let get = mk_get_local(m, gen_obj_var, gv.gen_local_idx, gv.ty.clone(), span);
-        body.push(mk_stmt(
+        body.push(mk_leaf_stmt(
             m,
             hir::StmtKind::Bind {
                 target: hir::BindingTarget::Var(gv.var_id),
@@ -554,7 +560,7 @@ fn emit_save_all_vars(
     m: &mut hir::Module,
     gen_vars: &[GeneratorVar],
     gen_obj_var: VarId,
-    body: &mut Vec<hir::StmtId>,
+    body: &mut Vec<GenStmt>,
     span: Span,
 ) {
     emit_save_vars_where(m, gen_vars, gen_obj_var, body, span, |_| true);
@@ -574,7 +580,7 @@ fn emit_save_vars_where(
     m: &mut hir::Module,
     gen_vars: &[GeneratorVar],
     gen_obj_var: VarId,
-    body: &mut Vec<hir::StmtId>,
+    body: &mut Vec<GenStmt>,
     span: Span,
     keep: impl Fn(&GeneratorVar) -> bool,
 ) {
@@ -584,11 +590,11 @@ fn emit_save_vars_where(
         }
         let vr = mk_var(m, gv.var_id, gv.ty.clone(), span);
         let set = mk_set_local(m, gen_obj_var, gv.gen_local_idx, vr, span);
-        body.push(mk_stmt(m, hir::StmtKind::Expr(set), span));
+        body.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set), span));
         // Mark heap-typed captures so GC traces the slot (§G.3).
         if gv.ty.is_heap() {
             let set_ty = mk_set_local_type_ptr(m, gen_obj_var, gv.gen_local_idx, span);
-            body.push(mk_stmt(m, hir::StmtKind::Expr(set_ty), span));
+            body.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set_ty), span));
         }
     }
 }
@@ -596,46 +602,49 @@ fn emit_save_vars_where(
 /// Collect every VarId bound by a statement list (recursive through
 /// control-flow bodies). Used to decide which gen_vars are safe to
 /// save in the init state.
-fn collect_defined_vars(stmts: &[hir::StmtId], module: &hir::Module, out: &mut HashSet<VarId>) {
-    for sid in stmts {
-        let stmt = &module.stmts[*sid];
-        match &stmt.kind {
-            hir::StmtKind::Bind { target, .. } => {
-                target.for_each_var(&mut |v| {
-                    out.insert(v);
-                });
+fn collect_defined_vars(stmts: &[GenStmt], module: &hir::Module, out: &mut HashSet<VarId>) {
+    for stmt in stmts {
+        match stmt {
+            GenStmt::Stmt(stmt_id) => {
+                let stmt = &module.stmts[*stmt_id];
+                if let hir::StmtKind::Bind { target, .. } = &stmt.kind {
+                    target.for_each_var(&mut |v| {
+                        out.insert(v);
+                    });
+                }
             }
-            hir::StmtKind::ForBind {
+            GenStmt::For {
                 target,
                 body,
-                else_block,
+                else_body,
                 ..
             } => {
                 target.for_each_var(&mut |v| {
                     out.insert(v);
                 });
                 collect_defined_vars(body, module, out);
-                collect_defined_vars(else_block, module, out);
+                collect_defined_vars(else_body, module, out);
             }
-            hir::StmtKind::If {
-                then_block,
-                else_block,
+            GenStmt::If {
+                then_body,
+                else_body,
                 ..
             } => {
-                collect_defined_vars(then_block, module, out);
-                collect_defined_vars(else_block, module, out);
+                collect_defined_vars(then_body, module, out);
+                collect_defined_vars(else_body, module, out);
             }
-            hir::StmtKind::While {
-                body, else_block, ..
+            GenStmt::While {
+                body, else_body, ..
             } => {
                 collect_defined_vars(body, module, out);
-                collect_defined_vars(else_block, module, out);
+                collect_defined_vars(else_body, module, out);
             }
-            hir::StmtKind::Try {
+            GenStmt::Try {
                 body,
                 handlers,
-                else_block,
-                finally_block,
+                else_body,
+                finally_body,
+                ..
             } => {
                 collect_defined_vars(body, module, out);
                 for h in handlers {
@@ -644,15 +653,14 @@ fn collect_defined_vars(stmts: &[hir::StmtId], module: &hir::Module, out: &mut H
                     }
                     collect_defined_vars(&h.body, module, out);
                 }
-                collect_defined_vars(else_block, module, out);
-                collect_defined_vars(finally_block, module, out);
+                collect_defined_vars(else_body, module, out);
+                collect_defined_vars(finally_body, module, out);
             }
-            hir::StmtKind::Match { cases, .. } => {
+            GenStmt::Match { cases, .. } => {
                 for case in cases {
                     collect_defined_vars(&case.body, module, out);
                 }
             }
-            _ => {}
         }
     }
 }
@@ -836,10 +844,11 @@ impl<'a> Lowering<'a> {
         };
 
         let gen_obj_name = self.interner.intern("__gen_obj");
-        let mut resume_cfg = hir::cfg_build::CfgBuilder::new();
+        let resume_legacy_body = materialize_legacy_body(&resume_body, m);
+        let mut resume_cfg = CfgBuilder::new();
         let resume_entry_block = resume_cfg.new_block();
         resume_cfg.enter(resume_entry_block);
-        resume_cfg.lower_stmts(&resume_body, m);
+        resume_cfg.lower_cfg_stmts(&resume_body, m);
         resume_cfg.terminate_if_open(hir::HirTerminator::Return(None));
         let (resume_blocks, resume_entry_block, resume_try_scopes) =
             resume_cfg.finish(resume_entry_block);
@@ -855,7 +864,7 @@ impl<'a> Lowering<'a> {
                 span,
             }],
             return_type: Some(Type::Int),
-            body: resume_body,
+            body: resume_legacy_body,
             span,
             cell_vars: HashSet::new(),
             nonlocal_vars: HashSet::new(),
@@ -871,10 +880,11 @@ impl<'a> Lowering<'a> {
 
         // 5. Replace original function body with creator logic
         let creator_body = build_creator_body(m, &func, &gen_vars, num_locals, span);
-        let mut creator_cfg = hir::cfg_build::CfgBuilder::new();
+        let creator_legacy_body = materialize_legacy_body(&creator_body, m);
+        let mut creator_cfg = CfgBuilder::new();
         let creator_entry_block = creator_cfg.new_block();
         creator_cfg.enter(creator_entry_block);
-        creator_cfg.lower_stmts(&creator_body, m);
+        creator_cfg.lower_cfg_stmts(&creator_body, m);
         creator_cfg.terminate_if_open(hir::HirTerminator::Return(None));
         let (creator_blocks, creator_entry_block, creator_try_scopes) =
             creator_cfg.finish(creator_entry_block);
@@ -889,7 +899,7 @@ impl<'a> Lowering<'a> {
             .func_defs
             .get_mut(&func_id)
             .expect("internal error: generator func_id not found in HIR module");
-        original.body = creator_body;
+        original.body = creator_legacy_body;
         original.is_generator = false;
         // Set return type so callers know this returns an iterator
         original.return_type = Some(creator_return_type);
@@ -1011,7 +1021,7 @@ fn build_creator_body(
     gen_vars: &[GeneratorVar],
     num_locals: u32,
     span: Span,
-) -> Vec<hir::StmtId> {
+) -> Vec<GenStmt> {
     let mut stmts = Vec::new();
     let creator_gen_var = VarId(GEN_VAR_ID_OFFSET + 30000 + func.id.0);
 
@@ -1025,7 +1035,7 @@ fn build_creator_body(
         Some(Type::Iterator(Box::new(Type::Any))),
         span,
     );
-    stmts.push(mk_stmt(
+    stmts.push(mk_leaf_stmt(
         m,
         hir::StmtKind::Bind {
             target: hir::BindingTarget::Var(creator_gen_var),
@@ -1040,11 +1050,11 @@ fn build_creator_body(
         if gv.is_param {
             let pv = mk_var(m, gv.var_id, gv.ty.clone(), span);
             let set = mk_set_local(m, creator_gen_var, gv.gen_local_idx, pv, span);
-            stmts.push(mk_stmt(m, hir::StmtKind::Expr(set), span));
+            stmts.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set), span));
             // Mark heap-typed captures so GC traces the slot (§G.3).
             if gv.ty.is_heap() {
                 let set_ty = mk_set_local_type_ptr(m, creator_gen_var, gv.gen_local_idx, span);
-                stmts.push(mk_stmt(m, hir::StmtKind::Expr(set_ty), span));
+                stmts.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set_ty), span));
             }
         }
     }
@@ -1073,7 +1083,7 @@ fn build_creator_body(
                     if let Some(gv) = gen_vars.iter().find(|v| v.var_id == target) {
                         let val = clone_expr(m, value);
                         let set = mk_set_local(m, creator_gen_var, gv.gen_local_idx, val, span);
-                        stmts.push(mk_stmt(m, hir::StmtKind::Expr(set), span));
+                        stmts.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set), span));
                     }
                 }
             } else if let hir::StmtKind::Expr(eid) = &stmt.kind {
@@ -1101,7 +1111,7 @@ fn build_creator_body(
             span,
         );
         let set_iter = mk_set_local(m, creator_gen_var, 0, iter_call, span);
-        stmts.push(mk_stmt(m, hir::StmtKind::Expr(set_iter), span));
+        stmts.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set_iter), span));
 
         // Mark slot 0 as heap pointer for GC
         let g = mk_var(m, creator_gen_var, Type::HeapAny, span);
@@ -1115,7 +1125,7 @@ fn build_creator_body(
             Some(Type::Int),
             span,
         );
-        stmts.push(mk_stmt(m, hir::StmtKind::Expr(set_type), span));
+        stmts.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set_type), span));
     }
 
     // return gen_obj
@@ -1125,7 +1135,7 @@ fn build_creator_body(
         Type::Iterator(Box::new(Type::Any)),
         span,
     );
-    stmts.push(mk_stmt(m, hir::StmtKind::Return(Some(ret_val)), span));
+    stmts.push(mk_leaf_stmt(m, hir::StmtKind::Return(Some(ret_val)), span));
 
     stmts
 }
@@ -1141,7 +1151,7 @@ fn build_generic_resume(
     gen_obj_var: VarId,
     state_var: VarId,
     span: Span,
-) -> Vec<hir::StmtId> {
+) -> Vec<GenStmt> {
     let yield_infos = collect_yield_info(func, m);
     let n = yield_infos.len();
     let mut stmts = mk_resume_preamble(m, gen_obj_var, state_var, span);
@@ -1171,7 +1181,7 @@ fn build_generic_resume(
                     Some(Type::Int),
                     span,
                 );
-                body.push(mk_stmt(
+                body.push(mk_leaf_stmt(
                     m,
                     hir::StmtKind::Bind {
                         target: hir::BindingTarget::Var(target),
@@ -1184,7 +1194,7 @@ fn build_generic_resume(
                 if let Some(gv) = gen_vars.iter().find(|v| v.var_id == target) {
                     let tv = mk_var(m, target, Type::Int, span);
                     let set = mk_set_local(m, gen_obj_var, gv.gen_local_idx, tv, span);
-                    body.push(mk_stmt(m, hir::StmtKind::Expr(set), span));
+                    body.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set), span));
                 }
             }
         }
@@ -1201,10 +1211,14 @@ fn build_generic_resume(
 
         // 5. Set next state
         let set_state = mk_set_state(m, gen_obj_var, (i + 1) as i64, span);
-        body.push(mk_stmt(m, hir::StmtKind::Expr(set_state), span));
+        body.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set_state), span));
 
         // 6. Return yield value
-        body.push(mk_stmt(m, hir::StmtKind::Return(Some(yield_value)), span));
+        body.push(mk_leaf_stmt(
+            m,
+            hir::StmtKind::Return(Some(yield_value)),
+            span,
+        ));
 
         // Wrap in if state == i
         let if_stmt = mk_state_check(m, state_var, i as i64, body, else_block, span);
@@ -1227,7 +1241,7 @@ fn build_while_loop_resume(
     state_var: VarId,
     next_var_id: &mut u32,
     span: Span,
-) -> Vec<hir::StmtId> {
+) -> Vec<GenStmt> {
     let num_yields = wg.yield_sections.len();
     let mut stmts = mk_resume_preamble(m, gen_obj_var, state_var, span);
 
@@ -1287,14 +1301,14 @@ fn build_while_init(
     gen_obj_var: VarId,
     _next_var_id: &mut u32,
     span: Span,
-) -> Vec<hir::StmtId> {
+) -> Vec<GenStmt> {
     let mut body = Vec::new();
 
     // Load parameters
     for gv in gen_vars {
         if gv.is_param {
             let get = mk_get_local(m, gen_obj_var, gv.gen_local_idx, gv.ty.clone(), span);
-            body.push(mk_stmt(
+            body.push(mk_leaf_stmt(
                 m,
                 hir::StmtKind::Bind {
                     target: hir::BindingTarget::Var(gv.var_id),
@@ -1307,7 +1321,7 @@ fn build_while_init(
     }
 
     // Execute init statements (reuse original HIR)
-    body.extend_from_slice(&wg.init_stmts);
+    body.extend(wrap_stmt_ids(&wg.init_stmts));
 
     // Save only the variables that are actually defined at this point:
     // parameters (loaded above) and anything bound in init_stmts. Vars
@@ -1325,7 +1339,8 @@ fn build_while_init(
             defined_in_init.insert(gv.var_id);
         }
     }
-    collect_defined_vars(&wg.init_stmts, m, &mut defined_in_init);
+    let init_stmts = wrap_stmt_ids(&wg.init_stmts);
+    collect_defined_vars(&init_stmts, m, &mut defined_in_init);
     emit_save_vars_where(m, gen_vars, gen_obj_var, &mut body, span, |gv| {
         defined_in_init.contains(&gv.var_id)
     });
@@ -1337,19 +1352,16 @@ fn build_while_init(
         .unwrap_or_else(|| mk_expr(m, hir::ExprKind::Int(0), Some(Type::Int), span));
 
     let set_state = mk_set_state(m, gen_obj_var, 1, span);
-    let ss = mk_stmt(m, hir::StmtKind::Expr(set_state), span);
-    let ret = mk_stmt(m, hir::StmtKind::Return(Some(yield_val)), span);
+    let ss = mk_leaf_stmt(m, hir::StmtKind::Expr(set_state), span);
+    let ret = mk_leaf_stmt(m, hir::StmtKind::Return(Some(yield_val)), span);
 
     let exhaust = mk_exhaust_block(m, gen_obj_var, span);
-    let cond_check = mk_stmt(
-        m,
-        hir::StmtKind::If {
-            cond: wg.cond,
-            then_block: vec![ss, ret],
-            else_block: exhaust,
-        },
+    let cond_check = GenStmt::If {
+        cond: wg.cond,
+        then_body: vec![ss, ret],
+        else_body: exhaust,
         span,
-    );
+    };
     body.push(cond_check);
 
     body
@@ -1363,14 +1375,14 @@ fn build_while_yield_with_next_state(
     gen_obj_var: VarId,
     next_state: i64,
     span: Span,
-) -> Vec<hir::StmtId> {
+) -> Vec<GenStmt> {
     let mut body = Vec::new();
 
     // Load all variables
     emit_load_all_vars(m, gen_vars, gen_obj_var, &mut body, span);
 
     // Execute statements before this yield (reuse original HIR)
-    body.extend_from_slice(&section.stmts_before);
+    body.extend(wrap_stmt_ids(&section.stmts_before));
 
     // Compute yield value
     let yield_val = section
@@ -1383,10 +1395,14 @@ fn build_while_yield_with_next_state(
 
     // Set next state
     let ss = mk_set_state(m, gen_obj_var, next_state, span);
-    body.push(mk_stmt(m, hir::StmtKind::Expr(ss), span));
+    body.push(mk_leaf_stmt(m, hir::StmtKind::Expr(ss), span));
 
     // return yield_value
-    body.push(mk_stmt(m, hir::StmtKind::Return(Some(yield_val)), span));
+    body.push(mk_leaf_stmt(
+        m,
+        hir::StmtKind::Return(Some(yield_val)),
+        span,
+    ));
 
     body
 }
@@ -1398,14 +1414,14 @@ fn build_while_update(
     gen_obj_var: VarId,
     num_yields: usize,
     span: Span,
-) -> Vec<hir::StmtId> {
+) -> Vec<GenStmt> {
     let mut body = Vec::new();
 
     // Load all variables
     emit_load_all_vars(m, gen_vars, gen_obj_var, &mut body, span);
 
     // Execute update statements (reuse original HIR)
-    body.extend_from_slice(&wg.update_stmts);
+    body.extend(wrap_stmt_ids(&wg.update_stmts));
 
     // Save variables
     emit_save_all_vars(m, gen_vars, gen_obj_var, &mut body, span);
@@ -1417,21 +1433,18 @@ fn build_while_update(
         .unwrap_or_else(|| mk_expr(m, hir::ExprKind::Int(0), Some(Type::Int), span));
 
     let set_state = mk_set_state(m, gen_obj_var, 1, span);
-    let ss = mk_stmt(m, hir::StmtKind::Expr(set_state), span);
-    let ret = mk_stmt(m, hir::StmtKind::Return(Some(yield_val)), span);
+    let ss = mk_leaf_stmt(m, hir::StmtKind::Expr(set_state), span);
+    let ret = mk_leaf_stmt(m, hir::StmtKind::Return(Some(yield_val)), span);
 
     let exhaust = mk_exhaust_block(m, gen_obj_var, span);
     let _ = num_yields;
 
-    let cond_check = mk_stmt(
-        m,
-        hir::StmtKind::If {
-            cond: wg.cond,
-            then_block: vec![ss, ret],
-            else_block: exhaust,
-        },
+    let cond_check = GenStmt::If {
+        cond: wg.cond,
+        then_body: vec![ss, ret],
+        else_body: exhaust,
         span,
-    );
+    };
     body.push(cond_check);
 
     body
@@ -1449,14 +1462,14 @@ fn build_for_loop_resume(
     next_var_id: &mut u32,
     span: Span,
     interner: &StringInterner,
-) -> Vec<hir::StmtId> {
+) -> Vec<GenStmt> {
     let num_trailing = fg.trailing_yields.len();
     let mut stmts = mk_resume_preamble(m, gen_obj_var, state_var, span);
 
     // if state == 0: set state = 1 (first call initialization)
     {
         let set_s1 = mk_set_state(m, gen_obj_var, 1, span);
-        let ss = mk_stmt(m, hir::StmtKind::Expr(set_s1), span);
+        let ss = mk_leaf_stmt(m, hir::StmtKind::Expr(set_s1), span);
 
         // Build trailing yield state dispatch (else branch of state==0)
         let mut trailing_else = mk_exhaust_block(m, gen_obj_var, span);
@@ -1497,7 +1510,7 @@ fn build_for_loop_resume(
     // iter = __gen_get_local(gen_obj, 0)
     let iter_ty = Type::Iterator(Box::new(Type::Any));
     let get_iter = mk_get_local(m, gen_obj_var, 0, iter_ty.clone(), span);
-    stmts.push(mk_stmt(
+    stmts.push(mk_leaf_stmt(
         m,
         hir::StmtKind::Bind {
             target: hir::BindingTarget::Var(iter_var),
@@ -1550,7 +1563,7 @@ fn build_for_loop_direct(
     iter_done_var: VarId,
     num_trailing: usize,
     span: Span,
-    stmts: &mut Vec<hir::StmtId>,
+    stmts: &mut Vec<GenStmt>,
     interner: &StringInterner,
 ) {
     // Element type yielded per iteration. Required so `lower_binding_target`
@@ -1567,7 +1580,7 @@ fn build_for_loop_direct(
         Some(elem_ty.clone()),
         span,
     );
-    stmts.push(mk_stmt(
+    stmts.push(mk_leaf_stmt(
         m,
         hir::StmtKind::Bind {
             target: hir::BindingTarget::Var(next_val_var),
@@ -1585,7 +1598,7 @@ fn build_for_loop_direct(
         Some(Type::Bool),
         span,
     );
-    stmts.push(mk_stmt(
+    stmts.push(mk_leaf_stmt(
         m,
         hir::StmtKind::Bind {
             target: hir::BindingTarget::Var(iter_done_var),
@@ -1609,22 +1622,19 @@ fn build_for_loop_direct(
     } else {
         mk_exhaust_block(m, gen_obj_var, span)
     };
-    stmts.push(mk_stmt(
-        m,
-        hir::StmtKind::If {
-            cond: done_ref,
-            then_block: done_target,
-            else_block: vec![],
-        },
+    stmts.push(GenStmt::If {
+        cond: done_ref,
+        then_body: done_target,
+        else_body: vec![],
         span,
-    ));
+    });
 
     // Assign loop target — may be Var, Tuple, Attr, Index, etc. The Bind
     // statement's handler lowers the full shape recursively. `elem_ty` flows
     // through `type_hint` so tuple-target unpack picks the right
     // `RT_TUPLE_GET_*` runtime call.
     let nvr = mk_var(m, next_val_var, elem_ty.clone(), span);
-    stmts.push(mk_stmt(
+    stmts.push(mk_leaf_stmt(
         m,
         hir::StmtKind::Bind {
             target: fg.target.clone(),
@@ -1637,14 +1647,14 @@ fn build_for_loop_direct(
     // Save iterator back
     let ir3 = mk_var(m, iter_var, Type::Iterator(Box::new(Type::Any)), span);
     let save = mk_set_local(m, gen_obj_var, 0, ir3, span);
-    stmts.push(mk_stmt(m, hir::StmtKind::Expr(save), span));
+    stmts.push(mk_leaf_stmt(m, hir::StmtKind::Expr(save), span));
 
     // Compute and return yield value
     let yv = fg
         .yield_expr
         .map(|eid| clone_expr(m, eid))
         .unwrap_or_else(|| mk_expr(m, hir::ExprKind::None, Some(Type::None), span));
-    stmts.push(mk_stmt(m, hir::StmtKind::Return(Some(yv)), span));
+    stmts.push(mk_leaf_stmt(m, hir::StmtKind::Return(Some(yv)), span));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1657,7 +1667,7 @@ fn build_for_loop_filtered(
     iter_done_var: VarId,
     num_trailing: usize,
     span: Span,
-    stmts: &mut Vec<hir::StmtId>,
+    stmts: &mut Vec<GenStmt>,
     interner: &StringInterner,
 ) {
     let filter_cond_id = fg
@@ -1679,7 +1689,7 @@ fn build_for_loop_filtered(
         Some(elem_ty.clone()),
         span,
     );
-    loop_body.push(mk_stmt(
+    loop_body.push(mk_leaf_stmt(
         m,
         hir::StmtKind::Bind {
             target: hir::BindingTarget::Var(next_val_var),
@@ -1697,7 +1707,7 @@ fn build_for_loop_filtered(
         Some(Type::Bool),
         span,
     );
-    loop_body.push(mk_stmt(
+    loop_body.push(mk_leaf_stmt(
         m,
         hir::StmtKind::Bind {
             target: hir::BindingTarget::Var(iter_done_var),
@@ -1721,19 +1731,16 @@ fn build_for_loop_filtered(
     } else {
         mk_exhaust_block(m, gen_obj_var, span)
     };
-    loop_body.push(mk_stmt(
-        m,
-        hir::StmtKind::If {
-            cond: done_ref,
-            then_block: done_target,
-            else_block: vec![],
-        },
+    loop_body.push(GenStmt::If {
+        cond: done_ref,
+        then_body: done_target,
+        else_body: vec![],
         span,
-    ));
+    });
 
     // Assign loop target (recursive unpack for Tuple/Attr/Index shapes).
     let nvr = mk_var(m, next_val_var, elem_ty.clone(), span);
-    loop_body.push(mk_stmt(
+    loop_body.push(mk_leaf_stmt(
         m,
         hir::StmtKind::Bind {
             target: fg.target.clone(),
@@ -1747,34 +1754,28 @@ fn build_for_loop_filtered(
     let mut yield_body = Vec::new();
     let ir3 = mk_var(m, iter_var, Type::Iterator(Box::new(Type::Any)), span);
     let save = mk_set_local(m, gen_obj_var, 0, ir3, span);
-    yield_body.push(mk_stmt(m, hir::StmtKind::Expr(save), span));
+    yield_body.push(mk_leaf_stmt(m, hir::StmtKind::Expr(save), span));
 
     let yv = fg
         .yield_expr
         .map(|eid| clone_expr(m, eid))
         .unwrap_or_else(|| mk_expr(m, hir::ExprKind::None, Some(Type::None), span));
-    yield_body.push(mk_stmt(m, hir::StmtKind::Return(Some(yv)), span));
+    yield_body.push(mk_leaf_stmt(m, hir::StmtKind::Return(Some(yv)), span));
 
-    loop_body.push(mk_stmt(
-        m,
-        hir::StmtKind::If {
-            cond: filter_cond_id,
-            then_block: yield_body,
-            else_block: vec![], // continue loop: filter didn't match
-        },
+    loop_body.push(GenStmt::If {
+        cond: filter_cond_id,
+        then_body: yield_body,
+        else_body: vec![],
         span,
-    ));
+    });
 
     // while True: [loop_body]
-    stmts.push(mk_stmt(
-        m,
-        hir::StmtKind::While {
-            cond: true_expr,
-            body: loop_body,
-            else_block: vec![],
-        },
+    stmts.push(GenStmt::While {
+        cond: true_expr,
+        body: loop_body,
+        else_body: vec![],
         span,
-    ));
+    });
 }
 
 fn build_trailing_yield(
@@ -1784,19 +1785,19 @@ fn build_trailing_yield(
     trailing_idx: usize,
     _num_trailing: usize,
     span: Span,
-) -> Vec<hir::StmtId> {
+) -> Vec<GenStmt> {
     let mut body = Vec::new();
 
     // Set state to next trailing yield
     let next_state = (trailing_idx + 2 + 1) as i64;
     let ss = mk_set_state(m, gen_obj_var, next_state, span);
-    body.push(mk_stmt(m, hir::StmtKind::Expr(ss), span));
+    body.push(mk_leaf_stmt(m, hir::StmtKind::Expr(ss), span));
 
     // Return trailing yield value
     let value = trailing_yield_expr
         .map(|eid| clone_expr(m, eid))
         .unwrap_or_else(|| mk_expr(m, hir::ExprKind::Int(0), Some(Type::Int), span));
-    body.push(mk_stmt(m, hir::StmtKind::Return(Some(value)), span));
+    body.push(mk_leaf_stmt(m, hir::StmtKind::Return(Some(value)), span));
 
     body
 }
