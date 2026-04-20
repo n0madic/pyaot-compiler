@@ -79,7 +79,7 @@ impl<'a> Lowering<'a> {
                 } else {
                     let value_expr = &hir_module.exprs[*value];
                     let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
-                    let value_type = self.get_type_of_expr_id(*value, hir_module);
+                    let value_type = self.operand_type(&value_operand, mir_func);
                     self.lower_binding_target(
                         target,
                         value_operand,

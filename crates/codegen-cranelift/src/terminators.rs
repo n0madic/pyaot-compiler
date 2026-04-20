@@ -17,6 +17,7 @@ use crate::exceptions::{
     compile_raise, compile_raise_custom, compile_raise_instance, compile_reraise,
     compile_try_setjmp,
 };
+use crate::instructions::calls::box_primitive;
 use crate::utils::{declare_runtime_function, get_call_result, load_operand, type_to_cranelift};
 
 /// Compile a MIR terminator to Cranelift IR
@@ -98,7 +99,7 @@ pub fn compile_terminator(
                 .block_map
                 .get(target)
                 .expect("internal error: block not in block_map - codegen bug");
-            let args = phi_branch_args(builder, ctx, target);
+            let args = phi_branch_args(builder, ctx, target)?;
             builder.ins().jump(cl_block, &args);
         }
 
@@ -125,8 +126,8 @@ pub fn compile_terminator(
                 .block_map
                 .get(else_block)
                 .expect("internal error: block not in block_map - codegen bug");
-            let then_args = phi_branch_args(builder, ctx, then_block);
-            let else_args = phi_branch_args(builder, ctx, else_block);
+            let then_args = phi_branch_args(builder, ctx, then_block)?;
+            let else_args = phi_branch_args(builder, ctx, else_block)?;
             builder
                 .ins()
                 .brif(cond_i1, then_cl, &then_args, else_cl, &else_args);
@@ -185,16 +186,16 @@ pub fn compile_terminator(
 /// blocks with no phi joins still dispatch through here.
 fn phi_branch_args(
     builder: &mut FunctionBuilder,
-    ctx: &CodegenContext,
+    ctx: &mut CodegenContext,
     target: &pyaot_utils::BlockId,
-) -> Vec<cranelift_codegen::ir::BlockArg> {
+) -> Result<Vec<cranelift_codegen::ir::BlockArg>> {
     let Some(target_block) = ctx.symbols.mir_blocks.get(target) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let pred = ctx.symbols.current_block;
     let mut args = Vec::new();
     for inst in &target_block.instructions {
-        let mir::InstructionKind::Phi { sources, .. } = &inst.kind else {
+        let mir::InstructionKind::Phi { dest, sources } = &inst.kind else {
             break;
         };
         let source_op = sources
@@ -202,8 +203,66 @@ fn phi_branch_args(
             .find(|(bb, _)| *bb == pred)
             .map(|(_, op)| op)
             .expect("phi has no source for predecessor block — arity violation");
-        let value = load_operand(builder, source_op, ctx.symbols.var_map);
+        let value = coerce_phi_source_for_dest(builder, ctx, source_op, dest)?;
         args.push(cranelift_codegen::ir::BlockArg::Value(value));
     }
-    args
+    Ok(args)
+}
+
+fn coerce_phi_source_for_dest(
+    builder: &mut FunctionBuilder,
+    ctx: &mut CodegenContext,
+    source_op: &mir::Operand,
+    dest: &pyaot_utils::LocalId,
+) -> Result<cranelift_codegen::ir::Value> {
+    let value = load_operand(builder, source_op, ctx.symbols.var_map);
+    let Some(dest_ty) = ctx.symbols.locals.get(dest).map(|local| &local.ty) else {
+        return Ok(value);
+    };
+
+    if !matches!(dest_ty, Type::Union(_) | Type::Any | Type::HeapAny) {
+        return Ok(value);
+    }
+
+    let source_ty = operand_semantic_type(source_op, ctx);
+    match source_ty {
+        Type::Int => box_primitive(builder, ctx.module, "rt_box_int", cltypes::I64, value),
+        Type::Float => box_primitive(builder, ctx.module, "rt_box_float", cltypes::F64, value),
+        Type::Bool => box_primitive(builder, ctx.module, "rt_box_bool", cltypes::I8, value),
+        Type::None => box_none(builder, ctx),
+        _ => Ok(value),
+    }
+}
+
+fn operand_semantic_type(op: &mir::Operand, ctx: &CodegenContext) -> Type {
+    match op {
+        mir::Operand::Local(id) => ctx
+            .symbols
+            .locals
+            .get(id)
+            .map(|local| local.ty.clone())
+            .unwrap_or(Type::Any),
+        mir::Operand::Constant(c) => match c {
+            mir::Constant::Int(_) => Type::Int,
+            mir::Constant::Float(_) => Type::Float,
+            mir::Constant::Bool(_) => Type::Bool,
+            mir::Constant::Str(_) => Type::Str,
+            mir::Constant::Bytes(_) => Type::Bytes,
+            mir::Constant::None => Type::None,
+        },
+    }
+}
+
+fn box_none(
+    builder: &mut FunctionBuilder,
+    ctx: &mut CodegenContext,
+) -> Result<cranelift_codegen::ir::Value> {
+    let mut sig = ctx.module.make_signature();
+    sig.call_conv = CallConv::SystemV;
+    sig.returns
+        .push(cranelift_codegen::ir::AbiParam::new(cltypes::I64));
+    let func_id = declare_runtime_function(ctx.module, "rt_box_none", &sig)?;
+    let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+    let call_inst = builder.ins().call(func_ref, &[]);
+    Ok(get_call_result(builder, call_inst))
 }

@@ -73,6 +73,12 @@ impl<'a> Lowering<'a> {
                             };
                             let refined = Type::Dict(refined_key, refined_val);
                             self.insert_var_type(*var_id, refined.clone());
+                            if let Some(local_id) = self.get_var_local(var_id) {
+                                if let Some(local) = mir_func.locals.get_mut(&local_id) {
+                                    local.ty = refined.clone();
+                                    local.is_gc_root = local.ty.is_heap();
+                                }
+                            }
                             refined
                         } else {
                             obj_type.clone()

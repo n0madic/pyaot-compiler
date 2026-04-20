@@ -43,10 +43,10 @@
 //! * Integrate into the compile pipeline. Until S1.8b produces a
 //!   non-trivial table, nothing consumes the output.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, ptr};
 
 use indexmap::IndexMap;
-use pyaot_mir::{Function, InstructionKind, Module, Operand, RuntimeFunc};
+use pyaot_mir::{Function, Instruction, InstructionKind, Module, Operand, RuntimeFunc};
 use pyaot_types::Type;
 use pyaot_utils::{ClassId, FuncId, InternedString, LocalId};
 
@@ -226,10 +226,12 @@ fn apply_instruction(
             let result_ty = unop_result_type(*op, &operand_ty);
             update_type(types, *dest, result_ty)
         }
-        InstructionKind::RuntimeCall { dest, func, .. } => match runtime_call_return_type(func) {
-            Some(ty) => update_type(types, *dest, ty),
-            None => false,
-        },
+        InstructionKind::RuntimeCall { dest, func, args } => {
+            match infer_runtime_call_return_type(func, args, module, types) {
+                Some(ty) => update_type(types, *dest, ty),
+                None => false,
+            }
+        }
 
         // Remaining kinds (CallNamed, CallVirtual*, exc / boxing /
         // conversion helpers) stay at the seed type for now.
@@ -325,18 +327,21 @@ fn binop_result_type(op: pyaot_mir::BinOp, left: &Type, right: &Type) -> Type {
         BinOp::Div => Type::Float,
 
         // Floor division, modulus, and arithmetic: classical numeric
-        // tower via `Type::unify_numeric`. Bool + Int = Int; Int + Float
-        // = Float; etc.
+        // tower via Python arithmetic coercion. Bool is a subtype of Int,
+        // but arithmetic first coerces it to Int, so `True + True` is Int
+        // rather than Bool.
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
-            merge_operand_types(left, right)
+            merge_python_arithmetic_types(left, right)
         }
 
         // Bitwise operators: in Python these are defined on Int (and
         // Bool as 0/1). Result matches the wider operand type — promote
         // via the numeric tower for consistency.
-        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::LShift | BinOp::RShift => {
-            merge_operand_types(left, right)
-        }
+        BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => merge_operand_types(left, right),
+
+        // Shift operators always coerce Bool to Int, matching Python's
+        // `True << True == 2` / `True >> True == 0`.
+        BinOp::LShift | BinOp::RShift => merge_python_arithmetic_types(left, right),
     }
 }
 
@@ -395,6 +400,87 @@ fn runtime_call_return_type(func: &RuntimeFunc) -> Option<Type> {
     }
 }
 
+fn infer_runtime_call_return_type(
+    func: &RuntimeFunc,
+    args: &[Operand],
+    module: Option<&Module>,
+    types: &FunctionTypes,
+) -> Option<Type> {
+    if let RuntimeFunc::Call(def) = func {
+        if ptr::eq(
+            *def,
+            &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
+        ) {
+            return infer_instance_get_field_return_type(args, module, types);
+        }
+        if let Some(ty) = infer_iterator_runtime_return_type(def, args, types) {
+            return Some(ty);
+        }
+    }
+    runtime_call_return_type(func)
+}
+
+fn infer_iterator_runtime_return_type(
+    def: &'static pyaot_core_defs::RuntimeFuncDef,
+    args: &[Operand],
+    types: &FunctionTypes,
+) -> Option<Type> {
+    let first_arg_ty = || args.first().map(|op| operand_type(op, types));
+
+    if ptr::eq(def, &pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC) {
+        return first_arg_ty().and_then(|ty| iterable_element_type(&ty));
+    }
+    if ptr::eq(def, &pyaot_core_defs::runtime_func_def::RT_ITER_GENERATOR)
+        || ptr::eq(def, &pyaot_core_defs::runtime_func_def::RT_ITER_DICT)
+        || ptr::eq(def, &pyaot_core_defs::runtime_func_def::RT_ITER_SET)
+        || ptr::eq(def, &pyaot_core_defs::runtime_func_def::RT_ITER_STR)
+        || ptr::eq(def, &pyaot_core_defs::runtime_func_def::RT_ITER_BYTES)
+    {
+        return first_arg_ty().and_then(|ty| {
+            iterable_element_type(&ty).map(|elem_ty| Type::Iterator(Box::new(elem_ty)))
+        });
+    }
+    None
+}
+
+fn iterable_element_type(ty: &Type) -> Option<Type> {
+    match ty {
+        Type::List(elem) | Type::Set(elem) | Type::Iterator(elem) | Type::TupleVar(elem) => {
+            Some((**elem).clone())
+        }
+        Type::Tuple(elem_types) => Some(Type::normalize_union(elem_types.clone())),
+        Type::Dict(key, _) => Some((**key).clone()),
+        Type::Str => Some(Type::Str),
+        Type::Bytes => Some(Type::Int),
+        _ => None,
+    }
+}
+
+fn infer_instance_get_field_return_type(
+    args: &[Operand],
+    module: Option<&Module>,
+    types: &FunctionTypes,
+) -> Option<Type> {
+    if args.len() != 2 {
+        return None;
+    }
+    let module = module?;
+    let obj_ty = operand_type(&args[0], types);
+    let class_id = match obj_ty {
+        Type::Class { class_id, .. } => class_id,
+        _ => return None,
+    };
+    let Operand::Constant(pyaot_mir::Constant::Int(offset)) = &args[1] else {
+        return None;
+    };
+    let meta = module.class_info.get(&class_id)?;
+    let field_name = meta
+        .field_offsets
+        .iter()
+        .find_map(|(name, off)| (*off == *offset as usize).then_some(*name))?;
+    meta.field_types.get(&field_name).cloned()
+}
+
 /// Join two operand types monotonically, handling the `Any` / `Never`
 /// bounds `Type::unify_field_type` doesn't simplify on its own.
 fn merge_operand_types(a: &Type, b: &Type) -> Type {
@@ -408,6 +494,17 @@ fn merge_operand_types(a: &Type, b: &Type) -> Type {
         return Type::Any;
     }
     Type::unify_field_type(a, b)
+}
+
+fn arithmetic_operand_type(ty: &Type) -> Type {
+    match ty {
+        Type::Bool => Type::Int,
+        other => other.clone(),
+    }
+}
+
+fn merge_python_arithmetic_types(a: &Type, b: &Type) -> Type {
+    merge_operand_types(&arithmetic_operand_type(a), &arithmetic_operand_type(b))
 }
 
 /// Single-pass type refinement for legacy (non-SSA) MIR: Refine still
@@ -583,8 +680,6 @@ fn refine_function_params(
     table: &mut TypeTable,
     func_id: FuncId,
 ) -> bool {
-    use crate::call_graph::CallKind;
-
     let func = match module.functions.get(&func_id) {
         Some(f) => f,
         None => return false,
@@ -594,16 +689,20 @@ fn refine_function_params(
         return false;
     }
 
-    // Join arg types from every direct call site.
+    // Join arg types from every call site whose instruction shape can be
+    // matched back to this callee's parameter list.
     let mut joined: Vec<Option<Type>> = vec![None; n_params];
     let callers = match call_graph.callers.get(&func_id) {
         Some(c) => c,
         None => return false,
     };
+    let best_precision = callers
+        .iter()
+        .map(|site| call_kind_precision(site.kind))
+        .max()
+        .unwrap_or(0);
     for site in callers {
-        if site.kind != CallKind::Direct {
-            // Skip Indirect / Virtual — we can't reliably match their arg
-            // lists to a specific callee without devirtualisation.
+        if call_kind_precision(site.kind) != best_precision {
             continue;
         }
         let caller = match module.functions.get(&site.caller) {
@@ -618,12 +717,12 @@ fn refine_function_params(
             Some(i) => i,
             None => continue,
         };
-        let args = match &inst.kind {
-            InstructionKind::CallDirect { args, .. } => args,
-            _ => continue,
+        let call_args = match callsite_args_for_callee(inst, func, site.kind) {
+            Some(args) => args,
+            None => continue,
         };
         let caller_types = table.function_types(site.caller);
-        for (i, arg) in args.iter().enumerate().take(n_params) {
+        for (i, arg) in call_args.iter().enumerate().take(n_params) {
             let arg_ty = match caller_types {
                 Some(t) => operand_type(arg, t),
                 None => Type::Any,
@@ -657,6 +756,42 @@ fn refine_function_params(
         table.set_function_types(func_id, new_types);
     }
     differs
+}
+
+fn call_kind_precision(kind: crate::call_graph::CallKind) -> u8 {
+    use crate::call_graph::CallKind;
+
+    match kind {
+        CallKind::Direct => 2,
+        CallKind::Virtual => 1,
+        CallKind::Indirect => 0,
+    }
+}
+
+fn callsite_args_for_callee<'a>(
+    inst: &'a Instruction,
+    callee: &Function,
+    kind: crate::call_graph::CallKind,
+) -> Option<Vec<&'a Operand>> {
+    use crate::call_graph::CallKind;
+
+    match (&inst.kind, kind) {
+        (InstructionKind::CallDirect { args, .. }, CallKind::Direct)
+        | (InstructionKind::Call { args, .. }, CallKind::Indirect) => {
+            (args.len() == callee.params.len()).then_some(args.iter().collect())
+        }
+        (InstructionKind::CallVirtual { obj, args, .. }, CallKind::Virtual)
+        | (InstructionKind::CallVirtualNamed { obj, args, .. }, CallKind::Virtual) => {
+            if args.len() + 1 != callee.params.len() {
+                return None;
+            }
+            let mut out: Vec<&'a Operand> = Vec::with_capacity(args.len() + 1);
+            out.push(obj);
+            out.extend(args.iter());
+            Some(out)
+        }
+        _ => None,
+    }
 }
 
 fn update_type(types: &mut FunctionTypes, id: LocalId, new_ty: Type) -> bool {
@@ -839,6 +974,104 @@ pub fn wpa_param_and_field_inference_to_fixed_point(
             break;
         }
     }
+}
+
+/// Run the full Phase-1 type-analysis pipeline as a production pass and
+/// materialize the inferred results back into MIR metadata.
+///
+/// This is the integration point the CLI should call before consumers like
+/// devirtualize or codegen inspect `func.locals[*].ty`, `func.params[*].ty`,
+/// or `module.class_info[*].field_types`.
+pub fn analyze_and_materialize_types(module: &mut Module) -> TypeTable {
+    let call_graph = crate::call_graph::CallGraph::build(module);
+    let mut table = TypeTable::infer_module(module);
+
+    for _ in 0..MAX_FIELD_WPA_ITERATIONS {
+        wpa_param_inference_to_fixed_point(module, &call_graph, &mut table);
+        let field_changed = wpa_field_inference(module, &table);
+        let return_changed = materialize_function_return_types(module, &table);
+        if !field_changed && !return_changed {
+            break;
+        }
+        table = TypeTable::infer_module(module);
+    }
+
+    // Ensure the final table reflects the current module metadata after the
+    // last field-update round before we rewrite `params` / `locals`.
+    wpa_param_inference_to_fixed_point(module, &call_graph, &mut table);
+    if materialize_function_return_types(module, &table) {
+        table = TypeTable::infer_module(module);
+        wpa_param_inference_to_fixed_point(module, &call_graph, &mut table);
+    }
+    materialize_inferred_types(module, &table);
+    table
+}
+
+fn materialize_inferred_types(module: &mut Module, table: &TypeTable) {
+    for (&func_id, func) in &mut module.functions {
+        let Some(types) = table.function_types(func_id) else {
+            continue;
+        };
+        materialize_function_types(func, types);
+    }
+}
+
+fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
+    for param in &mut func.params {
+        if let Some(new_ty) = types
+            .get(&param.id)
+            .filter(|ty| !matches!(ty, Type::Never))
+            .cloned()
+        {
+            param.ty = new_ty;
+            param.is_gc_root = param.ty.is_heap();
+        }
+    }
+
+    for local in func.locals.values_mut() {
+        if let Some(new_ty) = types
+            .get(&local.id)
+            .filter(|ty| !matches!(ty, Type::Never))
+            .cloned()
+        {
+            local.ty = new_ty;
+            local.is_gc_root = local.ty.is_heap();
+        }
+    }
+}
+
+fn materialize_function_return_types(module: &mut Module, table: &TypeTable) -> bool {
+    let mut any_changed = false;
+    for (&func_id, func) in &mut module.functions {
+        let Some(types) = table.function_types(func_id) else {
+            continue;
+        };
+        let inferred = infer_function_return_type(func, types);
+        if !matches!(inferred, Type::Never) && func.return_type != inferred {
+            func.return_type = inferred;
+            any_changed = true;
+        }
+    }
+    any_changed
+}
+
+fn infer_function_return_type(func: &Function, types: &FunctionTypes) -> Type {
+    let mut joined: Option<Type> = None;
+    for block in func.blocks.values() {
+        let ret_ty = match &block.terminator {
+            pyaot_mir::Terminator::Return(Some(op)) => Some(operand_type(op, types)),
+            pyaot_mir::Terminator::Return(None) => Some(Type::None),
+            _ => None,
+        };
+        let Some(ret_ty) = ret_ty else {
+            continue;
+        };
+        joined = Some(match joined {
+            None => ret_ty,
+            Some(prev) => merge_operand_types(&prev, &ret_ty),
+        });
+    }
+    joined.unwrap_or_else(|| func.return_type.clone())
 }
 
 #[cfg(test)]
@@ -1528,6 +1761,91 @@ mod tests {
         assert_eq!(table.get(f_id, LocalId::from(0u32)), Some(&Type::Int));
     }
 
+    /// When a function is both directly called and address-taken, exact
+    /// `CallDirect` evidence must win over conservative indirect fan-out.
+    /// Otherwise nested functions / closures get their annotated params
+    /// widened back to `Any` just because their `FuncAddr` escapes into a
+    /// closure tuple.
+    #[test]
+    fn wpa_prefers_direct_sites_over_conservative_indirect_edges() {
+        let direct_callee_id = FuncId::from(10u32);
+        let other_callee_id = FuncId::from(11u32);
+        let caller_id = FuncId::from(0u32);
+
+        let direct_callee = callee_one_any_param(10, "direct_callee");
+        let other_callee = callee_one_any_param(11, "other_callee");
+
+        let addr_local = LocalId::from(0u32);
+        let indirect_dest = LocalId::from(1u32);
+        let direct_dest = LocalId::from(2u32);
+        let opaque_arg = LocalId::from(3u32);
+        let mut caller = Function::new(
+            caller_id,
+            "caller".to_string(),
+            vec![mk_local(3, Type::Any)],
+            Type::None,
+            None,
+        );
+        caller.locals.insert(addr_local, mk_local(0, Type::Any));
+        caller.locals.insert(indirect_dest, mk_local(1, Type::Any));
+        caller.locals.insert(direct_dest, mk_local(2, Type::Any));
+        caller.locals.insert(opaque_arg, mk_local(3, Type::Any));
+        let bb0 = caller.entry_block;
+        caller.block_mut(bb0).instructions.push(Instruction {
+            kind: InstructionKind::FuncAddr {
+                dest: addr_local,
+                func: other_callee_id,
+            },
+            span: None,
+        });
+        caller.block_mut(bb0).instructions.push(Instruction {
+            kind: InstructionKind::Call {
+                dest: indirect_dest,
+                func: Operand::Local(addr_local),
+                args: vec![Operand::Local(opaque_arg)],
+            },
+            span: None,
+        });
+        caller.block_mut(bb0).instructions.push(Instruction {
+            kind: InstructionKind::FuncAddr {
+                dest: LocalId::from(4u32),
+                func: direct_callee_id,
+            },
+            span: None,
+        });
+        caller
+            .locals
+            .insert(LocalId::from(4u32), mk_local(4, Type::Any));
+        caller.block_mut(bb0).instructions.push(Instruction {
+            kind: InstructionKind::CallDirect {
+                dest: direct_dest,
+                func: direct_callee_id,
+                args: vec![Operand::Constant(Constant::Bool(true))],
+            },
+            span: None,
+        });
+        caller.block_mut(bb0).terminator = Terminator::Return(None);
+        caller.is_ssa = true;
+
+        let mut module = Module::new();
+        module.add_function(direct_callee);
+        module.add_function(other_callee);
+        module.add_function(caller);
+
+        let cg = crate::call_graph::CallGraph::build(&module);
+        let mut table = TypeTable::infer_module(&module);
+        wpa_param_inference_to_fixed_point(&module, &cg, &mut table);
+
+        assert_eq!(
+            table.get(direct_callee_id, LocalId::from(0u32)),
+            Some(&Type::Bool)
+        );
+        assert_eq!(
+            table.get(other_callee_id, LocalId::from(0u32)),
+            Some(&Type::Any)
+        );
+    }
+
     // ========================================================================
     // S1.8c: BinOp / UnOp rules
     // ========================================================================
@@ -1559,6 +1877,28 @@ mod tests {
         let r = LocalId::from(2u32);
         func.locals.insert(a, mk_local(0, Type::Int));
         func.locals.insert(b, mk_local(1, Type::Int));
+        func.locals.insert(r, mk_local(2, Type::Any));
+        push_binop(
+            &mut func,
+            r,
+            pyaot_mir::BinOp::Add,
+            Operand::Local(a),
+            Operand::Local(b),
+        );
+        func.block_mut(func.entry_block).terminator = Terminator::Return(Some(Operand::Local(r)));
+        func.is_ssa = true;
+        let types = infer_function(&func, None);
+        assert_eq!(types.get(&r), Some(&Type::Int));
+    }
+
+    #[test]
+    fn binop_add_two_bools_is_int() {
+        let mut func = empty_func(Type::Int);
+        let a = LocalId::from(0u32);
+        let b = LocalId::from(1u32);
+        let r = LocalId::from(2u32);
+        func.locals.insert(a, mk_local(0, Type::Bool));
+        func.locals.insert(b, mk_local(1, Type::Bool));
         func.locals.insert(r, mk_local(2, Type::Any));
         push_binop(
             &mut func,
@@ -2128,6 +2468,396 @@ mod tests {
         assert_eq!(
             module.class_info[&class_id].field_types.get(&data),
             Some(&Type::Int)
+        );
+    }
+
+    #[test]
+    fn runtime_call_instance_get_field_uses_class_metadata_type() {
+        let mut interner = StringInterner::new();
+        let data = interner.intern("data");
+        let class_name = interner.intern("Box");
+        let class_id = ClassId::from(7u32);
+        let func_id = FuncId::from(70u32);
+        let obj = LocalId::from(0u32);
+        let dest = LocalId::from(1u32);
+
+        let class_ty = Type::Class {
+            class_id,
+            name: class_name,
+        };
+
+        let mut func = Function::new(
+            func_id,
+            "read_field".to_string(),
+            vec![mk_local(0, class_ty.clone())],
+            Type::Any,
+            None,
+        );
+        func.locals.insert(obj, mk_local(0, class_ty.clone()));
+        func.locals.insert(dest, mk_local(1, Type::Any));
+        let bb0 = func.entry_block;
+        func.block_mut(bb0).instructions.push(Instruction {
+            kind: InstructionKind::RuntimeCall {
+                dest,
+                func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD),
+                args: vec![Operand::Local(obj), Operand::Constant(Constant::Int(0))],
+            },
+            span: None,
+        });
+        func.block_mut(bb0).terminator = Terminator::Return(Some(Operand::Local(dest)));
+        func.is_ssa = true;
+
+        let mut module = Module::new();
+        module.add_function(func);
+        seed_class(
+            &mut module,
+            class_id,
+            FuncId::from(999u32),
+            &[(data, 0, Type::Int)],
+        );
+
+        let table = TypeTable::infer_module(&module);
+        assert_eq!(table.get(func_id, dest), Some(&Type::Int));
+    }
+
+    #[test]
+    fn analyze_and_materialize_updates_wpa_param_types_in_mir() {
+        let callee_id = FuncId::from(80u32);
+        let caller_id = FuncId::from(81u32);
+        let param = LocalId::from(0u32);
+        let result = LocalId::from(1u32);
+
+        let mut callee = Function::new(
+            callee_id,
+            "callee".to_string(),
+            vec![mk_local(0, Type::Any)],
+            Type::Any,
+            None,
+        );
+        callee.locals.insert(param, mk_local(0, Type::Any));
+        callee.locals.insert(result, mk_local(1, Type::Any));
+        let callee_bb = callee.entry_block;
+        callee.block_mut(callee_bb).instructions.push(Instruction {
+            kind: InstructionKind::Copy {
+                dest: result,
+                src: Operand::Local(param),
+            },
+            span: None,
+        });
+        callee.block_mut(callee_bb).terminator = Terminator::Return(Some(Operand::Local(result)));
+        callee.is_ssa = true;
+
+        let mut caller = Function::new(
+            caller_id,
+            "caller".to_string(),
+            Vec::new(),
+            Type::None,
+            None,
+        );
+        let caller_result = LocalId::from(0u32);
+        caller.locals.insert(caller_result, mk_local(0, Type::Any));
+        let caller_bb = caller.entry_block;
+        caller.block_mut(caller_bb).instructions.push(Instruction {
+            kind: InstructionKind::CallDirect {
+                dest: caller_result,
+                func: callee_id,
+                args: vec![Operand::Constant(Constant::Int(42))],
+            },
+            span: None,
+        });
+        caller.block_mut(caller_bb).terminator = Terminator::Return(None);
+        caller.is_ssa = true;
+
+        let mut module = Module::new();
+        module.add_function(callee);
+        module.add_function(caller);
+
+        let table = analyze_and_materialize_types(&mut module);
+        let callee = module
+            .functions
+            .get(&callee_id)
+            .expect("callee function exists");
+        assert_eq!(table.get(callee_id, param), Some(&Type::Int));
+        assert_eq!(callee.params[0].ty, Type::Int);
+        assert_eq!(callee.locals[&param].ty, Type::Int);
+        assert_eq!(callee.locals[&result].ty, Type::Int);
+    }
+
+    #[test]
+    fn analyze_and_materialize_updates_indirect_call_param_types_in_mir() {
+        let callee_id = FuncId::from(82u32);
+        let caller_id = FuncId::from(83u32);
+        let param = LocalId::from(0u32);
+        let result = LocalId::from(1u32);
+
+        let mut callee = Function::new(
+            callee_id,
+            "indirect_callee".to_string(),
+            vec![mk_local(0, Type::Any)],
+            Type::Any,
+            None,
+        );
+        callee.locals.insert(param, mk_local(0, Type::Any));
+        callee.locals.insert(result, mk_local(1, Type::Any));
+        let callee_bb = callee.entry_block;
+        callee.block_mut(callee_bb).instructions.push(Instruction {
+            kind: InstructionKind::Copy {
+                dest: result,
+                src: Operand::Local(param),
+            },
+            span: None,
+        });
+        callee.block_mut(callee_bb).terminator = Terminator::Return(Some(Operand::Local(result)));
+        callee.is_ssa = true;
+
+        let mut caller = Function::new(
+            caller_id,
+            "caller".to_string(),
+            Vec::new(),
+            Type::None,
+            None,
+        );
+        let addr_local = LocalId::from(0u32);
+        let call_dest = LocalId::from(1u32);
+        caller.locals.insert(addr_local, mk_local(0, Type::Any));
+        caller.locals.insert(call_dest, mk_local(1, Type::Any));
+        let caller_bb = caller.entry_block;
+        caller.block_mut(caller_bb).instructions.push(Instruction {
+            kind: InstructionKind::FuncAddr {
+                dest: addr_local,
+                func: callee_id,
+            },
+            span: None,
+        });
+        caller.block_mut(caller_bb).instructions.push(Instruction {
+            kind: InstructionKind::Call {
+                dest: call_dest,
+                func: Operand::Local(addr_local),
+                args: vec![Operand::Constant(Constant::Int(11))],
+            },
+            span: None,
+        });
+        caller.block_mut(caller_bb).terminator = Terminator::Return(None);
+        caller.is_ssa = true;
+
+        let mut module = Module::new();
+        module.add_function(callee);
+        module.add_function(caller);
+
+        let table = analyze_and_materialize_types(&mut module);
+        let callee = module
+            .functions
+            .get(&callee_id)
+            .expect("callee function exists");
+        assert_eq!(table.get(callee_id, param), Some(&Type::Int));
+        assert_eq!(callee.params[0].ty, Type::Int);
+        assert_eq!(callee.locals[&param].ty, Type::Int);
+    }
+
+    #[test]
+    fn analyze_and_materialize_updates_virtual_call_param_types_in_mir() {
+        let mut interner = StringInterner::new();
+        let class_id = ClassId::from(10u32);
+        let class_name = interner.intern("Receiver");
+        let class_ty = Type::Class {
+            class_id,
+            name: class_name,
+        };
+        let method_id = FuncId::from(84u32);
+        let caller_id = FuncId::from(85u32);
+        let self_local = LocalId::from(0u32);
+        let param_local = LocalId::from(1u32);
+        let result_local = LocalId::from(2u32);
+
+        let mut method = Function::new(
+            method_id,
+            "Receiver$m".to_string(),
+            vec![mk_local(0, Type::Any), mk_local(1, Type::Any)],
+            Type::Any,
+            None,
+        );
+        method.locals.insert(self_local, mk_local(0, Type::Any));
+        method.locals.insert(param_local, mk_local(1, Type::Any));
+        method.locals.insert(result_local, mk_local(2, Type::Any));
+        let method_bb = method.entry_block;
+        method.block_mut(method_bb).instructions.push(Instruction {
+            kind: InstructionKind::Copy {
+                dest: result_local,
+                src: Operand::Local(param_local),
+            },
+            span: None,
+        });
+        method.block_mut(method_bb).terminator =
+            Terminator::Return(Some(Operand::Local(result_local)));
+        method.is_ssa = true;
+
+        let mut caller = Function::new(
+            caller_id,
+            "caller".to_string(),
+            Vec::new(),
+            Type::None,
+            None,
+        );
+        let obj_local = LocalId::from(0u32);
+        let dest_local = LocalId::from(1u32);
+        caller
+            .locals
+            .insert(obj_local, mk_local(0, class_ty.clone()));
+        caller.locals.insert(dest_local, mk_local(1, Type::Any));
+        let caller_bb = caller.entry_block;
+        caller.block_mut(caller_bb).instructions.push(Instruction {
+            kind: InstructionKind::CallVirtual {
+                dest: dest_local,
+                obj: Operand::Local(obj_local),
+                slot: 0,
+                args: vec![Operand::Constant(Constant::Int(5))],
+            },
+            span: None,
+        });
+        caller.block_mut(caller_bb).terminator = Terminator::Return(None);
+        caller.is_ssa = true;
+
+        let mut module = Module::new();
+        module.add_function(method);
+        module.add_function(caller);
+        module.vtables.push(pyaot_mir::VtableInfo {
+            class_id,
+            entries: vec![pyaot_mir::VtableEntry {
+                slot: 0,
+                method_func_id: method_id,
+            }],
+        });
+
+        let table = analyze_and_materialize_types(&mut module);
+        let method = module
+            .functions
+            .get(&method_id)
+            .expect("method function exists");
+        assert_eq!(table.get(method_id, self_local), Some(&class_ty));
+        assert_eq!(table.get(method_id, param_local), Some(&Type::Int));
+        assert_eq!(method.params[0].ty, class_ty);
+        assert_eq!(method.params[1].ty, Type::Int);
+    }
+
+    #[test]
+    fn analyze_and_materialize_propagates_init_arg_into_field_reads() {
+        let mut interner = StringInterner::new();
+        let class_name = interner.intern("Value");
+        let field_name = interner.intern("data");
+        let class_id = ClassId::from(9u32);
+        let init_id = FuncId::from(90u32);
+        let reader_id = FuncId::from(91u32);
+        let caller_id = FuncId::from(92u32);
+        let self_local = LocalId::from(0u32);
+        let value_local = LocalId::from(1u32);
+        let read_dest = LocalId::from(1u32);
+
+        let class_ty = Type::Class {
+            class_id,
+            name: class_name,
+        };
+
+        let mut init = Function::new(
+            init_id,
+            "__init__".to_string(),
+            vec![mk_local(0, class_ty.clone()), mk_local(1, Type::Any)],
+            Type::None,
+            None,
+        );
+        init.locals
+            .insert(self_local, mk_local(0, class_ty.clone()));
+        init.locals.insert(value_local, mk_local(1, Type::Any));
+        let init_bb = init.entry_block;
+        init.block_mut(init_bb).instructions.push(Instruction {
+            kind: InstructionKind::RuntimeCall {
+                dest: LocalId::from(u32::MAX),
+                func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD),
+                args: vec![
+                    Operand::Local(self_local),
+                    Operand::Constant(Constant::Int(0)),
+                    Operand::Local(value_local),
+                ],
+            },
+            span: None,
+        });
+        init.block_mut(init_bb).terminator = Terminator::Return(None);
+        init.is_ssa = true;
+
+        let mut reader = Function::new(
+            reader_id,
+            "reader".to_string(),
+            vec![mk_local(0, class_ty.clone())],
+            Type::Any,
+            None,
+        );
+        reader
+            .locals
+            .insert(self_local, mk_local(0, class_ty.clone()));
+        reader.locals.insert(read_dest, mk_local(1, Type::Any));
+        let reader_bb = reader.entry_block;
+        reader.block_mut(reader_bb).instructions.push(Instruction {
+            kind: InstructionKind::RuntimeCall {
+                dest: read_dest,
+                func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD),
+                args: vec![
+                    Operand::Local(self_local),
+                    Operand::Constant(Constant::Int(0)),
+                ],
+            },
+            span: None,
+        });
+        reader.block_mut(reader_bb).terminator =
+            Terminator::Return(Some(Operand::Local(read_dest)));
+        reader.is_ssa = true;
+
+        let mut caller = Function::new(
+            caller_id,
+            "caller".to_string(),
+            Vec::new(),
+            Type::None,
+            None,
+        );
+        let obj_local = LocalId::from(0u32);
+        let call_result = LocalId::from(1u32);
+        caller
+            .locals
+            .insert(obj_local, mk_local(0, class_ty.clone()));
+        caller.locals.insert(call_result, mk_local(1, Type::None));
+        let caller_bb = caller.entry_block;
+        caller.block_mut(caller_bb).instructions.push(Instruction {
+            kind: InstructionKind::CallDirect {
+                dest: call_result,
+                func: init_id,
+                args: vec![
+                    Operand::Local(obj_local),
+                    Operand::Constant(Constant::Int(7)),
+                ],
+            },
+            span: None,
+        });
+        caller.block_mut(caller_bb).terminator = Terminator::Return(None);
+        caller.is_ssa = true;
+
+        let mut module = Module::new();
+        module.add_function(init);
+        module.add_function(reader);
+        module.add_function(caller);
+        seed_class(
+            &mut module,
+            class_id,
+            init_id,
+            &[(field_name, 0, Type::Any)],
+        );
+
+        let table = analyze_and_materialize_types(&mut module);
+        assert_eq!(
+            module.class_info[&class_id].field_types.get(&field_name),
+            Some(&Type::Int)
+        );
+        assert_eq!(table.get(reader_id, read_dest), Some(&Type::Int));
+        assert_eq!(
+            module.functions[&reader_id].locals[&read_dest].ty,
+            Type::Int
         );
     }
 }

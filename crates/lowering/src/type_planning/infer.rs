@@ -527,7 +527,9 @@ impl<'a> Lowering<'a> {
         iter_ty: Type,
     ) -> Type {
         match intrinsic {
-            hir::GeneratorIntrinsic::Create { .. } => Type::Iterator(Box::new(Type::Any)),
+            hir::GeneratorIntrinsic::Create { .. } => expr_ty
+                .cloned()
+                .unwrap_or_else(|| Type::Iterator(Box::new(Type::Any))),
             hir::GeneratorIntrinsic::IsExhausted(_)
             | hir::GeneratorIntrinsic::IterIsExhausted(_) => Type::Bool,
             // GetLocal: slot storage is type-erased (i64); desugaring annotates

@@ -43,12 +43,24 @@ impl<'a> Lowering<'a> {
     /// a boxed pointer even though the type has been narrowed.
     pub(crate) fn is_narrowed_union_var(&self, expr: &hir::Expr) -> bool {
         if let hir::ExprKind::Var(var_id) = &expr.kind {
+            if self.get_block_narrowed_local(var_id).is_some() {
+                return false;
+            }
             // Check if this variable is tracked in narrowed_union_vars
             // This tracks variables narrowed from Union to Int/Float/Bool/Str/None
             self.hir_types.narrowed_union_vars.contains_key(var_id)
         } else {
             false
         }
+    }
+
+    /// Whether the expression reads from a block-entry narrowing local rather
+    /// than the stable storage local/runtime slot.
+    pub(crate) fn uses_materialized_narrowing(&self, expr: &hir::Expr) -> bool {
+        matches!(
+            expr.kind,
+            hir::ExprKind::Var(var_id) if self.get_block_narrowed_local(&var_id).is_some()
+        )
     }
 
     /// Require exact argument count for a builtin function

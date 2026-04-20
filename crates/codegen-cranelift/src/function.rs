@@ -221,6 +221,7 @@ pub fn define_function(
                 stack_pop_id: compiler.stack_pop_id,
             },
             debug: crate::context::DebugContext {
+                function_name: &func.name,
                 return_type: &func.return_type,
                 line_map: compiler.line_map,
             },
@@ -290,7 +291,7 @@ pub fn define_function(
     compiler
         .module
         .define_function(cl_func_id, compiler.ctx)
-        .expect("failed to declare runtime function");
+        .unwrap_or_else(|err| panic!("failed to define function {}: {err:?}", func.name));
 
     Ok(())
 }

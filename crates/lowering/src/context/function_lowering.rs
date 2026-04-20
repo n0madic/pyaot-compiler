@@ -116,6 +116,7 @@ impl<'a> Lowering<'a> {
         self.codegen.expected_type = None;
         self.codegen.pending_varargs_from_unpack = None;
         self.codegen.pending_kwargs_from_unpack = None;
+        self.codegen.block_narrowed_locals.clear();
         // expr_types NOT cleared — ExprIds are unique per-module, so
         // memoized types from other functions remain valid.
 

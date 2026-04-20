@@ -55,6 +55,7 @@ impl<'a> Lowering<'a> {
                             Type::None,
                             mir_func,
                         );
+                        self.remove_block_narrowed_local(&target);
                         return Ok(());
                     }
                 }
@@ -66,6 +67,7 @@ impl<'a> Lowering<'a> {
         match &expr.kind {
             hir::ExprKind::FuncRef(func_id) => {
                 self.insert_var_func(target, *func_id);
+                self.remove_block_narrowed_local(&target);
                 // Skip lowering - calls are resolved through var_to_func
                 return Ok(());
             }
@@ -222,6 +224,7 @@ impl<'a> Lowering<'a> {
                         mir_func,
                     );
                 }
+                self.remove_block_narrowed_local(&target);
                 return Ok(());
             }
             // Handle decorated function pattern: var = decorator(FuncRef(func))
@@ -274,12 +277,14 @@ impl<'a> Lowering<'a> {
                                     // Mark this function as a wrapper so we know to handle
                                     // indirect calls to its first parameter
                                     self.insert_wrapper_func_id(wrapper_func_id);
+                                    self.remove_block_narrowed_local(&target);
                                     return Ok(());
                                 }
                             }
                         }
                         // Identity-like decorator: track the original function directly
                         self.insert_var_func(target, innermost_func_id);
+                        self.remove_block_narrowed_local(&target);
                         return Ok(());
                     }
                 }
@@ -318,7 +323,8 @@ impl<'a> Lowering<'a> {
         // `Float` here — and the Int write gets coerced below.
         let var_type = type_hint.unwrap_or_else(|| {
             // Priority: refined container type > prescan (when useful)
-            // > prior var_type > RHS inference.
+            // > active block-narrowing storage type > stable/base var type
+            // > live narrowed var_type > RHS inference.
             //
             // Prescan is skipped if it's "uselessly wide" — an Any-
             // parameterised container (Dict(Any, Any), List(Any),
@@ -330,11 +336,16 @@ impl<'a> Lowering<'a> {
                 .get(&target)
                 .cloned()
                 .filter(|ty| !crate::is_useless_container_ty(ty));
+            let base = self.get_base_var_type(&target).cloned().filter(|ty| {
+                !matches!(ty, Type::Any | Type::HeapAny) && !crate::is_useless_container_ty(ty)
+            });
             self.hir_types
                 .refined_var_types
                 .get(&target)
                 .cloned()
                 .or(prescan)
+                .or_else(|| self.get_block_narrowed_storage_type(&target).cloned())
+                .or(base)
                 .or_else(|| self.get_var_type(&target).cloned())
                 .unwrap_or_else(|| self.get_type_of_expr_id(value, hir_module))
         });
@@ -359,6 +370,8 @@ impl<'a> Lowering<'a> {
         } else {
             self.coerce_to_field_type(value_operand, &value_type, &var_type, mir_func)
         };
+
+        self.remove_block_narrowed_local(&target);
 
         // Check if this is a global variable
         if self.is_global(&target) {

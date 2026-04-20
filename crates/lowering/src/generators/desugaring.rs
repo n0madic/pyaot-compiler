@@ -232,6 +232,35 @@ fn shape_infer_type(
         hir::ExprKind::Str(_) => Some(Type::Str),
         hir::ExprKind::None => Some(Type::None),
 
+        hir::ExprKind::BinOp { left, op, right } => {
+            let left_ty = shape_infer_type(m, vmap, *left, depth + 1, interner)?;
+            let right_ty = shape_infer_type(m, vmap, *right, depth + 1, interner)?;
+            crate::type_planning::helpers::resolve_binop_type(op, &left_ty, &right_ty)
+        }
+        hir::ExprKind::UnOp { op, operand, .. } => {
+            let operand_ty = shape_infer_type(m, vmap, *operand, depth + 1, interner)?;
+            let ty = match op {
+                hir::UnOp::Not => Type::Bool,
+                hir::UnOp::Neg | hir::UnOp::Pos | hir::UnOp::Invert => operand_ty,
+            };
+            Some(ty)
+        }
+        hir::ExprKind::FuncRef(func_id) => {
+            m.func_defs.get(func_id).and_then(|f| f.return_type.clone())
+        }
+        hir::ExprKind::Closure { func, .. } => {
+            m.func_defs.get(func).and_then(|f| f.return_type.clone())
+        }
+        hir::ExprKind::Call { func, .. } => match &m.exprs[*func].kind {
+            hir::ExprKind::FuncRef(func_id) => {
+                m.func_defs.get(func_id).and_then(|f| f.return_type.clone())
+            }
+            hir::ExprKind::Closure { func, .. } => {
+                m.func_defs.get(func).and_then(|f| f.return_type.clone())
+            }
+            _ => None,
+        },
+
         hir::ExprKind::Tuple(items) => {
             let elem_types: Vec<Type> = items
                 .iter()
@@ -877,14 +906,6 @@ impl<'a> Lowering<'a> {
         m.functions.push(resume_func_id);
 
         // 5. Replace original function body with creator logic
-        let creator_body = build_creator_body(m, &func, &gen_vars, num_locals, span);
-        let mut creator_cfg = CfgBuilder::new();
-        let creator_entry_block = creator_cfg.new_block();
-        creator_cfg.enter(creator_entry_block);
-        creator_cfg.lower_cfg_stmts(&creator_body, m);
-        creator_cfg.terminate_if_open(hir::HirTerminator::Return(None));
-        let (creator_blocks, creator_entry_block, creator_try_scopes) =
-            creator_cfg.finish(creator_entry_block);
         // Retrieve the already-stored return type (Iterator[elem_type])
         let creator_return_type = self
             .func_return_types
@@ -892,6 +913,15 @@ impl<'a> Lowering<'a> {
             .get(&func_id)
             .cloned()
             .unwrap_or_else(|| Type::Iterator(Box::new(Type::Any)));
+        let creator_body =
+            build_creator_body(m, &func, &gen_vars, num_locals, &creator_return_type, span);
+        let mut creator_cfg = CfgBuilder::new();
+        let creator_entry_block = creator_cfg.new_block();
+        creator_cfg.enter(creator_entry_block);
+        creator_cfg.lower_cfg_stmts(&creator_body, m);
+        creator_cfg.terminate_if_open(hir::HirTerminator::Return(None));
+        let (creator_blocks, creator_entry_block, creator_try_scopes) =
+            creator_cfg.finish(creator_entry_block);
         let original = m
             .func_defs
             .get_mut(&func_id)
@@ -968,7 +998,26 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        Type::Any
+        let vmap = VarTypeMap::build(m);
+        let mut joined: Option<Type> = None;
+        let mut saw_any = false;
+        for yi in collect_yield_info(func, m) {
+            let yield_ty = match yi.yield_value {
+                Some(expr_id) => m.exprs[expr_id].ty.clone().unwrap_or_else(|| {
+                    shape_infer_type(m, &vmap, expr_id, 0, self.interner).unwrap_or(Type::Any)
+                }),
+                None => Type::None,
+            };
+            if matches!(yield_ty, Type::Any) {
+                saw_any = true;
+                continue;
+            }
+            joined = Some(match joined {
+                None => yield_ty,
+                Some(prev) => Type::unify_field_type(&prev, &yield_ty),
+            });
+        }
+        joined.unwrap_or(if saw_any { Type::Any } else { Type::None })
     }
 }
 
@@ -992,19 +1041,31 @@ fn shape_infer_yield_expr(
     };
 
     // Compute the iter's element type once.
-    let iter_elem = arg_elem_type(m, vmap, for_gen.iter_expr, 0, interner);
-    if let Some(Type::Tuple(elem_tys)) = &iter_elem {
-        if let hir::BindingTarget::Tuple { elts, .. } = &for_gen.target {
-            for (slot, leaf) in elts.iter().zip(elem_tys.iter()) {
-                if let hir::BindingTarget::Var(vid) = slot {
-                    // For-loop targets binding directly to a tuple element.
-                    augmented.by_param.insert(*vid, leaf.clone());
-                }
-            }
-        }
+    let iter_elem = Some(iter_elem_type_with(m, vmap, for_gen, interner));
+    if let Some(iter_elem) = &iter_elem {
+        augment_target_var_types(&for_gen.target, iter_elem, &mut augmented);
     }
 
     shape_infer_type(m, &augmented, yield_eid, 0, interner)
+}
+
+fn augment_target_var_types(target: &hir::BindingTarget, ty: &Type, augmented: &mut VarTypeMap) {
+    match (target, ty) {
+        (hir::BindingTarget::Var(vid), _) => {
+            augmented.by_param.insert(*vid, ty.clone());
+        }
+        (hir::BindingTarget::Tuple { elts, .. }, Type::Tuple(elem_tys)) => {
+            for (elt, elem_ty) in elts.iter().zip(elem_tys.iter()) {
+                augment_target_var_types(elt, elem_ty, augmented);
+            }
+        }
+        (hir::BindingTarget::Starred { inner, .. }, Type::List(elem_ty))
+        | (hir::BindingTarget::Starred { inner, .. }, Type::TupleVar(elem_ty))
+        | (hir::BindingTarget::Starred { inner, .. }, Type::Iterator(elem_ty)) => {
+            augment_target_var_types(inner, &Type::List(elem_ty.clone()), augmented);
+        }
+        _ => {}
+    }
 }
 
 // ============================================================================
@@ -1016,6 +1077,7 @@ fn build_creator_body(
     func: &hir::Function,
     gen_vars: &[GeneratorVar],
     num_locals: u32,
+    iterator_type: &Type,
     span: Span,
 ) -> Vec<GenStmt> {
     let mut stmts = Vec::new();
@@ -1028,7 +1090,7 @@ fn build_creator_body(
             func_id: func.id.0,
             num_locals,
         }),
-        Some(Type::Iterator(Box::new(Type::Any))),
+        Some(iterator_type.clone()),
         span,
     );
     stmts.push(mk_leaf_stmt(
@@ -1036,7 +1098,7 @@ fn build_creator_body(
         hir::StmtKind::Bind {
             target: hir::BindingTarget::Var(creator_gen_var),
             value: create,
-            type_hint: Some(Type::Iterator(Box::new(Type::Any))),
+            type_hint: Some(iterator_type.clone()),
         },
         span,
     ));

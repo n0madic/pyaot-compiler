@@ -55,6 +55,8 @@ pub struct GcState<'a> {
 
 /// Debug and type metadata for the function being compiled.
 pub struct DebugContext<'a> {
+    /// MIR function name for diagnostics.
+    pub function_name: &'a str,
     /// The function's declared return type (needed for return terminator codegen)
     pub return_type: &'a Type,
     /// Line map for source-level debug info (None when --debug is not set)
@@ -83,6 +85,22 @@ impl CodegenContext<'_> {
             .var_map
             .get(dest)
             .expect("internal error: local not in var_map - codegen bug");
+        let expected_ty = self
+            .symbols
+            .locals
+            .get(dest)
+            .map(|local| crate::utils::type_to_cranelift(&local.ty))
+            .expect("internal error: local metadata missing for codegen result");
+        let actual_ty = builder.func.dfg.value_type(value);
+        assert!(
+            expected_ty == actual_ty,
+            "codegen type mismatch in {} for local {:?}: declared {:?} => {:?}, value is {:?}",
+            self.debug.function_name,
+            dest,
+            self.symbols.locals.get(dest).map(|local| &local.ty),
+            expected_ty,
+            actual_ty
+        );
         builder.def_var(var, value);
         crate::gc::update_gc_root_if_needed(builder, dest, value, self.gc.frame_data);
     }

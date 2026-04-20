@@ -30,15 +30,25 @@ impl<'a> Lowering<'a> {
 
         // Handle identity operators first (is/is not) - pointer/value comparison
         if matches!(op, hir::CmpOp::Is | hir::CmpOp::IsNot) {
+            let left_materialized = self.uses_materialized_narrowing(left_expr);
+            let right_materialized = self.uses_materialized_narrowing(right_expr);
             // Check if either operand was originally a Union type (before narrowing)
             // A variable may have been narrowed from Union to a specific type, but still
             // holds a boxed pointer value that needs pointer comparison
-            let left_was_union = left_type.is_union()
-                || self.is_narrowed_union_var(left_expr)
-                || left_expr.ty.as_ref().is_some_and(|t| t.is_union());
-            let right_was_union = right_type.is_union()
-                || self.is_narrowed_union_var(right_expr)
-                || right_expr.ty.as_ref().is_some_and(|t| t.is_union());
+            let left_was_union = if left_materialized {
+                left_type.is_union()
+            } else {
+                left_type.is_union()
+                    || self.is_narrowed_union_var(left_expr)
+                    || left_expr.ty.as_ref().is_some_and(|t| t.is_union())
+            };
+            let right_was_union = if right_materialized {
+                right_type.is_union()
+            } else {
+                right_type.is_union()
+                    || self.is_narrowed_union_var(right_expr)
+                    || right_expr.ty.as_ref().is_some_and(|t| t.is_union())
+            };
 
             // For Union types (or narrowed Union variables), box both operands and use pointer comparison
             if left_was_union || right_was_union {

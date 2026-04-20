@@ -19,6 +19,7 @@
 
 use indexmap::IndexMap;
 use pyaot_hir as hir;
+use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::{Span, VarId};
 
@@ -72,6 +73,108 @@ pub struct NarrowingAnalysis {
 }
 
 impl<'a> Lowering<'a> {
+    /// Apply a block's incoming narrowings by materializing explicit MIR defs
+    /// at block entry and updating the lowering-time type view for HIR queries.
+    pub(crate) fn enter_cfg_block_narrowings(
+        &mut self,
+        narrowings: &[TypeNarrowingInfo],
+        mir_func: &mut mir::Function,
+    ) {
+        let mut saved_var_types = IndexMap::new();
+        self.clear_block_narrowed_locals();
+
+        for info in narrowings {
+            if matches!(info.narrowed_type, Type::Never) {
+                continue;
+            }
+            if let Some(original) = self.get_var_type(&info.var_id).cloned() {
+                saved_var_types.entry(info.var_id).or_insert(original);
+            }
+            self.insert_var_type(info.var_id, info.narrowed_type.clone());
+            let narrowed_local = self.materialize_block_narrowing_local(info, mir_func);
+            self.insert_block_narrowed_local(info.var_id, narrowed_local);
+        }
+
+        self.hir_types.narrowing_stack.push(NarrowingFrame {
+            saved_var_types,
+            added_union_tracking: Vec::new(),
+        });
+    }
+
+    /// Restore the pre-branch type view and drop any block-local narrowing defs.
+    pub(crate) fn leave_cfg_block_narrowings(&mut self) {
+        self.clear_block_narrowed_locals();
+        self.pop_narrowing_frame();
+    }
+
+    fn materialize_block_narrowing_local(
+        &mut self,
+        info: &TypeNarrowingInfo,
+        mir_func: &mut mir::Function,
+    ) -> pyaot_utils::LocalId {
+        let src = self.narrowing_source_operand(info, mir_func);
+        if matches!(
+            info.original_type,
+            Type::Union(_) | Type::Any | Type::HeapAny
+        ) {
+            if let Some(unbox_func) = Self::unbox_func_for_type(&info.narrowed_type) {
+                let unboxed = self.emit_runtime_call(
+                    unbox_func,
+                    vec![src],
+                    info.narrowed_type.clone(),
+                    mir_func,
+                );
+                let dest = self.alloc_and_add_local(info.narrowed_type.clone(), mir_func);
+                self.emit_instruction(mir::InstructionKind::Refine {
+                    dest,
+                    src: mir::Operand::Local(unboxed),
+                    ty: info.narrowed_type.clone(),
+                });
+                return dest;
+            }
+        }
+
+        let dest = self.alloc_and_add_local(info.narrowed_type.clone(), mir_func);
+        self.emit_instruction(mir::InstructionKind::Refine {
+            dest,
+            src,
+            ty: info.narrowed_type.clone(),
+        });
+        dest
+    }
+
+    fn narrowing_source_operand(
+        &mut self,
+        info: &TypeNarrowingInfo,
+        mir_func: &mut mir::Function,
+    ) -> mir::Operand {
+        if self.is_global(&info.var_id) {
+            let effective_var_id = self.get_effective_var_id(info.var_id);
+            let get_func = self.get_global_get_func(&info.original_type);
+            let local = self.emit_runtime_call(
+                get_func,
+                vec![mir::Operand::Constant(mir::Constant::Int(effective_var_id))],
+                info.original_type.clone(),
+                mir_func,
+            );
+            return mir::Operand::Local(local);
+        }
+
+        if let Some(cell_local) = self.get_nonlocal_cell(&info.var_id) {
+            let get_func = self.get_cell_get_func(&info.original_type);
+            let local = self.emit_runtime_call(
+                get_func,
+                vec![mir::Operand::Local(cell_local)],
+                info.original_type.clone(),
+                mir_func,
+            );
+            return mir::Operand::Local(local);
+        }
+
+        let local = self.get_or_create_local(info.var_id, info.original_type.clone(), mir_func);
+        mir::Operand::Local(local)
+    }
+
     /// Analyze a condition expression for type narrowing opportunities.
     /// Returns narrowings for both then-branch and else-branch.
     pub(crate) fn analyze_condition_for_narrowing(
@@ -525,6 +628,7 @@ impl<'a> Lowering<'a> {
     ///
     /// Replaces the legacy `apply_narrowings` / `restore_types` pair
     /// (S1.9d, Phase 1 §1.4). Semantics unchanged.
+    #[allow(dead_code)]
     pub(crate) fn push_narrowing_frame(&mut self, narrowings: &[TypeNarrowingInfo]) {
         let mut saved_var_types = IndexMap::new();
         let mut added_union_tracking = Vec::new();
@@ -603,6 +707,8 @@ impl<'a> Lowering<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pyaot_mir::InstructionKind;
+    use pyaot_utils::{ClassId, LocalId, StringInterner};
 
     #[test]
     fn test_narrowing_analysis_default() {
@@ -786,5 +892,118 @@ mod tests {
         let optional_list = Type::Union(vec![Type::List(Box::new(Type::Int)), Type::None]);
         let narrowed = optional_list.narrow_excluding(&Type::None);
         assert_eq!(narrowed, Type::List(Box::new(Type::Int)));
+    }
+
+    #[test]
+    fn cfg_block_narrowing_materializes_unbox_and_refine_for_primitive_union() {
+        let mut interner = StringInterner::default();
+        let mut lowering = Lowering::new(&mut interner);
+        let mut mir_func = mir::Function::new(
+            pyaot_utils::FuncId::from(0u32),
+            "f".to_string(),
+            Vec::new(),
+            Type::None,
+            None,
+        );
+        let block = lowering.new_block();
+        lowering.push_block(block);
+
+        let var_id = VarId::new(0);
+        let union_ty = Type::Union(vec![Type::Int, Type::Str]);
+        let base_local = LocalId::from(0u32);
+        mir_func.add_local(mir::Local {
+            id: base_local,
+            name: None,
+            ty: union_ty.clone(),
+            is_gc_root: true,
+        });
+        lowering.insert_var_local(var_id, base_local);
+        lowering.insert_var_type(var_id, union_ty.clone());
+
+        lowering.enter_cfg_block_narrowings(
+            &[TypeNarrowingInfo {
+                var_id,
+                narrowed_type: Type::Int,
+                original_type: union_ty.clone(),
+            }],
+            &mut mir_func,
+        );
+
+        let instructions = lowering.current_block_mut().instructions.clone();
+        assert_eq!(instructions.len(), 2);
+        match &instructions[0].kind {
+            InstructionKind::RuntimeCall { func, .. } => match func {
+                mir::RuntimeFunc::Call(def) => {
+                    assert!(std::ptr::eq(
+                        *def,
+                        &pyaot_core_defs::runtime_func_def::RT_UNBOX_INT
+                    ));
+                }
+                other => panic!("expected runtime unbox call, got {other:?}"),
+            },
+            other => panic!("expected RuntimeCall, got {other:?}"),
+        }
+        match &instructions[1].kind {
+            InstructionKind::Refine { ty, .. } => assert_eq!(ty, &Type::Int),
+            other => panic!("expected Refine, got {other:?}"),
+        }
+        let narrowed_local = lowering
+            .get_block_narrowed_local(&var_id)
+            .expect("narrowed local recorded");
+        assert_eq!(mir_func.locals[&narrowed_local].ty, Type::Int);
+
+        lowering.leave_cfg_block_narrowings();
+        assert_eq!(lowering.get_var_type(&var_id), Some(&union_ty));
+        assert!(lowering.get_block_narrowed_local(&var_id).is_none());
+    }
+
+    #[test]
+    fn cfg_block_narrowing_materializes_refine_only_for_heap_compatible_types() {
+        let mut interner = StringInterner::default();
+        let mut lowering = Lowering::new(&mut interner);
+        let mut mir_func = mir::Function::new(
+            pyaot_utils::FuncId::from(1u32),
+            "g".to_string(),
+            Vec::new(),
+            Type::None,
+            None,
+        );
+        let block = lowering.new_block();
+        lowering.push_block(block);
+
+        let class_ty = Type::Class {
+            class_id: ClassId::from(1u32),
+            name: lowering.interner.intern("Box"),
+        };
+        let var_id = VarId::new(1);
+        let base_local = LocalId::from(0u32);
+        mir_func.add_local(mir::Local {
+            id: base_local,
+            name: None,
+            ty: Type::Any,
+            is_gc_root: true,
+        });
+        lowering.insert_var_local(var_id, base_local);
+        lowering.insert_var_type(var_id, Type::Any);
+
+        lowering.enter_cfg_block_narrowings(
+            &[TypeNarrowingInfo {
+                var_id,
+                narrowed_type: class_ty.clone(),
+                original_type: Type::Any,
+            }],
+            &mut mir_func,
+        );
+
+        let instructions = lowering.current_block_mut().instructions.clone();
+        assert_eq!(instructions.len(), 1);
+        match &instructions[0].kind {
+            InstructionKind::Refine { ty, .. } => assert_eq!(ty, &class_ty),
+            other => panic!("expected Refine, got {other:?}"),
+        }
+        let narrowed_local = lowering
+            .get_block_narrowed_local(&var_id)
+            .expect("narrowed local recorded");
+        assert_eq!(mir_func.locals[&narrowed_local].ty, class_ty);
     }
 }

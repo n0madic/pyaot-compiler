@@ -357,11 +357,12 @@ impl<'a> Lowering<'a> {
                 self.push_block(block);
             }
 
-            // Apply narrowing frame for this block's entry type-info.
-            // CRITICAL: must stay active through terminator emission.
+            // Materialize block-entry narrowings as explicit MIR defs and keep
+            // the narrowed type view active through terminator emission.
             let narrow = narrowings.get(hir_id).cloned();
+            self.clear_block_narrowed_locals();
             if let Some(ref n) = narrow {
-                self.push_narrowing_frame(n);
+                self.enter_cfg_block_narrowings(n, mir_func);
             }
 
             // Handler preamble — before stmts, if this is a handler entry.
@@ -592,9 +593,9 @@ impl<'a> Lowering<'a> {
                 }
             }
 
-            // Pop narrowing frame AFTER terminator emission.
+            // Restore the pre-branch view AFTER terminator emission.
             if narrow.is_some() {
-                self.pop_narrowing_frame();
+                self.leave_cfg_block_narrowings();
             }
         }
 

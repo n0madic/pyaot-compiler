@@ -23,7 +23,15 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
-        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
+        let iter_expr = &hir_module.exprs[iter_id];
+        let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
+        let hir_iter_type = self.get_type_of_expr_id(iter_id, hir_module);
+        let lowered_iter_type = self.operand_type(&iter_operand, mir_func);
+        let iter_type = if matches!(hir_iter_type, Type::Any) || hir_iter_type.is_union() {
+            lowered_iter_type
+        } else {
+            hir_iter_type
+        };
 
         let Some((kind, elem_type)) = get_iterable_info(&iter_type) else {
             // Fallback for unknown types: use iterator protocol
@@ -84,9 +92,6 @@ impl<'a> Lowering<'a> {
                 types
             }
         };
-
-        let iter_expr = &hir_module.exprs[iter_id];
-        let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {

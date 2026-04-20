@@ -61,10 +61,10 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         // Get operand types using get_expr_type for better inference
         let left_expr = &hir_module.exprs[left];
-        let left_ty = self.get_type_of_expr_id(left, hir_module);
+        let left_hir_ty = self.get_type_of_expr_id(left, hir_module);
 
         // Check for string concatenation chain optimization
-        if matches!(op, hir::BinOp::Add) && matches!(left_ty, Type::Str) {
+        if matches!(op, hir::BinOp::Add) && matches!(left_hir_ty, Type::Str) {
             // Collect the full chain starting from the current expression
             let mut chain = Vec::new();
 
@@ -84,7 +84,8 @@ impl<'a> Lowering<'a> {
         let right_expr = &hir_module.exprs[right];
         let right_op = self.lower_expr(right_expr, hir_module, mir_func)?;
 
-        let right_ty = self.get_type_of_expr_id(right, hir_module);
+        let left_ty = self.operand_type(&left_op, mir_func);
+        let right_ty = self.operand_type(&right_op, mir_func);
 
         // Infer result type based on operand types
         let result_ty = if matches!(left_ty, Type::Class { .. }) {

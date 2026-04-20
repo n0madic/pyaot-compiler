@@ -337,6 +337,11 @@ pub struct CodeGenState {
     /// appropriate variant; subsequent IterHasNext / IterAdvance for the
     /// same ExprId read from the cache.
     pub iter_cache: IndexMap<pyaot_hir::ExprId, IterState>,
+    /// Per-block shadow locals for branch narrowings materialized as MIR
+    /// defs at block entry. Reads consult this before falling back to the
+    /// stable `var_to_local` mapping so branch-local unbox/refine state
+    /// does not leak across sibling blocks.
+    pub block_narrowed_locals: IndexMap<VarId, LocalId>,
 }
 
 /// Variable names → local IDs, function references, global tracking, per-function type state

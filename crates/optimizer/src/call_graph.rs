@@ -23,16 +23,18 @@
 //! * `CallVirtual` / `CallVirtualNamed` — class method dispatch. These
 //!   resolve at runtime via the vtable; devirtualisation handles the
 //!   specific case where the receiver's concrete class is known. Until
-//!   then, treat vtable calls the same as indirect: conservative edges
-//!   from caller to every virtual-method-bearing function.
+//!   then, conservative virtual edges target only methods reachable
+//!   through module vtables (slot-matched for `CallVirtual`, all known
+//!   vtable methods for `CallVirtualNamed`).
 //! * `RuntimeCall` — runtime-library calls are not part of the user
 //!   call graph; they do not flow into WPA decisions.
 
 use std::collections::HashMap;
 
 use indexmap::{IndexMap, IndexSet};
-use pyaot_mir::{InstructionKind, Module};
-use pyaot_utils::{BlockId, FuncId};
+use pyaot_mir::{InstructionKind, Module, Operand};
+use pyaot_types::Type;
+use pyaot_utils::{BlockId, ClassId, FuncId};
 
 /// One specific call edge. `(caller, callee)` pairs are de-duplicated in
 /// the graph by `(caller, callee)` key, but `CallSite::block` and
@@ -62,8 +64,8 @@ pub enum CallKind {
     /// the caller to every address-taken function.
     Indirect,
     /// `CallVirtual` / `CallVirtualNamed` — dispatched through a vtable.
-    /// Conservative: targets every function whose address was taken (a
-    /// closer approximation needs class-hierarchy analysis).
+    /// Conservative: targets methods reachable through module vtables
+    /// (slot-matched when available; otherwise every known vtable method).
     Virtual,
 }
 
@@ -80,8 +82,7 @@ pub struct CallGraph {
     /// suitable for bottom-up analyses). Singletons are included.
     pub sccs: Vec<Vec<FuncId>>,
     /// Functions whose address is taken via `FuncAddr` anywhere in the
-    /// module. Every indirect / virtual call edge conservatively targets
-    /// this set.
+    /// module. Indirect calls conservatively target this set.
     pub address_taken: IndexSet<FuncId>,
 }
 
@@ -91,6 +92,9 @@ impl CallGraph {
     /// digraph. Runs in `O(V + E)` time.
     pub fn build(module: &Module) -> Self {
         let address_taken = collect_address_taken(module);
+        let virtual_targets_by_slot = collect_virtual_targets_by_slot(module);
+        let all_virtual_targets = collect_all_virtual_targets(module);
+        let vtable_map = build_vtable_map(module);
 
         let mut callers: IndexMap<FuncId, Vec<CallSite>> = IndexMap::new();
         let mut callees: IndexMap<FuncId, Vec<CallSite>> = IndexMap::new();
@@ -140,13 +144,51 @@ impl CallGraph {
                                 );
                             }
                         }
-                        InstructionKind::CallVirtual { .. }
-                        | InstructionKind::CallVirtualNamed { .. } => {
-                            // Vtable dispatch: conservative over-approx —
-                            // every address-taken function is a possible
-                            // target. Devirtualisation narrows specific
-                            // call sites by rewriting them to CallDirect.
-                            for &target in &address_taken {
+                        InstructionKind::CallVirtual { obj, slot, .. } => {
+                            // If the receiver already has a concrete class in MIR
+                            // metadata, resolve the exact vtable entry now even
+                            // before the dedicated devirtualization pass rewrites
+                            // the instruction.
+                            if let Some(class_id) = operand_class_id(obj, func) {
+                                if let Some(&target) = vtable_map.get(&(class_id, *slot)) {
+                                    push_edge(
+                                        &mut callers,
+                                        &mut callees,
+                                        CallSite {
+                                            caller: caller_id,
+                                            callee: target,
+                                            block: bid,
+                                            instruction: idx,
+                                            kind: CallKind::Virtual,
+                                        },
+                                    );
+                                    continue;
+                                }
+                            }
+
+                            // Otherwise fall back to the slot-based conservative
+                            // over-approximation across all class vtables.
+                            let Some(targets) = virtual_targets_by_slot.get(slot) else {
+                                continue;
+                            };
+                            for &target in targets {
+                                push_edge(
+                                    &mut callers,
+                                    &mut callees,
+                                    CallSite {
+                                        caller: caller_id,
+                                        callee: target,
+                                        block: bid,
+                                        instruction: idx,
+                                        kind: CallKind::Virtual,
+                                    },
+                                );
+                            }
+                        }
+                        InstructionKind::CallVirtualNamed { .. } => {
+                            // Name-hash protocol dispatch: no slot information, so
+                            // conservatively target every method present in a vtable.
+                            for &target in &all_virtual_targets {
                                 push_edge(
                                     &mut callers,
                                     &mut callees,
@@ -243,6 +285,54 @@ fn collect_address_taken(module: &Module) -> IndexSet<FuncId> {
         }
     }
     out
+}
+
+fn collect_virtual_targets_by_slot(module: &Module) -> IndexMap<usize, IndexSet<FuncId>> {
+    let mut out: IndexMap<usize, IndexSet<FuncId>> = IndexMap::new();
+    for vtable in &module.vtables {
+        for entry in &vtable.entries {
+            out.entry(entry.slot)
+                .or_default()
+                .insert(entry.method_func_id);
+        }
+    }
+    out
+}
+
+fn collect_all_virtual_targets(module: &Module) -> IndexSet<FuncId> {
+    let mut out = IndexSet::new();
+    for vtable in &module.vtables {
+        for entry in &vtable.entries {
+            out.insert(entry.method_func_id);
+        }
+    }
+    out
+}
+
+fn build_vtable_map(module: &Module) -> HashMap<(ClassId, usize), FuncId> {
+    let mut map = HashMap::new();
+    for vtable in &module.vtables {
+        for entry in &vtable.entries {
+            map.insert((vtable.class_id, entry.slot), entry.method_func_id);
+        }
+    }
+    map
+}
+
+fn operand_class_id(operand: &Operand, func: &pyaot_mir::Function) -> Option<ClassId> {
+    let Operand::Local(id) = operand else {
+        return None;
+    };
+    let ty = func.locals.get(id).map(|local| &local.ty).or_else(|| {
+        func.params
+            .iter()
+            .find(|param| param.id == *id)
+            .map(|param| &param.ty)
+    })?;
+    match ty {
+        Type::Class { class_id, .. } => Some(*class_id),
+        _ => None,
+    }
 }
 
 fn push_edge(
@@ -548,5 +638,66 @@ mod tests {
 
         // The indirect site is recorded with CallKind::Indirect.
         assert!(f0_callees.iter().any(|s| s.kind == CallKind::Indirect));
+    }
+
+    #[test]
+    fn virtual_edges_target_slot_matched_vtable_methods() {
+        let mut module = Module::new();
+        let mut caller = mk_func(0);
+        let obj = LocalId::from(0u32);
+        let dest = LocalId::from(1u32);
+        caller.locals.insert(
+            obj,
+            Local {
+                id: obj,
+                name: None,
+                ty: Type::Any,
+                is_gc_root: true,
+            },
+        );
+        caller.locals.insert(
+            dest,
+            Local {
+                id: dest,
+                name: None,
+                ty: Type::Any,
+                is_gc_root: false,
+            },
+        );
+        let bb0 = caller.entry_block;
+        caller.block_mut(bb0).instructions.push(Instruction {
+            kind: InstructionKind::CallVirtual {
+                dest,
+                obj: Operand::Local(obj),
+                slot: 0,
+                args: vec![Operand::Constant(Constant::Int(7))],
+            },
+            span: None,
+        });
+        caller.block_mut(bb0).terminator = Terminator::Return(None);
+
+        let method = Function::new(
+            FuncId::from(1u32),
+            "C$m".to_string(),
+            Vec::new(),
+            Type::None,
+            None,
+        );
+
+        module.add_function(caller);
+        module.add_function(method);
+        module.vtables.push(pyaot_mir::VtableInfo {
+            class_id: pyaot_utils::ClassId::from(0u32),
+            entries: vec![pyaot_mir::VtableEntry {
+                slot: 0,
+                method_func_id: FuncId::from(1u32),
+            }],
+        });
+
+        let cg = CallGraph::build(&module);
+        assert!(!cg.address_taken.contains(&FuncId::from(1u32)));
+        assert!(cg.callees[&FuncId::from(0u32)]
+            .iter()
+            .any(|site| site.kind == CallKind::Virtual && site.callee == FuncId::from(1u32)));
     }
 }

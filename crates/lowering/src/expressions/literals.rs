@@ -51,6 +51,10 @@ impl<'a> Lowering<'a> {
         expr: &hir::Expr,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
+        if let Some(local_id) = self.get_block_narrowed_local(&var_id) {
+            return Ok(mir::Operand::Local(local_id));
+        }
+
         // Check if this is a global variable
         if self.is_global(&var_id) {
             // Global variable: emit runtime call to get the value

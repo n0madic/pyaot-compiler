@@ -27,13 +27,17 @@ impl<'a> Lowering<'a> {
                 func_id,
                 num_locals,
             } => {
+                let result_ty = expr
+                    .ty
+                    .clone()
+                    .unwrap_or_else(|| Type::Iterator(Box::new(Type::Any)));
                 let dest = self.emit_runtime_call_gc(
                     mir::RuntimeFunc::Call(&RT_MAKE_GENERATOR),
                     vec![
                         mir::Operand::Constant(mir::Constant::Int(*func_id as i64)),
                         mir::Operand::Constant(mir::Constant::Int(*num_locals as i64)),
                     ],
-                    Type::Iterator(Box::new(Type::Any)),
+                    result_ty,
                     mir_func,
                 );
                 Ok(mir::Operand::Local(dest))

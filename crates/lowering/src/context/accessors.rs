@@ -40,6 +40,36 @@ impl<'a> Lowering<'a> {
 // =============================================================================
 
 impl<'a> Lowering<'a> {
+    /// Get a block-local shadow local emitted for a materialized narrowing.
+    pub(crate) fn get_block_narrowed_local(&self, var_id: &VarId) -> Option<LocalId> {
+        self.codegen.block_narrowed_locals.get(var_id).copied()
+    }
+
+    /// Record the block-local shadow local for a materialized narrowing.
+    pub(crate) fn insert_block_narrowed_local(&mut self, var_id: VarId, local_id: LocalId) {
+        self.codegen.block_narrowed_locals.insert(var_id, local_id);
+    }
+
+    /// Drop a materialized narrowing local, typically after the variable is reassigned.
+    pub(crate) fn remove_block_narrowed_local(&mut self, var_id: &VarId) {
+        self.codegen.block_narrowed_locals.shift_remove(var_id);
+    }
+
+    /// If `var_id` currently has a block-local narrowed shadow, return the
+    /// original pre-narrowing storage type that writes must target.
+    pub(crate) fn get_block_narrowed_storage_type(&self, var_id: &VarId) -> Option<&Type> {
+        self.codegen.block_narrowed_locals.get(var_id)?;
+        self.hir_types
+            .narrowing_stack
+            .last()
+            .and_then(|frame| frame.saved_var_types.get(var_id))
+    }
+
+    /// Clear all per-block materialized narrowing locals.
+    pub(crate) fn clear_block_narrowed_locals(&mut self) {
+        self.codegen.block_narrowed_locals.clear();
+    }
+
     /// Get the LocalId for a variable, if it exists.
     pub(crate) fn get_var_local(&self, var_id: &VarId) -> Option<LocalId> {
         self.symbols.var_to_local.get(var_id).copied()
