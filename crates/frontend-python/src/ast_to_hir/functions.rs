@@ -1,7 +1,7 @@
 use super::AstToHir;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
-    cfg_build::{materialize_legacy_body, CfgBuilder, CfgStmt},
+    cfg_builder::{CfgBuilder, CfgStmt},
     *,
 };
 use pyaot_types::Type;
@@ -107,7 +107,6 @@ impl AstToHir {
         let func_cell_vars = std::mem::take(&mut self.scope.current_cell_vars);
         let func_is_generator = self.scope.current_func_is_generator;
 
-        let legacy_body = materialize_legacy_body(&body_stmts, &mut self.module);
         let mut cfg = CfgBuilder::new();
         let entry_block = cfg.new_block();
         cfg.enter(entry_block);
@@ -119,7 +118,6 @@ impl AstToHir {
             name: func_name,
             params,
             return_type,
-            body: legacy_body,
             span: func_span,
             cell_vars: func_cell_vars,
             nonlocal_vars: std::collections::HashSet::new(), // Top-level functions don't have nonlocal

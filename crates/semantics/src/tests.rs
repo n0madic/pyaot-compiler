@@ -1,7 +1,8 @@
 use super::*;
 use indexmap::IndexSet;
-use pyaot_hir::{BindingTarget, ClassDef, ExceptHandler, Expr, Module, Stmt};
-use pyaot_utils::{ClassId, HirBlockId, Span, StringInterner, VarId};
+use pyaot_hir::cfg_builder::{CfgBuilder, CfgExceptHandler, CfgStmt};
+use pyaot_hir::{BindingTarget, ClassDef, Expr, Function, HirTerminator, MethodKind, Module, Stmt};
+use pyaot_utils::{ClassId, FuncId, Span, StringInterner, VarId};
 
 fn dummy_span() -> Span {
     Span { start: 0, end: 0 }
@@ -12,6 +13,37 @@ fn create_test_module() -> (Module, StringInterner) {
     let module_name = interner.intern("test_module");
     let module = Module::new(module_name);
     (module, interner)
+}
+
+fn install_module_init(module: &mut Module, body: Vec<CfgStmt>) {
+    let mut cfg = CfgBuilder::new();
+    let entry_block = cfg.new_block();
+    cfg.enter(entry_block);
+    cfg.lower_cfg_stmts(&body, module);
+    cfg.terminate_if_open(HirTerminator::Return(None));
+    let (blocks, entry_block, try_scopes) = cfg.finish(entry_block);
+
+    let func_id = FuncId::new(0);
+    module.module_init_func = Some(func_id);
+    module.functions.push(func_id);
+    module.func_defs.insert(
+        func_id,
+        Function {
+            id: func_id,
+            name: module.name,
+            params: Vec::new(),
+            return_type: None,
+            span: dummy_span(),
+            cell_vars: std::collections::HashSet::new(),
+            nonlocal_vars: std::collections::HashSet::new(),
+            is_generator: false,
+            method_kind: MethodKind::default(),
+            is_abstract: false,
+            blocks,
+            entry_block,
+            try_scopes,
+        },
+    );
 }
 
 #[test]
@@ -31,7 +63,7 @@ fn test_break_outside_loop_fails() {
         kind: StmtKind::Break,
         span: dummy_span(),
     });
-    module.module_init_stmts.push(break_stmt);
+    install_module_init(&mut module, vec![CfgStmt::stmt(break_stmt)]);
 
     let mut analyzer = SemanticAnalyzer::new(&interner);
     let result = analyzer.analyze(&module);
@@ -53,7 +85,7 @@ fn test_continue_outside_loop_fails() {
         kind: StmtKind::Continue,
         span: dummy_span(),
     });
-    module.module_init_stmts.push(continue_stmt);
+    install_module_init(&mut module, vec![CfgStmt::stmt(continue_stmt)]);
 
     let mut analyzer = SemanticAnalyzer::new(&interner);
     let result = analyzer.analyze(&module);
@@ -78,7 +110,7 @@ fn test_bare_raise_outside_except_fails() {
         },
         span: dummy_span(),
     });
-    module.module_init_stmts.push(raise_stmt);
+    install_module_init(&mut module, vec![CfgStmt::stmt(raise_stmt)]);
 
     let mut analyzer = SemanticAnalyzer::new(&interner);
     let result = analyzer.analyze(&module);
@@ -107,15 +139,15 @@ fn test_break_inside_while_loop_succeeds() {
         span: dummy_span(),
     });
 
-    let while_stmt = module.stmts.alloc(Stmt {
-        kind: StmtKind::While {
+    install_module_init(
+        &mut module,
+        vec![CfgStmt::While {
             cond: true_expr,
-            body: vec![break_stmt],
-            else_block: vec![],
-        },
-        span: dummy_span(),
-    });
-    module.module_init_stmts.push(while_stmt);
+            body: vec![CfgStmt::stmt(break_stmt)],
+            else_body: vec![],
+            span: dummy_span(),
+        }],
+    );
 
     let mut analyzer = SemanticAnalyzer::new(&interner);
     let result = analyzer.analyze(&module);
@@ -140,16 +172,16 @@ fn test_continue_inside_for_loop_succeeds() {
     });
 
     let var_id = VarId::new(0);
-    let for_stmt = module.stmts.alloc(Stmt {
-        kind: StmtKind::ForBind {
+    install_module_init(
+        &mut module,
+        vec![CfgStmt::For {
             target: BindingTarget::Var(var_id),
             iter: empty_list,
-            body: vec![continue_stmt],
-            else_block: vec![],
-        },
-        span: dummy_span(),
-    });
-    module.module_init_stmts.push(for_stmt);
+            body: vec![CfgStmt::stmt(continue_stmt)],
+            else_body: vec![],
+            span: dummy_span(),
+        }],
+    );
 
     let mut analyzer = SemanticAnalyzer::new(&interner);
     let result = analyzer.analyze(&module);
@@ -175,21 +207,20 @@ fn test_bare_raise_inside_except_succeeds() {
         span: dummy_span(),
     });
 
-    let try_stmt = module.stmts.alloc(Stmt {
-        kind: StmtKind::Try {
-            body: vec![pass_stmt],
-            handlers: vec![ExceptHandler {
+    install_module_init(
+        &mut module,
+        vec![CfgStmt::Try {
+            body: vec![CfgStmt::stmt(pass_stmt)],
+            handlers: vec![CfgExceptHandler {
                 ty: None,
                 name: None,
-                body: vec![raise_stmt],
-                entry_block: HirBlockId::new(0),
+                body: vec![CfgStmt::stmt(raise_stmt)],
             }],
-            else_block: vec![],
-            finally_block: vec![],
-        },
-        span: dummy_span(),
-    });
-    module.module_init_stmts.push(try_stmt);
+            else_body: vec![],
+            finally_body: vec![],
+            span: dummy_span(),
+        }],
+    );
 
     let mut analyzer = SemanticAnalyzer::new(&interner);
     let result = analyzer.analyze(&module);
@@ -219,24 +250,20 @@ fn test_nested_loops_succeed() {
         span: dummy_span(),
     });
 
-    let inner_while = module.stmts.alloc(Stmt {
-        kind: StmtKind::While {
-            cond: true_expr2,
-            body: vec![break_stmt],
-            else_block: vec![],
-        },
-        span: dummy_span(),
-    });
-
-    let outer_while = module.stmts.alloc(Stmt {
-        kind: StmtKind::While {
+    install_module_init(
+        &mut module,
+        vec![CfgStmt::While {
             cond: true_expr1,
-            body: vec![inner_while],
-            else_block: vec![],
-        },
-        span: dummy_span(),
-    });
-    module.module_init_stmts.push(outer_while);
+            body: vec![CfgStmt::While {
+                cond: true_expr2,
+                body: vec![CfgStmt::stmt(break_stmt)],
+                else_body: vec![],
+                span: dummy_span(),
+            }],
+            else_body: vec![],
+            span: dummy_span(),
+        }],
+    );
 
     let mut analyzer = SemanticAnalyzer::new(&interner);
     let result = analyzer.analyze(&module);
@@ -262,16 +289,16 @@ fn test_bare_raise_in_finally_succeeds() {
         span: dummy_span(),
     });
 
-    let try_stmt = module.stmts.alloc(Stmt {
-        kind: StmtKind::Try {
-            body: vec![pass_stmt],
+    install_module_init(
+        &mut module,
+        vec![CfgStmt::Try {
+            body: vec![CfgStmt::stmt(pass_stmt)],
             handlers: vec![],
-            else_block: vec![],
-            finally_block: vec![raise_stmt],
-        },
-        span: dummy_span(),
-    });
-    module.module_init_stmts.push(try_stmt);
+            else_body: vec![],
+            finally_body: vec![CfgStmt::stmt(raise_stmt)],
+            span: dummy_span(),
+        }],
+    );
 
     let mut analyzer = SemanticAnalyzer::new(&interner);
     let result = analyzer.analyze(&module);
@@ -297,7 +324,7 @@ fn test_raise_with_expression_outside_except_succeeds() {
         },
         span: dummy_span(),
     });
-    module.module_init_stmts.push(raise_stmt);
+    install_module_init(&mut module, vec![CfgStmt::stmt(raise_stmt)]);
 
     let mut analyzer = SemanticAnalyzer::new(&interner);
     let result = analyzer.analyze(&module);
@@ -356,7 +383,7 @@ fn test_abstract_class_instantiation_fails() {
         kind: StmtKind::Expr(call_expr),
         span: dummy_span(),
     });
-    module.module_init_stmts.push(call_stmt);
+    install_module_init(&mut module, vec![CfgStmt::stmt(call_stmt)]);
 
     let mut analyzer = SemanticAnalyzer::new(&interner);
     let result = analyzer.analyze(&module);
@@ -418,7 +445,7 @@ fn test_concrete_class_instantiation_succeeds() {
         kind: StmtKind::Expr(call_expr),
         span: dummy_span(),
     });
-    module.module_init_stmts.push(call_stmt);
+    install_module_init(&mut module, vec![CfgStmt::stmt(call_stmt)]);
 
     let mut analyzer = SemanticAnalyzer::new(&interner);
     let result = analyzer.analyze(&module);

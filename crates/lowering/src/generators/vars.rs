@@ -27,10 +27,8 @@ pub(super) fn collect_generator_vars(
     // Reserve slot 0 for the for-loop iterator (see `build_creator_body` /
     // resume builders in `desugaring.rs` — they hardcode slot 0 for the
     // iter). Without this reservation, the first generator param would
-    // collide with the iter slot. `detect_for_loop_generator` is still
-    // tree-shape (operates on `func.body`); migrating it is a separate
-    // piece since its pattern-matching on `StmtKind::ForBind` is specific
-    // to single-for-loop generators.
+    // collide with the iter slot. `detect_for_loop_generator` still uses a
+    // source-order structural heuristic tailored to single-for-loop generators.
     let mut next_idx = if detect_for_loop_generator(func, hir_module).is_some() {
         1u32
     } else {

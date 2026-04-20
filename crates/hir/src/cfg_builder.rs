@@ -1,41 +1,17 @@
-//! Tree → CFG conversion for HIR function bodies.
+//! HIR CFG construction utilities.
 //!
-//! Phase 1 §1.1 of `ARCHITECTURE_REFACTOR.md` requires every `hir::Function` to
-//! carry an explicit control-flow graph (`blocks` + `entry_block`). This
-//! module consumes the tree form (`Function.body` + nested-body `StmtKind`
-//! variants) and emits a parallel CFG that consumers read after the §1.11
-//! S1.17b-c/d/e migrations.
-//!
-//! ## Rich CFG shape (S1.17b-b enhancement, 2026-04-19)
-//!
-//! Post-S1.17b-a schema additions (`ExprKind::IterHasNext`,
-//! `StmtKind::IterAdvance`, `ExprKind::MatchPattern`, `Function::try_scopes`,
-//! `ExceptHandler::entry_block`) the bridge now allocates the new arena
-//! entries directly:
-//!
-//! * `ForBind` — the header block terminates with
-//!   `Branch(IterHasNext(iter), body_entry, else_or_exit)`. `body_entry`
-//!   begins with a new `StmtKind::IterAdvance { iter, target }` to bind the
-//!   next element, then runs the original body statements.
-//! * `Match` — each case block is entered via
-//!   `Branch(MatchPattern(subject, case.pattern), body, next_case)`. Pattern
-//!   capture bindings are emitted as ordinary `StmtKind::Bind` statements at
-//!   the case-body head (Stage 2 emits them via legacy lowering still;
-//!   S1.17b-c moves this in-bridge).
-//! * `Try` — handler `entry_block`s are populated and registered in the
-//!   function's `try_scopes` side map.
-//!
-//! Because these additions require allocating new arena entries, the bridge
-//! now takes `&mut Module` (not `&Arena<Stmt>`). The 8 call sites in the
-//! frontend + generator desugaring were migrated accordingly.
+//! `CfgBuilder` lowers a temporary nested `CfgStmt` tree into
+//! `Function::{blocks, entry_block, try_scopes}`. The temporary tree never
+//! enters the public HIR schema; only flat `StmtId` leaves are allocated in
+//! `Module::stmts`.
 
 use indexmap::IndexMap;
 use pyaot_types::Type;
 use pyaot_utils::{HirBlockId, Span, VarId};
 
 use crate::{
-    BindingTarget, ExceptHandler, Expr, ExprId, ExprKind, HirBlock, HirTerminator, MatchCase,
-    Module, Stmt, StmtId, StmtKind, TryScope,
+    BindingTarget, ExceptHandler, Expr, ExprId, ExprKind, HirBlock, HirTerminator, Module, Stmt,
+    StmtId, StmtKind, TryScope,
 };
 
 /// Temporary nested statement tree used only while constructing a CFG.
@@ -100,138 +76,15 @@ pub struct CfgExceptHandler {
     pub body: Vec<CfgStmt>,
 }
 
-/// Materialize a temporary `CfgStmt` tree back into the legacy HIR stmt tree.
+/// Reusable HIR CFG builder for emitters that want to construct
+/// `Function::{blocks, entry_block, try_scopes}` from temporary nested control
+/// flow without allocating tree-shaped HIR statements.
 ///
-/// This is an interim shim while the remaining lowering/type-planning paths
-/// are still being migrated off `Function::body` and `module_init_stmts`.
-/// Once Stage 6 finishes, both this helper and the legacy HIR control-flow
-/// variants are deleted together.
-pub fn materialize_legacy_body(stmts: &[CfgStmt], module: &mut Module) -> Vec<StmtId> {
-    stmts
-        .iter()
-        .map(|stmt| materialize_legacy_stmt(stmt, module))
-        .collect()
-}
-
-fn materialize_legacy_stmt(stmt: &CfgStmt, module: &mut Module) -> StmtId {
-    match stmt {
-        CfgStmt::Stmt(stmt_id) => *stmt_id,
-        CfgStmt::If {
-            cond,
-            then_body,
-            else_body,
-            span,
-        } => {
-            let then_block = materialize_legacy_body(then_body, module);
-            let else_block = materialize_legacy_body(else_body, module);
-            module.stmts.alloc(Stmt {
-                kind: StmtKind::If {
-                    cond: *cond,
-                    then_block,
-                    else_block,
-                },
-                span: *span,
-            })
-        }
-        CfgStmt::While {
-            cond,
-            body,
-            else_body,
-            span,
-        } => {
-            let body = materialize_legacy_body(body, module);
-            let else_block = materialize_legacy_body(else_body, module);
-            module.stmts.alloc(Stmt {
-                kind: StmtKind::While {
-                    cond: *cond,
-                    body,
-                    else_block,
-                },
-                span: *span,
-            })
-        }
-        CfgStmt::For {
-            target,
-            iter,
-            body,
-            else_body,
-            span,
-        } => {
-            let body = materialize_legacy_body(body, module);
-            let else_block = materialize_legacy_body(else_body, module);
-            module.stmts.alloc(Stmt {
-                kind: StmtKind::ForBind {
-                    target: target.clone(),
-                    iter: *iter,
-                    body,
-                    else_block,
-                },
-                span: *span,
-            })
-        }
-        CfgStmt::Try {
-            body,
-            handlers,
-            else_body,
-            finally_body,
-            span,
-        } => {
-            let body = materialize_legacy_body(body, module);
-            let handlers = handlers
-                .iter()
-                .map(|handler| ExceptHandler {
-                    ty: handler.ty.clone(),
-                    name: handler.name,
-                    body: materialize_legacy_body(&handler.body, module),
-                    entry_block: HirBlockId::new(0),
-                })
-                .collect();
-            let else_block = materialize_legacy_body(else_body, module);
-            let finally_block = materialize_legacy_body(finally_body, module);
-            module.stmts.alloc(Stmt {
-                kind: StmtKind::Try {
-                    body,
-                    handlers,
-                    else_block,
-                    finally_block,
-                },
-                span: *span,
-            })
-        }
-        CfgStmt::Match {
-            subject,
-            cases,
-            span,
-        } => {
-            let cases = cases
-                .iter()
-                .map(|case| MatchCase {
-                    pattern: case.pattern.clone(),
-                    guard: case.guard,
-                    body: materialize_legacy_body(&case.body, module),
-                })
-                .collect();
-            module.stmts.alloc(Stmt {
-                kind: StmtKind::Match {
-                    subject: *subject,
-                    cases,
-                },
-                span: *span,
-            })
-        }
-    }
-}
-
-/// Reusable HIR CFG builder used by the legacy tree bridge and by direct
-/// emitters that want to construct `Function::{blocks, entry_block, try_scopes}`
-/// without first allocating a top-level `Vec<StmtId>`.
-///
-/// The API deliberately mirrors the bridge's internal structure so the
-/// remaining frontend/generator tree constructors can migrate one site at a
-/// time. The builder owns the block map and try-scope side table; callers are
-/// responsible for creating an entry block, selecting insertion points via
-/// `enter`, pushing straight-line statements into the current block, and
-/// terminating open blocks explicitly.
+/// The API mirrors the structure of CFG construction used by the frontend and
+/// generator desugaring. The builder owns the block map and try-scope side
+/// table; callers are responsible for creating an entry block, selecting
+/// insertion points via `enter`, pushing straight-line statements into the
+/// current block, and terminating open blocks explicitly.
 pub struct CfgBuilder {
     blocks: IndexMap<HirBlockId, HirBlock>,
     current: HirBlockId,
@@ -250,6 +103,12 @@ pub struct CfgBuilder {
     /// Current nesting depth inside exception handler / finally regions.
     /// Written to each new block's `handler_depth`.
     handler_depth: u8,
+}
+
+impl Default for CfgBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -430,15 +289,6 @@ impl CfgBuilder {
         self.try_scopes.push(scope);
     }
 
-    pub fn lower_stmts(&mut self, stmts_list: &[StmtId], module: &mut Module) {
-        for &stmt_id in stmts_list {
-            if self.current_terminated {
-                break;
-            }
-            self.lower_stmt(stmt_id, module);
-        }
-    }
-
     pub fn lower_cfg_stmts(&mut self, stmts_list: &[CfgStmt], module: &mut Module) {
         for stmt in stmts_list {
             if self.current_terminated {
@@ -448,11 +298,8 @@ impl CfgBuilder {
         }
     }
 
-    pub fn lower_stmt(&mut self, stmt_id: StmtId, module: &mut Module) {
-        // Clone the kind so we can release the shared borrow on `module.stmts`
-        // before recursing into `lower_stmts` with a mutable borrow.
+    fn lower_flat_stmt(&mut self, stmt_id: StmtId, module: &mut Module) {
         let stmt_kind = module.stmts[stmt_id].kind.clone();
-        let stmt_span = module.stmts[stmt_id].span;
         match stmt_kind {
             StmtKind::Expr(_)
             | StmtKind::Bind { .. }
@@ -470,377 +317,44 @@ impl CfgBuilder {
             }
 
             StmtKind::Raise { exc, cause } => {
-                let block = self.current;
-                let term = match exc {
-                    Some(exc_id) => HirTerminator::Raise { exc: exc_id, cause },
-                    // Bare `raise` — re-raise the active exception.
-                    None => HirTerminator::Reraise,
-                };
-                self.set_terminator(block, term);
+                match exc {
+                    Some(exc_id) => {
+                        let block = self.current;
+                        self.set_terminator(block, HirTerminator::Raise { exc: exc_id, cause });
+                    }
+                    // Preserve invalid bare `raise` as a statement so semantic
+                    // analysis can report it with the original span.
+                    None if self.handler_depth == 0 => self.push_stmt(stmt_id),
+                    None => {
+                        let block = self.current;
+                        self.set_terminator(block, HirTerminator::Reraise);
+                    }
+                }
             }
 
             StmtKind::Break => {
-                let block = self.current;
-                let term = match self.loop_stack.last() {
-                    Some(ctx) => HirTerminator::Jump(ctx.break_bb),
-                    None => HirTerminator::Unreachable,
-                };
-                self.set_terminator(block, term);
+                if let Some(ctx) = self.loop_stack.last() {
+                    let block = self.current;
+                    self.set_terminator(block, HirTerminator::Jump(ctx.break_bb));
+                } else {
+                    self.push_stmt(stmt_id);
+                }
             }
 
             StmtKind::Continue => {
-                let block = self.current;
-                let term = match self.loop_stack.last() {
-                    Some(ctx) => HirTerminator::Jump(ctx.continue_bb),
-                    None => HirTerminator::Unreachable,
-                };
-                self.set_terminator(block, term);
-            }
-
-            StmtKind::If {
-                cond,
-                then_block,
-                else_block,
-            } => {
-                let then_bb = self.new_block();
-                let else_bb = self.new_block();
-                let merge_bb = self.new_block();
-
-                let branch_block = self.current;
-                self.set_terminator(
-                    branch_block,
-                    HirTerminator::Branch {
-                        cond,
-                        then_bb,
-                        else_bb,
-                    },
-                );
-
-                self.enter(then_bb);
-                self.lower_stmts(&then_block, module);
-                self.terminate_if_open(HirTerminator::Jump(merge_bb));
-
-                self.enter(else_bb);
-                self.lower_stmts(&else_block, module);
-                self.terminate_if_open(HirTerminator::Jump(merge_bb));
-
-                self.enter(merge_bb);
-            }
-
-            StmtKind::While {
-                cond,
-                body,
-                else_block,
-            } => {
-                let header_bb = self.new_block();
-                let body_bb = self.new_block();
-                let exit_bb = self.new_block();
-                let else_bb = if else_block.is_empty() {
-                    exit_bb
+                if let Some(ctx) = self.loop_stack.last() {
+                    let block = self.current;
+                    self.set_terminator(block, HirTerminator::Jump(ctx.continue_bb));
                 } else {
-                    self.new_block()
-                };
-
-                let pre_block = self.current;
-                self.set_terminator(pre_block, HirTerminator::Jump(header_bb));
-
-                self.enter(header_bb);
-                self.set_terminator(
-                    header_bb,
-                    HirTerminator::Branch {
-                        cond,
-                        then_bb: body_bb,
-                        else_bb,
-                    },
-                );
-
-                self.push_loop(header_bb, exit_bb);
-                self.enter(body_bb);
-                // Rewrite the block's loop_depth — it was allocated at the
-                // outer depth, but its stmts run inside the loop.
-                self.blocks.get_mut(&body_bb).unwrap().loop_depth = self.loop_depth;
-                self.lower_stmts(&body, module);
-                self.terminate_if_open(HirTerminator::Jump(header_bb));
-                self.pop_loop();
-
-                if !else_block.is_empty() {
-                    self.enter(else_bb);
-                    self.lower_stmts(&else_block, module);
-                    self.terminate_if_open(HirTerminator::Jump(exit_bb));
+                    self.push_stmt(stmt_id);
                 }
-
-                self.enter(exit_bb);
-            }
-
-            // §1.11 Q1 Scheme A — emit IterHasNext + IterAdvance.
-            StmtKind::ForBind {
-                target,
-                iter,
-                body,
-                else_block,
-            } => {
-                let header_bb = self.new_block();
-                let body_bb = self.new_block();
-                let exit_bb = self.new_block();
-                let else_bb = if else_block.is_empty() {
-                    exit_bb
-                } else {
-                    self.new_block()
-                };
-
-                // Pre-block: push IterSetup stmt BEFORE Jump(header). This
-                // evaluates iter_expr exactly once and caches the resulting
-                // iterator local in `CodeGenState::iter_cache` during
-                // lowering — so subsequent IterHasNext (in header) and
-                // IterAdvance (in body) read from the cache without
-                // re-creating the iterator each iteration.
-                let iter_setup_stmt = self.alloc_iter_setup(module, iter, stmt_span);
-                self.push_stmt(iter_setup_stmt);
-
-                let pre_block = self.current;
-                self.set_terminator(pre_block, HirTerminator::Jump(header_bb));
-
-                // Header: `Branch(IterHasNext(iter), body, else_or_exit)`.
-                let has_next = self.alloc_iter_has_next(module, iter, stmt_span);
-                self.enter(header_bb);
-                self.set_terminator(
-                    header_bb,
-                    HirTerminator::Branch {
-                        cond: has_next,
-                        then_bb: body_bb,
-                        else_bb,
-                    },
-                );
-
-                // Body: prefix with `IterAdvance { iter, target }` then emit
-                // the original body statements. Lowering will recognise the
-                // IterAdvance and emit the runtime iterator-next protocol.
-                self.push_loop(header_bb, exit_bb);
-                self.enter(body_bb);
-                self.blocks.get_mut(&body_bb).unwrap().loop_depth = self.loop_depth;
-                let advance_stmt = self.alloc_iter_advance(module, iter, target.clone(), stmt_span);
-                self.push_stmt(advance_stmt);
-                self.lower_stmts(&body, module);
-                self.terminate_if_open(HirTerminator::Jump(header_bb));
-                self.pop_loop();
-
-                if !else_block.is_empty() {
-                    self.enter(else_bb);
-                    self.lower_stmts(&else_block, module);
-                    self.terminate_if_open(HirTerminator::Jump(exit_bb));
-                }
-
-                self.enter(exit_bb);
-            }
-
-            // §1.11 Q2 — handlers are registered as a `TryScope`. Handler
-            // entry blocks have no CFG predecessors; runtime unwinding
-            // dispatches into them on a matching raise.
-            StmtKind::Try {
-                body,
-                handlers,
-                else_block,
-                finally_block,
-            } => {
-                let body_bb = self.new_block();
-                let post_bb = self.new_block();
-
-                let pre_block = self.current;
-                self.set_terminator(pre_block, HirTerminator::Jump(body_bb));
-
-                // Track blocks emitted inside body / else / finally so the
-                // TryScope can cite them as "guarded by this handler chain".
-                let mut try_blocks_set: Vec<HirBlockId> = Vec::new();
-                let mut else_blocks_set: Vec<HirBlockId> = Vec::new();
-                let mut finally_blocks_set: Vec<HirBlockId> = Vec::new();
-
-                // body_bb was allocated before the snapshot so we include it
-                // explicitly — the snapshot only captures blocks created during
-                // lower_stmts (nested if/while/for inside the try body).
-                let blocks_before_body = self.next_id;
-                self.enter(body_bb);
-                self.lower_stmts(&body, module);
-                try_blocks_set.push(body_bb);
-                for id in blocks_before_body..self.next_id {
-                    try_blocks_set.push(HirBlockId::new(id));
-                }
-
-                let blocks_before_else = self.next_id;
-                let after_body = if else_block.is_empty() {
-                    post_bb
-                } else {
-                    let else_bb = self.new_block();
-                    self.terminate_if_open(HirTerminator::Jump(else_bb));
-                    self.enter(else_bb);
-                    self.lower_stmts(&else_block, module);
-                    post_bb
-                };
-                for id in blocks_before_else..self.next_id {
-                    else_blocks_set.push(HirBlockId::new(id));
-                }
-
-                let blocks_before_finally = self.next_id;
-                if !finally_block.is_empty() {
-                    let finally_bb = self.new_block();
-                    self.terminate_if_open(HirTerminator::Jump(finally_bb));
-                    // §1.11 Q2 — `finally` runs in an exception-handler
-                    // context (bare raise is allowed). Bump handler_depth.
-                    self.push_handler();
-                    self.enter(finally_bb);
-                    self.blocks.get_mut(&finally_bb).unwrap().handler_depth = self.handler_depth;
-                    self.lower_stmts(&finally_block, module);
-                    self.terminate_if_open(HirTerminator::Jump(post_bb));
-                    self.pop_handler();
-                } else {
-                    self.terminate_if_open(HirTerminator::Jump(after_body));
-                }
-                for id in blocks_before_finally..self.next_id {
-                    finally_blocks_set.push(HirBlockId::new(id));
-                }
-
-                // Emit a CFG block for each handler, populating its
-                // `entry_block`. Each handler's body lives inside the block
-                // (bindings + user-written code); terminator is Jump(post_bb).
-                // §1.11 Q2 — handler bodies run in an exception-handler
-                // context so bare `raise` is allowed. Bump handler_depth.
-                let mut handlers_out: Vec<ExceptHandler> = Vec::with_capacity(handlers.len());
-                for handler in handlers {
-                    let handler_bb = self.new_block();
-                    self.push_handler();
-                    self.enter(handler_bb);
-                    self.blocks.get_mut(&handler_bb).unwrap().handler_depth = self.handler_depth;
-                    self.lower_stmts(&handler.body, module);
-                    self.terminate_if_open(HirTerminator::Jump(post_bb));
-                    self.pop_handler();
-                    handlers_out.push(ExceptHandler {
-                        entry_block: handler_bb,
-                        ..handler
-                    });
-                }
-
-                // Register the scope. Consumer migration (S1.17b-c/d) reads
-                // `Function::try_scopes` to find handler chains for each
-                // guarded body block.
-                self.register_try_scope(TryScope {
-                    try_blocks: try_blocks_set,
-                    else_blocks: else_blocks_set,
-                    handlers: handlers_out,
-                    finally_blocks: finally_blocks_set,
-                    span: stmt_span,
-                });
-
-                self.enter(post_bb);
-            }
-
-            // §1.11 Q3 — match desugars to an if/else ladder of
-            // `Branch(MatchPattern(subject, pattern), body, next_case)`.
-            StmtKind::Match { subject, cases } => {
-                let post_bb = self.new_block();
-
-                if cases.is_empty() {
-                    let pre_block = self.current;
-                    self.set_terminator(pre_block, HirTerminator::Jump(post_bb));
-                } else {
-                    // Allocate one block per case-body plus the "no match"
-                    // fallthrough block used as the else target of the last
-                    // case's predicate branch.
-                    let case_bbs: Vec<HirBlockId> =
-                        cases.iter().map(|_| self.new_block()).collect();
-                    let fallthrough_bb = self.new_block();
-
-                    // Allocate predicate ExprIds upfront so the loop below
-                    // can freely call `lower_stmts(.. module)`.
-                    let predicates: Vec<ExprId> = cases
-                        .iter()
-                        .map(|case| {
-                            self.alloc_match_pattern(
-                                module,
-                                subject,
-                                case.pattern.clone(),
-                                stmt_span,
-                            )
-                        })
-                        .collect();
-
-                    // Test block N: if case has a guard, split into
-                    //   test_bb → Branch(pattern, guard_bb, next_test)
-                    //   guard_bb → Branch(guard_expr, case_body, next_test)
-                    // Otherwise:
-                    //   test_bb → Branch(pattern, case_body, next_test)
-                    // Guard block allocated only when case has a guard.
-                    let test_bbs: Vec<HirBlockId> =
-                        cases.iter().map(|_| self.new_block()).collect();
-                    let guard_bbs: Vec<Option<HirBlockId>> = cases
-                        .iter()
-                        .map(|case| {
-                            if case.guard.is_some() {
-                                Some(self.new_block())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    let pre_block = self.current;
-                    self.set_terminator(pre_block, HirTerminator::Jump(test_bbs[0]));
-                    for (i, ((&test_bb, &case_bb), predicate)) in test_bbs
-                        .iter()
-                        .zip(case_bbs.iter())
-                        .zip(predicates.iter())
-                        .enumerate()
-                    {
-                        let next_test = if i + 1 < test_bbs.len() {
-                            test_bbs[i + 1]
-                        } else {
-                            fallthrough_bb
-                        };
-                        // If this case has a guard, branch to guard_bb
-                        // on pattern match; otherwise straight to case
-                        // body.
-                        let then_target = guard_bbs[i].unwrap_or(case_bb);
-                        self.enter(test_bb);
-                        self.set_terminator(
-                            test_bb,
-                            HirTerminator::Branch {
-                                cond: *predicate,
-                                then_bb: then_target,
-                                else_bb: next_test,
-                            },
-                        );
-                        // If there's a guard, emit the guard check
-                        // block: Branch(guard_expr, case_body, next_test).
-                        if let (Some(guard_bb), Some(guard_expr_id)) =
-                            (guard_bbs[i], cases[i].guard)
-                        {
-                            self.enter(guard_bb);
-                            self.set_terminator(
-                                guard_bb,
-                                HirTerminator::Branch {
-                                    cond: guard_expr_id,
-                                    then_bb: case_bb,
-                                    else_bb: next_test,
-                                },
-                            );
-                        }
-                    }
-
-                    for (case, &bb) in cases.iter().zip(&case_bbs) {
-                        self.enter(bb);
-                        self.lower_stmts(&case.body, module);
-                        self.terminate_if_open(HirTerminator::Jump(post_bb));
-                    }
-
-                    self.enter(fallthrough_bb);
-                    self.terminate_if_open(HirTerminator::Jump(post_bb));
-                }
-
-                self.enter(post_bb);
             }
         }
     }
 
     pub fn lower_cfg_stmt(&mut self, stmt: &CfgStmt, module: &mut Module) {
         match stmt {
-            CfgStmt::Stmt(stmt_id) => self.lower_stmt(*stmt_id, module),
+            CfgStmt::Stmt(stmt_id) => self.lower_flat_stmt(*stmt_id, module),
             CfgStmt::If {
                 cond,
                 then_body,
@@ -1032,7 +546,6 @@ impl CfgBuilder {
                     handlers_out.push(ExceptHandler {
                         ty: handler.ty.clone(),
                         name: handler.name,
-                        body: Vec::new(),
                         entry_block: handler_bb,
                     });
                 }
@@ -1186,13 +699,13 @@ mod tests {
     }
 
     fn build_cfg(
-        body: &[StmtId],
+        body: &[CfgStmt],
         module: &mut Module,
     ) -> (IndexMap<HirBlockId, HirBlock>, HirBlockId, Vec<TryScope>) {
         let mut builder = CfgBuilder::new();
         let entry = builder.new_block();
         builder.enter(entry);
-        builder.lower_stmts(body, module);
+        builder.lower_cfg_stmts(body, module);
         builder.terminate_if_open(HirTerminator::Return(None));
         builder.finish(entry)
     }
@@ -1214,7 +727,10 @@ mod tests {
         let s2 = bind_stmt(&mut module.stmts, &mut module.exprs);
         let s3 = bind_stmt(&mut module.stmts, &mut module.exprs);
 
-        let (blocks, entry, _try_scopes) = build_cfg(&[s1, s2, s3], &mut module);
+        let (blocks, entry, _try_scopes) = build_cfg(
+            &[CfgStmt::stmt(s1), CfgStmt::stmt(s2), CfgStmt::stmt(s3)],
+            &mut module,
+        );
         assert_eq!(blocks.len(), 1);
         let block = &blocks[&entry];
         assert_eq!(block.stmts, vec![s1, s2, s3]);
@@ -1227,16 +743,15 @@ mod tests {
         let cond = alloc_expr(&mut module.exprs);
         let then_stmt = bind_stmt(&mut module.stmts, &mut module.exprs);
         let else_stmt = bind_stmt(&mut module.stmts, &mut module.exprs);
-        let if_stmt = alloc_stmt(
-            &mut module.stmts,
-            StmtKind::If {
+        let (blocks, entry, _try_scopes) = build_cfg(
+            &[CfgStmt::If {
                 cond,
-                then_block: vec![then_stmt],
-                else_block: vec![else_stmt],
-            },
+                then_body: vec![CfgStmt::stmt(then_stmt)],
+                else_body: vec![CfgStmt::stmt(else_stmt)],
+                span: dummy_span(),
+            }],
+            &mut module,
         );
-
-        let (blocks, entry, _try_scopes) = build_cfg(&[if_stmt], &mut module);
         // entry(branch) + then + else + merge = 4 blocks.
         assert_eq!(blocks.len(), 4);
         let branch = &blocks[&entry];
@@ -1271,24 +786,20 @@ mod tests {
         let break_stmt = alloc_stmt(&mut module.stmts, StmtKind::Break);
         let continue_stmt = alloc_stmt(&mut module.stmts, StmtKind::Continue);
         let inner_cond = alloc_expr(&mut module.exprs);
-        let inner_if = alloc_stmt(
-            &mut module.stmts,
-            StmtKind::If {
-                cond: inner_cond,
-                then_block: vec![break_stmt],
-                else_block: vec![continue_stmt],
-            },
-        );
-        let while_stmt = alloc_stmt(
-            &mut module.stmts,
-            StmtKind::While {
+        let (blocks, _entry, _try_scopes) = build_cfg(
+            &[CfgStmt::While {
                 cond,
-                body: vec![inner_if],
-                else_block: vec![],
-            },
+                body: vec![CfgStmt::If {
+                    cond: inner_cond,
+                    then_body: vec![CfgStmt::stmt(break_stmt)],
+                    else_body: vec![CfgStmt::stmt(continue_stmt)],
+                    span: dummy_span(),
+                }],
+                else_body: vec![],
+                span: dummy_span(),
+            }],
+            &mut module,
         );
-
-        let (blocks, _entry, _try_scopes) = build_cfg(&[while_stmt], &mut module);
         // Verify at least one Jump to a header (continue) and at least one
         // Jump to an exit (break) exist — precise block ids are internal.
         let jumps: Vec<HirBlockId> = blocks
@@ -1321,7 +832,10 @@ mod tests {
         let ret = alloc_stmt(&mut module.stmts, StmtKind::Return(None));
         let after = bind_stmt(&mut module.stmts, &mut module.exprs);
 
-        let (blocks, entry, _try_scopes) = build_cfg(&[pre, ret, after], &mut module);
+        let (blocks, entry, _try_scopes) = build_cfg(
+            &[CfgStmt::stmt(pre), CfgStmt::stmt(ret), CfgStmt::stmt(after)],
+            &mut module,
+        );
         assert_eq!(blocks.len(), 1);
         let block = &blocks[&entry];
         // `after` must not be emitted — it lives past the Return.
@@ -1341,7 +855,7 @@ mod tests {
             },
         );
 
-        let (blocks, entry, _try_scopes) = build_cfg(&[raise_stmt], &mut module);
+        let (blocks, entry, _try_scopes) = build_cfg(&[CfgStmt::stmt(raise_stmt)], &mut module);
         assert!(matches!(
             blocks[&entry].terminator,
             HirTerminator::Raise { cause: None, .. }

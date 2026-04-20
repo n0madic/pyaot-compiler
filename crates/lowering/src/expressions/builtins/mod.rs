@@ -39,7 +39,7 @@ impl<'a> Lowering<'a> {
         match builtin {
             hir::Builtin::Print => self.lower_print(args, kwargs, hir_module, mir_func),
             hir::Builtin::Range => {
-                // Range is handled specially in StmtKind::ForBind.
+                // Range is handled specially by for-loop CFG lowering.
                 // If it appears as a standalone expression, just return None.
                 Ok(mir::Operand::Constant(mir::Constant::None))
             }

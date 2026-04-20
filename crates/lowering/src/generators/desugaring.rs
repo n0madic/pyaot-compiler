@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
-use pyaot_hir::cfg_build::{materialize_legacy_body, CfgBuilder, CfgStmt};
+use pyaot_hir::cfg_builder::{CfgBuilder, CfgStmt};
 use pyaot_types::Type;
 use pyaot_utils::{FuncId, Span, StringInterner, VarId, RESUME_FUNC_ID_OFFSET};
 
@@ -844,7 +844,6 @@ impl<'a> Lowering<'a> {
         };
 
         let gen_obj_name = self.interner.intern("__gen_obj");
-        let resume_legacy_body = materialize_legacy_body(&resume_body, m);
         let mut resume_cfg = CfgBuilder::new();
         let resume_entry_block = resume_cfg.new_block();
         resume_cfg.enter(resume_entry_block);
@@ -864,7 +863,6 @@ impl<'a> Lowering<'a> {
                 span,
             }],
             return_type: Some(Type::Int),
-            body: resume_legacy_body,
             span,
             cell_vars: HashSet::new(),
             nonlocal_vars: HashSet::new(),
@@ -880,7 +878,6 @@ impl<'a> Lowering<'a> {
 
         // 5. Replace original function body with creator logic
         let creator_body = build_creator_body(m, &func, &gen_vars, num_locals, span);
-        let creator_legacy_body = materialize_legacy_body(&creator_body, m);
         let mut creator_cfg = CfgBuilder::new();
         let creator_entry_block = creator_cfg.new_block();
         creator_cfg.enter(creator_entry_block);
@@ -899,7 +896,6 @@ impl<'a> Lowering<'a> {
             .func_defs
             .get_mut(&func_id)
             .expect("internal error: generator func_id not found in HIR module");
-        original.body = creator_legacy_body;
         original.is_generator = false;
         // Set return type so callers know this returns an iterator
         original.return_type = Some(creator_return_type);
@@ -924,7 +920,7 @@ impl<'a> Lowering<'a> {
     }
 
     fn infer_yield_type_raw(&self, func: &hir::Function, m: &hir::Module) -> Type {
-        if let Some(for_gen) = detect_for_loop_generator(&func, m) {
+        if let Some(for_gen) = detect_for_loop_generator(func, m) {
             let vmap = VarTypeMap::build(m);
             // Use the module-wide Var/param index so Var refs in yield expressions
             // (`yield (v, i)` where v and i are for-loop targets) resolve to

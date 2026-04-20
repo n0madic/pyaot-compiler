@@ -3,7 +3,7 @@
 use super::AstToHir;
 use pyaot_diagnostics::Result;
 use pyaot_hir::{
-    cfg_build::{CfgExceptHandler, CfgStmt},
+    cfg_builder::{CfgExceptHandler, CfgStmt},
     *,
 };
 use pyaot_types::Type;

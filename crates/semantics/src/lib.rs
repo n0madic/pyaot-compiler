@@ -10,8 +10,8 @@
 //!
 //! The analyzer walks `Function::blocks` (the CFG) directly. `loop_depth`
 //! and `handler_depth` are read from `HirBlock.loop_depth` /
-//! `HirBlock.handler_depth`, populated by `cfg_build` during tree→CFG
-//! conversion. No recursive tree descent.
+//! `HirBlock.handler_depth`, populated by `cfg_builder`. No recursive
+//! tree descent remains.
 
 #![forbid(unsafe_code)]
 
@@ -32,17 +32,10 @@ impl<'a> SemanticAnalyzer<'a> {
 
     /// Analyze a module for semantic errors
     pub fn analyze(&mut self, module: &Module) -> Result<()> {
-        // Analyze all function bodies via their CFG.
+        // Analyze all function bodies via their CFG, including the synthetic
+        // module-init function when present.
         for func in module.func_defs.values() {
             self.analyze_function_cfg(func, module)?;
-        }
-
-        // Compatibility fallback for unit tests that still hand-construct
-        // `module_init_stmts` without a synthetic module-init function.
-        if module.module_init_func.is_none() {
-            for &stmt_id in &module.module_init_stmts {
-                self.analyze_stmt_flat(stmt_id, module, 0, 0)?;
-            }
         }
 
         Ok(())
@@ -70,13 +63,7 @@ impl<'a> SemanticAnalyzer<'a> {
         Ok(())
     }
 
-    /// Analyze a single "flat" statement: straight-line only. Control flow
-    /// statements (`If`, `While`, `ForBind`, `Try`, `Match`, `Break`,
-    /// `Continue`) are handled at the block-terminator level in CFG form —
-    /// we still accept them here during the bridge period because they
-    /// appear inside `module_init_stmts`. When tree deletion (S1.17b-f)
-    /// lands, the control-flow variants disappear and this stays the only
-    /// statement walker.
+    /// Analyze a single straight-line statement inside a HIR CFG block.
     fn analyze_stmt_flat(
         &mut self,
         stmt_id: StmtId,
@@ -119,76 +106,6 @@ impl<'a> SemanticAnalyzer<'a> {
                 }
             }
 
-            // Tree-form control flow (remains visible in module_init_stmts
-            // and function bodies during the S1.17b-c/d bridge). Recurse
-            // with carried-through depths; the depths are only consulted
-            // for break/continue/raise emission points, which the bridge
-            // also sees via its own loop_depth tracking.
-            StmtKind::While {
-                cond,
-                body,
-                else_block,
-            } => {
-                self.analyze_expr(*cond, module)?;
-                for s in body {
-                    self.analyze_stmt_flat(*s, module, loop_depth + 1, handler_depth)?;
-                }
-                for s in else_block {
-                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
-                }
-            }
-
-            StmtKind::ForBind {
-                iter,
-                body,
-                else_block,
-                ..
-            } => {
-                self.analyze_expr(*iter, module)?;
-                for s in body {
-                    self.analyze_stmt_flat(*s, module, loop_depth + 1, handler_depth)?;
-                }
-                for s in else_block {
-                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
-                }
-            }
-
-            StmtKind::If {
-                cond,
-                then_block,
-                else_block,
-            } => {
-                self.analyze_expr(*cond, module)?;
-                for s in then_block {
-                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
-                }
-                for s in else_block {
-                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
-                }
-            }
-
-            StmtKind::Try {
-                body,
-                handlers,
-                else_block,
-                finally_block,
-            } => {
-                for s in body {
-                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
-                }
-                for handler in handlers {
-                    for s in &handler.body {
-                        self.analyze_stmt_flat(*s, module, loop_depth, handler_depth + 1)?;
-                    }
-                }
-                for s in else_block {
-                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
-                }
-                for s in finally_block {
-                    self.analyze_stmt_flat(*s, module, loop_depth, handler_depth + 1)?;
-                }
-            }
-
             StmtKind::Expr(expr_id) => {
                 self.analyze_expr(*expr_id, module)?;
             }
@@ -203,18 +120,6 @@ impl<'a> SemanticAnalyzer<'a> {
                 self.analyze_expr(*cond, module)?;
                 if let Some(msg_id) = msg {
                     self.analyze_expr(*msg_id, module)?;
-                }
-            }
-
-            StmtKind::Match { subject, cases } => {
-                self.analyze_expr(*subject, module)?;
-                for case in cases {
-                    if let Some(guard) = case.guard {
-                        self.analyze_expr(guard, module)?;
-                    }
-                    for s in &case.body {
-                        self.analyze_stmt_flat(*s, module, loop_depth, handler_depth)?;
-                    }
                 }
             }
 

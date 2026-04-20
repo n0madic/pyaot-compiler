@@ -19,23 +19,10 @@ impl<'a> Lowering<'a> {
     /// This must run before lowering functions so that lambda/closure type inference
     /// can use the captured variable types.
     ///
-    /// §1.17b-d — function bodies iterate `func.blocks.values()` in bridge
-    /// allocation order (pre-order DFS of the source tree). Module init
-    /// stmts are still a flat list (no containing CFG function) and keep
-    /// the tree walker.
+    /// §1.17b-d/f — all HIR functions, including the synthetic module-init
+    /// function, are scanned through their CFG blocks in allocation order.
     pub(crate) fn precompute_closure_capture_types(&mut self, hir_module: &hir::Module) {
-        // Track module-level variable types as we scan statements
-        let mut module_var_types: IndexMap<VarId, Type> = IndexMap::new();
-
-        // Compatibility fallback for unit tests that still hand-construct
-        // `module_init_stmts` without a synthetic module-init function.
-        if hir_module.module_init_func.is_none() {
-            for stmt_id in &hir_module.module_init_stmts {
-                self.scan_stmt_for_closures(*stmt_id, hir_module, &mut module_var_types);
-            }
-        }
-
-        // Then, scan all function bodies via their CFG blocks.
+        // Track local variable types as we scan each function's CFG blocks.
         for func_id in &hir_module.functions {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 let mut func_var_types: IndexMap<VarId, Type> = IndexMap::new();
@@ -94,12 +81,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// Scan a single straight-line statement for closure assignments and
-    /// record capture types. §1.17b-d: nested control-flow recursion
-    /// removed — the entry-point now iterates CFG blocks, so every
-    /// logically-nested stmt is visited exactly once via the outer
-    /// `for block in func.blocks.values()` loop. The tree-form variants
-    /// below are still matched because `module_init_stmts` (which has no
-    /// CFG) continues to call this function with a flat tree walker.
+    /// record capture types.
     fn scan_stmt_for_closures(
         &mut self,
         stmt_id: hir::StmtId,
@@ -108,85 +90,6 @@ impl<'a> Lowering<'a> {
     ) {
         let stmt = &hir_module.stmts[stmt_id];
         match &stmt.kind {
-            hir::StmtKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                // Tree path (module_init only) — CFG path visits these
-                // stmts directly through block iteration, bypassing this
-                // arm entirely.
-                for stmt_id in then_block {
-                    self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
-                }
-                for stmt_id in else_block {
-                    self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
-                }
-            }
-            hir::StmtKind::ForBind {
-                target,
-                iter,
-                body,
-                else_block,
-            } => {
-                // Tree path (module_init) — scan the iter expression and
-                // propagate loop-target element type into `var_types`.
-                let iter_expr = &hir_module.exprs[*iter];
-                self.scan_expr_for_closures(iter_expr, hir_module, var_types);
-                let iter_ty = self.infer_deep_expr_type(iter_expr, hir_module, var_types);
-                let elem_ty = extract_iterable_element_type(&iter_ty);
-                insert_target_types(target, &elem_ty, var_types);
-                for stmt_id in body {
-                    self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
-                }
-                for stmt_id in else_block {
-                    self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
-                }
-            }
-            hir::StmtKind::While {
-                body, else_block, ..
-            } => {
-                for stmt_id in body {
-                    self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
-                }
-                for stmt_id in else_block {
-                    self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
-                }
-            }
-            hir::StmtKind::Try {
-                body,
-                handlers,
-                else_block,
-                finally_block,
-            } => {
-                for stmt_id in body {
-                    self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
-                }
-                for handler in handlers {
-                    for stmt_id in &handler.body {
-                        self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
-                    }
-                }
-                for stmt_id in else_block {
-                    self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
-                }
-                for stmt_id in finally_block {
-                    self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
-                }
-            }
-            hir::StmtKind::Match { subject, cases } => {
-                let subj_expr = &hir_module.exprs[*subject];
-                self.scan_expr_for_closures(subj_expr, hir_module, var_types);
-                for case in cases {
-                    if let Some(guard) = &case.guard {
-                        let guard_expr = &hir_module.exprs[*guard];
-                        self.scan_expr_for_closures(guard_expr, hir_module, var_types);
-                    }
-                    for stmt_id in &case.body {
-                        self.scan_stmt_for_closures(*stmt_id, hir_module, var_types);
-                    }
-                }
-            }
             hir::StmtKind::Bind {
                 target,
                 value,
@@ -254,6 +157,28 @@ impl<'a> Lowering<'a> {
                 let expr = &hir_module.exprs[*expr_id];
                 self.scan_expr_for_closures(expr, hir_module, var_types);
             }
+            hir::StmtKind::Assert { cond, msg } => {
+                self.scan_expr_for_closures(&hir_module.exprs[*cond], hir_module, var_types);
+                if let Some(msg_id) = msg {
+                    self.scan_expr_for_closures(&hir_module.exprs[*msg_id], hir_module, var_types);
+                }
+            }
+            hir::StmtKind::IndexDelete { obj, index } => {
+                self.scan_expr_for_closures(&hir_module.exprs[*obj], hir_module, var_types);
+                self.scan_expr_for_closures(&hir_module.exprs[*index], hir_module, var_types);
+            }
+            hir::StmtKind::Raise { exc, cause } => {
+                if let Some(exc_id) = exc {
+                    self.scan_expr_for_closures(&hir_module.exprs[*exc_id], hir_module, var_types);
+                }
+                if let Some(cause_id) = cause {
+                    self.scan_expr_for_closures(
+                        &hir_module.exprs[*cause_id],
+                        hir_module,
+                        var_types,
+                    );
+                }
+            }
             // §1.17b-d — `IterAdvance` replaces `ForBind` inside CFG blocks.
             // Preserve the Area G §G.10 loop-target element-type
             // propagation so closures **inside** the loop body see the
@@ -265,8 +190,13 @@ impl<'a> Lowering<'a> {
                 let elem_ty = extract_iterable_element_type(&iter_ty);
                 insert_target_types(target, &elem_ty, var_types);
             }
-            // Other statement types don't contain nested closures
-            _ => {}
+            hir::StmtKind::IterSetup { iter } => {
+                self.scan_expr_for_closures(&hir_module.exprs[*iter], hir_module, var_types);
+            }
+            hir::StmtKind::Return(None)
+            | hir::StmtKind::Break
+            | hir::StmtKind::Continue
+            | hir::StmtKind::Pass => {}
         }
     }
 
@@ -560,7 +490,7 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // 2. Walk every function body plus module-init, collecting per-FuncId
+        // 2. Walk every function body, collecting per-FuncId
         //    positional arg-type accumulators.
         let mut accumulators: HashMap<pyaot_utils::FuncId, Vec<Type>> = HashMap::new();
 
@@ -595,18 +525,6 @@ impl<'a> Lowering<'a> {
                 );
             }
         }
-        if hir_module.module_init_func.is_none() {
-            for stmt_id in &hir_module.module_init_stmts {
-                self.collect_call_arg_types(
-                    *stmt_id,
-                    hir_module,
-                    &var_to_func,
-                    &IndexMap::new(),
-                    &mut accumulators,
-                );
-            }
-        }
-
         // 3. Commit hints for eligible functions.
         for (func_id, inferred) in accumulators {
             if self.get_lambda_param_type_hints(&func_id).is_some() {
@@ -708,81 +626,58 @@ impl<'a> Lowering<'a> {
                 let expr = &hir_module.exprs[*value];
                 self.scan_expr_for_calls(expr, hir_module, var_to_func, overlay, accumulators);
             }
-            hir::StmtKind::If {
-                cond,
-                then_block,
-                else_block,
-            } => {
-                let cond_expr = &hir_module.exprs[*cond];
-                self.scan_expr_for_calls(cond_expr, hir_module, var_to_func, overlay, accumulators);
-                for s in then_block {
-                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
+            hir::StmtKind::IterAdvance { iter, .. } | hir::StmtKind::IterSetup { iter } => {
+                let expr = &hir_module.exprs[*iter];
+                self.scan_expr_for_calls(expr, hir_module, var_to_func, overlay, accumulators);
+            }
+            hir::StmtKind::Raise { exc, cause } => {
+                if let Some(expr_id) = exc {
+                    let expr = &hir_module.exprs[*expr_id];
+                    self.scan_expr_for_calls(expr, hir_module, var_to_func, overlay, accumulators);
                 }
-                for s in else_block {
-                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
+                if let Some(expr_id) = cause {
+                    let expr = &hir_module.exprs[*expr_id];
+                    self.scan_expr_for_calls(expr, hir_module, var_to_func, overlay, accumulators);
                 }
             }
-            hir::StmtKind::While {
-                body, else_block, ..
-            } => {
-                for s in body {
-                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
-                }
-                for s in else_block {
-                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
-                }
-            }
-            hir::StmtKind::ForBind {
-                body, else_block, ..
-            } => {
-                for s in body {
-                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
-                }
-                for s in else_block {
-                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
+            hir::StmtKind::Assert { cond, msg } => {
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*cond],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+                if let Some(msg_id) = msg {
+                    self.scan_expr_for_calls(
+                        &hir_module.exprs[*msg_id],
+                        hir_module,
+                        var_to_func,
+                        overlay,
+                        accumulators,
+                    );
                 }
             }
-            hir::StmtKind::Try {
-                body,
-                handlers,
-                else_block,
-                finally_block,
-            } => {
-                for s in body {
-                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
-                }
-                for h in handlers {
-                    for s in &h.body {
-                        self.collect_call_arg_types(
-                            *s,
-                            hir_module,
-                            var_to_func,
-                            overlay,
-                            accumulators,
-                        );
-                    }
-                }
-                for s in else_block {
-                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
-                }
-                for s in finally_block {
-                    self.collect_call_arg_types(*s, hir_module, var_to_func, overlay, accumulators);
-                }
+            hir::StmtKind::IndexDelete { obj, index } => {
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*obj],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*index],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
             }
-            hir::StmtKind::Match { cases, .. } => {
-                for case in cases {
-                    for s in &case.body {
-                        self.collect_call_arg_types(
-                            *s,
-                            hir_module,
-                            var_to_func,
-                            overlay,
-                            accumulators,
-                        );
-                    }
-                }
-            }
-            _ => {}
+            hir::StmtKind::Return(None)
+            | hir::StmtKind::Break
+            | hir::StmtKind::Continue
+            | hir::StmtKind::Pass => {}
         }
     }
 

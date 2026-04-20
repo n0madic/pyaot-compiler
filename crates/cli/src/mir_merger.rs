@@ -260,13 +260,7 @@ impl MirMerger {
                     .hir
                     .module_init()
                     .map(|func| Self::find_var_type_in_func(*var_id, func, &parsed.hir))
-                    .unwrap_or_else(|| {
-                        Self::find_var_type_in_stmts(
-                            *var_id,
-                            &parsed.hir.module_init_stmts,
-                            &parsed.hir,
-                        )
-                    });
+                    .unwrap_or(Type::Any);
                 let raw_var_type = type_to_raw(&var_type, &parsed.interner, class_id_offset);
 
                 module_var_exports.insert(
@@ -605,7 +599,7 @@ impl MirMerger {
         }
     }
 
-    /// Find the type of a variable from its assignment in module_init_stmts
+    /// Find the type of a variable from its assignment in the module-init CFG.
     fn find_var_type_in_func(
         var_id: VarId,
         func: &hir::Function,
@@ -620,7 +614,7 @@ impl MirMerger {
         Type::Any
     }
 
-    /// Find the type of a variable from its assignment in module_init_stmts
+    /// Find the type of a variable from its assignment in a statement slice.
     fn find_var_type_in_stmts(
         var_id: VarId,
         stmt_ids: &[hir::StmtId],

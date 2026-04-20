@@ -239,9 +239,8 @@ impl<'a> Lowering<'a> {
                 return return_type.clone();
             }
 
-            // For lambdas (functions with simple bodies), infer from body
-            // Lambda functions typically have a single return statement
-            if func_def.body.len() == 1 {
+            // For lambdas (functions with simple CFGs), infer from body.
+            if func_def.blocks.len() == 1 {
                 return self.infer_lambda_return_type(func_def, hir_module);
             }
         }

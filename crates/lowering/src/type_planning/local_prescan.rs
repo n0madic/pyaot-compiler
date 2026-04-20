@@ -44,7 +44,7 @@ impl<'a> Lowering<'a> {
             let Some(func) = hir_module.func_defs.get(&func_id) else {
                 continue;
             };
-            if func.has_no_body_stmts() {
+            if func.has_no_blocks() {
                 continue;
             }
 
@@ -96,7 +96,7 @@ impl<'a> Lowering<'a> {
         let func_ids = hir_module.functions.clone();
         for func_id in func_ids {
             if let Some(func) = hir_module.func_defs.get(&func_id) {
-                if func.has_no_body_stmts() {
+                if func.has_no_blocks() {
                     continue;
                 }
                 // Seed from annotations, then layer in any
@@ -148,8 +148,7 @@ impl<'a> Lowering<'a> {
     /// preserves the semantics of the tree-walker: for-body stmts are
     /// visited before post-loop stmts, so the post-loop rebind heuristic
     /// (§A.6 #3) sees the loop-only write before the outer-scope rebind.
-    /// `loop_depth` comes from `HirBlock.loop_depth` directly (populated
-    /// by `cfg_build`).
+    /// `loop_depth` comes from `HirBlock.loop_depth` directly.
     pub(crate) fn precompute_var_types(
         &self,
         func: &hir::Function,
@@ -168,12 +167,7 @@ impl<'a> Lowering<'a> {
         scratch
     }
 
-    /// Walk a single straight-line statement (no tree-form control flow).
-    /// The only binding-producing kinds that appear inside a `HirBlock.stmts`
-    /// list are `Bind`, `IterAdvance`, and the tree-form variants that the
-    /// bridge leaves behind until S1.17b-f (If/While/ForBind/Try/Match);
-    /// the latter are never emitted into blocks by `cfg_build`, so we
-    /// treat any occurrence as a programming error.
+    /// Walk a single straight-line statement inside a HIR CFG block.
     fn walk_flat_stmt(
         &self,
         stmt: &hir::Stmt,
@@ -224,18 +218,6 @@ impl<'a> Lowering<'a> {
             | hir::StmtKind::Pass
             | hir::StmtKind::Assert { .. }
             | hir::StmtKind::IndexDelete { .. } => {}
-            // These should never appear inside a HirBlock.stmts list — the
-            // bridge terminates blocks at control-flow boundaries.
-            hir::StmtKind::If { .. }
-            | hir::StmtKind::While { .. }
-            | hir::StmtKind::ForBind { .. }
-            | hir::StmtKind::Try { .. }
-            | hir::StmtKind::Match { .. } => {
-                debug_assert!(
-                    false,
-                    "local_prescan: control-flow StmtKind must not appear inside HirBlock.stmts"
-                );
-            }
             // IterSetup is a pre-block iter-protocol initializer — no
             // local-var binding to absorb.
             hir::StmtKind::IterSetup { .. } => {}
@@ -284,16 +266,6 @@ impl<'a> Lowering<'a> {
             hir::StmtKind::IndexDelete { obj, index } => {
                 rewrite_expr_vars(*obj, hir_module, state);
                 rewrite_expr_vars(*index, hir_module, state);
-            }
-            hir::StmtKind::If { .. }
-            | hir::StmtKind::While { .. }
-            | hir::StmtKind::ForBind { .. }
-            | hir::StmtKind::Try { .. }
-            | hir::StmtKind::Match { .. } => {
-                debug_assert!(
-                    false,
-                    "storage-version rewrite: control-flow stmt should not appear in CFG block"
-                );
             }
         }
 
@@ -435,18 +407,6 @@ fn max_var_in_stmt(stmt: &hir::Stmt, max_id: &mut u32) {
         hir::StmtKind::Bind { target, .. } | hir::StmtKind::IterAdvance { target, .. } => {
             max_var_in_target(target, max_id);
         }
-        hir::StmtKind::Try { handlers, .. } => {
-            for handler in handlers {
-                if let Some(var_id) = handler.name {
-                    *max_id = (*max_id).max(var_id.0);
-                }
-            }
-        }
-        hir::StmtKind::Match { cases, .. } => {
-            for case in cases {
-                max_var_in_pattern(&case.pattern, max_id);
-            }
-        }
         _ => {}
     }
 }
@@ -463,50 +423,6 @@ fn max_var_in_target(target: &hir::BindingTarget, max_id: &mut u32) {
         hir::BindingTarget::Attr { .. }
         | hir::BindingTarget::Index { .. }
         | hir::BindingTarget::ClassAttr { .. } => {}
-    }
-}
-
-fn max_var_in_pattern(pattern: &hir::Pattern, max_id: &mut u32) {
-    match pattern {
-        hir::Pattern::MatchValue(_) | hir::Pattern::MatchSingleton(_) => {}
-        hir::Pattern::MatchAs { pattern, name } => {
-            if let Some(var_id) = name {
-                *max_id = (*max_id).max(var_id.0);
-            }
-            if let Some(inner) = pattern {
-                max_var_in_pattern(inner, max_id);
-            }
-        }
-        hir::Pattern::MatchSequence { patterns } | hir::Pattern::MatchOr(patterns) => {
-            for inner in patterns {
-                max_var_in_pattern(inner, max_id);
-            }
-        }
-        hir::Pattern::MatchStar(name) => {
-            if let Some(var_id) = name {
-                *max_id = (*max_id).max(var_id.0);
-            }
-        }
-        hir::Pattern::MatchMapping { patterns, rest, .. } => {
-            if let Some(var_id) = rest {
-                *max_id = (*max_id).max(var_id.0);
-            }
-            for inner in patterns {
-                max_var_in_pattern(inner, max_id);
-            }
-        }
-        hir::Pattern::MatchClass {
-            patterns,
-            kwd_patterns,
-            ..
-        } => {
-            for inner in patterns {
-                max_var_in_pattern(inner, max_id);
-            }
-            for inner in kwd_patterns {
-                max_var_in_pattern(inner, max_id);
-            }
-        }
     }
 }
 

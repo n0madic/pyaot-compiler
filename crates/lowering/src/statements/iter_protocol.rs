@@ -2,8 +2,8 @@
 //! `StmtKind::IterAdvance`, and `ExprKind::IterHasNext`, plus the
 //! `ExprKind::MatchPattern` pattern-predicate lowering.
 //!
-//! Produced by the `cfg_build` bridge when lowering a tree `ForBind` into
-//! its CFG form:
+//! Produced by HIR CFG construction for a `for` loop's iterator-protocol
+//! form:
 //!
 //! ```text
 //!   pre:        ...user stmts...; IterSetup(iter); Jump(header)

@@ -116,6 +116,7 @@ impl<'a> Lowering<'a> {
 
 impl<'a> Lowering<'a> {
     /// Push a loop context (continue_target, break_target) onto the stack.
+    #[allow(dead_code)]
     pub(crate) fn push_loop(&mut self, continue_target: BlockId, break_target: BlockId) {
         self.codegen
             .loop_stack
@@ -123,6 +124,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// Pop the current loop context.
+    #[allow(dead_code)]
     pub(crate) fn pop_loop(&mut self) {
         self.codegen.loop_stack.pop();
     }
@@ -541,6 +543,7 @@ impl<'a> Lowering<'a> {
 
 impl<'a> Lowering<'a> {
     /// Emit a dead code warning for unreachable isinstance branches.
+    #[allow(dead_code)]
     pub(crate) fn emit_dead_code_warning(
         &mut self,
         span: pyaot_utils::Span,

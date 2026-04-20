@@ -4,7 +4,7 @@
 
 #![forbid(unsafe_code)]
 
-pub mod cfg_build;
+pub mod cfg_builder;
 
 use indexmap::IndexMap;
 use indexmap::IndexSet;
@@ -100,8 +100,6 @@ pub struct Module {
     pub class_defs: IndexMap<ClassId, ClassDef>,
     pub stmts: Arena<Stmt>,
     pub exprs: Arena<Expr>,
-    /// Top-level statements to execute at module init (CPython semantics)
-    pub module_init_stmts: Vec<StmtId>,
     /// Variables declared as global (shared across all functions)
     pub globals: IndexSet<VarId>,
     /// Import declarations
@@ -175,12 +173,9 @@ pub struct ClassAttribute {
 
 /// A straight-line basic block in a HIR control-flow graph.
 ///
-/// Introduced for Phase 1 §1.1 of `ARCHITECTURE_REFACTOR.md`: HIR functions
-/// will eventually carry an explicit CFG (`Function::blocks` keyed by
-/// `HirBlockId`) instead of nested `Vec<StmtId>` bodies inside `StmtKind::{If,
-/// While, ForBind, Try, Match}`. In S1.1 this type is defined but has no
-/// consumers; S1.2 wires the frontend to emit blocks; S1.3 deletes the legacy
-/// control-flow `StmtKind` variants.
+/// HIR is CFG-only: each `Function` owns `blocks` keyed by `HirBlockId`,
+/// with structured control flow represented by `HirTerminator` edges rather
+/// than nested statement trees.
 #[derive(Debug, Clone)]
 pub struct HirBlock {
     pub id: HirBlockId,
@@ -189,13 +184,13 @@ pub struct HirBlock {
     pub stmts: Vec<StmtId>,
     pub terminator: HirTerminator,
     /// How many loop bodies enclose this block — 0 if not inside any loop.
-    /// Populated by `cfg_build` during tree→CFG conversion. Consumed by the
+    /// Populated by HIR CFG construction. Consumed by the
     /// semantic analyzer (`break` / `continue` must be inside a loop) and
     /// by the `local_prescan` post-loop-rebind heuristic (§A.6 #3).
     pub loop_depth: u8,
     /// How many exception-handler regions (handler body or `finally`) enclose
-    /// this block — 0 if not inside any handler. Populated by `cfg_build`
-    /// during tree→CFG conversion. Consumed by the semantic analyzer
+    /// this block — 0 if not inside any handler. Populated by HIR CFG
+    /// construction. Consumed by the semantic analyzer
     /// (bare `raise` must be inside an exception handler).
     pub handler_depth: u8,
 }
@@ -233,8 +228,6 @@ pub enum HirTerminator {
 /// HIR blocks that execute under the protection of the same handler chain.
 /// Runtime unwinding (setjmp/longjmp) jumps into a handler's `entry_block`
 /// when a matching exception is raised inside any of the `try_blocks`.
-///
-/// Introduced in S1.17b-a as purely additive — not yet populated or consumed.
 #[derive(Debug, Clone)]
 pub struct TryScope {
     /// CFG blocks whose statements run inside `try:`.
@@ -256,7 +249,6 @@ pub struct Function {
     pub name: InternedString,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
-    pub body: Vec<StmtId>,
     pub span: Span,
     /// Variables that need to be wrapped in cells (used by inner functions via nonlocal)
     pub cell_vars: HashSet<VarId>,
@@ -268,18 +260,14 @@ pub struct Function {
     pub method_kind: MethodKind,
     /// True if this method is marked with @abstractmethod
     pub is_abstract: bool,
-    /// Control-flow graph built in parallel with `body` during the Phase 1
-    /// S1.2 bridge. See `ARCHITECTURE_REFACTOR.md` §1.1. Not consumed yet —
-    /// optimizer/lowering/codegen switch to it in S1.3, at which point
-    /// `body` and the tree-shaped `StmtKind::{If, While, ForBind, Try,
-    /// Match}` variants are deleted.
+    /// Control-flow graph for this function. Each block contains only
+    /// straight-line statements; all branching lives in `HirTerminator`.
     pub blocks: IndexMap<HirBlockId, HirBlock>,
     pub entry_block: HirBlockId,
     /// Exception-handler scopes (§1.11 Q2). Handlers do not have incoming
     /// CFG edges — runtime unwinding transfers control to the matching
     /// handler's `entry_block` when an exception is raised inside a block
-    /// listed in `try_blocks`. Introduced additively in S1.17b-a; not yet
-    /// populated by the frontend (Stage 2) or consumed by lowering (Stage 3).
+    /// listed in `try_blocks`.
     pub try_scopes: Vec<TryScope>,
 }
 
@@ -290,16 +278,6 @@ impl Function {
                 .blocks
                 .get(&self.entry_block)
                 .is_none_or(|b| matches!(b.terminator, HirTerminator::Return(None)))
-    }
-
-    /// `true` if the function has no executable statements — either the
-    /// legacy tree `body` is empty OR every CFG block has an empty stmt
-    /// list and the entry block terminates with `Return(None)`. Used by
-    /// prescan / return-type inference passes to skip empty bodies
-    /// (abstract methods, `pass`-only bodies). §1.17b-d: introduced to
-    /// abstract away the tree vs. CFG distinction.
-    pub fn has_no_body_stmts(&self) -> bool {
-        self.has_no_blocks()
     }
 }
 
@@ -412,32 +390,8 @@ pub enum StmtKind {
         type_hint: Option<Type>,
     },
 
-    /// Unified for-loop with arbitrary binding target: `for TARGET in ITER:`.
-    /// Covers simple variable targets, tuple/starred unpack patterns, and
-    /// attribute/index write targets.
-    ForBind {
-        target: BindingTarget,
-        iter: ExprId,
-        body: Vec<StmtId>,
-        else_block: Vec<StmtId>,
-    },
-
     /// Return statement
     Return(Option<ExprId>),
-
-    /// If statement
-    If {
-        cond: ExprId,
-        then_block: Vec<StmtId>,
-        else_block: Vec<StmtId>,
-    },
-
-    /// While loop (with optional else block, executed if loop completes without break)
-    While {
-        cond: ExprId,
-        body: Vec<StmtId>,
-        else_block: Vec<StmtId>,
-    },
 
     /// Break
     Break,
@@ -451,14 +405,6 @@ pub enum StmtKind {
         cause: Option<ExprId>,
     },
 
-    /// Try-except-else-finally
-    Try {
-        body: Vec<StmtId>,
-        handlers: Vec<ExceptHandler>,
-        else_block: Vec<StmtId>,
-        finally_block: Vec<StmtId>,
-    },
-
     /// Pass (no-op)
     Pass,
 
@@ -468,24 +414,15 @@ pub enum StmtKind {
     /// Delete indexed item: del obj[index] (for dict/list)
     IndexDelete { obj: ExprId, index: ExprId },
 
-    /// Match statement (Python 3.10+ pattern matching)
-    Match {
-        subject: ExprId,
-        cases: Vec<MatchCase>,
-    },
-
     /// Advance an iterator and bind the next value to `target`
     /// (§1.11 Q1 Scheme A). Emitted at the head of a for-loop body block;
     /// preconditioned by a `Branch(IterHasNext(iter))` in the header. Binds
-    /// through the same `BindingTarget` infrastructure as `Bind` and
-    /// `ForBind`, covering tuple-unpack and starred targets.
-    ///
-    /// Introduced additively in S1.17b-a; not yet emitted by the frontend
-    /// (Stage 2) or consumed by lowering (Stage 3).
+    /// through the same `BindingTarget` infrastructure as `Bind`, covering
+    /// tuple-unpack and starred targets.
     IterAdvance { iter: ExprId, target: BindingTarget },
 
     /// Set up an iterator for a subsequent `IterHasNext` / `IterAdvance`
-    /// pair. Emitted by `cfg_build` in the pre-block (before
+    /// pair. Emitted by CFG construction in the pre-block (before
     /// `Jump(header)`) of a for-loop; lowering calls the appropriate
     /// `rt_iter_X` runtime function and caches the resulting iterator
     /// local in `CodeGenState::iter_cache` keyed by `iter: ExprId`.
@@ -496,14 +433,6 @@ pub enum StmtKind {
     /// header) so the iterator's state isn't reset on each header pass.
     /// See §1.11 critical open issue — resolved by Option A (S1.17b-c).
     IterSetup { iter: ExprId },
-}
-
-/// Match case for match statement
-#[derive(Debug, Clone)]
-pub struct MatchCase {
-    pub pattern: Pattern,
-    pub guard: Option<ExprId>,
-    pub body: Vec<StmtId>,
 }
 
 /// Pattern for match statement
@@ -552,11 +481,8 @@ pub enum MatchSingletonKind {
 pub struct ExceptHandler {
     pub ty: Option<Type>,
     pub name: Option<VarId>,
-    pub body: Vec<StmtId>,
     /// CFG entry block for this handler (§1.11). The block has no CFG
     /// predecessors — runtime unwinding jumps here on a matching exception.
-    /// Introduced additively in S1.17b-a; defaults to `HirBlockId::new(0)`
-    /// for tree-built handlers until Stage 2 populates the real value.
     pub entry_block: HirBlockId,
 }
 
@@ -1059,7 +985,6 @@ impl Module {
             class_defs: IndexMap::new(),
             stmts: Arena::new(),
             exprs: Arena::new(),
-            module_init_stmts: Vec::new(),
             globals: IndexSet::new(),
             imports: Vec::new(),
             imported_symbols: IndexMap::new(),

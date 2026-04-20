@@ -18,24 +18,11 @@ impl<'a> Lowering<'a> {
     /// Refine types of empty containers by scanning for subsequent method calls.
     /// Must run before lowering so that `get_var_type` returns the refined type.
     ///
-    /// §1.17b-d — function bodies iterate `func.blocks.values()` in bridge
-    /// allocation order (pre-order DFS of the source tree). Each block is
-    /// treated as a flat stmt list; "subsequent uses" inside the block are
-    /// read from `block.stmts[i+1..]`. Uses in separate blocks are visited
-    /// by their own block scan — this preserves the original tree-walker's
-    /// per-scope discipline (an `x = []` at the module level only sees uses
-    /// at the module level; nested-block uses are handled when the walker
-    /// recurses into that block, now represented as a separate CFG block).
-    /// Module init stmts are still flat-walked (no containing CFG function).
+    /// §1.17b-d/f — all HIR functions, including the synthetic module-init
+    /// function, are scanned via their CFG blocks in allocation order. Each
+    /// block is treated as a flat stmt list; "subsequent uses" are read from
+    /// `block.stmts[i+1..]`.
     pub(crate) fn refine_empty_container_types(&mut self, hir_module: &hir::Module) {
-        if hir_module.module_init_func.is_none() {
-            let module_overlay: IndexMap<VarId, Type> = IndexMap::new();
-            self.refine_empty_containers_in_block(
-                &hir_module.module_init_stmts,
-                hir_module,
-                &module_overlay,
-            );
-        }
         for func_id in hir_module.functions.iter() {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 let overlay = self
@@ -116,46 +103,6 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-
-            // Recurse into nested blocks
-            match &hir_module.stmts[*stmt_id].kind {
-                hir::StmtKind::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    self.refine_empty_containers_in_block(then_block, hir_module, overlay);
-                    self.refine_empty_containers_in_block(else_block, hir_module, overlay);
-                }
-                hir::StmtKind::ForBind {
-                    body, else_block, ..
-                }
-                | hir::StmtKind::While {
-                    body, else_block, ..
-                } => {
-                    self.refine_empty_containers_in_block(body, hir_module, overlay);
-                    self.refine_empty_containers_in_block(else_block, hir_module, overlay);
-                }
-                hir::StmtKind::Try {
-                    body,
-                    handlers,
-                    else_block,
-                    finally_block,
-                } => {
-                    self.refine_empty_containers_in_block(body, hir_module, overlay);
-                    for handler in handlers {
-                        self.refine_empty_containers_in_block(&handler.body, hir_module, overlay);
-                    }
-                    self.refine_empty_containers_in_block(else_block, hir_module, overlay);
-                    self.refine_empty_containers_in_block(finally_block, hir_module, overlay);
-                }
-                hir::StmtKind::Match { cases, .. } => {
-                    for case in cases {
-                        self.refine_empty_containers_in_block(&case.body, hir_module, overlay);
-                    }
-                }
-                _ => {}
-            }
         }
     }
 
@@ -175,31 +122,6 @@ impl<'a> Lowering<'a> {
                         self.extract_elem_type_from_method_call(var, *expr_id, hir_module, overlay)
                     {
                         return ty;
-                    }
-                }
-                // If statement — check the condition (may contain
-                // assert-style method calls) and also recurse into
-                // both branches so `if cond: var.append(x)` and
-                // similar patterns are found.
-                hir::StmtKind::If {
-                    cond,
-                    then_block,
-                    else_block,
-                } => {
-                    if let Some(ty) =
-                        self.extract_elem_type_from_method_call(var, *cond, hir_module, overlay)
-                    {
-                        return ty;
-                    }
-                    let result =
-                        self.find_elem_type_from_usage(var, then_block, hir_module, overlay);
-                    if result != Type::Any {
-                        return result;
-                    }
-                    let result =
-                        self.find_elem_type_from_usage(var, else_block, hir_module, overlay);
-                    if result != Type::Any {
-                        return result;
                     }
                 }
                 // Stop at reassignment to the same variable — any
@@ -256,73 +178,29 @@ impl<'a> Lowering<'a> {
                                 .get(closure_func_id)
                                 .cloned()
                                 .unwrap_or_default();
-                            let result = self.find_elem_type_from_usage(
-                                capture_param.var,
-                                &closure_func.body,
-                                hir_module,
-                                &closure_overlay,
-                            );
-                            if result != Type::Any {
-                                return result;
+                            for block in closure_func.blocks.values() {
+                                let result = self.find_elem_type_from_usage(
+                                    capture_param.var,
+                                    &block.stmts,
+                                    hir_module,
+                                    &closure_overlay,
+                                );
+                                if result != Type::Any {
+                                    return result;
+                                }
                             }
                         }
                     }
                 }
-                // Recurse into nested blocks
-                hir::StmtKind::ForBind {
-                    body, else_block, ..
-                }
-                | hir::StmtKind::While {
-                    body, else_block, ..
-                } => {
-                    let result = self.find_elem_type_from_usage(var, body, hir_module, overlay);
-                    if result != Type::Any {
-                        return result;
-                    }
-                    let result =
-                        self.find_elem_type_from_usage(var, else_block, hir_module, overlay);
-                    if result != Type::Any {
-                        return result;
-                    }
-                }
-                hir::StmtKind::Try {
-                    body,
-                    handlers,
-                    else_block,
-                    finally_block,
-                } => {
-                    let result = self.find_elem_type_from_usage(var, body, hir_module, overlay);
-                    if result != Type::Any {
-                        return result;
-                    }
-                    for handler in handlers {
-                        let result =
-                            self.find_elem_type_from_usage(var, &handler.body, hir_module, overlay);
-                        if result != Type::Any {
-                            return result;
-                        }
-                    }
-                    let result =
-                        self.find_elem_type_from_usage(var, else_block, hir_module, overlay);
-                    if result != Type::Any {
-                        return result;
-                    }
-                    let result =
-                        self.find_elem_type_from_usage(var, finally_block, hir_module, overlay);
-                    if result != Type::Any {
-                        return result;
-                    }
-                }
-                hir::StmtKind::Match { cases, .. } => {
-                    for case in cases {
-                        let result =
-                            self.find_elem_type_from_usage(var, &case.body, hir_module, overlay);
-                        if result != Type::Any {
-                            return result;
-                        }
-                    }
-                }
-                _ => {}
+                hir::StmtKind::Return(_)
+                | hir::StmtKind::Break
+                | hir::StmtKind::Continue
+                | hir::StmtKind::Raise { .. }
+                | hir::StmtKind::Pass
+                | hir::StmtKind::Assert { .. }
+                | hir::StmtKind::IndexDelete { .. }
+                | hir::StmtKind::IterAdvance { .. }
+                | hir::StmtKind::IterSetup { .. } => {}
             }
         }
         Type::Any
@@ -409,65 +287,17 @@ impl<'a> Lowering<'a> {
                 } if *target_var == var => {
                     return (Type::Any, Type::Any);
                 }
-                // Recurse into nested blocks
-                hir::StmtKind::ForBind {
-                    body, else_block, ..
-                }
-                | hir::StmtKind::While {
-                    body, else_block, ..
-                } => {
-                    let result = self.find_dict_types_from_usage(var, body, hir_module, overlay);
-                    if result != (Type::Any, Type::Any) {
-                        return result;
-                    }
-                    let result =
-                        self.find_dict_types_from_usage(var, else_block, hir_module, overlay);
-                    if result != (Type::Any, Type::Any) {
-                        return result;
-                    }
-                }
-                hir::StmtKind::Try {
-                    body,
-                    handlers,
-                    else_block,
-                    finally_block,
-                } => {
-                    let result = self.find_dict_types_from_usage(var, body, hir_module, overlay);
-                    if result != (Type::Any, Type::Any) {
-                        return result;
-                    }
-                    for handler in handlers {
-                        let result = self.find_dict_types_from_usage(
-                            var,
-                            &handler.body,
-                            hir_module,
-                            overlay,
-                        );
-                        if result != (Type::Any, Type::Any) {
-                            return result;
-                        }
-                    }
-                    let result =
-                        self.find_dict_types_from_usage(var, else_block, hir_module, overlay);
-                    if result != (Type::Any, Type::Any) {
-                        return result;
-                    }
-                    let result =
-                        self.find_dict_types_from_usage(var, finally_block, hir_module, overlay);
-                    if result != (Type::Any, Type::Any) {
-                        return result;
-                    }
-                }
-                hir::StmtKind::Match { cases, .. } => {
-                    for case in cases {
-                        let result =
-                            self.find_dict_types_from_usage(var, &case.body, hir_module, overlay);
-                        if result != (Type::Any, Type::Any) {
-                            return result;
-                        }
-                    }
-                }
-                _ => {}
+                hir::StmtKind::Bind { .. }
+                | hir::StmtKind::Expr(_)
+                | hir::StmtKind::Return(_)
+                | hir::StmtKind::Break
+                | hir::StmtKind::Continue
+                | hir::StmtKind::Raise { .. }
+                | hir::StmtKind::Pass
+                | hir::StmtKind::Assert { .. }
+                | hir::StmtKind::IndexDelete { .. }
+                | hir::StmtKind::IterAdvance { .. }
+                | hir::StmtKind::IterSetup { .. } => {}
             }
         }
         (Type::Any, Type::Any)

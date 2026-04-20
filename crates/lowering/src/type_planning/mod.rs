@@ -214,7 +214,7 @@ impl<'a> Lowering<'a> {
 
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 // Skip empty functions
-                if func.has_no_body_stmts() {
+                if func.has_no_blocks() {
                     continue;
                 }
 
@@ -278,7 +278,7 @@ impl<'a> Lowering<'a> {
                     continue;
                 }
             }
-            if func.has_no_body_stmts() {
+            if func.has_no_blocks() {
                 continue;
             }
             let Some(prescanned) = self

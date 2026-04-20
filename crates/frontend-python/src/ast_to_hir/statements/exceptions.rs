@@ -2,7 +2,7 @@
 
 use super::AstToHir;
 use pyaot_diagnostics::Result;
-use pyaot_hir::{cfg_build::CfgExceptHandler, cfg_build::CfgStmt, *};
+use pyaot_hir::{cfg_builder::CfgExceptHandler, cfg_builder::CfgStmt, *};
 use pyaot_types::{BuiltinExceptionKind, Type};
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;

@@ -2,7 +2,7 @@ use super::AstToHir;
 use indexmap::{IndexMap, IndexSet};
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
-    cfg_build::{materialize_legacy_body, CfgBuilder, CfgStmt},
+    cfg_builder::{CfgBuilder, CfgStmt},
     *,
 };
 use pyaot_types::dunders::{dunder_kind, polymorphic_other_type};
@@ -630,7 +630,6 @@ impl AstToHir {
 
         let method_is_generator = self.scope.current_func_is_generator;
 
-        let legacy_body = materialize_legacy_body(&body_stmts, &mut self.module);
         let mut cfg = CfgBuilder::new();
         let entry_block = cfg.new_block();
         cfg.enter(entry_block);
@@ -642,7 +641,6 @@ impl AstToHir {
             name: func_name,
             params,
             return_type,
-            body: legacy_body,
             span: method_span,
             cell_vars: HashSet::new(),
             nonlocal_vars: HashSet::new(),

@@ -247,9 +247,9 @@ impl<'a> Lowering<'a> {
                 self.lower_iter_has_next(*iter_id, hir_module, mir_func)
             }
 
-            // §1.17b-c — match-statement desugaring. Bridge emits this as
-            // the cond of each test block's `Branch` terminator when
-            // rewriting `StmtKind::Match` into an if/else ladder.
+            // §1.17b-c — match-statement desugaring. CFG construction emits
+            // this as the cond of each test block's `Branch` terminator in
+            // the match-case ladder.
             // Delegates to `lower_match_pattern` which reuses the
             // authoritative `generate_pattern_check` from lower_match.
             // See the doc comment on `lower_match_pattern` for the

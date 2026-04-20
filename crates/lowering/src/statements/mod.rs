@@ -11,7 +11,6 @@ mod assert;
 mod assign;
 mod control_flow;
 mod iter_protocol;
-mod loops;
 mod match_stmt;
 
 use pyaot_diagnostics::Result;
@@ -41,20 +40,6 @@ impl<'a> Lowering<'a> {
             hir::StmtKind::Return(value_expr) => {
                 self.lower_return(value_expr.as_ref(), hir_module, mir_func)?;
             }
-            hir::StmtKind::If {
-                cond,
-                then_block,
-                else_block,
-            } => {
-                self.lower_if(*cond, then_block, else_block, hir_module, mir_func)?;
-            }
-            hir::StmtKind::While {
-                cond,
-                body,
-                else_block,
-            } => {
-                self.lower_while(*cond, body, else_block, hir_module, mir_func)?;
-            }
             hir::StmtKind::Break => {
                 self.lower_break();
             }
@@ -75,29 +60,9 @@ impl<'a> Lowering<'a> {
                 self.lower_assert(*cond, msg.as_ref(), hir_module, mir_func)?;
             }
 
-            // Match statement (match_stmt.rs)
-            hir::StmtKind::Match { subject, cases } => {
-                self.lower_match(*subject, cases, hir_module, mir_func)?;
-            }
-
             // Exceptions (exceptions.rs - already separate)
             hir::StmtKind::Raise { exc, cause } => {
                 self.lower_raise(exc, cause, hir_module, mir_func)?;
-            }
-            hir::StmtKind::Try {
-                body,
-                handlers,
-                else_block,
-                finally_block,
-            } => {
-                self.lower_try(
-                    body,
-                    handlers,
-                    else_block,
-                    finally_block,
-                    hir_module,
-                    mir_func,
-                )?;
             }
 
             // Unified binding: assign/bind.rs
@@ -124,20 +89,7 @@ impl<'a> Lowering<'a> {
                     )?;
                 }
             }
-            hir::StmtKind::ForBind {
-                target,
-                iter,
-                body,
-                else_block,
-            } => {
-                self.lower_for_bind(target, *iter, body, else_block, hir_module, mir_func)?;
-            }
-
-            // §1.17b-c — new HIR primitives. Emitted by `cfg_build` when
-            // producing a for-loop CFG; consumed by the CFG-walker path
-            // (follow-up work). When lowering still runs via the tree
-            // walker (current default), these never execute — the tree
-            // walker handles `StmtKind::ForBind` via `lower_for_bind`.
+            // HIR CFG primitives for for-loops.
             hir::StmtKind::IterSetup { iter } => {
                 self.lower_iter_setup(*iter, hir_module, mir_func)?;
             }

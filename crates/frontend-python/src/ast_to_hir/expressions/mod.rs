@@ -15,7 +15,7 @@ mod names;
 
 use super::AstToHir;
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::{cfg_build::CfgStmt, *};
+use pyaot_hir::{cfg_builder::CfgStmt, *};
 use pyaot_types::Type;
 use rustpython_parser::ast as py;
 

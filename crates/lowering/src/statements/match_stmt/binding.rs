@@ -4,7 +4,6 @@
 //! `get_or_create_local_for_var()`, and `emit_pattern_var_assign()`.
 
 use pyaot_diagnostics::Result;
-use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::VarId;
@@ -57,34 +56,6 @@ impl<'a> Lowering<'a> {
         };
 
         Ok(mir::Operand::Local(result_local))
-    }
-
-    /// Bind pattern variables to the subject (for wildcard/as patterns)
-    pub(super) fn bind_pattern_variables(
-        &mut self,
-        pattern: &hir::Pattern,
-        subject: mir::Operand,
-        subject_type: &Type,
-        mir_func: &mut mir::Function,
-    ) -> Result<()> {
-        match pattern {
-            hir::Pattern::MatchAs { pattern, name } => {
-                // Recursively bind inner pattern
-                if let Some(inner) = pattern {
-                    self.bind_pattern_variables(inner, subject.clone(), subject_type, mir_func)?;
-                }
-
-                // Bind name to subject
-                if let Some(var_id) = name {
-                    self.emit_pattern_var_assign(*var_id, subject, subject_type, mir_func);
-                }
-            }
-            _ => {
-                // Other patterns don't need direct binding here
-                // (handled in generate_pattern_check)
-            }
-        }
-        Ok(())
     }
 
     /// Get or create a local for a variable. For globals, also registers the

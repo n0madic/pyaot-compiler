@@ -2,7 +2,7 @@
 
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::{
-    cfg_build::{materialize_legacy_body, CfgBuilder, CfgStmt},
+    cfg_builder::{CfgBuilder, CfgStmt},
     *,
 };
 use pyaot_stdlib_defs;
@@ -450,7 +450,6 @@ impl AstToHir {
         let func_name = self.interner.intern("__pyaot_module_init__");
 
         let body_stmts = self.module_init_stmts.clone();
-        let legacy_body = materialize_legacy_body(&body_stmts, &mut self.module);
         let mut cfg = CfgBuilder::new();
         let entry_block = cfg.new_block();
         cfg.enter(entry_block);
@@ -462,7 +461,6 @@ impl AstToHir {
             name: func_name,
             params: Vec::new(),
             return_type: Some(Type::None),
-            body: legacy_body.clone(),
             span: Span::dummy(),
             cell_vars: std::collections::HashSet::new(),
             nonlocal_vars: std::collections::HashSet::new(),
@@ -475,7 +473,6 @@ impl AstToHir {
         };
 
         self.module.functions.push(func_id);
-        self.module.module_init_stmts = legacy_body;
         self.module.module_init_func = Some(func_id);
         self.module.func_defs.insert(func_id, function);
     }

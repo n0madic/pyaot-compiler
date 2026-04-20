@@ -34,6 +34,7 @@ pub enum DeadBranch {
 }
 
 /// Information extracted from an isinstance() call for narrowing and dead code detection
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IsinstanceInfo {
     /// The variable being checked
@@ -577,6 +578,7 @@ impl<'a> Lowering<'a> {
 
     /// Extract isinstance information from an isinstance expression for dead code detection.
     /// This is a public wrapper for use by control_flow.rs.
+    #[allow(dead_code)]
     pub(crate) fn extract_isinstance_info_from_expr(
         &self,
         expr: &hir::Expr,

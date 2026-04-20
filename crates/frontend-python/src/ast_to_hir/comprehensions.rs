@@ -1,7 +1,7 @@
 use super::AstToHir;
 use pyaot_diagnostics::Result;
 use pyaot_hir::{
-    cfg_build::{materialize_legacy_body, CfgBuilder, CfgStmt},
+    cfg_builder::{CfgBuilder, CfgStmt},
     *,
 };
 use pyaot_types::Type;
@@ -349,7 +349,6 @@ impl AstToHir {
         let func_id = self.ids.alloc_func();
         let func_name_interned = self.interner.intern(&func_name);
 
-        let legacy_body = materialize_legacy_body(&body_stmts, &mut self.module);
         let mut cfg = CfgBuilder::new();
         let entry_block = cfg.new_block();
         cfg.enter(entry_block);
@@ -361,7 +360,6 @@ impl AstToHir {
             name: func_name_interned,
             params,
             return_type: None,
-            body: legacy_body,
             span: genexp_span,
             cell_vars: std::collections::HashSet::new(),
             nonlocal_vars: std::collections::HashSet::new(),
