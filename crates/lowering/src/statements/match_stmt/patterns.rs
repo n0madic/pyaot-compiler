@@ -471,11 +471,7 @@ impl<'a> Lowering<'a> {
             // Commit bindings in this block (elements_bb) — see doc note
             // at the top of this function.
             for (var_id, value, ty) in &elem_bindings {
-                let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
-                self.emit_instruction(mir::InstructionKind::Copy {
-                    dest: local,
-                    src: value.clone(),
-                });
+                self.emit_pattern_var_assign(*var_id, value.clone(), ty, mir_func);
             }
 
             // Combine with AND
@@ -543,12 +539,12 @@ impl<'a> Lowering<'a> {
 
                     // Commit star binding in elements_bb — see doc note
                     // at the top of this function.
-                    let star_local =
-                        self.get_or_create_local_for_var(*var_id, mir_func, &star_elem_type);
-                    self.emit_instruction(mir::InstructionKind::Copy {
-                        dest: star_local,
-                        src: mir::Operand::Local(slice_local),
-                    });
+                    self.emit_pattern_var_assign(
+                        *var_id,
+                        mir::Operand::Local(slice_local),
+                        &star_elem_type,
+                        mir_func,
+                    );
                 }
 
                 // Process patterns after star
@@ -605,11 +601,7 @@ impl<'a> Lowering<'a> {
 
                     // Commit bindings in elements_bb — see doc note.
                     for (var_id, value, ty) in &elem_bindings {
-                        let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
-                        self.emit_instruction(mir::InstructionKind::Copy {
-                            dest: local,
-                            src: value.clone(),
-                        });
+                        self.emit_pattern_var_assign(*var_id, value.clone(), ty, mir_func);
                     }
 
                     // Combine with AND
@@ -741,11 +733,7 @@ impl<'a> Lowering<'a> {
             // Commit bindings in get_bb — see doc note on
             // `generate_mapping_pattern_check`.
             for (var_id, value, ty) in &pattern_bindings {
-                let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
-                self.emit_instruction(mir::InstructionKind::Copy {
-                    dest: local,
-                    src: value.clone(),
-                });
+                self.emit_pattern_var_assign(*var_id, value.clone(), ty, mir_func);
             }
 
             // Overwrite combined_local with AND(result_cond, pattern_cond) on true path
@@ -799,12 +787,13 @@ impl<'a> Lowering<'a> {
             // Commit rest binding in the current block (pattern dispatch
             // or last get_bb) — see doc note. Caller merges via the
             // returned cond; Cytron will insert a phi at the merge.
-            let rest_bind_local =
-                self.get_or_create_local_for_var(*rest_var, mir_func, &ctx.subject_type.clone());
-            self.emit_instruction(mir::InstructionKind::Copy {
-                dest: rest_bind_local,
-                src: mir::Operand::Local(rest_local),
-            });
+            let rest_ty = ctx.subject_type.clone();
+            self.emit_pattern_var_assign(
+                *rest_var,
+                mir::Operand::Local(rest_local),
+                &rest_ty,
+                mir_func,
+            );
         }
 
         Ok((result_cond, bindings))
@@ -952,11 +941,7 @@ impl<'a> Lowering<'a> {
             // Commit bindings in the isinstance-success path — see doc
             // note on `generate_class_pattern_check`.
             for (var_id, value, ty) in &attr_bindings {
-                let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
-                self.emit_instruction(mir::InstructionKind::Copy {
-                    dest: local,
-                    src: value.clone(),
-                });
+                self.emit_pattern_var_assign(*var_id, value.clone(), ty, mir_func);
             }
 
             // Combine with AND

@@ -1,7 +1,7 @@
 //! Variable binding helpers for match statement lowering.
 //!
-//! Contains `emit_equality_check()`, `bind_pattern_variables()`, and
-//! `get_or_create_local_for_var()`.
+//! Contains `emit_equality_check()`, `bind_pattern_variables()`,
+//! `get_or_create_local_for_var()`, and `emit_pattern_var_assign()`.
 
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
@@ -76,11 +76,7 @@ impl<'a> Lowering<'a> {
 
                 // Bind name to subject
                 if let Some(var_id) = name {
-                    let local = self.get_or_create_local_for_var(*var_id, mir_func, subject_type);
-                    self.emit_instruction(mir::InstructionKind::Copy {
-                        dest: local,
-                        src: subject,
-                    });
+                    self.emit_pattern_var_assign(*var_id, subject, subject_type, mir_func);
                 }
             }
             _ => {
@@ -91,7 +87,9 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    /// Get or create a local for a variable
+    /// Get or create a local for a variable. For globals, also registers the
+    /// type in `global_var_types`. Does NOT emit the GlobalSet call — use
+    /// `emit_pattern_var_assign` when you need to actually write the value.
     pub(super) fn get_or_create_local_for_var(
         &mut self,
         var_id: VarId,
@@ -105,6 +103,39 @@ impl<'a> Lowering<'a> {
             self.insert_var_local(var_id, local);
             self.insert_var_type(var_id, ty.clone());
             local
+        }
+    }
+
+    /// Assign `operand` to a pattern-bound variable. Handles both locals and
+    /// module-level globals: for globals, emits the runtime GlobalSet call so
+    /// the value is visible outside the match statement.
+    pub(super) fn emit_pattern_var_assign(
+        &mut self,
+        var_id: VarId,
+        operand: mir::Operand,
+        ty: &Type,
+        mir_func: &mut mir::Function,
+    ) {
+        let local = self.get_or_create_local_for_var(var_id, mir_func, ty);
+        // Always update the type map so global_var_types reflects the match-bound type
+        // even if the local was already registered with a different/absent type.
+        self.insert_var_type(var_id, ty.clone());
+        self.emit_instruction(mir::InstructionKind::Copy {
+            dest: local,
+            src: operand.clone(),
+        });
+
+        if self.is_global(&var_id) {
+            let runtime_func = self.get_global_set_func(ty);
+            let effective_var_id = self.get_effective_var_id(var_id);
+            self.emit_runtime_call_void(
+                runtime_func,
+                vec![
+                    mir::Operand::Constant(mir::Constant::Int(effective_var_id)),
+                    operand,
+                ],
+                mir_func,
+            );
         }
     }
 }

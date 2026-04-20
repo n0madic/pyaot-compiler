@@ -384,12 +384,31 @@ impl AstToHir {
                     _ => None,
                 };
 
+                // For Match statements: snapshot var_map keys before conversion
+                // so we can detect new variables bound by case patterns.
+                let is_match = matches!(&stmt, py::Stmt::Match(_));
+                let var_map_keys_before: HashSet<InternedString> = if is_match {
+                    self.symbols.var_map.keys().copied().collect()
+                } else {
+                    HashSet::new()
+                };
+
                 let stmt_id = self.convert_stmt(stmt)?;
 
                 // Mark the target variable as a module-level assignment
                 if is_assignment {
                     if let Some(name) = target_name {
                         if let Some(&var_id) = self.symbols.var_map.get(&name) {
+                            self.scope.module_level_assignments.insert(var_id);
+                        }
+                    }
+                }
+
+                // Match case patterns bind variables (like regular assignments in Python).
+                // Mark all newly-added variables as module-level so they become globals.
+                if is_match {
+                    for (&name, &var_id) in &self.symbols.var_map {
+                        if !var_map_keys_before.contains(&name) {
                             self.scope.module_level_assignments.insert(var_id);
                         }
                     }

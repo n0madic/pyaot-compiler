@@ -524,6 +524,34 @@ impl<'a> Lowering<'a> {
         // and `MethodCall` on dict lowers to `None` (§G.11).
         for stmt_id in &init_func.body {
             let stmt = &hir_module.stmts[*stmt_id];
+
+            // Pre-populate types for variables captured by match patterns.
+            // This is needed because the CFG walker may process blocks in an
+            // order where assert blocks (post-match) are lowered before the
+            // match condition blocks that set var_types. Pre-populating
+            // global_var_types ensures reads after the match use the right type.
+            if let hir::StmtKind::Match { subject, cases } = &stmt.kind {
+                let subject_type =
+                    if let hir::ExprKind::Var(var_id) = &hir_module.exprs[*subject].kind {
+                        self.symbols
+                            .global_var_types
+                            .get(var_id)
+                            .cloned()
+                            .unwrap_or(Type::Any)
+                    } else {
+                        hir_module.exprs[*subject].ty.clone().unwrap_or(Type::Any)
+                    };
+                for case in cases {
+                    Self::scan_match_pattern_global_types(
+                        &case.pattern,
+                        &subject_type,
+                        &self.symbols.globals,
+                        &mut self.symbols.global_var_types,
+                    );
+                }
+                continue;
+            }
+
             let (target, type_hint, value) = match &stmt.kind {
                 hir::StmtKind::Bind {
                     target: hir::BindingTarget::Var(target_var),
@@ -577,6 +605,82 @@ impl<'a> Lowering<'a> {
                     self.symbols.global_var_types.insert(target, inferred);
                 }
             }
+        }
+    }
+
+    /// Recursively assign types to global variables captured by a match pattern.
+    /// Called from `scan_global_var_types` for `Match` statements so that
+    /// global_var_types is populated before any blocks are lowered.
+    fn scan_match_pattern_global_types(
+        pattern: &hir::Pattern,
+        context_type: &Type,
+        globals: &indexmap::IndexSet<pyaot_utils::VarId>,
+        global_var_types: &mut indexmap::IndexMap<pyaot_utils::VarId, Type>,
+    ) {
+        match pattern {
+            hir::Pattern::MatchAs { pattern, name } => {
+                if let Some(inner) = pattern {
+                    Self::scan_match_pattern_global_types(
+                        inner,
+                        context_type,
+                        globals,
+                        global_var_types,
+                    );
+                }
+                if let Some(var_id) = name {
+                    if globals.contains(var_id) {
+                        global_var_types.insert(*var_id, context_type.clone());
+                    }
+                }
+            }
+            hir::Pattern::MatchMapping { patterns, rest, .. } => {
+                if let Some(rest_var) = rest {
+                    if globals.contains(rest_var) {
+                        global_var_types.insert(*rest_var, context_type.clone());
+                    }
+                }
+                let value_type = match context_type {
+                    Type::Dict(_, v) => (**v).clone(),
+                    _ => Type::Any,
+                };
+                for p in patterns {
+                    Self::scan_match_pattern_global_types(
+                        p,
+                        &value_type,
+                        globals,
+                        global_var_types,
+                    );
+                }
+            }
+            hir::Pattern::MatchSequence { patterns } => {
+                let elem_type = match context_type {
+                    Type::List(t) => (**t).clone(),
+                    _ => Type::Any,
+                };
+                for p in patterns {
+                    Self::scan_match_pattern_global_types(p, &elem_type, globals, global_var_types);
+                }
+            }
+            hir::Pattern::MatchStar(Some(var_id)) => {
+                if globals.contains(var_id) {
+                    let list_type = match context_type {
+                        Type::List(t) => Type::List(t.clone()),
+                        _ => Type::Any,
+                    };
+                    global_var_types.insert(*var_id, list_type);
+                }
+            }
+            hir::Pattern::MatchOr(alternatives) => {
+                for alt in alternatives {
+                    Self::scan_match_pattern_global_types(
+                        alt,
+                        context_type,
+                        globals,
+                        global_var_types,
+                    );
+                }
+            }
+            _ => {}
         }
     }
 

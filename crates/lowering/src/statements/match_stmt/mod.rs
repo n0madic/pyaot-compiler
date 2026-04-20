@@ -141,11 +141,7 @@ impl<'a> Lowering<'a> {
             // Bindings block: emit bindings, then evaluate guard
             self.push_block(bindings_bb);
             for (var_id, value, ty) in &bindings {
-                let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
-                self.emit_instruction(mir::InstructionKind::Copy {
-                    dest: local,
-                    src: value.clone(),
-                });
+                self.emit_pattern_var_assign(*var_id, value.clone(), ty, mir_func);
             }
 
             // Evaluate guard (now pattern variables are bound)
@@ -178,11 +174,7 @@ impl<'a> Lowering<'a> {
 
             // Apply bindings inside the then-block (only on match success)
             for (var_id, value, ty) in &bindings {
-                let local = self.get_or_create_local_for_var(*var_id, mir_func, ty);
-                self.emit_instruction(mir::InstructionKind::Copy {
-                    dest: local,
-                    src: value.clone(),
-                });
+                self.emit_pattern_var_assign(*var_id, value.clone(), ty, mir_func);
             }
         }
 
