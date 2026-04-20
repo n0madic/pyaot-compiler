@@ -312,11 +312,11 @@ calls and removes the `#[ignore]` attributes.
 
 **Duration**: 6–10 weeks.
 
-**Status dashboard (2026-04-18)** — ✅ done · 🟡 partial · ⏳ pending
+**Status dashboard (2026-04-20)** — ✅ done · 🟡 partial · ⏳ pending
 
 | Milestone | Status | Sessions |
 |---|---|---|
-| §1.1 HIR → CFG conversion | 🟡 | S1.1 ✅ · S1.2 ✅ · S1.3 ⏳ (folded into S1.17b) |
+| §1.1 HIR → CFG conversion | ✅ | S1.1 ✅ · S1.2 ✅ · S1.3 folded into S1.17b ✅ |
 | §1.2 DomTree | ✅ | S1.4 ✅ |
 | §1.3 SSA + φ + Refine | ✅ | S1.5 ✅ · S1.6 ✅ · S1.7 ✅ |
 | §1.4 Flow-sensitive type inference | ✅ | S1.8 ✅ (core + rules) · S1.9 ✅ (legacy deletion) · §1.4u ✅ (Path A — see row below) |
@@ -325,11 +325,76 @@ calls and removes the `#[ignore]` attributes.
 | §1.7 WPA field inference | ✅ | S1.12 ✅ (params + fields to full-program fixed point) |
 | §1.8 Pass migration | ✅ | S1.13 ✅ · S1.14a ✅ · S1.14b-prep ✅ · S1.14b-inliner ✅ · S1.15 ✅ |
 | §1.9 Codegen migration | ✅ | S1.5 wiring ✅ · S1.16 ✅ (audit: no manual-phi emulation; Variable API is OK under SSA single-def) |
-| §1.10 Final cleanup | 🟡 | S1.17a ✅ (partial acceptance: tests green, microgpt triaged) · S1.17 full ⏳ (blocked on S1.17b) |
+| §1.10 Final cleanup | 🟡 | S1.17a ✅ · S1.17b ✅ · formal close ⏳ (benchmark acceptance vs Phase 0 baseline) |
 | §1.11 Deferred HIR-tree deletion | ✅ | S1.17b-a ✅ · S1.17b-b ✅ · S1.17b-c ✅ · S1.17b-d ✅ · S1.17b-e ✅ · S1.17b-f ✅ (2026-04-20, 2f49dc0) |
 | §1.4u Single-TypeTable unification | ✅ | step 1 ✅ · step 2 ✅ · step 3 ✅ · step 4 ✅ · step 5 ✅ · §1.4u-c ✅ (Path A by construction) · §1.4u-d ✅ |
 
-### Phase 1 Completion Status (as of 2026-04-18, S1.17a partial acceptance)
+### Phase 1 Completion Status (as of 2026-04-20, post-S1.17b-f)
+
+**Current state**
+
+- **§1.1 HIR CFG conversion** is complete: `hir::Function` is CFG-native
+  (`blocks`, `entry_block`, `try_scopes`), all consumers walk CFG
+  directly, and the tree bridge was deleted in S1.17b-f.
+- **§1.2 DomTree / §1.3 SSA / §1.9 codegen migration** are complete and
+  enforced in debug builds via `debug_assert_ssa` after both
+  `construct_ssa` and `optimize_module`.
+- **§1.4 flow-sensitive inference + §1.4u Path A** are complete: the
+  accepted Phase 1 interpretation is "single HIR-level owner
+  (`HirTypeInference`) plus an SSA-derived MIR `TypeTable` view with
+  SSA-only refinements". This is the canonical end-state for Phase 1.
+- **§1.5 / §1.6 / §1.7** (call graph + WPA params + WPA fields) are
+  complete and exercised by the green workspace suite.
+- **§1.8 pass migration** is complete: constfold, DCE, inlining,
+  peephole, devirtualize, and flatten-properties all run on SSA MIR.
+- **§1.11 deferred HIR-tree deletion** is complete: `Function::body`,
+  tree control-flow `StmtKind`s, `MatchCase::body`, and
+  `ExceptHandler::body` are gone.
+
+**Acceptance checklist state**
+
+1. ✅ **All tests green** — fresh 2026-04-20 runs of
+   `cargo test --workspace --release` and `cargo test --workspace`
+   both passed.
+2. 🟡 **Benchmarks vs baseline** — a fresh full-sample
+   `cargo bench -p pyaot-bench` sweep was captured on 2026-04-20 and
+   recorded in `bench/BASELINE.md`. The committed methodology is
+   `run::*` within ±3% and `end_to_end::*` within ±10% of Phase 0.
+   That gate is **not yet satisfied**: `run::containers` (+5.3%),
+   `run::strings` (+4.1%), `run::generators` (+3.8%), and
+   `run::startup` (+3.4%) exceed the runtime threshold; the larger
+   compile+run outliers are `end_to_end::containers` (+35.0%),
+   `end_to_end::strings` (+10.4%), `end_to_end::exceptions`
+   (+21.3%), `end_to_end::gc_stress` (+88.8%), and
+   `end_to_end::classes` (+37.6%). Formal Phase 1 close remains
+   blocked on triage or rerun with corrected benchmark conditions.
+3. ✅ **SSA checker passes** — `debug_assert_ssa` is active in
+   `crates/cli/src/lib.rs` after both `construct_ssa` and
+   `optimize_module`; fresh debug workspace tests are green.
+4. ✅ **Deletion / ownership audit** — the four legacy type maps are
+   gone from `SymbolTable` / `TypeEnvironment`,
+   `apply_narrowings` / `restore_types` are deleted, and
+   `HirTypeInference` is the sole HIR-level owner. This is the
+   intended Path A end-state: the maps inside `HirTypeInference` are
+   canonical storage, not legacy shims; their physical deletion is
+   deferred to Path B / Phase 2.
+5. ✅ **microgpt.py diagnostic documented** — the last recorded
+   `§1.4u-b` sweep fixed the line-41 ternary-rebind narrowing gap and
+   classified the remaining issues as unrelated. `microgpt.py` is not
+   currently checked into the repo, so this item is documentary rather
+   than a live CI target.
+6. ✅ **Spec deviations documented** — per-session status notes and
+   deferred rows capture every divergence; the Path A / Path B split is
+   now also reflected in the acceptance text below.
+
+**Remaining before formal Phase 1 close**
+
+- benchmark acceptance against the committed Phase 0 baseline
+- optional follow-up: promote the blocked 2026-04-20 benchmark sweep to
+  a stable accepted Phase 1 column once the outliers are explained or
+  fixed
+
+### Historical Mid-Phase Snapshot (2026-04-18, pre-S1.17b-f)
 
 **What landed** (11 sessions, roughly 80% of the milestone goal):
 
@@ -634,29 +699,39 @@ parameter types are inferred from the join of all call-site argument
 types. Every class field's type is inferred from the join of all
 `__init__` argument types across all call sites.
 
-**After Phase 1**, the following legacy maps and helpers MUST be deleted:
+**Phase 1 outcome (amended 2026-04-20, Path A landed):**
 
-- `SymbolTable::prescan_var_types` — replaced by SSA types.
-- `SymbolTable::per_function_prescan_var_types` — same.
-- `SymbolTable::narrowed_union_vars` — replaced by SSA at narrowing points.
-- `SymbolTable::refined_var_types` — replaced by SSA refinement φ-nodes.
-- `Lowering::apply_narrowings` / `Lowering::restore_types` — narrowing
-  is expressed as SSA φ-insertion, not save/restore.
-- `Type::unify_field_type` as a free helper — replaced by lattice
-  `join` (Phase 3; Phase 1 inlines it into the field-inference pass).
-- `get_or_create_local` keyed by `VarId` — replaced by keyed by SSA
-  `(VarId, BlockId, Version)`.
-- `insert_var_type` as a mutable imperative API — types are computed
-  once per SSA variable.
+- `SymbolTable` / `TypeEnvironment` no longer own
+  `prescan_var_types`, `per_function_prescan_var_types`,
+  `narrowed_union_vars`, or `refined_var_types`; `HirTypeInference`
+  is the sole remaining Phase-1 owner.
+- `Lowering::apply_narrowings` / `Lowering::restore_types` are deleted;
+  scoped narrowing is expressed through narrowing frames.
+- The legacy HIR tree control-flow storage (`Function::body`,
+  `StmtKind::{If, While, ForBind, Try, Match}`, nested case/handler
+  bodies) is deleted; HIR CFG is canonical.
+- `HirTypeInference`'s backing maps, `insert_var_type`, and
+  `get_or_create_local` remain Phase-1-legal under Path A because
+  lowering still runs pre-SSA. Path B / Phase 2 is the intended point
+  where they become deletable.
+- Lattice cleanup such as replacing `Type::unify_field_type` with
+  `join` remains Phase 3 work as originally planned.
 
-## 1.1 HIR → CFG conversion 🟡
+## 1.1 HIR → CFG conversion ✅
 
 **Milestone goal**: HIR functions carry an explicit CFG, not a
 statement list.
 
-Currently `hir::Function { body: Vec<StmtId>, ... }`. Stmts like `If`,
-`While`, `Try`, `ForBind` contain nested `Vec<StmtId>` for their
-branches. Type inference walks this tree-of-statements.
+**Current status (2026-04-20)**: complete. `hir::Function` is CFG-only
+(`blocks`, `entry_block`, `try_scopes`); tree control-flow storage
+(`Function::body`, `StmtKind::{If, While, ForBind, Try, Match}`,
+nested case/handler bodies) was deleted in S1.17b-f. The design sketch
+and dated status notes below are kept as the historical record of how
+the milestone landed.
+
+Pre-migration `hir::Function` carried `body: Vec<StmtId>`, and stmts
+like `If`, `While`, `Try`, and `ForBind` contained nested
+`Vec<StmtId>` branches. Type inference walked this tree-of-statements.
 
 **New representation**:
 
@@ -667,7 +742,8 @@ pub struct Function {
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     pub blocks: IndexMap<HirBlockId, HirBlock>,  // NEW
-    pub entry_block: HirBlockId,                  // NEW
+    pub entry_block: HirBlockId,                 // NEW
+    pub try_scopes: Vec<TryScope>,               // NEW
     // ... other fields
 }
 
@@ -675,6 +751,8 @@ pub struct HirBlock {
     pub id: HirBlockId,
     pub stmts: Vec<StmtId>,          // linear list, no nested branches
     pub terminator: HirTerminator,   // NEW: explicit control flow
+    pub loop_depth: u8,
+    pub handler_depth: u8,
 }
 
 pub enum HirTerminator {
@@ -682,6 +760,7 @@ pub enum HirTerminator {
     Branch { cond: ExprId, then_bb: HirBlockId, else_bb: HirBlockId },
     Return(Option<ExprId>),
     Raise { exc: ExprId, cause: Option<ExprId> },
+    Reraise,
     Yield { value: ExprId, resume_bb: HirBlockId },  // for generators
     Unreachable,
 }
@@ -693,41 +772,38 @@ topology. What remains are "straight-line" statements: `Bind`,
 `Expr`, `Assert`, `Pass`, `Break`/`Continue` (these become Jumps to
 known blocks via the lowerer).
 
-**Work**:
+**Landed scope**:
 
-- Extend `hir` crate with `HirBlock`, `HirBlockId`, `HirTerminator`.
-- Extend frontend-python AST→HIR lowering to produce CFG instead of
-  tree. Every `if`/`while`/`for`/`try`/`match` creates the
-  corresponding blocks and terminators during conversion.
-- Delete `StmtKind::If`, `StmtKind::While`, `StmtKind::ForBind`,
-  `StmtKind::Try`, `StmtKind::Match`. Gone completely. The control
-  flow is now in the CFG.
-- Update `optimizer`, `lowering`, `codegen-cranelift` to consume
-  HIR-as-CFG. Lowering is simplified: each HIR block → one MIR block
-  prefix; terminators map 1:1.
-- Generators (already desugared to regular functions in current code)
-  are represented with `Yield` terminators in HIR-CFG. The
-  desugar-to-creator/resume pass moves into CFG-level graph rewriting.
+- Extended `hir` with `HirBlock`, `HirBlockId`, `HirTerminator`, and
+  `TryScope`.
+- Extended frontend-python AST→HIR lowering and generator desugaring to
+  build CFG directly.
+- Deleted `StmtKind::If`, `StmtKind::While`, `StmtKind::ForBind`,
+  `StmtKind::Try`, `StmtKind::Match`. Control flow now lives in the CFG.
+- Updated semantics, lowering, optimizer-facing walkers, and codegen
+  inputs to consume CFG-native HIR.
+- Kept generator `Yield` in HIR-CFG; the creator/resume construction now
+  works directly over CFG blocks rather than a tree→CFG bridge.
 
 **Non-negotiable**: after this milestone, there are no nested
 `Vec<StmtId>` anywhere in HIR. If any pass relies on tree-shape
 walking, it is rewritten to walk the CFG.
 
-**Exit criteria**:
+**Exit criteria (now satisfied)**:
 
 - `hir::StmtKind` variants reduced to straight-line only.
 - Every function has `entry_block` and `blocks` populated.
 - All existing `examples/*.py` compile and run bit-identically.
 - `cargo test --workspace --release` green.
 
-**Status (2026-04-18, S1.1 landed)**: new HIR CFG types
+**Historical status (2026-04-18, S1.1 landed)**: new HIR CFG types
 (`HirBlockId`, `HirBlock`, `HirTerminator`) added alongside the legacy
 tree representation — no consumers yet. `hir::Function` still carries
 `body: Vec<StmtId>`; nested control-flow `StmtKind` variants
 (`If`/`While`/`ForBind`/`Try`/`Match`) are untouched. S1.2 (frontend
 AST→CFG migration) and S1.3 (legacy-variant deletion) remain.
 
-**Status (2026-04-18, S1.2 landed)**: `hir::Function` now carries
+**Historical status (2026-04-18, S1.2 landed)**: `hir::Function` now carries
 `blocks: IndexMap<HirBlockId, HirBlock>` + `entry_block: HirBlockId`
 populated by a tree→CFG converter in `crates/hir/src/cfg_build.rs`.
 Every frontend construction site (functions, classes, comprehensions,
@@ -743,7 +819,7 @@ chained linearly without pattern dispatch. All tests green; 5 new
 unit tests in `cfg_build.rs` cover straight-line, if/else merge,
 while+break/continue, return short-circuit, and raise terminators.
 
-**Status (2026-04-18, S1.3 scope reduced — amendment)**: starting
+**Historical status (2026-04-18, S1.3 scope reduced — amendment)**: starting
 S1.3 surfaced two structural issues that make the session's original
 "delete `Function.body` + legacy `StmtKind::{If, While, ForBind, Try,
 Match}`" scope unsafe:
@@ -784,7 +860,7 @@ Match}`" scope unsafe:
   variant). The choice is documented in the §1.4b planning commit
   before implementation starts.
 
-**§1.1 Open Questions** (resolved no later than §1.4b):
+**§1.1 Historical open questions** (resolved in S1.17b-a / S1.17b-f):
 - How to represent for-loop iteration in a pure HIR CFG — primitive
   expressions vs. new terminator variant.
 - Whether exception edges should be modeled as CFG edges or left as
@@ -1874,37 +1950,70 @@ intermediate "flatten SSA" step.
 - Benchmarks (Phase 0.1) show **no regression** — SSA is a strict
   improvement for Cranelift's downstream passes.
 
-## 1.10 Cleanup + final purge ⏳
+## 1.10 Cleanup + final purge 🟡
 
-**Milestone goal**: the codebase contains zero artifacts of the pre-
-SSA era.
+**Milestone goal**: the codebase contains zero pre-SSA artifacts that
+Phase 1 intentionally promised to delete, and any deliberate deferrals
+are documented explicitly.
 
-**Work**: `grep` for and delete every reference to:
+**Current status (2026-04-20)**: all structural cleanup work that Phase 1
+committed to under Path A is complete; formal close remains blocked on
+benchmark acceptance against the committed Phase-0 baseline. The
+important amendment is that `HirTypeInference` is now the accepted
+Phase-1 owner of the HIR-level type maps. Their physical deletion is
+not a Phase 1 requirement anymore; that is deferred to Path B / Phase 2
+when lowering stops maintaining pre-SSA mutable type state.
 
-- `prescan_var_types`, `per_function_prescan_var_types`
-- `narrowed_union_vars`, `refined_var_types`
-- `insert_var_type`, `get_var_type` (replaced by `TypeTable::typeof`)
-- `apply_narrowings`, `restore_types`
-- `get_or_create_local` (replaced by SSA rename + explicit
-  `LocalId` tracking)
-- `scan_stmts_for_self_fields` (replaced by WPA field inference)
-- `insert_var_closure`, `get_var_closure` (closures are inlined
-  Phi-compatible SSA values or explicit closure objects)
-- Any other ad-hoc narrowing / unification helper
+**Phase-1 cleanup scope**:
+
+- Remove the four legacy type-map owners from `SymbolTable` /
+  `TypeEnvironment`; keep `HirTypeInference` as the sole remaining
+  HIR-level owner.
+- Delete `apply_narrowings` / `restore_types` and the standalone
+  narrowing save/restore workflow.
+- Delete the legacy HIR tree control-flow storage and the tree→CFG
+  bridge.
+- Grep-verify the codebase and document the final accepted ownership
+  split.
+
+**Deferred beyond Phase 1 (by design, not a blocker)**:
+
+- `insert_var_type`, `get_var_type`, and `get_or_create_local` remain
+  legal under Path A because lowering still materializes MIR locals from
+  pre-SSA HIR state.
+- `scan_stmts_for_self_fields` is frontend-only field discovery and is
+  not part of the SSA migration acceptance gate.
+- `insert_var_closure` / `get_var_closure` remain until closure
+  lowering is restructured around the later pipeline.
 
 For each deletion: verify no call sites remain via `cargo build`;
 remove the definition; remove related state from constructors.
 
-**Exit criterion**: `grep -rn 'prescan_var_types\|narrowed_union_vars\|refined_var_types\|apply_narrowings\|restore_types' crates/ | wc -l` returns `0`.
+**Exit criteria**:
 
-## 1.11 Deferred HIR-tree deletion — S1.17b scope ⏳
+- No references remain to the four legacy type maps on
+  `SymbolTable` / `TypeEnvironment`.
+- `apply_narrowings` / `restore_types` are deleted.
+- HIR tree control-flow storage is deleted and HIR is CFG-only.
+- `cargo test --workspace --release` is green.
+- Benchmark acceptance against `bench/BASELINE.md` passes.
+
+## 1.11 Deferred HIR-tree deletion — S1.17b scope ✅
 
 **Milestone goal**: delete `Function.body: Vec<StmtId>`,
 `StmtKind::{If, While, ForBind, Try, Match}`, and the tree→CFG bridge
-`crates/hir/src/cfg_build.rs`. After this milestone, HIR carries **only**
-a CFG — the legacy statement-tree is gone.
+entrypoint (`build_cfg_from_tree`, formerly in `crates/hir/src/cfg_build.rs`).
+After this milestone, HIR carries **only** a CFG — the legacy
+statement-tree is gone.
 
-**Current state (2026-04-19 scoping audit)**:
+**Current status (2026-04-20)**: complete. `Function.body`,
+`StmtKind::{If, While, ForBind, Try, Match}`, `MatchCase::body`,
+`ExceptHandler::body`, and the module-init stmt fallback are deleted.
+The former bridge module was reduced to the reusable CFG construction
+API and renamed to `crates/hir/src/cfg_builder.rs`; there is no longer a
+`build_cfg_from_tree` entrypoint. All consumers now walk CFG-native HIR.
+
+**Historical scoping audit (2026-04-19)**:
 
 - `Function.blocks: IndexMap<HirBlockId, HirBlock>` + `entry_block:
   HirBlockId` are populated at every function-construction site via
@@ -2246,9 +2355,10 @@ removes one entire module (`cfg_build.rs`).
 - [x] §1.4u ✅ (landed 2026-04-19)
 - [x] S1.9 ✅ (HirTypeInference owns all type maps)
 - [x] SSA gates active in debug builds
-- [ ] **Final prerequisite**: benchmark baseline re-captured with 10
-  samples to lock Phase 1 floor before the refactor churn starts.
-  Runs as the first task of S1.17b-a.
+- [x] **Post-hoc acceptance evidence captured**: a full-sample
+  `cargo bench -p pyaot-bench` sweep was run on 2026-04-20. It did
+  not satisfy the Phase 1 acceptance gate, but the baseline comparison
+  is now explicitly recorded in `bench/BASELINE.md` and §1.10 above.
 
 ### Risk registry
 
@@ -2309,12 +2419,18 @@ Must return zero non-diff lines.
 Before merging Phase 1's long-lived branch to master:
 
 1. **All tests green**: `cargo test --workspace --release` zero failures.
-2. **Benchmarks non-regressed**: every benchmark from Phase 0.1 is
-   within ±3% of baseline, or faster.
+2. **Benchmarks non-regressed**: every `run::*` benchmark from Phase 0.1
+   is within ±3% of baseline, or faster; every `end_to_end::*`
+   benchmark is within ±10% of baseline, or faster, matching the
+   methodology recorded in `bench/BASELINE.md`.
 3. **SSA property checker** runs on every function and passes.
-4. **Deletion audit**: 4 legacy maps + 6+ ad-hoc helpers are physically
-   removed. Diff must show lines removed > lines added, measured in
-   `symbol_table.rs`, `narrowing.rs`, `type_planning/`.
+4. **Deletion / ownership audit**: the 4 legacy type maps are
+   physically removed from `SymbolTable` / `TypeEnvironment`,
+   `apply_narrowings` / `restore_types` and the standalone narrowing
+   helpers are deleted, and `HirTypeInference` is the sole remaining
+   HIR-level owner. Under Path A, keeping the backing maps inside
+   `HirTypeInference` is acceptable; their physical deletion is
+   deferred to Path B / Phase 2.
 5. **microgpt.py diagnostic**: compile `microgpt.py`, record which
    errors remain, triage them as "Phase 2 target" / "Phase 3 target" /
    "unrelated". No expectation microgpt.py fully compiles yet.
@@ -3302,7 +3418,7 @@ audit often uncovers surprise gaps.
 | S1.5 ✅ | Phi MIR instruction + codegen-side block-param support (§1.3 prep) | S1.4 | Medium | — |
 | S1.6 ✅ | SSA renaming via Cytron algorithm (§1.3 main): rename all function bodies to SSA, activate SSA checker | S1.5 | **HIGH** | — |
 | S1.7 ✅ | `Refine` instruction + isinstance narrowing at CFG successors (§1.4 prep) — only the `Refine` infrastructure landed; isinstance-Refine emission at CFG successors is queued as a future extension (no code consumer yet). | S1.6 | Medium | — |
-| S1.8 🟡 | Unified `TypeInferencePass` (§1.4 main) — split into S1.8a (core engine), S1.8b (Const/Copy/CallDirect/GcAlloc rules), S1.8c-part (BinOp/UnOp + RuntimeCall + Call-indirect). The *single* unified match still coexists with the three legacy HIR functions; full collapse tracked by §1.4u-a/b/c/d (Phase 1 late or Phase 2 byproduct). | S1.7 | **HIGH** | — |
+| S1.8 ✅ | Unified `TypeInferencePass` (§1.4 main) — split into S1.8a (core engine), S1.8b (Const/Copy/CallDirect/GcAlloc rules), S1.8c-part (BinOp/UnOp + RuntimeCall + Call-indirect). The residual single-source collapse and Path-A interpretation were completed by §1.4u-a/b/c/d (see separate row). | S1.7 | **HIGH** | — |
 | S1.9 ✅ | Delete legacy type maps (§1.4 tail): purge `prescan_var_types`, `refined_var_types`, `narrowed_union_vars`, `apply_narrowings`, `restore_types`. Split into S1.9a (unified public entry points), S1.9b (shared result helpers), S1.9c (maps → `HirTypeInference`), S1.9d (narrowing stack push/pop). All 4 maps + the narrowing helpers deleted or relocated per §1.4 exit criteria; dual-state with `TypeTable` documented for §1.4u resolution. | S1.8 | Medium | — |
 | S1.10 ✅ | Call graph (§1.5): `crates/optimizer/src/call_graph.rs`, SCCs via Tarjan | S1.3 | Medium | Parallel-safe with S1.4-S1.9 |
 | S1.11 ✅ | WPA parameter inference (§1.6): fixed-point pass over call graph — core + full-program fixed-point wrapper both landed. | S1.9, S1.10 | **HIGH** | — |
@@ -3313,11 +3429,11 @@ audit often uncovers surprise gaps.
 | S1.14b-inliner ✅ | Pass migration: inlining — SSA-preserving rewrite. `perform_inline` emits a `Phi` at the continuation block head merging return values from every value-returning callee path; void returns contribute `Constant::Int(0)` placeholders to preserve Phi arity. Replaces the pre-SSA `Copy(dest, val); Goto(cont)` pattern that produced multi-def MIR. | S1.14b-prep | Medium | — |
 | S1.15 ✅ | Pass migration: peephole, devirtualize, flatten_properties (§1.8 part 3). Audit showed all three are already SSA-compatible: peephole is local-pattern, devirtualize reads `locals[id].ty` (seed is preserved under SSA), flatten_properties matches MIR patterns. Added SSA-aware idempotent peephole rules: `x & x → x` and `x | x → x` (keyed on LocalId identity — valid under SSA single-def). 3 new tests. TypeTable-aware devirtualize (post-Refine narrowing) and class_info-aware flatten deferred to §1.4u (pipeline restructure). | S1.9 | Medium-High | Parallel-safe with S1.13, S1.14 |
 | S1.16 ✅ | Codegen SSA migration (§1.9): audit found no manual phi emulation. Codegen uses Cranelift's `Variable` API which handles SSA conversion internally; under MIR single-def invariant this is trivial. Fixed one stale S1.5-prep comment in `terminators.rs`. Full `Value`-based migration (skip the Variable layer for ~12 call sites) deferred — pure performance optimization, not correctness. | S1.6, S1.15 | Medium-High | — |
-| S1.17 ⏳ | Phase 1 final cleanup + acceptance (§1.10): grep-verify deletions, benchmark check, docs update | S1.11, S1.12, S1.16, S1.17b | Low-Medium | — |
-| S1.17b ⏳ | **Deferred §1.1 tail — HIR tree deletion umbrella** (scoped 2026-04-19 per §1.11). Split into six sub-sessions below; tracks ~4,730 LOC deleted + ~3,900 added, net −830. Design questions (HirTerminator iteration gap, exception edges, match desugar) resolved in §1.11. Prerequisites: §1.4u ✅, S1.9 ✅. | S1.8 | High | — |
+| S1.17 🟡 | Phase 1 final cleanup + acceptance (§1.10): grep-verify deletions, docs sync, and benchmark gate. Tests/SSA/docs are complete; benchmark acceptance against the committed Phase-0 baseline remains open as of 2026-04-20. | S1.11, S1.12, S1.16, S1.17b | Low-Medium | — |
+| S1.17b ✅ (2026-04-20, 2f49dc0) | **Deferred §1.1 tail — HIR tree deletion umbrella** (scoped 2026-04-19 per §1.11). Split into six sub-sessions below; tracks ~4,730 LOC deleted + ~3,900 added, net −830. Design questions (HirTerminator iteration gap, exception edges, match desugar) resolved in §1.11. Prerequisites: §1.4u ✅, S1.9 ✅. | S1.8 | High | — |
 | S1.17b-a ✅ (2026-04-19) | HIR schema extension (§1.11 Stage 1): added `ExprKind::IterHasNext`, `ExprKind::MatchPattern`, `StmtKind::IterAdvance`, `Function::try_scopes`, `TryScope`, `ExceptHandler::entry_block` alongside legacy variants. Pure additive; consumer match sites guarded with `unreachable!()` until emitted. | §1.4u | Low | — |
 | S1.17b-b ✅ (2026-04-19, scope pivoted) | **Bridge produces rich CFG** — the original plan (rewrite frontend to emit CFG directly) was pivoted: the frontend still emits tree, but `cfg_build::build_cfg_from_tree` now allocates new arena entries (`&mut Module` signature) and produces the rich shape: ForBind as `Branch(IterHasNext) → IterAdvance`, Match as if/else ladder via `MatchPattern`, Try registers `Function::try_scopes` with populated handler `entry_block`s. All 8 call sites migrated (6 frontend + 2 generator desugar). Rationale: pivot avoids duplicated frontend emission during the S1.17b-c/d/e migration window. Final deletion (S1.17b-f) rewrites frontend CFG-direct and deletes the bridge. | S1.17b-a | High | — |
-| S1.17b-c ⏳ | Lowering core consumes HIR CFG (§1.11 Stage 3): rewrite `lowering/src/statements/mod.rs` dispatch for per-block RPO emission; delete `lower_if/while/for_bind/try/match`; port `exceptions.rs` to read `Function::try_scopes`; repackage pattern predicates from `statements/match_stmt/mod.rs` as `ExprKind::MatchPattern` emission. | S1.17b-b | **HIGH** | — |
+| S1.17b-c ✅ (2026-04-20, f4c2e10) | Lowering core consumes HIR CFG (§1.11 Stage 3): rewrote `lowering/src/statements/mod.rs` dispatch for per-block RPO emission; deleted `lower_if/while/for_bind/try/match`; ported `exceptions.rs` to read `Function::try_scopes`; repackaged pattern predicates from `statements/match_stmt/mod.rs` as `ExprKind::MatchPattern` emission. | S1.17b-b | **HIGH** | — |
 | S1.17b-d ✅ (2026-04-20, 2f49dc0) | Walkers + generator desugar (§1.11 Stage 4). All remaining CFG-portable consumers now walk blocks directly: `generators/desugaring.rs` builds creator/resume CFGs via `CfgBuilder`, `generators/vars.rs` and the type-planning passes consume `Bind` / `IterAdvance` in CFG order, and the last tree-only cleanup paths were deleted. | S1.17b-c | **HIGH** | — |
 | S1.17b-e ✅ (2026-04-19) | Semantics walks CFG. `SemanticAnalyzer` reads `HirBlock.loop_depth` / `handler_depth` populated during CFG construction instead of counter fields. Each function body goes through `analyze_function_cfg`; the remaining module-init fallback was deleted in S1.17b-f. | S1.17b-d | Low-Medium | Parallel-safe with S1.17b-f prep |
 | S1.17b-f ✅ (2026-04-20, 2f49dc0) | Delete tree (§1.11 Stage 6): removed `Function::body`, `StmtKind::{If, While, ForBind, Try, Match}`, `MatchCase::body`, `ExceptHandler::body`, and the module-init stmt fallback; renamed `cfg_build.rs` to `cfg_builder.rs` and kept only the reusable builder API + tests; grep-cleaned the codebase and updated the HIR docs. | S1.17b-e | Low | — |
@@ -3563,10 +3679,8 @@ the spec reflecting reality.
 
 ---
 
-*Last updated: 2026-04-19. Phase 0 complete. Phase 1 ~60 % landed:
-S1.1 / S1.2 / S1.4 / S1.5 / S1.6 / S1.7 / S1.9 / S1.10 / S1.11 ✅;
-S1.8 🟡 (core + rule set, single-match collapse queued as §1.4u);
-S1.16 🟡 (Phi wiring ✅, manual-phi cleanup ⏳); S1.3 ⏳ (folded into
-S1.17b); S1.12 ✅; S1.13 ✅; S1.14a ✅; S1.14b-prep ✅; S1.14b-inliner ✅; S1.15 ✅; S1.16 ✅; S1.17a ✅; §1.4u ✅ (all 4 steps + §1.4u-c/d); §1.11 scoped 2026-04-19 (S1.17b split into 6 sub-sessions S1.17b-{a..f}); S1.17 full / S1.17b ⏳.
-See the Phase-1 status dashboard at the top of §1 and the status
-blocks inside each §1.x milestone for details.*
+*Last updated: 2026-04-20. Phase 0 is complete. Phase 1's code migration
+is substantially landed: S1.1-S1.16, §1.4u, and S1.17b are complete;
+S1.17 formal close remains open only on benchmark acceptance against the
+committed Phase-0 baseline. See the Phase-1 dashboard at the top of §1
+and `bench/BASELINE.md` for the current acceptance sweep.*
