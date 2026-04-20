@@ -57,10 +57,20 @@ pub fn build_cfg_from_tree(
     builder.enter(entry);
     builder.lower_stmts(body, module);
     builder.terminate_if_open(HirTerminator::Return(None));
-    (builder.blocks, entry, builder.try_scopes)
+    builder.finish(entry)
 }
 
-struct CfgBuilder {
+/// Reusable HIR CFG builder used by the legacy tree bridge and by direct
+/// emitters that want to construct `Function::{blocks, entry_block, try_scopes}`
+/// without first allocating a top-level `Vec<StmtId>`.
+///
+/// The API deliberately mirrors the bridge's internal structure so the
+/// remaining frontend/generator tree constructors can migrate one site at a
+/// time. The builder owns the block map and try-scope side table; callers are
+/// responsible for creating an entry block, selecting insertion points via
+/// `enter`, pushing straight-line statements into the current block, and
+/// terminating open blocks explicitly.
+pub struct CfgBuilder {
     blocks: IndexMap<HirBlockId, HirBlock>,
     current: HirBlockId,
     /// `true` once the current block has received a real terminator and
@@ -87,7 +97,7 @@ struct LoopCtx {
 }
 
 impl CfgBuilder {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             blocks: IndexMap::new(),
             current: HirBlockId::new(0), // placeholder until enter() is called
@@ -101,7 +111,7 @@ impl CfgBuilder {
     }
 
     /// Allocate a fresh `ExprKind::IterHasNext(iter)` bool predicate.
-    fn alloc_iter_has_next(&self, module: &mut Module, iter: ExprId, span: Span) -> ExprId {
+    pub fn alloc_iter_has_next(&self, module: &mut Module, iter: ExprId, span: Span) -> ExprId {
         module.exprs.alloc(Expr {
             kind: ExprKind::IterHasNext(iter),
             ty: Some(pyaot_types::Type::Bool),
@@ -110,7 +120,7 @@ impl CfgBuilder {
     }
 
     /// Allocate a fresh `StmtKind::IterAdvance { iter, target }` stmt.
-    fn alloc_iter_advance(
+    pub fn alloc_iter_advance(
         &self,
         module: &mut Module,
         iter: ExprId,
@@ -126,7 +136,7 @@ impl CfgBuilder {
     /// Allocate a fresh `StmtKind::IterSetup { iter }` stmt. Emitted in
     /// the for-loop's pre-block (before `Jump(header)`) so the iterator
     /// is created exactly once per loop, not per header-iteration.
-    fn alloc_iter_setup(&self, module: &mut Module, iter: ExprId, span: Span) -> StmtId {
+    pub fn alloc_iter_setup(&self, module: &mut Module, iter: ExprId, span: Span) -> StmtId {
         module.stmts.alloc(Stmt {
             kind: StmtKind::IterSetup { iter },
             span,
@@ -135,7 +145,7 @@ impl CfgBuilder {
 
     /// Allocate a fresh `ExprKind::MatchPattern { subject, pattern }` bool
     /// predicate.
-    fn alloc_match_pattern(
+    pub fn alloc_match_pattern(
         &self,
         module: &mut Module,
         subject: ExprId,
@@ -152,7 +162,7 @@ impl CfgBuilder {
         })
     }
 
-    fn new_block(&mut self) -> HirBlockId {
+    pub fn new_block(&mut self) -> HirBlockId {
         let id = HirBlockId::new(self.next_id);
         self.next_id += 1;
         self.blocks.insert(
@@ -169,12 +179,20 @@ impl CfgBuilder {
     }
 
     /// Make `block` the current insertion point and mark it open (un-terminated).
-    fn enter(&mut self, block: HirBlockId) {
+    pub fn enter(&mut self, block: HirBlockId) {
         self.current = block;
         self.current_terminated = false;
     }
 
-    fn push_stmt(&mut self, stmt_id: StmtId) {
+    pub fn current_block(&self) -> HirBlockId {
+        self.current
+    }
+
+    pub fn is_current_terminated(&self) -> bool {
+        self.current_terminated
+    }
+
+    pub fn push_stmt(&mut self, stmt_id: StmtId) {
         let block = self.current;
         self.blocks
             .get_mut(&block)
@@ -183,7 +201,7 @@ impl CfgBuilder {
             .push(stmt_id);
     }
 
-    fn set_terminator(&mut self, block: HirBlockId, term: HirTerminator) {
+    pub fn set_terminator(&mut self, block: HirBlockId, term: HirTerminator) {
         self.blocks
             .get_mut(&block)
             .expect("terminator target block must exist")
@@ -194,14 +212,63 @@ impl CfgBuilder {
     }
 
     /// If the current block has not yet been terminated, close it with `term`.
-    fn terminate_if_open(&mut self, term: HirTerminator) {
+    pub fn terminate_if_open(&mut self, term: HirTerminator) {
         if !self.current_terminated {
             let block = self.current;
             self.set_terminator(block, term);
         }
     }
 
-    fn lower_stmts(&mut self, stmts_list: &[StmtId], module: &mut Module) {
+    pub fn block(&self, block: HirBlockId) -> Option<&HirBlock> {
+        self.blocks.get(&block)
+    }
+
+    pub fn block_mut(&mut self, block: HirBlockId) -> Option<&mut HirBlock> {
+        self.blocks.get_mut(&block)
+    }
+
+    pub fn push_loop(&mut self, continue_bb: HirBlockId, break_bb: HirBlockId) {
+        self.loop_stack.push(LoopCtx {
+            continue_bb,
+            break_bb,
+        });
+        self.loop_depth += 1;
+    }
+
+    pub fn pop_loop(&mut self) {
+        self.loop_stack.pop();
+        self.loop_depth = self.loop_depth.saturating_sub(1);
+    }
+
+    pub fn continue_target(&self) -> Option<HirBlockId> {
+        self.loop_stack.last().map(|ctx| ctx.continue_bb)
+    }
+
+    pub fn break_target(&self) -> Option<HirBlockId> {
+        self.loop_stack.last().map(|ctx| ctx.break_bb)
+    }
+
+    pub fn loop_depth(&self) -> u8 {
+        self.loop_depth
+    }
+
+    pub fn push_handler(&mut self) {
+        self.handler_depth += 1;
+    }
+
+    pub fn pop_handler(&mut self) {
+        self.handler_depth = self.handler_depth.saturating_sub(1);
+    }
+
+    pub fn handler_depth(&self) -> u8 {
+        self.handler_depth
+    }
+
+    pub fn register_try_scope(&mut self, scope: TryScope) {
+        self.try_scopes.push(scope);
+    }
+
+    pub fn lower_stmts(&mut self, stmts_list: &[StmtId], module: &mut Module) {
         for &stmt_id in stmts_list {
             if self.current_terminated {
                 break;
@@ -210,7 +277,7 @@ impl CfgBuilder {
         }
     }
 
-    fn lower_stmt(&mut self, stmt_id: StmtId, module: &mut Module) {
+    pub fn lower_stmt(&mut self, stmt_id: StmtId, module: &mut Module) {
         // Clone the kind so we can release the shared borrow on `module.stmts`
         // before recursing into `lower_stmts` with a mutable borrow.
         let stmt_kind = module.stmts[stmt_id].kind.clone();
@@ -316,19 +383,14 @@ impl CfgBuilder {
                     },
                 );
 
-                self.loop_stack.push(LoopCtx {
-                    continue_bb: header_bb,
-                    break_bb: exit_bb,
-                });
-                self.loop_depth += 1;
+                self.push_loop(header_bb, exit_bb);
                 self.enter(body_bb);
                 // Rewrite the block's loop_depth — it was allocated at the
                 // outer depth, but its stmts run inside the loop.
                 self.blocks.get_mut(&body_bb).unwrap().loop_depth = self.loop_depth;
                 self.lower_stmts(&body, module);
                 self.terminate_if_open(HirTerminator::Jump(header_bb));
-                self.loop_depth -= 1;
-                self.loop_stack.pop();
+                self.pop_loop();
 
                 if !else_block.is_empty() {
                     self.enter(else_bb);
@@ -382,19 +444,14 @@ impl CfgBuilder {
                 // Body: prefix with `IterAdvance { iter, target }` then emit
                 // the original body statements. Lowering will recognise the
                 // IterAdvance and emit the runtime iterator-next protocol.
-                self.loop_stack.push(LoopCtx {
-                    continue_bb: header_bb,
-                    break_bb: exit_bb,
-                });
-                self.loop_depth += 1;
+                self.push_loop(header_bb, exit_bb);
                 self.enter(body_bb);
                 self.blocks.get_mut(&body_bb).unwrap().loop_depth = self.loop_depth;
                 let advance_stmt = self.alloc_iter_advance(module, iter, target.clone(), stmt_span);
                 self.push_stmt(advance_stmt);
                 self.lower_stmts(&body, module);
                 self.terminate_if_open(HirTerminator::Jump(header_bb));
-                self.loop_depth -= 1;
-                self.loop_stack.pop();
+                self.pop_loop();
 
                 if !else_block.is_empty() {
                     self.enter(else_bb);
@@ -457,12 +514,12 @@ impl CfgBuilder {
                     self.terminate_if_open(HirTerminator::Jump(finally_bb));
                     // §1.11 Q2 — `finally` runs in an exception-handler
                     // context (bare raise is allowed). Bump handler_depth.
-                    self.handler_depth += 1;
+                    self.push_handler();
                     self.enter(finally_bb);
                     self.blocks.get_mut(&finally_bb).unwrap().handler_depth = self.handler_depth;
                     self.lower_stmts(&finally_block, module);
                     self.terminate_if_open(HirTerminator::Jump(post_bb));
-                    self.handler_depth -= 1;
+                    self.pop_handler();
                 } else {
                     self.terminate_if_open(HirTerminator::Jump(after_body));
                 }
@@ -478,12 +535,12 @@ impl CfgBuilder {
                 let mut handlers_out: Vec<ExceptHandler> = Vec::with_capacity(handlers.len());
                 for handler in handlers {
                     let handler_bb = self.new_block();
-                    self.handler_depth += 1;
+                    self.push_handler();
                     self.enter(handler_bb);
                     self.blocks.get_mut(&handler_bb).unwrap().handler_depth = self.handler_depth;
                     self.lower_stmts(&handler.body, module);
                     self.terminate_if_open(HirTerminator::Jump(post_bb));
-                    self.handler_depth -= 1;
+                    self.pop_handler();
                     handlers_out.push(ExceptHandler {
                         entry_block: handler_bb,
                         ..handler
@@ -493,7 +550,7 @@ impl CfgBuilder {
                 // Register the scope. Consumer migration (S1.17b-c/d) reads
                 // `Function::try_scopes` to find handler chains for each
                 // guarded body block.
-                self.try_scopes.push(TryScope {
+                self.register_try_scope(TryScope {
                     try_blocks: try_blocks_set,
                     else_blocks: else_blocks_set,
                     handlers: handlers_out,
@@ -608,6 +665,13 @@ impl CfgBuilder {
                 self.enter(post_bb);
             }
         }
+    }
+
+    pub fn finish(
+        self,
+        entry: HirBlockId,
+    ) -> (IndexMap<HirBlockId, HirBlock>, HirBlockId, Vec<TryScope>) {
+        (self.blocks, entry, self.try_scopes)
     }
 }
 
