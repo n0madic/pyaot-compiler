@@ -366,10 +366,11 @@ calls and removes the `#[ignore]` attributes.
    platform-specific fresh-launch cost, not by compiler throughput:
    isolated compile-only measurements now sit in a tight ~48-51 ms band
    across the entire suite, while isolated `fresh_launch::*` runs remain
-   ~350-470 ms for many binaries on macOS. Formal Phase 1 close is still
-   blocked, but now on the correct remaining task: backfill a committed
-   Phase-0 `compile::*` baseline and rerun the split-metric acceptance
-   sweep on a quiesced machine.
+   ~350-470 ms for many binaries on macOS. The follow-up split-harness
+   rerun changed the blocker shape: `compile::*` now passes against the
+   backfilled Phase-0 baseline, but `run::*` still fails materially
+   against the historical runtime baseline. Formal Phase 1 close remains
+   blocked on runtime benchmark investigation only.
 3. ✅ **SSA checker passes** — `debug_assert_ssa` is active in
    `crates/cli/src/lib.rs` after both `construct_ssa` and
    `optimize_module`; fresh debug workspace tests are green.
@@ -391,8 +392,11 @@ calls and removes the `#[ignore]` attributes.
 
 **Remaining before formal Phase 1 close**
 
-- capture and commit the new Phase-0 `compile::*` baseline
-- rerun Phase-1 acceptance on the split `compile::*` / `run::*` metrics
+- investigate the remaining `run::*` regressions against the historical
+  Phase-0 runtime baseline
+- decide whether the historical `run` column is still the right runtime
+  reference after the harness split, or whether it needs a controlled
+  re-capture under the new harness
 - optional follow-up: keep `fresh_launch::*` as a diagnostic trend line
   and record future macOS launch outliers without blocking phase closure
 
@@ -1967,7 +1971,9 @@ longer treated as compiler throughput. The important amendment is that
 `HirTypeInference` is now the accepted Phase-1 owner of the HIR-level
 type maps. Their physical deletion is not a Phase 1 requirement anymore;
 that is deferred to Path B / Phase 2 when lowering stops maintaining
-pre-SSA mutable type state.
+pre-SSA mutable type state. The `compile::*` half of the gate now passes
+against the backfilled Phase-0 baseline; the remaining blocker is the
+runtime `run::*` delta.
 
 **Phase-1 cleanup scope**:
 

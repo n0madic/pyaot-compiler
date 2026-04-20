@@ -85,6 +85,15 @@ captured with
 This replaced the earlier manual triage snapshot and is now the committed
 reference for `compile::*`.
 
+**Phase 1 acceptance rerun (2026-04-20, split harness, full sample)**:
+captured with
+`cargo bench -p pyaot-bench --bench pyaot_bench compile:: -- --baseline phase0-compile-backfill`.
+All 11 `compile::*` groups stayed comfortably inside the ±10% gate. The
+widest reported interval was still small: `containers` ended at
++1.35% on the high side, while the largest improvement was
+`startup` at -2.41% median. Compiler-throughput acceptance therefore
+passes against the newly backfilled Phase-0 baseline.
+
 ### `run` — pre-compiled execution wall time (ms, median)
 
 | Benchmark     | Phase 0 | Phase 1 | Phase 2 | Phase 3 | Notes |
@@ -124,6 +133,20 @@ numbers, so these full-suite deltas are now treated as pre-triage suite
 noise rather than as confirmed runtime regressions. The Phase 1 column
 above remains preliminary until a fresh full-suite capture is taken with
 the split-metric harness.
+
+**Phase 1 acceptance rerun (2026-04-20, split harness, full sample)**:
+captured with `cargo bench -p pyaot-bench --bench pyaot_bench run::`.
+This rerun does **not** satisfy the ±3% runtime gate against the
+historical Phase-0 `run` column. Every benchmark regressed materially:
+`classes` = `13.328 ms` (+52.3%), `closures` = `2.5427 ms` (+19.4%),
+`containers` = `13.184 ms` (+53.1%), `exceptions` = `143.86 ms`
+(+24.1%), `float_arith` = `3.4403 ms` (+19.0%), `gc_stress` =
+`9.1185 ms` (+43.1%), `generators` = `16.589 ms` (+26.8%),
+`int_arith` = `17.919 ms` (+16.7%), `polymorphic` = `13.080 ms`
+(+16.7%), `startup` = `2.2593 ms` (+31.4%), and `strings` =
+`4.6141 ms` (+70.3%). Phase 1 benchmark acceptance therefore remains
+blocked, but now for a narrowed reason: runtime performance vs the
+historical Phase-0 baseline, not compiler throughput.
 
 ### `fresh_launch` — compile + immediate first launch wall time (ms, median)
 
@@ -220,3 +243,6 @@ phase-acceptance gate.
   full Criterion sweep (`phase0-compile-backfill`) so Phase-1
   acceptance can now compare compiler throughput directly instead of
   inferring it from launch-heavy numbers.
+- As of the 2026-04-20 split-harness acceptance rerun, `compile::*`
+  passes and `run::*` fails materially against the committed historical
+  baseline. The remaining benchmark gate is therefore runtime-only.
