@@ -15,8 +15,8 @@ compiler toolchain changes, and review the diff in a dedicated PR.
 | Rust toolchain     | rustc 1.93.1 (01f6ddf75 2026-02-11)      |
 | pyaot build        | `cargo build --workspace --release`      |
 | Criterion version  | 0.5                                      |
-| Measurement date   | 2026-04-17                               |
-| Measurement mode   | `cargo bench -- --quick` (Phase 0 scaffolding; full 10-sample runs pending stability audit) |
+| Measurement date   | 2026-04-17 (`run` / `fresh_launch`), 2026-04-20 (`compile`) |
+| Measurement mode   | `run` / `fresh_launch`: `cargo bench -- --quick`; `compile`: `cargo bench -p pyaot-bench --bench pyaot_bench compile:: -- --save-baseline phase0-compile-backfill` |
 
 ## Columns
 
@@ -61,32 +61,29 @@ acceptance review. `fresh_launch::<stem>` is diagnostic-only.
 This metric was added on **2026-04-20** after Phase-1 triage showed that
 the old `end_to_end` benchmark was dominated by the first launch of a
 freshly linked executable on macOS rather than by compiler throughput.
-Until the committed Phase-0 baseline is backfilled with the new harness,
-compile numbers are tracked here as an informational triage snapshot
-rather than as phase columns.
+The Phase-0 column below is therefore a **post-hoc backfill** captured on
+the baseline machine after the metric split. It is the reference point
+for future compiler-throughput comparisons.
 
-| Benchmark     | 2026-04-20 triage snapshot | Notes |
-|---------------|----------------------------|-------|
-| int_arith     | 48.5                       | compiler + linker only |
-| float_arith   | 48.2                       | compiler + linker only |
-| polymorphic   | 49.1                       | compiler + linker only |
-| containers    | 48.8                       | compiler + linker only |
-| strings       | 51.3                       | compiler + linker only |
-| generators    | 49.9                       | compiler + linker only |
-| exceptions    | 48.8                       | compiler + linker only |
-| gc_stress     | 48.5                       | compiler + linker only |
-| classes       | 48.9                       | compiler + linker only |
-| closures      | 49.4                       | compiler + linker only |
-| startup       | 48.4                       | compiler + linker only |
+| Benchmark     | Phase 0 | Phase 1 | Phase 2 | Phase 3 | Notes |
+|---------------|---------|---------|---------|---------|-------|
+| int_arith     | 46.541  |         |         |         | compiler + linker only |
+| float_arith   | 46.662  |         |         |         | compiler + linker only |
+| polymorphic   | 48.636  |         |         |         | compiler + linker only |
+| containers    | 45.795  |         |         |         | compiler + linker only |
+| strings       | 48.175  |         |         |         | compiler + linker only |
+| generators    | 48.243  |         |         |         | compiler + linker only |
+| exceptions    | 47.415  |         |         |         | compiler + linker only |
+| gc_stress     | 47.454  |         |         |         | compiler + linker only |
+| classes       | 47.329  |         |         |         | compiler + linker only |
+| closures      | 46.847  |         |         |         | compiler + linker only |
+| startup       | 48.352  |         |         |         | compiler + linker only |
 
-**Current snapshot (2026-04-20, isolated manual measurement)**:
-5 compile-only repetitions per benchmark on the baseline machine,
-measured outside Criterion to validate the new metric split. The tight
-48-51 ms band across all 11 programs is the core triage result: compiler
-throughput itself was not exhibiting the 200-400 ms regressions suggested
-by the old `end_to_end` numbers. Before formal Phase-1 acceptance, a full
-Criterion `compile::*` baseline sweep must be captured and committed as
-the real Phase-0 / Phase-1 comparison column.
+**Phase 0 backfill (2026-04-20, full Criterion sample)**:
+captured with
+`cargo bench -p pyaot-bench --bench pyaot_bench compile:: -- --save-baseline phase0-compile-backfill`.
+This replaced the earlier manual triage snapshot and is now the committed
+reference for `compile::*`.
 
 ### `run` — pre-compiled execution wall time (ms, median)
 
@@ -219,7 +216,7 @@ phase-acceptance gate.
   bootstrap the scaffolding. Post-2026-04-20 triage, `run::*` remains
   the hot-runtime acceptance metric, `compile::*` is the compiler-
   throughput acceptance metric, and `fresh_launch::*` is diagnostic.
-- Before formal Phase-1 close, the new `compile::*` metric needs a
-  committed Phase-0 baseline sweep so the acceptance gate can compare
-  compiler throughput directly instead of inferring it from launch-heavy
-  numbers.
+- The `compile::*` Phase-0 column was backfilled on 2026-04-20 with a
+  full Criterion sweep (`phase0-compile-backfill`) so Phase-1
+  acceptance can now compare compiler throughput directly instead of
+  inferring it from launch-heavy numbers.
