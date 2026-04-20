@@ -718,10 +718,22 @@ mod tests {
         )
     }
 
+    fn build_cfg(
+        body: &[StmtId],
+        module: &mut Module,
+    ) -> (IndexMap<HirBlockId, HirBlock>, HirBlockId, Vec<TryScope>) {
+        let mut builder = CfgBuilder::new();
+        let entry = builder.new_block();
+        builder.enter(entry);
+        builder.lower_stmts(body, module);
+        builder.terminate_if_open(HirTerminator::Return(None));
+        builder.finish(entry)
+    }
+
     #[test]
     fn empty_body_returns_single_block_with_return_none() {
         let mut module = make_module();
-        let (blocks, entry, _try_scopes) = build_cfg_from_tree(&[], &mut module);
+        let (blocks, entry, _try_scopes) = build_cfg(&[], &mut module);
         assert_eq!(blocks.len(), 1);
         let block = &blocks[&entry];
         assert!(block.stmts.is_empty());
@@ -735,7 +747,7 @@ mod tests {
         let s2 = bind_stmt(&mut module.stmts, &mut module.exprs);
         let s3 = bind_stmt(&mut module.stmts, &mut module.exprs);
 
-        let (blocks, entry, _try_scopes) = build_cfg_from_tree(&[s1, s2, s3], &mut module);
+        let (blocks, entry, _try_scopes) = build_cfg(&[s1, s2, s3], &mut module);
         assert_eq!(blocks.len(), 1);
         let block = &blocks[&entry];
         assert_eq!(block.stmts, vec![s1, s2, s3]);
@@ -757,7 +769,7 @@ mod tests {
             },
         );
 
-        let (blocks, entry, _try_scopes) = build_cfg_from_tree(&[if_stmt], &mut module);
+        let (blocks, entry, _try_scopes) = build_cfg(&[if_stmt], &mut module);
         // entry(branch) + then + else + merge = 4 blocks.
         assert_eq!(blocks.len(), 4);
         let branch = &blocks[&entry];
@@ -809,7 +821,7 @@ mod tests {
             },
         );
 
-        let (blocks, _entry, _try_scopes) = build_cfg_from_tree(&[while_stmt], &mut module);
+        let (blocks, _entry, _try_scopes) = build_cfg(&[while_stmt], &mut module);
         // Verify at least one Jump to a header (continue) and at least one
         // Jump to an exit (break) exist — precise block ids are internal.
         let jumps: Vec<HirBlockId> = blocks
@@ -842,7 +854,7 @@ mod tests {
         let ret = alloc_stmt(&mut module.stmts, StmtKind::Return(None));
         let after = bind_stmt(&mut module.stmts, &mut module.exprs);
 
-        let (blocks, entry, _try_scopes) = build_cfg_from_tree(&[pre, ret, after], &mut module);
+        let (blocks, entry, _try_scopes) = build_cfg(&[pre, ret, after], &mut module);
         assert_eq!(blocks.len(), 1);
         let block = &blocks[&entry];
         // `after` must not be emitted — it lives past the Return.
@@ -862,7 +874,7 @@ mod tests {
             },
         );
 
-        let (blocks, entry, _try_scopes) = build_cfg_from_tree(&[raise_stmt], &mut module);
+        let (blocks, entry, _try_scopes) = build_cfg(&[raise_stmt], &mut module);
         assert!(matches!(
             blocks[&entry].terminator,
             HirTerminator::Raise { cause: None, .. }
