@@ -256,7 +256,7 @@ impl<'a> SemanticAnalyzer<'a> {
     ) -> Result<()> {
         use pyaot_hir::HirTerminator::*;
         match term {
-            Jump(_) | Unreachable => {}
+            Jump(_) | Unreachable | Reraise => {}
             Branch { cond, .. } => self.analyze_expr(*cond, module)?,
             Return(Some(expr_id)) => self.analyze_expr(*expr_id, module)?,
             Return(None) => {}

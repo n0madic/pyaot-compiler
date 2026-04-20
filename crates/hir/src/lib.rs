@@ -215,6 +215,8 @@ pub enum HirTerminator {
     Return(Option<ExprId>),
     /// `raise <exc> [from <cause>]`.
     Raise { exc: ExprId, cause: Option<ExprId> },
+    /// Bare `raise` — re-raise the current active exception.
+    Reraise,
     /// `yield <value>`; control resumes at `resume_bb` when the generator is
     /// next advanced. Generator desugaring rewrites these into ordinary jumps.
     Yield {

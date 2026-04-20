@@ -83,7 +83,7 @@ const MAX_EXCEPTION_CLASS_ID: u32 = 255;
 ///
 /// # Panics
 /// Panics at compile time if a custom exception class has class_id > 255.
-fn get_exc_type_tag_from_type(ty: &Type) -> Option<(u8, bool)> {
+pub(crate) fn get_exc_type_tag_from_type(ty: &Type) -> Option<(u8, bool)> {
     // First try built-in exception types
     if let Some(tag) = ty.builtin_exception_type_tag() {
         return Some((tag, false));

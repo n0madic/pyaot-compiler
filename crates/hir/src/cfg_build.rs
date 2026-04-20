@@ -235,11 +235,8 @@ impl CfgBuilder {
                 let block = self.current;
                 let term = match exc {
                     Some(exc_id) => HirTerminator::Raise { exc: exc_id, cause },
-                    // Bare `raise` (re-raise) has no expression to attach.
-                    // Mark the block Unreachable from a CFG perspective; the
-                    // legacy tree still carries the real `Raise` stmt for
-                    // semantics, so nothing is lost during the bridge.
-                    None => HirTerminator::Unreachable,
+                    // Bare `raise` — re-raise the active exception.
+                    None => HirTerminator::Reraise,
                 };
                 self.set_terminator(block, term);
             }
@@ -429,9 +426,13 @@ impl CfgBuilder {
                 let mut else_blocks_set: Vec<HirBlockId> = Vec::new();
                 let mut finally_blocks_set: Vec<HirBlockId> = Vec::new();
 
+                // body_bb was allocated before the snapshot so we include it
+                // explicitly — the snapshot only captures blocks created during
+                // lower_stmts (nested if/while/for inside the try body).
                 let blocks_before_body = self.next_id;
                 self.enter(body_bb);
                 self.lower_stmts(&body, module);
+                try_blocks_set.push(body_bb);
                 for id in blocks_before_body..self.next_id {
                     try_blocks_set.push(HirBlockId::new(id));
                 }

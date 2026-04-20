@@ -69,7 +69,7 @@ impl<'a> Lowering<'a> {
     ) {
         use hir::HirTerminator::*;
         match term {
-            Jump(_) | Unreachable => {}
+            Jump(_) | Unreachable | Reraise => {}
             Branch { cond, .. } => {
                 let expr = &hir_module.exprs[*cond];
                 self.scan_expr_for_closures(expr, hir_module, var_types);
@@ -661,7 +661,7 @@ impl<'a> Lowering<'a> {
     ) {
         use hir::HirTerminator::*;
         let exprs: Vec<hir::ExprId> = match term {
-            Jump(_) | Unreachable => Vec::new(),
+            Jump(_) | Unreachable | Reraise => Vec::new(),
             Branch { cond, .. } => vec![*cond],
             Return(Some(e)) | Yield { value: e, .. } => vec![*e],
             Return(None) => Vec::new(),
