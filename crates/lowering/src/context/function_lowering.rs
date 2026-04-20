@@ -14,13 +14,6 @@ impl<'a> Lowering<'a> {
         mut self,
         mut hir_module: hir::Module,
     ) -> Result<(mir::Module, CompilerWarnings)> {
-        // Copy global variables set from HIR module
-        self.symbols.globals = hir_module.globals.clone();
-
-        // Pre-populate global variable types from module init function
-        // This must happen before lowering any functions since they may reference globals
-        self.scan_global_var_types(&hir_module);
-
         // First pass: build class info
         self.build_class_info(&hir_module);
 
@@ -29,6 +22,19 @@ impl<'a> Lowering<'a> {
         // inference) and before function name map / type planning (so the desugared
         // functions are visible to both).
         self.desugar_generators(&mut hir_module)?;
+
+        // Split HIR VarIds before type planning when a later write would force
+        // a raw local to hold a heap value (or vice versa). Doing this before
+        // the global/type-planning scans keeps all downstream maps keyed by the
+        // final versioned VarIds instead of retargeting MIR locals mid-CFG.
+        self.split_storage_conflicting_var_rebinds(&mut hir_module);
+
+        // Copy global variables set from HIR module after VarId splitting.
+        self.symbols.globals = hir_module.globals.clone();
+
+        // Pre-populate global variable types from module init function.
+        // This must happen before lowering any functions since they may reference globals.
+        self.scan_global_var_types(&hir_module);
 
         // Second pass: build function name map
         for func_id in &hir_module.functions {

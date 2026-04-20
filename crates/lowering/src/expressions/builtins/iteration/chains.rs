@@ -13,6 +13,7 @@ impl<'a> Lowering<'a> {
     pub(in crate::expressions::builtins) fn lower_enumerate(
         &mut self,
         args: &[hir::ExprId],
+        kwargs: &[hir::KeywordArg],
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
@@ -28,12 +29,20 @@ impl<'a> Lowering<'a> {
         // Create inner iterator first
         let inner_iter = self.lower_iter(args, hir_module, mir_func)?;
 
-        // Get start value (second arg or default 0)
+        // Get start value (second arg, start= kwarg, or default 0)
         let start_operand = if args.len() > 1 {
             let start_expr = &hir_module.exprs[args[1]];
             self.lower_expr(start_expr, hir_module, mir_func)?
         } else {
-            mir::Operand::Constant(mir::Constant::Int(0))
+            let mut found_start = None;
+            for kwarg in kwargs {
+                if self.resolve(kwarg.name) == "start" {
+                    let start_expr = &hir_module.exprs[kwarg.value];
+                    found_start = Some(self.lower_expr(start_expr, hir_module, mir_func)?);
+                    break;
+                }
+            }
+            found_start.unwrap_or(mir::Operand::Constant(mir::Constant::Int(0)))
         };
 
         // Create result local with Iterator type wrapping (Int, elem_type) tuples

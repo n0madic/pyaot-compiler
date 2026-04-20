@@ -27,10 +27,67 @@ use indexmap::IndexSet;
 use pyaot_hir as hir;
 use pyaot_types::Type;
 use pyaot_utils::VarId;
+use std::collections::HashSet;
 
 use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
+    /// Split a `VarId` into fresh versions when later writes would force a
+    /// raw local to hold a heap value (or the reverse). This runs on HIR
+    /// before the Area E §E.6 local prescan so each version can keep a
+    /// storage-compatible prescan type and lowering never has to retarget a
+    /// live MIR local mid-CFG.
+    pub(crate) fn split_storage_conflicting_var_rebinds(&self, hir_module: &mut hir::Module) {
+        let mut next_var_id = next_fresh_var_id(hir_module);
+        let func_ids = hir_module.functions.clone();
+        for func_id in func_ids {
+            let Some(func) = hir_module.func_defs.get(&func_id) else {
+                continue;
+            };
+            if func.has_no_body_stmts() {
+                continue;
+            }
+
+            let mut param_seed: IndexMap<VarId, Type> = IndexMap::new();
+            for param in &func.params {
+                if let Some(ty) = param.ty.clone() {
+                    param_seed.insert(param.var, ty);
+                }
+            }
+            let block_ids: Vec<_> = func.blocks.keys().copied().collect();
+            let cell_vars = func.cell_vars.clone();
+            let nonlocal_vars = func.nonlocal_vars.clone();
+
+            let mut state = VarVersionState::new(next_var_id, &param_seed);
+            for block_id in block_ids {
+                let stmt_ids = hir_module
+                    .func_defs
+                    .get(&func_id)
+                    .and_then(|f| f.blocks.get(&block_id))
+                    .map(|block| block.stmts.clone())
+                    .unwrap_or_default();
+                for stmt_id in stmt_ids {
+                    self.rewrite_stmt_storage_versions(
+                        stmt_id,
+                        hir_module,
+                        &mut state,
+                        &cell_vars,
+                        &nonlocal_vars,
+                    );
+                }
+                let term = hir_module
+                    .func_defs
+                    .get(&func_id)
+                    .and_then(|f| f.blocks.get(&block_id))
+                    .map(|block| block.terminator.clone());
+                if let Some(term) = term {
+                    rewrite_terminator_exprs(&term, hir_module, &state);
+                }
+            }
+            next_var_id = state.next_var_id;
+        }
+    }
+
     /// Walk every function in the module and store per-function pre-scan
     /// results in `hir_types.per_function_prescan_var_types`. Called from
     /// `run_type_planning` before return-type inference so that
@@ -182,6 +239,616 @@ impl<'a> Lowering<'a> {
             // IterSetup is a pre-block iter-protocol initializer — no
             // local-var binding to absorb.
             hir::StmtKind::IterSetup { .. } => {}
+        }
+    }
+
+    fn rewrite_stmt_storage_versions(
+        &self,
+        stmt_id: hir::StmtId,
+        hir_module: &mut hir::Module,
+        state: &mut VarVersionState,
+        cell_vars: &HashSet<VarId>,
+        nonlocal_vars: &HashSet<VarId>,
+    ) {
+        let stmt_kind = hir_module.stmts[stmt_id].kind.clone();
+        match &stmt_kind {
+            hir::StmtKind::Bind { target, value, .. } => {
+                rewrite_binding_target_uses(target, hir_module, state);
+                rewrite_expr_vars(*value, hir_module, state);
+            }
+            hir::StmtKind::IterAdvance { iter, target } => {
+                rewrite_expr_vars(*iter, hir_module, state);
+                rewrite_binding_target_uses(target, hir_module, state);
+            }
+            hir::StmtKind::Expr(expr_id) => rewrite_expr_vars(*expr_id, hir_module, state),
+            hir::StmtKind::Return(Some(expr_id)) => rewrite_expr_vars(*expr_id, hir_module, state),
+            hir::StmtKind::Return(None)
+            | hir::StmtKind::Break
+            | hir::StmtKind::Continue
+            | hir::StmtKind::Pass
+            | hir::StmtKind::IterSetup { .. } => {}
+            hir::StmtKind::Raise { exc, cause } => {
+                if let Some(exc_id) = exc {
+                    rewrite_expr_vars(*exc_id, hir_module, state);
+                }
+                if let Some(cause_id) = cause {
+                    rewrite_expr_vars(*cause_id, hir_module, state);
+                }
+            }
+            hir::StmtKind::Assert { cond, msg } => {
+                rewrite_expr_vars(*cond, hir_module, state);
+                if let Some(msg_id) = msg {
+                    rewrite_expr_vars(*msg_id, hir_module, state);
+                }
+            }
+            hir::StmtKind::IndexDelete { obj, index } => {
+                rewrite_expr_vars(*obj, hir_module, state);
+                rewrite_expr_vars(*index, hir_module, state);
+            }
+            hir::StmtKind::If { .. }
+            | hir::StmtKind::While { .. }
+            | hir::StmtKind::ForBind { .. }
+            | hir::StmtKind::Try { .. }
+            | hir::StmtKind::Match { .. } => {
+                debug_assert!(
+                    false,
+                    "storage-version rewrite: control-flow stmt should not appear in CFG block"
+                );
+            }
+        }
+
+        let rhs_ty = match stmt_kind {
+            hir::StmtKind::Bind {
+                value, type_hint, ..
+            } => {
+                let expr = &hir_module.exprs[value];
+                match (&expr.kind, type_hint) {
+                    (_, Some(ann)) => ann,
+                    (hir::ExprKind::FuncRef(_) | hir::ExprKind::Closure { .. }, None) => Type::Any,
+                    _ => self.infer_deep_expr_type(expr, hir_module, &state.current_types),
+                }
+            }
+            hir::StmtKind::IterAdvance { iter, .. } => {
+                let iter_ty = self.infer_deep_expr_type(
+                    &hir_module.exprs[iter],
+                    hir_module,
+                    &state.current_types,
+                );
+                elem_type_of_iterable(&iter_ty)
+            }
+            _ => return,
+        };
+
+        let mut rewritten_target = match &hir_module.stmts[stmt_id].kind {
+            hir::StmtKind::Bind { target, .. } | hir::StmtKind::IterAdvance { target, .. } => {
+                target.clone()
+            }
+            _ => return,
+        };
+        rewrite_binding_target_defs(
+            &mut rewritten_target,
+            &rhs_ty,
+            hir_module,
+            state,
+            cell_vars,
+            nonlocal_vars,
+        );
+        match &mut hir_module.stmts[stmt_id].kind {
+            hir::StmtKind::Bind { target, .. } | hir::StmtKind::IterAdvance { target, .. } => {
+                *target = rewritten_target;
+            }
+            _ => {}
+        }
+    }
+}
+
+struct VarVersionState {
+    next_var_id: u32,
+    current_version: IndexMap<VarId, VarId>,
+    version_root: IndexMap<VarId, VarId>,
+    current_types: IndexMap<VarId, Type>,
+}
+
+impl VarVersionState {
+    fn new(next_var_id: u32, seed_types: &IndexMap<VarId, Type>) -> Self {
+        Self {
+            next_var_id,
+            current_version: IndexMap::new(),
+            version_root: IndexMap::new(),
+            current_types: seed_types.clone(),
+        }
+    }
+
+    fn root_of(&self, var_id: VarId) -> VarId {
+        self.version_root.get(&var_id).copied().unwrap_or(var_id)
+    }
+
+    fn current_of(&self, var_id: VarId) -> VarId {
+        let root = self.root_of(var_id);
+        self.current_version.get(&root).copied().unwrap_or(root)
+    }
+
+    fn alloc_split(&mut self, root: VarId) -> VarId {
+        let fresh = VarId::new(self.next_var_id);
+        self.next_var_id += 1;
+        self.version_root.insert(fresh, root);
+        self.current_version.insert(root, fresh);
+        fresh
+    }
+
+    fn record_write(&mut self, var_id: VarId, ty: &Type) {
+        if !matches!(ty, Type::Any) {
+            self.current_types.insert(var_id, ty.clone());
+        }
+    }
+
+    fn storage_conflict(&self, current_var: VarId, new_ty: &Type) -> bool {
+        let Some(prev_ty) = self.current_types.get(&current_var) else {
+            return false;
+        };
+        if prev_ty == new_ty || prev_ty.is_heap() == new_ty.is_heap() {
+            return false;
+        }
+        if matches!(new_ty, Type::Any | Type::HeapAny) {
+            return false;
+        }
+        // Dynamic heap locals can safely accept raw primitives by boxing at
+        // store time; concrete heap locals cannot.
+        let prev_accepts_boxed_primitive =
+            matches!(prev_ty, Type::Any | Type::HeapAny | Type::Union(_))
+                && matches!(new_ty, Type::Int | Type::Bool | Type::Float | Type::None);
+        !prev_accepts_boxed_primitive
+    }
+}
+
+fn next_fresh_var_id(hir_module: &hir::Module) -> u32 {
+    let mut max_id = 0u32;
+
+    for var_id in hir_module.globals.iter().copied() {
+        max_id = max_id.max(var_id.0);
+    }
+    for var_id in hir_module.module_var_map.values().copied() {
+        max_id = max_id.max(var_id.0);
+    }
+    for func in hir_module.func_defs.values() {
+        for param in &func.params {
+            max_id = max_id.max(param.var.0);
+        }
+        for var_id in func.cell_vars.iter().copied() {
+            max_id = max_id.max(var_id.0);
+        }
+        for var_id in func.nonlocal_vars.iter().copied() {
+            max_id = max_id.max(var_id.0);
+        }
+    }
+    for (_, stmt) in hir_module.stmts.iter() {
+        max_var_in_stmt(stmt, &mut max_id);
+    }
+    for (_, expr) in hir_module.exprs.iter() {
+        max_var_in_expr(expr, &mut max_id);
+    }
+    max_id + 1
+}
+
+fn max_var_in_stmt(stmt: &hir::Stmt, max_id: &mut u32) {
+    match &stmt.kind {
+        hir::StmtKind::Bind { target, .. } | hir::StmtKind::IterAdvance { target, .. } => {
+            max_var_in_target(target, max_id);
+        }
+        hir::StmtKind::Try { handlers, .. } => {
+            for handler in handlers {
+                if let Some(var_id) = handler.name {
+                    *max_id = (*max_id).max(var_id.0);
+                }
+            }
+        }
+        hir::StmtKind::Match { cases, .. } => {
+            for case in cases {
+                max_var_in_pattern(&case.pattern, max_id);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn max_var_in_target(target: &hir::BindingTarget, max_id: &mut u32) {
+    match target {
+        hir::BindingTarget::Var(var_id) => *max_id = (*max_id).max(var_id.0),
+        hir::BindingTarget::Tuple { elts, .. } => {
+            for elt in elts {
+                max_var_in_target(elt, max_id);
+            }
+        }
+        hir::BindingTarget::Starred { inner, .. } => max_var_in_target(inner, max_id),
+        hir::BindingTarget::Attr { .. }
+        | hir::BindingTarget::Index { .. }
+        | hir::BindingTarget::ClassAttr { .. } => {}
+    }
+}
+
+fn max_var_in_pattern(pattern: &hir::Pattern, max_id: &mut u32) {
+    match pattern {
+        hir::Pattern::MatchValue(_) | hir::Pattern::MatchSingleton(_) => {}
+        hir::Pattern::MatchAs { pattern, name } => {
+            if let Some(var_id) = name {
+                *max_id = (*max_id).max(var_id.0);
+            }
+            if let Some(inner) = pattern {
+                max_var_in_pattern(inner, max_id);
+            }
+        }
+        hir::Pattern::MatchSequence { patterns } | hir::Pattern::MatchOr(patterns) => {
+            for inner in patterns {
+                max_var_in_pattern(inner, max_id);
+            }
+        }
+        hir::Pattern::MatchStar(name) => {
+            if let Some(var_id) = name {
+                *max_id = (*max_id).max(var_id.0);
+            }
+        }
+        hir::Pattern::MatchMapping { patterns, rest, .. } => {
+            if let Some(var_id) = rest {
+                *max_id = (*max_id).max(var_id.0);
+            }
+            for inner in patterns {
+                max_var_in_pattern(inner, max_id);
+            }
+        }
+        hir::Pattern::MatchClass {
+            patterns,
+            kwd_patterns,
+            ..
+        } => {
+            for inner in patterns {
+                max_var_in_pattern(inner, max_id);
+            }
+            for inner in kwd_patterns {
+                max_var_in_pattern(inner, max_id);
+            }
+        }
+    }
+}
+
+fn max_var_in_expr(expr: &hir::Expr, max_id: &mut u32) {
+    if let hir::ExprKind::Var(var_id) = expr.kind {
+        *max_id = (*max_id).max(var_id.0);
+    }
+}
+
+fn rewrite_terminator_exprs(
+    term: &hir::HirTerminator,
+    hir_module: &mut hir::Module,
+    state: &VarVersionState,
+) {
+    match term {
+        hir::HirTerminator::Jump(_)
+        | hir::HirTerminator::Unreachable
+        | hir::HirTerminator::Reraise => {}
+        hir::HirTerminator::Branch { cond, .. } => rewrite_expr_vars(*cond, hir_module, state),
+        hir::HirTerminator::Return(Some(expr_id))
+        | hir::HirTerminator::Yield { value: expr_id, .. } => {
+            rewrite_expr_vars(*expr_id, hir_module, state)
+        }
+        hir::HirTerminator::Return(None) => {}
+        hir::HirTerminator::Raise { exc, cause } => {
+            rewrite_expr_vars(*exc, hir_module, state);
+            if let Some(cause_id) = cause {
+                rewrite_expr_vars(*cause_id, hir_module, state);
+            }
+        }
+    }
+}
+
+fn rewrite_binding_target_uses(
+    target: &hir::BindingTarget,
+    hir_module: &mut hir::Module,
+    state: &VarVersionState,
+) {
+    match target {
+        hir::BindingTarget::Var(_) | hir::BindingTarget::ClassAttr { .. } => {}
+        hir::BindingTarget::Attr { obj, .. } => rewrite_expr_vars(*obj, hir_module, state),
+        hir::BindingTarget::Index { obj, index, .. } => {
+            rewrite_expr_vars(*obj, hir_module, state);
+            rewrite_expr_vars(*index, hir_module, state);
+        }
+        hir::BindingTarget::Tuple { elts, .. } => {
+            for elt in elts {
+                rewrite_binding_target_uses(elt, hir_module, state);
+            }
+        }
+        hir::BindingTarget::Starred { inner, .. } => {
+            rewrite_binding_target_uses(inner, hir_module, state);
+        }
+    }
+}
+
+fn rewrite_binding_target_defs(
+    target: &mut hir::BindingTarget,
+    rhs_ty: &Type,
+    hir_module: &mut hir::Module,
+    state: &mut VarVersionState,
+    cell_vars: &HashSet<VarId>,
+    nonlocal_vars: &HashSet<VarId>,
+) {
+    match target {
+        hir::BindingTarget::Var(slot) => {
+            let root = state.root_of(*slot);
+            let current = state.current_of(*slot);
+            let can_split = !cell_vars.contains(&current)
+                && !nonlocal_vars.contains(&current)
+                && state.storage_conflict(current, rhs_ty);
+            let chosen = if can_split {
+                let fresh = state.alloc_split(root);
+                if hir_module.globals.contains(&root) {
+                    hir_module.globals.insert(fresh);
+                    for mapped in hir_module.module_var_map.values_mut() {
+                        if *mapped == root || *mapped == current {
+                            *mapped = fresh;
+                        }
+                    }
+                }
+                fresh
+            } else {
+                current
+            };
+            *slot = chosen;
+            state.record_write(chosen, rhs_ty);
+        }
+        hir::BindingTarget::Tuple { elts, .. } => match rhs_ty {
+            Type::Tuple(types) if types.len() == elts.len() => {
+                for (elt, ty) in elts.iter_mut().zip(types) {
+                    rewrite_binding_target_defs(
+                        elt,
+                        ty,
+                        hir_module,
+                        state,
+                        cell_vars,
+                        nonlocal_vars,
+                    );
+                }
+            }
+            Type::TupleVar(elem_ty) => {
+                for elt in elts {
+                    rewrite_binding_target_defs(
+                        elt,
+                        elem_ty,
+                        hir_module,
+                        state,
+                        cell_vars,
+                        nonlocal_vars,
+                    );
+                }
+            }
+            _ => {
+                for elt in elts {
+                    rewrite_binding_target_defs(
+                        elt,
+                        &Type::Any,
+                        hir_module,
+                        state,
+                        cell_vars,
+                        nonlocal_vars,
+                    );
+                }
+            }
+        },
+        hir::BindingTarget::Starred { inner, .. } => {
+            let starred_ty = Type::List(Box::new(rhs_ty.clone()));
+            rewrite_binding_target_defs(
+                inner,
+                &starred_ty,
+                hir_module,
+                state,
+                cell_vars,
+                nonlocal_vars,
+            );
+        }
+        hir::BindingTarget::Attr { .. }
+        | hir::BindingTarget::Index { .. }
+        | hir::BindingTarget::ClassAttr { .. } => {}
+    }
+}
+
+fn rewrite_expr_vars(expr_id: hir::ExprId, hir_module: &mut hir::Module, state: &VarVersionState) {
+    let expr_kind = hir_module.exprs[expr_id].kind.clone();
+    match expr_kind {
+        hir::ExprKind::Var(var_id) => {
+            hir_module.exprs[expr_id].kind = hir::ExprKind::Var(state.current_of(var_id));
+        }
+        hir::ExprKind::BinOp { left, right, .. }
+        | hir::ExprKind::Compare { left, right, .. }
+        | hir::ExprKind::LogicalOp { left, right, .. } => {
+            rewrite_expr_vars(left, hir_module, state);
+            rewrite_expr_vars(right, hir_module, state);
+        }
+        hir::ExprKind::UnOp { operand, .. }
+        | hir::ExprKind::Attribute { obj: operand, .. }
+        | hir::ExprKind::Yield(Some(operand))
+        | hir::ExprKind::IterHasNext(operand) => rewrite_expr_vars(operand, hir_module, state),
+        hir::ExprKind::Yield(None)
+        | hir::ExprKind::Int(_)
+        | hir::ExprKind::Float(_)
+        | hir::ExprKind::Bool(_)
+        | hir::ExprKind::Str(_)
+        | hir::ExprKind::Bytes(_)
+        | hir::ExprKind::None
+        | hir::ExprKind::NotImplemented
+        | hir::ExprKind::FuncRef(_)
+        | hir::ExprKind::ClassRef(_)
+        | hir::ExprKind::ClassAttrRef { .. }
+        | hir::ExprKind::TypeRef(_)
+        | hir::ExprKind::ImportedRef { .. }
+        | hir::ExprKind::ModuleAttr { .. }
+        | hir::ExprKind::BuiltinRef(_)
+        | hir::ExprKind::StdlibAttr(_)
+        | hir::ExprKind::StdlibConst(_)
+        | hir::ExprKind::ExcCurrentValue => {}
+        hir::ExprKind::Call {
+            func,
+            args,
+            kwargs,
+            kwargs_unpack,
+        } => {
+            rewrite_expr_vars(func, hir_module, state);
+            rewrite_call_args(&args, hir_module, state);
+            rewrite_keyword_args(&kwargs, hir_module, state);
+            if let Some(expr_id) = kwargs_unpack {
+                rewrite_expr_vars(expr_id, hir_module, state);
+            }
+        }
+        hir::ExprKind::BuiltinCall { args, kwargs, .. } => {
+            for arg in args {
+                rewrite_expr_vars(arg, hir_module, state);
+            }
+            rewrite_keyword_args(&kwargs, hir_module, state);
+        }
+        hir::ExprKind::IfExpr {
+            cond,
+            then_val,
+            else_val,
+        } => {
+            rewrite_expr_vars(cond, hir_module, state);
+            rewrite_expr_vars(then_val, hir_module, state);
+            rewrite_expr_vars(else_val, hir_module, state);
+        }
+        hir::ExprKind::List(items)
+        | hir::ExprKind::Tuple(items)
+        | hir::ExprKind::Set(items)
+        | hir::ExprKind::Closure {
+            captures: items, ..
+        } => {
+            for item in items {
+                rewrite_expr_vars(item, hir_module, state);
+            }
+        }
+        hir::ExprKind::Dict(entries) => {
+            for (key, value) in entries {
+                rewrite_expr_vars(key, hir_module, state);
+                rewrite_expr_vars(value, hir_module, state);
+            }
+        }
+        hir::ExprKind::Index { obj, index } => {
+            rewrite_expr_vars(obj, hir_module, state);
+            rewrite_expr_vars(index, hir_module, state);
+        }
+        hir::ExprKind::Slice {
+            obj,
+            start,
+            end,
+            step,
+        } => {
+            rewrite_expr_vars(obj, hir_module, state);
+            if let Some(expr_id) = start {
+                rewrite_expr_vars(expr_id, hir_module, state);
+            }
+            if let Some(expr_id) = end {
+                rewrite_expr_vars(expr_id, hir_module, state);
+            }
+            if let Some(expr_id) = step {
+                rewrite_expr_vars(expr_id, hir_module, state);
+            }
+        }
+        hir::ExprKind::MethodCall {
+            obj, args, kwargs, ..
+        } => {
+            rewrite_expr_vars(obj, hir_module, state);
+            for arg in args {
+                rewrite_expr_vars(arg, hir_module, state);
+            }
+            rewrite_keyword_args(&kwargs, hir_module, state);
+        }
+        hir::ExprKind::SuperCall { args, .. } | hir::ExprKind::StdlibCall { args, .. } => {
+            for arg in args {
+                rewrite_expr_vars(arg, hir_module, state);
+            }
+        }
+        hir::ExprKind::GeneratorIntrinsic(intrinsic) => match intrinsic {
+            hir::GeneratorIntrinsic::GetState(expr_id)
+            | hir::GeneratorIntrinsic::SetExhausted(expr_id)
+            | hir::GeneratorIntrinsic::IsExhausted(expr_id)
+            | hir::GeneratorIntrinsic::GetSentValue(expr_id)
+            | hir::GeneratorIntrinsic::IterNextNoExc(expr_id)
+            | hir::GeneratorIntrinsic::IterIsExhausted(expr_id) => {
+                rewrite_expr_vars(expr_id, hir_module, state);
+            }
+            hir::GeneratorIntrinsic::SetState { gen, .. }
+            | hir::GeneratorIntrinsic::GetLocal { gen, .. }
+            | hir::GeneratorIntrinsic::SetLocalType { gen, .. } => {
+                rewrite_expr_vars(gen, hir_module, state);
+            }
+            hir::GeneratorIntrinsic::SetLocal { gen, value, .. } => {
+                rewrite_expr_vars(gen, hir_module, state);
+                rewrite_expr_vars(value, hir_module, state);
+            }
+            hir::GeneratorIntrinsic::Create { .. } => {}
+        },
+        hir::ExprKind::MatchPattern { subject, pattern } => {
+            rewrite_expr_vars(subject, hir_module, state);
+            rewrite_pattern_exprs(&pattern, hir_module, state);
+        }
+    }
+}
+
+fn rewrite_call_args(args: &[hir::CallArg], hir_module: &mut hir::Module, state: &VarVersionState) {
+    for arg in args {
+        match arg {
+            hir::CallArg::Regular(expr_id) | hir::CallArg::Starred(expr_id) => {
+                rewrite_expr_vars(*expr_id, hir_module, state);
+            }
+        }
+    }
+}
+
+fn rewrite_keyword_args(
+    kwargs: &[hir::KeywordArg],
+    hir_module: &mut hir::Module,
+    state: &VarVersionState,
+) {
+    for kw in kwargs {
+        rewrite_expr_vars(kw.value, hir_module, state);
+    }
+}
+
+fn rewrite_pattern_exprs(
+    pattern: &hir::Pattern,
+    hir_module: &mut hir::Module,
+    state: &VarVersionState,
+) {
+    match pattern {
+        hir::Pattern::MatchValue(expr_id) => rewrite_expr_vars(*expr_id, hir_module, state),
+        hir::Pattern::MatchSingleton(_) | hir::Pattern::MatchStar(_) => {}
+        hir::Pattern::MatchAs { pattern, .. } => {
+            if let Some(inner) = pattern {
+                rewrite_pattern_exprs(inner, hir_module, state);
+            }
+        }
+        hir::Pattern::MatchSequence { patterns } | hir::Pattern::MatchOr(patterns) => {
+            for inner in patterns {
+                rewrite_pattern_exprs(inner, hir_module, state);
+            }
+        }
+        hir::Pattern::MatchMapping { keys, patterns, .. } => {
+            for key in keys {
+                rewrite_expr_vars(*key, hir_module, state);
+            }
+            for inner in patterns {
+                rewrite_pattern_exprs(inner, hir_module, state);
+            }
+        }
+        hir::Pattern::MatchClass {
+            cls,
+            patterns,
+            kwd_patterns,
+            ..
+        } => {
+            rewrite_expr_vars(*cls, hir_module, state);
+            for inner in patterns {
+                rewrite_pattern_exprs(inner, hir_module, state);
+            }
+            for inner in kwd_patterns {
+                rewrite_pattern_exprs(inner, hir_module, state);
+            }
         }
     }
 }

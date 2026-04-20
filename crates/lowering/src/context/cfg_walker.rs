@@ -143,6 +143,8 @@ struct TryScopeCtx {
     handler_entry_map: IndexMap<HirBlockId, (usize, usize)>,
 }
 
+type ScopeCellData = IndexMap<usize, (IndexMap<VarId, LocalId>, IndexMap<VarId, LocalId>)>;
+
 impl TryScopeCtx {
     fn new() -> Self {
         Self {
@@ -250,10 +252,7 @@ impl<'a> Lowering<'a> {
 
         // Scope cell data: populated during TrySetjmp emission, consumed in normal_exit.
         // Maps scope_idx → (saved_nonlocal_cells, cell_locals: VarId → cell LocalId).
-        let mut scope_cell_data: IndexMap<
-            usize,
-            (IndexMap<VarId, LocalId>, IndexMap<VarId, LocalId>),
-        > = IndexMap::new();
+        let mut scope_cell_data: ScopeCellData = IndexMap::new();
 
         for (scope_idx, scope) in func.try_scopes.iter().enumerate() {
             // Even if try_blocks is empty (degenerate scope), we still push emi

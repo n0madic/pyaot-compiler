@@ -79,7 +79,7 @@ impl<'a> Lowering<'a> {
             hir::Builtin::Sorted => self.lower_sorted(args, kwargs, hir_module, mir_func),
             hir::Builtin::Set => self.lower_set_builtin(args, hir_module, mir_func),
             hir::Builtin::Open => self.lower_open(args, kwargs, hir_module, mir_func),
-            hir::Builtin::Enumerate => self.lower_enumerate(args, hir_module, mir_func),
+            hir::Builtin::Enumerate => self.lower_enumerate(args, kwargs, hir_module, mir_func),
             // Phase 1: Quick Wins
             hir::Builtin::Divmod => self.lower_divmod(args, hir_module, mir_func),
             hir::Builtin::Input => self.lower_input(args, hir_module, mir_func),
