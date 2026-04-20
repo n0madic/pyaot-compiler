@@ -36,7 +36,7 @@ impl<'a> Lowering<'a> {
                 };
 
                 // Skip Any — gradual typing
-                if *param_ty == Type::Any {
+                if matches!(param_ty, Type::Any | Type::HeapAny) {
                     continue;
                 }
 
@@ -54,13 +54,7 @@ impl<'a> Lowering<'a> {
                     continue;
                 }
 
-                // Python special cases: int/float promotion, bool/int promotion
-                let is_python_compatible = matches!(
-                    (&inferred, param_ty),
-                    (Type::Int, Type::Float) | (Type::Bool, Type::Int) | (Type::Bool, Type::Float)
-                );
-
-                if !is_python_compatible && !inferred.is_subtype_of(param_ty) {
+                if !self.types_compatible_for_annotation(&inferred, param_ty, hir_module) {
                     let expr = &hir_module.exprs[default_id];
                     self.warnings
                         .add(pyaot_diagnostics::CompilerWarning::TypeError {
@@ -81,7 +75,7 @@ impl<'a> Lowering<'a> {
         for class_def in hir_module.class_defs.values() {
             for attr in &class_def.class_attrs {
                 // Skip Any — gradual typing
-                if attr.ty == Type::Any {
+                if matches!(attr.ty, Type::Any | Type::HeapAny) {
                     continue;
                 }
 
@@ -92,13 +86,7 @@ impl<'a> Lowering<'a> {
                     continue;
                 }
 
-                // Python special cases: int/float promotion, bool/int promotion
-                let is_python_compatible = matches!(
-                    (&inferred, &attr.ty),
-                    (Type::Int, Type::Float) | (Type::Bool, Type::Int) | (Type::Bool, Type::Float)
-                );
-
-                if !is_python_compatible && !inferred.is_subtype_of(&attr.ty) {
+                if !self.types_compatible_for_annotation(&inferred, &attr.ty, hir_module) {
                     let expr = &hir_module.exprs[attr.initializer];
                     self.warnings
                         .add(pyaot_diagnostics::CompilerWarning::TypeError {

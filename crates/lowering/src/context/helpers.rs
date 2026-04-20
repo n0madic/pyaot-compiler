@@ -234,6 +234,103 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Check whether an inferred type is compatible with an annotated type.
+    ///
+    /// This mirrors `Type::is_subtype_of()` but has access to lowering-time
+    /// class hierarchy metadata, so annotation checks can accept subclasses
+    /// inside unions and container element types.
+    pub(crate) fn types_compatible_for_annotation(
+        &self,
+        actual: &Type,
+        expected: &Type,
+        hir_module: &hir::Module,
+    ) -> bool {
+        if let Type::Class { class_id, .. } = expected {
+            if hir_module
+                .class_defs
+                .get(class_id)
+                .is_some_and(|class_def| class_def.is_protocol)
+            {
+                return true;
+            }
+        }
+
+        match (actual, expected) {
+            (a, b) if a == b => true,
+            (Type::Never, _) => true,
+            (_, Type::Any | Type::HeapAny) => true,
+            (Type::Bool, Type::Int) | (Type::Int, Type::Float) | (Type::Bool, Type::Float) => true,
+            (Type::None, Type::Union(set)) if set.contains(&Type::None) => true,
+            (Type::Union(left), right) => left
+                .iter()
+                .all(|member| self.types_compatible_for_annotation(member, right, hir_module)),
+            (left, Type::Union(right)) => right
+                .iter()
+                .any(|member| self.types_compatible_for_annotation(left, member, hir_module)),
+            (Type::List(a), Type::List(b)) | (Type::Set(a), Type::Set(b)) => {
+                **a == Type::Any
+                    || **b == Type::Any
+                    || self.types_compatible_for_annotation(a, b, hir_module)
+            }
+            (Type::Dict(k1, v1), Type::Dict(k2, v2))
+            | (Type::DefaultDict(k1, v1), Type::DefaultDict(k2, v2))
+            | (Type::DefaultDict(k1, v1), Type::Dict(k2, v2)) => {
+                (**k1 == Type::Any
+                    || **k2 == Type::Any
+                    || self.types_compatible_for_annotation(k1, k2, hir_module))
+                    && (**v1 == Type::Any
+                        || **v2 == Type::Any
+                        || self.types_compatible_for_annotation(v1, v2, hir_module))
+            }
+            (Type::Tuple(ts1), Type::Tuple(ts2)) => {
+                ts1.len() == ts2.len()
+                    && ts1.iter().zip(ts2.iter()).all(|(t1, t2)| {
+                        *t1 == Type::Any || self.types_compatible_for_annotation(t1, t2, hir_module)
+                    })
+            }
+            (Type::Tuple(ts), Type::TupleVar(elem)) => ts.iter().all(|t| {
+                *t == Type::Any || self.types_compatible_for_annotation(t, elem, hir_module)
+            }),
+            (Type::TupleVar(a), Type::TupleVar(b)) | (Type::Iterator(a), Type::Iterator(b)) => {
+                **a == Type::Any || self.types_compatible_for_annotation(a, b, hir_module)
+            }
+            (
+                Type::Function {
+                    params: p1,
+                    ret: r1,
+                },
+                Type::Function {
+                    params: p2,
+                    ret: r2,
+                },
+            ) => {
+                p1.len() == p2.len()
+                    && p2
+                        .iter()
+                        .zip(p1.iter())
+                        .all(|(expected_param, actual_param)| {
+                            self.types_compatible_for_annotation(
+                                expected_param,
+                                actual_param,
+                                hir_module,
+                            )
+                        })
+                    && self.types_compatible_for_annotation(r1, r2, hir_module)
+            }
+            (
+                Type::Class {
+                    class_id: actual_id,
+                    ..
+                },
+                Type::Class {
+                    class_id: expected_id,
+                    ..
+                },
+            ) => actual_id == expected_id || self.is_proper_subclass(*actual_id, *expected_id),
+            _ => actual.is_subtype_of(expected),
+        }
+    }
+
     /// Get the TypeTag value for a type (from core-defs single source of truth).
     /// Returns `None` for types that have no corresponding runtime type tag.
     pub(crate) fn get_type_tag_for_isinstance_check(&self, ty: &Type) -> Option<i64> {
@@ -518,5 +615,112 @@ impl<'a> Lowering<'a> {
                 0 // ELEM_HEAP_OBJ (no boxing)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::LoweredClassInfo;
+    use indexmap::IndexMap;
+    use pyaot_utils::{ClassId, StringInterner};
+
+    fn stub_class_info(base_class: Option<ClassId>) -> LoweredClassInfo {
+        LoweredClassInfo {
+            field_offsets: IndexMap::new(),
+            field_types: IndexMap::new(),
+            method_funcs: IndexMap::new(),
+            init_func: None,
+            dunder_methods: IndexMap::new(),
+            base_class,
+            total_field_count: 0,
+            own_field_offset: 0,
+            vtable_slots: IndexMap::new(),
+            class_attr_offsets: IndexMap::new(),
+            class_attr_types: IndexMap::new(),
+            static_methods: IndexMap::new(),
+            class_methods: IndexMap::new(),
+            properties: IndexMap::new(),
+            property_types: IndexMap::new(),
+            is_exception_class: false,
+        }
+    }
+
+    #[test]
+    fn annotation_compatibility_accepts_union_of_subclasses_for_base() {
+        let mut interner = StringInterner::default();
+        let mut lowering = Lowering::new(&mut interner);
+        let module_name = lowering.interner.intern("compat_test");
+        let module = hir::Module::new(module_name);
+
+        let shape_id = ClassId::new(0);
+        let circle_id = ClassId::new(1);
+        let square_id = ClassId::new(2);
+        let shape_name = lowering.interner.intern("Shape");
+        let circle_name = lowering.interner.intern("Circle");
+        let square_name = lowering.interner.intern("Square");
+
+        lowering
+            .classes
+            .class_info
+            .insert(shape_id, stub_class_info(None));
+        lowering
+            .classes
+            .class_info
+            .insert(circle_id, stub_class_info(Some(shape_id)));
+        lowering
+            .classes
+            .class_info
+            .insert(square_id, stub_class_info(Some(shape_id)));
+
+        let actual = Type::Union(vec![
+            Type::Class {
+                class_id: circle_id,
+                name: circle_name,
+            },
+            Type::Class {
+                class_id: square_id,
+                name: square_name,
+            },
+        ]);
+        let expected = Type::Class {
+            class_id: shape_id,
+            name: shape_name,
+        };
+
+        assert!(lowering.types_compatible_for_annotation(&actual, &expected, &module));
+    }
+
+    #[test]
+    fn annotation_compatibility_accepts_container_of_subclass_for_base() {
+        let mut interner = StringInterner::default();
+        let mut lowering = Lowering::new(&mut interner);
+        let module_name = lowering.interner.intern("compat_test");
+        let module = hir::Module::new(module_name);
+
+        let shape_id = ClassId::new(0);
+        let circle_id = ClassId::new(1);
+        let shape_name = lowering.interner.intern("Shape");
+        let circle_name = lowering.interner.intern("Circle");
+
+        lowering
+            .classes
+            .class_info
+            .insert(shape_id, stub_class_info(None));
+        lowering
+            .classes
+            .class_info
+            .insert(circle_id, stub_class_info(Some(shape_id)));
+
+        let actual = Type::List(Box::new(Type::Class {
+            class_id: circle_id,
+            name: circle_name,
+        }));
+        let expected = Type::List(Box::new(Type::Class {
+            class_id: shape_id,
+            name: shape_name,
+        }));
+
+        assert!(lowering.types_compatible_for_annotation(&actual, &expected, &module));
     }
 }

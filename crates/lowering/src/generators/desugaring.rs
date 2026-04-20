@@ -862,7 +862,7 @@ impl<'a> Lowering<'a> {
                 kind: hir::ParamKind::Regular,
                 span,
             }],
-            return_type: Some(Type::Int),
+            return_type: Some(Type::Any),
             span,
             cell_vars: HashSet::new(),
             nonlocal_vars: HashSet::new(),
@@ -1796,4 +1796,84 @@ fn build_trailing_yield(
     body.push(mk_leaf_stmt(m, hir::StmtKind::Return(Some(value)), span));
 
     body
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyaot_utils::{HirBlockId, StringInterner};
+
+    #[test]
+    fn desugaring_marks_resume_return_type_as_any() {
+        let mut interner = StringInterner::default();
+        let module_name = interner.intern("gen_test");
+        let func_name = interner.intern("tuple_gen");
+        let span = Span::dummy();
+
+        let mut module = hir::Module::new(module_name);
+        let one = module.exprs.alloc(hir::Expr {
+            kind: hir::ExprKind::Int(1),
+            ty: Some(Type::Int),
+            span,
+        });
+        let two = module.exprs.alloc(hir::Expr {
+            kind: hir::ExprKind::Int(2),
+            ty: Some(Type::Int),
+            span,
+        });
+        let tuple_expr = module.exprs.alloc(hir::Expr {
+            kind: hir::ExprKind::Tuple(vec![one, two]),
+            ty: Some(Type::Tuple(vec![Type::Int, Type::Int])),
+            span,
+        });
+        let yield_expr = module.exprs.alloc(hir::Expr {
+            kind: hir::ExprKind::Yield(Some(tuple_expr)),
+            ty: Some(Type::Tuple(vec![Type::Int, Type::Int])),
+            span,
+        });
+        let yield_stmt = module.stmts.alloc(hir::Stmt {
+            kind: hir::StmtKind::Expr(yield_expr),
+            span,
+        });
+
+        let func_id = FuncId::new(0);
+        let entry_block = HirBlockId::new(0);
+        module.func_defs.insert(
+            func_id,
+            hir::Function {
+                id: func_id,
+                name: func_name,
+                params: vec![],
+                return_type: None,
+                span,
+                cell_vars: HashSet::new(),
+                nonlocal_vars: HashSet::new(),
+                is_generator: true,
+                method_kind: hir::MethodKind::default(),
+                is_abstract: false,
+                blocks: indexmap::indexmap! {
+                    entry_block => hir::HirBlock {
+                        id: entry_block,
+                        stmts: vec![yield_stmt],
+                        terminator: hir::HirTerminator::Return(None),
+                        loop_depth: 0,
+                        handler_depth: 0,
+                    }
+                },
+                entry_block,
+                try_scopes: vec![],
+            },
+        );
+        module.functions.push(func_id);
+
+        let mut lowering = Lowering::new(&mut interner);
+        lowering.desugar_generators(&mut module).unwrap();
+
+        let resume_func_id = FuncId(func_id.0 + RESUME_FUNC_ID_OFFSET);
+        let resume_func = module
+            .func_defs
+            .get(&resume_func_id)
+            .expect("resume function should be created during desugaring");
+        assert_eq!(resume_func.return_type, Some(Type::Any));
+    }
 }
