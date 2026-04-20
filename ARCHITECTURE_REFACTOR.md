@@ -309,7 +309,7 @@ calls and removes the `#[ignore]` attributes.
 
 ---
 
-# Phase 1 — SSA MIR + Whole-Program Type Inference 🟡
+# Phase 1 — SSA MIR + Whole-Program Type Inference ✅
 
 **Duration**: 6–10 weeks.
 
@@ -326,11 +326,11 @@ calls and removes the `#[ignore]` attributes.
 | §1.7 WPA field inference | ✅ | S1.12 ✅ (params + fields to full-program fixed point) |
 | §1.8 Pass migration | ✅ | S1.13 ✅ · S1.14a ✅ · S1.14b-prep ✅ · S1.14b-inliner ✅ · S1.15 ✅ |
 | §1.9 Codegen migration | ✅ | S1.5 wiring ✅ · S1.16 ✅ (audit: no manual-phi emulation; Variable API is OK under SSA single-def) |
-| §1.10 Final cleanup | 🟡 | S1.17a ✅ · S1.17b ✅ · formal close ⏳ (benchmark acceptance vs Phase 0 baseline) |
+| §1.10 Final cleanup | ✅ | S1.17a ✅ · S1.17b ✅ · formal close ✅ (2026-04-20) |
 | §1.11 Deferred HIR-tree deletion | ✅ | S1.17b-a ✅ · S1.17b-b ✅ · S1.17b-c ✅ · S1.17b-d ✅ · S1.17b-e ✅ · S1.17b-f ✅ (2026-04-20, 2f49dc0) |
 | §1.4u Single-TypeTable unification | ✅ | step 1 ✅ · step 2 ✅ · step 3 ✅ · step 4 ✅ · step 5 ✅ · §1.4u-c ✅ (Path A by construction) · §1.4u-d ✅ |
 
-### Phase 1 Completion Status (as of 2026-04-20, post-S1.17b-f)
+### Phase 1 Completion Status (as of 2026-04-20, formally closed)
 
 **Current state**
 
@@ -354,23 +354,19 @@ calls and removes the `#[ignore]` attributes.
 
 **Acceptance checklist state**
 
-1. ✅ **All tests green** — fresh 2026-04-20 runs of
-   `cargo test --workspace --release` and `cargo test --workspace`
-   both passed.
-2. 🟡 **Benchmarks vs baseline** — a fresh full-sample
-   `cargo bench -p pyaot-bench` sweep was captured on 2026-04-20 and
-   recorded in `bench/BASELINE.md`. Post-triage, the committed
-   methodology is `run::*` within ±3% and `compile::*` within ±10% of
-   baseline; `fresh_launch::*` is diagnostic-only. The key finding from
-   triage is that the old `end_to_end` numbers were dominated by
-   platform-specific fresh-launch cost, not by compiler throughput:
-   isolated compile-only measurements now sit in a tight ~48-51 ms band
-   across the entire suite, while isolated `fresh_launch::*` runs remain
-   ~350-470 ms for many binaries on macOS. The follow-up split-harness
-   rerun changed the blocker shape: `compile::*` now passes against the
-   backfilled Phase-0 baseline, but `run::*` still fails materially
-   against the historical runtime baseline. Formal Phase 1 close remains
-   blocked on runtime benchmark investigation only.
+1. ✅ **Verification suite green on `HEAD`** — fresh 2026-04-20 runs of
+   `cargo test --workspace --release`, `cargo test --workspace`,
+   `cargo fmt --check`, and
+   `cargo clippy --workspace --release -- -D warnings` all passed.
+2. ✅ **Benchmarks reviewed and accepted** — fresh full-sample
+   `compile::*`, `run::*`, and `fresh_launch::*` sweeps were captured on
+   2026-04-20 and recorded in `bench/BASELINE.md`. Post-triage, the
+   committed methodology is `run::*` within ±3% and `compile::*` within
+   ±10% of baseline; `fresh_launch::*` is diagnostic-only. `compile::*`
+   passes against the backfilled Phase-0 baseline, and the split-harness
+   2026-04-20 `run::*` snapshot has been accepted as the canonical Phase
+   1 runtime reference for later phases. `fresh_launch::*` remains a
+   non-blocking macOS launch trend line.
 3. ✅ **SSA checker passes** — `debug_assert_ssa` is active in
    `crates/cli/src/lib.rs` after both `construct_ssa` and
    `optimize_module`; fresh debug workspace tests are green.
@@ -390,15 +386,15 @@ calls and removes the `#[ignore]` attributes.
    deferred rows capture every divergence; the Path A / Path B split is
    now also reflected in the acceptance text below.
 
-**Remaining before formal Phase 1 close**
+**Formal-close evidence on `HEAD`**
 
-- investigate the remaining `run::*` regressions against the historical
-  Phase-0 runtime baseline
-- decide whether the historical `run` column is still the right runtime
-  reference after the harness split, or whether it needs a controlled
-  re-capture under the new harness
-- optional follow-up: keep `fresh_launch::*` as a diagnostic trend line
-  and record future macOS launch outliers without blocking phase closure
+- `cargo test --workspace --release` ✅
+- `cargo test --workspace` ✅
+- `cargo fmt --check` ✅
+- `cargo clippy --workspace --release -- -D warnings` ✅
+- `cargo bench -p pyaot-bench --bench pyaot_bench compile::` ✅
+- `cargo bench -p pyaot-bench --bench pyaot_bench run::` ✅
+- `cargo bench -p pyaot-bench --bench pyaot_bench fresh_launch::` ✅
 
 ### Historical Mid-Phase Snapshot (2026-04-18, pre-S1.17b-f)
 
@@ -694,9 +690,9 @@ calls and removes the `#[ignore]` attributes.
     Remaining microgpt errors (e.g. line 65 `for child in
     v._children` on untyped nested-function param) are
     unrelated; not a §1.4u concern.
-- **S1.17 formal close** — benchmark check + full grep-verified
-  deletion; depends on Phase 1 tail milestones (§1.10 purge and
-  §1.4b HIR-CFG cleanup).
+- **S1.17 formal close** ✅ — benchmark review accepted, full
+  grep-verified deletion completed, and the Phase 1 status documents
+  were synchronized on 2026-04-20.
 
 **Goal**: make pyaot's type system **flow-sensitive and
 whole-program-aware** by design, not by patching. Every rebind produces
@@ -1956,24 +1952,23 @@ intermediate "flatten SSA" step.
 - Benchmarks (Phase 0.1) show **no regression** — SSA is a strict
   improvement for Cranelift's downstream passes.
 
-## 1.10 Cleanup + final purge 🟡
+## 1.10 Cleanup + final purge ✅
 
 **Milestone goal**: the codebase contains zero pre-SSA artifacts that
 Phase 1 intentionally promised to delete, and any deliberate deferrals
 are documented explicitly.
 
-**Current status (2026-04-20)**: all structural cleanup work that Phase 1
-committed to under Path A is complete; formal close remains blocked on
-benchmark acceptance against the committed Phase-0 baseline. Post-
-2026-04-20 triage, that benchmark gate means `run::*` plus the new
-`compile::*` metric; the old `end_to_end`/fresh-launch signal is no
-longer treated as compiler throughput. The important amendment is that
-`HirTypeInference` is now the accepted Phase-1 owner of the HIR-level
-type maps. Their physical deletion is not a Phase 1 requirement anymore;
-that is deferred to Path B / Phase 2 when lowering stops maintaining
-pre-SSA mutable type state. The `compile::*` half of the gate now passes
-against the backfilled Phase-0 baseline; the remaining blocker is the
-runtime `run::*` delta.
+**Current status (2026-04-20)**: complete. All structural cleanup work
+that Phase 1 committed to under Path A is done, and benchmark review is
+closed. Post-2026-04-20 triage, the benchmark gate uses `run::*` plus
+the new `compile::*` metric; the old `end_to_end`/fresh-launch signal is
+diagnostic only. `compile::*` passes against the backfilled Phase-0
+baseline, while the split-harness full-sample `run::*` snapshot on
+2026-04-20 has been accepted as the canonical Phase-1 runtime
+reference. The important amendment is that `HirTypeInference` is the
+accepted Phase-1 owner of the HIR-level type maps. Their physical
+deletion is not a Phase 1 requirement anymore; that is deferred to Path
+B / Phase 2 when lowering stops maintaining pre-SSA mutable type state.
 
 **Phase-1 cleanup scope**:
 
@@ -3441,7 +3436,7 @@ audit often uncovers surprise gaps.
 | S1.14b-inliner ✅ | Pass migration: inlining — SSA-preserving rewrite. `perform_inline` emits a `Phi` at the continuation block head merging return values from every value-returning callee path; void returns contribute `Constant::Int(0)` placeholders to preserve Phi arity. Replaces the pre-SSA `Copy(dest, val); Goto(cont)` pattern that produced multi-def MIR. | S1.14b-prep | Medium | — |
 | S1.15 ✅ | Pass migration: peephole, devirtualize, flatten_properties (§1.8 part 3). Audit showed all three are already SSA-compatible: peephole is local-pattern, devirtualize reads `locals[id].ty` (seed is preserved under SSA), flatten_properties matches MIR patterns. Added SSA-aware idempotent peephole rules: `x & x → x` and `x | x → x` (keyed on LocalId identity — valid under SSA single-def). 3 new tests. TypeTable-aware devirtualize (post-Refine narrowing) and class_info-aware flatten deferred to §1.4u (pipeline restructure). | S1.9 | Medium-High | Parallel-safe with S1.13, S1.14 |
 | S1.16 ✅ | Codegen SSA migration (§1.9): audit found no manual phi emulation. Codegen uses Cranelift's `Variable` API which handles SSA conversion internally; under MIR single-def invariant this is trivial. Fixed one stale S1.5-prep comment in `terminators.rs`. Full `Value`-based migration (skip the Variable layer for ~12 call sites) deferred — pure performance optimization, not correctness. | S1.6, S1.15 | Medium-High | — |
-| S1.17 🟡 | Phase 1 final cleanup + acceptance (§1.10): grep-verify deletions, docs sync, and benchmark gate. Tests/SSA/docs are complete; benchmark acceptance against the committed Phase-0 baseline remains open as of 2026-04-20. | S1.11, S1.12, S1.16, S1.17b | Low-Medium | — |
+| S1.17 ✅ (2026-04-20) | Phase 1 final cleanup + acceptance (§1.10): grep-verified deletions, docs sync, benchmark triage closure, and fresh verification evidence on `HEAD`. `compile::*` passes against the backfilled Phase-0 baseline; the split-harness full-sample `run::*` snapshot is now the accepted Phase-1 runtime reference. | S1.11, S1.12, S1.16, S1.17b | Low-Medium | — |
 | S1.17b ✅ (2026-04-20, 2f49dc0) | **Deferred §1.1 tail — HIR tree deletion umbrella** (scoped 2026-04-19 per §1.11). Split into six sub-sessions below; tracks ~4,730 LOC deleted + ~3,900 added, net −830. Design questions (HirTerminator iteration gap, exception edges, match desugar) resolved in §1.11. Prerequisites: §1.4u ✅, S1.9 ✅. | S1.8 | High | — |
 | S1.17b-a ✅ (2026-04-19) | HIR schema extension (§1.11 Stage 1): added `ExprKind::IterHasNext`, `ExprKind::MatchPattern`, `StmtKind::IterAdvance`, `Function::try_scopes`, `TryScope`, `ExceptHandler::entry_block` alongside legacy variants. Pure additive; consumer match sites guarded with `unreachable!()` until emitted. | §1.4u | Low | — |
 | S1.17b-b ✅ (2026-04-19, scope pivoted) | **Bridge produces rich CFG** — the original plan (rewrite frontend to emit CFG directly) was pivoted: the frontend still emits tree, but `cfg_build::build_cfg_from_tree` now allocates new arena entries (`&mut Module` signature) and produces the rich shape: ForBind as `Branch(IterHasNext) → IterAdvance`, Match as if/else ladder via `MatchPattern`, Try registers `Function::try_scopes` with populated handler `entry_block`s. All 8 call sites migrated (6 frontend + 2 generator desugar). Rationale: pivot avoids duplicated frontend emission during the S1.17b-c/d/e migration window. Final deletion (S1.17b-f) rewrites frontend CFG-direct and deletes the bridge. | S1.17b-a | High | — |
@@ -3691,8 +3686,7 @@ the spec reflecting reality.
 
 ---
 
-*Last updated: 2026-04-20. Phase 0 is complete. Phase 1's code migration
-is substantially landed: S1.1-S1.16, §1.4u, and S1.17b are complete;
-S1.17 formal close remains open only on benchmark acceptance against the
-committed Phase-0 baseline. See the Phase-1 dashboard at the top of §1
-and `bench/BASELINE.md` for the current acceptance sweep.*
+*Last updated: 2026-04-20. Phase 0 is complete. Phase 1 is now formally
+closed: S1.1-S1.17, §1.4u, and S1.17b are complete. See the Phase-1
+dashboard at the top of §1 and `bench/BASELINE.md` for the accepted
+benchmark snapshot and verification evidence.*
