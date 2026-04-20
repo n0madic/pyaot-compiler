@@ -37,29 +37,6 @@ use crate::{
     StmtId, StmtKind, TryScope,
 };
 
-/// Build a CFG from a straight-through tree-form function body.
-///
-/// Returns the populated block map, the `entry_block` id, and any `TryScope`s
-/// discovered while lowering. The returned CFG always has at least one block;
-/// if `body` is empty the single entry block is terminated with
-/// `Return(None)`.
-///
-/// `module` is borrowed mutably so the bridge can allocate new arena entries
-/// for the rich CFG shape (`ExprKind::IterHasNext`, `StmtKind::IterAdvance`,
-/// `ExprKind::MatchPattern`). None of these allocations are visible through
-/// the legacy tree; consumers walking `Function.body` never see them.
-pub fn build_cfg_from_tree(
-    body: &[StmtId],
-    module: &mut Module,
-) -> (IndexMap<HirBlockId, HirBlock>, HirBlockId, Vec<TryScope>) {
-    let mut builder = CfgBuilder::new();
-    let entry = builder.new_block();
-    builder.enter(entry);
-    builder.lower_stmts(body, module);
-    builder.terminate_if_open(HirTerminator::Return(None));
-    builder.finish(entry)
-}
-
 /// Reusable HIR CFG builder used by the legacy tree bridge and by direct
 /// emitters that want to construct `Function::{blocks, entry_block, try_scopes}`
 /// without first allocating a top-level `Vec<StmtId>`.
