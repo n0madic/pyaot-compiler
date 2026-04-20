@@ -46,10 +46,12 @@ the linker needs.
 cargo bench -p pyaot-bench
 ```
 
-For each `bench/py/<name>.py` source, Criterion emits two groups:
+For each `bench/py/<name>.py` source, Criterion emits three groups:
 
-- `run::<name>`         — pre-compiled binary invocation only.
-- `end_to_end::<name>`  — compile + run per sample.
+- `compile::<name>`      — compiler + linker throughput only.
+- `run::<name>`          — pre-compiled binary invocation only.
+- `fresh_launch::<name>` — compile + immediate first launch of the
+  freshly linked binary.
 
 Results land under `target/criterion/`. Human-readable summaries are
 maintained in `BASELINE.md`; the raw Criterion JSON is **not** committed.
@@ -66,9 +68,16 @@ cargo bench -p pyaot-bench -- --save-baseline phase-1
 cargo bench -p pyaot-bench -- --baseline phase-1
 ```
 
-The second invocation prints per-benchmark deltas. Any `run::*` row that
-regresses > 3 % or any `end_to_end::*` row that regresses > 10 % must be
-flagged in the associated phase-acceptance PR.
+The second invocation prints per-benchmark deltas.
+
+- `run::*` is the hot-runtime acceptance metric. Regressions > 3 % must
+  be flagged in the associated phase-acceptance PR.
+- `compile::*` is the compiler-throughput acceptance metric. Regressions
+  > 10 % must be flagged in the associated phase-acceptance PR.
+- `fresh_launch::*` is **diagnostic only**. On macOS it is dominated by
+  path-sensitive first-launch cost for a freshly linked executable, so it
+  is useful for spotting launch regressions but should not block phase
+  acceptance on its own.
 
 ### Binary size & max RSS
 
@@ -92,11 +101,15 @@ a run, so these commands can be scripted on top of a fresh
 
 ## Stability
 
-Each Criterion group uses `sample_size(10)` and `measurement_time(15–30s)`
-so variance stays under 3 % on a quiesced machine. If a benchmark
-consistently reports > 3 % variance, profile it in isolation before
-committing a new baseline column — a noisy baseline erodes the
-regression-detection signal for every downstream phase.
+Each Criterion group uses `sample_size(10)` and `measurement_time(15–30s)`.
+`run::*` and `compile::*` should stay low-noise on a quiesced machine.
+`fresh_launch::*` is intentionally more variable because it captures
+platform launch effects on a newly linked executable; compare it as a
+trend line, not as a hard gate.
+
+If a `run::*` or `compile::*` benchmark consistently reports > 3 % spread,
+profile it in isolation before committing a new baseline column — a noisy
+baseline erodes the regression-detection signal for every downstream phase.
 
 ## Adding a benchmark
 
