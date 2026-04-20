@@ -1,7 +1,7 @@
 //! Convert Python AST to HIR
 
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::*;
+use pyaot_hir::{cfg_build::CfgBuilder, *};
 use pyaot_stdlib_defs;
 use pyaot_types::Type;
 use pyaot_utils::{ClassId, FuncId, InternedString, Span, StringInterner, VarId};
@@ -445,8 +445,12 @@ impl AstToHir {
         let func_name = self.interner.intern("__pyaot_module_init__");
 
         let body_stmts = self.module.module_init_stmts.clone();
-        let (blocks, entry_block, try_scopes) =
-            cfg_build::build_cfg_from_tree(&body_stmts, &mut self.module);
+        let mut cfg = CfgBuilder::new();
+        let entry_block = cfg.new_block();
+        cfg.enter(entry_block);
+        cfg.lower_stmts(&body_stmts, &mut self.module);
+        cfg.terminate_if_open(HirTerminator::Return(None));
+        let (blocks, entry_block, try_scopes) = cfg.finish(entry_block);
         let function = Function {
             id: func_id,
             name: func_name,

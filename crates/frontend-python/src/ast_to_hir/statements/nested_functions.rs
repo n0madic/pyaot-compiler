@@ -2,7 +2,7 @@
 
 use super::AstToHir;
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_hir::*;
+use pyaot_hir::{cfg_build::CfgBuilder, *};
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;
 
@@ -202,8 +202,12 @@ impl AstToHir {
         let nested_cell_vars = std::mem::take(&mut self.scope.current_cell_vars);
         let nested_is_generator = self.scope.current_func_is_generator;
 
-        let (blocks, entry_block, try_scopes) =
-            cfg_build::build_cfg_from_tree(&body_stmts, &mut self.module);
+        let mut cfg = CfgBuilder::new();
+        let entry_block = cfg.new_block();
+        cfg.enter(entry_block);
+        cfg.lower_stmts(&body_stmts, &mut self.module);
+        cfg.terminate_if_open(HirTerminator::Return(None));
+        let (blocks, entry_block, try_scopes) = cfg.finish(entry_block);
         let function = Function {
             id: func_id,
             name: internal_func_name,

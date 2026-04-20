@@ -856,8 +856,13 @@ impl<'a> Lowering<'a> {
         };
 
         let gen_obj_name = self.interner.intern("__gen_obj");
+        let mut resume_cfg = hir::cfg_build::CfgBuilder::new();
+        let resume_entry_block = resume_cfg.new_block();
+        resume_cfg.enter(resume_entry_block);
+        resume_cfg.lower_stmts(&resume_body, m);
+        resume_cfg.terminate_if_open(hir::HirTerminator::Return(None));
         let (resume_blocks, resume_entry_block, resume_try_scopes) =
-            hir::cfg_build::build_cfg_from_tree(&resume_body, m);
+            resume_cfg.finish(resume_entry_block);
         let resume_func = hir::Function {
             id: resume_func_id,
             name: resume_name,
@@ -886,8 +891,13 @@ impl<'a> Lowering<'a> {
 
         // 5. Replace original function body with creator logic
         let creator_body = build_creator_body(m, &func, &gen_vars, num_locals, span);
+        let mut creator_cfg = hir::cfg_build::CfgBuilder::new();
+        let creator_entry_block = creator_cfg.new_block();
+        creator_cfg.enter(creator_entry_block);
+        creator_cfg.lower_stmts(&creator_body, m);
+        creator_cfg.terminate_if_open(hir::HirTerminator::Return(None));
         let (creator_blocks, creator_entry_block, creator_try_scopes) =
-            hir::cfg_build::build_cfg_from_tree(&creator_body, m);
+            creator_cfg.finish(creator_entry_block);
         // Retrieve the already-stored return type (Iterator[elem_type])
         let creator_return_type = self
             .func_return_types

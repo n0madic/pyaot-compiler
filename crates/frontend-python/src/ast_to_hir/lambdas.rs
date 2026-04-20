@@ -1,6 +1,6 @@
 use super::AstToHir;
 use pyaot_diagnostics::Result;
-use pyaot_hir::*;
+use pyaot_hir::{cfg_build::CfgBuilder, *};
 use pyaot_utils::InternedString;
 use rustpython_parser::ast as py;
 use std::collections::HashSet;
@@ -119,8 +119,12 @@ impl AstToHir {
 
         // 9. Create and register function
         let body_stmts = vec![return_stmt];
-        let (blocks, entry_block, try_scopes) =
-            cfg_build::build_cfg_from_tree(&body_stmts, &mut self.module);
+        let mut cfg = CfgBuilder::new();
+        let entry_block = cfg.new_block();
+        cfg.enter(entry_block);
+        cfg.lower_stmts(&body_stmts, &mut self.module);
+        cfg.terminate_if_open(HirTerminator::Return(None));
+        let (blocks, entry_block, try_scopes) = cfg.finish(entry_block);
         let function = Function {
             id: func_id,
             name: func_name,

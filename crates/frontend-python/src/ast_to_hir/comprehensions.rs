@@ -1,6 +1,6 @@
 use super::AstToHir;
 use pyaot_diagnostics::Result;
-use pyaot_hir::*;
+use pyaot_hir::{cfg_build::CfgBuilder, *};
 use pyaot_types::Type;
 use pyaot_utils::InternedString;
 use pyaot_utils::Span;
@@ -346,8 +346,12 @@ impl AstToHir {
         let func_id = self.ids.alloc_func();
         let func_name_interned = self.interner.intern(&func_name);
 
-        let (blocks, entry_block, try_scopes) =
-            cfg_build::build_cfg_from_tree(&body_stmts, &mut self.module);
+        let mut cfg = CfgBuilder::new();
+        let entry_block = cfg.new_block();
+        cfg.enter(entry_block);
+        cfg.lower_stmts(&body_stmts, &mut self.module);
+        cfg.terminate_if_open(HirTerminator::Return(None));
+        let (blocks, entry_block, try_scopes) = cfg.finish(entry_block);
         let gen_func = Function {
             id: func_id,
             name: func_name_interned,
