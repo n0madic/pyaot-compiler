@@ -30,12 +30,75 @@
 //! frontend + generator desugaring were migrated accordingly.
 
 use indexmap::IndexMap;
-use pyaot_utils::{HirBlockId, Span};
+use pyaot_types::Type;
+use pyaot_utils::{HirBlockId, Span, VarId};
 
 use crate::{
     BindingTarget, ExceptHandler, Expr, ExprId, ExprKind, HirBlock, HirTerminator, Module, Stmt,
     StmtId, StmtKind, TryScope,
 };
+
+/// Temporary nested statement tree used only while constructing a CFG.
+///
+/// Frontend lowering and generator desugaring still need to assemble nested
+/// control flow before it is materialised into `Function::{blocks, entry_block,
+/// try_scopes}`. Unlike the legacy HIR tree, these nodes never enter
+/// `Module::stmts`; only `Stmt(stmt_id)` leaves are real HIR statements.
+#[derive(Debug, Clone)]
+pub enum CfgStmt {
+    Stmt(StmtId),
+    If {
+        cond: ExprId,
+        then_body: Vec<CfgStmt>,
+        else_body: Vec<CfgStmt>,
+        span: Span,
+    },
+    While {
+        cond: ExprId,
+        body: Vec<CfgStmt>,
+        else_body: Vec<CfgStmt>,
+        span: Span,
+    },
+    For {
+        target: BindingTarget,
+        iter: ExprId,
+        body: Vec<CfgStmt>,
+        else_body: Vec<CfgStmt>,
+        span: Span,
+    },
+    Try {
+        body: Vec<CfgStmt>,
+        handlers: Vec<CfgExceptHandler>,
+        else_body: Vec<CfgStmt>,
+        finally_body: Vec<CfgStmt>,
+        span: Span,
+    },
+    Match {
+        subject: ExprId,
+        cases: Vec<CfgMatchCase>,
+        span: Span,
+    },
+}
+
+impl CfgStmt {
+    pub fn stmt(stmt_id: StmtId) -> Self {
+        Self::Stmt(stmt_id)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CfgMatchCase {
+    pub pattern: crate::Pattern,
+    pub guard: Option<ExprId>,
+    pub body: Vec<CfgStmt>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CfgExceptHandler {
+    pub ty: Option<Type>,
+    pub name: Option<VarId>,
+    pub body: Vec<CfgStmt>,
+}
 
 /// Reusable HIR CFG builder used by the legacy tree bridge and by direct
 /// emitters that want to construct `Function::{blocks, entry_block, try_scopes}`
@@ -251,6 +314,15 @@ impl CfgBuilder {
                 break;
             }
             self.lower_stmt(stmt_id, module);
+        }
+    }
+
+    pub fn lower_cfg_stmts(&mut self, stmts_list: &[CfgStmt], module: &mut Module) {
+        for stmt in stmts_list {
+            if self.current_terminated {
+                break;
+            }
+            self.lower_cfg_stmt(stmt, module);
         }
     }
 
@@ -632,6 +704,308 @@ impl CfgBuilder {
                     for (case, &bb) in cases.iter().zip(&case_bbs) {
                         self.enter(bb);
                         self.lower_stmts(&case.body, module);
+                        self.terminate_if_open(HirTerminator::Jump(post_bb));
+                    }
+
+                    self.enter(fallthrough_bb);
+                    self.terminate_if_open(HirTerminator::Jump(post_bb));
+                }
+
+                self.enter(post_bb);
+            }
+        }
+    }
+
+    pub fn lower_cfg_stmt(&mut self, stmt: &CfgStmt, module: &mut Module) {
+        match stmt {
+            CfgStmt::Stmt(stmt_id) => self.lower_stmt(*stmt_id, module),
+            CfgStmt::If {
+                cond,
+                then_body,
+                else_body,
+                ..
+            } => {
+                let then_bb = self.new_block();
+                let else_bb = self.new_block();
+                let merge_bb = self.new_block();
+
+                let branch_block = self.current;
+                self.set_terminator(
+                    branch_block,
+                    HirTerminator::Branch {
+                        cond: *cond,
+                        then_bb,
+                        else_bb,
+                    },
+                );
+
+                self.enter(then_bb);
+                self.lower_cfg_stmts(then_body, module);
+                self.terminate_if_open(HirTerminator::Jump(merge_bb));
+
+                self.enter(else_bb);
+                self.lower_cfg_stmts(else_body, module);
+                self.terminate_if_open(HirTerminator::Jump(merge_bb));
+
+                self.enter(merge_bb);
+            }
+            CfgStmt::While {
+                cond,
+                body,
+                else_body,
+                ..
+            } => {
+                let header_bb = self.new_block();
+                let body_bb = self.new_block();
+                let exit_bb = self.new_block();
+                let else_bb = if else_body.is_empty() {
+                    exit_bb
+                } else {
+                    self.new_block()
+                };
+
+                let pre_block = self.current;
+                self.set_terminator(pre_block, HirTerminator::Jump(header_bb));
+
+                self.enter(header_bb);
+                self.set_terminator(
+                    header_bb,
+                    HirTerminator::Branch {
+                        cond: *cond,
+                        then_bb: body_bb,
+                        else_bb,
+                    },
+                );
+
+                self.push_loop(header_bb, exit_bb);
+                self.enter(body_bb);
+                self.blocks.get_mut(&body_bb).unwrap().loop_depth = self.loop_depth;
+                self.lower_cfg_stmts(body, module);
+                self.terminate_if_open(HirTerminator::Jump(header_bb));
+                self.pop_loop();
+
+                if !else_body.is_empty() {
+                    self.enter(else_bb);
+                    self.lower_cfg_stmts(else_body, module);
+                    self.terminate_if_open(HirTerminator::Jump(exit_bb));
+                }
+
+                self.enter(exit_bb);
+            }
+            CfgStmt::For {
+                target,
+                iter,
+                body,
+                else_body,
+                span,
+            } => {
+                let header_bb = self.new_block();
+                let body_bb = self.new_block();
+                let exit_bb = self.new_block();
+                let else_bb = if else_body.is_empty() {
+                    exit_bb
+                } else {
+                    self.new_block()
+                };
+
+                let iter_setup_stmt = self.alloc_iter_setup(module, *iter, *span);
+                self.push_stmt(iter_setup_stmt);
+
+                let pre_block = self.current;
+                self.set_terminator(pre_block, HirTerminator::Jump(header_bb));
+
+                let has_next = self.alloc_iter_has_next(module, *iter, *span);
+                self.enter(header_bb);
+                self.set_terminator(
+                    header_bb,
+                    HirTerminator::Branch {
+                        cond: has_next,
+                        then_bb: body_bb,
+                        else_bb,
+                    },
+                );
+
+                self.push_loop(header_bb, exit_bb);
+                self.enter(body_bb);
+                self.blocks.get_mut(&body_bb).unwrap().loop_depth = self.loop_depth;
+                let advance_stmt =
+                    self.alloc_iter_advance(module, *iter, target.clone(), *span);
+                self.push_stmt(advance_stmt);
+                self.lower_cfg_stmts(body, module);
+                self.terminate_if_open(HirTerminator::Jump(header_bb));
+                self.pop_loop();
+
+                if !else_body.is_empty() {
+                    self.enter(else_bb);
+                    self.lower_cfg_stmts(else_body, module);
+                    self.terminate_if_open(HirTerminator::Jump(exit_bb));
+                }
+
+                self.enter(exit_bb);
+            }
+            CfgStmt::Try {
+                body,
+                handlers,
+                else_body,
+                finally_body,
+                span,
+            } => {
+                let body_bb = self.new_block();
+                let post_bb = self.new_block();
+
+                let pre_block = self.current;
+                self.set_terminator(pre_block, HirTerminator::Jump(body_bb));
+
+                let mut try_blocks_set: Vec<HirBlockId> = Vec::new();
+                let mut else_blocks_set: Vec<HirBlockId> = Vec::new();
+                let mut finally_blocks_set: Vec<HirBlockId> = Vec::new();
+
+                let blocks_before_body = self.next_id;
+                self.enter(body_bb);
+                self.lower_cfg_stmts(body, module);
+                try_blocks_set.push(body_bb);
+                for id in blocks_before_body..self.next_id {
+                    try_blocks_set.push(HirBlockId::new(id));
+                }
+
+                let blocks_before_else = self.next_id;
+                let after_body = if else_body.is_empty() {
+                    post_bb
+                } else {
+                    let else_bb = self.new_block();
+                    self.terminate_if_open(HirTerminator::Jump(else_bb));
+                    self.enter(else_bb);
+                    self.lower_cfg_stmts(else_body, module);
+                    post_bb
+                };
+                for id in blocks_before_else..self.next_id {
+                    else_blocks_set.push(HirBlockId::new(id));
+                }
+
+                let blocks_before_finally = self.next_id;
+                if !finally_body.is_empty() {
+                    let finally_bb = self.new_block();
+                    self.terminate_if_open(HirTerminator::Jump(finally_bb));
+                    self.push_handler();
+                    self.enter(finally_bb);
+                    self.blocks.get_mut(&finally_bb).unwrap().handler_depth = self.handler_depth;
+                    self.lower_cfg_stmts(finally_body, module);
+                    self.terminate_if_open(HirTerminator::Jump(post_bb));
+                    self.pop_handler();
+                } else {
+                    self.terminate_if_open(HirTerminator::Jump(after_body));
+                }
+                for id in blocks_before_finally..self.next_id {
+                    finally_blocks_set.push(HirBlockId::new(id));
+                }
+
+                let mut handlers_out: Vec<ExceptHandler> = Vec::with_capacity(handlers.len());
+                for handler in handlers {
+                    let handler_bb = self.new_block();
+                    self.push_handler();
+                    self.enter(handler_bb);
+                    self.blocks.get_mut(&handler_bb).unwrap().handler_depth = self.handler_depth;
+                    self.lower_cfg_stmts(&handler.body, module);
+                    self.terminate_if_open(HirTerminator::Jump(post_bb));
+                    self.pop_handler();
+                    handlers_out.push(ExceptHandler {
+                        ty: handler.ty.clone(),
+                        name: handler.name,
+                        body: Vec::new(),
+                        entry_block: handler_bb,
+                    });
+                }
+
+                self.register_try_scope(TryScope {
+                    try_blocks: try_blocks_set,
+                    else_blocks: else_blocks_set,
+                    handlers: handlers_out,
+                    finally_blocks: finally_blocks_set,
+                    span: *span,
+                });
+
+                self.enter(post_bb);
+            }
+            CfgStmt::Match {
+                subject,
+                cases,
+                span,
+            } => {
+                let post_bb = self.new_block();
+
+                if cases.is_empty() {
+                    let pre_block = self.current;
+                    self.set_terminator(pre_block, HirTerminator::Jump(post_bb));
+                } else {
+                    let case_bbs: Vec<HirBlockId> =
+                        cases.iter().map(|_| self.new_block()).collect();
+                    let fallthrough_bb = self.new_block();
+
+                    let predicates: Vec<ExprId> = cases
+                        .iter()
+                        .map(|case| {
+                            self.alloc_match_pattern(
+                                module,
+                                *subject,
+                                case.pattern.clone(),
+                                *span,
+                            )
+                        })
+                        .collect();
+
+                    let test_bbs: Vec<HirBlockId> =
+                        cases.iter().map(|_| self.new_block()).collect();
+                    let guard_bbs: Vec<Option<HirBlockId>> = cases
+                        .iter()
+                        .map(|case| {
+                            if case.guard.is_some() {
+                                Some(self.new_block())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    let pre_block = self.current;
+                    self.set_terminator(pre_block, HirTerminator::Jump(test_bbs[0]));
+                    for (i, ((&test_bb, &case_bb), predicate)) in test_bbs
+                        .iter()
+                        .zip(case_bbs.iter())
+                        .zip(predicates.iter())
+                        .enumerate()
+                    {
+                        let next_test = if i + 1 < test_bbs.len() {
+                            test_bbs[i + 1]
+                        } else {
+                            fallthrough_bb
+                        };
+                        let then_target = guard_bbs[i].unwrap_or(case_bb);
+                        self.enter(test_bb);
+                        self.set_terminator(
+                            test_bb,
+                            HirTerminator::Branch {
+                                cond: *predicate,
+                                then_bb: then_target,
+                                else_bb: next_test,
+                            },
+                        );
+                        if let (Some(guard_bb), Some(guard_expr_id)) =
+                            (guard_bbs[i], cases[i].guard)
+                        {
+                            self.enter(guard_bb);
+                            self.set_terminator(
+                                guard_bb,
+                                HirTerminator::Branch {
+                                    cond: guard_expr_id,
+                                    then_bb: case_bb,
+                                    else_bb: next_test,
+                                },
+                            );
+                        }
+                    }
+
+                    for (case, &bb) in cases.iter().zip(&case_bbs) {
+                        self.enter(bb);
+                        self.lower_cfg_stmts(&case.body, module);
                         self.terminate_if_open(HirTerminator::Jump(post_bb));
                     }
 

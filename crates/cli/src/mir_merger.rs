@@ -256,12 +256,17 @@ impl MirMerger {
                 // Remap VarId with offset
                 let remapped_var_id = VarId::new(var_id.0 + var_id_offset);
 
-                // Determine variable type by scanning module_init_stmts for assignments
-                let var_type = Self::find_var_type_in_stmts(
-                    *var_id,
-                    &parsed.hir.module_init_stmts,
-                    &parsed.hir,
-                );
+                let var_type = parsed
+                    .hir
+                    .module_init()
+                    .map(|func| Self::find_var_type_in_func(*var_id, func, &parsed.hir))
+                    .unwrap_or_else(|| {
+                        Self::find_var_type_in_stmts(
+                            *var_id,
+                            &parsed.hir.module_init_stmts,
+                            &parsed.hir,
+                        )
+                    });
                 let raw_var_type = type_to_raw(&var_type, &parsed.interner, class_id_offset);
 
                 module_var_exports.insert(
@@ -598,6 +603,17 @@ impl MirMerger {
             )),
             _ => None,
         }
+    }
+
+    /// Find the type of a variable from its assignment in module_init_stmts
+    fn find_var_type_in_func(var_id: VarId, func: &hir::Function, hir_module: &hir::Module) -> Type {
+        for block in func.blocks.values() {
+            let ty = Self::find_var_type_in_stmts(var_id, &block.stmts, hir_module);
+            if ty != Type::Any {
+                return ty;
+            }
+        }
+        Type::Any
     }
 
     /// Find the type of a variable from its assignment in module_init_stmts

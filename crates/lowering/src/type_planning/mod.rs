@@ -391,8 +391,7 @@ impl<'a> Lowering<'a> {
 /// `HirTypeInference::base_var_types` with handler binding types.
 ///
 /// §1.17b-d — reads `Function::try_scopes` directly instead of walking
-/// the statement tree. Module-level init statements still walk the tree
-/// (no containing CFG function).
+/// the statement tree, including the synthetic module-init function.
 fn collect_handler_binds(module: &hir::Module) -> Vec<(VarId, Type)> {
     let mut out = Vec::new();
     for func in module.func_defs.values() {
@@ -404,59 +403,5 @@ fn collect_handler_binds(module: &hir::Module) -> Vec<(VarId, Type)> {
             }
         }
     }
-    // Module init stmts are a flat Vec<StmtId>, not a CFG function. Walk
-    // the tree to find `Try`-embedded handlers.
-    collect_handler_binds_in_stmts(&module.module_init_stmts, module, &mut out);
     out
-}
-
-fn collect_handler_binds_in_stmts(
-    stmts: &[hir::StmtId],
-    module: &hir::Module,
-    out: &mut Vec<(VarId, Type)>,
-) {
-    for sid in stmts {
-        let stmt = &module.stmts[*sid];
-        match &stmt.kind {
-            hir::StmtKind::Try {
-                body,
-                handlers,
-                else_block,
-                finally_block,
-            } => {
-                collect_handler_binds_in_stmts(body, module, out);
-                for h in handlers {
-                    if let (Some(name), Some(ty)) = (h.name, h.ty.clone()) {
-                        out.push((name, ty));
-                    }
-                    collect_handler_binds_in_stmts(&h.body, module, out);
-                }
-                collect_handler_binds_in_stmts(else_block, module, out);
-                collect_handler_binds_in_stmts(finally_block, module, out);
-            }
-            hir::StmtKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                collect_handler_binds_in_stmts(then_block, module, out);
-                collect_handler_binds_in_stmts(else_block, module, out);
-            }
-            hir::StmtKind::While {
-                body, else_block, ..
-            }
-            | hir::StmtKind::ForBind {
-                body, else_block, ..
-            } => {
-                collect_handler_binds_in_stmts(body, module, out);
-                collect_handler_binds_in_stmts(else_block, module, out);
-            }
-            hir::StmtKind::Match { cases, .. } => {
-                for case in cases {
-                    collect_handler_binds_in_stmts(&case.body, module, out);
-                }
-            }
-            _ => {}
-        }
-    }
 }

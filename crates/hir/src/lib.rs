@@ -96,6 +96,7 @@ pub struct Module {
     pub name: InternedString,
     pub functions: Vec<FuncId>,
     pub func_defs: IndexMap<FuncId, Function>,
+    pub module_init_func: Option<FuncId>,
     pub class_defs: IndexMap<ClassId, ClassDef>,
     pub stmts: Arena<Stmt>,
     pub exprs: Arena<Expr>,
@@ -283,6 +284,14 @@ pub struct Function {
 }
 
 impl Function {
+    pub fn has_no_blocks(&self) -> bool {
+        self.blocks.values().all(|b| b.stmts.is_empty())
+            && self
+                .blocks
+                .get(&self.entry_block)
+                .is_none_or(|b| matches!(b.terminator, HirTerminator::Return(None)))
+    }
+
     /// `true` if the function has no executable statements — either the
     /// legacy tree `body` is empty OR every CFG block has an empty stmt
     /// list and the entry block terminates with `Return(None)`. Used by
@@ -290,11 +299,7 @@ impl Function {
     /// (abstract methods, `pass`-only bodies). §1.17b-d: introduced to
     /// abstract away the tree vs. CFG distinction.
     pub fn has_no_body_stmts(&self) -> bool {
-        self.blocks.values().all(|b| b.stmts.is_empty())
-            && self
-                .blocks
-                .get(&self.entry_block)
-                .is_none_or(|b| matches!(b.terminator, HirTerminator::Return(None)))
+        self.has_no_blocks()
     }
 }
 
@@ -1035,11 +1040,22 @@ pub use pyaot_stdlib_defs::{StdlibAttrDef, StdlibConstDef, StdlibFunctionDef, St
 // Re-export BuiltinFunctionKind for first-class builtin support
 
 impl Module {
+    pub fn module_init(&self) -> Option<&Function> {
+        self.module_init_func
+            .and_then(|func_id| self.func_defs.get(&func_id))
+    }
+
+    pub fn module_init_mut(&mut self) -> Option<&mut Function> {
+        let func_id = self.module_init_func?;
+        self.func_defs.get_mut(&func_id)
+    }
+
     pub fn new(name: InternedString) -> Self {
         Self {
             name,
             functions: Vec::new(),
             func_defs: IndexMap::new(),
+            module_init_func: None,
             class_defs: IndexMap::new(),
             stmts: Arena::new(),
             exprs: Arena::new(),

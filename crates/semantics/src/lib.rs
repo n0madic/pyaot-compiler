@@ -37,15 +37,12 @@ impl<'a> SemanticAnalyzer<'a> {
             self.analyze_function_cfg(func, module)?;
         }
 
-        // Analyze module-level statements. These are not inside a function
-        // body, so they have no containing CFG — walk the flat stmt list
-        // with baseline depths. (Module init can contain control flow only
-        // at the statement level, which the tree already captures; these
-        // flat stmts feed a separate CFG inside `__pyaot_module_init__` at
-        // lowering time, so per-stmt control-flow checks would require the
-        // same logic — reuse the flat walk for now.)
-        for &stmt_id in &module.module_init_stmts {
-            self.analyze_stmt_flat(stmt_id, module, 0, 0)?;
+        // Compatibility fallback for unit tests that still hand-construct
+        // `module_init_stmts` without a synthetic module-init function.
+        if module.module_init_func.is_none() {
+            for &stmt_id in &module.module_init_stmts {
+                self.analyze_stmt_flat(stmt_id, module, 0, 0)?;
+            }
         }
 
         Ok(())

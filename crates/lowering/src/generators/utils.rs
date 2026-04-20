@@ -10,15 +10,21 @@ use super::YieldInfo;
 /// Collect yield information from the function body (in order).
 /// Returns YieldInfo for each yield, including assignment targets.
 /// Pure HIR analysis — no Lowering state needed.
-pub(crate) fn collect_yield_info(body: &[hir::StmtId], hir_module: &hir::Module) -> Vec<YieldInfo> {
+pub(crate) fn collect_yield_info(
+    func: &hir::Function,
+    hir_module: &hir::Module,
+) -> Vec<YieldInfo> {
     let mut yields = Vec::new();
-    for stmt_id in body {
-        collect_yields_from_stmt_with_target(*stmt_id, hir_module, &mut yields);
+    for block in func.blocks.values() {
+        for &stmt_id in &block.stmts {
+            collect_yields_from_flat_stmt_with_target(stmt_id, hir_module, &mut yields);
+        }
+        collect_yields_from_terminator(&block.terminator, hir_module, &mut yields);
     }
     yields
 }
 
-fn collect_yields_from_stmt_with_target(
+fn collect_yields_from_flat_stmt_with_target(
     stmt_id: hir::StmtId,
     hir_module: &hir::Module,
     yields: &mut Vec<YieldInfo>,
@@ -46,47 +52,33 @@ fn collect_yields_from_stmt_with_target(
         hir::StmtKind::Return(Some(expr_id)) => {
             collect_yields_from_expr_with_target(*expr_id, None, hir_module, yields);
         }
-        hir::StmtKind::If {
-            cond,
-            then_block,
-            else_block,
-        } => {
-            collect_yields_from_expr_with_target(*cond, None, hir_module, yields);
-            for s in then_block {
-                collect_yields_from_stmt_with_target(*s, hir_module, yields);
-            }
-            for s in else_block {
-                collect_yields_from_stmt_with_target(*s, hir_module, yields);
-            }
-        }
-        hir::StmtKind::While {
-            cond,
-            body,
-            else_block,
-        } => {
-            collect_yields_from_expr_with_target(*cond, None, hir_module, yields);
-            for s in body {
-                collect_yields_from_stmt_with_target(*s, hir_module, yields);
-            }
-            for s in else_block {
-                collect_yields_from_stmt_with_target(*s, hir_module, yields);
-            }
-        }
-        hir::StmtKind::ForBind {
-            iter,
-            body,
-            else_block,
-            ..
-        } => {
-            collect_yields_from_expr_with_target(*iter, None, hir_module, yields);
-            for s in body {
-                collect_yields_from_stmt_with_target(*s, hir_module, yields);
-            }
-            for s in else_block {
-                collect_yields_from_stmt_with_target(*s, hir_module, yields);
-            }
-        }
         _ => {}
+    }
+}
+
+fn collect_yields_from_terminator(
+    term: &hir::HirTerminator,
+    hir_module: &hir::Module,
+    yields: &mut Vec<YieldInfo>,
+) {
+    match term {
+        hir::HirTerminator::Branch { cond, .. } => {
+            collect_yields_from_expr_with_target(*cond, None, hir_module, yields);
+        }
+        hir::HirTerminator::Return(Some(expr_id))
+        | hir::HirTerminator::Yield {
+            value: expr_id, ..
+        } => collect_yields_from_expr_with_target(*expr_id, None, hir_module, yields),
+        hir::HirTerminator::Raise { exc, cause } => {
+            collect_yields_from_expr_with_target(*exc, None, hir_module, yields);
+            if let Some(cause) = cause {
+                collect_yields_from_expr_with_target(*cause, None, hir_module, yields);
+            }
+        }
+        hir::HirTerminator::Jump(_)
+        | hir::HirTerminator::Return(None)
+        | hir::HirTerminator::Reraise
+        | hir::HirTerminator::Unreachable => {}
     }
 }
 

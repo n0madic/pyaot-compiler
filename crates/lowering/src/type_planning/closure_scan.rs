@@ -27,9 +27,12 @@ impl<'a> Lowering<'a> {
         // Track module-level variable types as we scan statements
         let mut module_var_types: IndexMap<VarId, Type> = IndexMap::new();
 
-        // First, scan module-level statements (no containing CFG — flat walk)
-        for stmt_id in &hir_module.module_init_stmts {
-            self.scan_stmt_for_closures(*stmt_id, hir_module, &mut module_var_types);
+        // Compatibility fallback for unit tests that still hand-construct
+        // `module_init_stmts` without a synthetic module-init function.
+        if hir_module.module_init_func.is_none() {
+            for stmt_id in &hir_module.module_init_stmts {
+                self.scan_stmt_for_closures(*stmt_id, hir_module, &mut module_var_types);
+            }
         }
 
         // Then, scan all function bodies via their CFG blocks.
@@ -592,14 +595,16 @@ impl<'a> Lowering<'a> {
                 );
             }
         }
-        for stmt_id in &hir_module.module_init_stmts {
-            self.collect_call_arg_types(
-                *stmt_id,
-                hir_module,
-                &var_to_func,
-                &IndexMap::new(),
-                &mut accumulators,
-            );
+        if hir_module.module_init_func.is_none() {
+            for stmt_id in &hir_module.module_init_stmts {
+                self.collect_call_arg_types(
+                    *stmt_id,
+                    hir_module,
+                    &var_to_func,
+                    &IndexMap::new(),
+                    &mut accumulators,
+                );
+            }
         }
 
         // 3. Commit hints for eligible functions.

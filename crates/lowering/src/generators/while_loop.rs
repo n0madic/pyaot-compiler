@@ -18,36 +18,41 @@ use super::{WhileLoopGenerator, YieldSection};
 ///
 /// Pure HIR analysis — no Lowering state needed.
 pub(crate) fn detect_while_loop_generator(
-    body: &[hir::StmtId],
+    func: &hir::Function,
     hir_module: &hir::Module,
 ) -> Option<WhileLoopGenerator> {
-    // Find the while loop
-    let mut init_stmts = Vec::new();
-    let mut while_stmt_idx = None;
-
-    for (i, stmt_id) in body.iter().enumerate() {
-        let stmt = &hir_module.stmts[*stmt_id];
-        if matches!(stmt.kind, hir::StmtKind::While { .. }) {
-            while_stmt_idx = Some(i);
-            break;
-        }
-        init_stmts.push(*stmt_id);
-    }
-
-    let while_idx = while_stmt_idx?;
-    let while_stmt_id = body[while_idx];
-    let while_stmt = &hir_module.stmts[while_stmt_id];
-
-    let (cond, while_body) = match &while_stmt.kind {
-        hir::StmtKind::While { cond, body, .. } => (*cond, body),
+    let entry = func.blocks.get(&func.entry_block)?;
+    let init_stmts = entry.stmts.clone();
+    let header_bb = match entry.terminator {
+        hir::HirTerminator::Jump(target) => target,
         _ => return None,
     };
+    let header = func.blocks.get(&header_bb)?;
+    if !header.stmts.is_empty() {
+        return None;
+    }
+    let (cond, body_bb, exit_bb) = match header.terminator {
+        hir::HirTerminator::Branch {
+            cond,
+            then_bb,
+            else_bb,
+        } => (cond, then_bb, else_bb),
+        _ => return None,
+    };
+    let body = func.blocks.get(&body_bb)?;
+    match body.terminator {
+        hir::HirTerminator::Jump(target) if target == header_bb => {}
+        _ => return None,
+    }
+    let exit = func.blocks.get(&exit_bb)?;
+    if !exit.stmts.is_empty() || !matches!(exit.terminator, hir::HirTerminator::Return(None)) {
+        return None;
+    }
 
-    // Find all yields in while body and split into sections
     let mut yield_sections = Vec::new();
     let mut current_stmts = Vec::new();
 
-    for stmt_id in while_body {
+    for stmt_id in &body.stmts {
         let stmt = &hir_module.stmts[*stmt_id];
         match &stmt.kind {
             hir::StmtKind::Expr(expr_id) => {
@@ -73,11 +78,6 @@ pub(crate) fn detect_while_loop_generator(
     let update_stmts = current_stmts;
 
     if yield_sections.is_empty() {
-        return None;
-    }
-
-    // Make sure there's nothing after the while loop
-    if while_idx + 1 < body.len() {
         return None;
     }
 

@@ -31,7 +31,7 @@ pub(super) fn collect_generator_vars(
     // tree-shape (operates on `func.body`); migrating it is a separate
     // piece since its pattern-matching on `StmtKind::ForBind` is specific
     // to single-for-loop generators.
-    let mut next_idx = if detect_for_loop_generator(&func.body, hir_module).is_some() {
+    let mut next_idx = if detect_for_loop_generator(func, hir_module).is_some() {
         1u32
     } else {
         0u32

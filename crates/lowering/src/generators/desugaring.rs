@@ -79,51 +79,31 @@ impl VarTypeMap {
                     }
                 }
             }
-            collect_bind_targets(m, &func.body, &mut map);
+            collect_bind_targets_in_func(m, func, &mut map);
         }
-        // Module init statements live outside `func_defs` body lists.
-        collect_bind_targets(m, &m.module_init_stmts, &mut map);
         map
     }
 }
 
-fn collect_bind_targets(m: &hir::Module, stmts: &[hir::StmtId], map: &mut VarTypeMap) {
-    for sid in stmts {
-        let stmt = &m.stmts[*sid];
-        match &stmt.kind {
-            hir::StmtKind::Bind { target, value, .. } => {
-                collect_bind_target_vars(target, *value, map);
-            }
-            hir::StmtKind::ForBind {
-                target, iter, body, ..
-            } => {
-                collect_for_target_vars(target, *iter, map);
-                collect_bind_targets(m, body, map);
-            }
-            hir::StmtKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                collect_bind_targets(m, then_block, map);
-                collect_bind_targets(m, else_block, map);
-            }
-            hir::StmtKind::While { body, .. } => collect_bind_targets(m, body, map),
-            hir::StmtKind::Try {
-                body,
-                handlers,
-                else_block,
-                finally_block,
-                ..
-            } => {
-                collect_bind_targets(m, body, map);
-                for h in handlers {
-                    collect_bind_targets(m, &h.body, map);
+fn collect_bind_targets_in_func(m: &hir::Module, func: &hir::Function, map: &mut VarTypeMap) {
+    for block in func.blocks.values() {
+        for sid in &block.stmts {
+            let stmt = &m.stmts[*sid];
+            match &stmt.kind {
+                hir::StmtKind::Bind { target, value, .. } => {
+                    collect_bind_target_vars(target, *value, map);
                 }
-                collect_bind_targets(m, else_block, map);
-                collect_bind_targets(m, finally_block, map);
+                hir::StmtKind::IterAdvance { iter, target } => {
+                    collect_for_target_vars(target, *iter, map);
+                }
+                _ => {}
             }
-            _ => {}
+        }
+        if let hir::HirTerminator::Branch { cond, .. } = block.terminator {
+            let expr = &m.exprs[cond];
+            if let hir::ExprKind::IterHasNext(iter) = expr.kind {
+                let _ = iter;
+            }
         }
     }
 }
@@ -831,7 +811,7 @@ impl<'a> Lowering<'a> {
             self.interner.intern(&format!("{orig}$resume"))
         };
 
-        let resume_body = if let Some(for_gen) = detect_for_loop_generator(&func.body, m) {
+        let resume_body = if let Some(for_gen) = detect_for_loop_generator(&func, m) {
             build_for_loop_resume(
                 m,
                 &for_gen,
@@ -841,7 +821,7 @@ impl<'a> Lowering<'a> {
                 span,
                 self.interner,
             )
-        } else if let Some(while_gen) = detect_while_loop_generator(&func.body, m) {
+        } else if let Some(while_gen) = detect_while_loop_generator(&func, m) {
             build_while_loop_resume(
                 m,
                 &gen_vars,
@@ -934,7 +914,7 @@ impl<'a> Lowering<'a> {
     }
 
     fn infer_yield_type_raw(&self, func: &hir::Function, m: &hir::Module) -> Type {
-        if let Some(for_gen) = detect_for_loop_generator(&func.body, m) {
+        if let Some(for_gen) = detect_for_loop_generator(&func, m) {
             let vmap = VarTypeMap::build(m);
             // Use the module-wide Var/param index so Var refs in yield expressions
             // (`yield (v, i)` where v and i are for-loop targets) resolve to
@@ -1070,35 +1050,37 @@ fn build_creator_body(
     }
 
     // Initialize constant assignments before first yield
-    for stmt_id in &func.body {
-        let stmt = m.stmts[*stmt_id].clone();
-        // Only scalar Var bindings are candidates for constant initialization;
-        // tuple-pattern bindings (e.g., `a, b = 1, 2`) are not constants.
-        let var_assign = match &stmt.kind {
-            hir::StmtKind::Bind {
-                target: hir::BindingTarget::Var(target_var),
-                value,
-                ..
-            } => Some((*target_var, *value)),
-            _ => None,
-        };
-        if let Some((target, value)) = var_assign {
-            let ve = m.exprs[value].clone();
-            let is_const = matches!(
-                ve.kind,
-                hir::ExprKind::Int(_) | hir::ExprKind::Float(_) | hir::ExprKind::Bool(_)
-            );
-            if is_const {
-                if let Some(gv) = gen_vars.iter().find(|v| v.var_id == target) {
-                    let val = clone_expr(m, value);
-                    let set = mk_set_local(m, creator_gen_var, gv.gen_local_idx, val, span);
-                    stmts.push(mk_stmt(m, hir::StmtKind::Expr(set), span));
+    'scan_consts: for block in func.blocks.values() {
+        for stmt_id in &block.stmts {
+            let stmt = m.stmts[*stmt_id].clone();
+            // Only scalar Var bindings are candidates for constant initialization;
+            // tuple-pattern bindings (e.g., `a, b = 1, 2`) are not constants.
+            let var_assign = match &stmt.kind {
+                hir::StmtKind::Bind {
+                    target: hir::BindingTarget::Var(target_var),
+                    value,
+                    ..
+                } => Some((*target_var, *value)),
+                _ => None,
+            };
+            if let Some((target, value)) = var_assign {
+                let ve = m.exprs[value].clone();
+                let is_const = matches!(
+                    ve.kind,
+                    hir::ExprKind::Int(_) | hir::ExprKind::Float(_) | hir::ExprKind::Bool(_)
+                );
+                if is_const {
+                    if let Some(gv) = gen_vars.iter().find(|v| v.var_id == target) {
+                        let val = clone_expr(m, value);
+                        let set = mk_set_local(m, creator_gen_var, gv.gen_local_idx, val, span);
+                        stmts.push(mk_stmt(m, hir::StmtKind::Expr(set), span));
+                    }
                 }
-            }
-        } else if let hir::StmtKind::Expr(eid) = &stmt.kind {
-            let e = &m.exprs[*eid];
-            if matches!(e.kind, hir::ExprKind::Yield(_)) {
-                break;
+            } else if let hir::StmtKind::Expr(eid) = &stmt.kind {
+                let e = &m.exprs[*eid];
+                if matches!(e.kind, hir::ExprKind::Yield(_)) {
+                    break 'scan_consts;
+                }
             }
         }
     }
@@ -1106,7 +1088,7 @@ fn build_creator_body(
     // For for-loop generators, evaluate the iterable and create an iterator,
     // then store it at slot 0. We use `Builtin::Iter` to create the iterator;
     // the lowering's `lower_builtin_call` handles type dispatch (list → rt_iter_list, etc.).
-    if let Some(for_gen) = detect_for_loop_generator(&func.body, m) {
+    if let Some(for_gen) = detect_for_loop_generator(func, m) {
         let iter_expr_clone = clone_expr(m, for_gen.iter_expr);
         let iter_call = mk_expr(
             m,
@@ -1160,7 +1142,7 @@ fn build_generic_resume(
     state_var: VarId,
     span: Span,
 ) -> Vec<hir::StmtId> {
-    let yield_infos = collect_yield_info(&func.body, m);
+    let yield_infos = collect_yield_info(func, m);
     let n = yield_infos.len();
     let mut stmts = mk_resume_preamble(m, gen_obj_var, state_var, span);
 

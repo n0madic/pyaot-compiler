@@ -469,6 +469,7 @@ impl AstToHir {
         };
 
         self.module.functions.push(func_id);
+        self.module.module_init_func = Some(func_id);
         self.module.func_defs.insert(func_id, function);
     }
 

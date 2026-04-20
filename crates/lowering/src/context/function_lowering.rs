@@ -511,34 +511,19 @@ impl<'a> Lowering<'a> {
     /// Only stores types for variables with explicit type hints to avoid incorrect inference.
     fn scan_global_var_types(&mut self, hir_module: &hir::Module) {
         // Find the module init function (name is __pyaot_module_init__)
-        let init_func = hir_module
-            .func_defs
-            .values()
-            .find(|f| self.interner.resolve(f.name) == "__pyaot_module_init__");
+        let init_func = hir_module.module_init();
 
         let Some(init_func) = init_func else {
             return;
         };
 
-        // Scan statements in module init for assignments to global variables.
-        // Records the global's type for persistence across function boundaries:
-        // explicit annotations take precedence; when absent, best-effort
-        // inference from the RHS expression covers literal containers
-        // (list, dict, set, tuple) and simple constants so that gen-exprs
-        // referencing the global (e.g. `d.items()` inside `sum(...)`) can
-        // dispatch the right method — otherwise the global defaults to `Int`
-        // and `MethodCall` on dict lowers to `None` (§G.11).
-        for stmt_id in &init_func.body {
-            let stmt = &hir_module.stmts[*stmt_id];
-
-            // Pre-populate types for variables captured by match patterns.
-            // This is needed because the CFG walker may process blocks in an
-            // order where assert blocks (post-match) are lowered before the
-            // match condition blocks that set var_types. Pre-populating
-            // global_var_types ensures reads after the match use the right type.
-            if let hir::StmtKind::Match { subject, cases } = &stmt.kind {
-                let subject_type =
-                    if let hir::ExprKind::Var(var_id) = &hir_module.exprs[*subject].kind {
+        for block in init_func.blocks.values() {
+            if let hir::HirTerminator::Branch { cond, .. } = block.terminator {
+                if let hir::ExprKind::MatchPattern { subject, pattern } = &hir_module.exprs[cond].kind
+                {
+                    let subject_type = if let hir::ExprKind::Var(var_id) =
+                        &hir_module.exprs[*subject].kind
+                    {
                         self.symbols
                             .global_var_types
                             .get(var_id)
@@ -547,68 +532,57 @@ impl<'a> Lowering<'a> {
                     } else {
                         hir_module.exprs[*subject].ty.clone().unwrap_or(Type::Any)
                     };
-                for case in cases {
                     Self::scan_match_pattern_global_types(
-                        &case.pattern,
+                        pattern,
                         &subject_type,
                         &self.symbols.globals,
                         &mut self.symbols.global_var_types,
                     );
                 }
-                continue;
             }
 
-            let (target, type_hint, value) = match &stmt.kind {
-                hir::StmtKind::Bind {
-                    target: hir::BindingTarget::Var(target_var),
-                    type_hint,
-                    value,
-                } => (*target_var, type_hint.as_ref(), *value),
-                _ => continue,
-            };
+            for stmt_id in &block.stmts {
+                let stmt = &hir_module.stmts[*stmt_id];
+                let (target, type_hint, value) = match &stmt.kind {
+                    hir::StmtKind::Bind {
+                        target: hir::BindingTarget::Var(target_var),
+                        type_hint,
+                        value,
+                    } => (*target_var, type_hint.as_ref(), *value),
+                    _ => continue,
+                };
 
-            if !self.symbols.globals.contains(&target) {
-                continue;
-            }
+                if !self.symbols.globals.contains(&target) {
+                    continue;
+                }
 
-            // Explicit annotation wins.
-            if let Some(var_type) = type_hint {
-                self.symbols
-                    .global_var_types
-                    .insert(target, var_type.clone());
-                continue;
-            }
+                if let Some(var_type) = type_hint {
+                    self.symbols
+                        .global_var_types
+                        .insert(target, var_type.clone());
+                    continue;
+                }
 
-            // Fall back to RHS inference for **literal-shaped** globals only
-            // (container literals and primitive constants). Skipping
-            // `Call` / `Var` / `MethodCall` etc. is intentional — those
-            // lowering paths have their own typing machinery (module-var
-            // wrappers, closure tracking, nonlocal cells) and pre-recording
-            // a potentially wrong type here has caused regressions in
-            // escaping-closure globals. Container literals are safe because
-            // their type is fully determined by the literal shape.
-            let value_expr = &hir_module.exprs[value];
-            let is_literal_shape = matches!(
-                value_expr.kind,
-                hir::ExprKind::Dict(_)
-                    | hir::ExprKind::List(_)
-                    | hir::ExprKind::Set(_)
-                    | hir::ExprKind::Tuple(_)
-                    | hir::ExprKind::Int(_)
-                    | hir::ExprKind::Float(_)
-                    | hir::ExprKind::Bool(_)
-                    | hir::ExprKind::Str(_)
-                    | hir::ExprKind::Bytes(_)
-                    | hir::ExprKind::None
-            );
-            if is_literal_shape {
-                // §1.4u step 1 (2026-04-18): the empty-overlay
-                // wrapper `infer_expr_type` was deleted; callers with
-                // no param overlay pass an empty map directly.
-                let inferred =
-                    self.infer_deep_expr_type(value_expr, hir_module, &indexmap::IndexMap::new());
-                if !matches!(inferred, Type::Any) {
-                    self.symbols.global_var_types.insert(target, inferred);
+                let value_expr = &hir_module.exprs[value];
+                let is_literal_shape = matches!(
+                    value_expr.kind,
+                    hir::ExprKind::Dict(_)
+                        | hir::ExprKind::List(_)
+                        | hir::ExprKind::Set(_)
+                        | hir::ExprKind::Tuple(_)
+                        | hir::ExprKind::Int(_)
+                        | hir::ExprKind::Float(_)
+                        | hir::ExprKind::Bool(_)
+                        | hir::ExprKind::Str(_)
+                        | hir::ExprKind::Bytes(_)
+                        | hir::ExprKind::None
+                );
+                if is_literal_shape {
+                    let inferred =
+                        self.infer_deep_expr_type(value_expr, hir_module, &indexmap::IndexMap::new());
+                    if !matches!(inferred, Type::Any) {
+                        self.symbols.global_var_types.insert(target, inferred);
+                    }
                 }
             }
         }
@@ -695,27 +669,27 @@ impl<'a> Lowering<'a> {
     /// The decorator pattern produces: var = decorator(FuncRef(func))
     pub(crate) fn process_module_decorated_functions(&mut self, hir_module: &hir::Module) {
         // Find the module init function (name is __pyaot_module_init__)
-        let init_func = hir_module
-            .func_defs
-            .values()
-            .find(|f| self.interner.resolve(f.name) == "__pyaot_module_init__");
+        let init_func = hir_module.module_init();
 
         let Some(init_func) = init_func else {
             return;
         };
 
         // Scan statements in module init for decorated function assignments
-        for stmt_id in &init_func.body {
-            let stmt = &hir_module.stmts[*stmt_id];
-            let var_assign = match &stmt.kind {
-                hir::StmtKind::Bind {
-                    target: hir::BindingTarget::Var(target_var),
-                    value,
-                    ..
-                } => Some((*target_var, *value)),
-                _ => None,
-            };
-            if let Some((target, value)) = var_assign {
+        for block in init_func.blocks.values() {
+            for stmt_id in &block.stmts {
+                let stmt = &hir_module.stmts[*stmt_id];
+                let var_assign = match &stmt.kind {
+                    hir::StmtKind::Bind {
+                        target: hir::BindingTarget::Var(target_var),
+                        value,
+                        ..
+                    } => Some((*target_var, *value)),
+                    _ => None,
+                };
+                let Some((target, value)) = var_assign else {
+                    continue;
+                };
                 let expr = &hir_module.exprs[value];
 
                 // Check for decorated function pattern: Call { func: FuncRef(decorator), args: [FuncRef(original)] }

@@ -28,12 +28,14 @@ impl<'a> Lowering<'a> {
     /// recurses into that block, now represented as a separate CFG block).
     /// Module init stmts are still flat-walked (no containing CFG function).
     pub(crate) fn refine_empty_container_types(&mut self, hir_module: &hir::Module) {
-        let module_overlay: IndexMap<VarId, Type> = IndexMap::new();
-        self.refine_empty_containers_in_block(
-            &hir_module.module_init_stmts,
-            hir_module,
-            &module_overlay,
-        );
+        if hir_module.module_init_func.is_none() {
+            let module_overlay: IndexMap<VarId, Type> = IndexMap::new();
+            self.refine_empty_containers_in_block(
+                &hir_module.module_init_stmts,
+                hir_module,
+                &module_overlay,
+            );
+        }
         for func_id in hir_module.functions.iter() {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 let overlay = self
