@@ -313,6 +313,25 @@ calls and removes the `#[ignore]` attributes.
 
 **Duration**: 6–10 weeks.
 
+**Post-close reassessment (2026-04-21)**: the codebase has moved past the
+older "Path A" wording used throughout the historical notes below.
+Today, SSA construction and whole-program type analysis are mandatory
+production passes, narrowing is materialized in MIR block-entry defs,
+and the old HIR-type owner names have been removed from code in favor of
+`LoweringSeedInfo`. If we judge Phase 1 against the **literal original
+intent** rather than the historical close criteria, only two substantive
+gaps remain:
+
+1. **Lowering still depends on HIR-backed `expr_type_hint` queries for many
+   production decisions.** The strict end-state would keep HIR limited to
+   seed/bootstrap metadata and force unresolved cases through conservative
+   generic MIR paths rather than recursive expression typing during
+   lowering.
+2. **There is still no dedicated MIR ABI-repair / call-site rewrite pass
+   after WPA.** Direct calls are coerced at codegen by callee signature,
+   but indirect and virtual call sites still rely on already-compatible
+   operand shapes instead of an explicit post-WPA MIR retyping pass.
+
 **Status dashboard (2026-04-20)** — ✅ done · 🟡 partial · ⏳ pending
 
 | Milestone | Status | Sessions |
@@ -330,7 +349,7 @@ calls and removes the `#[ignore]` attributes.
 | §1.11 Deferred HIR-tree deletion | ✅ | S1.17b-a ✅ · S1.17b-b ✅ · S1.17b-c ✅ · S1.17b-d ✅ · S1.17b-e ✅ · S1.17b-f ✅ (2026-04-20, 2f49dc0) |
 | §1.4u Single-TypeTable unification | ✅ | step 1 ✅ · step 2 ✅ · step 3 ✅ · step 4 ✅ · step 5 ✅ · §1.4u-c ✅ (Path A by construction) · §1.4u-d ✅ |
 
-### Phase 1 Completion Status (as of 2026-04-20, formally closed)
+### Phase 1 Completion Status (historical close state, 2026-04-20)
 
 **Current state**
 
@@ -340,10 +359,12 @@ calls and removes the `#[ignore]` attributes.
 - **§1.2 DomTree / §1.3 SSA / §1.9 codegen migration** are complete and
   enforced in debug builds via `debug_assert_ssa` after both
   `construct_ssa` and `optimize_module`.
-- **§1.4 flow-sensitive inference + §1.4u Path A** are complete: the
-  accepted Phase 1 interpretation is "single HIR-level owner
-  (`HirTypeInference`) plus an SSA-derived MIR `TypeTable` view with
-  SSA-only refinements". This is the canonical end-state for Phase 1.
+- **§1.4 flow-sensitive inference** is complete in production terms:
+  the CLI runs mandatory SSA/WPA analysis via
+  `analyze_and_materialize_types`, and MIR block-entry `Refine` /
+  `Unbox + Refine` now carry narrowing state. The older `HirTypeInference`
+  / Path-A wording in the historical notes below is obsolete and should be
+  read as superseded by the 2026-04-21 reassessment above.
 - **§1.5 / §1.6 / §1.7** (call graph + WPA params + WPA fields) are
   complete and exercised by the green workspace suite.
 - **§1.8 pass migration** is complete: constfold, DCE, inlining,
@@ -370,13 +391,12 @@ calls and removes the `#[ignore]` attributes.
 3. ✅ **SSA checker passes** — `debug_assert_ssa` is active in
    `crates/cli/src/lib.rs` after both `construct_ssa` and
    `optimize_module`; fresh debug workspace tests are green.
-4. ✅ **Deletion / ownership audit** — the four legacy type maps are
-   gone from `SymbolTable` / `TypeEnvironment`,
-   `apply_narrowings` / `restore_types` are deleted, and
-   `HirTypeInference` is the sole HIR-level owner. This is the
-   intended Path A end-state: the maps inside `HirTypeInference` are
-   canonical storage, not legacy shims; their physical deletion is
-   deferred to Path B / Phase 2.
+4. ✅ **Deletion / ownership audit** — the legacy maps are gone from
+   `SymbolTable` / `TypeEnvironment`, `apply_narrowings` /
+   `restore_types` are deleted, and code now uses
+   `LoweringSeedInfo` as the stable pre-lowering seed store.
+   The stricter MIR-only end-state is **not** fully complete yet; see the
+   2026-04-21 reassessment above for the remaining two gaps.
 5. ✅ **microgpt.py diagnostic documented** — the last recorded
    `§1.4u-b` sweep fixed the line-41 ternary-rebind narrowing gap and
    classified the remaining issues as unrelated. `microgpt.py` is not
@@ -3686,7 +3706,7 @@ the spec reflecting reality.
 
 ---
 
-*Last updated: 2026-04-20. Phase 0 is complete. Phase 1 is now formally
-closed: S1.1-S1.17, §1.4u, and S1.17b are complete. See the Phase-1
-dashboard at the top of §1 and `bench/BASELINE.md` for the accepted
-benchmark snapshot and verification evidence.*
+*Last updated: 2026-04-21. Phase 0 is complete. Phase 1 remains
+historically closed under the 2026-04-20 acceptance record, but the
+2026-04-21 reassessment at the top of §1 is the authoritative statement
+for what still differs from the literal original intent.*

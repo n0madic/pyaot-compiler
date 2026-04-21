@@ -21,13 +21,19 @@ High-level IR (HIR) - Desugared Python with types
     ↓
 [Semantic Analysis] (name resolution, control flow)
     ↓
-[Type Inference] (type_planning module in lowering)
+[Lowering Seed Planning] (type_planning module in lowering)
     ↓
 [HIR → MIR Lowering]
     ↓
 Mid-level IR (MIR) - CFG with basic blocks
     ↓
-[MIR Optimizer] (optional, --devirtualize / --flatten-properties / --inline / --constfold / --dce flags)
+[SSA Construction] (dominance + phi insertion + Refine materialization)
+    ↓
+[Whole-Program Type Analysis] (mandatory SSA/WPA analysis + MIR type materialization)
+    ↓
+[MIR Optimizer] (devirtualize / flatten-properties / inline / constfold / dce)
+    ↓
+[Whole-Program Type Analysis] (re-run after optimizer rewrites)
     ↓
 [Cranelift Code Generator]
     ↓
