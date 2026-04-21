@@ -120,7 +120,7 @@ impl<'a> Lowering<'a> {
             }
         );
 
-        let first_type = self.get_type_of_expr_id(args[0], hir_module);
+        let first_type = self.expr_type_hint(args[0], hir_module);
         let first_elem_type = if first_is_range {
             Type::Int
         } else {
@@ -148,7 +148,8 @@ impl<'a> Lowering<'a> {
                 });
             }
         } else {
-            let first_operand = self.lower_expr(first_expr, hir_module, mir_func)?;
+            let first_operand =
+                self.lower_expr_expecting(first_expr, None, hir_module, mir_func)?;
             let first_source = match &first_type {
                 Type::List(_) => mir::IterSourceKind::List,
                 Type::Tuple(_) | Type::TupleVar(_) => mir::IterSourceKind::Tuple,
@@ -186,7 +187,7 @@ impl<'a> Lowering<'a> {
             }
         );
 
-        let second_type = self.get_type_of_expr_id(args[1], hir_module);
+        let second_type = self.expr_type_hint(args[1], hir_module);
         let second_elem_type = if second_is_range {
             Type::Int
         } else {
@@ -214,7 +215,8 @@ impl<'a> Lowering<'a> {
                 });
             }
         } else {
-            let second_operand = self.lower_expr(second_expr, hir_module, mir_func)?;
+            let second_operand =
+                self.lower_expr_expecting(second_expr, None, hir_module, mir_func)?;
             let second_source = match &second_type {
                 Type::List(_) => mir::IterSourceKind::List,
                 Type::Tuple(_) | Type::TupleVar(_) => mir::IterSourceKind::Tuple,
@@ -289,7 +291,7 @@ impl<'a> Lowering<'a> {
                     if !captures.is_empty() && !self.has_closure_capture_types(&func_id) {
                         let mut capture_types = Vec::new();
                         for capture_id in &captures {
-                            let capture_type = self.get_type_of_expr_id(*capture_id, hir_module);
+                            let capture_type = self.expr_type_hint(*capture_id, hir_module);
                             capture_types.push(capture_type);
                         }
                         self.insert_closure_capture_types(func_id, capture_types);
@@ -498,7 +500,7 @@ impl<'a> Lowering<'a> {
                 if !captures.is_empty() && !self.has_closure_capture_types(&func_id) {
                     let mut capture_types = Vec::new();
                     for capture_id in &captures {
-                        let capture_type = self.get_type_of_expr_id(*capture_id, hir_module);
+                        let capture_type = self.expr_type_hint(*capture_id, hir_module);
                         capture_types.push(capture_type);
                     }
                     self.insert_closure_capture_types(func_id, capture_types);
@@ -630,7 +632,7 @@ impl<'a> Lowering<'a> {
                     if !captures.is_empty() && !self.has_closure_capture_types(&func_id) {
                         let mut capture_types = Vec::new();
                         for capture_id in &captures {
-                            let capture_type = self.get_type_of_expr_id(*capture_id, hir_module);
+                            let capture_type = self.expr_type_hint(*capture_id, hir_module);
                             capture_types.push(capture_type);
                         }
                         self.insert_closure_capture_types(func_id, capture_types);
@@ -684,7 +686,7 @@ impl<'a> Lowering<'a> {
         let inner_iter = self.lower_iter(iter_args, hir_module, mir_func)?;
 
         // Element type is same as input iterator
-        let iterable_type = self.get_type_of_expr_id(args[1], hir_module);
+        let iterable_type = self.expr_type_hint(args[1], hir_module);
         let elem_type =
             crate::type_planning::infer::extract_iterable_first_element_type(&iterable_type);
 

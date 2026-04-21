@@ -42,16 +42,8 @@ impl<'a> Lowering<'a> {
     /// This is used for `is`/`is not` comparisons where the variable still holds
     /// a boxed pointer even though the type has been narrowed.
     pub(crate) fn is_narrowed_union_var(&self, expr: &hir::Expr) -> bool {
-        if let hir::ExprKind::Var(var_id) = &expr.kind {
-            if self.get_block_narrowed_local(var_id).is_some() {
-                return false;
-            }
-            // Check if this variable is tracked in narrowed_union_vars
-            // This tracks variables narrowed from Union to Int/Float/Bool/Str/None
-            self.hir_types.narrowed_union_vars.contains_key(var_id)
-        } else {
-            false
-        }
+        let _ = expr;
+        false
     }
 
     /// Whether the expression reads from a block-entry narrowing local rather
@@ -498,7 +490,7 @@ impl<'a> Lowering<'a> {
                     if !self.has_closure_capture_types(func_id) {
                         let mut capture_types = Vec::new();
                         for capture_id in captures {
-                            let capture_type = self.get_type_of_expr_id(*capture_id, hir_module);
+                            let capture_type = self.expr_type_hint(*capture_id, hir_module);
                             capture_types.push(capture_type);
                         }
                         self.insert_closure_capture_types(*func_id, capture_types);

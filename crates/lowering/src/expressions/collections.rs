@@ -16,19 +16,38 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let mut list_type = self.get_expr_type(expr, hir_module);
+        let mut list_type = expr.ty.clone().unwrap_or(Type::Any);
+
+        if matches!(list_type, Type::Any) {
+            if let Some(Type::List(ref expected_elem)) = self.codegen.expected_type {
+                list_type = Type::List(expected_elem.clone());
+            }
+        }
 
         // For empty lists with unknown element type, use the expected type from
         // the assignment context (e.g., `x: list[int] = []` or `x = []` where x
         // was previously declared as list[int]).
         if elements.is_empty() {
-            if let Type::List(ref elem_ty) = list_type {
-                if **elem_ty == Type::Any {
-                    if let Some(Type::List(ref expected_elem)) = self.codegen.expected_type {
+            if let Some(Type::List(ref expected_elem)) = self.codegen.expected_type {
+                match &list_type {
+                    Type::Any => {
                         list_type = Type::List(expected_elem.clone());
                     }
+                    Type::List(elem_ty) if **elem_ty == Type::Any => {
+                        list_type = Type::List(expected_elem.clone());
+                    }
+                    _ => {}
                 }
             }
+        } else if matches!(list_type, Type::Any) {
+            let inferred_elem = elements.iter().fold(None, |acc: Option<Type>, elem_id| {
+                let next = self.expr_type_hint(*elem_id, hir_module);
+                Some(match acc {
+                    Some(prev) => Type::unify_field_type(&prev, &next),
+                    None => next,
+                })
+            });
+            list_type = Type::List(Box::new(inferred_elem.unwrap_or(Type::Any)));
         }
 
         // Determine elem_tag based on element type
@@ -58,20 +77,25 @@ impl<'a> Lowering<'a> {
         // Push each element
         for elem_id in elements {
             let elem_expr = &hir_module.exprs[*elem_id];
-            let elem_operand = self.lower_expr(elem_expr, hir_module, mir_func)?;
+            let elem_operand = self.lower_expr_expecting(
+                elem_expr,
+                Some(elem_type.clone()),
+                hir_module,
+                mir_func,
+            )?;
+            let actual_elem_type = self.expr_type_hint(*elem_id, hir_module);
+            let elem_operand = if elem_type == Type::Float {
+                self.coerce_to_field_type(elem_operand, &actual_elem_type, &elem_type, mir_func)
+            } else {
+                elem_operand
+            };
 
             // Box elements before pushing to list:
             // - Float elements always need boxing
             // - Union element types need boxing for primitive values
             // - Bool elements: box for heap lists, extend to i64 for raw bool lists
             let push_operand = if elem_type == Type::Float {
-                let boxed_local = self.emit_runtime_call(
-                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
-                    vec![elem_operand],
-                    Type::HeapAny,
-                    mir_func,
-                );
-                mir::Operand::Local(boxed_local)
+                self.box_primitive_if_needed(elem_operand, &Type::Float, mir_func)
             } else if elem_type == Type::Bool {
                 // ELEM_HEAP_OBJ: box bools
                 let boxed_local = self.emit_runtime_call(
@@ -83,7 +107,6 @@ impl<'a> Lowering<'a> {
                 mir::Operand::Local(boxed_local)
             } else if matches!(elem_type, Type::Union(_)) {
                 // Box primitives for Union element types
-                let actual_elem_type = self.get_type_of_expr_id(*elem_id, hir_module);
                 self.box_primitive_if_needed(elem_operand, &actual_elem_type, mir_func)
             } else {
                 elem_operand
@@ -107,7 +130,27 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let tuple_type = self.get_expr_type(expr, hir_module);
+        let mut tuple_type = expr.ty.clone().unwrap_or(Type::Any);
+
+        if matches!(tuple_type, Type::Any) {
+            match self.codegen.expected_type.clone() {
+                Some(Type::Tuple(expected)) => {
+                    tuple_type = Type::Tuple(expected);
+                }
+                Some(Type::TupleVar(expected)) => {
+                    tuple_type = Type::TupleVar(expected);
+                }
+                _ => {}
+            }
+        }
+        if matches!(tuple_type, Type::Any) {
+            tuple_type = Type::Tuple(
+                elements
+                    .iter()
+                    .map(|elem_id| self.expr_type_hint(*elem_id, hir_module))
+                    .collect(),
+            );
+        }
 
         // Determine elem_tag for tuple
         // If all elements have the same primitive type, use that tag
@@ -120,6 +163,8 @@ impl<'a> Lowering<'a> {
             } else {
                 0 // ELEM_HEAP_OBJ (including bool tuples)
             }
+        } else if matches!(tuple_type, Type::TupleVar(ref elem_type) if **elem_type == Type::Int) {
+            1 // ELEM_RAW_INT for homogeneous tuple[int, ...]
         } else {
             0
         };
@@ -139,12 +184,18 @@ impl<'a> Lowering<'a> {
         // Set each element
         for (i, elem_id) in elements.iter().enumerate() {
             let elem_expr = &hir_module.exprs[*elem_id];
-            let elem_operand = self.lower_expr(elem_expr, hir_module, mir_func)?;
+            let expected_elem_type = match &tuple_type {
+                Type::Tuple(elem_types) => elem_types.get(i).cloned(),
+                Type::TupleVar(elem_type) => Some((**elem_type).clone()),
+                _ => None,
+            };
+            let elem_operand =
+                self.lower_expr_expecting(elem_expr, expected_elem_type, hir_module, mir_func)?;
 
             // Box primitive values when elem_tag is ELEM_HEAP_OBJ
             let final_operand = if elem_tag == 0 {
                 // ELEM_HEAP_OBJ - need to box primitives
-                let elem_type = self.get_type_of_expr_id(*elem_id, hir_module);
+                let elem_type = self.expr_type_hint(*elem_id, hir_module);
                 match elem_type {
                     Type::Int => {
                         let boxed_local = self.emit_runtime_call(
@@ -203,17 +254,50 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let mut dict_type = self.get_expr_type(expr, hir_module);
+        let mut dict_type = expr.ty.clone().unwrap_or(Type::Any);
+
+        if matches!(dict_type, Type::Any) {
+            if let Some(Type::Dict(ref expected_key, ref expected_val)) = self.codegen.expected_type
+            {
+                dict_type = Type::Dict(expected_key.clone(), expected_val.clone());
+            }
+        }
 
         // Bidirectional: for empty dicts, use expected_type from context
         if pairs.is_empty() {
-            if let Type::Dict(ref key_ty, ref val_ty) = dict_type {
-                if **key_ty == Type::Any && **val_ty == Type::Any {
-                    if let Some(Type::Dict(ref ek, ref ev)) = self.codegen.expected_type {
-                        dict_type = Type::Dict(ek.clone(), ev.clone());
+            if let Some(Type::Dict(ref expected_key, ref expected_val)) = self.codegen.expected_type
+            {
+                match &dict_type {
+                    Type::Any => {
+                        dict_type = Type::Dict(expected_key.clone(), expected_val.clone());
                     }
+                    Type::Dict(key_ty, val_ty)
+                        if **key_ty == Type::Any && **val_ty == Type::Any =>
+                    {
+                        dict_type = Type::Dict(expected_key.clone(), expected_val.clone());
+                    }
+                    _ => {}
                 }
             }
+        } else if matches!(dict_type, Type::Any) {
+            let inferred_key = pairs.iter().fold(None, |acc: Option<Type>, (key_id, _)| {
+                let next = self.expr_type_hint(*key_id, hir_module);
+                Some(match acc {
+                    Some(prev) => Type::unify_field_type(&prev, &next),
+                    None => next,
+                })
+            });
+            let inferred_val = pairs.iter().fold(None, |acc: Option<Type>, (_, value_id)| {
+                let next = self.expr_type_hint(*value_id, hir_module);
+                Some(match acc {
+                    Some(prev) => Type::unify_field_type(&prev, &next),
+                    None => next,
+                })
+            });
+            dict_type = Type::Dict(
+                Box::new(inferred_key.unwrap_or(Type::Any)),
+                Box::new(inferred_val.unwrap_or(Type::Any)),
+            );
         }
 
         // Create dict with capacity
@@ -226,21 +310,57 @@ impl<'a> Lowering<'a> {
         );
 
         // Insert each key-value pair
+        let (dict_key_type, dict_value_type) = match &dict_type {
+            Type::Dict(key_ty, value_ty) => ((**key_ty).clone(), (**value_ty).clone()),
+            _ => (Type::Any, Type::Any),
+        };
         for (key_id, value_id) in pairs {
-            let key_type = self.get_type_of_expr_id(*key_id, hir_module);
+            let key_type = self.expr_type_hint(*key_id, hir_module);
             let key_expr = &hir_module.exprs[*key_id];
-            let key_operand = self.lower_expr(key_expr, hir_module, mir_func)?;
+            let key_operand = self.lower_expr_expecting(
+                key_expr,
+                Some(dict_key_type.clone()),
+                hir_module,
+                mir_func,
+            )?;
+            let key_operand = if dict_key_type == Type::Float {
+                self.coerce_to_field_type(key_operand, &key_type, &dict_key_type, mir_func)
+            } else {
+                key_operand
+            };
 
             // Box non-heap keys (int, bool) so dict can use them as object pointers
-            let boxed_key = self.box_primitive_if_needed(key_operand, &key_type, mir_func);
+            let boxed_key = if dict_key_type == Type::Float {
+                self.box_primitive_if_needed(key_operand, &dict_key_type, mir_func)
+            } else {
+                self.box_primitive_if_needed(key_operand, &key_type, mir_func)
+            };
 
             let value_expr = &hir_module.exprs[*value_id];
-            let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
-            let actual_value_type = self.get_type_of_expr_id(*value_id, hir_module);
+            let value_operand = self.lower_expr_expecting(
+                value_expr,
+                Some(dict_value_type.clone()),
+                hir_module,
+                mir_func,
+            )?;
+            let actual_value_type = self.expr_type_hint(*value_id, hir_module);
+            let value_operand = if dict_value_type == Type::Float {
+                self.coerce_to_field_type(
+                    value_operand,
+                    &actual_value_type,
+                    &dict_value_type,
+                    mir_func,
+                )
+            } else {
+                value_operand
+            };
 
             // Box primitive values (all dict values must be heap pointers for GC)
-            let boxed_value =
-                self.box_primitive_if_needed(value_operand, &actual_value_type, mir_func);
+            let boxed_value = if dict_value_type == Type::Float {
+                self.box_primitive_if_needed(value_operand, &dict_value_type, mir_func)
+            } else {
+                self.box_primitive_if_needed(value_operand, &actual_value_type, mir_func)
+            };
 
             self.emit_runtime_call_void(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
@@ -260,17 +380,36 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let mut set_type = self.get_expr_type(expr, hir_module);
+        let mut set_type = expr.ty.clone().unwrap_or(Type::Any);
+
+        if matches!(set_type, Type::Any) {
+            if let Some(Type::Set(ref expected_elem)) = self.codegen.expected_type {
+                set_type = Type::Set(expected_elem.clone());
+            }
+        }
 
         // Bidirectional: for empty sets, use expected_type from context
         if elements.is_empty() {
-            if let Type::Set(ref elem_ty) = set_type {
-                if **elem_ty == Type::Any {
-                    if let Some(Type::Set(ref expected_elem)) = self.codegen.expected_type {
+            if let Some(Type::Set(ref expected_elem)) = self.codegen.expected_type {
+                match &set_type {
+                    Type::Any => {
                         set_type = Type::Set(expected_elem.clone());
                     }
+                    Type::Set(elem_ty) if **elem_ty == Type::Any => {
+                        set_type = Type::Set(expected_elem.clone());
+                    }
+                    _ => {}
                 }
             }
+        } else if matches!(set_type, Type::Any) {
+            let inferred_elem = elements.iter().fold(None, |acc: Option<Type>, elem_id| {
+                let next = self.expr_type_hint(*elem_id, hir_module);
+                Some(match acc {
+                    Some(prev) => Type::unify_field_type(&prev, &next),
+                    None => next,
+                })
+            });
+            set_type = Type::Set(Box::new(inferred_elem.unwrap_or(Type::Any)));
         }
 
         // Create set with capacity
@@ -284,12 +423,27 @@ impl<'a> Lowering<'a> {
 
         // Add each element
         for elem_id in elements {
-            let elem_type = self.get_type_of_expr_id(*elem_id, hir_module);
+            let elem_type = self.expr_type_hint(*elem_id, hir_module);
             let elem_expr = &hir_module.exprs[*elem_id];
-            let elem_operand = self.lower_expr(elem_expr, hir_module, mir_func)?;
+            let expected_elem_type = match &set_type {
+                Type::Set(inner) => Some((**inner).clone()),
+                _ => None,
+            };
+            let elem_operand =
+                self.lower_expr_expecting(elem_expr, expected_elem_type, hir_module, mir_func)?;
+            let elem_operand = if matches!(set_type, Type::Set(ref inner) if **inner == Type::Float)
+            {
+                self.coerce_to_field_type(elem_operand, &elem_type, &Type::Float, mir_func)
+            } else {
+                elem_operand
+            };
 
             // Box non-heap elements (int, bool) so set can use them as object pointers
-            let boxed_elem = self.box_primitive_if_needed(elem_operand, &elem_type, mir_func);
+            let boxed_elem = if matches!(set_type, Type::Set(ref inner) if **inner == Type::Float) {
+                self.box_primitive_if_needed(elem_operand, &Type::Float, mir_func)
+            } else {
+                self.box_primitive_if_needed(elem_operand, &elem_type, mir_func)
+            };
 
             self.emit_runtime_call_void(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_ADD),

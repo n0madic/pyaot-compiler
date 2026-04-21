@@ -92,7 +92,7 @@ impl<'a> Lowering<'a> {
             return Ok(None);
         }
         let iterable_expr = &hir_module.exprs[args[0]];
-        let iterable_type = self.get_type_of_expr_id(args[0], hir_module);
+        let iterable_type = self.expr_type_hint(args[0], hir_module);
         let elem_ty = match &iterable_type {
             Type::List(t) | Type::Iterator(t) | Type::Set(t) => (**t).clone(),
             _ => return Ok(None),
@@ -111,7 +111,7 @@ impl<'a> Lowering<'a> {
         //   class + class via the forward dunder.
         // - anything else → give up; fall through to the numeric path.
         let start_operand = if args.len() > 1 {
-            let start_ty = self.get_type_of_expr_id(args[1], hir_module);
+            let start_ty = self.expr_type_hint(args[1], hir_module);
             let expr = &hir_module.exprs[args[1]];
             let op = self.lower_expr(expr, hir_module, mir_func)?;
             if start_ty == class_ty {
@@ -125,7 +125,8 @@ impl<'a> Lowering<'a> {
             StartSeed::Default
         };
 
-        let iterable_operand = self.lower_expr(iterable_expr, hir_module, mir_func)?;
+        let iterable_operand =
+            self.lower_expr_expecting(iterable_expr, None, hir_module, mir_func)?;
 
         // Materialise an iterator over the source so we don't care whether
         // the caller passed a list, set, or generator expression.
@@ -442,7 +443,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<Option<mir::Operand>> {
-        let iterable_type = self.get_type_of_expr_id(arg, hir_module);
+        let iterable_type = self.expr_type_hint(arg, hir_module);
         let elem_ty = match &iterable_type {
             Type::List(t) | Type::Iterator(t) | Type::Set(t) => (**t).clone(),
             Type::Tuple(types) => {
@@ -499,7 +500,8 @@ impl<'a> Lowering<'a> {
         };
 
         let iterable_expr = &hir_module.exprs[arg];
-        let iterable_operand = self.lower_expr(iterable_expr, hir_module, mir_func)?;
+        let iterable_operand =
+            self.lower_expr_expecting(iterable_expr, None, hir_module, mir_func)?;
         let (iter_local, _iter_ty) =
             self.make_iter_from_operand(iterable_operand, &iterable_type, mir_func);
 

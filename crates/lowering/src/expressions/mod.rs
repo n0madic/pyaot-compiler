@@ -232,7 +232,7 @@ impl<'a> Lowering<'a> {
 
             // Standard library function call (sys.exit, os.path.join, re.*)
             hir::ExprKind::StdlibCall { func, args } => {
-                self.lower_stdlib_call(func, args, hir_module, mir_func)
+                self.lower_stdlib_call(func, args, expr, hir_module, mir_func)
             }
 
             // Standard library compile-time constant (math.pi, math.e)

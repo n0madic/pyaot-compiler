@@ -388,7 +388,7 @@ impl<'a> Lowering<'a> {
             if let Some((subject_id, pattern)) = case_body_bindings.get(hir_id).cloned() {
                 let subject_expr = &hir_module.exprs[subject_id];
                 let subject_op = self.lower_expr(subject_expr, hir_module, mir_func)?;
-                let subject_type = self.get_type_of_expr_id(subject_id, hir_module);
+                let subject_type = self.expr_type_hint(subject_id, hir_module);
                 let subject_local = self.alloc_and_add_local(subject_type.clone(), mir_func);
                 self.emit_instruction(mir::InstructionKind::Copy {
                     dest: subject_local,
@@ -793,7 +793,7 @@ impl<'a> Lowering<'a> {
                 else_bb,
             } => {
                 let cond_expr = &hir_module.exprs[*cond];
-                let cond_type = self.get_type_of_expr_id(*cond, hir_module);
+                let cond_type = self.expr_type_hint(*cond, hir_module);
                 let cond_operand = self.lower_expr(cond_expr, hir_module, mir_func)?;
                 let cond_bool =
                     self.emit_truthiness_conversion_if_needed(cond_operand, &cond_type, mir_func);

@@ -719,7 +719,7 @@ pub enum ExprKind {
 
     /// Pure predicate: does `iter` have a next element?
     /// (§1.11 Q1 Scheme A). Used as the branch condition on a for-loop's
-    /// header block. Cacheable in `HirTypeInference.expr_types` as `Bool`.
+    /// header block. Cacheable in lowering seed metadata as `Bool`.
     ///
     /// Introduced additively in S1.17b-a; not yet emitted by the frontend
     /// (Stage 2) or consumed by lowering (Stage 3).

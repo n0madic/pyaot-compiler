@@ -35,7 +35,7 @@ impl<'a> Lowering<'a> {
                 if ret_ty.is_union()
                     && matches!(&ret_ty, Type::Union(members) if members.contains(&Type::NotImplementedT))
                 {
-                    let value_ty = self.get_type_of_expr_id(*expr_id, hir_module);
+                    let value_ty = self.expr_type_hint(*expr_id, hir_module);
                     if matches!(value_ty, Type::Bool | Type::Int | Type::Float | Type::None) {
                         operand = self.box_primitive_if_needed(operand, &value_ty, mir_func);
                     }

@@ -21,7 +21,7 @@ impl<'a> Lowering<'a> {
             return Ok(mir::Operand::Constant(mir::Constant::None));
         }
 
-        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
+        let arg_type = self.expr_type_hint(args[0], hir_module);
 
         // Determine element type from container type
         let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
@@ -79,7 +79,7 @@ impl<'a> Lowering<'a> {
         // Create iterators for each argument and add to list
         for arg_id in args.iter() {
             let arg_expr = &hir_module.exprs[*arg_id];
-            let arg_type = self.get_type_of_expr_id(*arg_id, hir_module);
+            let arg_type = self.expr_type_hint(*arg_id, hir_module);
 
             // Check if this is a range() call
             let is_range = matches!(
@@ -109,7 +109,8 @@ impl<'a> Lowering<'a> {
                     });
                 }
             } else {
-                let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
+                let arg_operand =
+                    self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
                 let source = match &arg_type {
                     Type::List(_) => mir::IterSourceKind::List,
                     Type::Tuple(_) => mir::IterSourceKind::Tuple,
@@ -170,7 +171,7 @@ impl<'a> Lowering<'a> {
 
         // Get the iterable and create an iterator
         let iter_expr = &hir_module.exprs[args[0]];
-        let iter_type = self.get_type_of_expr_id(args[0], hir_module);
+        let iter_type = self.expr_type_hint(args[0], hir_module);
 
         let is_range = matches!(
             &iter_expr.kind,
@@ -199,7 +200,7 @@ impl<'a> Lowering<'a> {
                 });
             }
         } else {
-            let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
+            let iter_operand = self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
             let source = match &iter_type {
                 Type::List(_) => mir::IterSourceKind::List,
                 Type::Tuple(_) => mir::IterSourceKind::Tuple,

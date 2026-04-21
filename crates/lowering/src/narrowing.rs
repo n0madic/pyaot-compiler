@@ -17,13 +17,12 @@
 //!     print(y + 1)      # y is narrowed to int
 //! ```
 
-use indexmap::IndexMap;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
 use pyaot_utils::{Span, VarId};
 
-use crate::context::{Lowering, NarrowingFrame};
+use crate::context::Lowering;
 
 /// Indicates which branch of an if statement is dead (unreachable)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,31 +79,25 @@ impl<'a> Lowering<'a> {
         narrowings: &[TypeNarrowingInfo],
         mir_func: &mut mir::Function,
     ) {
-        let mut saved_var_types = IndexMap::new();
         self.clear_block_narrowed_locals();
 
         for info in narrowings {
             if matches!(info.narrowed_type, Type::Never) {
                 continue;
             }
-            if let Some(original) = self.get_var_type(&info.var_id).cloned() {
-                saved_var_types.entry(info.var_id).or_insert(original);
-            }
-            self.insert_var_type(info.var_id, info.narrowed_type.clone());
             let narrowed_local = self.materialize_block_narrowing_local(info, mir_func);
-            self.insert_block_narrowed_local(info.var_id, narrowed_local);
+            self.insert_block_narrowed_local(
+                info.var_id,
+                narrowed_local,
+                info.original_type.clone(),
+                info.narrowed_type.clone(),
+            );
         }
-
-        self.hir_types.narrowing_stack.push(NarrowingFrame {
-            saved_var_types,
-            added_union_tracking: Vec::new(),
-        });
     }
 
     /// Restore the pre-branch type view and drop any block-local narrowing defs.
     pub(crate) fn leave_cfg_block_narrowings(&mut self) {
         self.clear_block_narrowed_locals();
-        self.pop_narrowing_frame();
     }
 
     fn materialize_block_narrowing_local(
@@ -618,66 +611,6 @@ impl<'a> Lowering<'a> {
             return self.is_proper_subclass(*id1, *id2);
         }
         false
-    }
-
-    /// Push a new narrowing scope onto `hir_types.narrowing_stack` and
-    /// apply the given narrowings to `var_types` + `narrowed_union_vars`.
-    /// Pair with [`Self::pop_narrowing_frame`] on scope exit — the stack
-    /// records the undo information so callers don't thread a saved-state
-    /// variable through their own scope.
-    ///
-    /// Replaces the legacy `apply_narrowings` / `restore_types` pair
-    /// (S1.9d, Phase 1 §1.4). Semantics unchanged.
-    #[allow(dead_code)]
-    pub(crate) fn push_narrowing_frame(&mut self, narrowings: &[TypeNarrowingInfo]) {
-        let mut saved_var_types = IndexMap::new();
-        let mut added_union_tracking = Vec::new();
-
-        for info in narrowings {
-            // Save original type.
-            if let Some(original) = self.get_var_type(&info.var_id).cloned() {
-                saved_var_types.insert(info.var_id, original.clone());
-
-                // Track narrowed Union variables for unboxing and is / is
-                // not comparisons. Applies when the original is a Union
-                // and the narrowed type is a primitive or None (None is
-                // required for `is None` comparisons on narrowed vars).
-                if matches!(original, Type::Union(_))
-                    && matches!(
-                        info.narrowed_type,
-                        Type::Int | Type::Float | Type::Bool | Type::Str | Type::None
-                    )
-                {
-                    self.insert_narrowed_union(info.var_id, info.original_type.clone());
-                    added_union_tracking.push(info.var_id);
-                }
-            }
-            // Apply narrowed type.
-            self.insert_var_type(info.var_id, info.narrowed_type.clone());
-        }
-
-        self.hir_types.narrowing_stack.push(NarrowingFrame {
-            saved_var_types,
-            added_union_tracking,
-        });
-    }
-
-    /// Pop the innermost narrowing scope and restore the var types it
-    /// overwrote. Also clears any narrowed-Union tracking the matching
-    /// push added. Panics if the stack is empty — calls must be
-    /// balanced with `push_narrowing_frame`.
-    pub(crate) fn pop_narrowing_frame(&mut self) {
-        let frame = self
-            .hir_types
-            .narrowing_stack
-            .pop()
-            .expect("pop_narrowing_frame called without a matching push");
-        for (var_id, original_type) in frame.saved_var_types {
-            self.insert_var_type(var_id, original_type);
-        }
-        for var_id in frame.added_union_tracking {
-            self.remove_narrowed_union(&var_id);
-        }
     }
 
     /// Extract isinstance information from an isinstance expression for dead code detection.

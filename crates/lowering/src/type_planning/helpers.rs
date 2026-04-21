@@ -2,7 +2,7 @@
 //!
 //! Pure functions for method return types, binary operations, container
 //! element unification, builtin call types, and index resolution.
-//! Used by both `compute_expr_type` (codegen) and `infer_deep_expr_type`
+//! Used by both `compute_expr_type` (codegen) and `seed_infer_expr_type`
 //! (return type inference) to ensure consistent behavior.
 
 use pyaot_hir as hir;

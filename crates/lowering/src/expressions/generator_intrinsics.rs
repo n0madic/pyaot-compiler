@@ -156,7 +156,7 @@ impl<'a> Lowering<'a> {
                 // runtime always returns raw i64 (a value or heap pointer),
                 // so the MIR type is just bookkeeping — the bits are the
                 // same.
-                let iter_ty = self.get_type_of_expr_id(*iter_expr_id, hir_module);
+                let iter_ty = self.expr_type_hint(*iter_expr_id, hir_module);
                 let dest_ty = crate::utils::get_iterable_info(&iter_ty)
                     .map(|(_k, elem)| elem)
                     .or_else(|| expr.ty.clone())

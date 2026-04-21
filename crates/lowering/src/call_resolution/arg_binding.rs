@@ -73,8 +73,15 @@ impl<'a> Lowering<'a> {
         all_positional: &mut Vec<mir::Operand>,
     ) -> Result<()> {
         let tuple_expr = &hir_module.exprs[expr_id];
-        let tuple_type = self.get_type_of_expr_id(expr_id, hir_module);
         let tuple_operand = self.lower_expr(tuple_expr, hir_module, mir_func)?;
+        let tuple_type = match &tuple_operand {
+            mir::Operand::Local(local_id) => mir_func
+                .locals
+                .get(local_id)
+                .map(|local| local.ty.clone())
+                .unwrap_or_else(|| self.expr_type_hint(expr_id, hir_module)),
+            _ => self.expr_type_hint(expr_id, hir_module),
+        };
 
         if let Type::Tuple(elem_types) = tuple_type {
             for (i, elem_type) in elem_types.iter().enumerate() {
@@ -110,8 +117,15 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<Vec<mir::Operand>> {
         let list_expr = &hir_module.exprs[expr_id];
-        let list_type = self.get_type_of_expr_id(expr_id, hir_module);
         let list_operand = self.lower_expr(list_expr, hir_module, mir_func)?;
+        let list_type = match &list_operand {
+            mir::Operand::Local(local_id) => mir_func
+                .locals
+                .get(local_id)
+                .map(|local| local.ty.clone())
+                .unwrap_or_else(|| self.expr_type_hint(expr_id, hir_module)),
+            _ => self.expr_type_hint(expr_id, hir_module),
+        };
 
         let Type::List(elem_type) = list_type else {
             // Not a list - return as-is

@@ -48,7 +48,7 @@ impl<'a> Lowering<'a> {
         }
 
         // Infer the actual type
-        let inferred = self.get_type_of_expr_id(expr_id, hir_module);
+        let inferred = self.seed_expr_type_by_id(expr_id, hir_module);
 
         // Skip if inferred is Any (insufficient type info — not an error)
         if inferred == Type::Any {

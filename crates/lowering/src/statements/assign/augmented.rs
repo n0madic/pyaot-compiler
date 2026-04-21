@@ -19,11 +19,11 @@ impl<'a> Lowering<'a> {
     ) -> Result<()> {
         let obj_expr = &hir_module.exprs[obj];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        let obj_type = self.get_type_of_expr_id(obj, hir_module);
+        let obj_type = self.expr_type_hint(obj, hir_module);
 
         let index_expr = &hir_module.exprs[index];
         let index_operand = self.lower_expr(index_expr, hir_module, mir_func)?;
-        let index_type = self.get_type_of_expr_id(index, hir_module);
+        let index_type = self.expr_type_hint(index, hir_module);
 
         match obj_type {
             Type::Dict(_, _) | Type::DefaultDict(_, _) => {

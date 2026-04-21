@@ -5,12 +5,12 @@
 //! **Two public HIR type-query entry points.** Consumers outside
 //! `type_planning/` must route through exactly one of these:
 //!
-//! - [`Lowering::get_type_of_expr_id`] — the memoized lowering-time
+//! - [`Lowering::seed_expr_type_by_id`] — the memoized lowering-time
 //!   query. Takes an `ExprId`, caches per-expression results. Nearly
 //!   every post-type-planning caller in `statements/`, `expressions/`,
 //!   `exceptions.rs`, etc. funnels through this path (~124 call
 //!   sites per the §1.4u caller audit).
-//! - [`Lowering::infer_deep_expr_type`] — the pre-scan / non-memoized
+//! - [`Lowering::seed_infer_expr_type`] — the pre-scan / non-memoized
 //!   path. Takes an `&hir::Expr` and a `param_types` overlay (pass
 //!   `&IndexMap::new()` for no overlay). Used by the 10 prescan
 //!   walkers in `type_planning/*` that need to query types before the
@@ -28,9 +28,9 @@
 //! # Internal structure (deleted in S1.9b)
 //!
 //! - `compute_expr_type` — codegen path (`&mut self`), recurses via
-//!   `get_type_of_expr_id` for memoized sub-expression resolution.
+//!   `seed_expr_type_by_id` for memoized sub-expression resolution.
 //! - `infer_expr_type_inner` — pre-scan path (`&self`), recurses directly
-//!   without memoization. Used by `infer_deep_expr_type` for return type
+//!   without memoization. Used by `seed_infer_expr_type` for return type
 //!   inference and lambda/closure analysis before codegen starts.
 //!
 //! Complex match arms (MethodCall, Call, BuiltinCall, Attribute, Index)
@@ -39,7 +39,7 @@
 //!
 //! # Why two functions instead of one
 //!
-//! `compute_expr_type` MUST recurse through `get_type_of_expr_id` (which
+//! `compute_seed_expr_type` MUST recurse through `seed_expr_type_by_id` (which
 //! caches results in `expr_types`). During lowering, `var_types` evolves
 //! as statements are processed. If sub-expression types are computed fresh
 //! (without cache), the same expression can produce different types at
@@ -47,13 +47,13 @@
 //! assignment, then becomes `Str` after. The cache freezes the type at
 //! first computation, ensuring consistent codegen.
 //!
-//! `infer_expr_type_inner` takes `&self` and cannot call `get_type_of_expr_id`
+//! `infer_seed_expr_type_inner` takes `&self` and cannot call `seed_expr_type_by_id`
 //! (which requires `&mut self`). It also MUST NOT cache into `expr_types`
 //! because it runs during pre-scan before lowering — caching at that point
 //! would freeze stale types that the codegen path would later pick up.
 //!
 //! A closure-based unification also fails: a shared `unified(&self, ..., F)`
-//! cannot accept a closure `|id| self.get_type_of_expr_id(id)` because the
+//! cannot accept a closure `|id| self.seed_expr_type_by_id(id)` because the
 //! closure needs `&mut self` while `unified` already holds `&self`.
 //!
 //! # Adding new match arms
@@ -570,17 +570,21 @@ impl<'a> Lowering<'a> {
 }
 
 // =============================================================================
-// Codegen path: memoized sub-expression resolution via get_type_of_expr_id
+// Codegen path: memoized sub-expression resolution via seed_expr_type_by_id
 // =============================================================================
 
 impl<'a> Lowering<'a> {
     /// **Internal** — codegen-path implementation of the memoized HIR type
-    /// query. External callers must go through `get_type_of_expr_id`
+    /// query. External callers must go through `seed_expr_type_by_id`
     /// (which wraps this with caching). S1.9b merges this with
-    /// [`Self::infer_expr_type_inner`] into a single unified match.
+    /// [`Self::infer_seed_expr_type_inner`] into a single unified match.
     ///
-    /// Uses `get_type_of_expr_id` for sub-expressions to ensure caching.
-    pub(super) fn compute_expr_type(&mut self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
+    /// Uses `seed_expr_type_by_id` for sub-expressions to ensure caching.
+    pub(super) fn compute_seed_expr_type(
+        &mut self,
+        expr: &hir::Expr,
+        hir_module: &hir::Module,
+    ) -> Type {
         match &expr.kind {
             hir::ExprKind::Var(var_id) => self
                 .get_base_var_type(var_id)
@@ -588,19 +592,19 @@ impl<'a> Lowering<'a> {
                 .or_else(|| expr.ty.clone())
                 .unwrap_or(Type::Any),
             hir::ExprKind::BinOp { op, left, right } => {
-                let left_ty = self.get_type_of_expr_id(*left, hir_module);
-                let right_ty = self.get_type_of_expr_id(*right, hir_module);
+                let left_ty = self.seed_expr_type_by_id(*left, hir_module);
+                let right_ty = self.seed_expr_type_by_id(*right, hir_module);
                 self.binop_result_type(op, &left_ty, &right_ty, expr)
             }
             hir::ExprKind::UnOp { op, operand } => match op {
                 hir::UnOp::Not => Type::Bool,
-                hir::UnOp::Neg | hir::UnOp::Pos => self.get_type_of_expr_id(*operand, hir_module),
+                hir::UnOp::Neg | hir::UnOp::Pos => self.seed_expr_type_by_id(*operand, hir_module),
                 hir::UnOp::Invert => Type::Int,
             },
             hir::ExprKind::Compare { .. } => Type::Bool,
             hir::ExprKind::LogicalOp { left, right, .. } => {
-                let left_ty = self.get_type_of_expr_id(*left, hir_module);
-                let right_ty = self.get_type_of_expr_id(*right, hir_module);
+                let left_ty = self.seed_expr_type_by_id(*left, hir_module);
+                let right_ty = self.seed_expr_type_by_id(*right, hir_module);
                 self.logical_op_result_type(left_ty, right_ty)
             }
             hir::ExprKind::IfExpr {
@@ -627,7 +631,7 @@ impl<'a> Lowering<'a> {
                         ) {
                             then_narrow
                         } else {
-                            self.get_type_of_expr_id(*then_val, hir_module)
+                            self.seed_expr_type_by_id(*then_val, hir_module)
                         };
                         let else_ty = if matches!(
                             &else_expr.kind,
@@ -635,13 +639,13 @@ impl<'a> Lowering<'a> {
                         ) {
                             else_narrow
                         } else {
-                            self.get_type_of_expr_id(*else_val, hir_module)
+                            self.seed_expr_type_by_id(*else_val, hir_module)
                         };
                         helpers::union_or_any(then_ty, else_ty)
                     }
                     None => {
-                        let then_ty = self.get_type_of_expr_id(*then_val, hir_module);
-                        let else_ty = self.get_type_of_expr_id(*else_val, hir_module);
+                        let then_ty = self.seed_expr_type_by_id(*then_val, hir_module);
+                        let else_ty = self.seed_expr_type_by_id(*else_val, hir_module);
                         helpers::union_or_any(then_ty, else_ty)
                     }
                 }
@@ -649,42 +653,42 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::List(elements) => {
                 let elem_types: Vec<Type> = elements
                     .iter()
-                    .map(|e| self.get_type_of_expr_id(*e, hir_module))
+                    .map(|e| self.seed_expr_type_by_id(*e, hir_module))
                     .collect();
                 helpers::infer_list_type(elem_types, expr.ty.as_ref())
             }
             hir::ExprKind::Tuple(elements) => {
                 let elem_types: Vec<Type> = elements
                     .iter()
-                    .map(|e| self.get_type_of_expr_id(*e, hir_module))
+                    .map(|e| self.seed_expr_type_by_id(*e, hir_module))
                     .collect();
                 Type::Tuple(elem_types)
             }
             hir::ExprKind::Dict(pairs) => {
                 let key_types: Vec<Type> = pairs
                     .iter()
-                    .map(|(k, _)| self.get_type_of_expr_id(*k, hir_module))
+                    .map(|(k, _)| self.seed_expr_type_by_id(*k, hir_module))
                     .collect();
                 let val_types: Vec<Type> = pairs
                     .iter()
-                    .map(|(_, v)| self.get_type_of_expr_id(*v, hir_module))
+                    .map(|(_, v)| self.seed_expr_type_by_id(*v, hir_module))
                     .collect();
                 helpers::infer_dict_type(key_types, val_types)
             }
             hir::ExprKind::Set(elements) => {
                 let elem_types: Vec<Type> = elements
                     .iter()
-                    .map(|e| self.get_type_of_expr_id(*e, hir_module))
+                    .map(|e| self.seed_expr_type_by_id(*e, hir_module))
                     .collect();
                 helpers::infer_set_type(elem_types)
             }
             hir::ExprKind::MethodCall { obj, method, .. } => {
-                let obj_ty = self.get_type_of_expr_id(*obj, hir_module);
+                let obj_ty = self.seed_expr_type_by_id(*obj, hir_module);
                 self.method_call_result_type(&obj_ty, *method, hir_module, expr)
             }
-            hir::ExprKind::Slice { obj, .. } => self.get_type_of_expr_id(*obj, hir_module),
+            hir::ExprKind::Slice { obj, .. } => self.seed_expr_type_by_id(*obj, hir_module),
             hir::ExprKind::Index { obj, index } => {
-                let obj_ty = self.get_type_of_expr_id(*obj, hir_module);
+                let obj_ty = self.seed_expr_type_by_id(*obj, hir_module);
                 let index_expr = &hir_module.exprs[*index];
                 self.index_result_type(&obj_ty, index_expr, expr)
             }
@@ -695,15 +699,46 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::BuiltinCall { builtin, args, .. } => {
                 let arg_types: Vec<Type> = args
                     .iter()
-                    .map(|id| self.get_type_of_expr_id(*id, hir_module))
+                    .map(|id| self.seed_expr_type_by_id(*id, hir_module))
                     .collect();
                 self.builtin_call_result_type(builtin, args, &arg_types, hir_module, expr)
             }
-            hir::ExprKind::StdlibCall { func, .. } => typespec_to_type(&func.return_type),
+            hir::ExprKind::StdlibCall { func, args } => {
+                let declared = typespec_to_type(&func.return_type);
+                if !matches!(declared, Type::Any | Type::HeapAny) {
+                    declared
+                } else if let Some(annotated) = expr.ty.clone() {
+                    if !matches!(annotated, Type::Any | Type::HeapAny) {
+                        annotated
+                    } else {
+                        match func.name {
+                            "choice" => args
+                                .first()
+                                .map(|arg_id| {
+                                    extract_iterable_first_element_type(
+                                        &self.seed_expr_type_by_id(*arg_id, hir_module),
+                                    )
+                                })
+                                .unwrap_or(Type::Any),
+                            "sample" | "choices" => args
+                                .first()
+                                .map(|arg_id| {
+                                    Type::List(Box::new(extract_iterable_first_element_type(
+                                        &self.seed_expr_type_by_id(*arg_id, hir_module),
+                                    )))
+                                })
+                                .unwrap_or(Type::Any),
+                            _ => annotated,
+                        }
+                    }
+                } else {
+                    declared
+                }
+            }
             hir::ExprKind::StdlibAttr(attr_def) => typespec_to_type(&attr_def.ty),
             hir::ExprKind::StdlibConst(const_def) => typespec_to_type(&const_def.ty),
             hir::ExprKind::Attribute { obj, attr } => {
-                let obj_ty = self.get_type_of_expr_id(*obj, hir_module);
+                let obj_ty = self.seed_expr_type_by_id(*obj, hir_module);
                 self.attribute_result_type(&obj_ty, *attr, expr)
             }
             hir::ExprKind::ClassRef(class_id) => self.class_ref_type(*class_id, hir_module),
@@ -717,10 +752,10 @@ impl<'a> Lowering<'a> {
             }
             hir::ExprKind::ImportedRef { module, name } => self.module_export_type(module, name),
             // Generator intrinsics — delegate to shared helper; resolve
-            // iter_ty here via the memoized get_type_of_expr_id path.
+            // iter_ty here via the memoized seed_expr_type_by_id path.
             hir::ExprKind::GeneratorIntrinsic(intrinsic) => {
                 let iter_ty = if let hir::GeneratorIntrinsic::IterNextNoExc(iter_id) = intrinsic {
-                    self.get_type_of_expr_id(*iter_id, hir_module)
+                    self.seed_expr_type_by_id(*iter_id, hir_module)
                 } else {
                     Type::Any
                 };
@@ -744,23 +779,23 @@ impl<'a> Lowering<'a> {
     /// when no overlay is needed (the former `infer_expr_type`
     /// no-overlay wrapper was deleted in §1.4u step 1 since its sole
     /// caller migrated).
-    pub(crate) fn infer_deep_expr_type(
+    pub(crate) fn seed_infer_expr_type(
         &self,
         expr: &hir::Expr,
         module: &hir::Module,
         param_types: &IndexMap<VarId, Type>,
     ) -> Type {
-        self.infer_expr_type_inner(expr, module, Some(param_types))
+        self.infer_seed_expr_type_inner(expr, module, Some(param_types))
     }
 
     /// **Internal** — pre-scan inference engine. Direct recursion, no
     /// memoization. External callers must go through
-    /// [`Self::infer_deep_expr_type`]. Same match arms as
-    /// [`Self::compute_expr_type`] but different sub-expression
+    /// [`Self::seed_infer_expr_type`]. Same match arms as
+    /// [`Self::compute_seed_expr_type`] but different sub-expression
     /// resolution and variable lookup strategy — full unification
     /// (§1.4u) requires the borrow-checker work documented at the top
     /// of this file.
-    pub(super) fn infer_expr_type_inner(
+    pub(super) fn infer_seed_expr_type_inner(
         &self,
         expr: &hir::Expr,
         module: &hir::Module,
@@ -790,23 +825,25 @@ impl<'a> Lowering<'a> {
                 }
             }
             hir::ExprKind::BinOp { op, left, right } => {
-                let left_ty = self.infer_expr_type_inner(&module.exprs[*left], module, param_types);
+                let left_ty =
+                    self.infer_seed_expr_type_inner(&module.exprs[*left], module, param_types);
                 let right_ty =
-                    self.infer_expr_type_inner(&module.exprs[*right], module, param_types);
+                    self.infer_seed_expr_type_inner(&module.exprs[*right], module, param_types);
                 self.binop_result_type(op, &left_ty, &right_ty, expr)
             }
             hir::ExprKind::UnOp { op, operand } => match op {
                 hir::UnOp::Not => Type::Bool,
                 hir::UnOp::Neg | hir::UnOp::Pos => {
-                    self.infer_expr_type_inner(&module.exprs[*operand], module, param_types)
+                    self.infer_seed_expr_type_inner(&module.exprs[*operand], module, param_types)
                 }
                 hir::UnOp::Invert => Type::Int,
             },
             hir::ExprKind::Compare { .. } => Type::Bool,
             hir::ExprKind::LogicalOp { left, right, .. } => {
-                let left_ty = self.infer_expr_type_inner(&module.exprs[*left], module, param_types);
+                let left_ty =
+                    self.infer_seed_expr_type_inner(&module.exprs[*left], module, param_types);
                 let right_ty =
-                    self.infer_expr_type_inner(&module.exprs[*right], module, param_types);
+                    self.infer_seed_expr_type_inner(&module.exprs[*right], module, param_types);
                 self.logical_op_result_type(left_ty, right_ty)
             }
             hir::ExprKind::IfExpr {
@@ -830,12 +867,12 @@ impl<'a> Lowering<'a> {
                         then_overlay.insert(var_id, then_narrow);
                         let mut else_overlay = param_types.cloned().unwrap_or_else(IndexMap::new);
                         else_overlay.insert(var_id, else_narrow);
-                        let then_ty = self.infer_expr_type_inner(
+                        let then_ty = self.infer_seed_expr_type_inner(
                             &module.exprs[*then_val],
                             module,
                             Some(&then_overlay),
                         );
-                        let else_ty = self.infer_expr_type_inner(
+                        let else_ty = self.infer_seed_expr_type_inner(
                             &module.exprs[*else_val],
                             module,
                             Some(&else_overlay),
@@ -843,12 +880,12 @@ impl<'a> Lowering<'a> {
                         helpers::union_or_any(then_ty, else_ty)
                     }
                     None => {
-                        let then_ty = self.infer_expr_type_inner(
+                        let then_ty = self.infer_seed_expr_type_inner(
                             &module.exprs[*then_val],
                             module,
                             param_types,
                         );
-                        let else_ty = self.infer_expr_type_inner(
+                        let else_ty = self.infer_seed_expr_type_inner(
                             &module.exprs[*else_val],
                             module,
                             param_types,
@@ -860,14 +897,18 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::List(elements) => {
                 let elem_types: Vec<Type> = elements
                     .iter()
-                    .map(|e| self.infer_expr_type_inner(&module.exprs[*e], module, param_types))
+                    .map(|e| {
+                        self.infer_seed_expr_type_inner(&module.exprs[*e], module, param_types)
+                    })
                     .collect();
                 helpers::infer_list_type(elem_types, expr.ty.as_ref())
             }
             hir::ExprKind::Tuple(elements) => {
                 let elem_types: Vec<Type> = elements
                     .iter()
-                    .map(|e| self.infer_expr_type_inner(&module.exprs[*e], module, param_types))
+                    .map(|e| {
+                        self.infer_seed_expr_type_inner(&module.exprs[*e], module, param_types)
+                    })
                     .collect();
                 Type::Tuple(elem_types)
             }
@@ -875,13 +916,13 @@ impl<'a> Lowering<'a> {
                 let key_types: Vec<Type> = pairs
                     .iter()
                     .map(|(k, _)| {
-                        self.infer_expr_type_inner(&module.exprs[*k], module, param_types)
+                        self.infer_seed_expr_type_inner(&module.exprs[*k], module, param_types)
                     })
                     .collect();
                 let val_types: Vec<Type> = pairs
                     .iter()
                     .map(|(_, v)| {
-                        self.infer_expr_type_inner(&module.exprs[*v], module, param_types)
+                        self.infer_seed_expr_type_inner(&module.exprs[*v], module, param_types)
                     })
                     .collect();
                 helpers::infer_dict_type(key_types, val_types)
@@ -889,19 +930,23 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::Set(elements) => {
                 let elem_types: Vec<Type> = elements
                     .iter()
-                    .map(|e| self.infer_expr_type_inner(&module.exprs[*e], module, param_types))
+                    .map(|e| {
+                        self.infer_seed_expr_type_inner(&module.exprs[*e], module, param_types)
+                    })
                     .collect();
                 helpers::infer_set_type(elem_types)
             }
             hir::ExprKind::MethodCall { obj, method, .. } => {
-                let obj_ty = self.infer_expr_type_inner(&module.exprs[*obj], module, param_types);
+                let obj_ty =
+                    self.infer_seed_expr_type_inner(&module.exprs[*obj], module, param_types);
                 self.method_call_result_type(&obj_ty, *method, module, expr)
             }
             hir::ExprKind::Slice { obj, .. } => {
-                self.infer_expr_type_inner(&module.exprs[*obj], module, param_types)
+                self.infer_seed_expr_type_inner(&module.exprs[*obj], module, param_types)
             }
             hir::ExprKind::Index { obj, index } => {
-                let obj_ty = self.infer_expr_type_inner(&module.exprs[*obj], module, param_types);
+                let obj_ty =
+                    self.infer_seed_expr_type_inner(&module.exprs[*obj], module, param_types);
                 let index_expr = &module.exprs[*index];
                 self.index_result_type(&obj_ty, index_expr, expr)
             }
@@ -912,15 +957,57 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::BuiltinCall { builtin, args, .. } => {
                 let arg_types: Vec<Type> = args
                     .iter()
-                    .map(|id| self.infer_expr_type_inner(&module.exprs[*id], module, param_types))
+                    .map(|id| {
+                        self.infer_seed_expr_type_inner(&module.exprs[*id], module, param_types)
+                    })
                     .collect();
                 self.builtin_call_result_type(builtin, args, &arg_types, module, expr)
             }
-            hir::ExprKind::StdlibCall { func, .. } => typespec_to_type(&func.return_type),
+            hir::ExprKind::StdlibCall { func, args } => {
+                let declared = typespec_to_type(&func.return_type);
+                if !matches!(declared, Type::Any | Type::HeapAny) {
+                    declared
+                } else if let Some(annotated) = expr.ty.clone() {
+                    if !matches!(annotated, Type::Any | Type::HeapAny) {
+                        annotated
+                    } else {
+                        match func.name {
+                            "choice" => args
+                                .first()
+                                .map(|arg_id| {
+                                    extract_iterable_first_element_type(
+                                        &self.infer_seed_expr_type_inner(
+                                            &module.exprs[*arg_id],
+                                            module,
+                                            param_types,
+                                        ),
+                                    )
+                                })
+                                .unwrap_or(Type::Any),
+                            "sample" | "choices" => args
+                                .first()
+                                .map(|arg_id| {
+                                    Type::List(Box::new(extract_iterable_first_element_type(
+                                        &self.infer_seed_expr_type_inner(
+                                            &module.exprs[*arg_id],
+                                            module,
+                                            param_types,
+                                        ),
+                                    )))
+                                })
+                                .unwrap_or(Type::Any),
+                            _ => annotated,
+                        }
+                    }
+                } else {
+                    declared
+                }
+            }
             hir::ExprKind::StdlibAttr(attr_def) => typespec_to_type(&attr_def.ty),
             hir::ExprKind::StdlibConst(const_def) => typespec_to_type(&const_def.ty),
             hir::ExprKind::Attribute { obj, attr } => {
-                let obj_ty = self.infer_expr_type_inner(&module.exprs[*obj], module, param_types);
+                let obj_ty =
+                    self.infer_seed_expr_type_inner(&module.exprs[*obj], module, param_types);
                 self.attribute_result_type(&obj_ty, *attr, expr)
             }
             hir::ExprKind::ClassRef(class_id) => self.class_ref_type(*class_id, module),
@@ -943,7 +1030,7 @@ impl<'a> Lowering<'a> {
             // iter_ty here via the direct (non-memoized) recursion path.
             hir::ExprKind::GeneratorIntrinsic(intrinsic) => {
                 let iter_ty = if let hir::GeneratorIntrinsic::IterNextNoExc(iter_id) = intrinsic {
-                    self.infer_expr_type_inner(&module.exprs[*iter_id], module, param_types)
+                    self.infer_seed_expr_type_inner(&module.exprs[*iter_id], module, param_types)
                 } else {
                     Type::Any
                 };
@@ -956,7 +1043,7 @@ impl<'a> Lowering<'a> {
     /// Extract `isinstance(var, T)` (or `not isinstance(var, T)`) narrowing
     /// info from a condition expression. Returns `(var_id, then_ty, else_ty)`
     /// with the narrowing applied. Used by the `IfExpr` arm of
-    /// `infer_expr_type_inner` to give ternary branches refined types.
+    /// `infer_seed_expr_type_inner` to give ternary branches refined types.
     ///
     /// Unlike `narrowing::extract_isinstance_info`, this helper consults the
     /// supplied `param_types` overlay first so it works during pre-scan
@@ -1019,7 +1106,7 @@ impl<'a> Lowering<'a> {
         // stable state (refined/prescan/global), else default to Any.
         // §1.4u-b: this helper is called from `compute_expr_type`'s
         // IfExpr arm, which must be free of `symbols.var_types` reads so
-        // non-Var expressions can be eagerly cached in `run_type_planning`.
+        // non-Var expressions can be eagerly cached in `build_lowering_seed_info`.
         // The narrowing heuristic works on the base (pre-narrowing) type
         // anyway — narrowing INSIDE an isinstance condition is the
         // outer rule the IfExpr is applying; reading the post-narrowing

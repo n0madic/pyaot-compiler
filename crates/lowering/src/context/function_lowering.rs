@@ -51,7 +51,7 @@ impl<'a> Lowering<'a> {
 
         // Phase 1: Type Planning — pre-scan + compute types for all expressions
         // Fills type_map, closure_capture_types, lambda_param_type_hints, func_return_types
-        self.run_type_planning(&hir_module);
+        self.build_lowering_seed_info(&hir_module);
 
         // Phase 2: Code Generation — lower functions using type_map
         // After desugaring, no functions should have is_generator=true
@@ -98,7 +98,7 @@ impl<'a> Lowering<'a> {
         // Reset per-function state
         self.symbols.var_to_local.clear();
         self.symbols.var_types.clear();
-        self.hir_types.prescan_var_types.clear();
+        self.lowering_seed_info.current_local_seed_types.clear();
         self.symbols.var_to_func.clear();
         self.closures.var_to_closure.clear();
         self.closures.var_to_wrapper.clear();
@@ -111,7 +111,6 @@ impl<'a> Lowering<'a> {
         self.codegen.next_local_id = 0;
         self.symbols.cell_vars.clear();
         self.symbols.nonlocal_cells.clear();
-        self.hir_types.narrowed_union_vars.clear();
         self.codegen.loop_stack.clear();
         self.codegen.expected_type = None;
         self.codegen.pending_varargs_from_unpack = None;
@@ -225,13 +224,13 @@ impl<'a> Lowering<'a> {
         }
 
         // Area E §E.6 — copy this function's pre-scan results (computed
-        // during `run_type_planning::precompute_all_local_var_types`) into
-        // the active `prescan_var_types` map. `get_or_create_local` and
+        // during `build_lowering_seed_info::precompute_all_local_var_types`) into
+        // the active `current_local_seed_types` map. `get_or_create_local` and
         // `lower_assign` consult it to size MIR locals and coerce RHS
         // values through the numeric tower.
         if let Some(prescanned) = self
-            .hir_types
-            .per_function_prescan_var_types
+            .lowering_seed_info
+            .per_function_local_seed_types
             .get(&func.id)
             .cloned()
         {
@@ -251,7 +250,9 @@ impl<'a> Lowering<'a> {
                     .iter()
                     .any(|p| p.var == var_id && p.ty.is_some());
                 if !is_annotated_param {
-                    self.hir_types.prescan_var_types.insert(var_id, ty);
+                    self.lowering_seed_info
+                        .current_local_seed_types
+                        .insert(var_id, ty);
                 }
             }
         }
@@ -568,7 +569,7 @@ impl<'a> Lowering<'a> {
                         | hir::ExprKind::None
                 );
                 if is_literal_shape {
-                    let inferred = self.infer_deep_expr_type(
+                    let inferred = self.seed_infer_expr_type(
                         value_expr,
                         hir_module,
                         &indexmap::IndexMap::new(),

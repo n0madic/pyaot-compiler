@@ -54,7 +54,7 @@ impl<'a> Lowering<'a> {
                 );
             }
             // class-iterator protocol
-            let iter_type = self.get_type_of_expr_id(iter, hir_module);
+            let iter_type = self.expr_type_hint(iter, hir_module);
             if let Type::Class { class_id, .. } = &iter_type {
                 let has_iter = self
                     .get_class_info(class_id)
@@ -149,7 +149,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<()> {
         let iter_expr = &hir_module.exprs[iter_id];
-        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
+        let iter_type = self.expr_type_hint(iter_id, hir_module);
 
         // Resolve element type and iteration kind. For unknown types we
         // could in principle fall back to the iterator protocol, but the

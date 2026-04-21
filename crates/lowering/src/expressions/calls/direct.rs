@@ -44,7 +44,14 @@ impl<'a> Lowering<'a> {
                         }
                         _ => {
                             // Runtime unpacking: check if it's a tuple or list variable
-                            let arg_type = self.get_type_of_expr_id(*expr_id, hir_module);
+                            let arg_type = match &arg_expr.kind {
+                                hir::ExprKind::Var(var_id) => self
+                                    .get_var_local(var_id)
+                                    .and_then(|local_id| mir_func.locals.get(&local_id))
+                                    .map(|local| local.ty.clone())
+                                    .unwrap_or_else(|| self.expr_type_hint(*expr_id, hir_module)),
+                                _ => self.expr_type_hint(*expr_id, hir_module),
+                            };
                             match &arg_type {
                                 Type::Tuple(_) => {
                                     // Mark for runtime tuple unpacking
@@ -103,8 +110,15 @@ impl<'a> Lowering<'a> {
                 }
                 _ => {
                     // Runtime **kwargs unpacking: lower the dict and pass to resolve_call_args
-                    let dict_type = self.get_type_of_expr_id(*kwargs_expr_id, hir_module);
                     let dict_operand = self.lower_expr(kwargs_expr, hir_module, mir_func)?;
+                    let dict_type = match &dict_operand {
+                        mir::Operand::Local(local_id) => mir_func
+                            .locals
+                            .get(local_id)
+                            .map(|local| local.ty.clone())
+                            .unwrap_or_else(|| self.expr_type_hint(*kwargs_expr_id, hir_module)),
+                        _ => self.expr_type_hint(*kwargs_expr_id, hir_module),
+                    };
 
                     // Get the value type from dict type
                     let value_type = match &dict_type {
@@ -456,12 +470,20 @@ impl<'a> Lowering<'a> {
                 // No args at all — use func expression span
                 func_expr.span
             };
-            // Skip the validator when we're forwarding captures —
-            // `check_call_args` compares against the full param list
-            // (captures + user params) but the user's call site only
-            // supplies the user-facing args. Validation after capture
-            // prepending would accept the synthetic operands anyway.
-            if !has_forwarded_captures {
+            let has_runtime_unpack = args
+                .iter()
+                .any(|arg| !matches!(arg, ExpandedArg::Regular(_)));
+            let has_runtime_kwargs_unpack = kwargs_unpack
+                .as_ref()
+                .map(|expr_id| &hir_module.exprs[*expr_id])
+                .is_some_and(|kwargs_expr| !matches!(kwargs_expr.kind, hir::ExprKind::Dict(_)));
+
+            // Skip the legacy HIR-side validator when we're forwarding captures
+            // or when the call site uses runtime *args/**kwargs expansion.
+            // `check_call_args` only reasons about explicit HIR arg expr ids,
+            // while `resolve_call_args` is the canonical path that understands
+            // runtime unpacking and default/kwarg filling.
+            if !has_forwarded_captures && !has_runtime_unpack && !has_runtime_kwargs_unpack {
                 self.check_call_args(func_id, &regular_arg_ids, kwargs, call_span, hir_module);
             }
 

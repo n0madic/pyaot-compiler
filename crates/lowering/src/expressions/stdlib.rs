@@ -21,6 +21,64 @@ use pyaot_types::{typespec_to_type, Type};
 use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
+    fn stdlib_param_expected_type(&self, ty: &TypeSpec) -> Option<Type> {
+        let expected = typespec_to_type(ty);
+        if matches!(expected, Type::Any | Type::HeapAny) {
+            None
+        } else {
+            Some(expected)
+        }
+    }
+
+    fn resolved_stdlib_call_result_type(
+        &self,
+        func_def: &'static StdlibFunctionDef,
+        args: &[hir::ExprId],
+        expr: Option<&hir::Expr>,
+        hir_module: &hir::Module,
+    ) -> Type {
+        let declared = typespec_to_type(&func_def.return_type);
+        if !matches!(declared, Type::Any | Type::HeapAny) {
+            return declared;
+        }
+
+        if let Some(expr) = expr {
+            if let Some(annotated) = expr.ty.clone() {
+                if !matches!(annotated, Type::Any | Type::HeapAny) {
+                    return annotated;
+                }
+            }
+        }
+
+        if let Some(expected) = self.codegen.expected_type.clone() {
+            if !matches!(expected, Type::Any | Type::HeapAny) {
+                return expected;
+            }
+        }
+
+        match func_def.name {
+            "choice" => args
+                .first()
+                .map(|arg_id| {
+                    crate::type_planning::infer::extract_iterable_first_element_type(
+                        &self.expr_type_hint(*arg_id, hir_module),
+                    )
+                })
+                .unwrap_or(Type::Any),
+            "sample" | "choices" => args
+                .first()
+                .map(|arg_id| {
+                    Type::List(Box::new(
+                        crate::type_planning::infer::extract_iterable_first_element_type(
+                            &self.expr_type_hint(*arg_id, hir_module),
+                        ),
+                    ))
+                })
+                .unwrap_or(Type::Any),
+            _ => declared,
+        }
+    }
+
     /// Lower a stdlib attribute access (e.g., sys.argv, os.environ)
     /// Uses the definition reference for Single Source of Truth
     pub(crate) fn lower_stdlib_attr(
@@ -77,6 +135,7 @@ impl<'a> Lowering<'a> {
         &mut self,
         func_def: &'static StdlibFunctionDef,
         args: &[hir::ExprId],
+        expr: &hir::Expr,
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
@@ -84,7 +143,7 @@ impl<'a> Lowering<'a> {
 
         // Handle variadic_to_list: collect all args into a list
         if hints.variadic_to_list {
-            return self.lower_variadic_to_list_call(func_def, args, hir_module, mir_func);
+            return self.lower_variadic_to_list_call(func_def, args, expr, hir_module, mir_func);
         }
 
         // Lower arguments with auto-boxing and default value support
@@ -100,7 +159,8 @@ impl<'a> Lowering<'a> {
             ));
         }
 
-        let result_type = typespec_to_type(&func_def.return_type);
+        let result_type =
+            self.resolved_stdlib_call_result_type(func_def, args, Some(expr), hir_module);
         let result_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&func_def.codegen),
             mir_args,
@@ -126,9 +186,14 @@ impl<'a> Lowering<'a> {
         for (i, param) in params.iter().enumerate() {
             let operand = if i < args.len() {
                 // Argument provided - lower it
-                let arg_type = self.get_type_of_expr_id(args[i], hir_module);
+                let arg_type = self.expr_type_hint(args[i], hir_module);
                 let arg_expr = &hir_module.exprs[args[i]];
-                let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
+                let arg_operand = self.lower_expr_expecting(
+                    arg_expr,
+                    self.stdlib_param_expected_type(&param.ty),
+                    hir_module,
+                    mir_func,
+                )?;
 
                 // Auto-box if enabled and parameter is Any
                 if hints.auto_box && matches!(param.ty, TypeSpec::Any) {
@@ -169,6 +234,7 @@ impl<'a> Lowering<'a> {
         &mut self,
         func_def: &'static StdlibFunctionDef,
         args: &[hir::ExprId],
+        expr: &hir::Expr,
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
@@ -187,7 +253,7 @@ impl<'a> Lowering<'a> {
         // Add each argument to the list, boxing primitives as required since the list
         // uses ELEM_HEAP_OBJ storage (float, bool, and None are stored as heap objects).
         for arg_id in args {
-            let arg_type = self.get_type_of_expr_id(*arg_id, hir_module);
+            let arg_type = self.expr_type_hint(*arg_id, hir_module);
             let arg_expr = &hir_module.exprs[*arg_id];
             let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
 
@@ -204,7 +270,8 @@ impl<'a> Lowering<'a> {
         }
 
         // Call the runtime function with the list
-        let result_type = typespec_to_type(&func_def.return_type);
+        let result_type =
+            self.resolved_stdlib_call_result_type(func_def, args, Some(expr), hir_module);
         let result_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&func_def.codegen),
             vec![mir::Operand::Local(list_local)],
@@ -242,12 +309,17 @@ impl<'a> Lowering<'a> {
             let operand = if i < args.len() {
                 // Argument provided - lower it
                 let arg_expr = &hir_module.exprs[args[i]];
-                let op = self.lower_expr(arg_expr, hir_module, mir_func)?;
+                let op = self.lower_expr_expecting(
+                    arg_expr,
+                    self.stdlib_param_expected_type(&param.ty),
+                    hir_module,
+                    mir_func,
+                )?;
 
                 // Auto-box primitives for Any parameters so the runtime
                 // receives valid *mut Obj pointers (not raw i64/f64 values)
                 if matches!(param.ty, pyaot_stdlib_defs::TypeSpec::Any) {
-                    let arg_type = self.get_type_of_expr_id(args[i], hir_module);
+                    let arg_type = self.expr_type_hint(args[i], hir_module);
                     self.box_primitive_if_needed(op, &arg_type, mir_func)
                 } else {
                     op

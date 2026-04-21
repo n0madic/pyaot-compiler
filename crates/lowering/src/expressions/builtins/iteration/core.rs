@@ -32,8 +32,8 @@ impl<'a> Lowering<'a> {
             return self.lower_iter_range(range_args, hir_module, mir_func);
         }
 
-        let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
+        let arg_operand = self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
+        let arg_type = self.expr_type_hint(args[0], hir_module);
 
         // Handle class with __iter__ dunder
         if let Type::Class { class_id, .. } = &arg_type {
@@ -155,8 +155,8 @@ impl<'a> Lowering<'a> {
         }
 
         let arg_expr = &hir_module.exprs[args[0]];
-        let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
+        let arg_operand = self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
+        let arg_type = self.expr_type_hint(args[0], hir_module);
 
         // Handle class with __next__ dunder
         if let Type::Class { class_id, .. } = &arg_type {
@@ -213,7 +213,7 @@ impl<'a> Lowering<'a> {
             }
         );
 
-        let expr_type = self.get_type_of_expr_id(expr_id, hir_module);
+        let expr_type = self.expr_type_hint(expr_id, hir_module);
         let elem_type = if is_range {
             Type::Int
         } else {
@@ -241,7 +241,7 @@ impl<'a> Lowering<'a> {
                 });
             }
         } else {
-            let operand = self.lower_expr(expr, hir_module, mir_func)?;
+            let operand = self.lower_expr_expecting(expr, None, hir_module, mir_func)?;
             let source = crate::type_dispatch::type_to_iter_source(&expr_type);
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {

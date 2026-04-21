@@ -44,7 +44,7 @@ pub static RANDOM_CHOICE: StdlibFunctionDef = StdlibFunctionDef {
     return_type: TypeSpec::Any,
     min_args: 1,
     max_args: 1,
-    hints: LoweringHints::DEFAULT,
+    hints: LoweringHints::NO_AUTO_BOX,
     codegen: RuntimeFuncDef::new("rt_random_choice", &[P_I64], Some(R_I64), false),
 };
 
@@ -56,7 +56,7 @@ pub static RANDOM_SHUFFLE: StdlibFunctionDef = StdlibFunctionDef {
     return_type: TypeSpec::None,
     min_args: 1,
     max_args: 1,
-    hints: LoweringHints::DEFAULT,
+    hints: LoweringHints::NO_AUTO_BOX,
     codegen: RuntimeFuncDef::void("rt_random_shuffle", &[P_I64]),
 };
 
@@ -127,7 +127,7 @@ pub static RANDOM_SAMPLE: StdlibFunctionDef = StdlibFunctionDef {
     return_type: TypeSpec::Any,
     min_args: 2,
     max_args: 2,
-    hints: LoweringHints::DEFAULT,
+    hints: LoweringHints::NO_AUTO_BOX,
     codegen: RuntimeFuncDef::new("rt_random_sample", &[P_I64, P_I64], Some(R_I64), false),
 };
 
@@ -159,7 +159,7 @@ pub static RANDOM_CHOICES: StdlibFunctionDef = StdlibFunctionDef {
     return_type: TypeSpec::Any,
     min_args: 1,
     max_args: 3,
-    hints: LoweringHints::DEFAULT,
+    hints: LoweringHints::NO_AUTO_BOX,
     codegen: RuntimeFuncDef::new(
         "rt_random_choices",
         &[P_I64, P_I64, P_I64],

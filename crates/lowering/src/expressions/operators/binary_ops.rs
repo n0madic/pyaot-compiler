@@ -34,7 +34,7 @@ impl<'a> Lowering<'a> {
             right,
         } = &expr.kind
         {
-            let left_type = self.get_type_of_expr_id(*left, hir_module);
+            let left_type = self.expr_type_hint(*left, hir_module);
             if matches!(left_type, Type::Str) {
                 // Recursively collect from left side first (left-to-right evaluation)
                 self.collect_str_concat_chain(*left, hir_module, chain);
@@ -61,7 +61,7 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         // Get operand types using get_expr_type for better inference
         let left_expr = &hir_module.exprs[left];
-        let left_hir_ty = self.get_type_of_expr_id(left, hir_module);
+        let left_hir_ty = self.expr_type_hint(left, hir_module);
 
         // Check for string concatenation chain optimization
         if matches!(op, hir::BinOp::Add) && matches!(left_hir_ty, Type::Str) {

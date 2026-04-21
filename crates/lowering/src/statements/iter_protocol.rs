@@ -144,7 +144,7 @@ impl<'a> Lowering<'a> {
             return Ok(());
         }
 
-        let iter_type = self.get_type_of_expr_id(iter_id, hir_module);
+        let iter_type = self.expr_type_hint(iter_id, hir_module);
         if let Type::Class { class_id, .. } = &iter_type {
             let class_info = self.get_class_info(class_id).ok_or_else(|| {
                 CompilerError::type_error(
@@ -822,7 +822,7 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         let subject_expr = &hir_module.exprs[subject];
         let subject_operand = self.lower_expr(subject_expr, hir_module, mir_func)?;
-        let subject_type = self.get_type_of_expr_id(subject, hir_module);
+        let subject_type = self.expr_type_hint(subject, hir_module);
 
         let subject_local = self.alloc_and_add_local(subject_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {

@@ -7,10 +7,11 @@ use indexmap::IndexMap;
 use pyaot_diagnostics::CompilerWarning;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
-use pyaot_types::Type;
+use pyaot_types::{typespec_to_type, Type};
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, VarId};
 
 use crate::narrowing::DeadBranch;
+use crate::type_planning::helpers;
 
 use super::{CrossModuleClassInfo, LoweredClassInfo, Lowering};
 
@@ -42,12 +43,28 @@ impl<'a> Lowering<'a> {
 impl<'a> Lowering<'a> {
     /// Get a block-local shadow local emitted for a materialized narrowing.
     pub(crate) fn get_block_narrowed_local(&self, var_id: &VarId) -> Option<LocalId> {
-        self.codegen.block_narrowed_locals.get(var_id).copied()
+        self.codegen
+            .block_narrowed_locals
+            .get(var_id)
+            .map(|info| info.local_id)
     }
 
     /// Record the block-local shadow local for a materialized narrowing.
-    pub(crate) fn insert_block_narrowed_local(&mut self, var_id: VarId, local_id: LocalId) {
-        self.codegen.block_narrowed_locals.insert(var_id, local_id);
+    pub(crate) fn insert_block_narrowed_local(
+        &mut self,
+        var_id: VarId,
+        local_id: LocalId,
+        storage_ty: Type,
+        narrowed_ty: Type,
+    ) {
+        self.codegen.block_narrowed_locals.insert(
+            var_id,
+            super::BlockNarrowedLocal {
+                local_id,
+                storage_ty,
+                narrowed_ty,
+            },
+        );
     }
 
     /// Drop a materialized narrowing local, typically after the variable is reassigned.
@@ -58,11 +75,10 @@ impl<'a> Lowering<'a> {
     /// If `var_id` currently has a block-local narrowed shadow, return the
     /// original pre-narrowing storage type that writes must target.
     pub(crate) fn get_block_narrowed_storage_type(&self, var_id: &VarId) -> Option<&Type> {
-        self.codegen.block_narrowed_locals.get(var_id)?;
-        self.hir_types
-            .narrowing_stack
-            .last()
-            .and_then(|frame| frame.saved_var_types.get(var_id))
+        self.codegen
+            .block_narrowed_locals
+            .get(var_id)
+            .map(|info| &info.storage_ty)
     }
 
     /// Clear all per-block materialized narrowing locals.
@@ -86,35 +102,35 @@ impl<'a> Lowering<'a> {
         self.symbols
             .var_types
             .get(var_id)
-            .or_else(|| self.hir_types.refined_var_types.get(var_id))
+            .or_else(|| self.lowering_seed_info.refined_container_types.get(var_id))
             .or_else(|| self.symbols.global_var_types.get(var_id))
     }
 
     /// Read a variable's **base** type — fully independent of
-    /// `symbols.var_types` (which is cleared per function and mutated
-    /// by `push_narrowing_frame` during lowering). §1.4u-b step 4
+    /// `symbols.var_types` (which is cleared per function and only
+    /// tracks lowering-time writes). §1.4u-b step 4
     /// restricts this accessor to stable sources so `compute_expr_type`
     /// can be a pure function of HIR + F/M state, cacheable at
     /// module level.
     ///
-    /// Fallback chain (all stable after `run_type_planning`
+    /// Fallback chain (all stable after `build_lowering_seed_info`
     /// completes, never touched by narrowing):
     /// 1. `base_var_types` — persistent per-module map seeded from
     ///    every function's annotated params, prescan locals, and
     ///    exception-handler binding types.
-    /// 2. `refined_var_types` — empty-container refine output.
-    /// 3. `prescan_var_types` — current function's Area E §E.6 prescan.
+    /// 2. `refined_container_types` — empty-container refine output.
+    /// 3. `current_local_seed_types` — current function's Area E §E.6 prescan.
     /// 4. `global_var_types` — module-level globals.
     ///
     /// Consumers that need the **effective** (narrowing-aware) type
-    /// at a use site must go through `get_type_of_expr_id` — its Var
+    /// at a use site must go through `expr_type_hint` — its Var
     /// branch reads `get_var_type` first.
     pub(crate) fn get_base_var_type(&self, var_id: &VarId) -> Option<&Type> {
-        self.hir_types
+        self.lowering_seed_info
             .base_var_types
             .get(var_id)
-            .or_else(|| self.hir_types.refined_var_types.get(var_id))
-            .or_else(|| self.hir_types.prescan_var_types.get(var_id))
+            .or_else(|| self.lowering_seed_info.refined_container_types.get(var_id))
+            .or_else(|| self.lowering_seed_info.current_local_seed_types.get(var_id))
             .or_else(|| self.symbols.global_var_types.get(var_id))
     }
 
@@ -124,6 +140,334 @@ impl<'a> Lowering<'a> {
         self.symbols.var_types.insert(var_id, ty.clone());
         if self.symbols.globals.contains(&var_id) {
             self.symbols.global_var_types.insert(var_id, ty);
+        }
+    }
+
+    /// Lightweight lowering-time type hint.
+    ///
+    /// This is intentionally not a recursive HIR inference engine. It reads the
+    /// current lowered view for `Var` expressions and otherwise falls back to the
+    /// HIR node's own annotation. Seed-building passes inside `type_planning`
+    /// still use their private inference helpers; regular lowering must not.
+    pub(crate) fn expr_type_hint(&self, expr_id: hir::ExprId, hir_module: &hir::Module) -> Type {
+        let expr = &hir_module.exprs[expr_id];
+        if !matches!(expr.kind, hir::ExprKind::Var(_)) {
+            if let Some(cached) = self.lowering_seed_info.lookup(expr_id).cloned() {
+                return cached;
+            }
+        }
+        match &expr.kind {
+            hir::ExprKind::Var(var_id) => self
+                .codegen
+                .block_narrowed_locals
+                .get(var_id)
+                .map(|info| info.narrowed_ty.clone())
+                .or_else(|| self.get_var_type(var_id).cloned())
+                .or_else(|| self.get_base_var_type(var_id).cloned())
+                .or_else(|| expr.ty.clone())
+                .unwrap_or(Type::Any),
+            hir::ExprKind::Int(_) => Type::Int,
+            hir::ExprKind::Float(_) => Type::Float,
+            hir::ExprKind::Bool(_) => Type::Bool,
+            hir::ExprKind::Str(_) => Type::Str,
+            hir::ExprKind::Bytes(_) => Type::Bytes,
+            hir::ExprKind::None => Type::None,
+            hir::ExprKind::TypeRef(ty) => ty.clone(),
+            hir::ExprKind::BinOp { op, left, right } => {
+                if let Some(annotated) = expr.ty.clone() {
+                    return annotated;
+                }
+                let left_ty = self.expr_type_hint(*left, hir_module);
+                let right_ty = self.expr_type_hint(*right, hir_module);
+                match op {
+                    hir::BinOp::Add => match (&left_ty, &right_ty) {
+                        (Type::Float, _) | (_, Type::Float) => Type::Float,
+                        (Type::Int, Type::Int) | (Type::Bool, Type::Bool) => Type::Int,
+                        (Type::Str, Type::Str) => Type::Str,
+                        (Type::Bytes, Type::Bytes) => Type::Bytes,
+                        (Type::List(left), Type::List(right)) => {
+                            Type::List(Box::new(Type::unify_field_type(left, right)))
+                        }
+                        (Type::Tuple(left), Type::Tuple(right)) => {
+                            let mut elems = left.clone();
+                            elems.extend(right.clone());
+                            Type::Tuple(elems)
+                        }
+                        _ => Type::Any,
+                    },
+                    hir::BinOp::Sub
+                    | hir::BinOp::Mul
+                    | hir::BinOp::Div
+                    | hir::BinOp::FloorDiv
+                    | hir::BinOp::Mod
+                    | hir::BinOp::Pow => {
+                        if matches!(left_ty, Type::Float) || matches!(right_ty, Type::Float) {
+                            Type::Float
+                        } else if matches!(left_ty, Type::Int | Type::Bool)
+                            && matches!(right_ty, Type::Int | Type::Bool)
+                        {
+                            Type::Int
+                        } else {
+                            Type::Any
+                        }
+                    }
+                    hir::BinOp::BitAnd
+                    | hir::BinOp::BitOr
+                    | hir::BinOp::BitXor
+                    | hir::BinOp::LShift
+                    | hir::BinOp::RShift => Type::Int,
+                    hir::BinOp::MatMul => Type::Any,
+                }
+            }
+            hir::ExprKind::UnOp { op, operand } => match op {
+                hir::UnOp::Not => Type::Bool,
+                hir::UnOp::Neg | hir::UnOp::Pos => self.expr_type_hint(*operand, hir_module),
+                hir::UnOp::Invert => Type::Int,
+            },
+            hir::ExprKind::Compare { .. } => Type::Bool,
+            hir::ExprKind::LogicalOp { left, right, .. } => {
+                if let Some(annotated) = expr.ty.clone() {
+                    return annotated;
+                }
+                let left_ty = self.expr_type_hint(*left, hir_module);
+                let right_ty = self.expr_type_hint(*right, hir_module);
+                if left_ty == right_ty {
+                    left_ty
+                } else {
+                    Type::normalize_union(vec![left_ty, right_ty])
+                }
+            }
+            hir::ExprKind::IfExpr {
+                then_val, else_val, ..
+            } => {
+                if let Some(annotated) = expr.ty.clone() {
+                    return annotated;
+                }
+                let then_ty = self.expr_type_hint(*then_val, hir_module);
+                let else_ty = self.expr_type_hint(*else_val, hir_module);
+                if then_ty == else_ty {
+                    then_ty
+                } else {
+                    Type::normalize_union(vec![then_ty, else_ty])
+                }
+            }
+            hir::ExprKind::List(elements) => {
+                if let Some(annotated) = expr.ty.clone() {
+                    return annotated;
+                }
+                let elem_ty = elements.iter().fold(None, |acc: Option<Type>, elem_id| {
+                    let next = self.expr_type_hint(*elem_id, hir_module);
+                    Some(match acc {
+                        Some(prev) => Type::unify_field_type(&prev, &next),
+                        None => next,
+                    })
+                });
+                Type::List(Box::new(elem_ty.unwrap_or(Type::Any)))
+            }
+            hir::ExprKind::Tuple(elements) => {
+                if let Some(annotated) = expr.ty.clone() {
+                    return annotated;
+                }
+                Type::Tuple(
+                    elements
+                        .iter()
+                        .map(|elem_id| self.expr_type_hint(*elem_id, hir_module))
+                        .collect(),
+                )
+            }
+            hir::ExprKind::Set(elements) => {
+                if let Some(annotated) = expr.ty.clone() {
+                    return annotated;
+                }
+                let elem_ty = elements.iter().fold(None, |acc: Option<Type>, elem_id| {
+                    let next = self.expr_type_hint(*elem_id, hir_module);
+                    Some(match acc {
+                        Some(prev) => Type::unify_field_type(&prev, &next),
+                        None => next,
+                    })
+                });
+                Type::Set(Box::new(elem_ty.unwrap_or(Type::Any)))
+            }
+            hir::ExprKind::Dict(pairs) => {
+                if let Some(annotated) = expr.ty.clone() {
+                    return annotated;
+                }
+                let (key_ty, value_ty) = pairs.iter().fold(
+                    (None, None),
+                    |(acc_k, acc_v): (Option<Type>, Option<Type>), (key_id, value_id)| {
+                        let next_k = self.expr_type_hint(*key_id, hir_module);
+                        let next_v = self.expr_type_hint(*value_id, hir_module);
+                        (
+                            Some(match acc_k {
+                                Some(prev) => Type::unify_field_type(&prev, &next_k),
+                                None => next_k,
+                            }),
+                            Some(match acc_v {
+                                Some(prev) => Type::unify_field_type(&prev, &next_v),
+                                None => next_v,
+                            }),
+                        )
+                    },
+                );
+                Type::Dict(
+                    Box::new(key_ty.unwrap_or(Type::Any)),
+                    Box::new(value_ty.unwrap_or(Type::Any)),
+                )
+            }
+            hir::ExprKind::Call { func, .. } => {
+                let func_expr = &hir_module.exprs[*func];
+                match &func_expr.kind {
+                    hir::ExprKind::FuncRef(func_id) => self
+                        .get_func_return_type(func_id)
+                        .cloned()
+                        .or_else(|| {
+                            hir_module
+                                .func_defs
+                                .get(func_id)
+                                .and_then(|f| f.return_type.clone())
+                        })
+                        .or_else(|| expr.ty.clone())
+                        .unwrap_or(Type::Any),
+                    hir::ExprKind::Var(var_id) => self
+                        .get_var_func(var_id)
+                        .and_then(|func_id| self.get_func_return_type(&func_id).cloned())
+                        .or_else(|| expr.ty.clone())
+                        .unwrap_or(Type::Any),
+                    _ => expr.ty.clone().unwrap_or(Type::Any),
+                }
+            }
+            hir::ExprKind::BuiltinCall { .. } => expr.ty.clone().unwrap_or(Type::Any),
+            hir::ExprKind::MethodCall { obj, method, .. } => {
+                let obj_ty = self.expr_type_hint(*obj, hir_module);
+                let method_name = self.resolve(*method);
+                if let Some(ret_ty) = helpers::resolve_method_return_type(&obj_ty, method_name) {
+                    return ret_ty;
+                }
+                if let Type::Class { class_id, .. } = obj_ty {
+                    if let Some(class_info) = self.get_class_info(&class_id) {
+                        for methods in [
+                            &class_info.method_funcs,
+                            &class_info.class_methods,
+                            &class_info.static_methods,
+                        ] {
+                            if let Some(&func_id) = methods.get(method) {
+                                if let Some(ret_ty) = self.get_func_return_type(&func_id) {
+                                    return ret_ty.clone();
+                                }
+                                if let Some(func_def) = hir_module.func_defs.get(&func_id) {
+                                    return func_def.return_type.clone().unwrap_or(Type::Any);
+                                }
+                            }
+                        }
+                        if let Some(func_id) = class_info.get_dunder_func(method_name) {
+                            if let Some(ret_ty) = self.get_func_return_type(&func_id) {
+                                return ret_ty.clone();
+                            }
+                        }
+                    }
+                }
+                expr.ty.clone().unwrap_or(Type::Any)
+            }
+            hir::ExprKind::Attribute { obj, attr } => {
+                let obj_ty = self.expr_type_hint(*obj, hir_module);
+                if let Type::Class { class_id, .. } = obj_ty {
+                    if let Some(class_info) = self.get_class_info(&class_id) {
+                        if let Some(field_ty) = class_info.field_types.get(attr) {
+                            return field_ty.clone();
+                        }
+                        if let Some(prop_ty) = class_info.property_types.get(attr) {
+                            return prop_ty.clone();
+                        }
+                        if let Some(class_attr_ty) = class_info.class_attr_types.get(attr) {
+                            return class_attr_ty.clone();
+                        }
+                    }
+                }
+                expr.ty.clone().unwrap_or(Type::Any)
+            }
+            hir::ExprKind::Index { obj, .. } => {
+                let obj_ty = self.expr_type_hint(*obj, hir_module);
+                match obj_ty {
+                    Type::List(elem) | Type::Set(elem) | Type::Iterator(elem) => *elem,
+                    Type::Tuple(items) => items.first().cloned().unwrap_or(Type::Any),
+                    Type::TupleVar(elem) => *elem,
+                    Type::Dict(_, value) | Type::DefaultDict(_, value) => *value,
+                    Type::Str => Type::Str,
+                    Type::Bytes => Type::Int,
+                    _ => expr.ty.clone().unwrap_or(Type::Any),
+                }
+            }
+            hir::ExprKind::Slice { obj, .. } => {
+                let obj_ty = self.expr_type_hint(*obj, hir_module);
+                if matches!(obj_ty, Type::Any) {
+                    expr.ty.clone().unwrap_or(Type::Any)
+                } else {
+                    obj_ty
+                }
+            }
+            hir::ExprKind::StdlibCall { func, args } => {
+                let declared = typespec_to_type(&func.return_type);
+                if !matches!(declared, Type::Any | Type::HeapAny) {
+                    declared
+                } else if let Some(annotated) = expr.ty.clone() {
+                    if !matches!(annotated, Type::Any | Type::HeapAny) {
+                        annotated
+                    } else if let Some(expected) = self.codegen.expected_type.clone() {
+                        if !matches!(expected, Type::Any | Type::HeapAny) {
+                            expected
+                        } else {
+                            match func.name {
+                                "choice" => args
+                                    .first()
+                                    .map(|arg_id| {
+                                        crate::type_planning::infer::extract_iterable_first_element_type(
+                                            &self.expr_type_hint(*arg_id, hir_module),
+                                        )
+                                    })
+                                    .unwrap_or(Type::Any),
+                                "sample" | "choices" => args
+                                    .first()
+                                    .map(|arg_id| {
+                                        Type::List(Box::new(
+                                            crate::type_planning::infer::extract_iterable_first_element_type(
+                                                &self.expr_type_hint(*arg_id, hir_module),
+                                            ),
+                                        ))
+                                    })
+                                    .unwrap_or(Type::Any),
+                                _ => annotated,
+                            }
+                        }
+                    } else {
+                        annotated
+                    }
+                } else {
+                    match func.name {
+                        "choice" => args
+                            .first()
+                            .map(|arg_id| {
+                                crate::type_planning::infer::extract_iterable_first_element_type(
+                                    &self.expr_type_hint(*arg_id, hir_module),
+                                )
+                            })
+                            .unwrap_or(Type::Any),
+                        "sample" | "choices" => args
+                            .first()
+                            .map(|arg_id| {
+                                Type::List(Box::new(
+                                    crate::type_planning::infer::extract_iterable_first_element_type(
+                                        &self.expr_type_hint(*arg_id, hir_module),
+                                    ),
+                                ))
+                            })
+                            .unwrap_or(Type::Any),
+                        _ => declared,
+                    }
+                }
+            }
+            hir::ExprKind::StdlibAttr(attr_def) => typespec_to_type(&attr_def.ty),
+            hir::ExprKind::StdlibConst(const_def) => typespec_to_type(&const_def.ty),
+            _ => expr.ty.clone().unwrap_or(Type::Any),
         }
     }
 }
@@ -383,29 +727,6 @@ impl<'a> Lowering<'a> {
     /// Restore nonlocal cells from a saved state.
     pub(crate) fn restore_nonlocal_cells(&mut self, cells: IndexMap<VarId, LocalId>) {
         self.symbols.nonlocal_cells = cells;
-    }
-}
-
-// =============================================================================
-// Union Narrowing (symbols.narrowed_union_vars)
-// =============================================================================
-
-impl<'a> Lowering<'a> {
-    /// Get the original Union type for a narrowed variable.
-    pub(crate) fn get_narrowed_union_type(&self, var_id: &VarId) -> Option<Type> {
-        self.hir_types.narrowed_union_vars.get(var_id).cloned()
-    }
-
-    /// Track a narrowed Union variable with its original type.
-    pub(crate) fn insert_narrowed_union(&mut self, var_id: VarId, original_type: Type) {
-        self.hir_types
-            .narrowed_union_vars
-            .insert(var_id, original_type);
-    }
-
-    /// Remove a narrowed Union variable tracking.
-    pub(crate) fn remove_narrowed_union(&mut self, var_id: &VarId) {
-        self.hir_types.narrowed_union_vars.shift_remove(var_id);
     }
 }
 

@@ -15,7 +15,7 @@ use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
     /// Validate type annotations across the entire module.
-    /// Called from `run_type_planning()` after return type inference.
+    /// Called from `build_lowering_seed_info()` after return type inference.
     pub(crate) fn validate_type_annotations(&mut self, hir_module: &hir::Module) {
         self.validate_default_param_types(hir_module);
         self.validate_class_attr_types(hir_module);
@@ -40,7 +40,7 @@ impl<'a> Lowering<'a> {
                     continue;
                 }
 
-                let inferred = self.get_type_of_expr_id(default_id, hir_module);
+                let inferred = self.seed_expr_type_by_id(default_id, hir_module);
 
                 // Skip if inferred is Any (insufficient info)
                 if inferred == Type::Any {
@@ -79,7 +79,7 @@ impl<'a> Lowering<'a> {
                     continue;
                 }
 
-                let inferred = self.get_type_of_expr_id(attr.initializer, hir_module);
+                let inferred = self.seed_expr_type_by_id(attr.initializer, hir_module);
 
                 // Skip if inferred is Any (insufficient info)
                 if inferred == Type::Any {

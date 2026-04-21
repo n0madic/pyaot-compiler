@@ -17,7 +17,7 @@
 //! idiomatic "reuse the for-var name" pattern while keeping attribute
 //! access on the rebound class compileable.
 //!
-//! The result is stored in `symbols.prescan_var_types` and consumed later
+//! The result is stored in `lowering_seed_info.current_local_seed_types` and consumed later
 //! by `get_or_create_local` (which uses the unified type as the MIR
 //! local's declared type) and by `lower_assign` / `bind_var_op` (which
 //! coerce each RHS to the unified type before the store).
@@ -89,8 +89,8 @@ impl<'a> Lowering<'a> {
     }
 
     /// Walk every function in the module and store per-function pre-scan
-    /// results in `hir_types.per_function_prescan_var_types`. Called from
-    /// `run_type_planning` before return-type inference so that
+    /// results in `lowering_seed_info.per_function_local_seed_types`. Called from
+    /// `build_lowering_seed_info` before return-type inference so that
     /// `return x` can see the unified local type.
     pub(crate) fn precompute_all_local_var_types(&mut self, hir_module: &hir::Module) {
         let func_ids = hir_module.functions.clone();
@@ -128,8 +128,8 @@ impl<'a> Lowering<'a> {
                 map.retain(|var_id, _| {
                     !func.cell_vars.contains(var_id) && !func.nonlocal_vars.contains(var_id)
                 });
-                self.hir_types
-                    .per_function_prescan_var_types
+                self.lowering_seed_info
+                    .per_function_local_seed_types
                     .insert(func_id, map);
             }
         }
@@ -137,7 +137,7 @@ impl<'a> Lowering<'a> {
 
     /// Run the local type pre-scan for a single function body.
     ///
-    /// Writes the resulting map to `self.hir_types.prescan_var_types`.
+    /// Writes the resulting map to `self.lowering_seed_info.current_local_seed_types`.
     /// Call this once per function right before parameters are processed
     /// and statements are lowered. `param_seed` should contain the
     /// parameter `VarId → Type` map already computed by the caller.
@@ -198,14 +198,14 @@ impl<'a> Lowering<'a> {
                 // type.
                 let rhs_ty = match type_hint {
                     Some(ann) => ann.clone(),
-                    None => self.infer_deep_expr_type(rhs_expr, hir_module, scratch),
+                    None => self.seed_infer_expr_type(rhs_expr, hir_module, scratch),
                 };
                 absorb_into_targets(target, &rhs_ty, scratch, loop_only, loop_depth, false);
             }
             hir::StmtKind::IterAdvance { iter, target } => {
                 // For-loop target binding: element type of the iterable.
                 let iter_expr = &hir_module.exprs[*iter];
-                let iter_ty = self.infer_deep_expr_type(iter_expr, hir_module, scratch);
+                let iter_ty = self.seed_infer_expr_type(iter_expr, hir_module, scratch);
                 let elem_ty = elem_type_of_iterable(&iter_ty);
                 absorb_into_targets(target, &elem_ty, scratch, loop_only, loop_depth, true);
             }
@@ -277,11 +277,11 @@ impl<'a> Lowering<'a> {
                 match (&expr.kind, type_hint) {
                     (_, Some(ann)) => ann,
                     (hir::ExprKind::FuncRef(_) | hir::ExprKind::Closure { .. }, None) => Type::Any,
-                    _ => self.infer_deep_expr_type(expr, hir_module, &state.current_types),
+                    _ => self.seed_infer_expr_type(expr, hir_module, &state.current_types),
                 }
             }
             hir::StmtKind::IterAdvance { iter, .. } => {
-                let iter_ty = self.infer_deep_expr_type(
+                let iter_ty = self.seed_infer_expr_type(
                     &hir_module.exprs[iter],
                     hir_module,
                     &state.current_types,

@@ -26,8 +26,8 @@ impl<'a> Lowering<'a> {
         for func_id in hir_module.functions.iter() {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 let overlay = self
-                    .hir_types
-                    .per_function_prescan_var_types
+                    .lowering_seed_info
+                    .per_function_local_seed_types
                     .get(func_id)
                     .cloned()
                     .unwrap_or_default();
@@ -81,7 +81,9 @@ impl<'a> Lowering<'a> {
                     );
                     if key_ty != Type::Any || val_ty != Type::Any {
                         let refined = Type::Dict(Box::new(key_ty), Box::new(val_ty));
-                        self.hir_types.refined_var_types.insert(target, refined);
+                        self.lowering_seed_info
+                            .refined_container_types
+                            .insert(target, refined);
                     }
                 } else if is_empty_list || is_empty_set {
                     // Scan subsequent statements for method calls on this variable
@@ -98,8 +100,10 @@ impl<'a> Lowering<'a> {
                         } else {
                             Type::Set(Box::new(elem_ty))
                         };
-                        // Store in refined_var_types which persists across function lowerings
-                        self.hir_types.refined_var_types.insert(target, refined);
+                        // Store in refined_container_types which persists across function lowerings
+                        self.lowering_seed_info
+                            .refined_container_types
+                            .insert(target, refined);
                     }
                 }
             }
@@ -173,8 +177,8 @@ impl<'a> Lowering<'a> {
                             // type (via `infer_nested_function_param_types`)
                             // rather than `Any`.
                             let closure_overlay = self
-                                .hir_types
-                                .per_function_prescan_var_types
+                                .lowering_seed_info
+                                .per_function_local_seed_types
                                 .get(closure_func_id)
                                 .cloned()
                                 .unwrap_or_default();
@@ -236,7 +240,7 @@ impl<'a> Lowering<'a> {
             if let Some(idx) = value_arg_idx {
                 if let Some(arg_id) = args.get(idx) {
                     let arg_expr = &hir_module.exprs[*arg_id];
-                    let ty = self.infer_deep_expr_type(arg_expr, hir_module, overlay);
+                    let ty = self.seed_infer_expr_type(arg_expr, hir_module, overlay);
                     if ty != Type::Any {
                         return Some(ty);
                     }
@@ -265,12 +269,12 @@ impl<'a> Lowering<'a> {
                 } => {
                     let obj_expr = &hir_module.exprs[*obj];
                     if matches!(&obj_expr.kind, hir::ExprKind::Var(v) if *v == var) {
-                        let key_ty = self.infer_deep_expr_type(
+                        let key_ty = self.seed_infer_expr_type(
                             &hir_module.exprs[*index],
                             hir_module,
                             overlay,
                         );
-                        let val_ty = self.infer_deep_expr_type(
+                        let val_ty = self.seed_infer_expr_type(
                             &hir_module.exprs[*value],
                             hir_module,
                             overlay,

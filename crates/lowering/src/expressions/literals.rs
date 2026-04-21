@@ -97,49 +97,13 @@ impl<'a> Lowering<'a> {
             Ok(mir::Operand::Local(result_local))
         } else {
             // Local variable: use the standard local mapping
-            let narrowed_type = self
+            let local_type = self
                 .get_var_type(&var_id)
                 .cloned()
                 .or_else(|| expr.ty.clone())
                 .unwrap_or(Type::Any);
-
-            // Check if this is a Union variable that has been narrowed to a primitive type
-            // In that case, we need to unbox the value since Union variables are stored as boxed pointers
-            let original_union_type = self.get_narrowed_union_type(&var_id);
-            let needs_unbox = original_union_type.is_some()
-                && matches!(narrowed_type, Type::Int | Type::Float | Type::Bool);
-
-            if needs_unbox {
-                // Get the local holding the boxed value (using original Union type)
-                let original_ty = original_union_type.unwrap_or(Type::Any);
-                let boxed_local = self.get_or_create_local(var_id, original_ty, mir_func);
-
-                // Emit unbox operation based on narrowed type
-                let unbox_func = match narrowed_type {
-                    Type::Int => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_INT)
-                    }
-                    Type::Float => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT)
-                    }
-                    Type::Bool => {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL)
-                    }
-                    _ => unreachable!(), // Already checked in needs_unbox condition
-                };
-
-                let unboxed_local = self.emit_runtime_call(
-                    unbox_func,
-                    vec![mir::Operand::Local(boxed_local)],
-                    narrowed_type.clone(),
-                    mir_func,
-                );
-
-                Ok(mir::Operand::Local(unboxed_local))
-            } else {
-                let local_id = self.get_or_create_local(var_id, narrowed_type, mir_func);
-                Ok(mir::Operand::Local(local_id))
-            }
+            let local_id = self.get_or_create_local(var_id, local_type, mir_func);
+            Ok(mir::Operand::Local(local_id))
         }
     }
 }

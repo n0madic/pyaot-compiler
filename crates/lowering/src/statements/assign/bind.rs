@@ -37,7 +37,7 @@ impl<'a> Lowering<'a> {
             hir::BindingTarget::Attr { obj, field, .. } => {
                 let obj_expr = &hir_module.exprs[*obj];
                 let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-                let obj_type = self.get_type_of_expr_id(*obj, hir_module);
+                let obj_type = self.expr_type_hint(*obj, hir_module);
                 self.bind_attr_op(
                     obj_operand,
                     &obj_type,
@@ -50,10 +50,10 @@ impl<'a> Lowering<'a> {
             hir::BindingTarget::Index { obj, index, .. } => {
                 let obj_expr = &hir_module.exprs[*obj];
                 let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-                let obj_type = self.get_type_of_expr_id(*obj, hir_module);
+                let obj_type = self.expr_type_hint(*obj, hir_module);
                 let index_expr = &hir_module.exprs[*index];
                 let index_operand = self.lower_expr(index_expr, hir_module, mir_func)?;
-                let index_type = self.get_type_of_expr_id(*index, hir_module);
+                let index_type = self.expr_type_hint(*index, hir_module);
 
                 // Refine Dict(Any, Any) type based on actual key/value types.
                 // For patterns like `d = defaultdict(); d["k"] = 42`, infer
@@ -352,8 +352,8 @@ impl<'a> Lowering<'a> {
         // through the numeric tower store via the same coercion path
         // used for class fields (§E.3 Part B).
         let local_ty = self
-            .hir_types
-            .prescan_var_types
+            .lowering_seed_info
+            .current_local_seed_types
             .get(&var_id)
             .cloned()
             .unwrap_or_else(|| value_type.clone());

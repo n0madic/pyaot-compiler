@@ -24,7 +24,7 @@ use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
     /// Run type planning: pre-scan + return type inference for all functions.
-    pub(crate) fn run_type_planning(&mut self, hir_module: &hir::Module) {
+    pub(crate) fn build_lowering_seed_info(&mut self, hir_module: &hir::Module) {
         self.precompute_closure_capture_types(hir_module);
         self.process_module_decorated_functions(hir_module);
         // First-pass refinement — handles `x = [1, 2, 3]` /
@@ -43,35 +43,35 @@ impl<'a> Lowering<'a> {
         // `topo = []; topo.append(root)` where `root`'s type comes
         // from prescan (not the declared HIR annotation) can still
         // refine `topo` to `List[Value]`. The underlying scan uses
-        // `infer_deep_expr_type` with a prescan-sourced overlay so
+        // `seed_infer_expr_type` with a prescan-sourced overlay so
         // any intermediate local gets resolved.
         self.refine_empty_container_types(hir_module);
         self.validate_type_annotations(hir_module);
         // §1.4u-b step 3 — populate the stable per-module Var→Type
         // base map. Never mutated during lowering.
         self.populate_base_var_types(hir_module);
-        // §1.4u-b step 5 — populate `hir_types.expr_types` eagerly for
+        // §1.4u-b step 5 — populate `lowering_seed_info.expr_types` eagerly for
         // every non-Var ExprId. Lowering-side queries become cache hits
         // for stable (non-narrowing-sensitive) expressions.
         self.eagerly_populate_expr_types(hir_module);
     }
 
     /// §1.4u-b step 5: walk every `ExprId` in the module and force
-    /// `get_type_of_expr_id` to compute+cache the result. `Var` arms
+    /// `seed_expr_type_by_id` to compute+cache the result. `Var` arms
     /// skip the cache (effective type is context-sensitive); all
-    /// other arms populate `hir_types.expr_types`.
+    /// other arms populate `lowering_seed_info.expr_types`.
     fn eagerly_populate_expr_types(&mut self, hir_module: &hir::Module) {
         let ids: Vec<hir::ExprId> = hir_module.exprs.iter().map(|(id, _)| id).collect();
         for expr_id in ids {
-            let _ = self.get_type_of_expr_id(expr_id, hir_module);
+            let _ = self.seed_expr_type_by_id(expr_id, hir_module);
         }
     }
 
     /// §1.4u-b persistent `base_var_types` builder — populates
-    /// `HirTypeInference::base_var_types` from three stable sources
+    /// `LoweringSeedInfo::base_var_types` from three stable sources
     /// without walking any expression:
     ///
-    /// 1. `per_function_prescan_var_types` — Area E §E.6 prescan
+    /// 1. `per_function_local_seed_types` — Area E §E.6 prescan
     ///    output for every function (inferred locals + seeded params).
     /// 2. `hir_module.func_defs[*].params[*].ty` — declared parameter
     ///    annotations. Covers empty-body functions that
@@ -84,13 +84,13 @@ impl<'a> Lowering<'a> {
     /// `lower_function` or by narrowing.
     fn populate_base_var_types(&mut self, hir_module: &hir::Module) {
         let from_prescan: Vec<(pyaot_utils::VarId, Type)> = self
-            .hir_types
-            .per_function_prescan_var_types
+            .lowering_seed_info
+            .per_function_local_seed_types
             .values()
             .flat_map(|m| m.iter().map(|(k, v)| (*k, v.clone())))
             .collect();
         for (var_id, ty) in from_prescan {
-            self.hir_types.base_var_types.insert(var_id, ty);
+            self.lowering_seed_info.base_var_types.insert(var_id, ty);
         }
         let from_params: Vec<(pyaot_utils::VarId, Type)> = hir_module
             .func_defs
@@ -102,11 +102,11 @@ impl<'a> Lowering<'a> {
             })
             .collect();
         for (var_id, ty) in from_params {
-            self.hir_types.base_var_types.insert(var_id, ty);
+            self.lowering_seed_info.base_var_types.insert(var_id, ty);
         }
         let handler_binds = collect_handler_binds(hir_module);
         for (var_id, ty) in handler_binds {
-            self.hir_types.base_var_types.insert(var_id, ty);
+            self.lowering_seed_info.base_var_types.insert(var_id, ty);
         }
     }
 
@@ -117,22 +117,22 @@ impl<'a> Lowering<'a> {
     /// for every other `ExprKind`. The two paths:
     ///
     /// - **`Var`**: reads `get_var_type(v)` (chain: `symbols.var_types`
-    ///   → `refined_var_types` → `global_var_types`) with a fallback
-    ///   to `get_base_var_type(v)` and then to `expr.ty`. At lowering
-    ///   time this sees any narrowing that `push_narrowing_frame` has
-    ///   installed; at type-planning / eager-cache time
-    ///   `symbols.var_types` is empty so the fallback chain returns
-    ///   the base type. Never writes to the cache — Var types are
+    ///   → `refined_container_types` → `global_var_types`) with a fallback
+    ///   to `get_base_var_type(v)` and then to `expr.ty`. During
+    ///   lowering this sees the current function-local overlay in
+    ///   `symbols.var_types`; during seed-building / eager-cache time
+    ///   that map is empty, so the fallback chain returns the base
+    ///   type. Never writes to the cache — Var types are
     ///   context-sensitive.
     /// - **Non-`Var`**: cache hit when available, otherwise call
-    ///   `compute_expr_type` (which is now a pure function of HIR +
-    ///   F/M state — it does not read `symbols.var_types`) and cache.
+    ///   `compute_seed_expr_type` (which is now a pure function of HIR
+    ///   + F/M state — it does not read `symbols.var_types`) and cache.
     ///
     /// The cache is populated eagerly by `eagerly_populate_expr_types`
-    /// at the end of `run_type_planning`, so during lowering this
+    /// at the end of `build_lowering_seed_info`, so during lowering this
     /// function is typically a pure cache hit for non-Var queries and
     /// a cheap `symbols.var_types` read for Vars.
-    pub(crate) fn get_type_of_expr_id(
+    pub(crate) fn seed_expr_type_by_id(
         &mut self,
         expr_id: hir::ExprId,
         hir_module: &hir::Module,
@@ -140,9 +140,9 @@ impl<'a> Lowering<'a> {
         let expr = &hir_module.exprs[expr_id];
         if let hir::ExprKind::Var(var_id) = &expr.kind {
             // Effective-type fast path. `get_var_type` returns the
-            // narrowed type inside an active `push_narrowing_frame`
-            // scope, else the function-local type from the prologue,
-            // else falls through to stable sources.
+            // current function-local overlay when present, else the
+            // function-local type from the prologue, else falls
+            // through to stable sources.
             return self
                 .get_var_type(var_id)
                 .cloned()
@@ -150,10 +150,10 @@ impl<'a> Lowering<'a> {
                 .or_else(|| expr.ty.clone())
                 .unwrap_or(Type::Any);
         }
-        if let Some(cached) = self.hir_types.lookup(expr_id).cloned() {
+        if let Some(cached) = self.lowering_seed_info.lookup(expr_id).cloned() {
             return cached;
         }
-        let result = self.compute_expr_type(expr, hir_module);
+        let result = self.compute_seed_expr_type(expr, hir_module);
         // Do NOT cache `Any` or `Union` results — they signal narrowing
         // sensitivity. At eager-pass time no narrowing frame is active,
         // so a contained `Var` reads its *base* Union/Any type; a later
@@ -163,19 +163,9 @@ impl<'a> Lowering<'a> {
         // (Int, Str, Class { … }, Tuple, …) are stable and safe to
         // cache: narrowing never widens them.
         if !matches!(result, Type::Any) && !result.is_union() {
-            self.hir_types.insert_type(expr_id, result.clone());
+            self.lowering_seed_info.insert_type(expr_id, result.clone());
         }
         result
-    }
-
-    /// Get the effective type of an expression (uncached).
-    ///
-    /// Prefer `get_type_of_expr_id` when the `ExprId` is available —
-    /// it uses the `expr_types` cache. This method exists only for callers
-    /// that receive `&hir::Expr` without an ExprId (e.g., the current
-    /// expression being lowered in `lower_expr`).
-    pub(crate) fn get_expr_type(&mut self, expr: &hir::Expr, hir_module: &hir::Module) -> Type {
-        self.compute_expr_type(expr, hir_module)
     }
 }
 
@@ -234,7 +224,10 @@ impl<'a> Lowering<'a> {
                 // Area E §E.6 — layer in pre-scanned local types so `return x`
                 // sees the unified type for a local that was widened across
                 // multiple writes.
-                if let Some(prescanned) = self.hir_types.per_function_prescan_var_types.get(func_id)
+                if let Some(prescanned) = self
+                    .lowering_seed_info
+                    .per_function_local_seed_types
+                    .get(func_id)
                 {
                     for (var_id, ty) in prescanned {
                         // Don't clobber param types (param annotations win).
@@ -282,8 +275,8 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             let Some(prescanned) = self
-                .hir_types
-                .per_function_prescan_var_types
+                .lowering_seed_info
+                .per_function_local_seed_types
                 .get(func_id)
                 .cloned()
             else {
@@ -335,7 +328,7 @@ impl<'a> Lowering<'a> {
             match &block.terminator {
                 hir::HirTerminator::Return(Some(expr_id)) => {
                     let expr = &module.exprs[*expr_id];
-                    return_types.push(self.infer_deep_expr_type(expr, module, param_types));
+                    return_types.push(self.seed_infer_expr_type(expr, module, param_types));
                 }
                 hir::HirTerminator::Return(None) => {
                     return_types.push(Type::None);
@@ -347,7 +340,7 @@ impl<'a> Lowering<'a> {
                 match &stmt.kind {
                     hir::StmtKind::Return(Some(expr_id)) => {
                         let expr = &module.exprs[*expr_id];
-                        return_types.push(self.infer_deep_expr_type(expr, module, param_types));
+                        return_types.push(self.seed_infer_expr_type(expr, module, param_types));
                     }
                     hir::StmtKind::Return(None) => {
                         return_types.push(Type::None);
@@ -382,13 +375,13 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    // `infer_deep_expr_type` is now defined in `infer.rs` as part of the
+    // `seed_infer_expr_type` is now defined in `infer.rs` as part of the
     // unified `infer_expr_type_inner` engine.
 }
 
 /// §1.4u-b helper: collect `(handler.name, handler.ty)` pairs where both
 /// are present, for every exception handler in the module. Used to seed
-/// `HirTypeInference::base_var_types` with handler binding types.
+/// `LoweringSeedInfo::base_var_types` with handler binding types.
 ///
 /// §1.17b-d — reads `Function::try_scopes` directly instead of walking
 /// the statement tree, including the synthetic module-init function.

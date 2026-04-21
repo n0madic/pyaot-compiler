@@ -41,7 +41,7 @@ impl<'a> Lowering<'a> {
             let left_expr = &hir_module.exprs[*left];
             if let hir::ExprKind::Var(var_id) = &left_expr.kind {
                 if *var_id == target {
-                    let left_ty = self.get_type_of_expr_id(*left, hir_module);
+                    let left_ty = self.expr_type_hint(*left, hir_module);
                     if matches!(left_ty, Type::Dict(_, _)) {
                         let dict_operand = self.lower_expr(left_expr, hir_module, mir_func)?;
                         let right_expr = &hir_module.exprs[*right];
@@ -77,7 +77,7 @@ impl<'a> Lowering<'a> {
                 // Track capture types for the lambda function
                 let mut capture_types = Vec::new();
                 for capture_id in captures {
-                    let capture_type = self.get_type_of_expr_id(*capture_id, hir_module);
+                    let capture_type = self.expr_type_hint(*capture_id, hir_module);
                     capture_types.push(capture_type);
                 }
                 self.insert_closure_capture_types(*func, capture_types.clone());
@@ -331,30 +331,26 @@ impl<'a> Lowering<'a> {
             // Set(Any)) — because the RHS-driven inference or later
             // refinement will produce a tighter type.
             let prescan = self
-                .hir_types
-                .prescan_var_types
+                .lowering_seed_info
+                .current_local_seed_types
                 .get(&target)
                 .cloned()
                 .filter(|ty| !crate::is_useless_container_ty(ty));
             let base = self.get_base_var_type(&target).cloned().filter(|ty| {
                 !matches!(ty, Type::Any | Type::HeapAny) && !crate::is_useless_container_ty(ty)
             });
-            self.hir_types
-                .refined_var_types
+            self.lowering_seed_info
+                .refined_container_types
                 .get(&target)
                 .cloned()
                 .or(prescan)
                 .or_else(|| self.get_block_narrowed_storage_type(&target).cloned())
                 .or(base)
                 .or_else(|| self.get_var_type(&target).cloned())
-                .unwrap_or_else(|| self.get_type_of_expr_id(value, hir_module))
+                .unwrap_or_else(|| self.expr_type_hint(value, hir_module))
         });
         // Track the variable type for later reference
         self.insert_var_type(target, var_type.clone());
-
-        // Check if this is a narrowed Union variable - if so, we need to use the
-        // original Union type for boxing, even though the narrowed type is not Union
-        let original_union_type = self.get_narrowed_union_type(&target);
 
         // Lower the value expression with expected type for bidirectional propagation
         let value_operand =
@@ -364,8 +360,8 @@ impl<'a> Lowering<'a> {
         // or coerce through the numeric tower when the target local is
         // wider than the RHS (Area E §E.6: `x = 0; x += 0.5` widens
         // `x: Float`; the literal `0` must be `IntToFloat`'d).
-        let value_type = self.get_type_of_expr_id(value, hir_module);
-        let final_operand = if var_type.is_union() || original_union_type.is_some() {
+        let value_type = self.expr_type_hint(value, hir_module);
+        let final_operand = if var_type.is_union() {
             self.box_primitive_if_needed(value_operand, &value_type, mir_func)
         } else {
             self.coerce_to_field_type(value_operand, &value_type, &var_type, mir_func)
@@ -416,34 +412,6 @@ impl<'a> Lowering<'a> {
                 dest: dest_local,
                 src: final_operand,
             });
-        }
-
-        // Persistent Bind-narrowing: when the declared `var_type` is a
-        // Union that contains the inferred RHS `value_type` as a proper
-        // member (e.g. polymorphic operator-dunder `other: Union[Self,
-        // Int, Float, Bool]` rebound via `other = other if isinstance(
-        // other, Self) else Self(other)` where both ternary branches
-        // yield `Self`), update `var_types[target]` to the narrower
-        // type so subsequent reads of `target` see the concrete class
-        // and attribute access / method dispatch works. The MIR local
-        // stays allocated at the wider Union type (heap pointer), and
-        // `narrowed_union_vars[target]` preserves the original Union
-        // so downstream boxing logic (comparison, literal coercion)
-        // continues to treat `target` as a Union-widened slot.
-        //
-        // Only applies to heap-to-heap narrowings (Union of Class +
-        // primitives → Class). Primitive narrowings go through the
-        // regular `push_narrowing_frame` / `insert_narrowed_union`
-        // path from `If`/`While`-driven isinstance analysis.
-        if var_type.is_union() && original_union_type.is_none() {
-            if let Type::Class { .. } = &value_type {
-                if let Type::Union(members) = &var_type {
-                    if members.iter().any(|m| m == &value_type) {
-                        self.insert_narrowed_union(target, var_type.clone());
-                        self.insert_var_type(target, value_type.clone());
-                    }
-                }
-            }
         }
 
         Ok(())

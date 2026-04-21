@@ -38,8 +38,8 @@
 //!   `Call{Direct,Named}` etc.
 //! * Emit `Refine` instructions at `isinstance`-branch successors.
 //!   That's S1.8c.
-//! * Delete the legacy `SymbolTable` maps (`refined_var_types`,
-//!   `prescan_var_types`, `narrowed_union_vars`). S1.9.
+//! * Consume only MIR materialized seed types; the old lowering-side
+//!   seed maps were removed in the strict cleanup pass.
 //! * Integrate into the compile pipeline. Until S1.8b produces a
 //!   non-trivial table, nothing consumes the output.
 
@@ -738,7 +738,19 @@ fn refine_function_params(
     let mut overrides: HashMap<LocalId, Type> = HashMap::new();
     for (i, param) in func.params.iter().enumerate() {
         if let Some(ty) = &joined[i] {
-            overrides.insert(param.id, ty.clone());
+            let override_ty = if matches!(ty, Type::Any | Type::HeapAny | Type::Never)
+                && !matches!(param.ty, Type::Any | Type::HeapAny | Type::Never)
+            {
+                // Preserve an existing concrete param ABI when a call-site observation
+                // is only "some heap object". This commonly happens for mutable-default
+                // parameters loaded via `rt_global_get_ptr`: the storage read is `Any`,
+                // but the callee's annotation still defines the correct container/class
+                // representation and method-dispatch ABI.
+                param.ty.clone()
+            } else {
+                ty.clone()
+            };
+            overrides.insert(param.id, override_ty);
         }
     }
     if overrides.is_empty() {

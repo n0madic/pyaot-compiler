@@ -21,7 +21,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
+        let arg_type = self.expr_type_hint(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
@@ -100,7 +100,7 @@ impl<'a> Lowering<'a> {
 
         // set(iterable) - create set from iterable
         let iter_expr = &hir_module.exprs[args[0]];
-        let iter_type = self.get_type_of_expr_id(args[0], hir_module);
+        let iter_type = self.expr_type_hint(args[0], hir_module);
 
         // Determine element type
         let elem_type = match &iter_type {
@@ -120,7 +120,7 @@ impl<'a> Lowering<'a> {
         });
 
         // Create iterator over the source
-        let source_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
+        let source_operand = self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
 
         // Get appropriate iterator source kind based on type
         let source = match &iter_type {
@@ -245,7 +245,7 @@ impl<'a> Lowering<'a> {
 
         // list(iterable) - create list from iterable
         let iter_expr = &hir_module.exprs[args[0]];
-        let hir_type = self.get_type_of_expr_id(args[0], hir_module);
+        let hir_type = self.expr_type_hint(args[0], hir_module);
 
         // Check for range() call - handle specially
         if let hir::ExprKind::BuiltinCall {
@@ -257,7 +257,7 @@ impl<'a> Lowering<'a> {
             return self.lower_list_from_range(range_args, hir_module, mir_func);
         }
 
-        let source_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
+        let source_operand = self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
 
         // Use the lowered operand type if the HIR type is unknown (Any).
         // map/filter infer Iterator(Int) during lowering, but the HIR may still say Any.
@@ -421,7 +421,7 @@ impl<'a> Lowering<'a> {
 
         // tuple(iterable) - create tuple from iterable
         let iter_expr = &hir_module.exprs[args[0]];
-        let iter_type = self.get_type_of_expr_id(args[0], hir_module);
+        let iter_type = self.expr_type_hint(args[0], hir_module);
 
         // Check for range() call - handle specially
         if let hir::ExprKind::BuiltinCall {
@@ -433,7 +433,7 @@ impl<'a> Lowering<'a> {
             return self.lower_tuple_from_range(range_args, hir_module, mir_func);
         }
 
-        let source_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
+        let source_operand = self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
 
         // Dispatch based on source type
         match &iter_type {
@@ -585,8 +585,9 @@ impl<'a> Lowering<'a> {
         // Process positional argument (iterable of pairs) if present
         if !args.is_empty() {
             let iter_expr = &hir_module.exprs[args[0]];
-            let iter_type = self.get_type_of_expr_id(args[0], hir_module);
-            let source_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
+            let iter_type = self.expr_type_hint(args[0], hir_module);
+            let source_operand =
+                self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
 
             // If it's a list of pairs, use DictFromPairs
             match &iter_type {
@@ -626,7 +627,7 @@ impl<'a> Lowering<'a> {
         for kwarg in kwargs {
             let value_expr = &hir_module.exprs[kwarg.value];
             let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
-            let value_type = self.get_type_of_expr_id(kwarg.value, hir_module);
+            let value_type = self.expr_type_hint(kwarg.value, hir_module);
 
             // Create string key - use the interned string directly
             let key_local = self.emit_runtime_call(
@@ -737,14 +738,14 @@ impl<'a> Lowering<'a> {
         } else {
             // Counter(iterable) — count elements
             let iter_expr = &hir_module.exprs[args[0]];
-            let iter_type = self.get_type_of_expr_id(args[0], hir_module);
+            let iter_type = self.expr_type_hint(args[0], hir_module);
 
             // Create iterator from the argument
             let iter_operand = if matches!(iter_type, Type::Iterator(_)) {
-                self.lower_expr(iter_expr, hir_module, mir_func)?
+                self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?
             } else {
                 // Need to convert to iterator first
-                let source = self.lower_expr(iter_expr, hir_module, mir_func)?;
+                let source = self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
                 let iter_local =
                     self.alloc_and_add_local(Type::Iterator(Box::new(Type::Any)), mir_func);
                 let source_kind = match &iter_type {
@@ -813,12 +814,12 @@ impl<'a> Lowering<'a> {
         } else {
             // deque(iterable, maxlen?) — from iterator
             let iter_expr = &hir_module.exprs[args[0]];
-            let iter_type = self.get_type_of_expr_id(args[0], hir_module);
+            let iter_type = self.expr_type_hint(args[0], hir_module);
 
             let iter_operand = if matches!(iter_type, Type::Iterator(_)) {
-                self.lower_expr(iter_expr, hir_module, mir_func)?
+                self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?
             } else {
-                let source = self.lower_expr(iter_expr, hir_module, mir_func)?;
+                let source = self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
                 let iter_local =
                     self.alloc_and_add_local(Type::Iterator(Box::new(Type::Any)), mir_func);
                 let source_kind = match &iter_type {

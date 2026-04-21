@@ -22,9 +22,12 @@ impl<'a> Lowering<'a> {
         let right_expr = &hir_module.exprs[right];
         let right_op = self.lower_expr(right_expr, hir_module, mir_func)?;
 
-        // Get types for comparison detection
-        let left_type = self.get_type_of_expr_id(left, hir_module);
-        let right_type = self.get_type_of_expr_id(right, hir_module);
+        // Preserve the seed/HIR view for "was this originally a Union?"
+        // checks, but prefer the actual lowered MIR local type for dispatch.
+        let left_hint_type = self.expr_type_hint(left, hir_module);
+        let right_hint_type = self.expr_type_hint(right, hir_module);
+        let left_type = self.resolved_value_type_hint(left, &left_op, hir_module, mir_func);
+        let right_type = self.resolved_value_type_hint(right, &right_op, hir_module, mir_func);
 
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
@@ -38,14 +41,16 @@ impl<'a> Lowering<'a> {
             let left_was_union = if left_materialized {
                 left_type.is_union()
             } else {
-                left_type.is_union()
+                left_hint_type.is_union()
+                    || left_type.is_union()
                     || self.is_narrowed_union_var(left_expr)
                     || left_expr.ty.as_ref().is_some_and(|t| t.is_union())
             };
             let right_was_union = if right_materialized {
                 right_type.is_union()
             } else {
-                right_type.is_union()
+                right_hint_type.is_union()
+                    || right_type.is_union()
                     || self.is_narrowed_union_var(right_expr)
                     || right_expr.ty.as_ref().is_some_and(|t| t.is_union())
             };
@@ -517,6 +522,16 @@ impl<'a> Lowering<'a> {
                     });
                 }
             } else {
+                if matches!(op, hir::CmpOp::Eq | hir::CmpOp::NotEq) {
+                    self.emit_instruction(mir::InstructionKind::Copy {
+                        dest: result_local,
+                        src: mir::Operand::Constant(mir::Constant::Bool(matches!(
+                            op,
+                            hir::CmpOp::NotEq
+                        ))),
+                    });
+                    return Ok(mir::Operand::Local(result_local));
+                }
                 // List ordering comparisons (<, <=, >, >=) use lexicographic comparison
                 let compare_op = match op {
                     hir::CmpOp::Lt => mir::ComparisonOp::Lt,
@@ -568,6 +583,16 @@ impl<'a> Lowering<'a> {
                     });
                 }
             } else {
+                if matches!(op, hir::CmpOp::Eq | hir::CmpOp::NotEq) {
+                    self.emit_instruction(mir::InstructionKind::Copy {
+                        dest: result_local,
+                        src: mir::Operand::Constant(mir::Constant::Bool(matches!(
+                            op,
+                            hir::CmpOp::NotEq
+                        ))),
+                    });
+                    return Ok(mir::Operand::Local(result_local));
+                }
                 // For ordering comparisons on tuples, use runtime lexicographic comparison
                 let compare_op = match op {
                     hir::CmpOp::Lt => mir::ComparisonOp::Lt,

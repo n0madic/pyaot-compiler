@@ -32,8 +32,8 @@ impl<'a> Lowering<'a> {
             return self.lower_reversed_range(range_args, hir_module, mir_func);
         }
 
-        let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
+        let arg_operand = self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
+        let arg_type = self.expr_type_hint(args[0], hir_module);
 
         // Determine element type from container type
         let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
@@ -156,8 +156,8 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.get_type_of_expr_id(args[0], hir_module);
+        let arg_operand = self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
+        let arg_type = self.expr_type_hint(args[0], hir_module);
 
         // Determine element type from container type
         let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);

@@ -271,7 +271,7 @@ impl<'a> Lowering<'a> {
         for block in func.blocks.values() {
             if let hir::HirTerminator::Return(Some(expr_id)) = &block.terminator {
                 let expr = &hir_module.exprs[*expr_id];
-                return self.infer_deep_expr_type(expr, hir_module, &param_type_map);
+                return self.seed_infer_expr_type(expr, hir_module, &param_type_map);
             }
         }
         Type::None

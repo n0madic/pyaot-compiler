@@ -34,7 +34,7 @@ fn first_arg_or_none(args: Vec<mir::Operand>) -> mir::Operand {
 
 /// Whether `ty` is a container type with `Any` element / key / value
 /// parameters. Used by the Area E §E.6 prescan consumers to defer to
-/// later, more precise type sources (RHS inference, `refined_var_types`,
+/// later, more precise type sources (RHS inference, `refined_container_types`,
 /// etc.) rather than hard-coding a shape that will be tightened later.
 pub(crate) fn is_useless_container_ty(ty: &Type) -> bool {
     match ty {
@@ -141,8 +141,8 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Get the type of a MIR operand
-    fn operand_type(&self, operand: &mir::Operand, mir_func: &mir::Function) -> Type {
+    /// Get the type of a MIR operand.
+    pub(crate) fn operand_type(&self, operand: &mir::Operand, mir_func: &mir::Function) -> Type {
         match operand {
             mir::Operand::Local(id) => mir_func.locals[id].ty.clone(),
             mir::Operand::Constant(c) => match c {
@@ -154,6 +154,22 @@ impl<'a> Lowering<'a> {
                 mir::Constant::None => Type::None,
             },
         }
+    }
+
+    /// Prefer the already-lowered MIR operand type when it is concrete; fall
+    /// back to the seed/HIR hint only for dynamic `Any`/`HeapAny` cases.
+    pub(crate) fn resolved_value_type_hint(
+        &self,
+        expr_id: hir::ExprId,
+        operand: &mir::Operand,
+        hir_module: &hir::Module,
+        mir_func: &mir::Function,
+    ) -> Type {
+        let lowered = self.operand_type(operand, mir_func);
+        if !matches!(lowered, Type::Any | Type::HeapAny) {
+            return lowered;
+        }
+        self.expr_type_hint(expr_id, hir_module)
     }
 
     fn get_or_create_local(
@@ -170,14 +186,14 @@ impl<'a> Lowering<'a> {
             // `Dict(Any, Any)` tightened to `Dict(Str, Int)` by the
             // empty-container pass is preserved.
             let prescan = self
-                .hir_types
-                .prescan_var_types
+                .lowering_seed_info
+                .current_local_seed_types
                 .get(&var_id)
                 .cloned()
                 .filter(|ty| !is_useless_container_ty(ty));
             let ty = self
-                .hir_types
-                .refined_var_types
+                .lowering_seed_info
+                .refined_container_types
                 .get(&var_id)
                 .cloned()
                 .or(prescan)

@@ -69,17 +69,8 @@ impl<'a> Lowering<'a> {
         for (i, arg_id) in args.iter().enumerate() {
             let arg_expr = &hir_module.exprs[*arg_id];
             let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-            // Use get_type_of_expr_id for proper type inference, but also check the local's
-            // actual storage type — Union locals store boxed pointers even when inference
-            // narrows the type to a primitive.
-            let mut arg_type = self.get_type_of_expr_id(*arg_id, hir_module);
-            if let mir::Operand::Local(id) = &arg_operand {
-                if let Some(local) = mir_func.locals.get(id) {
-                    if local.ty.is_union() {
-                        arg_type = local.ty.clone();
-                    }
-                }
-            }
+            let arg_type =
+                self.resolved_value_type_hint(*arg_id, &arg_operand, hir_module, mir_func);
 
             // For exception instances, convert to string via rt_exc_instance_str, then print
             if matches!(&arg_type, Type::BuiltinException(_)) {

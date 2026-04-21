@@ -101,7 +101,7 @@ impl<'a> Lowering<'a> {
                     // Determine the variable type (mirrors the Assign branch above)
                     let var_type = type_hint
                         .clone()
-                        .unwrap_or_else(|| self.infer_deep_expr_type(expr, hir_module, var_types));
+                        .unwrap_or_else(|| self.seed_infer_expr_type(expr, hir_module, var_types));
                     var_types.insert(*target_var, var_type);
 
                     // Scan the value expression for inline closures
@@ -186,7 +186,7 @@ impl<'a> Lowering<'a> {
             hir::StmtKind::IterAdvance { iter, target } => {
                 let iter_expr = &hir_module.exprs[*iter];
                 self.scan_expr_for_closures(iter_expr, hir_module, var_types);
-                let iter_ty = self.infer_deep_expr_type(iter_expr, hir_module, var_types);
+                let iter_ty = self.seed_infer_expr_type(iter_expr, hir_module, var_types);
                 let elem_ty = extract_iterable_element_type(&iter_ty);
                 insert_target_types(target, &elem_ty, var_types);
             }
@@ -215,7 +215,7 @@ impl<'a> Lowering<'a> {
                     for capture_id in captures {
                         let capture_expr = &hir_module.exprs[*capture_id];
                         let capture_type =
-                            self.infer_deep_expr_type(capture_expr, hir_module, var_types);
+                            self.seed_infer_expr_type(capture_expr, hir_module, var_types);
                         capture_types.push(capture_type);
                     }
                     self.insert_closure_capture_types(*func, capture_types);
@@ -387,7 +387,7 @@ impl<'a> Lowering<'a> {
         expected_non_capture: usize,
         make_hints: impl FnOnce(Type) -> Vec<Type>,
     ) {
-        let iterable_type = self.infer_deep_expr_type(iterable_expr, hir_module, var_types);
+        let iterable_type = self.seed_infer_expr_type(iterable_expr, hir_module, var_types);
         let elem_type = extract_iterable_element_type(&iterable_type);
         if matches!(elem_type, Type::Any) {
             return;
@@ -410,7 +410,7 @@ impl<'a> Lowering<'a> {
         let mut param_hints = Vec::new();
         for cap_id in &captures {
             let cap_expr = &hir_module.exprs[*cap_id];
-            let cap_type = self.infer_deep_expr_type(cap_expr, hir_module, var_types);
+            let cap_type = self.seed_infer_expr_type(cap_expr, hir_module, var_types);
             param_hints.push(cap_type);
         }
         param_hints.extend(make_hints(elem_type));
@@ -448,7 +448,7 @@ impl<'a> Lowering<'a> {
     ///    whose target resolves (direct `FuncRef`, inline `Closure`,
     ///    or `Var` via the map from step 1), compute the inferred
     ///    type of every positional argument (using
-    ///    `infer_deep_expr_type` with a param-overlay built from the
+    ///    `seed_infer_expr_type` with a param-overlay built from the
     ///    enclosing function's annotated parameters) and union it
     ///    into a per-`FuncId` accumulator keyed by positional index.
     /// 3. Finalisation — for every `FuncId` with collected types and
@@ -606,7 +606,7 @@ impl<'a> Lowering<'a> {
     /// each to a target `FuncId` via direct `FuncRef`, inline
     /// `Closure`, or `Var`-through-`var_to_func`. For every resolved
     /// call, infer each positional-arg type (via
-    /// `infer_deep_expr_type` with `overlay`) and union it into
+    /// `seed_infer_expr_type` with `overlay`) and union it into
     /// `accumulators[func_id][positional_index]`.
     fn collect_call_arg_types(
         &self,
@@ -707,7 +707,7 @@ impl<'a> Lowering<'a> {
                     match call_arg {
                         hir::CallArg::Regular(arg_id) => {
                             let arg_expr = &hir_module.exprs[*arg_id];
-                            let ty = self.infer_deep_expr_type(arg_expr, hir_module, overlay);
+                            let ty = self.seed_infer_expr_type(arg_expr, hir_module, overlay);
                             positional_tys.push(ty);
                         }
                         hir::CallArg::Starred(_) => {
