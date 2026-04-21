@@ -8,11 +8,18 @@ use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
-use pyaot_utils::{ClassId, FuncId};
+use pyaot_utils::{ClassId, FuncId, InternedString, VarId};
 
 use crate::{LoweredClassInfo, Lowering};
 
 impl<'a> Lowering<'a> {
+    fn should_refine_field_seed_type(storage_ty: &Type) -> bool {
+        matches!(storage_ty, Type::Any | Type::HeapAny)
+            || crate::is_useless_container_ty(storage_ty)
+            || matches!(storage_ty, Type::Tuple(types) if types.is_empty())
+            || matches!(storage_ty, Type::TupleVar(inner) if **inner == Type::Any)
+    }
+
     // ==================== Class Hierarchy Processing ====================
 
     /// Topological sort of classes to ensure parents are processed before children
@@ -214,6 +221,992 @@ impl<'a> Lowering<'a> {
 
             self.insert_class_info(class_id, info);
         }
+    }
+
+    /// Refine class field seed types from constructor call sites after
+    /// `build_lowering_seed_info()` has populated expression/var seed metadata.
+    ///
+    /// This complements the frontend's `self.field = param` scan with
+    /// actual argument types observed at `ClassName(...)` call sites. The
+    /// pass is intentionally lightweight and flow-sensitive only within a
+    /// single straight-line CFG walk: it tracks the current semantic type of
+    /// locals as statements execute, then uses that overlay to infer
+    /// constructor argument types.
+    ///
+    /// Why this exists:
+    /// - `__init__(self, children=())` seeds `_children` as `Tuple([])`,
+    ///   which is too weak for later `for child in node._children: child.grad`.
+    /// - numeric/operator dunders often normalize `other` before calling the
+    ///   constructor again; the constructor call should see the post-rebind
+    ///   semantic type, not only the wide ABI seed of the original param.
+    pub(crate) fn refine_class_fields_from_constructor_calls(
+        &mut self,
+        hir_module: &hir::Module,
+    ) {
+        let init_bindings = self.collect_init_field_bindings(hir_module);
+        if init_bindings.is_empty() {
+            return;
+        }
+
+        let mut observed_arg_types: IndexMap<(ClassId, usize), Type> = IndexMap::new();
+        for func in hir_module.func_defs.values() {
+            if func.has_no_blocks() {
+                continue;
+            }
+            let mut current_types = self.constructor_scan_seed_types(func);
+            for block in func.blocks.values() {
+                for &stmt_id in &block.stmts {
+                    let stmt = &hir_module.stmts[stmt_id];
+                    self.scan_constructor_calls_in_stmt(
+                        stmt,
+                        hir_module,
+                        &current_types,
+                        &init_bindings,
+                        &mut observed_arg_types,
+                    );
+                    self.update_constructor_scan_types_from_stmt(
+                        stmt,
+                        hir_module,
+                        &mut current_types,
+                    );
+                }
+                self.scan_constructor_calls_in_terminator(
+                    &block.terminator,
+                    hir_module,
+                    &current_types,
+                    &init_bindings,
+                    &mut observed_arg_types,
+                );
+            }
+        }
+
+        for ((class_id, param_idx), observed_ty) in observed_arg_types {
+            if matches!(observed_ty, Type::Any | Type::HeapAny) {
+                continue;
+            }
+            let Some(field_names) = init_bindings
+                .get(&class_id)
+                .and_then(|bindings| bindings.param_fields.get(&param_idx))
+                .cloned()
+            else {
+                continue;
+            };
+            let storage_types: Vec<(InternedString, Type)> = field_names
+                .iter()
+                .map(|field_name| {
+                    let storage_ty = self
+                        .get_class_info(&class_id)
+                        .and_then(|info| info.field_types.get(field_name))
+                        .cloned()
+                        .unwrap_or(Type::Any);
+                    (*field_name, storage_ty)
+                })
+                .collect();
+            let class_fields = self
+                .lowering_seed_info
+                .refined_class_field_types
+                .entry(class_id)
+                .or_default();
+            for (field_name, storage_ty) in storage_types {
+                if !Self::should_refine_field_seed_type(&storage_ty) {
+                    continue;
+                }
+                let refined = class_fields
+                    .get(&field_name)
+                    .map(|prev| Type::unify_field_type(prev, &observed_ty))
+                    .unwrap_or_else(|| Type::unify_field_type(&storage_ty, &observed_ty));
+                class_fields.insert(field_name, refined);
+            }
+        }
+    }
+
+    fn collect_init_field_bindings(
+        &self,
+        hir_module: &hir::Module,
+    ) -> IndexMap<ClassId, ConstructorFieldBindings> {
+        let mut out = IndexMap::new();
+        for (class_id, class_def) in &hir_module.class_defs {
+            let Some(init_func_id) = class_def.init_method else {
+                continue;
+            };
+            let Some(init_func) = hir_module.func_defs.get(&init_func_id) else {
+                continue;
+            };
+            let Some(self_param) = init_func.params.first() else {
+                continue;
+            };
+
+            let mut param_name_to_index = IndexMap::new();
+            let mut param_var_to_index = IndexMap::new();
+            for (idx, param) in init_func.params.iter().skip(1).enumerate() {
+                param_name_to_index.insert(param.name, idx);
+                param_var_to_index.insert(param.var, idx);
+            }
+
+            let mut bindings = ConstructorFieldBindings {
+                param_fields: IndexMap::new(),
+                param_name_to_index,
+            };
+
+            for block in init_func.blocks.values() {
+                for &stmt_id in &block.stmts {
+                    let stmt = &hir_module.stmts[stmt_id];
+                    let hir::StmtKind::Bind { target, value, .. } = &stmt.kind else {
+                        continue;
+                    };
+                    let hir::BindingTarget::Attr { obj, field, .. } = target else {
+                        continue;
+                    };
+                    let hir::ExprKind::Var(obj_var) = hir_module.exprs[*obj].kind else {
+                        continue;
+                    };
+                    if obj_var != self_param.var {
+                        continue;
+                    }
+                    let hir::ExprKind::Var(value_var) = hir_module.exprs[*value].kind else {
+                        continue;
+                    };
+                    let Some(param_idx) = param_var_to_index.get(&value_var).copied() else {
+                        continue;
+                    };
+                    bindings
+                        .param_fields
+                        .entry(param_idx)
+                        .or_default()
+                        .push(*field);
+                }
+            }
+
+            if !bindings.param_fields.is_empty() {
+                out.insert(*class_id, bindings);
+            }
+        }
+        out
+    }
+
+    fn constructor_scan_seed_types(&self, func: &hir::Function) -> IndexMap<VarId, Type> {
+        let inferred_hints = self.get_lambda_param_type_hints(&func.id).cloned();
+        let mut current_types = IndexMap::new();
+        for (idx, param) in func.params.iter().enumerate() {
+            if let Some(ty) = param
+                .ty
+                .clone()
+                .or_else(|| inferred_hints.as_ref().and_then(|hints| hints.get(idx).cloned()))
+            {
+                current_types.insert(param.var, ty);
+            }
+        }
+        current_types
+    }
+
+    fn scan_constructor_calls_in_stmt(
+        &self,
+        stmt: &hir::Stmt,
+        hir_module: &hir::Module,
+        current_types: &IndexMap<VarId, Type>,
+        init_bindings: &IndexMap<ClassId, ConstructorFieldBindings>,
+        observed_arg_types: &mut IndexMap<(ClassId, usize), Type>,
+    ) {
+        match &stmt.kind {
+            hir::StmtKind::Bind { target, value, .. } => {
+                self.scan_constructor_calls_in_binding_target(
+                    target,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                self.scan_constructor_calls_in_expr(
+                    *value,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+            }
+            hir::StmtKind::IterAdvance { iter, target } => {
+                self.scan_constructor_calls_in_expr(
+                    *iter,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                self.scan_constructor_calls_in_binding_target(
+                    target,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+            }
+            hir::StmtKind::Expr(expr_id) => self.scan_constructor_calls_in_expr(
+                *expr_id,
+                hir_module,
+                current_types,
+                init_bindings,
+                observed_arg_types,
+            ),
+            hir::StmtKind::Return(Some(expr_id)) => self.scan_constructor_calls_in_expr(
+                *expr_id,
+                hir_module,
+                current_types,
+                init_bindings,
+                observed_arg_types,
+            ),
+            hir::StmtKind::Raise { exc, cause } => {
+                if let Some(expr_id) = exc {
+                    self.scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+                if let Some(expr_id) = cause {
+                    self.scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::StmtKind::Assert { cond, msg } => {
+                self.scan_constructor_calls_in_expr(
+                    *cond,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                if let Some(expr_id) = msg {
+                    self.scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::StmtKind::IndexDelete { obj, index } => {
+                self.scan_constructor_calls_in_expr(
+                    *obj,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                self.scan_constructor_calls_in_expr(
+                    *index,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+            }
+            hir::StmtKind::Break
+            | hir::StmtKind::Continue
+            | hir::StmtKind::Pass
+            | hir::StmtKind::Return(None)
+            | hir::StmtKind::IterSetup { .. } => {}
+        }
+    }
+
+    fn scan_constructor_calls_in_terminator(
+        &self,
+        term: &hir::HirTerminator,
+        hir_module: &hir::Module,
+        current_types: &IndexMap<VarId, Type>,
+        init_bindings: &IndexMap<ClassId, ConstructorFieldBindings>,
+        observed_arg_types: &mut IndexMap<(ClassId, usize), Type>,
+    ) {
+        match term {
+            hir::HirTerminator::Branch { cond, .. } => self.scan_constructor_calls_in_expr(
+                *cond,
+                hir_module,
+                current_types,
+                init_bindings,
+                observed_arg_types,
+            ),
+            hir::HirTerminator::Return(Some(expr_id))
+            | hir::HirTerminator::Yield { value: expr_id, .. } => self
+                .scan_constructor_calls_in_expr(
+                    *expr_id,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                ),
+            hir::HirTerminator::Raise { exc, cause } => {
+                self.scan_constructor_calls_in_expr(
+                    *exc,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                if let Some(expr_id) = cause {
+                    self.scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::HirTerminator::Jump(_)
+            | hir::HirTerminator::Return(None)
+            | hir::HirTerminator::Reraise
+            | hir::HirTerminator::Unreachable => {}
+        }
+    }
+
+    fn scan_constructor_calls_in_binding_target(
+        &self,
+        target: &hir::BindingTarget,
+        hir_module: &hir::Module,
+        current_types: &IndexMap<VarId, Type>,
+        init_bindings: &IndexMap<ClassId, ConstructorFieldBindings>,
+        observed_arg_types: &mut IndexMap<(ClassId, usize), Type>,
+    ) {
+        match target {
+            hir::BindingTarget::Attr { obj, .. } => self.scan_constructor_calls_in_expr(
+                *obj,
+                hir_module,
+                current_types,
+                init_bindings,
+                observed_arg_types,
+            ),
+            hir::BindingTarget::Index { obj, index, .. } => {
+                self.scan_constructor_calls_in_expr(
+                    *obj,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                self.scan_constructor_calls_in_expr(
+                    *index,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+            }
+            hir::BindingTarget::Tuple { elts, .. } => {
+                for elt in elts {
+                    self.scan_constructor_calls_in_binding_target(
+                        elt,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::BindingTarget::Starred { inner, .. } => self
+                .scan_constructor_calls_in_binding_target(
+                    inner,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                ),
+            hir::BindingTarget::Var(_) | hir::BindingTarget::ClassAttr { .. } => {}
+        }
+    }
+
+    fn scan_constructor_calls_in_expr(
+        &self,
+        expr_id: hir::ExprId,
+        hir_module: &hir::Module,
+        current_types: &IndexMap<VarId, Type>,
+        init_bindings: &IndexMap<ClassId, ConstructorFieldBindings>,
+        observed_arg_types: &mut IndexMap<(ClassId, usize), Type>,
+    ) {
+        let expr = &hir_module.exprs[expr_id];
+        match &expr.kind {
+            hir::ExprKind::Call {
+                func,
+                args,
+                kwargs,
+                kwargs_unpack,
+            } => {
+                let func_expr = &hir_module.exprs[*func];
+                if let hir::ExprKind::ClassRef(class_id) = func_expr.kind {
+                    if let Some(bindings) = init_bindings.get(&class_id) {
+                        for (arg_idx, arg) in args.iter().enumerate() {
+                            let hir::CallArg::Regular(arg_expr_id) = arg else {
+                                continue;
+                            };
+                            if !bindings.param_fields.contains_key(&arg_idx) {
+                                continue;
+                            }
+                            let arg_ty = self.seed_infer_expr_type(
+                                &hir_module.exprs[*arg_expr_id],
+                                hir_module,
+                                current_types,
+                            );
+                            Self::record_constructor_arg_type(
+                                observed_arg_types,
+                                class_id,
+                                arg_idx,
+                                arg_ty,
+                            );
+                        }
+                        for kwarg in kwargs {
+                            let Some(param_idx) =
+                                bindings.param_name_to_index.get(&kwarg.name).copied()
+                            else {
+                                continue;
+                            };
+                            if !bindings.param_fields.contains_key(&param_idx) {
+                                continue;
+                            }
+                            let arg_ty = self.seed_infer_expr_type(
+                                &hir_module.exprs[kwarg.value],
+                                hir_module,
+                                current_types,
+                            );
+                            Self::record_constructor_arg_type(
+                                observed_arg_types,
+                                class_id,
+                                param_idx,
+                                arg_ty,
+                            );
+                        }
+                    }
+                }
+
+                self.scan_constructor_calls_in_expr(
+                    *func,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                for arg in args {
+                    let expr_id = match arg {
+                        hir::CallArg::Regular(expr_id) | hir::CallArg::Starred(expr_id) => expr_id,
+                    };
+                    self.scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+                for kwarg in kwargs {
+                    self.scan_constructor_calls_in_expr(
+                        kwarg.value,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+                if let Some(expr_id) = kwargs_unpack {
+                    self.scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::ExprKind::BuiltinCall { args, kwargs, .. } => {
+                for expr_id in args {
+                    self.scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+                for kwarg in kwargs {
+                    self.scan_constructor_calls_in_expr(
+                        kwarg.value,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::ExprKind::IfExpr {
+                cond,
+                then_val,
+                else_val,
+            } => {
+                self.scan_constructor_calls_in_expr(
+                    *cond,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                self.scan_constructor_calls_in_expr(
+                    *then_val,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                self.scan_constructor_calls_in_expr(
+                    *else_val,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+            }
+            hir::ExprKind::BinOp { left, right, .. }
+            | hir::ExprKind::Compare { left, right, .. }
+            | hir::ExprKind::LogicalOp { left, right, .. } => {
+                self.scan_constructor_calls_in_expr(
+                    *left,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                self.scan_constructor_calls_in_expr(
+                    *right,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+            }
+            hir::ExprKind::UnOp { operand, .. }
+            | hir::ExprKind::Attribute { obj: operand, .. }
+            | hir::ExprKind::Yield(Some(operand))
+            | hir::ExprKind::IterHasNext(operand) => self.scan_constructor_calls_in_expr(
+                *operand,
+                hir_module,
+                current_types,
+                init_bindings,
+                observed_arg_types,
+            ),
+            hir::ExprKind::Yield(None)
+            | hir::ExprKind::Int(_)
+            | hir::ExprKind::Float(_)
+            | hir::ExprKind::Bool(_)
+            | hir::ExprKind::Str(_)
+            | hir::ExprKind::Bytes(_)
+            | hir::ExprKind::None
+            | hir::ExprKind::NotImplemented
+            | hir::ExprKind::Var(_)
+            | hir::ExprKind::FuncRef(_)
+            | hir::ExprKind::ClassRef(_)
+            | hir::ExprKind::ClassAttrRef { .. }
+            | hir::ExprKind::TypeRef(_)
+            | hir::ExprKind::ImportedRef { .. }
+            | hir::ExprKind::ModuleAttr { .. }
+            | hir::ExprKind::BuiltinRef(_)
+            | hir::ExprKind::StdlibAttr(_)
+            | hir::ExprKind::StdlibConst(_)
+            | hir::ExprKind::ExcCurrentValue => {}
+            hir::ExprKind::List(items)
+            | hir::ExprKind::Tuple(items)
+            | hir::ExprKind::Set(items)
+            | hir::ExprKind::Closure {
+                captures: items, ..
+            } => {
+                for item in items {
+                    self.scan_constructor_calls_in_expr(
+                        *item,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::ExprKind::Dict(entries) => {
+                for (key, value) in entries {
+                    self.scan_constructor_calls_in_expr(
+                        *key,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                    self.scan_constructor_calls_in_expr(
+                        *value,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::ExprKind::Index { obj, index } => {
+                self.scan_constructor_calls_in_expr(
+                    *obj,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                self.scan_constructor_calls_in_expr(
+                    *index,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+            }
+            hir::ExprKind::Slice {
+                obj,
+                start,
+                end,
+                step,
+            } => {
+                self.scan_constructor_calls_in_expr(
+                    *obj,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                if let Some(expr_id) = start {
+                    self.scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+                if let Some(expr_id) = end {
+                    self.scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+                if let Some(expr_id) = step {
+                    self.scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::ExprKind::MethodCall {
+                obj, args, kwargs, ..
+            } => {
+                self.scan_constructor_calls_in_expr(
+                    *obj,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                for expr_id in args {
+                    self.scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+                for kwarg in kwargs {
+                    self.scan_constructor_calls_in_expr(
+                        kwarg.value,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::ExprKind::SuperCall { args, .. } | hir::ExprKind::StdlibCall { args, .. } => {
+                for expr_id in args {
+                    self.scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::ExprKind::GeneratorIntrinsic(intrinsic) => match intrinsic {
+                hir::GeneratorIntrinsic::GetState(expr_id)
+                | hir::GeneratorIntrinsic::SetExhausted(expr_id)
+                | hir::GeneratorIntrinsic::IsExhausted(expr_id)
+                | hir::GeneratorIntrinsic::GetSentValue(expr_id)
+                | hir::GeneratorIntrinsic::IterNextNoExc(expr_id)
+                | hir::GeneratorIntrinsic::IterIsExhausted(expr_id) => self
+                    .scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    ),
+                hir::GeneratorIntrinsic::SetState { gen, .. }
+                | hir::GeneratorIntrinsic::GetLocal { gen, .. }
+                | hir::GeneratorIntrinsic::SetLocalType { gen, .. } => self
+                    .scan_constructor_calls_in_expr(
+                        *gen,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    ),
+                hir::GeneratorIntrinsic::SetLocal { gen, value, .. } => {
+                    self.scan_constructor_calls_in_expr(
+                        *gen,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                    self.scan_constructor_calls_in_expr(
+                        *value,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+                hir::GeneratorIntrinsic::Create { .. } => {}
+            },
+            hir::ExprKind::MatchPattern { subject, pattern } => {
+                self.scan_constructor_calls_in_expr(
+                    *subject,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                self.scan_constructor_calls_in_pattern(
+                    pattern,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+            }
+        }
+    }
+
+    fn scan_constructor_calls_in_pattern(
+        &self,
+        pattern: &hir::Pattern,
+        hir_module: &hir::Module,
+        current_types: &IndexMap<VarId, Type>,
+        init_bindings: &IndexMap<ClassId, ConstructorFieldBindings>,
+        observed_arg_types: &mut IndexMap<(ClassId, usize), Type>,
+    ) {
+        match pattern {
+            hir::Pattern::MatchValue(expr_id) => self.scan_constructor_calls_in_expr(
+                *expr_id,
+                hir_module,
+                current_types,
+                init_bindings,
+                observed_arg_types,
+            ),
+            hir::Pattern::MatchAs { pattern, .. } => {
+                if let Some(inner) = pattern.as_ref() {
+                    self.scan_constructor_calls_in_pattern(
+                        inner,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::Pattern::MatchSequence { patterns }
+            | hir::Pattern::MatchOr(patterns) => {
+                for inner in patterns {
+                    self.scan_constructor_calls_in_pattern(
+                        inner,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::Pattern::MatchMapping { keys, patterns, .. } => {
+                for expr_id in keys {
+                    self.scan_constructor_calls_in_expr(
+                        *expr_id,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+                for inner in patterns {
+                    self.scan_constructor_calls_in_pattern(
+                        inner,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::Pattern::MatchClass {
+                cls,
+                patterns,
+                kwd_patterns,
+                ..
+            } => {
+                self.scan_constructor_calls_in_expr(
+                    *cls,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+                for inner in patterns {
+                    self.scan_constructor_calls_in_pattern(
+                        inner,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+                for inner in kwd_patterns {
+                    self.scan_constructor_calls_in_pattern(
+                        inner,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
+            }
+            hir::Pattern::MatchSingleton(_) | hir::Pattern::MatchStar(_) => {}
+        }
+    }
+
+    fn update_constructor_scan_types_from_stmt(
+        &self,
+        stmt: &hir::Stmt,
+        hir_module: &hir::Module,
+        current_types: &mut IndexMap<VarId, Type>,
+    ) {
+        match &stmt.kind {
+            hir::StmtKind::Bind {
+                target,
+                value,
+                type_hint,
+            } => {
+                let rhs_ty = type_hint.clone().unwrap_or_else(|| {
+                    self.seed_infer_expr_type(&hir_module.exprs[*value], hir_module, current_types)
+                });
+                Self::assign_constructor_scan_target_types(target, &rhs_ty, current_types);
+            }
+            hir::StmtKind::IterAdvance { iter, target } => {
+                let iter_ty =
+                    self.seed_infer_expr_type(&hir_module.exprs[*iter], hir_module, current_types);
+                let elem_ty = Self::constructor_scan_iter_elem_type(&iter_ty);
+                Self::assign_constructor_scan_target_types(target, &elem_ty, current_types);
+            }
+            hir::StmtKind::Expr(_)
+            | hir::StmtKind::Return(_)
+            | hir::StmtKind::Raise { .. }
+            | hir::StmtKind::Assert { .. }
+            | hir::StmtKind::IndexDelete { .. }
+            | hir::StmtKind::Break
+            | hir::StmtKind::Continue
+            | hir::StmtKind::Pass
+            | hir::StmtKind::IterSetup { .. } => {}
+        }
+    }
+
+    fn assign_constructor_scan_target_types(
+        target: &hir::BindingTarget,
+        value_ty: &Type,
+        current_types: &mut IndexMap<VarId, Type>,
+    ) {
+        match target {
+            hir::BindingTarget::Var(var_id) => {
+                current_types.insert(*var_id, value_ty.clone());
+            }
+            hir::BindingTarget::Tuple { elts, .. } => match value_ty {
+                Type::Tuple(types) => {
+                    for (elt, ty) in elts.iter().zip(types.iter()) {
+                        Self::assign_constructor_scan_target_types(elt, ty, current_types);
+                    }
+                    if types.len() < elts.len() {
+                        for elt in &elts[types.len()..] {
+                            Self::assign_constructor_scan_target_types(
+                                elt,
+                                &Type::Any,
+                                current_types,
+                            );
+                        }
+                    }
+                }
+                Type::TupleVar(elem_ty) => {
+                    for elt in elts {
+                        Self::assign_constructor_scan_target_types(elt, elem_ty, current_types);
+                    }
+                }
+                _ => {
+                    for elt in elts {
+                        Self::assign_constructor_scan_target_types(elt, &Type::Any, current_types);
+                    }
+                }
+            },
+            hir::BindingTarget::Starred { inner, .. } => {
+                let starred_ty = Type::List(Box::new(value_ty.clone()));
+                Self::assign_constructor_scan_target_types(inner, &starred_ty, current_types);
+            }
+            hir::BindingTarget::Attr { .. }
+            | hir::BindingTarget::Index { .. }
+            | hir::BindingTarget::ClassAttr { .. } => {}
+        }
+    }
+
+    fn constructor_scan_iter_elem_type(ty: &Type) -> Type {
+        match ty {
+            Type::List(e) | Type::Set(e) | Type::Iterator(e) | Type::TupleVar(e) => (**e).clone(),
+            Type::Tuple(types) if !types.is_empty() => Type::normalize_union(types.clone()),
+            Type::Tuple(_) => Type::Any,
+            Type::Dict(k, _) | Type::DefaultDict(k, _) => (**k).clone(),
+            Type::Str => Type::Str,
+            Type::Bytes => Type::Int,
+            _ => Type::Any,
+        }
+    }
+
+    fn record_constructor_arg_type(
+        observed_arg_types: &mut IndexMap<(ClassId, usize), Type>,
+        class_id: ClassId,
+        param_idx: usize,
+        arg_ty: Type,
+    ) {
+        if matches!(arg_ty, Type::Any | Type::HeapAny) {
+            return;
+        }
+        observed_arg_types
+            .entry((class_id, param_idx))
+            .and_modify(|prev| *prev = Type::unify_field_type(prev, &arg_ty))
+            .or_insert(arg_ty);
     }
 
     /// Build vtables from class information and export to MIR module.
@@ -577,4 +1570,10 @@ impl<'a> Lowering<'a> {
         }
         None
     }
+}
+
+#[derive(Debug, Default, Clone)]
+struct ConstructorFieldBindings {
+    param_fields: IndexMap<usize, Vec<InternedString>>,
+    param_name_to_index: IndexMap<InternedString, usize>,
 }

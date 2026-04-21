@@ -355,6 +355,16 @@ impl<'a> Lowering<'a> {
         let value_operand =
             self.lower_expr_expecting(expr, Some(initial_var_type.clone()), hir_module, mir_func)?;
         let value_type = self.resolved_value_type_hint(value, &value_operand, hir_module, mir_func);
+        let seed_value_type = self.seed_expr_type(value, hir_module);
+        let semantic_value_type =
+            if matches!(value_type, Type::Any | Type::HeapAny | Type::Union(_))
+                && seed_value_type != value_type
+                && !matches!(seed_value_type, Type::Any | Type::HeapAny | Type::Union(_))
+            {
+                seed_value_type
+            } else {
+                value_type.clone()
+            };
 
         let mut var_type = initial_var_type;
         if !has_explicit_type_hint
@@ -365,9 +375,6 @@ impl<'a> Lowering<'a> {
         {
             var_type = value_type.clone();
         }
-        // Track the variable type for later reference
-        self.insert_var_type(target, var_type.clone());
-
         // Box primitives when assigning to Union type (or narrowed Union variable)
         // or coerce through the numeric tower when the target local is
         // wider than the RHS (Area E §E.6: `x = 0; x += 0.5` widens
@@ -403,6 +410,8 @@ impl<'a> Lowering<'a> {
                 ],
                 mir_func,
             );
+
+            self.insert_var_type(target, var_type);
         } else if let Some(cell_local) = self.get_nonlocal_cell(&target) {
             // Cell-wrapped variable (either cell_var or nonlocal_var): write through cell
             // Don't create a local for the variable - it lives in the cell
@@ -416,6 +425,8 @@ impl<'a> Lowering<'a> {
                 vec![mir::Operand::Local(cell_local), final_operand],
                 mir_func,
             );
+
+            self.insert_var_type(target, var_type);
         } else {
             // Local variable: standard copy
             let dest_local = self.get_or_create_local(target, var_type.clone(), mir_func);
@@ -423,6 +434,30 @@ impl<'a> Lowering<'a> {
                 dest: dest_local,
                 src: final_operand,
             });
+
+            let storage_ty = mir_func.locals[&dest_local].ty.clone();
+            let needs_post_assign_narrowing = !has_explicit_type_hint
+                && storage_ty != semantic_value_type
+                && !matches!(semantic_value_type, Type::Any | Type::HeapAny)
+                && matches!(storage_ty, Type::Any | Type::HeapAny | Type::Union(_));
+
+            if needs_post_assign_narrowing {
+                let narrowed_local = self.materialize_narrowed_local_from_operand(
+                    mir::Operand::Local(dest_local),
+                    &storage_ty,
+                    &semantic_value_type,
+                    mir_func,
+                );
+                self.insert_block_narrowed_local(
+                    target,
+                    narrowed_local,
+                    storage_ty,
+                    semantic_value_type.clone(),
+                );
+                self.insert_var_type(target, semantic_value_type);
+            } else {
+                self.insert_var_type(target, var_type);
+            }
         }
 
         Ok(())

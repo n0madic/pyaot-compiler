@@ -143,10 +143,15 @@ impl<'a> Lowering<'a> {
 
     /// Lightweight lowering-time seed type.
     ///
-    /// This is intentionally not a recursive HIR inference engine. Regular
-    /// lowering reads precomputed seed metadata for non-`Var` expressions and
-    /// the current lowered view for `Var`s. Seed-building inside
-    /// `type_planning` continues to use `seed_expr_type_by_id`.
+    /// Regular lowering mostly reads precomputed seed metadata for non-`Var`
+    /// expressions and the current lowered view for `Var`s. A small set of
+    /// context-sensitive expression kinds (`Attribute`, `BuiltinCall`) are
+    /// recomputed against the current lowering-time var map so loop-carried
+    /// locals like `v` in `zip(v._children, v._local_grads)` can refine after
+    /// earlier `IterAdvance` binds in the same CFG block.
+    ///
+    /// Seed-building inside `type_planning` continues to use
+    /// `seed_expr_type_by_id`.
     pub(crate) fn seed_expr_type(&self, expr_id: hir::ExprId, hir_module: &hir::Module) -> Type {
         let expr = &hir_module.exprs[expr_id];
         match &expr.kind {
@@ -166,6 +171,17 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::Bytes(_) => Type::Bytes,
             hir::ExprKind::None => Type::None,
             hir::ExprKind::TypeRef(ty) => ty.clone(),
+            hir::ExprKind::Attribute { obj, attr } => {
+                let obj_ty = self.seed_expr_type(*obj, hir_module);
+                self.attribute_result_type(&obj_ty, *attr, expr)
+            }
+            hir::ExprKind::BuiltinCall { builtin, args, .. } => {
+                let arg_types: Vec<Type> = args
+                    .iter()
+                    .map(|arg_id| self.seed_expr_type(*arg_id, hir_module))
+                    .collect();
+                self.builtin_call_result_type(builtin, args, &arg_types, hir_module, expr)
+            }
             _ => self
                 .lowering_seed_info
                 .lookup(expr_id)
@@ -173,6 +189,17 @@ impl<'a> Lowering<'a> {
                 .or_else(|| expr.ty.clone())
                 .unwrap_or(Type::Any),
         }
+    }
+
+    pub(crate) fn get_refined_class_field_type(
+        &self,
+        class_id: &pyaot_utils::ClassId,
+        field: &InternedString,
+    ) -> Option<&Type> {
+        self.lowering_seed_info
+            .refined_class_field_types
+            .get(class_id)
+            .and_then(|fields| fields.get(field))
     }
 }
 

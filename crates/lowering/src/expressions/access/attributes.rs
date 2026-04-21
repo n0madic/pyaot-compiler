@@ -162,13 +162,17 @@ impl<'a> Lowering<'a> {
 
                 // 2. Check for regular field access
                 if let Some(&offset) = class_info.field_offsets.get(&attr) {
-                    let field_type = class_info
+                    let storage_type = class_info
                         .field_types
                         .get(&attr)
                         .cloned()
                         .unwrap_or(Type::Any);
+                    let read_type = self
+                        .get_refined_class_field_type(class_id, &attr)
+                        .cloned()
+                        .unwrap_or_else(|| storage_type.clone());
 
-                    let result_local = self.emit_runtime_call(
+                    let storage_local = self.emit_runtime_call(
                         mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
                         ),
@@ -176,11 +180,21 @@ impl<'a> Lowering<'a> {
                             obj_operand,
                             mir::Operand::Constant(mir::Constant::Int(offset as i64)),
                         ],
-                        field_type.clone(),
+                        storage_type.clone(),
                         mir_func,
                     );
 
-                    return Ok(mir::Operand::Local(result_local));
+                    if read_type != storage_type {
+                        let refined_local = self.materialize_narrowed_local_from_operand(
+                            mir::Operand::Local(storage_local),
+                            &storage_type,
+                            &read_type,
+                            mir_func,
+                        );
+                        return Ok(mir::Operand::Local(refined_local));
+                    }
+
+                    return Ok(mir::Operand::Local(storage_local));
                 }
 
                 // 3. Fallback to class attribute (Python: instance.class_attr)

@@ -119,29 +119,40 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> pyaot_utils::LocalId {
         let src = self.narrowing_source_operand(info, mir_func);
-        if Self::narrowing_requires_unbox(&info.original_type, &info.narrowed_type) {
-            if let Some(unbox_func) = Self::unbox_func_for_type(&info.narrowed_type) {
-                let unboxed = self.emit_runtime_call(
-                    unbox_func,
-                    vec![src],
-                    info.narrowed_type.clone(),
-                    mir_func,
-                );
-                let dest = self.alloc_and_add_local(info.narrowed_type.clone(), mir_func);
+        self.materialize_narrowed_local_from_operand(
+            src,
+            &info.original_type,
+            &info.narrowed_type,
+            mir_func,
+        )
+    }
+
+    pub(crate) fn materialize_narrowed_local_from_operand(
+        &mut self,
+        src: mir::Operand,
+        original_type: &Type,
+        narrowed_type: &Type,
+        mir_func: &mut mir::Function,
+    ) -> pyaot_utils::LocalId {
+        if Self::narrowing_requires_unbox(original_type, narrowed_type) {
+            if let Some(unbox_func) = Self::unbox_func_for_type(narrowed_type) {
+                let unboxed =
+                    self.emit_runtime_call(unbox_func, vec![src], narrowed_type.clone(), mir_func);
+                let dest = self.alloc_and_add_local(narrowed_type.clone(), mir_func);
                 self.emit_instruction(mir::InstructionKind::Refine {
                     dest,
                     src: mir::Operand::Local(unboxed),
-                    ty: info.narrowed_type.clone(),
+                    ty: narrowed_type.clone(),
                 });
                 return dest;
             }
         }
 
-        let dest = self.alloc_and_add_local(info.narrowed_type.clone(), mir_func);
+        let dest = self.alloc_and_add_local(narrowed_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Refine {
             dest,
             src,
-            ty: info.narrowed_type.clone(),
+            ty: narrowed_type.clone(),
         });
         dest
     }

@@ -419,6 +419,13 @@ pub struct LoweringSeedInfo {
     /// can be a pure function of HIR + stable state and its results
     /// can be cached at the module level.
     pub base_var_types: IndexMap<VarId, Type>,
+    /// Early read-time field refinements learned from constructor call sites.
+    ///
+    /// This does NOT change class field storage layout/ABI or GC masks.
+    /// Lowering uses it only when reading `obj.field`: if the refined read
+    /// type is narrower than the storage type, lowering emits `Refine` or
+    /// `Unbox + Refine` after `RT_INSTANCE_GET_FIELD`.
+    pub refined_class_field_types: IndexMap<ClassId, IndexMap<InternedString, Type>>,
 }
 
 /// Narrowed block-local shadow plus the stable storage type it shadows.
@@ -437,6 +444,7 @@ impl LoweringSeedInfo {
             refined_container_types: IndexMap::new(),
             expr_types: HashMap::new(),
             base_var_types: IndexMap::new(),
+            refined_class_field_types: IndexMap::new(),
         }
     }
 

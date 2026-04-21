@@ -383,12 +383,11 @@ impl<'a> Lowering<'a> {
     ) -> Vec<Type> {
         let mut elem_types = Vec::new();
         for arg_id in zip_args {
-            let arg_expr = &hir_module.exprs[*arg_id];
             // Special case: range() returns Int elements
             if let hir::ExprKind::BuiltinCall {
                 builtin: hir::Builtin::Range,
                 ..
-            } = &arg_expr.kind
+            } = &hir_module.exprs[*arg_id].kind
             {
                 elem_types.push(Type::Int);
                 continue;

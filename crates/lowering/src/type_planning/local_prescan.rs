@@ -890,14 +890,12 @@ fn merge_var(
                 // type directly (§G.13: unannotated param narrowed via
                 // `x = x if isinstance(x, T) else T(x)` rebind).
                 //
-                // NOTE: narrowing a `Union` seed (e.g. dunder
+                // NOTE: for `Union` seeds (e.g. dunder
                 // `other: Union[Self, Int, Float, Bool]` narrowed to
-                // `Self`) is NOT applied here: the MIR local is
-                // allocated once at the signature type, and the caller
-                // already boxed the argument at that width. Changing
-                // the local's type to a narrower member would break
-                // the caller ABI. The dunder-narrowing case needs a
-                // second local + unbox; tracked as a known limitation.
+                // `Self`) prescan still keeps the storage ABI at the
+                // wider signature type. Lowering materializes a shadow
+                // narrowed local after the rebind so post-assign reads
+                // see `Self` without changing the caller ABI.
                 scratch.insert(var_id, new_ty);
             }
             if !write_is_loop_scoped {

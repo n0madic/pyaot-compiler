@@ -2329,9 +2329,9 @@ def _g13_combine(a: _G13, other):
 
 
 _g13_a = _g13_combine(_G13(3), 5)
-assert _g13_a.data == 8
+assert _g13_a.data == 8, f"_g13_a.data expected 8, got {_g13_a.data}"
 _g13_b = _g13_combine(_G13(3), _G13(10))
-assert _g13_b.data == 13
+assert _g13_b.data == 13, f"_g13_b.data expected 13, got {_g13_b.data}"
 
 
 # Narrowing over an unannotated local (not a param).
@@ -2340,8 +2340,52 @@ def _g13_local_narrow(x):
     return x.data * 2
 
 
-assert _g13_local_narrow(3) == 6
-assert _g13_local_narrow(_G13(11)) == 22
+assert _g13_local_narrow(3) == 6, "_g13_local_narrow(3) expected 6"
+assert _g13_local_narrow(_G13(11)) == 22, "_g13_local_narrow(_G13(11)) expected 22"
+
+
+# Method / dunder variant: polymorphic `other` is seeded as a Union for
+# operator dunders, so the post-rebind read must use a narrowed shadow local
+# rather than the ABI storage local.
+class _G13Method:
+    __slots__ = ("data",)
+
+    def __init__(self, data):
+        self.data = data
+
+    def __add__(self, other):
+        other = other if isinstance(other, _G13Method) else _G13Method(other)
+        return _G13Method(self.data + other.data)
+
+
+_g13_m_a = _G13Method(3) + 5
+assert _g13_m_a.data == 8, f"_G13Method(3) + 5 expected 8, got {_g13_m_a.data}"
+_g13_m_b = _G13Method(3) + _G13Method(10)
+assert _g13_m_b.data == 13, f"_G13Method(3) + _G13Method(10) expected 13, got {_g13_m_b.data}"
+
+
+# Recursive tuple field + zip-unpack variant: the constructor default seeds
+# `_children` as an empty tuple, but later call sites refine it to
+# `tuple[_G13Node, ...]`. The loop target `child` must keep that refined class
+# type through `zip()` tuple-unpacking so `child.grad` resolves.
+class _G13Node:
+    __slots__ = ("grad", "_children", "_local_grads")
+
+    def __init__(self, children=(), local_grads=()):
+        self.grad = 0.0
+        self._children = children
+        self._local_grads = local_grads
+
+    def backward(self):
+        for child, local_grad in zip(self._children, self._local_grads):
+            child.grad += local_grad * self.grad
+
+
+_g13_leaf = _G13Node()
+_g13_parent = _G13Node((_g13_leaf,), (0.5,))
+_g13_parent.grad = 4.0
+_g13_parent.backward()
+assert abs(_g13_leaf.grad - 2.0) < 1e-9, f"_g13_leaf.grad expected 2.0, got {_g13_leaf.grad}"
 
 
 print("isinstance-narrowing rebind (§G.13): PASS")

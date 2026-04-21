@@ -50,6 +50,22 @@ impl<'a> Lowering<'a> {
         // §1.4u-b step 3 — populate the stable per-module Var→Type
         // base map. Never mutated during lowering.
         self.populate_base_var_types(hir_module);
+        // Refine class field seeds from constructor calls now that expression
+        // and local seed metadata exist. This keeps later lowering decisions
+        // (attribute access, iterable element typing) from getting stuck at
+        // constructor-default placeholders like `Tuple([])`.
+        self.refine_class_fields_from_constructor_calls(hir_module);
+        // Constructor-call field refinement can make a later prescan pass
+        // strictly more precise for loop-carried locals like:
+        //   for v in reversed(topo):
+        //       for child, grad in zip(v._children, v._local_grads): ...
+        // The first prescan ran before those field seeds existed, so rerun it
+        // now and rebuild the stable Var→Type base map before eager expr caching.
+        self.lowering_seed_info.per_function_local_seed_types.clear();
+        self.precompute_all_local_var_types(hir_module);
+        self.reinfer_return_types_with_prescan(hir_module);
+        self.lowering_seed_info.base_var_types.clear();
+        self.populate_base_var_types(hir_module);
         // §1.4u-b step 5 — populate `lowering_seed_info.expr_types` eagerly for
         // every non-Var ExprId. Lowering-side queries become cache hits
         // for stable (non-narrowing-sensitive) expressions.

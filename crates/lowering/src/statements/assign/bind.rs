@@ -351,12 +351,21 @@ impl<'a> Lowering<'a> {
         // local is typed consistently across all writes. Locals widened
         // through the numeric tower store via the same coercion path
         // used for class fields (§E.3 Part B).
-        let local_ty = self
+        let prescanned_ty = self
             .lowering_seed_info
             .current_local_seed_types
             .get(&var_id)
             .cloned()
             .unwrap_or_else(|| value_type.clone());
+        let local_ty = if (matches!(prescanned_ty, Type::Any | Type::HeapAny)
+            || crate::is_useless_container_ty(&prescanned_ty))
+            && !matches!(value_type, Type::Any | Type::HeapAny)
+            && !crate::is_useless_container_ty(value_type)
+        {
+            value_type.clone()
+        } else {
+            prescanned_ty
+        };
         self.insert_var_type(var_id, local_ty.clone());
         let dest_local = self.get_or_create_local(var_id, local_ty.clone(), mir_func);
         let coerced = self.coerce_to_field_type(value_operand, value_type, &local_ty, mir_func);

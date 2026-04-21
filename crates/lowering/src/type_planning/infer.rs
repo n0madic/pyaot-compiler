@@ -489,6 +489,9 @@ impl<'a> Lowering<'a> {
                 if attr_name == "__class__" && class_info.is_exception_class {
                     return Some(Type::Str);
                 }
+                if let Some(field_ty) = self.get_refined_class_field_type(class_id, &attr) {
+                    return Some(field_ty.clone());
+                }
                 if let Some(field_ty) = class_info.field_types.get(&attr) {
                     return Some(field_ty.clone());
                 }
@@ -1241,7 +1244,7 @@ impl<'a> Lowering<'a> {
 
     /// Result type of a `BuiltinCall`. Delegates to
     /// `resolve_builtin_with_overrides`; falls back to `expr.ty` / `Any`.
-    pub(super) fn builtin_call_result_type(
+    pub(crate) fn builtin_call_result_type(
         &self,
         builtin: &hir::Builtin,
         args: &[hir::ExprId],
@@ -1255,7 +1258,7 @@ impl<'a> Lowering<'a> {
 
     /// Result type of `obj.attr`. Delegates to `resolve_attribute_on_type`;
     /// falls back to `expr.ty` / `Any`.
-    pub(super) fn attribute_result_type(
+    pub(crate) fn attribute_result_type(
         &self,
         obj_ty: &Type,
         attr: pyaot_utils::InternedString,
