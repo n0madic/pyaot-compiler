@@ -251,17 +251,42 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
     }
     debug_assert_ssa(&mir_module, "post-construct_ssa");
 
+    if options.verbose {
+        println!("Running mandatory SSA type analysis (pre-opt, pass 1)...");
+    }
     // Phase 1 strict integration: run SSA type inference + WPA as a
-    // mandatory production pass and materialize the inferred results
-    // back into MIR metadata before optimizer passes inspect local /
-    // param / field types.
+    // mandatory production pass, repair call-site ABI from the
+    // materialized types, then re-analyze the rewritten MIR so every
+    // downstream consumer sees a single canonical view.
+    pyaot_optimizer::type_inference::analyze_and_materialize_types(&mut mir_module);
+    if options.verbose {
+        println!("Repairing MIR ABI from materialized types (pre-opt)...");
+    }
+    pyaot_optimizer::abi_repair::repair_mir_abi_from_types(&mut mir_module).into_diagnostic()?;
+    debug_assert_ssa(&mir_module, "post-abi-repair-pre-opt");
+    if options.verbose {
+        println!("Running mandatory SSA type analysis (pre-opt, pass 2)...");
+    }
     pyaot_optimizer::type_inference::analyze_and_materialize_types(&mut mir_module);
 
     pyaot_optimizer::optimize_module(&mut mir_module, &opt_config, &mut interner);
     debug_assert_ssa(&mir_module, "post-optimize");
 
     // Re-run after optimization so codegen sees final local/param/field
-    // types after inlining / const-folding / devirtualization rewrites.
+    // types after inlining / const-folding / devirtualization rewrites,
+    // then repair the final call ABI once more for the post-opt MIR.
+    if options.verbose {
+        println!("Running mandatory SSA type analysis (post-opt, pass 1)...");
+    }
+    pyaot_optimizer::type_inference::analyze_and_materialize_types(&mut mir_module);
+    if options.verbose {
+        println!("Repairing MIR ABI from materialized types (post-opt)...");
+    }
+    pyaot_optimizer::abi_repair::repair_mir_abi_from_types(&mut mir_module).into_diagnostic()?;
+    debug_assert_ssa(&mir_module, "post-abi-repair-final");
+    if options.verbose {
+        println!("Running mandatory SSA type analysis (post-opt, pass 2)...");
+    }
     let final_type_table =
         pyaot_optimizer::type_inference::analyze_and_materialize_types(&mut mir_module);
 

@@ -313,24 +313,33 @@ calls and removes the `#[ignore]` attributes.
 
 **Duration**: 6–10 weeks.
 
-**Post-close reassessment (2026-04-21)**: the codebase has moved past the
-older "Path A" wording used throughout the historical notes below.
-Today, SSA construction and whole-program type analysis are mandatory
-production passes, narrowing is materialized in MIR block-entry defs,
-and the old HIR-type owner names have been removed from code in favor of
-`LoweringSeedInfo`. If we judge Phase 1 against the **literal original
-intent** rather than the historical close criteria, only two substantive
-gaps remain:
+**Post-close reassessment (2026-04-21)**: Phase 1 is complete in its
+production architecture. Lowering is seed-only (`LoweringSeedInfo` plus
+already-lowered operand types; no recursive production HIR expr typing),
+SSA/WPA analysis is mandatory in the production pipeline, narrowing is
+materialized in MIR block-entry defs, and MIR ABI repair runs both
+before and after optimizer rewrites.
 
-1. **Lowering still depends on HIR-backed `expr_type_hint` queries for many
-   production decisions.** The strict end-state would keep HIR limited to
-   seed/bootstrap metadata and force unresolved cases through conservative
-   generic MIR paths rather than recursive expression typing during
-   lowering.
-2. **There is still no dedicated MIR ABI-repair / call-site rewrite pass
-   after WPA.** Direct calls are coerced at codegen by callee signature,
-   but indirect and virtual call sites still rely on already-compatible
-   operand shapes instead of an explicit post-WPA MIR retyping pass.
+**Authoritative current call/ABI contract**:
+
+- Internal `CallDirect` and resolvable internal `CallNamed` sites are
+  repaired against materialized MIR signatures; singleton internal sites
+  rewrite to `CallDirect`.
+- Internal `Call` / `CallVirtual` / `CallVirtualNamed` sites are
+  repaired when the call graph proves an exact target or when all
+  reachable internal targets converge to one materialized ABI. Singleton
+  repaired sites may rewrite to `CallDirect`; converged multi-target
+  sites may remain indirect/virtual with repaired operands.
+- Conservative runtime-erased function-value / closure calls and some
+  protocol-style named virtual dispatch sites are intentionally allowed
+  to remain dynamic when the optimizer cannot prove one exact internal
+  ABI. Those paths still compile, but they stay outside the strict
+  whole-program exact-signature contract.
+- Unresolved external `CallNamed` remains outside WPA/ABI-repair by
+  design and continues to rely on the existing codegen-time fallback.
+
+The older "Path A" wording used throughout the historical notes below is
+implementation history only, not the current architecture contract.
 
 **Status dashboard (2026-04-20)** — ✅ done · 🟡 partial · ⏳ pending
 
@@ -361,14 +370,18 @@ gaps remain:
   `construct_ssa` and `optimize_module`.
 - **§1.4 flow-sensitive inference** is complete in production terms:
   the CLI runs mandatory SSA/WPA analysis via
-  `analyze_and_materialize_types`, and MIR block-entry `Refine` /
-  `Unbox + Refine` now carry narrowing state. The older `HirTypeInference`
-  / Path-A wording in the historical notes below is obsolete and should be
-  read as superseded by the 2026-04-21 reassessment above.
+  `analyze_and_materialize_types`, lowering consumes only seed metadata
+  plus already-lowered operand types, and MIR block-entry `Refine` /
+  `Unbox + Refine` now carry narrowing state. The older
+  `HirTypeInference` / Path-A wording in the historical notes below is
+  obsolete and should be read as superseded by the 2026-04-21
+  reassessment above.
 - **§1.5 / §1.6 / §1.7** (call graph + WPA params + WPA fields) are
   complete and exercised by the green workspace suite.
 - **§1.8 pass migration** is complete: constfold, DCE, inlining,
-  peephole, devirtualize, and flatten-properties all run on SSA MIR.
+  peephole, devirtualize, and flatten-properties all run on SSA MIR, and
+  post-WPA `repair_mir_abi_from_types` now rewrites call / field ABI
+  before and after optimizer passes so codegen consumes repaired MIR.
 - **§1.11 deferred HIR-tree deletion** is complete: `Function::body`,
   tree control-flow `StmtKind`s, `MatchCase::body`, and
   `ExceptHandler::body` are gone.
@@ -394,9 +407,9 @@ gaps remain:
 4. ✅ **Deletion / ownership audit** — the legacy maps are gone from
    `SymbolTable` / `TypeEnvironment`, `apply_narrowings` /
    `restore_types` are deleted, and code now uses
-   `LoweringSeedInfo` as the stable pre-lowering seed store.
-   The stricter MIR-only end-state is **not** fully complete yet; see the
-   2026-04-21 reassessment above for the remaining two gaps.
+   `LoweringSeedInfo` as the stable pre-lowering seed store. Historical
+   Path-A ownership notes below are superseded by the 2026-04-21
+   reassessment above.
 5. ✅ **microgpt.py diagnostic documented** — the last recorded
    `§1.4u-b` sweep fixed the line-41 ternary-rebind narrowing gap and
    classified the remaining issues as unrelated. `microgpt.py` is not
@@ -3706,7 +3719,7 @@ the spec reflecting reality.
 
 ---
 
-*Last updated: 2026-04-21. Phase 0 is complete. Phase 1 remains
-historically closed under the 2026-04-20 acceptance record, but the
-2026-04-21 reassessment at the top of §1 is the authoritative statement
-for what still differs from the literal original intent.*
+*Last updated: 2026-04-21. Phase 0 is complete. Phase 1 is complete in
+production terms; the 2026-04-21 reassessment at the top of §1 is the
+authoritative statement of the current architecture, and the Path-A
+notes below are retained as implementation history only.*

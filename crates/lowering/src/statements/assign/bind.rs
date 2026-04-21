@@ -37,7 +37,7 @@ impl<'a> Lowering<'a> {
             hir::BindingTarget::Attr { obj, field, .. } => {
                 let obj_expr = &hir_module.exprs[*obj];
                 let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-                let obj_type = self.expr_type_hint(*obj, hir_module);
+                let obj_type = self.seed_expr_type(*obj, hir_module);
                 self.bind_attr_op(
                     obj_operand,
                     &obj_type,
@@ -50,10 +50,10 @@ impl<'a> Lowering<'a> {
             hir::BindingTarget::Index { obj, index, .. } => {
                 let obj_expr = &hir_module.exprs[*obj];
                 let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-                let obj_type = self.expr_type_hint(*obj, hir_module);
+                let obj_type = self.seed_expr_type(*obj, hir_module);
                 let index_expr = &hir_module.exprs[*index];
                 let index_operand = self.lower_expr(index_expr, hir_module, mir_func)?;
-                let index_type = self.expr_type_hint(*index, hir_module);
+                let index_type = self.seed_expr_type(*index, hir_module);
 
                 // Refine Dict(Any, Any) type based on actual key/value types.
                 // For patterns like `d = defaultdict(); d["k"] = 42`, infer

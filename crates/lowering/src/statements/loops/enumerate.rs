@@ -72,7 +72,7 @@ impl<'a> Lowering<'a> {
         }
 
         // General iterable path: use indexed iteration with counter
-        let iter_type = self.expr_type_hint(enum_args[0], hir_module);
+        let iter_type = self.seed_expr_type(enum_args[0], hir_module);
         if let Some((kind, elem_type)) = get_iterable_info(&iter_type) {
             self.lower_for_enumerate_iterable(
                 counter_var,
@@ -323,7 +323,7 @@ impl<'a> Lowering<'a> {
         // Lower the iterator expression
         let iter_expr = &hir_module.exprs[iter_id];
         let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
-        let iter_type = self.expr_type_hint(iter_id, hir_module);
+        let iter_type = self.seed_expr_type(iter_id, hir_module);
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {
@@ -567,7 +567,7 @@ impl<'a> Lowering<'a> {
         // Create iterator from the expression
         let iter_expr = &hir_module.exprs[iter_id];
         let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
-        let iter_type = self.expr_type_hint(iter_id, hir_module);
+        let iter_type = self.seed_expr_type(iter_id, hir_module);
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {

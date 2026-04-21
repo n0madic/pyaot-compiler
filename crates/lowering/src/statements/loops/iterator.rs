@@ -37,7 +37,7 @@ impl<'a> Lowering<'a> {
         // 1. Lower the iterator expression (generator) and store in a temp local
         let iter_expr = &hir_module.exprs[iter_id];
         let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
-        let iter_type = self.expr_type_hint(iter_id, hir_module);
+        let iter_type = self.seed_expr_type(iter_id, hir_module);
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {

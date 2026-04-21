@@ -169,7 +169,7 @@ impl<'a> Lowering<'a> {
         if !matches!(lowered, Type::Any | Type::HeapAny) {
             return lowered;
         }
-        self.expr_type_hint(expr_id, hir_module)
+        self.seed_expr_type(expr_id, hir_module)
     }
 
     fn get_or_create_local(

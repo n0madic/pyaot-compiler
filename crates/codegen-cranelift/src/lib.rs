@@ -163,14 +163,10 @@ impl Codegen {
         // Declare all functions first and collect parameter types
         let mut func_ids = IndexMap::new();
         let mut func_name_ids = IndexMap::new();
-        let mut func_param_types = IndexMap::new();
         for (fid, func) in &mir_module.functions {
             let cl_func_id = declare_function(&mut self.module, func)?;
             func_ids.insert(*fid, cl_func_id);
             func_name_ids.insert(func.name.clone(), cl_func_id);
-            // Collect parameter types for type coercion at call sites (e.g., Bool -> Int)
-            let param_types: Vec<_> = func.params.iter().map(|p| p.ty.clone()).collect();
-            func_param_types.insert(*fid, param_types);
         }
 
         // Create vtable data sections and collect their IDs
@@ -192,7 +188,6 @@ impl Codegen {
                 func_builder_ctx: &mut self.func_builder_ctx,
                 func_ids: &func_ids,
                 func_name_ids: &func_name_ids,
-                func_param_types: &func_param_types,
                 interner,
                 gc_push_id: self.gc_push_id,
                 gc_pop_id: self.gc_pop_id,

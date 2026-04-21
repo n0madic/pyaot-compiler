@@ -92,7 +92,7 @@ impl<'a> Lowering<'a> {
             return Ok(None);
         }
         let iterable_expr = &hir_module.exprs[args[0]];
-        let iterable_type = self.expr_type_hint(args[0], hir_module);
+        let iterable_type = self.seed_expr_type(args[0], hir_module);
         let elem_ty = match &iterable_type {
             Type::List(t) | Type::Iterator(t) | Type::Set(t) => (**t).clone(),
             _ => return Ok(None),
@@ -111,7 +111,7 @@ impl<'a> Lowering<'a> {
         //   class + class via the forward dunder.
         // - anything else → give up; fall through to the numeric path.
         let start_operand = if args.len() > 1 {
-            let start_ty = self.expr_type_hint(args[1], hir_module);
+            let start_ty = self.seed_expr_type(args[1], hir_module);
             let expr = &hir_module.exprs[args[1]];
             let op = self.lower_expr(expr, hir_module, mir_func)?;
             if start_ty == class_ty {
@@ -443,7 +443,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<Option<mir::Operand>> {
-        let iterable_type = self.expr_type_hint(arg, hir_module);
+        let iterable_type = self.seed_expr_type(arg, hir_module);
         let elem_ty = match &iterable_type {
             Type::List(t) | Type::Iterator(t) | Type::Set(t) => (**t).clone(),
             Type::Tuple(types) => {

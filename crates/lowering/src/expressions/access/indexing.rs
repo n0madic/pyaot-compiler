@@ -18,14 +18,14 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         let obj_expr = &hir_module.exprs[obj];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        // Use expr_type_hint for proper type inference
-        let obj_type = self.expr_type_hint(obj, hir_module);
+        // Use seed_expr_type for proper type inference
+        let obj_type = self.seed_expr_type(obj, hir_module);
 
         let index_expr = &hir_module.exprs[index];
         let mut index_operand = self.lower_expr(index_expr, hir_module, mir_func)?;
 
         // If index is a class with __index__, call it to convert to int
-        let index_type = self.expr_type_hint(index, hir_module);
+        let index_type = self.seed_expr_type(index, hir_module);
         if let Type::Class { class_id, .. } = &index_type {
             if let Some(func_id) = self
                 .get_class_info(class_id)
@@ -265,7 +265,7 @@ impl<'a> Lowering<'a> {
                     is_gc_root: value_ty.is_heap(),
                 });
                 // Box key if needed (int/bool keys need boxing)
-                let index_type = self.expr_type_hint(index, hir_module);
+                let index_type = self.seed_expr_type(index, hir_module);
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
 
                 // Check if value type needs unboxing
@@ -304,7 +304,7 @@ impl<'a> Lowering<'a> {
                     ty: (**value_ty).clone(),
                     is_gc_root: value_ty.is_heap(),
                 });
-                let index_type = self.expr_type_hint(index, hir_module);
+                let index_type = self.seed_expr_type(index, hir_module);
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
 
                 let unbox_func = Self::unbox_func_for_type(value_ty.as_ref());

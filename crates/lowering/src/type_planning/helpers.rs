@@ -399,10 +399,7 @@ pub(crate) fn resolve_builtin_call_type(
             }
             // Single-arg form: min(iterable) / max(iterable) — returns element type
             if arg_types.len() == 1 {
-                let elem_type = extract_iterable_element_type(&arg_types[0]);
-                if elem_type != Type::Any {
-                    return Some(elem_type);
-                }
+                return Some(extract_iterable_element_type(&arg_types[0]));
             }
             // Multi-arg form: min(a, b, c) — returns the common type
             let has_float = arg_types.contains(&Type::Float);

@@ -87,6 +87,7 @@ fn make_module_with_vtable(
         class_id,
         entries: vec![VtableEntry {
             slot,
+            name_hash: 0,
             method_func_id,
         }],
     });

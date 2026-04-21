@@ -43,12 +43,15 @@
 //! * Integrate into the compile pipeline. Until S1.8b produces a
 //!   non-trivial table, nothing consumes the output.
 
-use std::{collections::HashMap, ptr};
+use std::{
+    collections::{HashMap, HashSet},
+    ptr,
+};
 
 use indexmap::IndexMap;
 use pyaot_mir::{Function, Instruction, InstructionKind, Module, Operand, RuntimeFunc};
 use pyaot_types::Type;
-use pyaot_utils::{ClassId, FuncId, InternedString, LocalId};
+use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId};
 
 /// Upper bound on TypeInferencePass iterations per function. A well-
 /// formed SSA function reaches a fixed point in 1-2 sweeps; the cap is
@@ -176,7 +179,8 @@ pub fn infer_function_with_seed(
 
 /// Apply the type-inference rule for a single instruction, returning
 /// `true` if the table changed. Handles Phi, Refine, and the per-kind
-/// result-type rules added in S1.8b (Const, Copy, CallDirect, GcAlloc).
+/// result-type rules added in S1.8b (Const, Copy, CallDirect, CallNamed,
+/// GcAlloc).
 /// Instructions without a rule leave the seed type intact — they are
 /// neither widened nor narrowed by this pass.
 fn apply_instruction(
@@ -207,6 +211,27 @@ fn apply_instruction(
                 None => false,
             }
         }
+        InstructionKind::CallNamed { dest, name, .. } => {
+            match module.and_then(|m| m.functions.values().find(|func| func.name == *name)) {
+                Some(callee) => update_type(types, *dest, callee.return_type.clone()),
+                None => false,
+            }
+        }
+        InstructionKind::CallVirtual {
+            dest, obj, slot, ..
+        } => match infer_virtual_call_return_type(*slot, obj, module, types) {
+            Some(ty) => update_type(types, *dest, ty),
+            None => false,
+        },
+        InstructionKind::CallVirtualNamed {
+            dest,
+            obj,
+            name_hash,
+            ..
+        } => match infer_virtual_named_call_return_type(*name_hash, obj, module, types) {
+            Some(ty) => update_type(types, *dest, ty),
+            None => false,
+        },
         InstructionKind::GcAlloc { dest, ty, .. } => update_type(types, *dest, ty.clone()),
 
         // S1.8c rules.
@@ -232,9 +257,8 @@ fn apply_instruction(
                 None => false,
             }
         }
-
-        // Remaining kinds (CallNamed, CallVirtual*, exc / boxing /
-        // conversion helpers) stay at the seed type for now.
+        // Remaining kinds (exc / boxing / conversion helpers) stay at
+        // the seed type for now.
         // `InstructionKind::Call` goes through a dedicated path in
         // `run_pass` that has the `func: &Function` context needed to
         // resolve a function-pointer operand back to its defining
@@ -300,6 +324,84 @@ fn infer_call_return_via_func_addr(
         return false;
     };
     update_type(types, dest, callee.return_type.clone())
+}
+
+fn infer_virtual_call_return_type(
+    slot: usize,
+    obj: &Operand,
+    module: Option<&Module>,
+    types: &FunctionTypes,
+) -> Option<Type> {
+    let module = module?;
+    let obj_ty = operand_type(obj, types);
+
+    if let Type::Class { class_id, .. } = obj_ty {
+        for vtable in &module.vtables {
+            if vtable.class_id == class_id {
+                if let Some(entry) = vtable.entries.iter().find(|entry| entry.slot == slot) {
+                    return module
+                        .functions
+                        .get(&entry.method_func_id)
+                        .map(|func| func.return_type.clone());
+                }
+            }
+        }
+    }
+
+    let mut returns = module.vtables.iter().flat_map(|vtable| {
+        vtable
+            .entries
+            .iter()
+            .filter(move |entry| entry.slot == slot)
+            .filter_map(|entry| module.functions.get(&entry.method_func_id))
+            .map(|func| func.return_type.clone())
+    });
+    let first = returns.next()?;
+    returns.all(|ret| ret == first).then_some(first)
+}
+
+fn infer_virtual_named_call_return_type(
+    name_hash: u64,
+    obj: &Operand,
+    module: Option<&Module>,
+    types: &FunctionTypes,
+) -> Option<Type> {
+    let module = module?;
+    let obj_ty = operand_type(obj, types);
+
+    if let Type::Class { class_id, .. } = obj_ty {
+        let exact_named_dispatch = module
+            .class_info
+            .get(&class_id)
+            .is_some_and(|meta| !meta.is_protocol);
+        if exact_named_dispatch {
+            for vtable in &module.vtables {
+                if vtable.class_id == class_id {
+                    if let Some(entry) = vtable
+                        .entries
+                        .iter()
+                        .find(|entry| entry.name_hash == name_hash)
+                    {
+                        return module
+                            .functions
+                            .get(&entry.method_func_id)
+                            .map(|func| func.return_type.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut returns = module.vtables.iter().flat_map(|vtable| {
+        vtable
+            .entries
+            .iter()
+            .filter(move |entry| entry.name_hash == name_hash)
+            .filter_map(|entry| module.functions.get(&entry.method_func_id))
+            .map(|func| func.return_type.clone())
+    });
+    let first = returns.next()?;
+    returns.all(|ret| ret == first).then_some(first)
 }
 
 /// Result type of `left op right`. Comparison / logical-and/or / boolean
@@ -669,6 +771,182 @@ fn wpa_join_types(a: &Type, b: &Type) -> Type {
     Type::unify_field_type(a, b)
 }
 
+fn merge_observed_wpa_type(prev: Option<&Type>, new_ty: &Type) -> Type {
+    match prev {
+        None => new_ty.clone(),
+        Some(prev_ty)
+            if matches!(prev_ty, Type::Any | Type::HeapAny) && matches!(new_ty, Type::None) =>
+        {
+            prev_ty.clone()
+        }
+        Some(prev_ty)
+            if matches!(new_ty, Type::Any | Type::HeapAny) && matches!(prev_ty, Type::None) =>
+        {
+            new_ty.clone()
+        }
+        Some(prev_ty)
+            if matches!(prev_ty, Type::Any | Type::HeapAny)
+                && !matches!(new_ty, Type::Any | Type::HeapAny) =>
+        {
+            new_ty.clone()
+        }
+        Some(prev_ty)
+            if matches!(new_ty, Type::Any | Type::HeapAny)
+                && !matches!(prev_ty, Type::Any | Type::HeapAny) =>
+        {
+            prev_ty.clone()
+        }
+        Some(prev_ty) => wpa_join_types(prev_ty, new_ty),
+    }
+}
+
+fn merge_dynamic_observed_wpa_type(prev: Option<&Type>, new_ty: &Type) -> Type {
+    match prev {
+        None => new_ty.clone(),
+        Some(prev_ty)
+            if matches!(prev_ty, Type::Any | Type::HeapAny) && matches!(new_ty, Type::None) =>
+        {
+            prev_ty.clone()
+        }
+        Some(prev_ty)
+            if matches!(new_ty, Type::Any | Type::HeapAny) && matches!(prev_ty, Type::None) =>
+        {
+            new_ty.clone()
+        }
+        Some(prev_ty)
+            if matches!(prev_ty, Type::Any | Type::HeapAny)
+                && !matches!(new_ty, Type::Any | Type::HeapAny) =>
+        {
+            new_ty.clone()
+        }
+        Some(prev_ty)
+            if matches!(new_ty, Type::Any | Type::HeapAny)
+                && !matches!(prev_ty, Type::Any | Type::HeapAny) =>
+        {
+            prev_ty.clone()
+        }
+        Some(prev_ty) if *prev_ty == *new_ty => prev_ty.clone(),
+        Some(prev_ty) => Type::normalize_union(vec![prev_ty.clone(), new_ty.clone()]),
+    }
+}
+
+fn param_requires_erased_runtime_abi_with_def_map(
+    func: &Function,
+    param_id: LocalId,
+    def_map: &HashMap<LocalId, &InstructionKind>,
+) -> bool {
+    fn local_depends_on_param(
+        local_id: LocalId,
+        param_id: LocalId,
+        def_map: &HashMap<LocalId, &InstructionKind>,
+        seen: &mut HashSet<LocalId>,
+    ) -> bool {
+        if local_id == param_id {
+            return true;
+        }
+        if !seen.insert(local_id) {
+            return false;
+        }
+        match def_map.get(&local_id).copied() {
+            Some(InstructionKind::Copy { src, .. } | InstructionKind::Refine { src, .. }) => {
+                matches!(src, Operand::Local(src_local) if local_depends_on_param(*src_local, param_id, def_map, seen))
+            }
+            Some(InstructionKind::Phi { sources, .. }) => sources.iter().any(|(_, src)| {
+                matches!(src, Operand::Local(src_local) if local_depends_on_param(*src_local, param_id, def_map, seen))
+            }),
+            _ => false,
+        }
+    }
+
+    let rt_get_type_tag = &pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG;
+    let rt_isinstance_class = &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS;
+    let rt_isinstance_class_inherited =
+        &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS_INHERITED;
+    for block in func.blocks.values() {
+        for inst in &block.instructions {
+            let InstructionKind::RuntimeCall {
+                func: RuntimeFunc::Call(def),
+                args,
+                ..
+            } = &inst.kind
+            else {
+                continue;
+            };
+            if !(ptr::eq(*def, rt_get_type_tag)
+                || ptr::eq(*def, rt_isinstance_class)
+                || ptr::eq(*def, rt_isinstance_class_inherited))
+            {
+                continue;
+            }
+            if args.iter().any(|arg| match arg {
+                Operand::Local(local) => {
+                    let mut seen = HashSet::new();
+                    local_depends_on_param(*local, param_id, def_map, &mut seen)
+                }
+                Operand::Constant(_) => false,
+            }) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn param_requires_heap_erased_abi_with_def_map(
+    func: &Function,
+    param_id: LocalId,
+    def_map: &HashMap<LocalId, &InstructionKind>,
+) -> bool {
+    fn local_depends_on_param(
+        local_id: LocalId,
+        param_id: LocalId,
+        def_map: &HashMap<LocalId, &InstructionKind>,
+        seen: &mut HashSet<LocalId>,
+    ) -> bool {
+        if local_id == param_id {
+            return true;
+        }
+        if !seen.insert(local_id) {
+            return false;
+        }
+        match def_map.get(&local_id).copied() {
+            Some(InstructionKind::Copy { src, .. } | InstructionKind::Refine { src, .. }) => {
+                matches!(src, Operand::Local(src_local) if local_depends_on_param(*src_local, param_id, def_map, seen))
+            }
+            Some(InstructionKind::Phi { sources, .. }) => sources.iter().any(|(_, src)| {
+                matches!(src, Operand::Local(src_local) if local_depends_on_param(*src_local, param_id, def_map, seen))
+            }),
+            _ => false,
+        }
+    }
+
+    for block in func.blocks.values() {
+        for inst in &block.instructions {
+            let InstructionKind::RuntimeCall {
+                func: RuntimeFunc::Call(def),
+                args,
+                ..
+            } = &inst.kind
+            else {
+                continue;
+            };
+            if !def.symbol.starts_with("rt_obj_") {
+                continue;
+            }
+            if args.iter().any(|arg| match arg {
+                Operand::Local(local) => {
+                    let mut seen = HashSet::new();
+                    local_depends_on_param(*local, param_id, def_map, &mut seen)
+                }
+                Operand::Constant(_) => false,
+            }) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// One pass over a single function: collect arg types across every
 /// direct call site, join them per parameter position, seed the function
 /// with the joined types, and re-run intra-procedural inference.
@@ -688,6 +966,19 @@ fn refine_function_params(
     if n_params == 0 {
         return false;
     }
+    let func_def_map = build_def_map(func);
+    let dynamic_param_abi: Vec<bool> = func
+        .params
+        .iter()
+        .map(|param| param_requires_erased_runtime_abi_with_def_map(func, param.id, &func_def_map))
+        .collect();
+    let heap_erased_param_abi: Vec<bool> = func
+        .params
+        .iter()
+        .map(|param| param_requires_heap_erased_abi_with_def_map(func, param.id, &func_def_map))
+        .collect();
+    let mut caller_def_maps: HashMap<FuncId, HashMap<LocalId, &InstructionKind>> = HashMap::new();
+    let mut caller_preds: HashMap<FuncId, HashMap<BlockId, Vec<BlockId>>> = HashMap::new();
 
     // Join arg types from every call site whose instruction shape can be
     // matched back to this callee's parameter list.
@@ -696,19 +987,23 @@ fn refine_function_params(
         Some(c) => c,
         None => return false,
     };
-    let best_precision = callers
+    let precise_callers_present = callers
         .iter()
-        .map(|site| call_kind_precision(site.kind))
-        .max()
-        .unwrap_or(0);
+        .any(|site| call_site_is_precise(call_graph, site));
     for site in callers {
-        if call_kind_precision(site.kind) != best_precision {
+        if !call_site_is_precise(call_graph, site) {
             continue;
         }
         let caller = match module.functions.get(&site.caller) {
             Some(c) => c,
             None => continue,
         };
+        let caller_def_map = caller_def_maps
+            .entry(site.caller)
+            .or_insert_with(|| build_def_map(caller));
+        let caller_preds = caller_preds
+            .entry(site.caller)
+            .or_insert_with(|| build_predecessor_map(caller));
         let block = match caller.blocks.get(&site.block) {
             Some(b) => b,
             None => continue,
@@ -724,21 +1019,50 @@ fn refine_function_params(
         let caller_types = table.function_types(site.caller);
         for (i, arg) in call_args.iter().enumerate().take(n_params) {
             let arg_ty = match caller_types {
-                Some(t) => operand_type(arg, t),
+                Some(t) => logical_operand_type(
+                    arg,
+                    caller,
+                    t,
+                    caller_def_map,
+                    caller_preds,
+                    Some(site.block),
+                ),
                 None => Type::Any,
             };
-            joined[i] = Some(match &joined[i] {
-                None => arg_ty,
-                Some(prev) => wpa_join_types(prev, &arg_ty),
+            joined[i] = Some(if dynamic_param_abi.get(i).copied().unwrap_or(false) {
+                merge_dynamic_observed_wpa_type(joined[i].as_ref(), &arg_ty)
+            } else {
+                merge_observed_wpa_type(joined[i].as_ref(), &arg_ty)
             });
         }
+    }
+
+    if !precise_callers_present {
+        return false;
     }
 
     // Build seed overrides for every param we derived a type for.
     let mut overrides: HashMap<LocalId, Type> = HashMap::new();
     for (i, param) in func.params.iter().enumerate() {
         if let Some(ty) = &joined[i] {
-            let override_ty = if matches!(ty, Type::Any | Type::HeapAny | Type::Never)
+            let param_seed_is_dynamic = matches!(
+                param.ty,
+                Type::Any | Type::HeapAny | Type::Never | Type::Union(_)
+            );
+            let override_ty = if !param_seed_is_dynamic {
+                // Respect concrete MIR signature seeds for annotated parameters.
+                // WPA may refine dynamic/unannotated seeds, but it must not widen
+                // an explicit ABI contract like `v: int` into a call-site join.
+                param.ty.clone()
+            } else if dynamic_param_abi.get(i).copied().unwrap_or(false)
+                || heap_erased_param_abi.get(i).copied().unwrap_or(false)
+            {
+                // If the lowered body still inspects or consumes this parameter
+                // through erased runtime helpers, keep the original dynamic ABI
+                // seed. Otherwise WPA can materialize a raw primitive/class ABI
+                // that no longer matches the body's runtime-call expectations.
+                param.ty.clone()
+            } else if matches!(ty, Type::Any | Type::HeapAny | Type::Never)
                 && !matches!(param.ty, Type::Any | Type::HeapAny | Type::Never)
             {
                 // Preserve an existing concrete param ABI when a call-site observation
@@ -770,13 +1094,17 @@ fn refine_function_params(
     differs
 }
 
-fn call_kind_precision(kind: crate::call_graph::CallKind) -> u8 {
+fn call_site_is_precise(
+    call_graph: &crate::call_graph::CallGraph,
+    site: &crate::call_graph::CallSite,
+) -> bool {
     use crate::call_graph::CallKind;
 
-    match kind {
-        CallKind::Direct => 2,
-        CallKind::Virtual => 1,
-        CallKind::Indirect => 0,
+    match site.kind {
+        CallKind::Direct => true,
+        CallKind::Indirect | CallKind::Virtual => {
+            call_graph.site_targets_are_exact(site.caller, site.block, site.instruction)
+        }
     }
 }
 
@@ -789,6 +1117,7 @@ fn callsite_args_for_callee<'a>(
 
     match (&inst.kind, kind) {
         (InstructionKind::CallDirect { args, .. }, CallKind::Direct)
+        | (InstructionKind::CallNamed { args, .. }, CallKind::Direct)
         | (InstructionKind::Call { args, .. }, CallKind::Indirect) => {
             (args.len() == callee.params.len()).then_some(args.iter().collect())
         }
@@ -842,6 +1171,254 @@ fn operand_type(op: &Operand, types: &FunctionTypes) -> Type {
     }
 }
 
+fn instruction_dest(kind: &InstructionKind) -> Option<LocalId> {
+    match kind {
+        InstructionKind::Const { dest, .. }
+        | InstructionKind::BinOp { dest, .. }
+        | InstructionKind::UnOp { dest, .. }
+        | InstructionKind::Call { dest, .. }
+        | InstructionKind::CallDirect { dest, .. }
+        | InstructionKind::CallNamed { dest, .. }
+        | InstructionKind::CallVirtual { dest, .. }
+        | InstructionKind::CallVirtualNamed { dest, .. }
+        | InstructionKind::FuncAddr { dest, .. }
+        | InstructionKind::BuiltinAddr { dest, .. }
+        | InstructionKind::RuntimeCall { dest, .. }
+        | InstructionKind::Copy { dest, .. }
+        | InstructionKind::GcAlloc { dest, .. }
+        | InstructionKind::FloatToInt { dest, .. }
+        | InstructionKind::BoolToInt { dest, .. }
+        | InstructionKind::IntToFloat { dest, .. }
+        | InstructionKind::FloatBits { dest, .. }
+        | InstructionKind::IntBitsToFloat { dest, .. }
+        | InstructionKind::FloatAbs { dest, .. }
+        | InstructionKind::ExcGetType { dest }
+        | InstructionKind::ExcHasException { dest }
+        | InstructionKind::ExcGetCurrent { dest }
+        | InstructionKind::ExcCheckType { dest, .. }
+        | InstructionKind::ExcCheckClass { dest, .. }
+        | InstructionKind::Phi { dest, .. }
+        | InstructionKind::Refine { dest, .. } => Some(*dest),
+        InstructionKind::GcPush { .. }
+        | InstructionKind::GcPop
+        | InstructionKind::ExcPushFrame { .. }
+        | InstructionKind::ExcPopFrame
+        | InstructionKind::ExcClear
+        | InstructionKind::ExcStartHandling
+        | InstructionKind::ExcEndHandling => None,
+    }
+}
+
+fn build_def_map(func: &Function) -> HashMap<LocalId, &InstructionKind> {
+    let mut defs = HashMap::new();
+    for block in func.blocks.values() {
+        for inst in &block.instructions {
+            if let Some(dest) = instruction_dest(&inst.kind) {
+                defs.insert(dest, &inst.kind);
+            }
+        }
+    }
+    defs
+}
+
+fn build_predecessor_map(func: &Function) -> HashMap<BlockId, Vec<BlockId>> {
+    let mut preds: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+    for (&block_id, block) in &func.blocks {
+        match &block.terminator {
+            pyaot_mir::Terminator::Goto(target) => {
+                preds.entry(*target).or_default().push(block_id);
+            }
+            pyaot_mir::Terminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => {
+                preds.entry(*then_block).or_default().push(block_id);
+                preds.entry(*else_block).or_default().push(block_id);
+            }
+            pyaot_mir::Terminator::TrySetjmp {
+                try_body,
+                handler_entry,
+                ..
+            } => {
+                preds.entry(*try_body).or_default().push(block_id);
+                preds.entry(*handler_entry).or_default().push(block_id);
+            }
+            _ => {}
+        }
+    }
+    preds
+}
+
+fn class_variant_for_id(ty: &Type, target_id: ClassId) -> Option<Type> {
+    match ty {
+        Type::Class { class_id, .. } if *class_id == target_id => Some(ty.clone()),
+        Type::Union(members) => members.iter().find_map(|member| match member {
+            Type::Class { class_id, .. } if *class_id == target_id => Some(member.clone()),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+fn edge_narrowed_type_for_local(
+    local_id: LocalId,
+    site_block: BlockId,
+    base_ty: &Type,
+    func: &Function,
+    def_map: &HashMap<LocalId, &InstructionKind>,
+    preds: &HashMap<BlockId, Vec<BlockId>>,
+) -> Option<Type> {
+    let pred_list = preds.get(&site_block)?;
+    if pred_list.len() != 1 {
+        return None;
+    }
+    let pred_id = pred_list[0];
+    let pred = func.blocks.get(&pred_id)?;
+    let pyaot_mir::Terminator::Branch {
+        cond: Operand::Local(cond_local),
+        then_block,
+        else_block,
+    } = &pred.terminator
+    else {
+        return None;
+    };
+    let InstructionKind::RuntimeCall {
+        func: RuntimeFunc::Call(def),
+        args,
+        ..
+    } = def_map.get(cond_local).copied()?
+    else {
+        return None;
+    };
+    if !ptr::eq(
+        *def,
+        &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS,
+    ) && !ptr::eq(
+        *def,
+        &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS_INHERITED,
+    ) {
+        return None;
+    }
+    if args.len() != 2 {
+        return None;
+    }
+    let Operand::Local(checked_local) = args[0] else {
+        return None;
+    };
+    if checked_local != local_id {
+        return None;
+    }
+    let Operand::Constant(pyaot_mir::Constant::Int(class_raw)) = args[1] else {
+        return None;
+    };
+    let class_id = ClassId::from(class_raw as u32);
+    let checked_ty = class_variant_for_id(base_ty, class_id)?;
+    let narrowed = if *then_block == site_block {
+        base_ty.narrow_to(&checked_ty)
+    } else if *else_block == site_block {
+        base_ty.narrow_excluding(&checked_ty)
+    } else {
+        return None;
+    };
+    (!matches!(narrowed, Type::Never) && narrowed != *base_ty).then_some(narrowed)
+}
+
+fn logical_operand_type(
+    op: &Operand,
+    func: &Function,
+    types: &FunctionTypes,
+    def_map: &HashMap<LocalId, &InstructionKind>,
+    preds: &HashMap<BlockId, Vec<BlockId>>,
+    site_block: Option<BlockId>,
+) -> Type {
+    fn inner(
+        op: &Operand,
+        func: &Function,
+        types: &FunctionTypes,
+        def_map: &HashMap<LocalId, &InstructionKind>,
+        preds: &HashMap<BlockId, Vec<BlockId>>,
+        site_block: Option<BlockId>,
+        seen: &mut HashSet<LocalId>,
+    ) -> Type {
+        let Operand::Local(local_id) = op else {
+            return constant_type(match op {
+                Operand::Constant(c) => c,
+                Operand::Local(_) => unreachable!(),
+            });
+        };
+
+        if !seen.insert(*local_id) {
+            return types.get(local_id).cloned().unwrap_or(Type::Any);
+        }
+
+        let base_ty = types.get(local_id).cloned().unwrap_or(Type::Any);
+        let site_ty = site_block
+            .and_then(|block_id| {
+                edge_narrowed_type_for_local(*local_id, block_id, &base_ty, func, def_map, preds)
+            })
+            .unwrap_or_else(|| base_ty.clone());
+
+        let Some(def_kind) = def_map.get(local_id).copied() else {
+            return site_ty;
+        };
+
+        match def_kind {
+            InstructionKind::Const { value, .. } => constant_type(value),
+            InstructionKind::Copy { src, .. } => {
+                inner(src, func, types, def_map, preds, site_block, seen)
+            }
+            InstructionKind::Refine { src, ty, .. } => {
+                if matches!(ty, Type::Any | Type::HeapAny | Type::Union(_)) {
+                    inner(src, func, types, def_map, preds, site_block, seen)
+                } else {
+                    ty.clone()
+                }
+            }
+            InstructionKind::Phi { sources, .. } => {
+                let mut acc: Option<Type> = None;
+                for (_, src) in sources {
+                    let src_ty = inner(src, func, types, def_map, preds, site_block, seen);
+                    acc = Some(match acc {
+                        None => src_ty,
+                        Some(prev) => wpa_join_types(&prev, &src_ty),
+                    });
+                }
+                acc.unwrap_or(site_ty)
+            }
+            InstructionKind::BoolToInt { .. } | InstructionKind::FloatToInt { .. } => Type::Int,
+            InstructionKind::IntToFloat { .. } | InstructionKind::IntBitsToFloat { .. } => {
+                Type::Float
+            }
+            InstructionKind::RuntimeCall {
+                func: RuntimeFunc::Call(def),
+                ..
+            } if ptr::eq(*def, &pyaot_core_defs::runtime_func_def::RT_BOX_INT) => Type::Int,
+            InstructionKind::RuntimeCall {
+                func: RuntimeFunc::Call(def),
+                ..
+            } if ptr::eq(*def, &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT) => Type::Float,
+            InstructionKind::RuntimeCall {
+                func: RuntimeFunc::Call(def),
+                ..
+            } if ptr::eq(*def, &pyaot_core_defs::runtime_func_def::RT_BOX_BOOL) => Type::Bool,
+            InstructionKind::RuntimeCall {
+                func: RuntimeFunc::Call(def),
+                ..
+            } if ptr::eq(*def, &pyaot_core_defs::runtime_func_def::RT_BOX_NONE) => Type::None,
+            _ => site_ty,
+        }
+    }
+
+    match op {
+        Operand::Constant(c) => constant_type(c),
+        Operand::Local(_) => {
+            let mut seen = HashSet::new();
+            inner(op, func, types, def_map, preds, site_block, &mut seen)
+        }
+    }
+}
+
 fn constant_type(c: &pyaot_mir::Constant) -> Type {
     use pyaot_mir::Constant;
     match c {
@@ -867,11 +1444,11 @@ fn constant_type(c: &pyaot_mir::Constant) -> Type {
 const MAX_FIELD_WPA_ITERATIONS: usize = 4;
 
 /// Refine `module.class_info[*].field_types` from the joined types of
-/// every `rt_instance_set_field(self, CONST_OFFSET, value)` write inside
-/// each class's `__init__`. S1.11 has already joined every `__init__`'s
-/// parameter types across all `ClassName(...)` call sites, so the
-/// `TypeTable` entry for the value operand reflects the whole-program
-/// argument distribution — there is no separate call-site walk here.
+/// every `rt_instance_set_field(obj, CONST_OFFSET, value)` write across
+/// the whole module. This includes `__init__`, regular methods, and
+/// top-level instance-field assignments. S1.11 has already joined
+/// parameter types across call sites, so `TypeTable` reflects the
+/// whole-program argument distribution before we scan the writes.
 ///
 /// Returns `true` if any field type changed. Fixed-point loops use this
 /// to decide when to stop re-running param inference.
@@ -880,36 +1457,42 @@ pub fn wpa_field_inference(module: &mut Module, type_table: &TypeTable) -> bool 
         &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD;
 
     let mut any_changed = false;
-    let class_ids: Vec<ClassId> = module.class_info.keys().copied().collect();
+    let offset_maps: HashMap<ClassId, HashMap<usize, InternedString>> = module
+        .class_info
+        .iter()
+        .map(|(&class_id, meta)| {
+            let offset_to_name = meta
+                .field_offsets
+                .iter()
+                .map(|(name, off)| (*off, *name))
+                .collect();
+            (class_id, offset_to_name)
+        })
+        .collect();
+    let init_to_class: HashMap<FuncId, ClassId> = module
+        .class_info
+        .iter()
+        .filter_map(|(&class_id, meta)| meta.init_func_id.map(|init_id| (init_id, class_id)))
+        .collect();
+    let mut joined_by_class: HashMap<ClassId, IndexMap<InternedString, Type>> = HashMap::new();
 
-    for class_id in class_ids {
-        let Some(init_func_id) = module.class_info[&class_id].init_func_id else {
+    for (&func_id, func) in &module.functions {
+        let Some(func_types) = type_table.function_types(func_id) else {
             continue;
         };
-        let Some(init_func) = module.functions.get(&init_func_id) else {
-            continue;
-        };
-        let Some(func_types) = type_table.function_types(init_func_id) else {
-            continue;
-        };
-
-        // Reverse lookup: offset → field name. Needed because
-        // `rt_instance_set_field`'s offset operand is the identifier we
-        // have at the MIR level; we have to recover the symbolic name
-        // to key back into `field_types`.
-        let offset_to_name: HashMap<usize, InternedString> = module.class_info[&class_id]
-            .field_offsets
-            .iter()
-            .map(|(name, off)| (*off, *name))
-            .collect();
-
-        let mut joined: IndexMap<InternedString, Type> = IndexMap::new();
-        for block in init_func.blocks.values() {
+        let func_def_map = build_def_map(func);
+        let func_preds = build_predecessor_map(func);
+        for (&block_id, block) in &func.blocks {
             for inst in &block.instructions {
-                let InstructionKind::RuntimeCall { func, args, .. } = &inst.kind else {
+                let InstructionKind::RuntimeCall {
+                    func: runtime_func,
+                    args,
+                    ..
+                } = &inst.kind
+                else {
                     continue;
                 };
-                let RuntimeFunc::Call(def) = func else {
+                let RuntimeFunc::Call(def) = runtime_func else {
                     continue;
                 };
                 // Pointer-identity match against the canonical static def.
@@ -925,18 +1508,43 @@ pub fn wpa_field_inference(module: &mut Module, type_table: &TypeTable) -> bool 
                 let Operand::Constant(pyaot_mir::Constant::Int(off)) = &args[1] else {
                     continue;
                 };
+                let obj_ty = logical_operand_type(
+                    &args[0],
+                    func,
+                    func_types,
+                    &func_def_map,
+                    &func_preds,
+                    Some(block_id),
+                );
+                let class_id = match obj_ty {
+                    Type::Class { class_id, .. } => class_id,
+                    _ => match init_to_class.get(&func_id).copied() {
+                        Some(class_id) => class_id,
+                        None => continue,
+                    },
+                };
+                let Some(offset_to_name) = offset_maps.get(&class_id) else {
+                    continue;
+                };
                 let Some(field_name) = offset_to_name.get(&(*off as usize)).copied() else {
                     continue;
                 };
-                let value_ty = operand_type(&args[2], func_types);
-                let new_ty = match joined.get(&field_name) {
-                    None => value_ty,
-                    Some(prev) => wpa_join_types(prev, &value_ty),
-                };
+                let value_ty = logical_operand_type(
+                    &args[2],
+                    func,
+                    func_types,
+                    &func_def_map,
+                    &func_preds,
+                    Some(block_id),
+                );
+                let joined = joined_by_class.entry(class_id).or_default();
+                let new_ty = merge_observed_wpa_type(joined.get(&field_name), &value_ty);
                 joined.insert(field_name, new_ty);
             }
         }
+    }
 
+    for (class_id, joined) in joined_by_class {
         let meta = module
             .class_info
             .get_mut(&class_id)
@@ -1090,7 +1698,8 @@ fn infer_function_return_type(func: &Function, types: &FunctionTypes) -> Type {
 mod tests {
     use super::*;
     use pyaot_mir::{
-        BasicBlock, Constant, Function, Instruction, InstructionKind, Local, Operand, Terminator,
+        BasicBlock, Constant, Function, Instruction, InstructionKind, Local, Operand, RuntimeFunc,
+        Terminator,
     };
     use pyaot_utils::{BlockId, FuncId, LocalId};
 
@@ -1361,6 +1970,96 @@ mod tests {
             table.get(FuncId::from(1u32), LocalId::from(0u32)),
             Some(&Type::Float)
         );
+    }
+
+    #[test]
+    fn wpa_preserves_dynamic_param_seed_for_param_derived_rt_obj_use() {
+        let callee_id = FuncId::from(1u32);
+        let caller_id = FuncId::from(2u32);
+
+        let mut callee = Function::new(
+            callee_id,
+            "callee".to_string(),
+            vec![mk_local(0, Type::Any)],
+            Type::None,
+            None,
+        );
+        callee
+            .locals
+            .insert(LocalId::from(1u32), mk_local(1, Type::Any));
+        callee
+            .locals
+            .insert(LocalId::from(2u32), mk_local(2, Type::HeapAny));
+        callee
+            .locals
+            .insert(LocalId::from(3u32), mk_local(3, Type::HeapAny));
+        let entry = callee.entry_block;
+        callee.block_mut(entry).instructions.extend([
+            Instruction {
+                kind: InstructionKind::Copy {
+                    dest: LocalId::from(1u32),
+                    src: Operand::Local(LocalId::from(0u32)),
+                },
+                span: None,
+            },
+            Instruction {
+                kind: InstructionKind::RuntimeCall {
+                    dest: LocalId::from(2u32),
+                    func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
+                    args: vec![Operand::Constant(Constant::Float(1.0))],
+                },
+                span: None,
+            },
+            Instruction {
+                kind: InstructionKind::RuntimeCall {
+                    dest: LocalId::from(3u32),
+                    func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_OBJ_MUL),
+                    args: vec![
+                        Operand::Local(LocalId::from(1u32)),
+                        Operand::Local(LocalId::from(2u32)),
+                    ],
+                },
+                span: None,
+            },
+        ]);
+        callee.block_mut(entry).terminator = Terminator::Return(None);
+        callee.is_ssa = true;
+
+        let mut caller = Function::new(
+            caller_id,
+            "caller".to_string(),
+            Vec::new(),
+            Type::None,
+            None,
+        );
+        caller
+            .locals
+            .insert(LocalId::from(0u32), mk_local(0, Type::None));
+        caller
+            .block_mut(caller.entry_block)
+            .instructions
+            .push(Instruction {
+                kind: InstructionKind::CallDirect {
+                    dest: LocalId::from(0u32),
+                    func: callee_id,
+                    args: vec![Operand::Constant(Constant::Int(7))],
+                },
+                span: None,
+            });
+        caller.block_mut(caller.entry_block).terminator = Terminator::Return(None);
+        caller.is_ssa = true;
+
+        let mut module = Module::new();
+        module.add_function(callee);
+        module.add_function(caller);
+
+        analyze_and_materialize_types(&mut module);
+
+        let callee = module
+            .functions
+            .get(&callee_id)
+            .expect("callee remains in module");
+        assert_eq!(callee.params[0].ty, Type::Any);
     }
 
     /// An earlier-in-RPO Phi that feeds a later Phi requires at least
@@ -1637,6 +2336,42 @@ mod tests {
         wpa_param_inference(&module, &cg, &mut table);
 
         // After WPA: param narrows to Int.
+        assert_eq!(table.get(callee_id, LocalId::from(0u32)), Some(&Type::Int));
+    }
+
+    #[test]
+    fn wpa_narrows_internal_named_call_site_arg() {
+        let callee_id = FuncId::from(4u32);
+        let caller_id = FuncId::from(5u32);
+
+        let callee = callee_one_any_param(4, "__module_other_callee");
+        let mut caller =
+            Function::new(caller_id, "caller".to_string(), Vec::new(), Type::Int, None);
+        let ret = LocalId::from(0u32);
+        caller.locals.insert(ret, mk_local(0, Type::Int));
+        let bb0 = caller.entry_block;
+        caller.block_mut(bb0).instructions.push(Instruction {
+            kind: InstructionKind::CallNamed {
+                dest: ret,
+                name: "__module_other_callee".to_string(),
+                args: vec![Operand::Constant(Constant::Int(42))],
+            },
+            span: None,
+        });
+        caller.block_mut(bb0).terminator = Terminator::Return(Some(Operand::Local(ret)));
+        caller.is_ssa = true;
+
+        let mut module = Module::new();
+        module.add_function(callee);
+        module.add_function(caller);
+
+        let cg = crate::call_graph::CallGraph::build(&module);
+        let mut table = TypeTable::infer_module(&module);
+
+        assert_eq!(table.get(callee_id, LocalId::from(0u32)), Some(&Type::Any));
+
+        wpa_param_inference(&module, &cg, &mut table);
+
         assert_eq!(table.get(callee_id, LocalId::from(0u32)), Some(&Type::Int));
     }
 
@@ -2347,6 +3082,7 @@ mod tests {
                 field_offsets,
                 field_types,
                 base_class: None,
+                is_protocol: false,
             },
         );
     }
@@ -2454,6 +3190,7 @@ mod tests {
                 field_offsets: IndexMap::new(),
                 field_types: IndexMap::new(),
                 base_class: None,
+                is_protocol: false,
             },
         );
         let table = TypeTable::default();
@@ -2736,6 +3473,7 @@ mod tests {
             class_id,
             entries: vec![pyaot_mir::VtableEntry {
                 slot: 0,
+                name_hash: 0,
                 method_func_id: method_id,
             }],
         });

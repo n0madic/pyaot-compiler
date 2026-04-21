@@ -24,8 +24,8 @@ impl<'a> Lowering<'a> {
 
         // Preserve the seed/HIR view for "was this originally a Union?"
         // checks, but prefer the actual lowered MIR local type for dispatch.
-        let left_hint_type = self.expr_type_hint(left, hir_module);
-        let right_hint_type = self.expr_type_hint(right, hir_module);
+        let left_hint_type = self.seed_expr_type(left, hir_module);
+        let right_hint_type = self.seed_expr_type(right, hir_module);
         let left_type = self.resolved_value_type_hint(left, &left_op, hir_module, mir_func);
         let right_type = self.resolved_value_type_hint(right, &right_op, hir_module, mir_func);
 

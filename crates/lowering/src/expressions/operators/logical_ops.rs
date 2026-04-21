@@ -24,8 +24,8 @@ impl<'a> Lowering<'a> {
         // Infer result type from operand types
         let left_expr = &hir_module.exprs[left];
         let right_expr = &hir_module.exprs[right];
-        let left_type = self.expr_type_hint(left, hir_module);
-        let right_type = self.expr_type_hint(right, hir_module);
+        let left_type = self.seed_expr_type(left, hir_module);
+        let right_type = self.seed_expr_type(right, hir_module);
 
         // Determine result type based on operator
         let result_type = match op {
@@ -177,8 +177,10 @@ impl<'a> Lowering<'a> {
         // Get the result type from branch types
         let then_expr = &hir_module.exprs[then_val];
         let else_expr = &hir_module.exprs[else_val];
-        let then_ty = self.expr_type_hint(then_val, hir_module);
-        let else_ty = self.expr_type_hint(else_val, hir_module);
+        let then_ty = self.seed_expr_type(then_val, hir_module);
+        let else_ty = self.seed_expr_type(else_val, hir_module);
+        let cond_expr = &hir_module.exprs[cond];
+        let narrowing = self.analyze_condition_for_narrowing(cond_expr, hir_module);
 
         let types_differ = then_ty != else_ty;
         let result_ty = if types_differ {
@@ -191,8 +193,7 @@ impl<'a> Lowering<'a> {
         let result_local = self.alloc_and_add_local(result_ty, mir_func);
 
         // Evaluate condition and convert to bool if needed
-        let cond_expr = &hir_module.exprs[cond];
-        let cond_type = self.expr_type_hint(cond, hir_module);
+        let cond_type = self.seed_expr_type(cond, hir_module);
         let cond_op = self.lower_expr(cond_expr, hir_module, mir_func)?;
         let final_cond_op = if matches!(cond_type, Type::Bool) {
             cond_op
@@ -218,7 +219,11 @@ impl<'a> Lowering<'a> {
 
         // Then block: evaluate then_val and store in result
         self.push_block(then_bb);
+        if !narrowing.then_narrowings.is_empty() {
+            self.enter_cfg_block_narrowings(&narrowing.then_narrowings, mir_func);
+        }
         let then_op = self.lower_expr(then_expr, hir_module, mir_func)?;
+        self.leave_cfg_block_narrowings();
         // Box primitive if result is Union (mismatched types)
         let then_val = if types_differ {
             self.box_primitive_if_needed(then_op, &then_ty, mir_func)
@@ -233,7 +238,11 @@ impl<'a> Lowering<'a> {
 
         // Else block: evaluate else_val and store in result
         self.push_block(else_bb);
+        if !narrowing.else_narrowings.is_empty() {
+            self.enter_cfg_block_narrowings(&narrowing.else_narrowings, mir_func);
+        }
         let else_op = self.lower_expr(else_expr, hir_module, mir_func)?;
+        self.leave_cfg_block_narrowings();
         // Box primitive if result is Union (mismatched types)
         let else_val = if types_differ {
             self.box_primitive_if_needed(else_op, &else_ty, mir_func)

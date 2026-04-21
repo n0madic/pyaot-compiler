@@ -407,7 +407,7 @@ pub struct LoweringSeedInfo {
     /// are unique per-module). Moved here from the deleted
     /// `TypeEnvironment` in §1.4u step 2. Access via `lookup()` /
     /// `insert_type()` where possible; direct field access is still
-    /// available for the memoization fast path in `expr_type_hint`.
+    /// available for the memoization fast path in `seed_expr_type`.
     pub expr_types: HashMap<hir::ExprId, Type>,
     /// §1.4u-b: persistent per-module map of every variable's **base**
     /// type. Populated once at the end of `run_type_planning` by the
@@ -443,8 +443,8 @@ impl LoweringSeedInfo {
     /// Forward-compatible HIR type-query API — §1.4u-b target. Returns
     /// the memoized type for `expr_id` if already computed; `None`
     /// otherwise. Callers that need compute-on-miss semantics must
-    /// continue to use `Lowering::expr_type_hint`. §1.4u-b will
-    /// migrate all ~124 post-planning `expr_type_hint` call sites
+    /// continue to use `Lowering::seed_expr_type`. §1.4u-b will
+    /// migrate all post-planning seed-type call sites
     /// to read exclusively through this accessor once the memoization
     /// is guaranteed populated by a preceding HIR type pass.
     pub fn lookup(&self, expr_id: hir::ExprId) -> Option<&Type> {
@@ -521,7 +521,7 @@ pub struct Lowering<'a> {
     /// Variable/function name resolution
     pub(crate) symbols: SymbolTable,
     /// Stable pre-lowering seed metadata plus memoized expression
-    /// types for `expr_type_hint`.
+    /// types for `seed_expr_type`.
     pub(crate) lowering_seed_info: LoweringSeedInfo,
     /// Inferred function return types (mutable during lowering)
     pub(crate) func_return_types: FuncReturnTypes,

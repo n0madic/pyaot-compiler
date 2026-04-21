@@ -19,7 +19,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.expr_type_hint(args[0], hir_module);
+        let arg_type = self.seed_expr_type(args[0], hir_module);
 
         match arg_type {
             Type::Int => {
@@ -131,8 +131,8 @@ impl<'a> Lowering<'a> {
         let base_operand = self.lower_expr(base_expr, hir_module, mir_func)?;
         let exp_operand = self.lower_expr(exp_expr, hir_module, mir_func)?;
 
-        let base_type = self.expr_type_hint(args[0], hir_module);
-        let exp_type = self.expr_type_hint(args[1], hir_module);
+        let base_type = self.seed_expr_type(args[0], hir_module);
+        let exp_type = self.seed_expr_type(args[1], hir_module);
 
         // Convert both operands to float if needed
         let base_float = self.promote_to_float_if_needed(mir_func, base_operand, &base_type);
@@ -208,7 +208,7 @@ impl<'a> Lowering<'a> {
         }
 
         let iterable_expr = &hir_module.exprs[args[0]];
-        let iterable_type = self.expr_type_hint(args[0], hir_module);
+        let iterable_type = self.seed_expr_type(args[0], hir_module);
 
         // Infer element type from list or iterator type annotation
         let element_type = match &iterable_type {
@@ -219,7 +219,7 @@ impl<'a> Lowering<'a> {
 
         // Check if start value is provided and its type
         let start_type = if args.len() > 1 {
-            self.expr_type_hint(args[1], hir_module)
+            self.seed_expr_type(args[1], hir_module)
         } else {
             Type::Int // default start is 0 (int)
         };
@@ -474,8 +474,8 @@ impl<'a> Lowering<'a> {
         let a_expr = &hir_module.exprs[args[0]];
         let b_expr = &hir_module.exprs[args[1]];
 
-        let a_type = self.expr_type_hint(args[0], hir_module);
-        let b_type = self.expr_type_hint(args[1], hir_module);
+        let a_type = self.seed_expr_type(args[0], hir_module);
+        let b_type = self.seed_expr_type(args[1], hir_module);
 
         let a_operand = self.lower_expr(a_expr, hir_module, mir_func)?;
         let b_operand = self.lower_expr(b_expr, hir_module, mir_func)?;

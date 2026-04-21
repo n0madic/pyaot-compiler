@@ -294,8 +294,15 @@ impl Type {
                     Type::Union(remaining)
                 }
             }
-            // For non-Union types, return self if it doesn't match excluded
-            _ => self.clone(),
+            // For non-Union types, excluding the matched type makes the
+            // branch unreachable; otherwise the type is unchanged.
+            _ => {
+                if Self::types_match_for_isinstance(self, excluded) {
+                    Type::Never
+                } else {
+                    self.clone()
+                }
+            }
         }
     }
 

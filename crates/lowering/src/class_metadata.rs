@@ -230,6 +230,7 @@ impl<'a> Lowering<'a> {
                             class_info.method_funcs.get(name).map(|&method_func_id| {
                                 mir::VtableEntry {
                                     slot,
+                                    name_hash: pyaot_utils::fnv1a_hash(self.resolve(*name)),
                                     method_func_id,
                                 }
                             })

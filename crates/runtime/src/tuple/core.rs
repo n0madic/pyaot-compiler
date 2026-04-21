@@ -673,8 +673,13 @@ pub extern "C" fn rt_tuple_concat(tuple1: *mut Obj, tuple2: *mut Obj) -> *mut Ob
     }
 }
 
-/// Maximum number of arguments supported for *args forwarding via indirect call.
-const MAX_CALL_ARGS: usize = 8;
+/// Maximum number of arguments supported for tuple-args indirect calls.
+///
+/// Dynamic closure/decorator dispatch prepends captured values ahead of the
+/// user-visible arguments, so the trampoline must support more than the
+/// closure-capture limit alone. Runtime integration currently exercises 9
+/// total args (`func + 7 captures + 1 user arg`), so keep headroom here.
+const MAX_CALL_ARGS: usize = 16;
 
 /// Call a function pointer with arguments unpacked from a tuple.
 /// Used for *args forwarding in decorator wrappers: `func(*args)`.
@@ -717,6 +722,63 @@ pub extern "C" fn rt_call_with_tuple_args(func_ptr: i64, args_tuple: *mut Obj) -
         type F6 = extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64;
         type F7 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64;
         type F8 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+        type F9 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+        type F10 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+        type F11 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+        type F12 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+        type F13 =
+            extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+        type F14 = extern "C" fn(
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) -> i64;
+        type F15 = extern "C" fn(
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) -> i64;
+        type F16 = extern "C" fn(
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) -> i64;
 
         match len {
             0 => {
@@ -785,7 +847,183 @@ pub extern "C" fn rt_call_with_tuple_args(func_ptr: i64, args_tuple: *mut Obj) -
                     call_args[7],
                 )
             }
+            9 => {
+                let f: F9 = std::mem::transmute(func_ptr as usize);
+                f(
+                    call_args[0],
+                    call_args[1],
+                    call_args[2],
+                    call_args[3],
+                    call_args[4],
+                    call_args[5],
+                    call_args[6],
+                    call_args[7],
+                    call_args[8],
+                )
+            }
+            10 => {
+                let f: F10 = std::mem::transmute(func_ptr as usize);
+                f(
+                    call_args[0],
+                    call_args[1],
+                    call_args[2],
+                    call_args[3],
+                    call_args[4],
+                    call_args[5],
+                    call_args[6],
+                    call_args[7],
+                    call_args[8],
+                    call_args[9],
+                )
+            }
+            11 => {
+                let f: F11 = std::mem::transmute(func_ptr as usize);
+                f(
+                    call_args[0],
+                    call_args[1],
+                    call_args[2],
+                    call_args[3],
+                    call_args[4],
+                    call_args[5],
+                    call_args[6],
+                    call_args[7],
+                    call_args[8],
+                    call_args[9],
+                    call_args[10],
+                )
+            }
+            12 => {
+                let f: F12 = std::mem::transmute(func_ptr as usize);
+                f(
+                    call_args[0],
+                    call_args[1],
+                    call_args[2],
+                    call_args[3],
+                    call_args[4],
+                    call_args[5],
+                    call_args[6],
+                    call_args[7],
+                    call_args[8],
+                    call_args[9],
+                    call_args[10],
+                    call_args[11],
+                )
+            }
+            13 => {
+                let f: F13 = std::mem::transmute(func_ptr as usize);
+                f(
+                    call_args[0],
+                    call_args[1],
+                    call_args[2],
+                    call_args[3],
+                    call_args[4],
+                    call_args[5],
+                    call_args[6],
+                    call_args[7],
+                    call_args[8],
+                    call_args[9],
+                    call_args[10],
+                    call_args[11],
+                    call_args[12],
+                )
+            }
+            14 => {
+                let f: F14 = std::mem::transmute(func_ptr as usize);
+                f(
+                    call_args[0],
+                    call_args[1],
+                    call_args[2],
+                    call_args[3],
+                    call_args[4],
+                    call_args[5],
+                    call_args[6],
+                    call_args[7],
+                    call_args[8],
+                    call_args[9],
+                    call_args[10],
+                    call_args[11],
+                    call_args[12],
+                    call_args[13],
+                )
+            }
+            15 => {
+                let f: F15 = std::mem::transmute(func_ptr as usize);
+                f(
+                    call_args[0],
+                    call_args[1],
+                    call_args[2],
+                    call_args[3],
+                    call_args[4],
+                    call_args[5],
+                    call_args[6],
+                    call_args[7],
+                    call_args[8],
+                    call_args[9],
+                    call_args[10],
+                    call_args[11],
+                    call_args[12],
+                    call_args[13],
+                    call_args[14],
+                )
+            }
+            16 => {
+                let f: F16 = std::mem::transmute(func_ptr as usize);
+                f(
+                    call_args[0],
+                    call_args[1],
+                    call_args[2],
+                    call_args[3],
+                    call_args[4],
+                    call_args[5],
+                    call_args[6],
+                    call_args[7],
+                    call_args[8],
+                    call_args[9],
+                    call_args[10],
+                    call_args[11],
+                    call_args[12],
+                    call_args[13],
+                    call_args[14],
+                    call_args[15],
+                )
+            }
             _ => 0, // Unsupported arity
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{rt_call_with_tuple_args, rt_make_tuple, rt_tuple_set};
+    use crate::object::{Obj, ELEM_RAW_INT};
+
+    extern "C" fn sum9(
+        a0: i64,
+        a1: i64,
+        a2: i64,
+        a3: i64,
+        a4: i64,
+        a5: i64,
+        a6: i64,
+        a7: i64,
+        a8: i64,
+    ) -> i64 {
+        a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8
+    }
+
+    #[test]
+    fn call_with_tuple_args_supports_nine_args() {
+        let _guard = crate::RUNTIME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::gc::init();
+
+        let tuple = rt_make_tuple(9, ELEM_RAW_INT);
+        for i in 0..9 {
+            rt_tuple_set(tuple, i, (i as usize + 1) as *mut Obj);
+        }
+
+        let result = rt_call_with_tuple_args(sum9 as *const () as usize as i64, tuple);
+        assert_eq!(result, 45);
     }
 }

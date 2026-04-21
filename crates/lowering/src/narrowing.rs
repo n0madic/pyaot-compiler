@@ -72,6 +72,19 @@ pub struct NarrowingAnalysis {
 }
 
 impl<'a> Lowering<'a> {
+    fn narrowing_input_type(&self, var_id: &VarId) -> Option<Type> {
+        self.get_var_type(var_id)
+            .cloned()
+            .and_then(|ty| {
+                if matches!(ty, Type::Any | Type::HeapAny) {
+                    self.get_base_var_type(var_id).cloned().or(Some(ty))
+                } else {
+                    Some(ty)
+                }
+            })
+            .or_else(|| self.get_base_var_type(var_id).cloned())
+    }
+
     /// Apply a block's incoming narrowings by materializing explicit MIR defs
     /// at block entry and updating the lowering-time type view for HIR queries.
     pub(crate) fn enter_cfg_block_narrowings(
@@ -106,10 +119,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> pyaot_utils::LocalId {
         let src = self.narrowing_source_operand(info, mir_func);
-        if matches!(
-            info.original_type,
-            Type::Union(_) | Type::Any | Type::HeapAny
-        ) {
+        if Self::narrowing_requires_unbox(&info.original_type, &info.narrowed_type) {
             if let Some(unbox_func) = Self::unbox_func_for_type(&info.narrowed_type) {
                 let unboxed = self.emit_runtime_call(
                     unbox_func,
@@ -134,6 +144,11 @@ impl<'a> Lowering<'a> {
             ty: info.narrowed_type.clone(),
         });
         dest
+    }
+
+    fn narrowing_requires_unbox(original_type: &Type, narrowed_type: &Type) -> bool {
+        matches!(original_type, Type::Union(_) | Type::Any | Type::HeapAny)
+            && matches!(narrowed_type, Type::Int | Type::Float | Type::Bool)
     }
 
     fn narrowing_source_operand(
@@ -243,7 +258,7 @@ impl<'a> Lowering<'a> {
 
                 // Only narrow if we have a variable and can get its type
                 if let Some(var_id) = var_id {
-                    if let Some(original_type) = self.get_var_type(&var_id).cloned() {
+                    if let Some(original_type) = self.narrowing_input_type(&var_id) {
                         // Only narrow if the original type contains None (i.e., is Optional)
                         if self.type_contains_none(&original_type) {
                             let _ = is_none_on_right; // Both orderings are equivalent
@@ -408,7 +423,7 @@ impl<'a> Lowering<'a> {
             // For truthiness narrowing, we can exclude None in the then-branch
             // because None is always falsy
             hir::ExprKind::Var(var_id) => {
-                if let Some(original_type) = self.get_var_type(var_id).cloned() {
+                if let Some(original_type) = self.narrowing_input_type(var_id) {
                     // Only narrow if the original type contains None (i.e., is Optional)
                     if self.type_contains_none(&original_type) {
                         if negated {
@@ -465,7 +480,7 @@ impl<'a> Lowering<'a> {
         };
 
         // Get the original type of the variable
-        let original_type = self.get_var_type(&var_id).cloned()?;
+        let original_type = self.narrowing_input_type(&var_id)?;
 
         // Second argument must be a type reference
         let checked_type = match &type_expr.kind {
@@ -757,8 +772,7 @@ mod tests {
 
         // None excluding None -> Never (bottom type)
         let narrowed = Type::None.narrow_excluding(&Type::None);
-        // Non-union types return self when excluded
-        assert_eq!(narrowed, Type::None);
+        assert_eq!(narrowed, Type::Never);
     }
 
     #[test]
@@ -828,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn cfg_block_narrowing_materializes_unbox_and_refine_for_primitive_union() {
+    fn cfg_block_narrowing_materializes_unbox_and_refine_for_primitive_union_payloads() {
         let mut interner = StringInterner::default();
         let mut lowering = Lowering::new(&mut interner);
         let mut mir_func = mir::Function::new(
@@ -888,6 +902,60 @@ mod tests {
         lowering.leave_cfg_block_narrowings();
         assert_eq!(lowering.get_var_type(&var_id), Some(&union_ty));
         assert!(lowering.get_block_narrowed_local(&var_id).is_none());
+    }
+
+    #[test]
+    fn cfg_block_narrowing_materializes_unbox_and_refine_for_any_payloads() {
+        let mut interner = StringInterner::default();
+        let mut lowering = Lowering::new(&mut interner);
+        let mut mir_func = mir::Function::new(
+            pyaot_utils::FuncId::from(1u32),
+            "f_any".to_string(),
+            Vec::new(),
+            Type::None,
+            None,
+        );
+        let block = lowering.new_block();
+        lowering.push_block(block);
+
+        let var_id = VarId::new(0);
+        let base_local = LocalId::from(0u32);
+        mir_func.add_local(mir::Local {
+            id: base_local,
+            name: None,
+            ty: Type::Any,
+            is_gc_root: true,
+        });
+        lowering.insert_var_local(var_id, base_local);
+        lowering.insert_var_type(var_id, Type::Any);
+
+        lowering.enter_cfg_block_narrowings(
+            &[TypeNarrowingInfo {
+                var_id,
+                narrowed_type: Type::Int,
+                original_type: Type::Any,
+            }],
+            &mut mir_func,
+        );
+
+        let instructions = lowering.current_block_mut().instructions.clone();
+        assert_eq!(instructions.len(), 2);
+        match &instructions[0].kind {
+            InstructionKind::RuntimeCall { func, .. } => match func {
+                mir::RuntimeFunc::Call(def) => {
+                    assert!(std::ptr::eq(
+                        *def,
+                        &pyaot_core_defs::runtime_func_def::RT_UNBOX_INT
+                    ));
+                }
+                other => panic!("expected runtime unbox call, got {other:?}"),
+            },
+            other => panic!("expected RuntimeCall, got {other:?}"),
+        }
+        match &instructions[1].kind {
+            InstructionKind::Refine { ty, .. } => assert_eq!(ty, &Type::Int),
+            other => panic!("expected Refine, got {other:?}"),
+        }
     }
 
     #[test]

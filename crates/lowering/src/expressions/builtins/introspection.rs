@@ -25,7 +25,7 @@ impl<'a> Lowering<'a> {
         let type_expr = &hir_module.exprs[args[1]];
 
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        let obj_type = self.expr_type_hint(args[0], hir_module);
+        let obj_type = self.seed_expr_type(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
@@ -270,7 +270,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.expr_type_hint(args[0], hir_module);
+        let arg_type = self.seed_expr_type(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
@@ -400,7 +400,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.expr_type_hint(args[0], hir_module);
+        let arg_type = self.seed_expr_type(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Int, mir_func);
 
@@ -471,7 +471,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.expr_type_hint(args[0], hir_module);
+        let arg_type = self.seed_expr_type(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Str, mir_func);
 
@@ -537,7 +537,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.expr_type_hint(args[0], hir_module);
+        let arg_type = self.seed_expr_type(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Str, mir_func);
 
@@ -583,7 +583,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.expr_type_hint(args[0], hir_module);
+        let arg_type = self.seed_expr_type(args[0], hir_module);
 
         // type() returns a type object, represented internally as a string containing
         // the full type representation "<class 'typename'>".
@@ -638,7 +638,7 @@ impl<'a> Lowering<'a> {
 
         let arg_expr = &hir_module.exprs[args[0]];
         let _arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
-        let arg_type = self.expr_type_hint(args[0], hir_module);
+        let arg_type = self.seed_expr_type(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
@@ -664,7 +664,7 @@ impl<'a> Lowering<'a> {
 
         let obj_expr = &hir_module.exprs[args[0]];
         let _obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        let obj_type = self.expr_type_hint(args[0], hir_module);
+        let obj_type = self.seed_expr_type(args[0], hir_module);
 
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
@@ -715,7 +715,7 @@ impl<'a> Lowering<'a> {
 
         let obj_expr = &hir_module.exprs[args[0]];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        let obj_type = self.expr_type_hint(args[0], hir_module);
+        let obj_type = self.seed_expr_type(args[0], hir_module);
 
         let name_expr = &hir_module.exprs[args[1]];
 
@@ -788,7 +788,7 @@ impl<'a> Lowering<'a> {
 
         let value_expr = &hir_module.exprs[args[0]];
         let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
-        let value_type = self.expr_type_hint(args[0], hir_module);
+        let value_type = self.seed_expr_type(args[0], hir_module);
 
         // Check for class with __format__ dunder — call it directly instead of runtime dispatch
         if let Type::Class { class_id, .. } = &value_type {
@@ -870,7 +870,7 @@ impl<'a> Lowering<'a> {
 
         let obj_expr = &hir_module.exprs[args[0]];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        let obj_type = self.expr_type_hint(args[0], hir_module);
+        let obj_type = self.seed_expr_type(args[0], hir_module);
 
         let name_expr = &hir_module.exprs[args[1]];
         let value_expr = &hir_module.exprs[args[2]];

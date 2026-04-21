@@ -20,7 +20,7 @@ impl<'a> Lowering<'a> {
         let operand_op = self.lower_expr(operand_expr, hir_module, mir_func)?;
 
         // Determine result type based on operation and operand type
-        let operand_ty = self.expr_type_hint(operand, hir_module);
+        let operand_ty = self.seed_expr_type(operand, hir_module);
         let result_type = match op {
             hir::UnOp::Not => Type::Bool,         // not always returns bool
             hir::UnOp::Neg => operand_ty.clone(), // neg preserves operand type

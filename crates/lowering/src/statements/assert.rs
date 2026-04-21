@@ -20,7 +20,7 @@ impl<'a> Lowering<'a> {
     ) -> Result<()> {
         // Evaluate condition
         let cond_expr = &hir_module.exprs[cond];
-        let cond_type = self.expr_type_hint(cond, hir_module);
+        let cond_type = self.seed_expr_type(cond, hir_module);
         let cond_operand = self.lower_expr(cond_expr, hir_module, mir_func)?;
 
         // Convert to bool if needed (same pattern as lower_if / lower_while)

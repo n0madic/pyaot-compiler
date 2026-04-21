@@ -20,8 +20,8 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         let obj_expr = &hir_module.exprs[obj];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        // Use expr_type_hint for proper type inference
-        let obj_type = self.expr_type_hint(obj, hir_module);
+        // Use seed_expr_type for proper type inference
+        let obj_type = self.seed_expr_type(obj, hir_module);
 
         // Default values for slice: use sentinel values for unspecified start/end
         // i64::MIN for unspecified start, i64::MAX for unspecified end

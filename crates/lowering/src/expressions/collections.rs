@@ -41,7 +41,7 @@ impl<'a> Lowering<'a> {
             }
         } else if matches!(list_type, Type::Any) {
             let inferred_elem = elements.iter().fold(None, |acc: Option<Type>, elem_id| {
-                let next = self.expr_type_hint(*elem_id, hir_module);
+                let next = self.seed_expr_type(*elem_id, hir_module);
                 Some(match acc {
                     Some(prev) => Type::unify_field_type(&prev, &next),
                     None => next,
@@ -83,7 +83,7 @@ impl<'a> Lowering<'a> {
                 hir_module,
                 mir_func,
             )?;
-            let actual_elem_type = self.expr_type_hint(*elem_id, hir_module);
+            let actual_elem_type = self.seed_expr_type(*elem_id, hir_module);
             let elem_operand = if elem_type == Type::Float {
                 self.coerce_to_field_type(elem_operand, &actual_elem_type, &elem_type, mir_func)
             } else {
@@ -147,7 +147,7 @@ impl<'a> Lowering<'a> {
             tuple_type = Type::Tuple(
                 elements
                     .iter()
-                    .map(|elem_id| self.expr_type_hint(*elem_id, hir_module))
+                    .map(|elem_id| self.seed_expr_type(*elem_id, hir_module))
                     .collect(),
             );
         }
@@ -195,7 +195,7 @@ impl<'a> Lowering<'a> {
             // Box primitive values when elem_tag is ELEM_HEAP_OBJ
             let final_operand = if elem_tag == 0 {
                 // ELEM_HEAP_OBJ - need to box primitives
-                let elem_type = self.expr_type_hint(*elem_id, hir_module);
+                let elem_type = self.seed_expr_type(*elem_id, hir_module);
                 match elem_type {
                     Type::Int => {
                         let boxed_local = self.emit_runtime_call(
@@ -281,14 +281,14 @@ impl<'a> Lowering<'a> {
             }
         } else if matches!(dict_type, Type::Any) {
             let inferred_key = pairs.iter().fold(None, |acc: Option<Type>, (key_id, _)| {
-                let next = self.expr_type_hint(*key_id, hir_module);
+                let next = self.seed_expr_type(*key_id, hir_module);
                 Some(match acc {
                     Some(prev) => Type::unify_field_type(&prev, &next),
                     None => next,
                 })
             });
             let inferred_val = pairs.iter().fold(None, |acc: Option<Type>, (_, value_id)| {
-                let next = self.expr_type_hint(*value_id, hir_module);
+                let next = self.seed_expr_type(*value_id, hir_module);
                 Some(match acc {
                     Some(prev) => Type::unify_field_type(&prev, &next),
                     None => next,
@@ -315,7 +315,7 @@ impl<'a> Lowering<'a> {
             _ => (Type::Any, Type::Any),
         };
         for (key_id, value_id) in pairs {
-            let key_type = self.expr_type_hint(*key_id, hir_module);
+            let key_type = self.seed_expr_type(*key_id, hir_module);
             let key_expr = &hir_module.exprs[*key_id];
             let key_operand = self.lower_expr_expecting(
                 key_expr,
@@ -343,7 +343,7 @@ impl<'a> Lowering<'a> {
                 hir_module,
                 mir_func,
             )?;
-            let actual_value_type = self.expr_type_hint(*value_id, hir_module);
+            let actual_value_type = self.seed_expr_type(*value_id, hir_module);
             let value_operand = if dict_value_type == Type::Float {
                 self.coerce_to_field_type(
                     value_operand,
@@ -403,7 +403,7 @@ impl<'a> Lowering<'a> {
             }
         } else if matches!(set_type, Type::Any) {
             let inferred_elem = elements.iter().fold(None, |acc: Option<Type>, elem_id| {
-                let next = self.expr_type_hint(*elem_id, hir_module);
+                let next = self.seed_expr_type(*elem_id, hir_module);
                 Some(match acc {
                     Some(prev) => Type::unify_field_type(&prev, &next),
                     None => next,
@@ -423,7 +423,7 @@ impl<'a> Lowering<'a> {
 
         // Add each element
         for elem_id in elements {
-            let elem_type = self.expr_type_hint(*elem_id, hir_module);
+            let elem_type = self.seed_expr_type(*elem_id, hir_module);
             let elem_expr = &hir_module.exprs[*elem_id];
             let expected_elem_type = match &set_type {
                 Type::Set(inner) => Some((**inner).clone()),

@@ -7,13 +7,11 @@ use indexmap::IndexMap;
 use pyaot_diagnostics::CompilerWarning;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
-use pyaot_types::{typespec_to_type, Type};
+use pyaot_types::Type;
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, VarId};
 
-use crate::narrowing::DeadBranch;
-use crate::type_planning::helpers;
-
 use super::{CrossModuleClassInfo, LoweredClassInfo, Lowering};
+use crate::narrowing::DeadBranch;
 
 // =============================================================================
 // String Interning
@@ -123,7 +121,7 @@ impl<'a> Lowering<'a> {
     /// 4. `global_var_types` — module-level globals.
     ///
     /// Consumers that need the **effective** (narrowing-aware) type
-    /// at a use site must go through `expr_type_hint` — its Var
+    /// at a use site must go through `seed_expr_type` — its Var
     /// branch reads `get_var_type` first.
     pub(crate) fn get_base_var_type(&self, var_id: &VarId) -> Option<&Type> {
         self.lowering_seed_info
@@ -143,19 +141,14 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Lightweight lowering-time type hint.
+    /// Lightweight lowering-time seed type.
     ///
-    /// This is intentionally not a recursive HIR inference engine. It reads the
-    /// current lowered view for `Var` expressions and otherwise falls back to the
-    /// HIR node's own annotation. Seed-building passes inside `type_planning`
-    /// still use their private inference helpers; regular lowering must not.
-    pub(crate) fn expr_type_hint(&self, expr_id: hir::ExprId, hir_module: &hir::Module) -> Type {
+    /// This is intentionally not a recursive HIR inference engine. Regular
+    /// lowering reads precomputed seed metadata for non-`Var` expressions and
+    /// the current lowered view for `Var`s. Seed-building inside
+    /// `type_planning` continues to use `seed_expr_type_by_id`.
+    pub(crate) fn seed_expr_type(&self, expr_id: hir::ExprId, hir_module: &hir::Module) -> Type {
         let expr = &hir_module.exprs[expr_id];
-        if !matches!(expr.kind, hir::ExprKind::Var(_)) {
-            if let Some(cached) = self.lowering_seed_info.lookup(expr_id).cloned() {
-                return cached;
-            }
-        }
         match &expr.kind {
             hir::ExprKind::Var(var_id) => self
                 .codegen
@@ -173,301 +166,12 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::Bytes(_) => Type::Bytes,
             hir::ExprKind::None => Type::None,
             hir::ExprKind::TypeRef(ty) => ty.clone(),
-            hir::ExprKind::BinOp { op, left, right } => {
-                if let Some(annotated) = expr.ty.clone() {
-                    return annotated;
-                }
-                let left_ty = self.expr_type_hint(*left, hir_module);
-                let right_ty = self.expr_type_hint(*right, hir_module);
-                match op {
-                    hir::BinOp::Add => match (&left_ty, &right_ty) {
-                        (Type::Float, _) | (_, Type::Float) => Type::Float,
-                        (Type::Int, Type::Int) | (Type::Bool, Type::Bool) => Type::Int,
-                        (Type::Str, Type::Str) => Type::Str,
-                        (Type::Bytes, Type::Bytes) => Type::Bytes,
-                        (Type::List(left), Type::List(right)) => {
-                            Type::List(Box::new(Type::unify_field_type(left, right)))
-                        }
-                        (Type::Tuple(left), Type::Tuple(right)) => {
-                            let mut elems = left.clone();
-                            elems.extend(right.clone());
-                            Type::Tuple(elems)
-                        }
-                        _ => Type::Any,
-                    },
-                    hir::BinOp::Sub
-                    | hir::BinOp::Mul
-                    | hir::BinOp::Div
-                    | hir::BinOp::FloorDiv
-                    | hir::BinOp::Mod
-                    | hir::BinOp::Pow => {
-                        if matches!(left_ty, Type::Float) || matches!(right_ty, Type::Float) {
-                            Type::Float
-                        } else if matches!(left_ty, Type::Int | Type::Bool)
-                            && matches!(right_ty, Type::Int | Type::Bool)
-                        {
-                            Type::Int
-                        } else {
-                            Type::Any
-                        }
-                    }
-                    hir::BinOp::BitAnd
-                    | hir::BinOp::BitOr
-                    | hir::BinOp::BitXor
-                    | hir::BinOp::LShift
-                    | hir::BinOp::RShift => Type::Int,
-                    hir::BinOp::MatMul => Type::Any,
-                }
-            }
-            hir::ExprKind::UnOp { op, operand } => match op {
-                hir::UnOp::Not => Type::Bool,
-                hir::UnOp::Neg | hir::UnOp::Pos => self.expr_type_hint(*operand, hir_module),
-                hir::UnOp::Invert => Type::Int,
-            },
-            hir::ExprKind::Compare { .. } => Type::Bool,
-            hir::ExprKind::LogicalOp { left, right, .. } => {
-                if let Some(annotated) = expr.ty.clone() {
-                    return annotated;
-                }
-                let left_ty = self.expr_type_hint(*left, hir_module);
-                let right_ty = self.expr_type_hint(*right, hir_module);
-                if left_ty == right_ty {
-                    left_ty
-                } else {
-                    Type::normalize_union(vec![left_ty, right_ty])
-                }
-            }
-            hir::ExprKind::IfExpr {
-                then_val, else_val, ..
-            } => {
-                if let Some(annotated) = expr.ty.clone() {
-                    return annotated;
-                }
-                let then_ty = self.expr_type_hint(*then_val, hir_module);
-                let else_ty = self.expr_type_hint(*else_val, hir_module);
-                if then_ty == else_ty {
-                    then_ty
-                } else {
-                    Type::normalize_union(vec![then_ty, else_ty])
-                }
-            }
-            hir::ExprKind::List(elements) => {
-                if let Some(annotated) = expr.ty.clone() {
-                    return annotated;
-                }
-                let elem_ty = elements.iter().fold(None, |acc: Option<Type>, elem_id| {
-                    let next = self.expr_type_hint(*elem_id, hir_module);
-                    Some(match acc {
-                        Some(prev) => Type::unify_field_type(&prev, &next),
-                        None => next,
-                    })
-                });
-                Type::List(Box::new(elem_ty.unwrap_or(Type::Any)))
-            }
-            hir::ExprKind::Tuple(elements) => {
-                if let Some(annotated) = expr.ty.clone() {
-                    return annotated;
-                }
-                Type::Tuple(
-                    elements
-                        .iter()
-                        .map(|elem_id| self.expr_type_hint(*elem_id, hir_module))
-                        .collect(),
-                )
-            }
-            hir::ExprKind::Set(elements) => {
-                if let Some(annotated) = expr.ty.clone() {
-                    return annotated;
-                }
-                let elem_ty = elements.iter().fold(None, |acc: Option<Type>, elem_id| {
-                    let next = self.expr_type_hint(*elem_id, hir_module);
-                    Some(match acc {
-                        Some(prev) => Type::unify_field_type(&prev, &next),
-                        None => next,
-                    })
-                });
-                Type::Set(Box::new(elem_ty.unwrap_or(Type::Any)))
-            }
-            hir::ExprKind::Dict(pairs) => {
-                if let Some(annotated) = expr.ty.clone() {
-                    return annotated;
-                }
-                let (key_ty, value_ty) = pairs.iter().fold(
-                    (None, None),
-                    |(acc_k, acc_v): (Option<Type>, Option<Type>), (key_id, value_id)| {
-                        let next_k = self.expr_type_hint(*key_id, hir_module);
-                        let next_v = self.expr_type_hint(*value_id, hir_module);
-                        (
-                            Some(match acc_k {
-                                Some(prev) => Type::unify_field_type(&prev, &next_k),
-                                None => next_k,
-                            }),
-                            Some(match acc_v {
-                                Some(prev) => Type::unify_field_type(&prev, &next_v),
-                                None => next_v,
-                            }),
-                        )
-                    },
-                );
-                Type::Dict(
-                    Box::new(key_ty.unwrap_or(Type::Any)),
-                    Box::new(value_ty.unwrap_or(Type::Any)),
-                )
-            }
-            hir::ExprKind::Call { func, .. } => {
-                let func_expr = &hir_module.exprs[*func];
-                match &func_expr.kind {
-                    hir::ExprKind::FuncRef(func_id) => self
-                        .get_func_return_type(func_id)
-                        .cloned()
-                        .or_else(|| {
-                            hir_module
-                                .func_defs
-                                .get(func_id)
-                                .and_then(|f| f.return_type.clone())
-                        })
-                        .or_else(|| expr.ty.clone())
-                        .unwrap_or(Type::Any),
-                    hir::ExprKind::Var(var_id) => self
-                        .get_var_func(var_id)
-                        .and_then(|func_id| self.get_func_return_type(&func_id).cloned())
-                        .or_else(|| expr.ty.clone())
-                        .unwrap_or(Type::Any),
-                    _ => expr.ty.clone().unwrap_or(Type::Any),
-                }
-            }
-            hir::ExprKind::BuiltinCall { .. } => expr.ty.clone().unwrap_or(Type::Any),
-            hir::ExprKind::MethodCall { obj, method, .. } => {
-                let obj_ty = self.expr_type_hint(*obj, hir_module);
-                let method_name = self.resolve(*method);
-                if let Some(ret_ty) = helpers::resolve_method_return_type(&obj_ty, method_name) {
-                    return ret_ty;
-                }
-                if let Type::Class { class_id, .. } = obj_ty {
-                    if let Some(class_info) = self.get_class_info(&class_id) {
-                        for methods in [
-                            &class_info.method_funcs,
-                            &class_info.class_methods,
-                            &class_info.static_methods,
-                        ] {
-                            if let Some(&func_id) = methods.get(method) {
-                                if let Some(ret_ty) = self.get_func_return_type(&func_id) {
-                                    return ret_ty.clone();
-                                }
-                                if let Some(func_def) = hir_module.func_defs.get(&func_id) {
-                                    return func_def.return_type.clone().unwrap_or(Type::Any);
-                                }
-                            }
-                        }
-                        if let Some(func_id) = class_info.get_dunder_func(method_name) {
-                            if let Some(ret_ty) = self.get_func_return_type(&func_id) {
-                                return ret_ty.clone();
-                            }
-                        }
-                    }
-                }
-                expr.ty.clone().unwrap_or(Type::Any)
-            }
-            hir::ExprKind::Attribute { obj, attr } => {
-                let obj_ty = self.expr_type_hint(*obj, hir_module);
-                if let Type::Class { class_id, .. } = obj_ty {
-                    if let Some(class_info) = self.get_class_info(&class_id) {
-                        if let Some(field_ty) = class_info.field_types.get(attr) {
-                            return field_ty.clone();
-                        }
-                        if let Some(prop_ty) = class_info.property_types.get(attr) {
-                            return prop_ty.clone();
-                        }
-                        if let Some(class_attr_ty) = class_info.class_attr_types.get(attr) {
-                            return class_attr_ty.clone();
-                        }
-                    }
-                }
-                expr.ty.clone().unwrap_or(Type::Any)
-            }
-            hir::ExprKind::Index { obj, .. } => {
-                let obj_ty = self.expr_type_hint(*obj, hir_module);
-                match obj_ty {
-                    Type::List(elem) | Type::Set(elem) | Type::Iterator(elem) => *elem,
-                    Type::Tuple(items) => items.first().cloned().unwrap_or(Type::Any),
-                    Type::TupleVar(elem) => *elem,
-                    Type::Dict(_, value) | Type::DefaultDict(_, value) => *value,
-                    Type::Str => Type::Str,
-                    Type::Bytes => Type::Int,
-                    _ => expr.ty.clone().unwrap_or(Type::Any),
-                }
-            }
-            hir::ExprKind::Slice { obj, .. } => {
-                let obj_ty = self.expr_type_hint(*obj, hir_module);
-                if matches!(obj_ty, Type::Any) {
-                    expr.ty.clone().unwrap_or(Type::Any)
-                } else {
-                    obj_ty
-                }
-            }
-            hir::ExprKind::StdlibCall { func, args } => {
-                let declared = typespec_to_type(&func.return_type);
-                if !matches!(declared, Type::Any | Type::HeapAny) {
-                    declared
-                } else if let Some(annotated) = expr.ty.clone() {
-                    if !matches!(annotated, Type::Any | Type::HeapAny) {
-                        annotated
-                    } else if let Some(expected) = self.codegen.expected_type.clone() {
-                        if !matches!(expected, Type::Any | Type::HeapAny) {
-                            expected
-                        } else {
-                            match func.name {
-                                "choice" => args
-                                    .first()
-                                    .map(|arg_id| {
-                                        crate::type_planning::infer::extract_iterable_first_element_type(
-                                            &self.expr_type_hint(*arg_id, hir_module),
-                                        )
-                                    })
-                                    .unwrap_or(Type::Any),
-                                "sample" | "choices" => args
-                                    .first()
-                                    .map(|arg_id| {
-                                        Type::List(Box::new(
-                                            crate::type_planning::infer::extract_iterable_first_element_type(
-                                                &self.expr_type_hint(*arg_id, hir_module),
-                                            ),
-                                        ))
-                                    })
-                                    .unwrap_or(Type::Any),
-                                _ => annotated,
-                            }
-                        }
-                    } else {
-                        annotated
-                    }
-                } else {
-                    match func.name {
-                        "choice" => args
-                            .first()
-                            .map(|arg_id| {
-                                crate::type_planning::infer::extract_iterable_first_element_type(
-                                    &self.expr_type_hint(*arg_id, hir_module),
-                                )
-                            })
-                            .unwrap_or(Type::Any),
-                        "sample" | "choices" => args
-                            .first()
-                            .map(|arg_id| {
-                                Type::List(Box::new(
-                                    crate::type_planning::infer::extract_iterable_first_element_type(
-                                        &self.expr_type_hint(*arg_id, hir_module),
-                                    ),
-                                ))
-                            })
-                            .unwrap_or(Type::Any),
-                        _ => declared,
-                    }
-                }
-            }
-            hir::ExprKind::StdlibAttr(attr_def) => typespec_to_type(&attr_def.ty),
-            hir::ExprKind::StdlibConst(const_def) => typespec_to_type(&const_def.ty),
-            _ => expr.ty.clone().unwrap_or(Type::Any),
+            _ => self
+                .lowering_seed_info
+                .lookup(expr_id)
+                .cloned()
+                .or_else(|| expr.ty.clone())
+                .unwrap_or(Type::Any),
         }
     }
 }
@@ -924,5 +628,95 @@ impl<'a> Lowering<'a> {
     /// Check if there are any warnings.
     pub fn has_warnings(&self) -> bool {
         !self.warnings.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyaot_hir as hir;
+    use pyaot_mir as mir;
+    use pyaot_utils::{FuncId, Span, StringInterner};
+
+    fn expr(kind: hir::ExprKind) -> hir::Expr {
+        hir::Expr {
+            kind,
+            ty: None,
+            span: Span::dummy(),
+        }
+    }
+
+    #[test]
+    fn seed_expr_type_does_not_recursively_infer_unannotated_binop() {
+        let mut interner = StringInterner::default();
+        let mut lowering = Lowering::new(&mut interner);
+        let module_name = lowering.intern("seed_expr_type_test");
+        let mut hir_module = hir::Module::new(module_name);
+
+        let left = hir_module.exprs.alloc(expr(hir::ExprKind::Int(1)));
+        let right = hir_module.exprs.alloc(expr(hir::ExprKind::Float(2.0)));
+        let bin = hir_module.exprs.alloc(expr(hir::ExprKind::BinOp {
+            op: hir::BinOp::Add,
+            left,
+            right,
+        }));
+
+        assert_eq!(lowering.seed_expr_type(bin, &hir_module), Type::Any);
+    }
+
+    #[test]
+    fn seed_expr_type_prefers_cached_seed_metadata_for_non_var_expressions() {
+        let mut interner = StringInterner::default();
+        let mut lowering = Lowering::new(&mut interner);
+        let module_name = lowering.intern("seed_expr_type_cache_test");
+        let mut hir_module = hir::Module::new(module_name);
+
+        let left = hir_module.exprs.alloc(expr(hir::ExprKind::Int(1)));
+        let right = hir_module.exprs.alloc(expr(hir::ExprKind::Int(2)));
+        let bin = hir_module.exprs.alloc(expr(hir::ExprKind::BinOp {
+            op: hir::BinOp::Add,
+            left,
+            right,
+        }));
+        lowering.lowering_seed_info.insert_type(bin, Type::Int);
+
+        assert_eq!(lowering.seed_expr_type(bin, &hir_module), Type::Int);
+    }
+
+    #[test]
+    fn resolved_value_type_hint_prefers_lowered_operand_type_over_seed_any() {
+        let mut interner = StringInterner::default();
+        let mut lowering = Lowering::new(&mut interner);
+        let module_name = lowering.intern("resolved_value_type_hint_test");
+        let mut hir_module = hir::Module::new(module_name);
+
+        let left = hir_module.exprs.alloc(expr(hir::ExprKind::Int(1)));
+        let right = hir_module.exprs.alloc(expr(hir::ExprKind::Int(2)));
+        let bin = hir_module.exprs.alloc(expr(hir::ExprKind::BinOp {
+            op: hir::BinOp::Add,
+            left,
+            right,
+        }));
+
+        let func_id = FuncId::from(0u32);
+        let local_id = LocalId::from(0u32);
+        let mut mir_func =
+            mir::Function::new(func_id, "test".to_string(), Vec::new(), Type::None, None);
+        mir_func.add_local(mir::Local {
+            id: local_id,
+            name: None,
+            ty: Type::Int,
+            is_gc_root: false,
+        });
+
+        assert_eq!(
+            lowering.resolved_value_type_hint(
+                bin,
+                &mir::Operand::Local(local_id),
+                &hir_module,
+                &mir_func,
+            ),
+            Type::Int
+        );
     }
 }

@@ -26,11 +26,12 @@ mod tests {
     use super::arithmetic::*;
     use super::comparison::*;
 
-    fn init_runtime() {
-        let _guard = crate::RUNTIME_TEST_LOCK
+    fn init_runtime() -> std::sync::MutexGuard<'static, ()> {
+        let guard = crate::RUNTIME_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         crate::gc::init();
+        guard
     }
 
     #[test]
@@ -88,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_is_truthy_int() {
-        init_runtime();
+        let _guard = init_runtime();
         let zero = crate::boxing::rt_box_int(0);
         assert_eq!(rt_is_truthy(zero), 0);
         let one = crate::boxing::rt_box_int(1);

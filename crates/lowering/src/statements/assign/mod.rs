@@ -41,7 +41,7 @@ impl<'a> Lowering<'a> {
             let left_expr = &hir_module.exprs[*left];
             if let hir::ExprKind::Var(var_id) = &left_expr.kind {
                 if *var_id == target {
-                    let left_ty = self.expr_type_hint(*left, hir_module);
+                    let left_ty = self.seed_expr_type(*left, hir_module);
                     if matches!(left_ty, Type::Dict(_, _)) {
                         let dict_operand = self.lower_expr(left_expr, hir_module, mir_func)?;
                         let right_expr = &hir_module.exprs[*right];
@@ -77,7 +77,7 @@ impl<'a> Lowering<'a> {
                 // Track capture types for the lambda function
                 let mut capture_types = Vec::new();
                 for capture_id in captures {
-                    let capture_type = self.expr_type_hint(*capture_id, hir_module);
+                    let capture_type = self.seed_expr_type(*capture_id, hir_module);
                     capture_types.push(capture_type);
                 }
                 self.insert_closure_capture_types(*func, capture_types.clone());
@@ -321,7 +321,8 @@ impl<'a> Lowering<'a> {
         // merges every binding observation through the numeric tower, so a
         // local that is written `Int` once and `Float` once is typed
         // `Float` here — and the Int write gets coerced below.
-        let var_type = type_hint.unwrap_or_else(|| {
+        let has_explicit_type_hint = type_hint.is_some();
+        let initial_var_type = type_hint.unwrap_or_else(|| {
             // Priority: refined container type > prescan (when useful)
             // > active block-narrowing storage type > stable/base var type
             // > live narrowed var_type > RHS inference.
@@ -347,20 +348,30 @@ impl<'a> Lowering<'a> {
                 .or_else(|| self.get_block_narrowed_storage_type(&target).cloned())
                 .or(base)
                 .or_else(|| self.get_var_type(&target).cloned())
-                .unwrap_or_else(|| self.expr_type_hint(value, hir_module))
+                .unwrap_or_else(|| self.seed_expr_type(value, hir_module))
         });
-        // Track the variable type for later reference
-        self.insert_var_type(target, var_type.clone());
 
         // Lower the value expression with expected type for bidirectional propagation
         let value_operand =
-            self.lower_expr_expecting(expr, Some(var_type.clone()), hir_module, mir_func)?;
+            self.lower_expr_expecting(expr, Some(initial_var_type.clone()), hir_module, mir_func)?;
+        let value_type = self.resolved_value_type_hint(value, &value_operand, hir_module, mir_func);
+
+        let mut var_type = initial_var_type;
+        if !has_explicit_type_hint
+            && (matches!(var_type, Type::Any | Type::HeapAny)
+                || crate::is_useless_container_ty(&var_type))
+            && !matches!(value_type, Type::Any | Type::HeapAny)
+            && !crate::is_useless_container_ty(&value_type)
+        {
+            var_type = value_type.clone();
+        }
+        // Track the variable type for later reference
+        self.insert_var_type(target, var_type.clone());
 
         // Box primitives when assigning to Union type (or narrowed Union variable)
         // or coerce through the numeric tower when the target local is
         // wider than the RHS (Area E §E.6: `x = 0; x += 0.5` widens
         // `x: Float`; the literal `0` must be `IntToFloat`'d).
-        let value_type = self.expr_type_hint(value, hir_module);
         let final_operand = if var_type.is_union() {
             self.box_primitive_if_needed(value_operand, &value_type, mir_func)
         } else {

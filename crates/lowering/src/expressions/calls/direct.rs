@@ -49,8 +49,8 @@ impl<'a> Lowering<'a> {
                                     .get_var_local(var_id)
                                     .and_then(|local_id| mir_func.locals.get(&local_id))
                                     .map(|local| local.ty.clone())
-                                    .unwrap_or_else(|| self.expr_type_hint(*expr_id, hir_module)),
-                                _ => self.expr_type_hint(*expr_id, hir_module),
+                                    .unwrap_or_else(|| self.seed_expr_type(*expr_id, hir_module)),
+                                _ => self.seed_expr_type(*expr_id, hir_module),
                             };
                             match &arg_type {
                                 Type::Tuple(_) => {
@@ -116,8 +116,8 @@ impl<'a> Lowering<'a> {
                             .locals
                             .get(local_id)
                             .map(|local| local.ty.clone())
-                            .unwrap_or_else(|| self.expr_type_hint(*kwargs_expr_id, hir_module)),
-                        _ => self.expr_type_hint(*kwargs_expr_id, hir_module),
+                            .unwrap_or_else(|| self.seed_expr_type(*kwargs_expr_id, hir_module)),
+                        _ => self.seed_expr_type(*kwargs_expr_id, hir_module),
                     };
 
                     // Get the value type from dict type
@@ -358,12 +358,22 @@ impl<'a> Lowering<'a> {
 
                 // Use the expression's type hint if available, otherwise Any
                 let result_ty = expr.ty.clone().unwrap_or(Type::Any);
-
-                // Use the helper to emit closure call with nested format (func_ptr, (captures...))
-                let result_local =
-                    self.emit_closure_call(closure_local, user_arg_operands, result_ty, mir_func);
-
-                return Ok(mir::Operand::Local(result_local));
+                let arg_types: Vec<Type> = user_arg_operands
+                    .iter()
+                    .map(|op| self.operand_type(op, mir_func))
+                    .collect();
+                let args_tuple = self.create_tuple_from_operands_typed(
+                    &user_arg_operands,
+                    &Type::Any,
+                    Some(&arg_types),
+                    mir_func,
+                );
+                return self.lower_indirect_call_with_varargs(
+                    closure_local,
+                    args_tuple,
+                    result_ty,
+                    mir_func,
+                );
             }
 
             // Check if variable holds a dynamically returned closure (e.g., f = factory())
@@ -372,9 +382,19 @@ impl<'a> Lowering<'a> {
                 if let Some(local_id) = self.get_var_local(var_id) {
                     let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
                     let result_ty = expr.ty.clone().unwrap_or(Type::Any);
-                    let result_local =
-                        self.emit_closure_call(local_id, arg_operands, result_ty, mir_func);
-                    return Ok(mir::Operand::Local(result_local));
+                    let arg_types: Vec<Type> = arg_operands
+                        .iter()
+                        .map(|op| self.operand_type(op, mir_func))
+                        .collect();
+                    let args_tuple = self.create_tuple_from_operands_typed(
+                        &arg_operands,
+                        &Type::Any,
+                        Some(&arg_types),
+                        mir_func,
+                    );
+                    return self.lower_indirect_call_with_varargs(
+                        local_id, args_tuple, result_ty, mir_func,
+                    );
                 }
             }
 

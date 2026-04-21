@@ -34,11 +34,20 @@ This compiler follows a multi-stage compilation pipeline:
 4. **Lowering Seed Planning** (`lowering/type_planning`): pre-lowering validation plus seed metadata for locals, returns, captures, and container shapes
 5. **Lowering** (`lowering`): HIR to MIR transformation
 6. **MIR + SSA** (`mir`): Mid-level IR with CFG, dominance, SSA construction, and `Refine`
-7. **Whole-Program Type Analysis** (`optimizer/type_inference`): mandatory SSA/WPA analysis materialized back into MIR metadata before and after optimizer rewrites
-8. **Optimizer** (`optimizer`): MIR optimization passes via `PassManager` pipeline (devirtualization, property flattening, inlining, constant folding & propagation, peephole simplification, dead code elimination)
-9. **Codegen** (`codegen-cranelift`): Code generation using Cranelift
-10. **Linking** (`linker`): Linking with runtime library
-11. **Runtime** (`runtime`): Runtime support with precise GC
+7. **Whole-Program Type Analysis** (`optimizer/type_inference`): mandatory SSA/WPA analysis materialized back into MIR metadata
+8. **MIR ABI Repair** (`optimizer/abi_repair`): post-WPA internal call-site / field ABI rewrites so lowered MIR matches materialized signatures wherever the optimizer can resolve or unify the internal ABI
+9. **Optimizer** (`optimizer`): MIR optimization passes via `PassManager` pipeline (devirtualization, property flattening, inlining, constant folding & propagation, peephole simplification, dead code elimination)
+10. **Final Type Analysis + ABI Repair**: the SSA/WPA + ABI-repair cycle re-runs after optimizer rewrites before codegen
+11. **Codegen** (`codegen-cranelift`): Code generation using Cranelift
+12. **Linking** (`linker`): Linking with runtime library
+13. **Runtime** (`runtime`): Runtime support with precise GC
+
+Current Phase 1 contract: lowering is seed-only; SSA/WPA plus MIR ABI
+repair are mandatory in production; internal direct calls, resolvable
+named calls, and exact or ABI-converged indirect/virtual sites are
+repaired in MIR before codegen. Unresolved external `CallNamed` plus
+conservative runtime-erased closure/function-value and protocol dispatch
+paths intentionally remain dynamic.
 
 ## Features
 

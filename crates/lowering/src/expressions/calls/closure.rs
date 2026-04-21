@@ -212,93 +212,28 @@ impl<'a> Lowering<'a> {
 
         if let Some(args_tuple_local) = varargs_tuple_local {
             // *args forwarding: use runtime trampoline
-            return self.lower_indirect_call_with_varargs(func_local, args_tuple_local, mir_func);
+            return self.lower_indirect_call_with_varargs(
+                func_local,
+                args_tuple_local,
+                mir_func.return_type.clone(),
+                mir_func,
+            );
         }
 
         // Non-varargs case: lower arguments normally
         let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
-
-        // Use the wrapper function's return type for the indirect call result
-        // This ensures type consistency when the wrapper returns the call result
         let result_ty = mir_func.return_type.clone();
-        let result_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
-
-        // For chained decorators, the `func` parameter might be:
-        // 1. A raw function pointer (when the decorator receives a FuncRef directly)
-        // 2. A closure tuple with nested format: (func_ptr, (cap0, cap1, ...))
-        //
-        // We check the type tag and dispatch accordingly.
-
-        // Get the type tag
-        let type_tag_local = self.emit_runtime_call(
-            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG),
-            vec![mir::Operand::Local(func_local)],
-            Type::Int,
+        let arg_types: Vec<Type> = arg_operands
+            .iter()
+            .map(|op| self.operand_type(op, mir_func))
+            .collect();
+        let args_tuple_local = self.create_tuple_from_operands_typed(
+            &arg_operands,
+            &Type::Any,
+            Some(&arg_types),
             mir_func,
         );
-
-        // Compare with tuple tag
-        let is_tuple_local = self.alloc_and_add_local(Type::Bool, mir_func);
-        self.emit_instruction(mir::InstructionKind::BinOp {
-            dest: is_tuple_local,
-            op: mir::BinOp::Eq,
-            left: mir::Operand::Local(type_tag_local),
-            right: mir::Operand::Constant(mir::Constant::Int(TypeTagKind::Tuple.tag() as i64)),
-        });
-
-        // Create blocks for the two cases
-        let tuple_case_bb = self.new_block();
-        let direct_case_bb = self.new_block();
-        let merge_bb = self.new_block();
-        let tuple_case_id = tuple_case_bb.id;
-        let direct_case_id = direct_case_bb.id;
-        let merge_id = merge_bb.id;
-
-        // Branch based on whether it's a tuple
-        self.current_block_mut().terminator = mir::Terminator::Branch {
-            cond: mir::Operand::Local(is_tuple_local),
-            then_block: tuple_case_id,
-            else_block: direct_case_id,
-        };
-
-        // === Tuple case: use helper to call closure with nested format ===
-        self.push_block(tuple_case_bb);
-
-        let tuple_result = self.emit_closure_call(
-            func_local,
-            arg_operands.clone(),
-            result_ty.clone(),
-            mir_func,
-        );
-
-        self.emit_instruction(mir::InstructionKind::Copy {
-            dest: result_local,
-            src: mir::Operand::Local(tuple_result),
-        });
-
-        self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
-
-        // === Direct case: call directly ===
-        self.push_block(direct_case_bb);
-
-        let direct_result = self.alloc_and_add_local(result_ty, mir_func);
-        self.emit_instruction(mir::InstructionKind::Call {
-            dest: direct_result,
-            func: mir::Operand::Local(func_local),
-            args: arg_operands,
-        });
-
-        self.emit_instruction(mir::InstructionKind::Copy {
-            dest: result_local,
-            src: mir::Operand::Local(direct_result),
-        });
-
-        self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
-
-        // === Merge block ===
-        self.push_block(merge_bb);
-
-        Ok(mir::Operand::Local(result_local))
+        self.lower_indirect_call_with_varargs(func_local, args_tuple_local, result_ty, mir_func)
     }
 
     /// Detect if args contain a *args forwarding pattern (func(*varargs_param)).
@@ -339,13 +274,13 @@ impl<'a> Lowering<'a> {
 
     /// Lower an indirect call with *args forwarding via runtime trampoline.
     /// Handles both raw function pointers and closure tuples.
-    fn lower_indirect_call_with_varargs(
+    pub(super) fn lower_indirect_call_with_varargs(
         &mut self,
         func_local: pyaot_utils::LocalId,
         args_tuple_local: pyaot_utils::LocalId,
+        result_ty: Type,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let result_ty = mir_func.return_type.clone();
         let result_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
 
         // Check if func is a closure (tuple) or raw function pointer

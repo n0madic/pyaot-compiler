@@ -8,33 +8,26 @@
 //!
 //! ## Call edges collected
 //!
-//! * **Direct** — `InstructionKind::CallDirect { func, .. }` records a
-//!   precise `caller → func` edge with the exact call site.
+//! * **Direct** — `InstructionKind::CallDirect { func, .. }` and internal
+//!   `InstructionKind::CallNamed { name, .. }` record precise
+//!   `caller → callee` edges with the exact call site.
 //! * **Indirect** — `InstructionKind::Call { func: Operand, .. }` through
-//!   a function-pointer or closure. We don't track which specific
-//!   `FuncId` flows into the operand, so we conservatively add edges
-//!   from the caller to **every** function whose address has been taken
-//!   via `FuncAddr`. This over-approximates reachable targets (some false
-//!   positives) but never misses a real edge. Devirtualisation (S1.15)
-//!   can later refine specific call sites and re-run the call graph.
-//!
-//! ## What is NOT modelled
-//!
-//! * `CallVirtual` / `CallVirtualNamed` — class method dispatch. These
-//!   resolve at runtime via the vtable; devirtualisation handles the
-//!   specific case where the receiver's concrete class is known. Until
-//!   then, conservative virtual edges target only methods reachable
-//!   through module vtables (slot-matched for `CallVirtual`, all known
-//!   vtable methods for `CallVirtualNamed`).
-//! * `RuntimeCall` — runtime-library calls are not part of the user
-//!   call graph; they do not flow into WPA decisions.
+//!   a function-pointer or closure. The graph traces `FuncAddr` /
+//!   `Copy` / `Refine` / `Phi` chains at the site when possible; when a
+//!   site can't be resolved precisely it falls back to the conservative
+//!   address-taken set.
+//! * **Virtual** — `CallVirtual` / `CallVirtualNamed`. Exact when the
+//!   receiver already has a concrete class in MIR metadata; otherwise
+//!   conservative across vtable entries filtered by slot or `name_hash`.
+//! * `RuntimeCall` — runtime-library calls are not part of the user call
+//!   graph; they do not flow into WPA decisions.
 
 use std::collections::HashMap;
 
 use indexmap::{IndexMap, IndexSet};
 use pyaot_mir::{InstructionKind, Module, Operand};
 use pyaot_types::Type;
-use pyaot_utils::{BlockId, ClassId, FuncId};
+use pyaot_utils::{BlockId, ClassId, FuncId, LocalId};
 
 /// One specific call edge. `(caller, callee)` pairs are de-duplicated in
 /// the graph by `(caller, callee)` key, but `CallSite::block` and
@@ -52,6 +45,13 @@ pub struct CallSite {
     /// Classification of the edge. Direct edges are exact; indirect and
     /// virtual edges are conservative over-approximations.
     pub kind: CallKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CallSiteKey {
+    pub caller: FuncId,
+    pub block: BlockId,
+    pub instruction: usize,
 }
 
 /// How precisely the call graph tracks a given edge.
@@ -84,6 +84,11 @@ pub struct CallGraph {
     /// Functions whose address is taken via `FuncAddr` anywhere in the
     /// module. Indirect calls conservatively target this set.
     pub address_taken: IndexSet<FuncId>,
+    /// Exact or conservative targets for each physical call site.
+    pub site_targets: HashMap<CallSiteKey, IndexSet<FuncId>>,
+    /// Whether the site target set is exact (`true`) or a conservative
+    /// over-approximation (`false`).
+    pub site_exact: HashMap<CallSiteKey, bool>,
 }
 
 impl CallGraph {
@@ -92,12 +97,16 @@ impl CallGraph {
     /// digraph. Runs in `O(V + E)` time.
     pub fn build(module: &Module) -> Self {
         let address_taken = collect_address_taken(module);
+        let local_name_targets = build_local_name_targets(module);
         let virtual_targets_by_slot = collect_virtual_targets_by_slot(module);
-        let all_virtual_targets = collect_all_virtual_targets(module);
-        let vtable_map = build_vtable_map(module);
+        let virtual_targets_by_name = collect_virtual_targets_by_name_hash(module);
+        let vtable_slot_map = build_vtable_slot_map(module);
+        let vtable_name_map = build_vtable_name_map(module);
 
         let mut callers: IndexMap<FuncId, Vec<CallSite>> = IndexMap::new();
         let mut callees: IndexMap<FuncId, Vec<CallSite>> = IndexMap::new();
+        let mut site_targets: HashMap<CallSiteKey, IndexSet<FuncId>> = HashMap::new();
+        let mut site_exact: HashMap<CallSiteKey, bool> = HashMap::new();
         // Ensure every function has an entry in both maps, even if it has
         // zero edges — simplifies consumers that iterate `callees.keys()`.
         for &func_id in module.functions.keys() {
@@ -106,6 +115,7 @@ impl CallGraph {
         }
 
         for (&caller_id, func) in &module.functions {
+            let def_map = build_local_def_map(func);
             for (&bid, block) in &func.blocks {
                 for (idx, inst) in block.instructions.iter().enumerate() {
                     match &inst.kind {
@@ -113,6 +123,8 @@ impl CallGraph {
                             push_edge(
                                 &mut callers,
                                 &mut callees,
+                                &mut site_targets,
+                                &mut site_exact,
                                 CallSite {
                                     caller: caller_id,
                                     callee: *callee,
@@ -120,20 +132,39 @@ impl CallGraph {
                                     instruction: idx,
                                     kind: CallKind::Direct,
                                 },
+                                true,
+                            );
+                        }
+                        InstructionKind::CallNamed { name, .. } => {
+                            let Some(&callee) = local_name_targets.get(name.as_str()) else {
+                                continue;
+                            };
+                            push_edge(
+                                &mut callers,
+                                &mut callees,
+                                &mut site_targets,
+                                &mut site_exact,
+                                CallSite {
+                                    caller: caller_id,
+                                    callee,
+                                    block: bid,
+                                    instruction: idx,
+                                    kind: CallKind::Direct,
+                                },
+                                true,
                             );
                         }
                         InstructionKind::Call { func, .. } => {
-                            // Indirect call through a function-pointer
-                            // operand. If the operand is a constant
-                            // FuncAddr resolved at lowering time, we'd
-                            // have lowered to CallDirect — anything
-                            // reaching here is by-value and opaque. Add
-                            // edges to every address-taken function.
-                            let _ = func;
-                            for &target in &address_taken {
+                            let exact_targets =
+                                resolve_callable_targets(func, &def_map).filter(|t| !t.is_empty());
+                            let is_exact = exact_targets.is_some();
+                            let targets = exact_targets.unwrap_or_else(|| address_taken.clone());
+                            for target in targets {
                                 push_edge(
                                     &mut callers,
                                     &mut callees,
+                                    &mut site_targets,
+                                    &mut site_exact,
                                     CallSite {
                                         caller: caller_id,
                                         callee: target,
@@ -141,19 +172,18 @@ impl CallGraph {
                                         instruction: idx,
                                         kind: CallKind::Indirect,
                                     },
+                                    is_exact,
                                 );
                             }
                         }
                         InstructionKind::CallVirtual { obj, slot, .. } => {
-                            // If the receiver already has a concrete class in MIR
-                            // metadata, resolve the exact vtable entry now even
-                            // before the dedicated devirtualization pass rewrites
-                            // the instruction.
                             if let Some(class_id) = operand_class_id(obj, func) {
-                                if let Some(&target) = vtable_map.get(&(class_id, *slot)) {
+                                if let Some(&target) = vtable_slot_map.get(&(class_id, *slot)) {
                                     push_edge(
                                         &mut callers,
                                         &mut callees,
+                                        &mut site_targets,
+                                        &mut site_exact,
                                         CallSite {
                                             caller: caller_id,
                                             callee: target,
@@ -161,13 +191,12 @@ impl CallGraph {
                                             instruction: idx,
                                             kind: CallKind::Virtual,
                                         },
+                                        true,
                                     );
                                     continue;
                                 }
                             }
 
-                            // Otherwise fall back to the slot-based conservative
-                            // over-approximation across all class vtables.
                             let Some(targets) = virtual_targets_by_slot.get(slot) else {
                                 continue;
                             };
@@ -175,6 +204,8 @@ impl CallGraph {
                                 push_edge(
                                     &mut callers,
                                     &mut callees,
+                                    &mut site_targets,
+                                    &mut site_exact,
                                     CallSite {
                                         caller: caller_id,
                                         callee: target,
@@ -182,16 +213,48 @@ impl CallGraph {
                                         instruction: idx,
                                         kind: CallKind::Virtual,
                                     },
+                                    false,
                                 );
                             }
                         }
-                        InstructionKind::CallVirtualNamed { .. } => {
-                            // Name-hash protocol dispatch: no slot information, so
-                            // conservatively target every method present in a vtable.
-                            for &target in &all_virtual_targets {
+                        InstructionKind::CallVirtualNamed { obj, name_hash, .. } => {
+                            if let Some(class_id) = operand_class_id(obj, func) {
+                                let exact_named_dispatch = module
+                                    .class_info
+                                    .get(&class_id)
+                                    .is_some_and(|meta| !meta.is_protocol);
+                                if exact_named_dispatch {
+                                    if let Some(&target) =
+                                        vtable_name_map.get(&(class_id, *name_hash))
+                                    {
+                                        push_edge(
+                                            &mut callers,
+                                            &mut callees,
+                                            &mut site_targets,
+                                            &mut site_exact,
+                                            CallSite {
+                                                caller: caller_id,
+                                                callee: target,
+                                                block: bid,
+                                                instruction: idx,
+                                                kind: CallKind::Virtual,
+                                            },
+                                            true,
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            let Some(targets) = virtual_targets_by_name.get(name_hash) else {
+                                continue;
+                            };
+                            for &target in targets {
                                 push_edge(
                                     &mut callers,
                                     &mut callees,
+                                    &mut site_targets,
+                                    &mut site_exact,
                                     CallSite {
                                         caller: caller_id,
                                         callee: target,
@@ -199,6 +262,7 @@ impl CallGraph {
                                         instruction: idx,
                                         kind: CallKind::Virtual,
                                     },
+                                    false,
                                 );
                             }
                         }
@@ -215,7 +279,41 @@ impl CallGraph {
             callees,
             sccs,
             address_taken,
+            site_targets,
+            site_exact,
         }
+    }
+
+    pub fn targets_at(
+        &self,
+        caller: FuncId,
+        block: BlockId,
+        instruction: usize,
+    ) -> IndexSet<FuncId> {
+        self.site_targets
+            .get(&CallSiteKey {
+                caller,
+                block,
+                instruction,
+            })
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn site_targets_are_exact(
+        &self,
+        caller: FuncId,
+        block: BlockId,
+        instruction: usize,
+    ) -> bool {
+        self.site_exact
+            .get(&CallSiteKey {
+                caller,
+                block,
+                instruction,
+            })
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Returns the SCC index containing `func`. `O(N)` linear scan — fine
@@ -287,6 +385,100 @@ fn collect_address_taken(module: &Module) -> IndexSet<FuncId> {
     out
 }
 
+fn build_local_name_targets(module: &Module) -> HashMap<&str, FuncId> {
+    module
+        .functions
+        .iter()
+        .map(|(&func_id, func)| (func.name.as_str(), func_id))
+        .collect()
+}
+
+fn build_local_def_map(func: &pyaot_mir::Function) -> HashMap<LocalId, InstructionKind> {
+    let mut defs = HashMap::new();
+    for block in func.blocks.values() {
+        for inst in &block.instructions {
+            let dest = match &inst.kind {
+                InstructionKind::Const { dest, .. }
+                | InstructionKind::BinOp { dest, .. }
+                | InstructionKind::UnOp { dest, .. }
+                | InstructionKind::Call { dest, .. }
+                | InstructionKind::CallDirect { dest, .. }
+                | InstructionKind::CallNamed { dest, .. }
+                | InstructionKind::CallVirtual { dest, .. }
+                | InstructionKind::CallVirtualNamed { dest, .. }
+                | InstructionKind::FuncAddr { dest, .. }
+                | InstructionKind::BuiltinAddr { dest, .. }
+                | InstructionKind::RuntimeCall { dest, .. }
+                | InstructionKind::Copy { dest, .. }
+                | InstructionKind::GcAlloc { dest, .. }
+                | InstructionKind::FloatToInt { dest, .. }
+                | InstructionKind::BoolToInt { dest, .. }
+                | InstructionKind::IntToFloat { dest, .. }
+                | InstructionKind::FloatBits { dest, .. }
+                | InstructionKind::IntBitsToFloat { dest, .. }
+                | InstructionKind::FloatAbs { dest, .. }
+                | InstructionKind::ExcGetType { dest }
+                | InstructionKind::ExcHasException { dest }
+                | InstructionKind::ExcGetCurrent { dest }
+                | InstructionKind::ExcCheckType { dest, .. }
+                | InstructionKind::ExcCheckClass { dest, .. }
+                | InstructionKind::Phi { dest, .. }
+                | InstructionKind::Refine { dest, .. } => Some(*dest),
+                _ => None,
+            };
+            if let Some(dest) = dest {
+                defs.insert(dest, inst.kind.clone());
+            }
+        }
+    }
+    defs
+}
+
+fn resolve_callable_targets(
+    operand: &Operand,
+    def_map: &HashMap<LocalId, InstructionKind>,
+) -> Option<IndexSet<FuncId>> {
+    fn resolve_local(
+        local: LocalId,
+        def_map: &HashMap<LocalId, InstructionKind>,
+        visiting: &mut IndexSet<LocalId>,
+    ) -> Option<IndexSet<FuncId>> {
+        if !visiting.insert(local) {
+            return None;
+        }
+        let resolved = match def_map.get(&local)? {
+            InstructionKind::FuncAddr { func, .. } => Some(IndexSet::from_iter([*func])),
+            InstructionKind::Copy { src, .. } | InstructionKind::Refine { src, .. } => {
+                resolve_operand(src, def_map, visiting)
+            }
+            InstructionKind::Phi { sources, .. } => {
+                let mut out = IndexSet::new();
+                for (_, src) in sources {
+                    let targets = resolve_operand(src, def_map, visiting)?;
+                    out.extend(targets);
+                }
+                Some(out)
+            }
+            _ => None,
+        };
+        visiting.shift_remove(&local);
+        resolved
+    }
+
+    fn resolve_operand(
+        operand: &Operand,
+        def_map: &HashMap<LocalId, InstructionKind>,
+        visiting: &mut IndexSet<LocalId>,
+    ) -> Option<IndexSet<FuncId>> {
+        match operand {
+            Operand::Local(local) => resolve_local(*local, def_map, visiting),
+            Operand::Constant(_) => None,
+        }
+    }
+
+    resolve_operand(operand, def_map, &mut IndexSet::new())
+}
+
 fn collect_virtual_targets_by_slot(module: &Module) -> IndexMap<usize, IndexSet<FuncId>> {
     let mut out: IndexMap<usize, IndexSet<FuncId>> = IndexMap::new();
     for vtable in &module.vtables {
@@ -299,21 +491,33 @@ fn collect_virtual_targets_by_slot(module: &Module) -> IndexMap<usize, IndexSet<
     out
 }
 
-fn collect_all_virtual_targets(module: &Module) -> IndexSet<FuncId> {
-    let mut out = IndexSet::new();
+fn collect_virtual_targets_by_name_hash(module: &Module) -> IndexMap<u64, IndexSet<FuncId>> {
+    let mut out: IndexMap<u64, IndexSet<FuncId>> = IndexMap::new();
     for vtable in &module.vtables {
         for entry in &vtable.entries {
-            out.insert(entry.method_func_id);
+            out.entry(entry.name_hash)
+                .or_default()
+                .insert(entry.method_func_id);
         }
     }
     out
 }
 
-fn build_vtable_map(module: &Module) -> HashMap<(ClassId, usize), FuncId> {
+fn build_vtable_slot_map(module: &Module) -> HashMap<(ClassId, usize), FuncId> {
     let mut map = HashMap::new();
     for vtable in &module.vtables {
         for entry in &vtable.entries {
             map.insert((vtable.class_id, entry.slot), entry.method_func_id);
+        }
+    }
+    map
+}
+
+fn build_vtable_name_map(module: &Module) -> HashMap<(ClassId, u64), FuncId> {
+    let mut map = HashMap::new();
+    for vtable in &module.vtables {
+        for entry in &vtable.entries {
+            map.insert((vtable.class_id, entry.name_hash), entry.method_func_id);
         }
     }
     map
@@ -338,10 +542,23 @@ fn operand_class_id(operand: &Operand, func: &pyaot_mir::Function) -> Option<Cla
 fn push_edge(
     callers: &mut IndexMap<FuncId, Vec<CallSite>>,
     callees: &mut IndexMap<FuncId, Vec<CallSite>>,
+    site_targets: &mut HashMap<CallSiteKey, IndexSet<FuncId>>,
+    site_exact: &mut HashMap<CallSiteKey, bool>,
     site: CallSite,
+    exact: bool,
 ) {
+    let key = CallSiteKey {
+        caller: site.caller,
+        block: site.block,
+        instruction: site.instruction,
+    };
     callees.entry(site.caller).or_default().push(site);
     callers.entry(site.callee).or_default().push(site);
+    site_targets.entry(key).or_default().insert(site.callee);
+    site_exact
+        .entry(key)
+        .and_modify(|current| *current &= exact)
+        .or_insert(exact);
 }
 
 // ============================================================================
@@ -690,6 +907,7 @@ mod tests {
             class_id: pyaot_utils::ClassId::from(0u32),
             entries: vec![pyaot_mir::VtableEntry {
                 slot: 0,
+                name_hash: 0,
                 method_func_id: FuncId::from(1u32),
             }],
         });
@@ -699,5 +917,118 @@ mod tests {
         assert!(cg.callees[&FuncId::from(0u32)]
             .iter()
             .any(|site| site.kind == CallKind::Virtual && site.callee == FuncId::from(1u32)));
+    }
+
+    #[test]
+    fn internal_named_calls_resolve_to_exact_targets() {
+        let mut module = Module::new();
+        let mut caller = mk_func(0);
+        let dest = LocalId::from(0u32);
+        caller.locals.insert(
+            dest,
+            Local {
+                id: dest,
+                name: None,
+                ty: Type::Int,
+                is_gc_root: false,
+            },
+        );
+        let bb0 = caller.entry_block;
+        caller.block_mut(bb0).instructions.push(Instruction {
+            kind: InstructionKind::CallNamed {
+                dest,
+                name: "__module_other_callee".to_string(),
+                args: vec![Operand::Constant(Constant::Int(7))],
+            },
+            span: None,
+        });
+        caller.block_mut(bb0).terminator =
+            Terminator::Return(Some(Operand::Constant(Constant::Int(0))));
+
+        let callee = Function::new(
+            FuncId::from(1u32),
+            "__module_other_callee".to_string(),
+            Vec::new(),
+            Type::None,
+            None,
+        );
+
+        module.add_function(caller);
+        module.add_function(callee);
+
+        let cg = CallGraph::build(&module);
+        let site_targets = cg.targets_at(FuncId::from(0u32), bb0, 0);
+        let mut expected = IndexSet::new();
+        expected.insert(FuncId::from(1u32));
+        assert_eq!(site_targets, expected);
+        assert!(cg.callees[&FuncId::from(0u32)]
+            .iter()
+            .any(|site| site.kind == CallKind::Direct && site.callee == FuncId::from(1u32)));
+    }
+
+    #[test]
+    fn indirect_sites_follow_phi_of_funcaddr_targets() {
+        let mut module = Module::new();
+        let mut caller = mk_func(0);
+        let addr_a = LocalId::from(0u32);
+        let addr_b = LocalId::from(1u32);
+        let phi = LocalId::from(2u32);
+        let dest = LocalId::from(3u32);
+        for local in [addr_a, addr_b, phi, dest] {
+            caller.locals.insert(
+                local,
+                Local {
+                    id: local,
+                    name: None,
+                    ty: Type::Int,
+                    is_gc_root: false,
+                },
+            );
+        }
+        let bb0 = caller.entry_block;
+        caller.block_mut(bb0).instructions.push(Instruction {
+            kind: InstructionKind::FuncAddr {
+                dest: addr_a,
+                func: FuncId::from(1u32),
+            },
+            span: None,
+        });
+        caller.block_mut(bb0).instructions.push(Instruction {
+            kind: InstructionKind::FuncAddr {
+                dest: addr_b,
+                func: FuncId::from(2u32),
+            },
+            span: None,
+        });
+        caller.block_mut(bb0).instructions.push(Instruction {
+            kind: InstructionKind::Phi {
+                dest: phi,
+                sources: vec![(bb0, Operand::Local(addr_a)), (bb0, Operand::Local(addr_b))],
+            },
+            span: None,
+        });
+        caller.block_mut(bb0).instructions.push(Instruction {
+            kind: InstructionKind::Call {
+                dest,
+                func: Operand::Local(phi),
+                args: Vec::new(),
+            },
+            span: None,
+        });
+        caller.block_mut(bb0).terminator =
+            Terminator::Return(Some(Operand::Constant(Constant::Int(0))));
+
+        module.add_function(caller);
+        module.add_function(mk_func(1));
+        module.add_function(mk_func(2));
+        module.add_function(mk_func(3));
+
+        let cg = CallGraph::build(&module);
+        let site_targets = cg.targets_at(FuncId::from(0u32), bb0, 3);
+        let mut expected = IndexSet::new();
+        expected.insert(FuncId::from(1u32));
+        expected.insert(FuncId::from(2u32));
+        assert_eq!(site_targets, expected);
+        assert!(!site_targets.contains(&FuncId::from(3u32)));
     }
 }

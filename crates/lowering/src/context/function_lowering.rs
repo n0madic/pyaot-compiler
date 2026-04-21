@@ -81,6 +81,10 @@ impl<'a> Lowering<'a> {
                     field_offsets: info.field_offsets.clone(),
                     field_types: info.field_types.clone(),
                     base_class: info.base_class,
+                    is_protocol: hir_module
+                        .class_defs
+                        .get(class_id)
+                        .is_some_and(|class_def| class_def.is_protocol),
                 },
             );
         }

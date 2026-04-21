@@ -35,8 +35,8 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         let obj_expr = &hir_module.exprs[obj];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        // Use expr_type_hint for proper type inference
-        let obj_type = self.expr_type_hint(obj, hir_module);
+        // Use seed_expr_type for proper type inference
+        let obj_type = self.seed_expr_type(obj, hir_module);
 
         let method_name = self.resolve(method).to_string();
 
@@ -46,7 +46,7 @@ impl<'a> Lowering<'a> {
         for arg_id in args {
             let arg_expr = &hir_module.exprs[*arg_id];
             arg_operands.push(self.lower_expr(arg_expr, hir_module, mir_func)?);
-            arg_types.push(self.expr_type_hint(*arg_id, hir_module));
+            arg_types.push(self.seed_expr_type(*arg_id, hir_module));
         }
 
         match obj_type {

@@ -29,8 +29,6 @@ pub struct CodegenSymbols<'a> {
     pub func_ids: &'a IndexMap<FuncId, ClFuncId>,
     /// Function name → Cranelift FuncId (for cross-module calls)
     pub func_name_ids: &'a IndexMap<String, ClFuncId>,
-    /// FuncId → parameter types (for type coercion at call sites)
-    pub func_param_types: &'a IndexMap<FuncId, Vec<Type>>,
     /// MIR BlockId → Cranelift Block (for branches)
     pub block_map: &'a IndexMap<BlockId, cranelift_codegen::ir::Block>,
     /// Full MIR block map of the function being compiled. Consulted by

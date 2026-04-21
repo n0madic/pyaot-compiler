@@ -28,12 +28,17 @@ pub struct ClassMetadata {
     pub field_types: IndexMap<InternedString, Type>,
     /// Single-inheritance parent, if any.
     pub base_class: Option<ClassId>,
+    /// Whether this class is a Protocol and therefore should keep
+    /// name-based virtual dispatch semantics rather than exact slot
+    /// resolution from its own nominal type.
+    pub is_protocol: bool,
 }
 
 /// Entry in a class vtable mapping slot to method function
 #[derive(Debug, Clone)]
 pub struct VtableEntry {
     pub slot: usize,
+    pub name_hash: u64,
     pub method_func_id: FuncId,
 }
 

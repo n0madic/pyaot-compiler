@@ -33,7 +33,7 @@ impl<'a> Lowering<'a> {
         }
 
         let arg_operand = self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
-        let arg_type = self.expr_type_hint(args[0], hir_module);
+        let arg_type = self.seed_expr_type(args[0], hir_module);
 
         // Determine element type from container type
         let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
@@ -157,7 +157,7 @@ impl<'a> Lowering<'a> {
         }
 
         let arg_operand = self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
-        let arg_type = self.expr_type_hint(args[0], hir_module);
+        let arg_type = self.seed_expr_type(args[0], hir_module);
 
         // Determine element type from container type
         let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);

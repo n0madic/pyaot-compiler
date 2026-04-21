@@ -10,8 +10,7 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
 use pyaot_core_defs::layout;
 use pyaot_diagnostics::Result;
-use pyaot_mir::{self as mir, BuiltinFunctionKind, Operand};
-use pyaot_types::Type;
+use pyaot_mir::{BuiltinFunctionKind, Operand};
 use pyaot_utils::{FuncId, LocalId};
 
 use crate::context::CodegenContext;
@@ -19,8 +18,9 @@ use crate::utils::{declare_runtime_function, get_call_result, load_operand};
 
 /// Compile a direct function call: `dest = func(args)`.
 ///
-/// Resolves the function by `FuncId`, coerces argument types to match the callee
-/// signature (Bool -> Int, primitives -> Any, etc.), and stores the return value.
+/// Resolves the function by `FuncId`, expects MIR ABI repair to have already
+/// aligned argument representations with the callee signature, and stores the
+/// return value.
 pub(crate) fn compile_call_direct(
     builder: &mut FunctionBuilder,
     dest: &LocalId,
@@ -42,69 +42,55 @@ pub(crate) fn compile_call_direct(
     // Get a function reference
     let func_ref = ctx.module.declare_func_in_func(cl_func_id, builder.func);
 
-    // Get expected parameter types for type coercion
-    let param_types = ctx.symbols.func_param_types.get(func);
+    let expected_param_types: Vec<_> = builder.func.dfg.signatures
+        [builder.func.dfg.ext_funcs[func_ref].signature]
+        .params
+        .iter()
+        .map(|param| param.value_type)
+        .collect();
 
-    // Prepare arguments, applying type coercion where needed (e.g., Bool -> Int, primitives -> Any)
+    // Prepare arguments. Internal direct-call ABI repair must already have inserted any
+    // required boxing/unboxing or numeric conversions before codegen.
     let mut arg_vals = Vec::new();
     for (i, arg) in args.iter().enumerate() {
         let arg_val = load_operand(builder, arg, ctx.symbols.var_map);
-
-        // Get argument type and expected parameter type
-        let arg_type = match arg {
-            Operand::Local(local_id) => ctx.symbols.locals.get(local_id).map(|l| &l.ty),
-            Operand::Constant(c) => Some(match c {
-                mir::Constant::Int(_) => &Type::Int,
-                mir::Constant::Float(_) => &Type::Float,
-                mir::Constant::Bool(_) => &Type::Bool,
-                mir::Constant::None => &Type::None,
-                _ => &Type::Int,
-            }),
+        let Some(expected_ty) = expected_param_types.get(i).copied() else {
+            return Err(pyaot_diagnostics::CompilerError::codegen_error(
+                format!(
+                    "direct call in {} passes too many args to {:?}",
+                    ctx.debug.function_name, func
+                ),
+                None,
+            ));
         };
-        let param_type = param_types.and_then(|pts| pts.get(i));
-
-        // Coerce types: Bool -> Int, and non-i64 primitives -> Any
-        // Note: Int is already i64, so no coercion needed for Int -> Any
-        // This also preserves closure captures which pass values directly
-        let arg_cl_type = builder.func.dfg.value_type(arg_val);
-        let coerced_val = match (arg_type, param_type) {
-            (Some(Type::Bool), Some(Type::Int)) if arg_cl_type == cltypes::I8 => {
-                // Extend i8 to i64
-                builder.ins().uextend(cltypes::I64, arg_val)
-            }
-            // For Any/Union parameters, only convert types that have different Cranelift representations
-            // Int is already i64, same as Any/Union, so no conversion needed
-            (Some(Type::Float), Some(Type::Any | Type::Union(_)))
-                if arg_cl_type == cltypes::F64 =>
-            {
-                // f64 -> i64: need to box the float
-                box_primitive(builder, ctx.module, "rt_box_float", cltypes::F64, arg_val)?
-            }
-            (Some(Type::Bool), Some(Type::Any | Type::Union(_))) if arg_cl_type == cltypes::I8 => {
-                // i8 -> i64: extend bool to i64 for Any/Union parameter
-                builder.ins().uextend(cltypes::I64, arg_val)
-            }
-            (Some(Type::None), Some(Type::Any | Type::Union(_))) if arg_cl_type == cltypes::I8 => {
-                // i8 -> i64: extend None to i64 for Any/Union parameter
-                builder.ins().uextend(cltypes::I64, arg_val)
-            }
-            // None passed for pointer-typed parameters (list, dict, str, tuple, etc.)
-            // None is i8 (0) but pointer params expect i64 (null pointer)
-            (Some(Type::None), Some(param_ty)) if arg_cl_type == cltypes::I8 => {
-                let expected = crate::utils::type_to_cranelift(param_ty);
-                if expected == cltypes::I64 {
-                    builder.ins().uextend(cltypes::I64, arg_val)
-                } else {
-                    arg_val
-                }
-            }
-            // Fallback: check Cranelift function signature for type mismatch.
-            // This handles cases where param_types is unavailable (e.g., None
-            // constant passed as default for a pointer-typed parameter).
-            _ => coerce_arg_by_signature(builder, ctx.module, arg_val, func_ref, i)?,
-        };
-
-        arg_vals.push(coerced_val);
+        let actual_ty = builder.func.dfg.value_type(arg_val);
+        debug_assert_eq!(
+            actual_ty, expected_ty,
+            "unrepaired direct-call ABI in {} for callee {:?} arg {}: actual {:?}, expected {:?}",
+            ctx.debug.function_name, func, i, actual_ty, expected_ty
+        );
+        if actual_ty != expected_ty {
+            return Err(pyaot_diagnostics::CompilerError::codegen_error(
+                format!(
+                    "unrepaired direct-call ABI in {} for callee {:?} arg {}: actual {:?}, expected {:?}",
+                    ctx.debug.function_name, func, i, actual_ty, expected_ty
+                ),
+                None,
+            ));
+        }
+        arg_vals.push(arg_val);
+    }
+    if arg_vals.len() != expected_param_types.len() {
+        return Err(pyaot_diagnostics::CompilerError::codegen_error(
+            format!(
+                "direct call in {} passes {} args to {:?}, but signature expects {}",
+                ctx.debug.function_name,
+                arg_vals.len(),
+                func,
+                expected_param_types.len()
+            ),
+            None,
+        ));
     }
 
     // Make the call

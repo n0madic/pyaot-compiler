@@ -93,10 +93,19 @@ impl<'a> Lowering<'a> {
         let expr = &module.exprs[expr_id];
         match &expr.kind {
             hir::ExprKind::NotImplemented => true,
-            hir::ExprKind::Call { func, .. } => match self.resolve_call_target(*func, module) {
-                Some(callee) => self.func_may_return_not_implemented(callee, module),
-                None => true, // unresolved — conservative
-            },
+            hir::ExprKind::Call { func, .. } => {
+                let callee_expr = &module.exprs[*func];
+                if matches!(callee_expr.kind, hir::ExprKind::ClassRef(_)) {
+                    // Class constructors materialize instances; they do not
+                    // participate in the NotImplemented protocol.
+                    false
+                } else {
+                    match self.resolve_call_target(*func, module) {
+                        Some(callee) => self.func_may_return_not_implemented(callee, module),
+                        None => true, // unresolved — conservative
+                    }
+                }
+            }
             hir::ExprKind::MethodCall { obj, method, .. } => {
                 match self.resolve_method_call_target(*obj, *method, module) {
                     Some(callee) => self.func_may_return_not_implemented(callee, module),

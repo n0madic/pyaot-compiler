@@ -31,9 +31,13 @@ Mid-level IR (MIR) - CFG with basic blocks
     ↓
 [Whole-Program Type Analysis] (mandatory SSA/WPA analysis + MIR type materialization)
     ↓
+[MIR ABI Repair] (internal call-site and field ABI rewritten to materialized MIR signatures where the internal ABI can be resolved or unified)
+    ↓
 [MIR Optimizer] (devirtualize / flatten-properties / inline / constfold / dce)
     ↓
 [Whole-Program Type Analysis] (re-run after optimizer rewrites)
+    ↓
+[MIR ABI Repair] (final post-opt ABI rewrite before codegen)
     ↓
 [Cranelift Code Generator]
     ↓
@@ -43,6 +47,13 @@ Object File (.o)
     ↓
 Native Executable
 ```
+
+**Current Phase 1 contract**: complete in production terms. Lowering is
+seed-only, SSA/WPA analysis plus MIR ABI repair are mandatory, and
+internal `CallDirect`, resolvable `CallNamed`, and exact or ABI-converged
+indirect/virtual sites are repaired before codegen. Unresolved external
+`CallNamed` plus conservative runtime-erased closure/function-value and
+protocol dispatch paths intentionally remain dynamic.
 
 ## Feature Status
 

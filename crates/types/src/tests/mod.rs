@@ -124,10 +124,9 @@ fn test_never_subtyping() {
 
 #[test]
 fn test_narrow_excluding_all_returns_never() {
-    // Excluding the only type from a union returns Never
+    // Excluding the only concrete type returns Never.
     let narrowed = Type::Int.narrow_excluding(&Type::Int);
-    // Non-union types return themselves when narrowing
-    assert_eq!(narrowed, Type::Int);
+    assert_eq!(narrowed, Type::Never);
 
     // For union, excluding all types returns Never
     let union = Type::Union(vec![Type::Int]);

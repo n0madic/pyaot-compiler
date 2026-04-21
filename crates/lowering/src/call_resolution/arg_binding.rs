@@ -79,8 +79,8 @@ impl<'a> Lowering<'a> {
                 .locals
                 .get(local_id)
                 .map(|local| local.ty.clone())
-                .unwrap_or_else(|| self.expr_type_hint(expr_id, hir_module)),
-            _ => self.expr_type_hint(expr_id, hir_module),
+                .unwrap_or_else(|| self.seed_expr_type(expr_id, hir_module)),
+            _ => self.seed_expr_type(expr_id, hir_module),
         };
 
         if let Type::Tuple(elem_types) = tuple_type {
@@ -123,8 +123,8 @@ impl<'a> Lowering<'a> {
                 .locals
                 .get(local_id)
                 .map(|local| local.ty.clone())
-                .unwrap_or_else(|| self.expr_type_hint(expr_id, hir_module)),
-            _ => self.expr_type_hint(expr_id, hir_module),
+                .unwrap_or_else(|| self.seed_expr_type(expr_id, hir_module)),
+            _ => self.seed_expr_type(expr_id, hir_module),
         };
 
         let Type::List(elem_type) = list_type else {
