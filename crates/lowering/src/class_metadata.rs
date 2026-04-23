@@ -239,10 +239,7 @@ impl<'a> Lowering<'a> {
     /// - numeric/operator dunders often normalize `other` before calling the
     ///   constructor again; the constructor call should see the post-rebind
     ///   semantic type, not only the wide ABI seed of the original param.
-    pub(crate) fn refine_class_fields_from_constructor_calls(
-        &mut self,
-        hir_module: &hir::Module,
-    ) {
+    pub(crate) fn refine_class_fields_from_constructor_calls(&mut self, hir_module: &hir::Module) {
         let init_bindings = self.collect_init_field_bindings(hir_module);
         if init_bindings.is_empty() {
             return;
@@ -314,7 +311,20 @@ impl<'a> Lowering<'a> {
                 let refined = class_fields
                     .get(&field_name)
                     .map(|prev| Type::unify_field_type(prev, &observed_ty))
-                    .unwrap_or_else(|| Type::unify_field_type(&storage_ty, &observed_ty));
+                    .unwrap_or_else(|| {
+                        // `Any` / `HeapAny` storage carries no information; the
+                        // observed concrete type is strictly more informative.
+                        // `unify_field_type(Any, T)` returns `Union[Any, T]`
+                        // (normalize_union doesn't collapse subtypes), which
+                        // downstream lowering treats as a union and emits the
+                        // runtime-dispatch compare path — crashing when the
+                        // underlying storage is an unboxed primitive.
+                        if matches!(storage_ty, Type::Any | Type::HeapAny) {
+                            observed_ty.clone()
+                        } else {
+                            Type::unify_field_type(&storage_ty, &observed_ty)
+                        }
+                    });
                 class_fields.insert(field_name, refined);
             }
         }
@@ -388,11 +398,11 @@ impl<'a> Lowering<'a> {
         let inferred_hints = self.get_lambda_param_type_hints(&func.id).cloned();
         let mut current_types = IndexMap::new();
         for (idx, param) in func.params.iter().enumerate() {
-            if let Some(ty) = param
-                .ty
-                .clone()
-                .or_else(|| inferred_hints.as_ref().and_then(|hints| hints.get(idx).cloned()))
-            {
+            if let Some(ty) = param.ty.clone().or_else(|| {
+                inferred_hints
+                    .as_ref()
+                    .and_then(|hints| hints.get(idx).cloned())
+            }) {
                 current_types.insert(param.var, ty);
             }
         }
@@ -1034,8 +1044,7 @@ impl<'a> Lowering<'a> {
                     );
                 }
             }
-            hir::Pattern::MatchSequence { patterns }
-            | hir::Pattern::MatchOr(patterns) => {
+            hir::Pattern::MatchSequence { patterns } | hir::Pattern::MatchOr(patterns) => {
                 for inner in patterns {
                     self.scan_constructor_calls_in_pattern(
                         inner,

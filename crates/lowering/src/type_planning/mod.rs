@@ -61,7 +61,9 @@ impl<'a> Lowering<'a> {
         //       for child, grad in zip(v._children, v._local_grads): ...
         // The first prescan ran before those field seeds existed, so rerun it
         // now and rebuild the stable Var→Type base map before eager expr caching.
-        self.lowering_seed_info.per_function_local_seed_types.clear();
+        self.lowering_seed_info
+            .per_function_local_seed_types
+            .clear();
         self.precompute_all_local_var_types(hir_module);
         self.reinfer_return_types_with_prescan(hir_module);
         self.lowering_seed_info.base_var_types.clear();

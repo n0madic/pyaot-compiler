@@ -167,12 +167,20 @@ impl<'a> Lowering<'a> {
                         .get(&attr)
                         .cloned()
                         .unwrap_or(Type::Any);
+                    // The refined class field type reflects the actual values
+                    // flowing into `self.<field>` across all constructor call
+                    // sites. WPA param inference narrows the `__init__`
+                    // parameter to the same type, so runtime storage matches
+                    // the refined label (raw primitive for Int / Float / Bool,
+                    // pointer for heap shapes). Relabel the result local
+                    // directly — emitting an unbox would crash when the slot
+                    // holds a raw primitive that was stored without boxing.
                     let read_type = self
                         .get_refined_class_field_type(class_id, &attr)
                         .cloned()
-                        .unwrap_or_else(|| storage_type.clone());
+                        .unwrap_or(storage_type);
 
-                    let storage_local = self.emit_runtime_call(
+                    let result_local = self.emit_runtime_call(
                         mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
                         ),
@@ -180,21 +188,11 @@ impl<'a> Lowering<'a> {
                             obj_operand,
                             mir::Operand::Constant(mir::Constant::Int(offset as i64)),
                         ],
-                        storage_type.clone(),
+                        read_type,
                         mir_func,
                     );
 
-                    if read_type != storage_type {
-                        let refined_local = self.materialize_narrowed_local_from_operand(
-                            mir::Operand::Local(storage_local),
-                            &storage_type,
-                            &read_type,
-                            mir_func,
-                        );
-                        return Ok(mir::Operand::Local(refined_local));
-                    }
-
-                    return Ok(mir::Operand::Local(storage_local));
+                    return Ok(mir::Operand::Local(result_local));
                 }
 
                 // 3. Fallback to class attribute (Python: instance.class_attr)
