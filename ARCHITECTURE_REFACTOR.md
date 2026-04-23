@@ -429,6 +429,48 @@ implementation history only, not the current architecture contract.
 - `cargo bench -p pyaot-bench --bench pyaot_bench run::` ✅
 - `cargo bench -p pyaot-bench --bench pyaot_bench fresh_launch::` ✅
 
+### Post-close amendments (2026-04-21 … 2026-04-23)
+
+After the 2026-04-20 formal close, six additional commits landed on
+`master` that refine — but do not alter — the Phase 1 contract above:
+
+1. `b15000e`, `b8aaa2c`, `cf527cf` — refactoring + doc sync around
+   seed inference and call-graph precision. No contract change.
+2. `94d9351` "Finish Phase 1 SSA and ABI repair integration" — the
+   authoritative current call/ABI contract wording at the top of this
+   section was introduced here.
+3. `140a484` "Refine class field types and improve narrowing logic" —
+   added `LoweringSeedInfo::refined_class_field_types` plus the
+   `refine_class_fields_from_constructor_calls` pre-lowering pass,
+   wiring refined field types into attribute reads and widening the
+   §G.13 narrowing-rebind fixture into full dunder-method coverage.
+   **This commit introduced a runtime regression** in
+   `examples/test_classes.py` §E.7 / §G.13: the refinement used
+   `Type::unify_field_type(Any, observed)` which normalises to
+   `Union[Any, observed]`, triggering the union-compare / unbox paths
+   against raw-primitive slots (WPA had already narrowed the matching
+   `__init__` param to the observed type). Repro: `_Sym(1) != _Sym(2)`
+   → SIGSEGV in `rt_obj_eq` with `x0 = 0x1`.
+4. `5deb66b` "Fix SIGSEGV from refined class field types on unboxed
+   primitives" — restores the Phase 1 gates. Two localized fixes:
+   - `class_metadata.rs::refine_class_fields_from_constructor_calls`:
+     for `Any` / `HeapAny` storage, use `observed_ty` directly
+     instead of joining via `unify_field_type` (same rationale as the
+     WPA param-reset-to-`Never` workaround at §1.6).
+   - `attributes.rs::lower_attribute`: relabel the
+     `rt_instance_get_field` result with the refined type directly,
+     without emitting a `Refine` / unbox — WPA has already narrowed
+     `__init__` storage to match the refinement, so the slot bits
+     already carry the refined representation.
+
+All four acceptance gates (`cargo test --workspace --release`,
+`cargo fmt --check`, `cargo clippy --workspace --release -- -D warnings`,
+`cargo bench …`) are green again on `HEAD` as of 2026-04-23. The
+`refined_class_field_types` store and `refine_class_fields_from_constructor_calls`
+pass are now part of the seed-only lowering surface alongside the
+existing `LoweringSeedInfo` maps; they remain Phase-1-legal for the
+same reasons as the rest of that surface.
+
 ### Historical Mid-Phase Snapshot (2026-04-18, pre-S1.17b-f)
 
 **What landed** (11 sessions, roughly 80% of the milestone goal):
@@ -749,6 +791,14 @@ types. Every class field's type is inferred from the join of all
   `get_or_create_local` remain Phase-1-legal under Path A because
   lowering still runs pre-SSA. Path B / Phase 2 is the intended point
   where they become deletable.
+- `LoweringSeedInfo::refined_class_field_types` (added post-close in
+  `140a484`, guard-fixed in `5deb66b`) caches per-class field types
+  joined across constructor call sites. `refine_class_fields_from_constructor_calls`
+  populates it in `type_planning::mod`; `lower_attribute` relabels
+  `rt_instance_get_field` results with the refined type without a
+  `Refine` / unbox, since WPA has already narrowed `__init__` storage
+  to match. Remains Phase-1-legal for the same reasons as the rest of
+  the `LoweringSeedInfo` surface.
 - Lattice cleanup such as replacing `Type::unify_field_type` with
   `join` remains Phase 3 work as originally planned.
 

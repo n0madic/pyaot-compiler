@@ -994,7 +994,41 @@ map with prescan entries and re-scans return statements. Makes
 `def f(): x = 0; x += 0.5; return x` type-infer return as `Float` — the
 initial return-type pass only saw `x: Int` from the first write.
 
-### 4. Comparison dunders with `NotImplemented` (§E.7)
+### 4. `Union[Any, X]` pollution from `normalize_union`
+
+`Type::normalize_union` deduplicates members but does **not** collapse
+subtype relationships. `normalize_union(vec![Any, Int])` returns
+`Union[Any, Int]`, not `Any`. Every cross-site unification (`unify_numeric`
+→ `normalize_union`, `unify_field_type` → `unify_numeric`) inherits this
+behaviour, which poisons any flow that uses the unified type as if `Any`
+had been absorbed.
+
+There are two known sites that must explicitly defuse this. Both live
+outside `normalize_union` itself — the simplification stays lattice-level
+work (Phase 3):
+
+1. **WPA parameter inference** (`optimizer/src/type_inference.rs::wpa_param_inference`).
+   Resets every directly-called function's param entries to
+   `Type::Never` (lattice bottom) before the fixed-point ascent. Without
+   this, a recursive self-call on the first pass joins the pre-WPA seed
+   (`Any`) with the observed type and locks in `Union[Any, T]` forever.
+2. **Class-field refinement** (`lowering/src/class_metadata.rs::refine_class_fields_from_constructor_calls`).
+   When `storage_ty` is `Any` / `HeapAny`, uses `observed_ty` directly
+   rather than `unify_field_type(storage_ty, observed_ty)`. Without this,
+   a field refined from an unannotated `__init__(self, v)` param takes
+   `Union[Any, Int]`, which downstream lowering interprets as a union
+   (`is_union() == true`) and emits `rt_obj_eq` / runtime-dispatch
+   compare paths. WPA meanwhile has already narrowed the param to `Int`
+   and stores raw primitives in the slot, so the runtime dispatch
+   dereferences `0x1` as `*mut Obj` and crashes. Introduced and fixed
+   in the same release cycle (`140a484` → `5deb66b`) — see
+   `ARCHITECTURE_REFACTOR.md` post-close amendments.
+
+Adding a third such site? Check whether the incoming "weak" type is
+`Any` / `HeapAny` and branch around `unify_field_type` before
+consulting it. The lattice-aware replacement is Phase 3's `Type::join`.
+
+### 5. Comparison dunders with `NotImplemented` (§E.7)
 
 Semantically identical to the §3.3.8 arithmetic-dunder state machine
 but with unboxing at the end. `comparison.rs::lower_compare` now sizes
