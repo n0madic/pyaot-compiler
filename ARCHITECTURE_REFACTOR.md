@@ -2715,6 +2715,58 @@ S2.3/S2.4/S2.5 continue to migrate container internal storage to
 The `rt_tuple_get_int/float/bool` deletion listed above follows the
 same rule (extern ABI depends on codegen) and rides along with S2.7.
 
+**Amendment 2 (2026-04-24, S2.4 rollback):** The attempt to migrate
+`TupleObj.data`, `DictEntry.key/value`, and `SetEntry.elem` to `Value`
+storage during S2.4/S2.5 — while leaving lowering and codegen
+untouched — is no longer feasible. The failure mode is subtle enough
+that it is worth pinning to the record:
+
+- Closure tuples deliberately mix a *raw function pointer* at slot 0
+  with heap *captures_tuple* at slot 1. Pre-S2.3 the GC used
+  `heap_field_mask` to tell the two apart. Once tuple slots are
+  `Value`s, the raw function pointer wrapped via `Value::from_ptr`
+  leaves its low bit = 0 (aligned text address), so `Value::is_ptr()`
+  reports "pointer" and the GC would dereference a code address —
+  segfault on trivial programs. Removing `heap_field_mask` ahead of
+  codegen tagging raw slots explicitly with `Value::from_int` is
+  therefore premature.
+- For immutable slots, codegen occasionally issues a type-dispatch
+  sequence that reads the header of a value that the compiler knows
+  to be "an int stored in a tuple". Pre-S2.4 that value is raw
+  `0x3` (which the dispatch filters out as non-heap); post-S2.4 the
+  tuple slot holds `Value::from_int(3)` = `0x19`, and `tuple_slot_raw`
+  correctly unwraps it back to `0x3` at extract time. Any new code
+  path that does a direct memory load on `tuple.data` (instead of
+  going through `rt_tuple_get` / `tuple_slot_raw`) would see `0x19`
+  and mis-dispatch. Closing that gap requires codegen to learn about
+  `Value` slots — again an S2.7 concern.
+- The 61-bit `Value::from_int` limit silently truncates f64 bits when
+  a helper like `rt_list_tail_to_tuple_float` smuggles raw f64 bits
+  into an `ELEM_RAW_INT` slot. Fixing that specific helper is
+  tractable, but it confirms the broader rule: every `ELEM_RAW_*`
+  slot becomes an API concern once it is `Value`-backed.
+
+In short: flipping a container's internal storage to `Value` is an
+atomic change with codegen, not a runtime-only refactor. Attempting
+it under a "runtime-only" rubric produces bugs that masquerade as
+GC corruption or type-dispatch SEGVs at module init.
+
+**Resolution.** S2.4 (Dict/Set/Tuple) and S2.5 (Str/Bytes/Class/
+Generator) storage migrations **merge into S2.7** — the same session
+that retypes the `rt_*` extern ABI and switches codegen to inline tag
+arithmetic. Only then can all the pieces (storage, lowering boundary
+conversions, GC `is_ptr()` unification, `heap_field_mask` deletion,
+`rt_tuple_get_int/float/bool` deletion, `TOMBSTONE` → Value, raw
+function pointer tagging) land together without cross-phase
+contradictions. The S2.4 and S2.5 session rows below stand as
+placeholders for the pre-work that has already landed (S2.3) — their
+originally-scoped storage flips are explicitly folded into S2.7.
+
+List storage remains migrated in S2.3 because list ops were already
+funneled through `rt_list_*` runtime functions; no codegen emits a
+direct memory load into `list.data`, so the Value flip was safe
+there.
+
 **Exit criterion**: runtime crate passes all tests. Binary size of
 runtime staticlib stays within +10% of pre-migration (may grow
 slightly from `Value` wrapping, should be negligible after inlining).
@@ -3599,10 +3651,10 @@ audit often uncovers surprise gaps.
 | S2.1 | Tag scheme design + `core-defs/Value` API (§2.1 + §2.2): low-bit tagging constants, `Value` type, constructors, extractors, property tests | Phase 1 merged | Medium | — |
 | S2.2 ✅ (2026-04-24, cc69143) | Runtime Value foundation (§2.3 part 1, amended): add `runtime::value::type_of(Value) -> TypeTagKind` + runtime-side `Value` re-export. `rt_box_*` / `rt_unbox_*` deletion moved to S2.7 (cannot land before codegen stops emitting those symbols — see §2.3 amendment). | S2.1 | Low-Medium | Parallel-safe with nothing (hot path) |
 | S2.3 ✅ (2026-04-24) | Runtime migration: List (§2.3 part 2): `ListObj.data: *mut *mut Obj` → `*mut Value`; 35+ list ops migrated to Value-backed storage with boundary conversion via `store_raw_as_value`/`load_value_as_raw`/`list_slot_raw`; GC list scan now uses `Value::is_ptr()` instead of `elem_tag` branching. `elem_tag` field and `ELEM_*` constants retained for the extern-ABI boundary (deletion follows the S2.7 rule). | S2.2 | Medium-High | — |
-| S2.4 | Runtime migration: Dict, Set, Tuple (§2.3 part 3) | S2.3 | Medium | — |
-| S2.5 | Runtime migration: Str, Bytes, Class instances, Generators (§2.3 part 4): remove `heap_field_mask`, `type_tags` usage | S2.4 | Medium | — |
+| S2.4 ⏸ (2026-04-24, folded into S2.7) | Originally: Runtime migration of Dict/Set/Tuple storage to `Value` (§2.3 part 3). Attempted, rolled back — closure tuples mix a raw function pointer with heap captures, and without simultaneous codegen/GC changes the Value-backed slot trips `Value::is_ptr()` on the function pointer (segfault). See §2.3 Amendment 2. Migration folds into **S2.7** where codegen+storage can flip atomically. | S2.3 | Medium (deferred) | — |
+| S2.5 ⏸ (2026-04-24, folded into S2.7) | Originally: Runtime migration of Str/Bytes/Class instances/Generators to `Value`, delete `heap_field_mask` + generator `type_tags`. Same rollback rationale as S2.4 — `ClassInfo.heap_field_mask` exists for the same mixed-slot reason; deletion belongs with S2.7's codegen tagging. | S2.4 | Medium (deferred) | — |
 | S2.6 | GC migration (§2.4): `mark_object(Value)`, remove heap masks | S2.5 | **HIGH** (critical path) | — |
-| S2.7 | Codegen: Value lowering (§2.5 part 1): MIR ops emit uniform I64 Value, remove `ValueKind` enum. **Also picks up the S2.2-deferred deletions**: `rt_box_int/bool/float`, `rt_unbox_int/bool/float`, `rt_tuple_get_int/float/bool` (ABI retype requires codegen emitter migration — lowering in `box_primitive_if_needed`/`unbox_func_for_type` must stop emitting these before the extern bodies can go). | S2.6 | High | — |
+| S2.7 | Codegen: Value lowering (§2.5 part 1): MIR ops emit uniform I64 Value, remove `ValueKind` enum. **Picks up the full deferred Phase 2 storage + ABI migration** (see §2.3 Amendment 1 & 2): delete `rt_box_int/bool/float`, `rt_unbox_int/bool/float`, `rt_tuple_get_int/float/bool`; flip Dict/Set/Tuple/Str/Bytes/Class/Generator storage to `[Value]`; delete `TupleObj.heap_field_mask`, `ClassInfo.heap_field_mask`, `GeneratorObj.type_tags`; codegen emits `Value::from_int` for raw function pointers and inline tag arithmetic for all primitives. Scope grew from "medium" to "very high" because S2.4 and S2.5 cannot land without it. | S2.6 | **Very High** (split probable) | — |
 | S2.8 | Codegen: arithmetic fast-path inlining (§2.5 part 2): inline tag tests for hot ops based on SSA types | S2.7 | **HIGH** (perf-critical) | — |
 | S2.9 | Pass migration: delete boxing helpers (§2.6): `box_primitive_if_needed`, `promote_to_float_if_needed`, `coerce_to_field_type`, `is_useless_container_ty` | S2.8 | Medium | — |
 | S2.10 | Phase 2 final purge + benchmark acceptance (§2.7): grep verify, run benchmarks, update BASELINE | S2.9 | Low-Medium | — |
@@ -3615,6 +3667,14 @@ audit often uncovers surprise gaps.
 - **S2.8** (arithmetic fast-path): consider splitting: S2.8a =
   int+int fast path; S2.8b = mixed numeric fast paths; S2.8c =
   comparison fast paths.
+- **S2.7** (post-S2.4/S2.5 absorption): must split. Recommended
+  slicing: S2.7a = codegen emits `Value` for primitives + deletes
+  `rt_box_*`/`rt_unbox_*`; S2.7b = Tuple storage flip + `heap_field_mask`
+  delete + raw-function-pointer `Value::from_int` tagging; S2.7c =
+  Dict/Set storage flip + `TOMBSTONE` as `Value`; S2.7d = Str/Bytes/
+  Class/Generator storage flip + `GeneratorObj::type_tags` delete;
+  S2.7e = `rt_tuple_get_int/float/bool` delete. Each sub-session must
+  leave the workspace green; do not merge partial storage flips.
 
 **Combined ok**:
 
