@@ -27,6 +27,16 @@ phase branch may be red under either of the two workflows permitted
 by the amendment to Principle 4. "No partial migrations" refers to
 the end-state landed on master, not to every intra-branch commit.
 
+**Amended 2026-04-24 (S2.7 atomic-campaign carve-out)** — the
+intra-branch red-tolerance above is extended to the S2.7 campaign
+(see [`PHASE2_S2_7_PLAN.md`](PHASE2_S2_7_PLAN.md)). Stages B–F of
+that campaign are explicitly authorized to leave the workspace in a
+non-compiling or failing-test state between commits on the
+`phase-2-s2.7-atomic` branch. The campaign's final commit (Stage G)
+must restore all gates and meet every §2.7 exit criterion. No other
+phase or milestone inherits this relaxation without an explicit
+amendment.
+
 ### 2. No feature flags hiding work-in-progress
 
 pyaot has no deployment pipeline that justifies dual-code-path runtime
@@ -2834,6 +2844,20 @@ cargo test -p pyaot --test runtime --release`) stay green.
 
 ## 2.5 Codegen migration
 
+> **Campaign plan:** the execution of S2.5 is documented in a
+> dedicated multi-session campaign plan —
+> [`PHASE2_S2_7_PLAN.md`](PHASE2_S2_7_PLAN.md). That plan absorbs the
+> rolled-back S2.4/S2.5 container-storage flips, the narrow-S2.6
+> GC finalization, and the codegen work in this §2.5 section into a
+> single 7-stage atomic migration (A–G, 2–3 weeks). Stages B–F are
+> authorized to leave the workspace red between commits; only the
+> final Stage G commit must restore green and pass the perf gates
+> below. Non-Negotiable Principle 1 is explicitly relaxed for this
+> campaign (user-approved 2026-04-24). When reading §2.5 + the S2.7
+> row + §2.3/§2.4 amendment chain, the campaign plan is the
+> operational source of truth; the spec sections below describe the
+> final invariant the campaign must reach.
+
 **Milestone goal**: Cranelift codegen emits uniform `Value`-typed IR.
 
 **Work**:
@@ -3689,7 +3713,7 @@ audit often uncovers surprise gaps.
 | S2.4 ⏸ (2026-04-24, folded into S2.7) | Originally: Runtime migration of Dict/Set/Tuple storage to `Value` (§2.3 part 3). Attempted, rolled back — closure tuples mix a raw function pointer with heap captures, and without simultaneous codegen/GC changes the Value-backed slot trips `Value::is_ptr()` on the function pointer (segfault). See §2.3 Amendment 2. Migration folds into **S2.7** where codegen+storage can flip atomically. | S2.3 | Medium (deferred) | — |
 | S2.5 ⏸ (2026-04-24, folded into S2.7) | Originally: Runtime migration of Str/Bytes/Class instances/Generators to `Value`, delete `heap_field_mask` + generator `type_tags`. Same rollback rationale as S2.4 — `ClassInfo.heap_field_mask` exists for the same mixed-slot reason; deletion belongs with S2.7's codegen tagging. | S2.4 | Medium (deferred) | — |
 | S2.6 ✅ narrow (2026-04-24) | GC migration (§2.4, narrow): `mark_object` signature flipped to `Value`; ~40 call sites inside `gc.rs` wrap raw pointers via `Value::from_ptr`. `heap_field_mask` / `ClassInfo.heap_field_mask` / `GeneratorObj.type_tags` / the address-heuristic filter all stay until S2.7 (see §2.4 amendment). Workspace + GC-stress suites both green. | S2.3 (code); S2.5 folded | Low-Medium | — |
-| S2.7 | Codegen: Value lowering (§2.5 part 1): MIR ops emit uniform I64 Value, remove `ValueKind` enum. **Picks up the full deferred Phase 2 storage + ABI + GC-final migration** (see §2.3 Amendment 1/2 and §2.4 amendment): delete `rt_box_int/bool/float`, `rt_unbox_int/bool/float`, `rt_tuple_get_int/float/bool`; flip Dict/Set/Tuple/Str/Bytes/Class/Generator storage to `[Value]`; delete `TupleObj.heap_field_mask`, `ClassInfo.heap_field_mask`, `GeneratorObj.type_tags`; codegen emits `Value::from_int` for raw function pointers and inline tag arithmetic for all primitives; delete the `gc.rs` address-heuristic filter once every slot self-describes as Value. S2.4, S2.5, and the deleting half of S2.6 all collapse here. | S2.6 (narrow) | **Very High** (split probable) | — |
+| S2.7 📋 campaign | **See [`PHASE2_S2_7_PLAN.md`](PHASE2_S2_7_PLAN.md).** Multi-session atomic migration (7 stages A–G, 2–3 weeks). Absorbs rolled-back S2.4/S2.5 container storage flips, the deleting half of narrow-S2.6 GC work, the full codegen Value lowering, and the extern ABI retype. Non-Negotiable Principle 1 relaxed for this campaign — intermediate stages may leave workspace red; only the final commit restores green. Exit-criteria (perf gates, grep-verified deletions, docs refresh) live in the campaign plan. | S2.6 (narrow) | **Campaign** | — |
 | S2.8 | Codegen: arithmetic fast-path inlining (§2.5 part 2): inline tag tests for hot ops based on SSA types | S2.7 | **HIGH** (perf-critical) | — |
 | S2.9 | Pass migration: delete boxing helpers (§2.6): `box_primitive_if_needed`, `promote_to_float_if_needed`, `coerce_to_field_type`, `is_useless_container_ty` | S2.8 | Medium | — |
 | S2.10 | Phase 2 final purge + benchmark acceptance (§2.7): grep verify, run benchmarks, update BASELINE | S2.9 | Low-Medium | — |
