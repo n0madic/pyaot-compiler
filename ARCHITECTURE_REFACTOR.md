@@ -3597,12 +3597,12 @@ audit often uncovers surprise gaps.
 | ID | Scope | Deps | Complexity | Parallel? |
 |----|-------|------|------------|-----------|
 | S2.1 | Tag scheme design + `core-defs/Value` API (§2.1 + §2.2): low-bit tagging constants, `Value` type, constructors, extractors, property tests | Phase 1 merged | Medium | — |
-| S2.2 | Runtime migration: primitives (§2.3 part 1): Int, Bool, None — `rt_make_*` / `rt_unbox_*` replaced by Value methods | S2.1 | Medium | Parallel-safe with nothing (hot path) |
+| S2.2 ✅ (2026-04-24, cc69143) | Runtime Value foundation (§2.3 part 1, amended): add `runtime::value::type_of(Value) -> TypeTagKind` + runtime-side `Value` re-export. `rt_box_*` / `rt_unbox_*` deletion moved to S2.7 (cannot land before codegen stops emitting those symbols — see §2.3 amendment). | S2.1 | Low-Medium | Parallel-safe with nothing (hot path) |
 | S2.3 | Runtime migration: List + basic list ops (§2.3 part 2): drop `ELEM_RAW_INT` / `ELEM_HEAP_OBJ`, store Value uniformly | S2.2 | Medium-High | — |
 | S2.4 | Runtime migration: Dict, Set, Tuple (§2.3 part 3) | S2.3 | Medium | — |
 | S2.5 | Runtime migration: Str, Bytes, Class instances, Generators (§2.3 part 4): remove `heap_field_mask`, `type_tags` usage | S2.4 | Medium | — |
 | S2.6 | GC migration (§2.4): `mark_object(Value)`, remove heap masks | S2.5 | **HIGH** (critical path) | — |
-| S2.7 | Codegen: Value lowering (§2.5 part 1): MIR ops emit uniform I64 Value, remove `ValueKind` enum | S2.6 | High | — |
+| S2.7 | Codegen: Value lowering (§2.5 part 1): MIR ops emit uniform I64 Value, remove `ValueKind` enum. **Also picks up the S2.2-deferred deletions**: `rt_box_int/bool/float`, `rt_unbox_int/bool/float`, `rt_tuple_get_int/float/bool` (ABI retype requires codegen emitter migration — lowering in `box_primitive_if_needed`/`unbox_func_for_type` must stop emitting these before the extern bodies can go). | S2.6 | High | — |
 | S2.8 | Codegen: arithmetic fast-path inlining (§2.5 part 2): inline tag tests for hot ops based on SSA types | S2.7 | **HIGH** (perf-critical) | — |
 | S2.9 | Pass migration: delete boxing helpers (§2.6): `box_primitive_if_needed`, `promote_to_float_if_needed`, `coerce_to_field_type`, `is_useless_container_ty` | S2.8 | Medium | — |
 | S2.10 | Phase 2 final purge + benchmark acceptance (§2.7): grep verify, run benchmarks, update BASELINE | S2.9 | Low-Medium | — |
