@@ -412,9 +412,7 @@ fn mark_roots(state: &mut GcState) {
 
             for i in 0..nroots {
                 let root_ptr = *roots.add(i);
-                if !root_ptr.is_null() {
-                    mark_object(root_ptr);
-                }
+                mark_object(pyaot_core_defs::Value::from_ptr(root_ptr));
             }
             frame = (*frame).prev;
         }
@@ -444,51 +442,55 @@ fn mark_roots(state: &mut GcState) {
     // would free the underlying `ListObj` and a subsequent `sys.path`
     // read would dereference a dangling pointer.
     for ptr in crate::sys::get_sys_module_roots() {
-        if !ptr.is_null() {
-            mark_object(ptr);
-        }
+        mark_object(pyaot_core_defs::Value::from_ptr(ptr));
     }
 }
 
 /// Mark all heap objects stored in exception state (current/handling exceptions)
 fn mark_exception_pointers() {
     for ptr in crate::exceptions::get_exception_pointers() {
-        if !ptr.is_null() {
-            mark_object(ptr);
-        }
+        mark_object(pyaot_core_defs::Value::from_ptr(ptr));
     }
 }
 
 /// Mark all heap objects stored in global variables
 fn mark_global_pointers() {
     for ptr in get_global_pointers() {
-        if !ptr.is_null() {
-            mark_object(ptr);
-        }
+        mark_object(pyaot_core_defs::Value::from_ptr(ptr));
     }
 }
 
 /// Mark all heap objects stored in class attributes
 fn mark_class_attr_pointers() {
     for ptr in get_class_attr_pointers() {
-        if !ptr.is_null() {
-            mark_object(ptr);
-        }
+        mark_object(pyaot_core_defs::Value::from_ptr(ptr));
     }
 }
 
-/// Mark an object and its children
-fn mark_object(obj: *mut Obj) {
+/// Mark a `Value` and, if it's a heap pointer, recursively mark its children.
+///
+/// Phase 2 S2.6: the GC's canonical entrypoint is now `Value`-typed. An
+/// immediate `Value` (Int / Bool / None) self-describes as non-pointer
+/// via `Value::is_ptr()` and returns immediately. A pointer `Value`
+/// unwraps to `*mut Obj`; the heuristic address filter below survives
+/// from the pre-Value world to guard against garbage bit patterns that
+/// still flow through containers whose storage isn't yet Value-backed
+/// (tuples, dicts, sets, instances, generator locals — all flip in
+/// S2.7 together with codegen tagging raw function pointers).
+fn mark_object(v: pyaot_core_defs::Value) {
     unsafe {
-        // Skip null pointers and obviously-invalid addresses.
-        // Raw int/bool values (e.g., 0x1 for True) can appear in ELEM_HEAP_OBJ
-        // containers due to elem_tag mismatches in *args tuples and closure captures.
-        // Also validates alignment — Obj requires 8-byte alignment, so code pointers
-        // (4-byte aligned) and small integers are safely skipped.
-        //
-        // NOTE: This is a heuristic filter. An i64 value that happens to be >0x1000 and
-        // 8-byte aligned would pass this check and be traced as a pointer. The proper fix
-        // is to ensure elem_tag is always correct so raw values never reach mark_object.
+        if !v.is_ptr() {
+            return;
+        }
+        let obj = v.unwrap_ptr::<Obj>();
+
+        // Heuristic address filter: the tag bit says "pointer", but the
+        // pre-S2.7 storage (tuple.data / dict entries / set entries /
+        // instance fields / generator locals) holds raw `*mut Obj` bits
+        // that may still be garbage (small-int cast, 4-byte-aligned
+        // code pointer, etc.). Reject anything that clearly isn't a
+        // live heap allocation. The proper fix — per-slot Value tagging
+        // — lands in S2.7.
         if obj.is_null()
             || (obj as usize) < 0x1000
             || !(obj as usize).is_multiple_of(std::mem::align_of::<Obj>())
@@ -505,14 +507,12 @@ fn mark_object(obj: *mut Obj) {
         match (*obj).type_tag() {
             TypeTagKind::List => {
                 let list = obj as *mut ListObj;
-                // Phase 2 S2.3: list storage is `[Value]`. Walk each slot and
-                // let `Value::is_ptr()` decide whether to trace — no more
-                // elem_tag branching. Raw Int/Bool immediates self-describe
-                // as non-pointers, so the GC correctly skips them even when
-                // a future "mixed tag" layout lands.
+                // Phase 2 S2.3: list storage is `[Value]`. Walk each slot
+                // and let `mark_object` do the rest — immediates self-
+                // describe as non-pointers via `is_ptr()` and return
+                // immediately, heap pointers recurse as before.
                 let len = (*list).len;
                 let data = (*list).data;
-                // Validate data pointer before accessing
                 if data.is_null() && len > 0 {
                     eprintln!(
                         "FATAL: List heap corruption - null data pointer with len={}",
@@ -521,31 +521,25 @@ fn mark_object(obj: *mut Obj) {
                     std::process::abort();
                 }
                 for i in 0..len {
-                    let slot = *data.add(i);
-                    if slot.is_ptr() {
-                        let elem = slot.unwrap_ptr::<Obj>();
-                        if !elem.is_null() {
-                            mark_object(elem);
-                        }
-                    }
+                    mark_object(*data.add(i));
                 }
             }
             TypeTagKind::Tuple => {
                 let tuple = obj as *mut TupleObj;
                 let mask = (*tuple).heap_field_mask;
-                // Skip if no fields need tracing (ELEM_RAW_INT or mask == 0)
+                // S2.6 narrow scope: tuple storage is still raw `*mut Obj`;
+                // `heap_field_mask` stays until S2.7 flips storage +
+                // codegen together (see §2.3 Amendment 2). Wrap each
+                // raw slot via `Value::from_ptr` before recursing so
+                // `mark_object` can apply its uniform Value-typed API.
                 if mask != 0 {
                     let len = (*tuple).len;
-                    // Cap traversal at 64 fields (bitmask capacity)
                     let trace_count = len.min(64);
                     let data = (*tuple).data.as_ptr();
                     for i in 0..trace_count {
-                        // Only trace fields marked as heap pointers in the bitmask.
                         if mask & (1u64 << i) != 0 {
                             let elem = *data.add(i);
-                            if !elem.is_null() {
-                                mark_object(elem);
-                            }
+                            mark_object(pyaot_core_defs::Value::from_ptr(elem));
                         }
                     }
                 }
@@ -554,7 +548,6 @@ fn mark_object(obj: *mut Obj) {
                 let dict = obj as *mut DictObj;
                 let entries = (*dict).entries;
                 let entries_len = (*dict).entries_len;
-                // Validate entries pointer before accessing
                 if entries.is_null() && entries_len > 0 {
                     eprintln!(
                         "FATAL: Dict heap corruption - null entries pointer with entries_len={}",
@@ -566,11 +559,8 @@ fn mark_object(obj: *mut Obj) {
                     let entry = entries.add(i);
                     let key = (*entry).key;
                     if !key.is_null() {
-                        mark_object(key);
-                        let value = (*entry).value;
-                        if !value.is_null() {
-                            mark_object(value);
-                        }
+                        mark_object(pyaot_core_defs::Value::from_ptr(key));
+                        mark_object(pyaot_core_defs::Value::from_ptr((*entry).value));
                     }
                 }
             }
@@ -578,7 +568,6 @@ fn mark_object(obj: *mut Obj) {
                 let set = obj as *mut SetObj;
                 let capacity = (*set).capacity;
                 let entries = (*set).entries;
-                // Validate entries pointer before accessing
                 if entries.is_null() && capacity > 0 {
                     eprintln!(
                         "FATAL: Set heap corruption - null entries pointer with capacity={}",
@@ -589,26 +578,25 @@ fn mark_object(obj: *mut Obj) {
                 for i in 0..capacity {
                     let entry = entries.add(i);
                     let elem = (*entry).elem;
-                    if !elem.is_null() && elem != TOMBSTONE {
-                        mark_object(elem);
+                    if elem != TOMBSTONE {
+                        mark_object(pyaot_core_defs::Value::from_ptr(elem));
                     }
                 }
             }
             TypeTagKind::Instance => {
                 let instance = obj as *mut InstanceObj;
                 let field_count = (*instance).field_count;
-                // Cap traversal at 64 fields (bitmask capacity) to prevent reading past allocation
                 let trace_count = field_count.min(64);
                 let fields = (*instance).fields.as_ptr();
-                // Only mark fields that are heap objects (pointers), not raw int/float/bool values.
-                // The heap_field_mask tells us which fields are heap types.
+                // Only mark fields that are heap objects (pointers), not raw
+                // int/float/bool values. `ClassInfo.heap_field_mask` tells us
+                // which fields are heap types; stays until S2.7 (see §2.3
+                // Amendment 2).
                 let mask = crate::vtable::get_class_heap_field_mask((*instance).class_id);
                 for i in 0..trace_count {
                     if mask & (1u64 << i) != 0 {
                         let field = *fields.add(i);
-                        if !field.is_null() {
-                            mark_object(field);
-                        }
+                        mark_object(pyaot_core_defs::Value::from_ptr(field));
                     }
                 }
             }
@@ -616,83 +604,64 @@ fn mark_object(obj: *mut Obj) {
                 let iterator = obj as *mut IteratorObj;
                 let kind = IteratorKind::try_from((*iterator).kind);
 
+                // Local helper — keeps the per-variant code terse while
+                // still wrapping each raw field pointer for the
+                // Value-typed mark_object API.
+                let mark_ptr = |p: *mut Obj| mark_object(pyaot_core_defs::Value::from_ptr(p));
+
                 match kind {
                     Ok(IteratorKind::Map) => {
                         let map_iter = obj as *mut MapIterObj;
-                        if !(*map_iter).inner_iter.is_null() {
-                            mark_object((*map_iter).inner_iter);
-                        }
-                        if !(*map_iter).captures.is_null() {
-                            mark_object((*map_iter).captures);
-                        }
+                        mark_ptr((*map_iter).inner_iter);
+                        mark_ptr((*map_iter).captures);
                     }
                     Ok(IteratorKind::Filter) => {
                         let filter_iter = obj as *mut FilterIterObj;
-                        if !(*filter_iter).inner_iter.is_null() {
-                            mark_object((*filter_iter).inner_iter);
-                        }
-                        if !(*filter_iter).captures.is_null() {
-                            mark_object((*filter_iter).captures);
-                        }
+                        mark_ptr((*filter_iter).inner_iter);
+                        mark_ptr((*filter_iter).captures);
                     }
                     Ok(IteratorKind::Zip) => {
                         let zip_iter = obj as *mut ZipIterObj;
-                        if !(*zip_iter).iter1.is_null() {
-                            mark_object((*zip_iter).iter1);
-                        }
-                        if !(*zip_iter).iter2.is_null() {
-                            mark_object((*zip_iter).iter2);
-                        }
+                        mark_ptr((*zip_iter).iter1);
+                        mark_ptr((*zip_iter).iter2);
                     }
                     Ok(IteratorKind::Chain) => {
                         let chain_iter = obj as *mut ChainIterObj;
-                        if !(*chain_iter).iters.is_null() {
-                            mark_object((*chain_iter).iters);
-                        }
+                        mark_ptr((*chain_iter).iters);
                     }
                     Ok(IteratorKind::ISlice) => {
                         let islice_iter = obj as *mut ISliceIterObj;
-                        if !(*islice_iter).inner_iter.is_null() {
-                            mark_object((*islice_iter).inner_iter);
-                        }
+                        mark_ptr((*islice_iter).inner_iter);
                     }
                     Ok(IteratorKind::Zip3) => {
                         let zip3_iter = obj as *mut Zip3IterObj;
-                        if !(*zip3_iter).iter1.is_null() {
-                            mark_object((*zip3_iter).iter1);
-                        }
-                        if !(*zip3_iter).iter2.is_null() {
-                            mark_object((*zip3_iter).iter2);
-                        }
-                        if !(*zip3_iter).iter3.is_null() {
-                            mark_object((*zip3_iter).iter3);
-                        }
+                        mark_ptr((*zip3_iter).iter1);
+                        mark_ptr((*zip3_iter).iter2);
+                        mark_ptr((*zip3_iter).iter3);
                     }
                     Ok(IteratorKind::ZipN) => {
                         let zipn_iter = obj as *mut ZipNIterObj;
-                        // iters is a ListObj containing the iterators
-                        if !(*zipn_iter).iters.is_null() {
-                            mark_object((*zipn_iter).iters);
-                        }
+                        // iters is a ListObj containing the iterators.
+                        mark_ptr((*zipn_iter).iters);
                     }
                     _ => {
-                        // Standard iterators (List, Tuple, Dict, String, Range, Set, Bytes, Enumerate)
-                        let source = (*iterator).source;
-                        if !source.is_null() {
-                            mark_object(source);
-                        }
+                        // Standard iterators (List/Tuple/Dict/String/Range/
+                        // Set/Bytes/Enumerate) keep their source in one slot.
+                        mark_ptr((*iterator).source);
                     }
                 }
             }
             TypeTagKind::Cell => {
                 let cell = obj as *mut CellObj;
                 if let Some(ptr) = cell_get_ptr_for_gc(cell) {
-                    mark_object(ptr);
+                    mark_object(pyaot_core_defs::Value::from_ptr(ptr));
                 }
             }
             TypeTagKind::Generator => {
-                // Generators store local variables with precise type information
-                // Use type_tags array for precise GC tracking
+                // Generators store local variables with precise type
+                // information via `type_tags` (retained until S2.7). Each
+                // heap-pointer local is wrapped as Value before the
+                // recursive mark.
                 use crate::object::LOCAL_TYPE_PTR;
 
                 let gen = obj as *mut GeneratorObj;
@@ -700,117 +669,59 @@ fn mark_object(obj: *mut Obj) {
                 let locals = (*gen).locals.as_ptr();
                 let type_tags = (*gen).type_tags;
 
-                // Only trace locals that are marked as heap pointers
                 if !type_tags.is_null() {
                     for i in 0..num_locals as usize {
-                        let tag = *type_tags.add(i);
-                        if tag == LOCAL_TYPE_PTR {
-                            // This local is a heap pointer, trace it
+                        if *type_tags.add(i) == LOCAL_TYPE_PTR {
                             let ptr = *locals.add(i) as *mut Obj;
-                            if !ptr.is_null() {
-                                mark_object(ptr);
-                            }
+                            mark_object(pyaot_core_defs::Value::from_ptr(ptr));
                         }
-                        // Other tags (LOCAL_TYPE_RAW_INT, LOCAL_TYPE_RAW_FLOAT, LOCAL_TYPE_RAW_BOOL)
-                        // are raw values, not pointers - skip them
+                        // Other tags (LOCAL_TYPE_RAW_INT / RAW_FLOAT /
+                        // RAW_BOOL) are raw values — skip.
                     }
                 }
 
-                // Trace sent_value only if its type tag indicates a heap pointer.
-                // The sent_value_tag is set by the runtime when send() stores a value.
+                // Trace sent_value only if its type tag says heap pointer.
                 if (*gen).sent_value_tag == LOCAL_TYPE_PTR {
                     let sent_ptr = (*gen).sent_value as *mut Obj;
-                    if !sent_ptr.is_null() {
-                        mark_object(sent_ptr);
-                    }
+                    mark_object(pyaot_core_defs::Value::from_ptr(sent_ptr));
                 }
             }
             TypeTagKind::File => {
-                // File objects have a name field pointing to a StrObj
                 let file = obj as *mut FileObj;
-                let name = (*file).name;
-                if !name.is_null() {
-                    mark_object(name);
-                }
+                mark_object(pyaot_core_defs::Value::from_ptr((*file).name));
             }
             TypeTagKind::Match => {
-                // Match objects have groups (tuple) and original (string) fields
                 let match_obj = obj as *mut MatchObj;
-                let groups = (*match_obj).groups;
-                if !groups.is_null() {
-                    mark_object(groups);
-                }
-                let original = (*match_obj).original;
-                if !original.is_null() {
-                    mark_object(original);
-                }
+                mark_object(pyaot_core_defs::Value::from_ptr((*match_obj).groups));
+                mark_object(pyaot_core_defs::Value::from_ptr((*match_obj).original));
             }
             TypeTagKind::CompletedProcess => {
-                // CompletedProcess objects have args, stdout, and stderr fields
                 let cp_obj = obj as *mut CompletedProcessObj;
-                let args = (*cp_obj).args;
-                if !args.is_null() {
-                    mark_object(args);
-                }
-                let stdout = (*cp_obj).stdout;
-                if !stdout.is_null() {
-                    mark_object(stdout);
-                }
-                let stderr = (*cp_obj).stderr;
-                if !stderr.is_null() {
-                    mark_object(stderr);
-                }
+                mark_object(pyaot_core_defs::Value::from_ptr((*cp_obj).args));
+                mark_object(pyaot_core_defs::Value::from_ptr((*cp_obj).stdout));
+                mark_object(pyaot_core_defs::Value::from_ptr((*cp_obj).stderr));
             }
             TypeTagKind::ParseResult => {
-                // ParseResult objects have scheme, netloc, path, params, query, fragment fields
                 let pr_obj = obj as *mut crate::object::ParseResultObj;
-                if !(*pr_obj).scheme.is_null() {
-                    mark_object((*pr_obj).scheme);
-                }
-                if !(*pr_obj).netloc.is_null() {
-                    mark_object((*pr_obj).netloc);
-                }
-                if !(*pr_obj).path.is_null() {
-                    mark_object((*pr_obj).path);
-                }
-                if !(*pr_obj).params.is_null() {
-                    mark_object((*pr_obj).params);
-                }
-                if !(*pr_obj).query.is_null() {
-                    mark_object((*pr_obj).query);
-                }
-                if !(*pr_obj).fragment.is_null() {
-                    mark_object((*pr_obj).fragment);
-                }
+                mark_object(pyaot_core_defs::Value::from_ptr((*pr_obj).scheme));
+                mark_object(pyaot_core_defs::Value::from_ptr((*pr_obj).netloc));
+                mark_object(pyaot_core_defs::Value::from_ptr((*pr_obj).path));
+                mark_object(pyaot_core_defs::Value::from_ptr((*pr_obj).params));
+                mark_object(pyaot_core_defs::Value::from_ptr((*pr_obj).query));
+                mark_object(pyaot_core_defs::Value::from_ptr((*pr_obj).fragment));
             }
             TypeTagKind::HttpResponse => {
-                // HttpResponse objects have url, headers, and body fields
                 let hr_obj = obj as *mut crate::object::HttpResponseObj;
-                if !(*hr_obj).url.is_null() {
-                    mark_object((*hr_obj).url);
-                }
-                if !(*hr_obj).headers.is_null() {
-                    mark_object((*hr_obj).headers);
-                }
-                if !(*hr_obj).body.is_null() {
-                    mark_object((*hr_obj).body);
-                }
+                mark_object(pyaot_core_defs::Value::from_ptr((*hr_obj).url));
+                mark_object(pyaot_core_defs::Value::from_ptr((*hr_obj).headers));
+                mark_object(pyaot_core_defs::Value::from_ptr((*hr_obj).body));
             }
             TypeTagKind::Request => {
-                // Request objects have url, data, headers, and method fields
                 let req_obj = obj as *mut crate::object::RequestObj;
-                if !(*req_obj).url.is_null() {
-                    mark_object((*req_obj).url);
-                }
-                if !(*req_obj).data.is_null() {
-                    mark_object((*req_obj).data);
-                }
-                if !(*req_obj).headers.is_null() {
-                    mark_object((*req_obj).headers);
-                }
-                if !(*req_obj).method.is_null() {
-                    mark_object((*req_obj).method);
-                }
+                mark_object(pyaot_core_defs::Value::from_ptr((*req_obj).url));
+                mark_object(pyaot_core_defs::Value::from_ptr((*req_obj).data));
+                mark_object(pyaot_core_defs::Value::from_ptr((*req_obj).headers));
+                mark_object(pyaot_core_defs::Value::from_ptr((*req_obj).method));
             }
             // DefaultDict and Counter use the same dict layout — mark entries
             TypeTagKind::DefaultDict | TypeTagKind::Counter => {
@@ -828,11 +739,8 @@ fn mark_object(obj: *mut Obj) {
                     let entry = entries.add(i);
                     let key = (*entry).key;
                     if !key.is_null() {
-                        mark_object(key);
-                        let value = (*entry).value;
-                        if !value.is_null() {
-                            mark_object(value);
-                        }
+                        mark_object(pyaot_core_defs::Value::from_ptr(key));
+                        mark_object(pyaot_core_defs::Value::from_ptr((*entry).value));
                     }
                 }
             }
@@ -848,9 +756,7 @@ fn mark_object(obj: *mut Obj) {
                         for i in 0..len {
                             let idx = (head + i) % cap;
                             let elem = *data.add(idx);
-                            if !elem.is_null() {
-                                mark_object(elem);
-                            }
+                            mark_object(pyaot_core_defs::Value::from_ptr(elem));
                         }
                     }
                 }

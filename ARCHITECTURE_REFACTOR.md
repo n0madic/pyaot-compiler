@@ -2793,9 +2793,44 @@ not through type tags or heap masks.
 **Non-negotiable**: the GC has exactly one `is_pointer` predicate,
 used uniformly. Removing this code should shrink `gc.rs` by 30%+.
 
-**Exit criterion**: GC tests pass. Stress test (1M allocations with
-mixed types) runs correctly. No `heap_mask` reference anywhere in
-`crates/runtime`.
+**Amendment (2026-04-24, narrow S2.6 landing):** the §2.4 spec
+assumes every container's storage is already Value-backed. Because
+§2.3 Amendment 2 folded the Dict/Set/Tuple/Str/Bytes/Class/Generator
+storage flips into S2.7 (codegen must tag raw function pointers as
+`Value::from_int` before `heap_field_mask`/`type_tags` can be
+deleted), the parts of §2.4 that depend on that storage cannot land
+here. S2.6 therefore ships a **narrow signature flip only**:
+
+- `gc.rs::mark_object` is now `Value`-typed: it checks `is_ptr()`
+  first, unwraps to `*mut Obj` for the heap path, and still applies
+  the address-heuristic filter (< 0x1000, non-8-aligned, null) as a
+  belt-and-braces guard while raw-pointer storage survives in the
+  five non-list containers.
+- Every caller inside `gc.rs` — shadow-stack walk, global / class-attr
+  / sys / exception root scanners, and every type-match arm — wraps
+  raw pointers via `Value::from_ptr(p)` before recursing.
+- List arm (S2.3) now feeds slot `Value`s directly without the extra
+  `is_ptr`/`unwrap_ptr`/null-check dance: `mark_object` handles all
+  three internally.
+- `heap_field_mask` (TupleObj + `ClassInfo` via vtable),
+  `GeneratorObj::type_tags`, and the `elem_tag == 0` check on Deque
+  **remain in place** — their deletion rides with S2.7 together with
+  the storage flip.
+
+The "shrink gc.rs by 30%+" and "no heap_mask reference anywhere in
+`crates/runtime`" targets therefore move to **S2.7**. The narrow
+flip still earns its keep as prep work: S2.7 can feed Values
+directly from the newly-Value-backed containers without allocating
+another per-call-site `Value::from_ptr` wrap.
+
+**Exit criterion (narrow S2.6)**: `mark_object(Value)` signature
+lands; all gc.rs callers wrap through `Value::from_ptr`; workspace
+test suite + GC stress-test build (`RUSTFLAGS="--cfg gc_stress_test"
+cargo test -p pyaot --test runtime --release`) stay green.
+
+**Exit criterion (deferred to S2.7)**: delete `heap_field_mask`,
+`type_tags`, and the address-heuristic filter; replace with
+`Value::is_ptr()` uniformly; shrink `gc.rs` by 30%+.
 
 ## 2.5 Codegen migration
 
@@ -3653,8 +3688,8 @@ audit often uncovers surprise gaps.
 | S2.3 ✅ (2026-04-24) | Runtime migration: List (§2.3 part 2): `ListObj.data: *mut *mut Obj` → `*mut Value`; 35+ list ops migrated to Value-backed storage with boundary conversion via `store_raw_as_value`/`load_value_as_raw`/`list_slot_raw`; GC list scan now uses `Value::is_ptr()` instead of `elem_tag` branching. `elem_tag` field and `ELEM_*` constants retained for the extern-ABI boundary (deletion follows the S2.7 rule). | S2.2 | Medium-High | — |
 | S2.4 ⏸ (2026-04-24, folded into S2.7) | Originally: Runtime migration of Dict/Set/Tuple storage to `Value` (§2.3 part 3). Attempted, rolled back — closure tuples mix a raw function pointer with heap captures, and without simultaneous codegen/GC changes the Value-backed slot trips `Value::is_ptr()` on the function pointer (segfault). See §2.3 Amendment 2. Migration folds into **S2.7** where codegen+storage can flip atomically. | S2.3 | Medium (deferred) | — |
 | S2.5 ⏸ (2026-04-24, folded into S2.7) | Originally: Runtime migration of Str/Bytes/Class instances/Generators to `Value`, delete `heap_field_mask` + generator `type_tags`. Same rollback rationale as S2.4 — `ClassInfo.heap_field_mask` exists for the same mixed-slot reason; deletion belongs with S2.7's codegen tagging. | S2.4 | Medium (deferred) | — |
-| S2.6 | GC migration (§2.4): `mark_object(Value)`, remove heap masks | S2.5 | **HIGH** (critical path) | — |
-| S2.7 | Codegen: Value lowering (§2.5 part 1): MIR ops emit uniform I64 Value, remove `ValueKind` enum. **Picks up the full deferred Phase 2 storage + ABI migration** (see §2.3 Amendment 1 & 2): delete `rt_box_int/bool/float`, `rt_unbox_int/bool/float`, `rt_tuple_get_int/float/bool`; flip Dict/Set/Tuple/Str/Bytes/Class/Generator storage to `[Value]`; delete `TupleObj.heap_field_mask`, `ClassInfo.heap_field_mask`, `GeneratorObj.type_tags`; codegen emits `Value::from_int` for raw function pointers and inline tag arithmetic for all primitives. Scope grew from "medium" to "very high" because S2.4 and S2.5 cannot land without it. | S2.6 | **Very High** (split probable) | — |
+| S2.6 ✅ narrow (2026-04-24) | GC migration (§2.4, narrow): `mark_object` signature flipped to `Value`; ~40 call sites inside `gc.rs` wrap raw pointers via `Value::from_ptr`. `heap_field_mask` / `ClassInfo.heap_field_mask` / `GeneratorObj.type_tags` / the address-heuristic filter all stay until S2.7 (see §2.4 amendment). Workspace + GC-stress suites both green. | S2.3 (code); S2.5 folded | Low-Medium | — |
+| S2.7 | Codegen: Value lowering (§2.5 part 1): MIR ops emit uniform I64 Value, remove `ValueKind` enum. **Picks up the full deferred Phase 2 storage + ABI + GC-final migration** (see §2.3 Amendment 1/2 and §2.4 amendment): delete `rt_box_int/bool/float`, `rt_unbox_int/bool/float`, `rt_tuple_get_int/float/bool`; flip Dict/Set/Tuple/Str/Bytes/Class/Generator storage to `[Value]`; delete `TupleObj.heap_field_mask`, `ClassInfo.heap_field_mask`, `GeneratorObj.type_tags`; codegen emits `Value::from_int` for raw function pointers and inline tag arithmetic for all primitives; delete the `gc.rs` address-heuristic filter once every slot self-describes as Value. S2.4, S2.5, and the deleting half of S2.6 all collapse here. | S2.6 (narrow) | **Very High** (split probable) | — |
 | S2.8 | Codegen: arithmetic fast-path inlining (§2.5 part 2): inline tag tests for hot ops based on SSA types | S2.7 | **HIGH** (perf-critical) | — |
 | S2.9 | Pass migration: delete boxing helpers (§2.6): `box_primitive_if_needed`, `promote_to_float_if_needed`, `coerce_to_field_type`, `is_useless_container_ty` | S2.8 | Medium | — |
 | S2.10 | Phase 2 final purge + benchmark acceptance (§2.7): grep verify, run benchmarks, update BASELINE | S2.9 | Low-Medium | — |
