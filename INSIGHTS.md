@@ -4,6 +4,28 @@ Non-obvious insights, gotchas, and hard-won knowledge about the Python AOT Compi
 
 ---
 
+## Tagged Value Encoding (Phase 2 foundation, S2.1)
+
+`core-defs::Value(pub u64)` is the single runtime word. Low three bits carry the tag; the rest carries the payload:
+
+| Low 3 bits | Category | Payload |
+|------------|----------|---------|
+| `000` | Pointer | full 64-bit address (heap is 8-byte aligned, so low bits are naturally zero) |
+| `001` | Int     | bits 3..63, 61-bit two's-complement signed |
+| `011` | Bool    | bit 3 (0 or 1) |
+| `101` | None    | constant `0b101`; the payload bits are unused |
+| `111` | Reserved | kept aside for a future immediate category |
+
+**Int range is ±2^60, not ±2^63.** `INT_MIN`/`INT_MAX` in `core-defs::tag` bound what `Value::from_int` accepts. Debug builds panic on overflow; release silently truncates, matching the project's explicit "no arbitrary-precision int" non-goal. Arithmetic overflow semantics are out of S2.1 scope; future codegen may add explicit saturating/wrapping ops.
+
+**`primitive_type` vs. full `runtime_type` are in different crates.** `core-defs` forbids `unsafe_code`, so it cannot dereference `ObjHeader`. `Value::primitive_type() -> Option<TypeTagKind>` returns `Some` for Int/Bool/None and `None` for pointers. The runtime crate will expose `type_of(Value) -> TypeTagKind` in S2.2 that reads the header for the pointer case. If you want "what type is this really?" during migration, call the runtime helper — do not try to lift `primitive_type` into a total function.
+
+**`from_ptr`/`unwrap_ptr` are generic over pointee.** The spec sketch in `ARCHITECTURE_REFACTOR.md` §2.2 shows `*mut Obj`, but `Obj` lives in the runtime crate and naming it in `core-defs` would close a circular dependency. Use `Value::from_ptr::<Obj>(p)` and `v.unwrap_ptr::<Obj>()` at runtime call sites; pointer tagging is identical regardless of pointee type.
+
+**`Value(0)` is classified as a pointer**, not as `None`. None has its own tag (`0b101`). If a slot is legitimately "no value yet", use `Value::NONE`; treating the zero word as null-pointer is fine for GC trace boundaries but don't conflate the two.
+
+**Debug-only `#[should_panic]` tests don't run under `--release`.** The workspace release profile sets `panic = "abort"`, which turns an expected panic into an abort (test fails). The overflow/wrong-tag tests in `core-defs/src/value.rs` are gated on `cfg(debug_assertions)` for this reason. Any new `#[should_panic]` assertion that rests on `debug_assert!` needs the same gate.
+
 ## setjmp Must Be Called Directly From Cranelift Code
 
 `setjmp`/`longjmp` exception handling requires that `setjmp` is called directly from the function whose context should be saved. **Never wrap `setjmp` in a Rust function** — after the wrapper returns, `longjmp` would try to restore a dead stack frame, causing SIGILL. In release mode this accidentally works because LTO inlines the wrapper, but in debug mode the wrapper's frame is separate and gets destroyed. The codegen (`codegen-cranelift/src/exceptions.rs`) imports `setjmp` directly and computes the jmp_buf address as `frame_ptr + 8` (offset of `jmp_buf` in `ExceptionFrame`).

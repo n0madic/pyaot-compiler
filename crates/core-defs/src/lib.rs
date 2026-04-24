@@ -8,6 +8,7 @@
 //!
 //! - [`BuiltinExceptionKind`] - Enum of all built-in exception types (0-13)
 //! - [`TypeTagKind`] - Enum of all runtime type tags (0-15)
+//! - [`Value`] and [`tag`] - Phase 2 universal tagged value representation
 //!
 //! # Single Source of Truth Pattern
 //!
@@ -22,7 +23,9 @@ pub mod elem_tags;
 pub mod exceptions;
 pub mod layout;
 pub mod runtime_func_def;
+pub mod tag;
 pub mod type_tags;
+pub mod value;
 
 pub use exceptions::{
     exception_name_to_tag, exception_tag_to_name, is_builtin_exception_name, BuiltinException,
@@ -37,3 +40,9 @@ pub use builtins::{BuiltinFunctionKind, BUILTIN_FUNCTION_COUNT};
 pub use elem_tags::{ELEM_HEAP_OBJ, ELEM_RAW_BOOL, ELEM_RAW_INT};
 
 pub use runtime_func_def::{ParamType, ReturnType, RuntimeFuncDef};
+
+pub use tag::{
+    int_fits, BOOL_SHIFT, BOOL_TAG, INT_MAX, INT_MIN, INT_SHIFT, INT_TAG, NONE_TAG, PTR_TAG,
+    RESERVED_TAG, TAG_MASK,
+};
+pub use value::Value;

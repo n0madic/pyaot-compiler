@@ -2636,6 +2636,27 @@ possible.
 **Non-negotiable**: all runtime code uses `Value` not `i64`, `*mut Obj`,
 or `f64` directly. `Value` is the sole currency.
 
+**Amendment (2026-04-24, landed in S2.1):** the sketch above shows
+`runtime_type(self) -> TypeTagKind` as a method on `Value`. As
+implemented, this splits across two crates to honour
+`#![forbid(unsafe_code)]` on the `core-defs` leaf:
+
+- `Value::primitive_type(self) -> Option<TypeTagKind>` lives in
+  `core-defs::value` — `Some(Int/Bool/None)` for immediates, `None` for
+  pointers (which need a dereference of `ObjHeader`).
+- `runtime::type_of(v: Value) -> TypeTagKind` lands in the runtime
+  crate in S2.2 — reads the header for the pointer case, delegates to
+  `primitive_type` otherwise.
+
+`Value::from_ptr` and `unwrap_ptr` are likewise generic
+(`from_ptr<T>(*mut T)`, `unwrap_ptr<T>() -> *mut T`) instead of
+hard-coding `*mut Obj`. `Obj` lives in the runtime crate, so naming it
+in `core-defs` would create a circular dependency; the generic form
+keeps `core-defs` a leaf while callers retain typed pointers at use
+sites. The tuple field stays `pub u64` so Phase 2.5/2.8 codegen can
+emit raw-bit ops without a method-call round-trip. No change to exit
+criteria.
+
 **Exit criterion**: `Value` type defined, exhaustive tests for every
 constructor/extractor, compile-time assertions on encoding.
 
