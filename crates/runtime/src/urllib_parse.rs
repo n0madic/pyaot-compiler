@@ -521,7 +521,7 @@ pub extern "C" fn rt_parse_qs(query: *mut Obj) -> *mut Obj {
                 let list = rt_make_list(1, crate::object::ELEM_HEAP_OBJ);
                 let list_obj = list as *mut ListObj;
                 (*list_obj).len = 1;
-                *(*list_obj).data = roots[2];
+                *(*list_obj).data = pyaot_core_defs::Value::from_ptr(roots[2]);
 
                 rt_dict_set(roots[0], roots[1], list);
             } else {

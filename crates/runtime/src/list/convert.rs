@@ -1,8 +1,10 @@
 //! List conversion operations: create lists from other types
 
 use super::core::{rt_list_push, rt_make_list};
+use super::{load_value_as_raw, store_raw_as_value};
 use crate::gc::{gc_pop, gc_push, ShadowFrame};
 use crate::object::{ListObj, Obj, StrObj, TupleObj, ELEM_HEAP_OBJ, ELEM_RAW_INT};
+use pyaot_core_defs::Value;
 
 /// Create a list from a tuple
 /// Returns: pointer to new ListObj
@@ -34,11 +36,15 @@ pub extern "C" fn rt_list_from_tuple(tuple: *mut Obj) -> *mut Obj {
         let list_obj = list as *mut ListObj;
 
         if len > 0 {
+            // Tuple data is still `*mut *mut Obj` (tuple migration is S2.4).
+            // Convert each tuple slot to a tagged `Value` before writing into
+            // the list's `[Value]` storage.
             let src_data = (*tuple_obj).data.as_ptr();
             let dst_data = (*list_obj).data;
 
             for i in 0..len {
-                *dst_data.add(i) = *src_data.add(i);
+                let raw = *src_data.add(i);
+                *dst_data.add(i) = store_raw_as_value(raw, elem_tag);
             }
             (*list_obj).len = len;
         }
@@ -85,7 +91,9 @@ pub extern "C" fn rt_list_from_str(str_obj: *mut Obj) -> *mut Obj {
             let char_str = rt_make_str(ch, 1);
             // Re-derive list_obj through the rooted list pointer (non-moving GC)
             let list_obj = roots[1] as *mut ListObj;
-            (*list_obj).data.add(i).write(char_str);
+            // List was created with ELEM_HEAP_OBJ, so each slot is a
+            // `Value::from_ptr(*mut StrObj)`.
+            (*list_obj).data.add(i).write(Value::from_ptr(char_str));
             // Update len immediately so GC sees this element as live
             (*list_obj).len = i + 1;
         }
@@ -131,7 +139,9 @@ pub extern "C" fn rt_list_from_range(start: i64, stop: i64, step: i64) -> *mut O
 
         let mut current = start;
         for i in 0..len {
-            *(*list_obj).data.add(i) = current as *mut Obj;
+            // ELEM_RAW_INT list slots are tagged immediates — `Value::from_int`
+            // is the canonical constructor.
+            *(*list_obj).data.add(i) = Value::from_int(current);
             current = match current.checked_add(step) {
                 Some(v) => v,
                 // Overflow means we've exceeded i64 range; stop iteration
@@ -241,11 +251,13 @@ pub extern "C" fn rt_list_tail_to_tuple(list: *mut Obj, start: i64) -> *mut Obj 
 
         let list_obj = list as *mut ListObj;
 
-        // Copy elements from list[start..] to tuple
+        // Copy elements from list[start..] to tuple. Convert each `Value`
+        // back to the raw ABI form that `rt_tuple_set` still expects
+        // (tuple migration is S2.4).
         if tail_len > 0 {
             let src_data = (*list_obj).data;
             for i in 0..tail_len {
-                let elem = *src_data.add((start_idx + i) as usize);
+                let elem = load_value_as_raw(*src_data.add((start_idx + i) as usize), elem_tag);
                 rt_tuple_set(tuple, i, elem);
             }
         }
@@ -292,12 +304,15 @@ pub extern "C" fn rt_list_tail_to_tuple_float(list: *mut Obj, start: i64) -> *mu
 
         let list_obj = list as *mut ListObj;
 
-        // Copy and unbox each float element
+        // Copy and unbox each float element. Float list slots are
+        // ELEM_HEAP_OBJ (tagged `*mut FloatObj`); extract the pointer via
+        // `load_value_as_raw`, then unbox to raw f64 bits.
+        let src_elem_tag = (*list_obj).elem_tag;
         if tail_len > 0 {
             let src_data = (*list_obj).data;
             for i in 0..tail_len {
-                let boxed_float = *src_data.add((start_idx + i) as usize);
-                // Unbox the float to get raw f64
+                let boxed_float =
+                    load_value_as_raw(*src_data.add((start_idx + i) as usize), src_elem_tag);
                 let raw_float = rt_unbox_float(boxed_float);
                 // Store raw f64 bits as pointer-sized value
                 let raw_bits = raw_float.to_bits() as i64;
@@ -346,12 +361,15 @@ pub extern "C" fn rt_list_tail_to_tuple_bool(list: *mut Obj, start: i64) -> *mut
 
         let list_obj = list as *mut ListObj;
 
-        // Copy and unbox each bool element
+        // Copy and unbox each bool element. Same pattern as the float
+        // variant: extract the heap pointer from each `Value` slot, then
+        // unbox to raw i8.
+        let src_elem_tag = (*list_obj).elem_tag;
         if tail_len > 0 {
             let src_data = (*list_obj).data;
             for i in 0..tail_len {
-                let boxed_bool = *src_data.add((start_idx + i) as usize);
-                // Unbox the bool to get raw i8
+                let boxed_bool =
+                    load_value_as_raw(*src_data.add((start_idx + i) as usize), src_elem_tag);
                 let raw_bool = rt_unbox_bool(boxed_bool);
                 // Store raw i8 as pointer-sized value
                 rt_tuple_set(tuple, i, raw_bool as *mut Obj);

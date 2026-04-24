@@ -51,14 +51,13 @@ pub(super) unsafe fn obj_to_ascii_string(obj: *mut Obj) -> String {
         TypeTagKind::List => {
             let list = obj as *mut ListObj;
             let len = (*list).len;
-            let data = (*list).data;
 
             let mut s = String::from("[");
             for i in 0..len {
                 if i > 0 {
                     s.push_str(", ");
                 }
-                let elem = *data.add(i);
+                let elem = crate::list::list_slot_raw(list, i);
                 s.push_str(&obj_to_ascii_string(elem));
             }
             s.push(']');

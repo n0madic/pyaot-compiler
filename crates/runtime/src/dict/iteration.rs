@@ -47,9 +47,9 @@ pub extern "C" fn rt_dict_keys(dict: *mut Obj, elem_tag: u8) -> *mut Obj {
             if !key.is_null() {
                 if elem_tag == ELEM_RAW_INT {
                     let raw_val = crate::boxing::rt_unbox_int(key);
-                    *(*list_obj).data.add(idx) = raw_val as *mut Obj;
+                    *(*list_obj).data.add(idx) = pyaot_core_defs::Value::from_int(raw_val);
                 } else {
-                    *(*list_obj).data.add(idx) = key;
+                    *(*list_obj).data.add(idx) = pyaot_core_defs::Value::from_ptr(key);
                 }
                 idx += 1;
             }
@@ -103,9 +103,9 @@ pub extern "C" fn rt_dict_values(dict: *mut Obj, elem_tag: u8) -> *mut Obj {
                 let value = (*entry).value;
                 if elem_tag == ELEM_RAW_INT {
                     let raw_val = crate::boxing::rt_unbox_int(value);
-                    *(*list_obj).data.add(idx) = raw_val as *mut Obj;
+                    *(*list_obj).data.add(idx) = pyaot_core_defs::Value::from_int(raw_val);
                 } else {
-                    *(*list_obj).data.add(idx) = value;
+                    *(*list_obj).data.add(idx) = pyaot_core_defs::Value::from_ptr(value);
                 }
                 idx += 1;
             }

@@ -97,7 +97,7 @@ pub extern "C" fn rt_os_path_join(parts: *mut Obj) -> *mut Obj {
             return make_str_from_rust("");
         }
 
-        let list_obj = parts as *const ListObj;
+        let list_obj = parts as *mut ListObj;
         let len = (*list_obj).len;
 
         if len == 0 {
@@ -109,7 +109,7 @@ pub extern "C" fn rt_os_path_join(parts: *mut Obj) -> *mut Obj {
 
         // Join each component
         for i in 0..len {
-            let elem = *(*list_obj).data.add(i);
+            let elem = crate::list::list_slot_raw(list_obj, i);
             if let Some(s) = crate::utils::extract_str_checked(elem) {
                 path.push(&s);
             }

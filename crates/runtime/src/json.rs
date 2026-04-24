@@ -72,12 +72,12 @@ unsafe fn obj_to_json_value(obj: *mut Obj) -> Value {
             Value::String(s)
         }
         TypeTagKind::List => {
-            let list_obj = obj as *const ListObj;
+            let list_obj = obj as *mut ListObj;
             let len = (*list_obj).len;
             let elem_tag = (*list_obj).elem_tag;
             let mut arr = Vec::with_capacity(len);
             for i in 0..len {
-                let elem = *(*list_obj).data.add(i);
+                let elem = crate::list::list_slot_raw(list_obj, i);
                 arr.push(elem_to_json_value(elem, elem_tag));
             }
             Value::Array(arr)

@@ -275,9 +275,9 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
                 gc_push(&mut frame);
                 memo.insert(obj_addr, roots[0]);
 
-                let orig_data = (*(obj as *mut ListObj)).data;
+                let orig_list = obj as *mut ListObj;
                 for i in 0..len {
-                    let elem = *orig_data.add(i);
+                    let elem = crate::list::list_slot_raw(orig_list, i);
                     let new_elem = deep_copy_recursive(elem, memo);
                     crate::list::rt_list_push(roots[0], new_elem);
                     memo.insert(obj_addr, roots[0]);

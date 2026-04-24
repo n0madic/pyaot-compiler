@@ -485,7 +485,7 @@ pub extern "C" fn rt_dict_fromkeys(keys_list: *mut Obj, value: *mut Obj) -> *mut
 
         for i in 0..len as usize {
             let list_obj = roots[1] as *mut ListObj;
-            let key = *(*list_obj).data.add(i);
+            let key = crate::list::list_slot_raw(list_obj, i);
             // When no value is supplied, Python uses None as the default.
             // Storing null would make rt_dict_get indistinguishable from a
             // missing key, so we store the None singleton instead.
@@ -586,7 +586,8 @@ pub extern "C" fn rt_dict_from_pairs(pairs: *mut Obj) -> *mut Obj {
         let len = (*(roots[1] as *mut ListObj)).len;
         for i in 0..len {
             let list = roots[1] as *mut ListObj;
-            let pair = *(*list).data.add(i);
+            // ELEM_HEAP_OBJ list of 2-tuples — extract the raw pointer.
+            let pair = crate::list::list_slot_raw(list, i);
             if pair.is_null() {
                 continue;
             }

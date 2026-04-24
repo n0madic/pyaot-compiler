@@ -127,7 +127,7 @@ unsafe fn iter_next_list(
         return EXHAUSTED_SENTINEL;
     }
 
-    let result = *(*list).data.add(idx as usize);
+    let result = crate::list::list_slot_raw(list, idx as usize);
     if reversed {
         (*iter).index -= 1;
     } else {
@@ -189,7 +189,7 @@ unsafe fn iter_next_dict(
         return EXHAUSTED_SENTINEL;
     }
 
-    let result = *(*keys_list).data.add(idx as usize);
+    let result = crate::list::list_slot_raw(keys_list, idx as usize);
     if reversed {
         (*iter).index -= 1;
     } else {
@@ -535,14 +535,13 @@ unsafe fn iter_next_zipn(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
 
     let count = (*zip_iter).count as usize;
     let iters_list = (*zip_iter).iters as *mut ListObj;
-    let iters_data = (*iters_list).data;
-
     // Collect all items first (no allocations during rt_iter_next_internal for raw iterators).
     // We need a fixed-size scratch area; use a Vec for simplicity — it lives on the heap
     // but is not a GC object, so it won't be collected.
     let mut items: Vec<(*mut Obj, *mut Obj)> = Vec::with_capacity(count); // (iter, item)
     for i in 0..count {
-        let iter_i = *iters_data.add(i);
+        // iters_list is ELEM_HEAP_OBJ (iterators are always heap); extract the pointer.
+        let iter_i = crate::list::list_slot_raw(iters_list, i);
         let item = rt_iter_next_internal(iter_i, false);
         if item == EXHAUSTED_SENTINEL {
             (*zip_iter).exhausted = true;
@@ -718,7 +717,8 @@ unsafe fn iter_next_chain(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut 
     // Try to get an element from the current iterator, advancing to next on exhaustion
     while (*chain_iter).current_idx < (*chain_iter).num_iters {
         let iters_list = (*chain_iter).iters as *mut ListObj;
-        let current_iter = *(*iters_list).data.add((*chain_iter).current_idx as usize);
+        let current_iter =
+            crate::list::list_slot_raw(iters_list, (*chain_iter).current_idx as usize);
 
         let elem = rt_iter_next_internal(current_iter, false);
         if elem != EXHAUSTED_SENTINEL {

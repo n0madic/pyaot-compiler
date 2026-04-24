@@ -505,22 +505,25 @@ fn mark_object(obj: *mut Obj) {
         match (*obj).type_tag() {
             TypeTagKind::List => {
                 let list = obj as *mut ListObj;
-                // Only traverse elements if they are heap objects
-                // Raw int/bool elements are NOT pointers and must NOT be dereferenced
-                if (*list).elem_tag == 0 {
-                    // ELEM_HEAP_OBJ
-                    let len = (*list).len;
-                    let data = (*list).data;
-                    // Validate data pointer before accessing
-                    if data.is_null() && len > 0 {
-                        eprintln!(
-                            "FATAL: List heap corruption - null data pointer with len={}",
-                            len
-                        );
-                        std::process::abort();
-                    }
-                    for i in 0..len {
-                        let elem = *data.add(i);
+                // Phase 2 S2.3: list storage is `[Value]`. Walk each slot and
+                // let `Value::is_ptr()` decide whether to trace — no more
+                // elem_tag branching. Raw Int/Bool immediates self-describe
+                // as non-pointers, so the GC correctly skips them even when
+                // a future "mixed tag" layout lands.
+                let len = (*list).len;
+                let data = (*list).data;
+                // Validate data pointer before accessing
+                if data.is_null() && len > 0 {
+                    eprintln!(
+                        "FATAL: List heap corruption - null data pointer with len={}",
+                        len
+                    );
+                    std::process::abort();
+                }
+                for i in 0..len {
+                    let slot = *data.add(i);
+                    if slot.is_ptr() {
+                        let elem = slot.unwrap_ptr::<Obj>();
                         if !elem.is_null() {
                             mark_object(elem);
                         }

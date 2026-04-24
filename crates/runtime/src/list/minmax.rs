@@ -1,6 +1,7 @@
 //! List min/max operations
 
-use crate::minmax_utils::{find_extremum_float, find_extremum_int};
+use super::load_value_as_raw;
+use crate::minmax_utils::find_extremum_float;
 use crate::object::{ListObj, Obj};
 use crate::sorted::compare_key_values;
 
@@ -27,13 +28,39 @@ pub extern "C" fn rt_list_minmax(list: *mut Obj, is_min: u8, elem_kind: u8) -> i
                 );
             }
         }
-        let data = (*list_obj).data as *const usize;
+        let data = (*list_obj).data;
         let len = (*list_obj).len;
+        let elem_tag = (*list_obj).elem_tag;
         let want_min = is_min == 0;
         if elem_kind == 1 {
-            find_extremum_float(data, len, want_min).to_bits() as i64
+            // Float: `data` points at a `[Value]` whose heap slots wrap
+            // `*mut FloatObj`. Since `Value::from_ptr` preserves aligned
+            // pointer bits verbatim, casting to `*const usize` still yields
+            // valid FloatObj pointers, and `find_extremum_float` works
+            // unchanged. (Raw-float lists don't exist — floats are always
+            // heap-boxed per §2.2.)
+            find_extremum_float(data as *const usize, len, want_min).to_bits() as i64
         } else {
-            find_extremum_int(data, len, want_min)
+            // Int: walk the `[Value]` slots directly, converting each slot
+            // back to its ABI `i64` form via `load_value_as_raw` so the
+            // logic handles both ELEM_RAW_INT (tagged immediate) and
+            // ELEM_HEAP_OBJ (pointer to IntObj — though the typed caller
+            // normally picks `rt_list_get_typed`, we handle both defensively).
+            if len == 0 {
+                return 0;
+            }
+            let mut extremum = load_value_as_raw(*data, elem_tag) as i64;
+            for i in 1..len {
+                let val = load_value_as_raw(*data.add(i), elem_tag) as i64;
+                if want_min {
+                    if val < extremum {
+                        extremum = val;
+                    }
+                } else if val > extremum {
+                    extremum = val;
+                }
+            }
+            extremum
         }
     }
 }
@@ -104,9 +131,15 @@ unsafe fn find_extremum_with_key(
     }
 
     let data = (*list_obj).data;
+    // Storage unwrapping always uses the list's own `elem_tag`. The
+    // `elem_tag` parameter that codegen passes is a key-function hint
+    // (whether to box before calling key_fn) and may disagree with the
+    // real storage tag — for example, `min([int], key=identity)` passes
+    // ELEM_HEAP_OBJ as a "don't box" hint while the list stores raw ints.
+    let storage_tag = (*list_obj).elem_tag;
 
-    // Apply key function to first element
-    let mut extremum_elem = *data;
+    // Apply key function to first element.
+    let mut extremum_elem = load_value_as_raw(*data, storage_tag);
     let boxed_elem = if elem_tag == ELEM_RAW_INT as i64 {
         crate::boxing::rt_box_int(extremum_elem as i64)
     } else {
@@ -116,7 +149,7 @@ unsafe fn find_extremum_with_key(
 
     // Compare remaining elements
     for i in 1..len {
-        let elem = *data.add(i);
+        let elem = load_value_as_raw(*data.add(i), storage_tag);
         let boxed_elem = if elem_tag == ELEM_RAW_INT as i64 {
             crate::boxing::rt_box_int(elem as i64)
         } else {
@@ -137,5 +170,5 @@ unsafe fn find_extremum_with_key(
         }
     }
 
-    extremum_elem // Return original element, not key!
+    extremum_elem // Return original element (in raw ABI form), not key!
 }

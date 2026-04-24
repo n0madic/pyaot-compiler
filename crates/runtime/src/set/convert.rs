@@ -4,6 +4,7 @@
 use crate::debug_assert_type_tag;
 use crate::gc;
 use crate::object::{ListObj, Obj, SetObj, TypeTagKind, ELEM_HEAP_OBJ, TOMBSTONE};
+use pyaot_core_defs::Value;
 use std::alloc::{alloc_zeroed, Layout};
 
 /// Convert set to list (for iteration support)
@@ -49,23 +50,26 @@ pub extern "C" fn rt_set_to_list(set: *mut Obj) -> *mut Obj {
 
         let list = list_obj as *mut ListObj;
 
-        // Allocate data array (raw allocator — does not trigger GC)
-        let data_layout = Layout::array::<*mut Obj>(set_len)
-            .expect("Allocation size overflow - capacity too large");
-        let data = alloc_zeroed(data_layout) as *mut *mut Obj;
+        // Allocate data array (raw allocator — does not trigger GC).
+        // Post-S2.3: list storage is `[Value]`; the allocation size/align are
+        // identical to the pre-S2.3 `*mut Obj` layout.
+        let data_layout =
+            Layout::array::<Value>(set_len).expect("Allocation size overflow - capacity too large");
+        let data = alloc_zeroed(data_layout) as *mut Value;
 
         (*list).elem_tag = ELEM_HEAP_OBJ;
         (*list).len = set_len;
         (*list).capacity = set_len;
         (*list).data = data;
 
-        // Copy non-empty, non-tombstone elements to list
+        // Copy non-empty, non-tombstone elements to list. Each entry is a
+        // heap pointer, so wrap with `Value::from_ptr`.
         let mut list_idx = 0;
         for i in 0..capacity {
             let entry = (*set_obj).entries.add(i);
             let elem = (*entry).elem;
             if !elem.is_null() && elem != TOMBSTONE {
-                *data.add(list_idx) = elem;
+                *data.add(list_idx) = Value::from_ptr(elem);
                 list_idx += 1;
             }
         }

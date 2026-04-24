@@ -34,9 +34,9 @@ fn convert_heap_list_to_raw_int(heap_list: *mut Obj) -> *mut Obj {
         let src = roots[0] as *mut ListObj;
         let dst = result as *mut ListObj;
         for i in 0..len {
-            let boxed = *(*src).data.add(i);
+            let boxed = crate::list::list_slot_raw(src, i);
             let raw_val = crate::boxing::rt_unbox_int(boxed);
-            *(*dst).data.add(i) = raw_val as *mut Obj;
+            *(*dst).data.add(i) = pyaot_core_defs::Value::from_int(raw_val);
         }
         (*dst).len = len;
         result
@@ -126,19 +126,22 @@ pub(crate) unsafe fn compare_list_elements(
     }
 }
 
-/// Stable sort for an array of *mut Obj elements.
+/// Stable sort for an array of `Value` slots (post-S2.3 list storage).
 /// Uses Vec::sort_by which is guaranteed stable (merge sort based).
 /// reverse: false for ascending, true for descending
 /// elem_tag: element storage type (ELEM_HEAP_OBJ, ELEM_RAW_INT, ELEM_RAW_BOOL)
-unsafe fn stable_sort(data: *mut *mut Obj, len: usize, reverse: bool, elem_tag: u8) {
+unsafe fn stable_sort(data: *mut pyaot_core_defs::Value, len: usize, reverse: bool, elem_tag: u8) {
     if len <= 1 {
         return;
     }
 
-    // Collect into a Vec, sort stably, write back
-    let mut vec: Vec<*mut Obj> = (0..len).map(|i| *data.add(i)).collect();
+    // Collect into a Vec, sort stably, write back. Comparisons happen on the
+    // raw ABI form, so convert each slot for the comparator.
+    let mut vec: Vec<pyaot_core_defs::Value> = (0..len).map(|i| *data.add(i)).collect();
     vec.sort_by(|&a, &b| {
-        let ord = compare_list_elements(a, b, elem_tag);
+        let a_raw = crate::list::load_value_as_raw(a, elem_tag);
+        let b_raw = crate::list::load_value_as_raw(b, elem_tag);
+        let ord = compare_list_elements(a_raw, b_raw, elem_tag);
         if reverse {
             ord.reverse()
         } else {
@@ -272,15 +275,16 @@ fn sorted_tuple_impl(tuple: *mut Obj, reverse: i64) -> *mut Obj {
             let src_data = (*src).data.as_ptr();
             let dst_data = (*new_list_obj).data;
 
-            // Copy elements from tuple to list
+            // Tuple stores `*mut Obj`; list stores `Value`. Convert per-slot.
+            let elem_tag = (*src).elem_tag;
             for i in 0..len {
-                *dst_data.add(i) = *src_data.add(i);
+                *dst_data.add(i) = crate::list::store_raw_as_value(*src_data.add(i), elem_tag);
             }
             (*new_list_obj).len = len;
 
             // Sort using stable sort (required for CPython compatibility)
             let data = (*new_list_obj).data;
-            stable_sort(data, len, reverse != 0, (*src).elem_tag);
+            stable_sort(data, len, reverse != 0, elem_tag);
         }
 
         new_list
@@ -382,9 +386,13 @@ fn sorted_str_impl(str_obj: *mut Obj, reverse: i64) -> *mut Obj {
             let char_str = rt_str_getchar(roots[0], byte_idx as i64);
 
             // Write char_str into the list and update len immediately so GC
-            // sees this slot as live on the next collection.
+            // sees this slot as live on the next collection. char_str is
+            // always a `*mut StrObj`, i.e. ELEM_HEAP_OBJ.
             let live_list = roots[1] as *mut ListObj;
-            (*live_list).data.add(char_count).write(char_str);
+            (*live_list)
+                .data
+                .add(char_count)
+                .write(pyaot_core_defs::Value::from_ptr(char_str));
             char_count += 1;
             (*live_list).len = char_count;
 
@@ -445,12 +453,11 @@ pub extern "C" fn rt_sorted_range(start: i64, stop: i64, step: i64, reverse: i64
         let new_list_obj = new_list as *mut ListObj;
         let dst_data = (*new_list_obj).data;
 
-        // Fill with raw integer values (cast to *mut Obj)
-        // This matches how list[int] stores elements
+        // Fill with tagged-int Values. Post-S2.3, ELEM_RAW_INT list slots
+        // are `Value::from_int(i)`.
         let mut current = start;
         for i in 0..len {
-            // Store raw integer as pointer (bit-cast)
-            *dst_data.add(i) = current as *mut Obj;
+            *dst_data.add(i) = pyaot_core_defs::Value::from_int(current);
             current += step;
         }
         (*new_list_obj).len = len;
@@ -588,9 +595,10 @@ fn sorted_list_with_key_impl(
 
         // Apply key function to each element; store keys in the GC-visible list
         let cc = capture_count as u8;
+        let elem_tag_u8 = elem_tag as u8;
         for i in 0..len {
             let src_live = roots[0] as *mut ListObj;
-            let elem = *(*src_live).data.add(i);
+            let elem = crate::list::list_slot_raw(src_live, i);
             let boxed_elem = if elem_tag == ELEM_RAW_INT as i64 {
                 crate::boxing::rt_box_int(elem as i64)
             } else {
@@ -598,7 +606,8 @@ fn sorted_list_with_key_impl(
             };
             let key_value = call_key_fn(key_fn, captures, cc, boxed_elem);
             let keys_list_live = roots[1] as *mut ListObj;
-            *(*keys_list_live).data.add(i) = key_value;
+            // keys_list is ELEM_HEAP_OBJ (stores boxed keys).
+            *(*keys_list_live).data.add(i) = pyaot_core_defs::Value::from_ptr(key_value);
             (*keys_list_live).len = i + 1;
         }
 
@@ -607,7 +616,7 @@ fn sorted_list_with_key_impl(
         let src_live = roots[0] as *mut ListObj;
         let mut key_index_pairs: Vec<(*mut Obj, usize)> = Vec::with_capacity(len);
         for i in 0..len {
-            let key_value = *(*keys_list_live).data.add(i);
+            let key_value = crate::list::list_slot_raw(keys_list_live, i);
             key_index_pairs.push((key_value, i));
         }
 
@@ -621,6 +630,9 @@ fn sorted_list_with_key_impl(
 
         let src_data_live = (*src_live).data;
         for (i, (_, orig_idx)) in key_index_pairs.iter().enumerate() {
+            // Both src and dst lists share `elem_tag`; the `Value` slot can
+            // be copied verbatim (no re-conversion needed).
+            let _ = elem_tag_u8; // silence unused if this branch isn't hit
             *dst_data.add(i) = *src_data_live.add(*orig_idx);
         }
         (*new_list_obj).len = len;
@@ -669,6 +681,7 @@ fn sorted_tuple_with_key_impl(
         let cc = capture_count as u8;
         for i in 0..len {
             let src_live = roots[0] as *mut TupleObj;
+            // Tuple is still `*mut Obj`-backed (S2.4).
             let elem = *(*src_live).data.as_ptr().add(i);
             let boxed_elem = if elem_tag == ELEM_RAW_INT as i64 {
                 crate::boxing::rt_box_int(elem as i64)
@@ -677,7 +690,8 @@ fn sorted_tuple_with_key_impl(
             };
             let key_value = call_key_fn(key_fn, captures, cc, boxed_elem);
             let keys_list_live = roots[1] as *mut ListObj;
-            *(*keys_list_live).data.add(i) = key_value;
+            // keys_list is ELEM_HEAP_OBJ.
+            *(*keys_list_live).data.add(i) = pyaot_core_defs::Value::from_ptr(key_value);
             (*keys_list_live).len = i + 1;
         }
 
@@ -685,7 +699,7 @@ fn sorted_tuple_with_key_impl(
         let src_live = roots[0] as *mut TupleObj;
         let mut key_index_pairs: Vec<(*mut Obj, usize)> = Vec::with_capacity(len);
         for i in 0..len {
-            let key_value = *(*keys_list_live).data.add(i);
+            let key_value = crate::list::list_slot_raw(keys_list_live, i);
             key_index_pairs.push((key_value, i));
         }
 
@@ -693,13 +707,17 @@ fn sorted_tuple_with_key_impl(
         stable_sort_key_pairs(&mut key_index_pairs, reverse != 0);
 
         // Build result list from sorted indices
-        let new_list = rt_make_list(len as i64, (*src_live).elem_tag);
+        let src_elem_tag = (*src_live).elem_tag;
+        let new_list = rt_make_list(len as i64, src_elem_tag);
         let new_list_obj = new_list as *mut ListObj;
         let dst_data = (*new_list_obj).data;
 
         let src_data_live = (*src_live).data.as_ptr();
         for (i, (_, orig_idx)) in key_index_pairs.iter().enumerate() {
-            *dst_data.add(i) = *src_data_live.add(*orig_idx);
+            // Tuple slots are raw `*mut Obj`; wrap them as `Value` using the
+            // tuple's elem_tag when writing into the list.
+            let raw = *src_data_live.add(*orig_idx);
+            *dst_data.add(i) = crate::list::store_raw_as_value(raw, src_elem_tag);
         }
         (*new_list_obj).len = len;
 
@@ -818,12 +836,13 @@ fn sorted_str_with_key_impl(
             let char_width = utf8_char_width(first_byte);
             let char_str = rt_str_getchar(str_obj, byte_idx as i64);
             let chars_live = roots[0] as *mut ListObj;
-            *(*chars_live).data.add(char_count) = char_str;
+            // Both chars_list and keys_list are ELEM_HEAP_OBJ.
+            *(*chars_live).data.add(char_count) = pyaot_core_defs::Value::from_ptr(char_str);
             (*chars_live).len = char_count + 1;
 
             let key_value = call_key_fn(key_fn, captures, cc, char_str);
             let keys_live = roots[1] as *mut ListObj;
-            *(*keys_live).data.add(char_count) = key_value;
+            *(*keys_live).data.add(char_count) = pyaot_core_defs::Value::from_ptr(key_value);
             (*keys_live).len = char_count + 1;
 
             char_count += 1;
@@ -836,8 +855,8 @@ fn sorted_str_with_key_impl(
         // Build (key, char_str) pairs from the stable lists
         let mut key_index_pairs: Vec<(*mut Obj, *mut Obj)> = Vec::with_capacity(char_count);
         for i in 0..char_count {
-            let key_value = *(*keys_live).data.add(i);
-            let char_str = *(*chars_live).data.add(i);
+            let key_value = crate::list::list_slot_raw(keys_live, i);
+            let char_str = crate::list::list_slot_raw(chars_live, i);
             key_index_pairs.push((key_value, char_str));
         }
 
@@ -850,7 +869,7 @@ fn sorted_str_with_key_impl(
         let dst_data = (*new_list_obj).data;
 
         for (i, (_, char_str)) in key_index_pairs.iter().enumerate() {
-            *dst_data.add(i) = *char_str;
+            *dst_data.add(i) = pyaot_core_defs::Value::from_ptr(*char_str);
         }
         (*new_list_obj).len = char_count;
 

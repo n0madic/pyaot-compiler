@@ -204,13 +204,24 @@ macro_rules! validate_elem_tag {
     };
 }
 
-/// List object
+/// List object.
+///
+/// Phase 2 S2.3 migration (2026-04-24): `data` now points at a uniform
+/// `[Value]` array — every slot is a properly-tagged `Value` regardless of
+/// the surface `elem_tag`. The physical layout is unchanged (8 bytes per
+/// slot, 8-byte alignment), so pre-existing allocation math and GC header
+/// assertions still hold. `elem_tag` is retained as a boundary-conversion
+/// hint: callers across the extern ABI still pass raw `i64` / `i8` / heap
+/// pointers encoded as `*mut Obj`, and the list module converts to/from
+/// `Value` using `elem_tag` at the ABI boundary. The field and the
+/// `ELEM_*` constants will be removed in S2.7 once codegen stops emitting
+/// the old boxing calls.
 #[repr(C)]
 pub struct ListObj {
     pub header: ObjHeader,
     pub len: usize,
     pub capacity: usize,
-    pub data: *mut *mut Obj,
+    pub data: *mut pyaot_core_defs::Value,
     pub elem_tag: u8,
 }
 

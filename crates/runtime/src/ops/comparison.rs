@@ -269,8 +269,9 @@ pub extern "C" fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
                         "list index out of range"
                     );
                 }
-                let elem = *(*list).data.add(actual_idx as usize);
-                // If list stores raw ints (ELEM_RAW_INT), box them
+                // Post-S2.3: list slots are `Value`; convert back to the raw
+                // ABI form before the ELEM_RAW_INT branch boxes.
+                let elem = crate::list::list_slot_raw(list, actual_idx as usize);
                 if (*list).elem_tag == ELEM_RAW_INT {
                     crate::boxing::rt_box_int(elem as i64)
                 } else {
@@ -365,7 +366,7 @@ unsafe fn rt_list_contains_value(list: *mut Obj, value: *mut Obj) -> i8 {
     }
 
     for i in 0..len {
-        let elem = *data.add(i);
+        let elem = crate::list::list_slot_raw(list_obj, i);
         if rt_obj_eq(elem, value) == 1 {
             return 1;
         }

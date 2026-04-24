@@ -62,13 +62,13 @@ unsafe fn create_argv_list(argc: i32, argv: *const *const i8) -> *mut Obj {
 
     // Allocate data array if needed
     if capacity > 0 {
-        let data_layout = std::alloc::Layout::array::<*mut Obj>(capacity)
+        let data_layout = std::alloc::Layout::array::<pyaot_core_defs::Value>(capacity)
             .expect("Allocation size overflow - capacity too large");
-        (*list_ptr).data = std::alloc::alloc(data_layout) as *mut *mut Obj;
+        (*list_ptr).data = std::alloc::alloc(data_layout) as *mut pyaot_core_defs::Value;
 
-        // Initialize all slots to null
+        // Initialize all slots to Value(0) (null pointer, skipped by GC).
         for i in 0..capacity {
-            *(*list_ptr).data.add(i) = std::ptr::null_mut();
+            *(*list_ptr).data.add(i) = pyaot_core_defs::Value(0);
         }
     } else {
         (*list_ptr).data = std::ptr::null_mut();
@@ -116,8 +116,8 @@ unsafe fn create_argv_list(argc: i32, argv: *const *const i8) -> *mut Obj {
         // explicit and avoids any confusion about which pointer is authoritative.
         let list_ptr = roots[0] as *mut ListObj;
 
-        // Add to list
-        *(*list_ptr).data.add(i as usize) = str_ptr as *mut Obj;
+        // Add to list (ELEM_HEAP_OBJ: wrap the string pointer as Value).
+        *(*list_ptr).data.add(i as usize) = pyaot_core_defs::Value::from_ptr(str_ptr as *mut Obj);
         (*list_ptr).len += 1;
     }
 
@@ -215,11 +215,11 @@ unsafe fn build_str_list<S: AsRef<str>>(entries: &[S]) -> *mut Obj {
     (*list_ptr).capacity = capacity;
 
     if capacity > 0 {
-        let data_layout = std::alloc::Layout::array::<*mut Obj>(capacity)
+        let data_layout = std::alloc::Layout::array::<pyaot_core_defs::Value>(capacity)
             .expect("Allocation size overflow - capacity too large");
-        (*list_ptr).data = std::alloc::alloc(data_layout) as *mut *mut Obj;
+        (*list_ptr).data = std::alloc::alloc(data_layout) as *mut pyaot_core_defs::Value;
         for i in 0..capacity {
-            *(*list_ptr).data.add(i) = std::ptr::null_mut();
+            *(*list_ptr).data.add(i) = pyaot_core_defs::Value(0);
         }
     } else {
         (*list_ptr).data = std::ptr::null_mut();
@@ -252,7 +252,7 @@ unsafe fn build_str_list<S: AsRef<str>>(entries: &[S]) -> *mut Obj {
         }
 
         let list_ptr = roots[0] as *mut ListObj;
-        *(*list_ptr).data.add(i) = str_ptr as *mut Obj;
+        *(*list_ptr).data.add(i) = pyaot_core_defs::Value::from_ptr(str_ptr as *mut Obj);
         (*list_ptr).len += 1;
     }
 

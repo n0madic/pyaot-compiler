@@ -5,7 +5,10 @@ use crate::debug_assert_type_tag;
 use crate::exceptions::ExceptionType;
 use crate::gc;
 use crate::object::{ListObj, Obj, TypeTagKind};
+use pyaot_core_defs::Value;
 use std::alloc::{alloc_zeroed, realloc, Layout};
+
+use super::{load_value_as_raw, store_raw_as_value};
 
 /// Create a new list with given capacity and element tag
 /// elem_tag: ELEM_HEAP_OBJ (0), ELEM_RAW_INT (1), or ELEM_RAW_BOOL (2)
@@ -26,11 +29,14 @@ pub extern "C" fn rt_make_list(capacity: i64, elem_tag: u8) -> *mut Obj {
         (*list).capacity = capacity;
         (*list).elem_tag = elem_tag;
 
-        // Allocate data array separately if capacity > 0
+        // Allocate data array separately if capacity > 0.
+        // Physical layout is 8 bytes per slot — identical to the pre-S2.3
+        // `*mut Obj` layout, so existing capacity math and GC assertions
+        // survive unchanged.
         if capacity > 0 {
-            let data_layout = Layout::array::<*mut Obj>(capacity)
+            let data_layout = Layout::array::<Value>(capacity)
                 .expect("Allocation size overflow - capacity too large");
-            let data_ptr = alloc_zeroed(data_layout) as *mut *mut Obj;
+            let data_ptr = alloc_zeroed(data_layout) as *mut Value;
             (*list).data = data_ptr;
         } else {
             (*list).data = std::ptr::null_mut();
@@ -66,7 +72,8 @@ pub extern "C" fn rt_list_set(list: *mut Obj, index: i64, value: *mut Obj) {
 
         let data = (*list_obj).data;
         if !data.is_null() {
-            *data.add(idx as usize) = value;
+            let elem_tag = (*list_obj).elem_tag;
+            *data.add(idx as usize) = store_raw_as_value(value, elem_tag);
         }
     }
 }
@@ -98,7 +105,8 @@ pub extern "C" fn rt_list_get(list: *mut Obj, index: i64) -> *mut Obj {
             return std::ptr::null_mut();
         }
 
-        *data.add(idx as usize)
+        let v = *data.add(idx as usize);
+        load_value_as_raw(v, (*list_obj).elem_tag)
     }
 }
 
@@ -117,7 +125,8 @@ pub extern "C" fn rt_list_len(list: *mut Obj) -> i64 {
 }
 
 /// Shared bounds-checking and element access for typed list getters.
-/// Returns the raw element pointer on success, or None if out of bounds / null.
+/// Returns the raw-ABI element pointer (after Value→raw conversion) on
+/// success, or `None` if out of bounds / null.
 unsafe fn list_get_element(list: *mut Obj, index: i64) -> Option<*mut Obj> {
     if list.is_null() {
         return None;
@@ -138,7 +147,8 @@ unsafe fn list_get_element(list: *mut Obj, index: i64) -> Option<*mut Obj> {
         return None;
     }
 
-    Some(*data.add(idx as usize))
+    let v = *data.add(idx as usize);
+    Some(load_value_as_raw(v, (*list_obj).elem_tag))
 }
 
 /// Get a typed scalar element from a list, unboxing if necessary. Always returns i64.
@@ -226,26 +236,27 @@ pub extern "C" fn rt_list_push(list: *mut Obj, value: *mut Obj) {
             let data = (*list_obj).data;
 
             if data.is_null() {
-                let new_layout = Layout::array::<*mut Obj>(new_capacity)
+                let new_layout = Layout::array::<Value>(new_capacity)
                     .expect("Allocation size overflow - capacity too large");
-                let new_data = alloc_zeroed(new_layout) as *mut *mut Obj;
+                let new_data = alloc_zeroed(new_layout) as *mut Value;
                 (*list_obj).data = new_data;
             } else {
-                let old_layout = Layout::array::<*mut Obj>(capacity)
+                let old_layout = Layout::array::<Value>(capacity)
                     .expect("Allocation size overflow - capacity too large");
-                let new_layout = Layout::array::<*mut Obj>(new_capacity)
+                let new_layout = Layout::array::<Value>(new_capacity)
                     .expect("Allocation size overflow - capacity too large");
                 let new_data =
-                    realloc(data as *mut u8, old_layout, new_layout.size()) as *mut *mut Obj;
+                    realloc(data as *mut u8, old_layout, new_layout.size()) as *mut Value;
                 if new_data.is_null() {
                     raise_exc!(
                         ExceptionType::MemoryError,
                         "cannot allocate memory for list"
                     );
                 }
-                // Zero new elements
+                // Zero new elements: Value(0) is a null-pointer-tagged Value,
+                // which GC correctly ignores.
                 for i in capacity..new_capacity {
-                    *new_data.add(i) = std::ptr::null_mut();
+                    *new_data.add(i) = Value(0);
                 }
                 (*list_obj).data = new_data;
             }
@@ -258,7 +269,8 @@ pub extern "C" fn rt_list_push(list: *mut Obj, value: *mut Obj) {
         // Add element
         let data = (*list_obj).data;
         if !data.is_null() {
-            *data.add(len) = value;
+            let elem_tag = (*list_obj).elem_tag;
+            *data.add(len) = store_raw_as_value(value, elem_tag);
             (*list_obj).len = len + 1;
         }
     }
@@ -283,7 +295,7 @@ pub unsafe fn list_finalize(list: *mut Obj) {
 
     // Free the data array if allocated
     if !data.is_null() && capacity > 0 {
-        let data_layout = Layout::array::<*mut Obj>(capacity)
+        let data_layout = Layout::array::<Value>(capacity)
             .expect("Allocation size overflow - capacity too large");
         dealloc(data as *mut u8, data_layout);
     }

@@ -26,13 +26,12 @@ unsafe fn extract_string_list(obj: *mut Obj) -> Vec<String> {
         return Vec::new();
     }
 
-    let list_obj = obj as *const ListObj;
+    let list_obj = obj as *mut ListObj;
     let len = (*list_obj).len;
-    let data = (*list_obj).data;
 
     let mut result = Vec::with_capacity(len);
     for i in 0..len {
-        let item = *data.add(i);
+        let item = crate::list::list_slot_raw(list_obj, i);
         if let Some(s) = crate::utils::extract_str_checked(item) {
             result.push(s);
         }

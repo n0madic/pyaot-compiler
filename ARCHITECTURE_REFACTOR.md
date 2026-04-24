@@ -3598,7 +3598,7 @@ audit often uncovers surprise gaps.
 |----|-------|------|------------|-----------|
 | S2.1 | Tag scheme design + `core-defs/Value` API (§2.1 + §2.2): low-bit tagging constants, `Value` type, constructors, extractors, property tests | Phase 1 merged | Medium | — |
 | S2.2 ✅ (2026-04-24, cc69143) | Runtime Value foundation (§2.3 part 1, amended): add `runtime::value::type_of(Value) -> TypeTagKind` + runtime-side `Value` re-export. `rt_box_*` / `rt_unbox_*` deletion moved to S2.7 (cannot land before codegen stops emitting those symbols — see §2.3 amendment). | S2.1 | Low-Medium | Parallel-safe with nothing (hot path) |
-| S2.3 | Runtime migration: List + basic list ops (§2.3 part 2): drop `ELEM_RAW_INT` / `ELEM_HEAP_OBJ`, store Value uniformly | S2.2 | Medium-High | — |
+| S2.3 ✅ (2026-04-24) | Runtime migration: List (§2.3 part 2): `ListObj.data: *mut *mut Obj` → `*mut Value`; 35+ list ops migrated to Value-backed storage with boundary conversion via `store_raw_as_value`/`load_value_as_raw`/`list_slot_raw`; GC list scan now uses `Value::is_ptr()` instead of `elem_tag` branching. `elem_tag` field and `ELEM_*` constants retained for the extern-ABI boundary (deletion follows the S2.7 rule). | S2.2 | Medium-High | — |
 | S2.4 | Runtime migration: Dict, Set, Tuple (§2.3 part 3) | S2.3 | Medium | — |
 | S2.5 | Runtime migration: Str, Bytes, Class instances, Generators (§2.3 part 4): remove `heap_field_mask`, `type_tags` usage | S2.4 | Medium | — |
 | S2.6 | GC migration (§2.4): `mark_object(Value)`, remove heap masks | S2.5 | **HIGH** (critical path) | — |

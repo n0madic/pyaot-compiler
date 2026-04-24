@@ -1,6 +1,7 @@
 //! List query operations: index, count, copy
 
 use super::core::rt_make_list;
+use super::load_value_as_raw;
 use crate::exceptions::ExceptionType;
 use crate::hash_table_utils::eq_hashable_obj;
 use crate::object::{ListObj, Obj, ELEM_HEAP_OBJ};
@@ -38,7 +39,8 @@ pub extern "C" fn rt_list_index(list: *mut Obj, value: *mut Obj) -> i64 {
         }
 
         for i in 0..len {
-            if elem_eq(*data.add(i), value, elem_tag) {
+            let elem = load_value_as_raw(*data.add(i), elem_tag);
+            if elem_eq(elem, value, elem_tag) {
                 return i as i64;
             }
         }
@@ -68,7 +70,8 @@ pub extern "C" fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
 
         let mut count = 0i64;
         for i in 0..len {
-            if elem_eq(*data.add(i), value, elem_tag) {
+            let elem = load_value_as_raw(*data.add(i), elem_tag);
+            if elem_eq(elem, value, elem_tag) {
                 count += 1;
             }
         }

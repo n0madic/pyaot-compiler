@@ -182,7 +182,7 @@ unsafe fn print_list_repr(obj: *mut Obj) {
         if i > 0 {
             print!(", ");
         }
-        let elem = *data.add(i);
+        let elem = crate::list::load_value_as_raw(*data.add(i), elem_tag);
         print_elem_repr(elem, elem_tag);
     }
     print!("]");

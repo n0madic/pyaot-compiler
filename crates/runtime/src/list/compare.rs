@@ -1,10 +1,12 @@
 //! List comparison operations (equality and ordering)
 
+use super::load_value_as_raw;
 use crate::hash_table_utils::eq_hashable_obj;
 use crate::object::{
     BoolObj, FloatObj, IntObj, ListObj, Obj, TypeTagKind, ELEM_HEAP_OBJ, ELEM_RAW_BOOL,
     ELEM_RAW_INT,
 };
+use pyaot_core_defs::Value;
 use std::cmp::Ordering;
 
 /// Semantic element equality across potentially different `elem_tag` storages.
@@ -70,7 +72,7 @@ unsafe fn list_elem_eq(a: *mut Obj, tag_a: u8, b: *mut Obj, tag_b: u8) -> bool {
 unsafe fn list_eq_precheck(
     a: *mut Obj,
     b: *mut Obj,
-) -> Result<i8, (*mut *mut Obj, *mut *mut Obj, usize)> {
+) -> Result<i8, (*mut Value, *mut Value, usize)> {
     if a.is_null() && b.is_null() {
         return Ok(1);
     }
@@ -118,24 +120,31 @@ pub extern "C" fn rt_list_eq(a: *mut Obj, b: *mut Obj) -> i8 {
         let tag_b = (*(b as *mut ListObj)).elem_tag;
 
         if tag_a == tag_b {
-            // Fast paths for matched storage.
+            // Fast paths for matched storage. `Value` has `Eq`, so tagged
+            // immediates and heap pointers both use bit-for-bit slot equality.
             if tag_a == ELEM_RAW_INT || tag_a == ELEM_RAW_BOOL {
                 for i in 0..len {
-                    if (*data_a.add(i) as i64) != (*data_b.add(i) as i64) {
+                    if *data_a.add(i) != *data_b.add(i) {
                         return 0;
                     }
                 }
             } else {
                 for i in 0..len {
-                    if !eq_hashable_obj(*data_a.add(i), *data_b.add(i)) {
+                    let a_raw = load_value_as_raw(*data_a.add(i), tag_a);
+                    let b_raw = load_value_as_raw(*data_b.add(i), tag_b);
+                    if !eq_hashable_obj(a_raw, b_raw) {
                         return 0;
                     }
                 }
             }
         } else {
-            // Mixed storage — dispatch per element.
+            // Mixed storage — dispatch per element, converting each slot back
+            // to its raw ABI representation so the cross-tag comparisons in
+            // `list_elem_eq` work the same as before S2.3.
             for i in 0..len {
-                if !list_elem_eq(*data_a.add(i), tag_a, *data_b.add(i), tag_b) {
+                let a_raw = load_value_as_raw(*data_a.add(i), tag_a);
+                let b_raw = load_value_as_raw(*data_b.add(i), tag_b);
+                if !list_elem_eq(a_raw, tag_a, b_raw, tag_b) {
                     return 0;
                 }
             }
@@ -169,8 +178,8 @@ unsafe fn list_cmp_ordering(a: *mut Obj, b: *mut Obj) -> Ordering {
     let data_b = (*list_b).data;
 
     for i in 0..min_len {
-        let elem_a = *data_a.add(i);
-        let elem_b = *data_b.add(i);
+        let elem_a = load_value_as_raw(*data_a.add(i), elem_tag);
+        let elem_b = load_value_as_raw(*data_b.add(i), elem_tag);
         match crate::sorted::compare_list_elements(elem_a, elem_b, elem_tag) {
             Ordering::Equal => continue,
             ord => return ord,

@@ -170,7 +170,7 @@ pub extern "C" fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
         // Calculate total length
         let mut total_len = 0;
         for i in 0..len as usize {
-            let item = *(*list).data.add(i);
+            let item = crate::list::list_slot_raw(list, i);
             if !item.is_null() {
                 let item_str = item as *mut StrObj;
                 total_len += (*item_str).len;
@@ -214,7 +214,7 @@ pub extern "C" fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
                 dst_idx += sep_len;
             }
 
-            let item = *(*list).data.add(i);
+            let item = crate::list::list_slot_raw(list, i);
             if !item.is_null() {
                 let item_str = item as *mut StrObj;
                 let item_len = (*item_str).len;

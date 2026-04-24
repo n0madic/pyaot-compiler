@@ -357,7 +357,7 @@ pub unsafe extern "C" fn rt_random_choices(
         let weights_list = weights as *mut ListObj;
         let mut total = 0.0f64;
         for i in 0..pop_len {
-            let w_obj = *(*weights_list).data.add(i);
+            let w_obj = crate::list::list_slot_raw(weights_list, i);
             let w = crate::boxing::rt_unbox_float(w_obj);
             total += w;
             cum_weights.push(total);
@@ -425,7 +425,7 @@ pub unsafe extern "C" fn rt_random_choice(seq: *mut Obj) -> *mut Obj {
     }
     // CPython: choice(seq) = seq[randbelow(len)]
     let idx = RNG.with(|rng| rng.borrow_mut().randbelow(len));
-    *(*list).data.add(idx)
+    crate::list::list_slot_raw(list, idx)
 }
 
 /// random.shuffle(seq) - shuffle list in-place using Fisher-Yates

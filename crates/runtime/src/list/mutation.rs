@@ -2,10 +2,12 @@
 
 use super::core::rt_list_push;
 use super::timsort;
+use super::{load_value_as_raw, store_raw_as_value};
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::exceptions::ExceptionType;
 use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind, ELEM_HEAP_OBJ, ELEM_RAW_INT};
+use pyaot_core_defs::Value;
 use std::alloc::{alloc_zeroed, realloc, Layout};
 
 /// Update the elem_tag of an empty list.
@@ -60,16 +62,18 @@ pub extern "C" fn rt_list_pop(list: *mut Obj, index: i64) -> *mut Obj {
 
         let idx = idx as usize;
         let data = (*list_obj).data;
+        let elem_tag = (*list_obj).elem_tag;
 
-        // Get the element to return
-        let result = *data.add(idx);
+        // Get the element to return (convert stored Value back to ABI *mut Obj).
+        let stored = *data.add(idx);
+        let result = load_value_as_raw(stored, elem_tag);
 
         // Shift remaining elements left
         let new_len = len as usize - 1;
         for i in idx..new_len {
             *data.add(i) = *data.add(i + 1);
         }
-        *data.add(new_len) = std::ptr::null_mut();
+        *data.add(new_len) = Value(0);
         (*list_obj).len = new_len;
 
         result
@@ -103,17 +107,17 @@ pub extern "C" fn rt_list_insert(list: *mut Obj, index: i64, value: *mut Obj) {
             let data = (*list_obj).data;
 
             if data.is_null() {
-                let new_layout = Layout::array::<*mut Obj>(new_capacity)
+                let new_layout = Layout::array::<Value>(new_capacity)
                     .expect("Allocation size overflow - capacity too large");
-                let new_data = alloc_zeroed(new_layout) as *mut *mut Obj;
+                let new_data = alloc_zeroed(new_layout) as *mut Value;
                 (*list_obj).data = new_data;
             } else {
-                let old_layout = Layout::array::<*mut Obj>(capacity)
+                let old_layout = Layout::array::<Value>(capacity)
                     .expect("Allocation size overflow - capacity too large");
-                let new_layout = Layout::array::<*mut Obj>(new_capacity)
+                let new_layout = Layout::array::<Value>(new_capacity)
                     .expect("Allocation size overflow - capacity too large");
                 let new_data =
-                    realloc(data as *mut u8, old_layout, new_layout.size()) as *mut *mut Obj;
+                    realloc(data as *mut u8, old_layout, new_layout.size()) as *mut Value;
                 if new_data.is_null() {
                     raise_exc!(
                         ExceptionType::MemoryError,
@@ -121,7 +125,7 @@ pub extern "C" fn rt_list_insert(list: *mut Obj, index: i64, value: *mut Obj) {
                     );
                 }
                 for i in capacity..new_capacity {
-                    *new_data.add(i) = std::ptr::null_mut();
+                    *new_data.add(i) = Value(0);
                 }
                 (*list_obj).data = new_data;
             }
@@ -134,8 +138,9 @@ pub extern "C" fn rt_list_insert(list: *mut Obj, index: i64, value: *mut Obj) {
             for i in (idx..len).rev() {
                 *data.add(i + 1) = *data.add(i);
             }
-            // Insert the new element
-            *data.add(idx) = value;
+            // Insert the new element (convert ABI *mut Obj to tagged Value).
+            let elem_tag = (*list_obj).elem_tag;
+            *data.add(idx) = store_raw_as_value(value, elem_tag);
             (*list_obj).len = len + 1;
         }
     }
@@ -162,9 +167,12 @@ pub extern "C" fn rt_list_remove(list: *mut Obj, value: *mut Obj) -> i8 {
 
         let elem_tag = (*list_obj).elem_tag;
 
-        // Find the element using value equality for heap objects, raw equality for primitives
+        // Find the element using value equality for heap objects, raw equality
+        // for primitives. Convert the stored `Value` back to ABI form so the
+        // comparison semantics match the pre-S2.3 behavior byte-for-byte.
         for i in 0..len {
-            let elem = *data.add(i);
+            let stored = *data.add(i);
+            let elem = load_value_as_raw(stored, elem_tag);
             let found = if elem_tag == ELEM_HEAP_OBJ {
                 crate::hash_table_utils::eq_hashable_obj(elem, value)
             } else {
@@ -175,7 +183,7 @@ pub extern "C" fn rt_list_remove(list: *mut Obj, value: *mut Obj) -> i8 {
                 for j in i..(len - 1) {
                     *data.add(j) = *data.add(j + 1);
                 }
-                *data.add(len - 1) = std::ptr::null_mut();
+                *data.add(len - 1) = Value(0);
                 (*list_obj).len = len - 1;
                 return 1;
             }
@@ -200,7 +208,7 @@ pub extern "C" fn rt_list_clear(list: *mut Obj) {
 
         if !data.is_null() {
             for i in 0..len {
-                *data.add(i) = std::ptr::null_mut();
+                *data.add(i) = Value(0);
             }
         }
         (*list_obj).len = 0;
@@ -227,7 +235,7 @@ pub extern "C" fn rt_list_reverse(list: *mut Obj) {
         let mut left = 0;
         let mut right = len - 1;
         while left < right {
-            let tmp = *data.add(left);
+            let tmp: Value = *data.add(left);
             *data.add(left) = *data.add(right);
             *data.add(right) = tmp;
             left += 1;
@@ -259,7 +267,7 @@ pub extern "C" fn rt_list_extend(list: *mut Obj, other: *mut Obj) {
 
         // Self-extend case (a.extend(a)): snapshot other's data before any realloc
         // that might move the underlying allocation and leave us with a dangling pointer.
-        let snapshot: Option<Vec<*mut Obj>> = if list == other {
+        let snapshot: Option<Vec<Value>> = if list == other {
             let data = (*other_obj).data;
             if data.is_null() {
                 return;
@@ -285,9 +293,9 @@ pub extern "C" fn rt_list_extend(list: *mut Obj, other: *mut Obj) {
                 new_capacity = list_grow_capacity(new_capacity);
             }
 
-            let old_layout = Layout::array::<*mut Obj>(capacity)
+            let old_layout = Layout::array::<Value>(capacity)
                 .expect("Allocation size overflow - capacity too large");
-            let new_layout = Layout::array::<*mut Obj>(new_capacity)
+            let new_layout = Layout::array::<Value>(new_capacity)
                 .expect("Allocation size overflow - new_capacity too large");
 
             let old_data = (*list_obj).data as *mut u8;
@@ -301,7 +309,7 @@ pub extern "C" fn rt_list_extend(list: *mut Obj, other: *mut Obj) {
                 raise_exc!(ExceptionType::MemoryError, "Failed to reallocate list");
             }
 
-            (*list_obj).data = new_data as *mut *mut Obj;
+            (*list_obj).data = new_data as *mut Value;
             (*list_obj).capacity = new_capacity;
         }
 
@@ -454,21 +462,30 @@ pub extern "C" fn rt_list_sort(list: *mut Obj, reverse: i8) {
 
         let elem_tag = (*list_obj).elem_tag;
 
-        // Use Timsort for O(n log n) performance
+        // Use Timsort for O(n log n) performance.
+        //
+        // Under S2.3 Value-backed storage:
+        //   ELEM_RAW_INT slot = ((raw_i64 << 3) | INT_TAG). The tag shift
+        //   preserves signed i64 ordering (within the 61-bit representable
+        //   range), so sorting the tagged bit pattern as i64 yields the
+        //   same permutation as sorting the untagged raw ints.
         if elem_tag == ELEM_RAW_INT {
-            // For raw integers, convert to i64 slice and sort
             let slice = std::slice::from_raw_parts_mut(data as *mut i64, len);
             timsort::timsort_int(slice);
 
             if reverse != 0 {
-                // Reverse the sorted array
                 slice.reverse();
             }
         } else {
-            // For heap objects, use custom comparison
+            // For heap objects / bools, convert each slot to the raw ABI
+            // form expected by `compare_objects`.
             let slice = std::slice::from_raw_parts_mut(data, len);
             timsort::timsort_with_cmp(slice, |a, b| {
-                let cmp = compare_objects(*a, *b, elem_tag);
+                let cmp = compare_objects(
+                    load_value_as_raw(*a, elem_tag),
+                    load_value_as_raw(*b, elem_tag),
+                    elem_tag,
+                );
                 if reverse != 0 {
                     // Reverse comparison for descending order
                     match cmp {
@@ -551,23 +568,30 @@ pub extern "C" fn rt_list_sort_with_key(
         };
         gc_push(&mut frame);
 
-        // Apply key function to each element and store (key_value, original_value) pairs
+        // Apply key function to each element and store (key_value, original_slot) pairs.
+        // `original_slot` is the raw `Value` as stored in the list — keeping the
+        // tagged form means the write-back phase below doesn't need to re-convert.
+        // Use the list's own storage tag for unwrapping: the `elem_tag` parameter
+        // is only a key-function hint (whether to box) and may disagree with the
+        // actual storage (see minmax.rs for the same pattern).
         let cc = capture_count as u8;
-        let mut key_value_pairs: Vec<(*mut Obj, *mut Obj)> = Vec::with_capacity(len);
+        let storage_tag = (*list_obj).elem_tag;
+        let mut key_value_pairs: Vec<(*mut Obj, Value)> = Vec::with_capacity(len);
         for i in 0..len {
             // Re-derive data pointer after each gc_alloc (list is non-moving,
             // but we re-read through the rooted list pointer to be explicit).
             let current_data = (*(list as *mut ListObj)).data;
-            let elem = *current_data.add(i);
+            let stored = *current_data.add(i);
+            let elem_raw = load_value_as_raw(stored, storage_tag);
             // Box raw elements before passing to key function
             let boxed_elem = if elem_tag == ELEM_RAW_INT as i64 {
-                crate::boxing::rt_box_int(elem as i64)
+                crate::boxing::rt_box_int(elem_raw as i64)
             } else {
-                elem
+                elem_raw
             };
             let key_value =
                 crate::iterator::call_map_with_captures(key_fn, captures, cc, boxed_elem);
-            key_value_pairs.push((key_value, elem));
+            key_value_pairs.push((key_value, stored));
         }
 
         gc_pop();
@@ -625,14 +649,14 @@ pub extern "C" fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, va
         // Detect self-aliasing: if values and list are the same object,
         // snapshot the values data first to avoid use-after-free during realloc
         let (values_data, values_len, values_is_alias) = if values.is_null() {
-            (std::ptr::null_mut(), 0, false)
+            (std::ptr::null_mut::<Value>(), 0, false)
         } else if list == values {
             // Make a copy of the data before any potential realloc of list
             let vlist = values as *mut ListObj;
             let vlen = (*vlist).len;
             let copy = std::alloc::alloc(
-                std::alloc::Layout::array::<*mut Obj>(vlen.max(1)).expect("alloc layout overflow"),
-            ) as *mut *mut Obj;
+                std::alloc::Layout::array::<Value>(vlen.max(1)).expect("alloc layout overflow"),
+            ) as *mut Value;
             if vlen > 0 {
                 std::ptr::copy_nonoverlapping((*vlist).data, copy, vlen);
             }
@@ -655,9 +679,9 @@ pub extern "C" fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, va
                 new_capacity = list_grow_capacity(new_capacity);
             }
 
-            let new_layout = Layout::array::<*mut Obj>(new_capacity)
+            let new_layout = Layout::array::<Value>(new_capacity)
                 .expect("Allocation size overflow - capacity too large");
-            let new_data = alloc_zeroed(new_layout) as *mut *mut Obj;
+            let new_data = alloc_zeroed(new_layout) as *mut Value;
 
             // Copy existing elements into the new buffer
             let old_data = (*list_obj).data;
@@ -668,7 +692,7 @@ pub extern "C" fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, va
             // Free the old data buffer (list data is std::alloc-managed, not GC-managed)
             if !old_data.is_null() && capacity > 0 {
                 let old_layout =
-                    Layout::array::<*mut Obj>(capacity).expect("list old layout overflow");
+                    Layout::array::<Value>(capacity).expect("list old layout overflow");
                 std::alloc::dealloc(old_data as *mut u8, old_layout);
             }
 
@@ -700,7 +724,7 @@ pub extern "C" fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, va
         if values_is_alias && !values_data.is_null() {
             std::alloc::dealloc(
                 values_data as *mut u8,
-                std::alloc::Layout::array::<*mut Obj>(values_len.max(1))
+                std::alloc::Layout::array::<Value>(values_len.max(1))
                     .expect("alloc layout overflow"),
             );
         }

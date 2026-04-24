@@ -118,11 +118,11 @@ pub extern "C" fn rt_make_bytes_from_list(list: *mut Obj) -> *mut Obj {
         // pointer (GC is non-moving so the address is stable; re-deriving
         // makes the live range explicit).
         let list_obj = list as *mut ListObj;
-        let data = (*list_obj).data;
         let bytes_data = (*bytes_obj).data.as_mut_ptr();
         for i in 0..len {
-            let elem = *data.add(i);
-            // Elements are raw i64 values cast to pointer
+            let elem = crate::list::list_slot_raw(list_obj, i);
+            // Elements are raw i64 values (ELEM_RAW_INT); list_slot_raw
+            // already unwrapped the tagged `Value`.
             let value = elem as i64;
             // Clamp to 0-255
             *bytes_data.add(i) = (value & 0xFF) as u8;

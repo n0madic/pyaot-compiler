@@ -253,9 +253,12 @@ pub extern "C" fn rt_tuple_slice_to_list(tuple: *mut Obj, start: i64, end: i64) 
             let src_data = (*src).data.as_ptr();
             let dst_data = (*new_list_obj).data;
 
-            // Copy element pointers (shallow copy)
+            // Tuple storage is still `*mut Obj` (migration is S2.4). Convert
+            // each slot into a tagged `Value` before writing to the
+            // Value-backed list storage.
             for i in 0..slice_len {
-                *dst_data.add(i) = *src_data.add(start as usize + i);
+                let raw = *src_data.add(start as usize + i);
+                *dst_data.add(i) = crate::list::store_raw_as_value(raw, elem_tag);
             }
             // Set the actual length
             (*new_list_obj).len = slice_len;
@@ -472,11 +475,13 @@ pub extern "C" fn rt_tuple_from_list(list: *mut Obj) -> *mut Obj {
         let tuple_obj = tuple as *mut crate::object::TupleObj;
 
         if len > 0 {
-            let src_data = (*list_obj).data;
             let dst_data = (*tuple_obj).data.as_mut_ptr();
 
+            // List storage is `[Value]`; tuple storage is still `[*mut Obj]`
+            // (S2.4). Convert each list slot back to raw ABI form before
+            // writing to the tuple.
             for i in 0..len {
-                *dst_data.add(i) = *src_data.add(i);
+                *dst_data.add(i) = crate::list::list_slot_raw(list_obj, i);
             }
         }
 
