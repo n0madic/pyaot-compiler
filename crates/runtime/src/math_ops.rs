@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     fn test_math_abs_degrees_radians() {
-        assert_eq!(rt_math_fabs(-3.14), 3.14);
+        assert_eq!(rt_math_fabs(-2.5), 2.5);
         assert!((rt_math_degrees(std::f64::consts::PI) - 180.0).abs() < 1e-10);
         assert!((rt_math_radians(180.0) - std::f64::consts::PI).abs() < 1e-10);
     }

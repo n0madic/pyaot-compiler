@@ -349,7 +349,7 @@ fn test_no_fold_div_by_zero() {
 #[test]
 fn test_constant_branch_simplification() {
     // Block 0: branch on True → should become Goto(then_block)
-    let locals = vec![make_local(0, Type::Bool)];
+    let locals = [make_local(0, Type::Bool)];
 
     let block0 = BlockId::from(0u32);
     let block1 = BlockId::from(1u32);

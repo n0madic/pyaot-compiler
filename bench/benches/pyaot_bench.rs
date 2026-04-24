@@ -4,7 +4,7 @@
 //!   * `compile::<stem>`     — compiler + linker throughput only.
 //!   * `run::<stem>`         — execute a pre-compiled binary (hot-loop perf).
 //!   * `fresh_launch::<stem>` — compile + immediate first launch of the
-//!                              freshly linked binary.
+//!     freshly linked binary.
 //!
 //! Binary size is recorded once per source at baseline time and written into
 //! `bench/BASELINE.md` out-of-band — Criterion doesn't have a natural

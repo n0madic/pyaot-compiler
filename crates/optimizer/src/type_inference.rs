@@ -2893,6 +2893,7 @@ mod tests {
     ///     was already visited with stale info.
     ///   - leaf: called by mid with the old `Any`-typed x → inferred
     ///     as `Any`.
+    ///
     /// The whole-program fixed point fires a second outer iteration,
     /// re-visiting leaf with the now-refined mid.x → Int.
     #[test]
@@ -3034,12 +3035,12 @@ mod tests {
         use pyaot_mir::RuntimeFunc;
         let rt_set_field = &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD;
 
-        let self_local = mk_local(param_local.0 as u32, Type::Any);
+        let self_local = mk_local(param_local.0, Type::Any);
         let params = vec![self_local.clone()];
         let mut f = Function::new(init_id, "__init__".to_string(), params, Type::None, None);
         // Add the param's Local + a "value" local per write.
         f.locals
-            .insert(param_local, mk_local(param_local.0 as u32, param_ty));
+            .insert(param_local, mk_local(param_local.0, param_ty));
 
         let bb0 = f.entry_block;
         let self_op = Operand::Local(param_local);
