@@ -2693,6 +2693,28 @@ used `i64` or `*mut Obj`).
 **Non-negotiable**: no `i64`-typed runtime entrypoint remains. Grep
 for `extern "C" fn rt_.*i64` must return zero results.
 
+**Amendment (2026-04-24, S2.2 landing):** S2.2's concrete
+deliverable is the additive foundation — `runtime::value::type_of(v:
+Value) -> TypeTagKind` plus a runtime-side `Value` re-export so every
+subsequent session can consume the tagged word. The "delete
+`rt_box_int` / `rt_unbox_int` / `rt_box_bool` / `rt_unbox_bool` /
+`rt_box_float` / `rt_unbox_float`" step listed in §2.3 cannot land in
+S2.2: lowering (`lowering/src/lib.rs`: `box_primitive_if_needed`,
+`unbox_func_for_type` — ~35 emission sites) and the optimizer
+(`optimizer/src/abi_repair.rs`, `peephole/patterns.rs`,
+`type_inference.rs`) still emit those exact symbols at MIR-generation
+time. Deleting the extern bodies before migrating the emitters would
+break the compiled-program ABI.
+
+The `rt_box_*` / `rt_unbox_*` deletion therefore moves to **S2.7**
+(codegen migration): when codegen emits inline tag arithmetic instead
+of `call rt_box_int`, lowering/optimizer stop referencing the
+symbols, and the extern bodies are deleted in the same commit.
+S2.3/S2.4/S2.5 continue to migrate container internal storage to
+`Value` on top of the existing extern ABI; their scope is unchanged.
+The `rt_tuple_get_int/float/bool` deletion listed above follows the
+same rule (extern ABI depends on codegen) and rides along with S2.7.
+
 **Exit criterion**: runtime crate passes all tests. Binary size of
 runtime staticlib stays within +10% of pre-migration (may grow
 slightly from `Value` wrapping, should be negligible after inlining).

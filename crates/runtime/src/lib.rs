@@ -95,6 +95,7 @@ pub mod object;
 pub mod ops;
 pub mod slab;
 pub mod traceback;
+pub mod value;
 
 // Type operations
 pub mod boxing;
