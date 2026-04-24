@@ -593,9 +593,12 @@ fn sorted_list_with_key_impl(
         };
         gc_push(&mut frame);
 
-        // Apply key function to each element; store keys in the GC-visible list
+        // Apply key function to each element; store keys in the GC-visible
+        // list. `list_slot_raw` reads through the list's storage tag, so the
+        // raw ABI form is independent of the `elem_tag` parameter (which is
+        // the key-function hint only — see INSIGHTS §"Key-taking runtime
+        // funcs").
         let cc = capture_count as u8;
-        let elem_tag_u8 = elem_tag as u8;
         for i in 0..len {
             let src_live = roots[0] as *mut ListObj;
             let elem = crate::list::list_slot_raw(src_live, i);
@@ -632,7 +635,6 @@ fn sorted_list_with_key_impl(
         for (i, (_, orig_idx)) in key_index_pairs.iter().enumerate() {
             // Both src and dst lists share `elem_tag`; the `Value` slot can
             // be copied verbatim (no re-conversion needed).
-            let _ = elem_tag_u8; // silence unused if this branch isn't hit
             *dst_data.add(i) = *src_data_live.add(*orig_idx);
         }
         (*new_list_obj).len = len;
