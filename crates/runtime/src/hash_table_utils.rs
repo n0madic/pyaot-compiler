@@ -3,9 +3,8 @@
 //! This module provides common hashing and equality functions
 //! used by both dictionaries and sets.
 
-use crate::object::{
-    BoolObj, FloatObj, IntObj, Obj, StrObj, TupleObj, TypeTagKind, ELEM_HEAP_OBJ, ELEM_RAW_INT,
-};
+use crate::object::{FloatObj, Obj, StrObj, TupleObj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 // FNV-1a hash constants
 pub const FNV_OFFSET_BASIS: u64 = 14695981039346656037;
@@ -34,11 +33,18 @@ pub unsafe fn hash_hashable_obj(obj: *mut Obj) -> u64 {
     if obj.is_null() {
         return 0;
     }
+    // Check Value-tagged primitives before heap pointer dereference.
+    let v = Value(obj as u64);
+    if v.is_int() {
+        return hash_int(v.unwrap_int());
+    }
+    if v.is_bool() {
+        return hash_int(if v.unwrap_bool() { 1 } else { 0 });
+    }
+    if v.is_none() {
+        return 0;
+    }
     match (*obj).type_tag() {
-        TypeTagKind::Int => {
-            let int_obj = obj as *mut IntObj;
-            hash_int((*int_obj).value)
-        }
         TypeTagKind::Str => {
             let str_obj = obj as *mut StrObj;
             let len = (*str_obj).len;
@@ -50,11 +56,6 @@ pub unsafe fn hash_hashable_obj(obj: *mut Obj) -> u64 {
                 hash = hash.wrapping_mul(FNV_PRIME);
             }
             hash
-        }
-        TypeTagKind::Bool => {
-            let bool_obj = obj as *mut BoolObj;
-            // True == 1, False == 0 in Python; use int hash for cross-type invariant
-            hash_int(if (*bool_obj).value { 1 } else { 0 })
         }
         TypeTagKind::Float => {
             let float_obj = obj as *mut FloatObj;
@@ -90,67 +91,77 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
     if a.is_null() || b.is_null() {
         return false;
     }
+
+    // Extract the "semantic type" for each side using Value tags for primitives,
+    // heap header for pointer values. This avoids dereferencing tagged primitives.
+    let va = Value(a as u64);
+    let vb = Value(b as u64);
+
+    // Helper: extract int-like value from a tagged primitive (Int or Bool as i64).
+    // Returns None if this side is a heap pointer.
+    let as_int_primitive = |v: Value| -> Option<i64> {
+        if v.is_int() {
+            Some(v.unwrap_int())
+        } else if v.is_bool() {
+            Some(v.unwrap_bool() as i64)
+        } else {
+            None
+        }
+    };
+
+    // If both are primitives, use Value-level comparison.
+    if !va.is_ptr() && !vb.is_ptr() {
+        // Same tag: Int==Int or Bool==Bool bit comparison.
+        if va.is_int() && vb.is_int() {
+            return va.unwrap_int() == vb.unwrap_int();
+        }
+        if va.is_bool() && vb.is_bool() {
+            return va.unwrap_bool() == vb.unwrap_bool();
+        }
+        // None==None
+        if va.is_none() && vb.is_none() {
+            return true;
+        }
+        // Cross-type Int/Bool equality (Python: 1 == True, 0 == False)
+        if let (Some(ia), Some(ib)) = (as_int_primitive(va), as_int_primitive(vb)) {
+            return ia == ib;
+        }
+        return false;
+    }
+
+    // One is a primitive, one is a heap pointer.
+    // Only Int/Bool primitives can equal heap Floats (e.g., 1 == 1.0).
+    if !va.is_ptr() || !vb.is_ptr() {
+        let (prim_v, heap_ptr) = if !va.is_ptr() { (va, b) } else { (vb, a) };
+        if let Some(int_val) = as_int_primitive(prim_v) {
+            // Check if heap side is Float with matching value
+            if !heap_ptr.is_null() && (*heap_ptr).type_tag() == TypeTagKind::Float {
+                let fv = (*(heap_ptr as *mut FloatObj)).value;
+                return fv.fract() == 0.0 && fv.is_finite() && fv as i64 == int_val;
+            }
+        }
+        return false;
+    }
+
+    // Both are heap pointers — safe to dereference.
     let tag_a = (*a).type_tag();
     let tag_b = (*b).type_tag();
     if tag_a != tag_b {
-        // Cross-type equality: Int == Bool, Int == Float, Bool == Float
+        // Cross-type equality for heap types: Float vs Int (heap Int not possible in Stage C,
+        // but keep the check for correctness during the mixed-migration period).
         return match (tag_a, tag_b) {
-            (TypeTagKind::Int, TypeTagKind::Bool) | (TypeTagKind::Bool, TypeTagKind::Int) => {
-                let int_val = if tag_a == TypeTagKind::Int {
-                    (*(a as *mut IntObj)).value
-                } else if (*(a as *mut BoolObj)).value {
-                    1
-                } else {
-                    0
-                };
-                let other_val = if tag_b == TypeTagKind::Int {
-                    (*(b as *mut IntObj)).value
-                } else if (*(b as *mut BoolObj)).value {
-                    1
-                } else {
-                    0
-                };
-                int_val == other_val
-            }
             (TypeTagKind::Int, TypeTagKind::Float) | (TypeTagKind::Float, TypeTagKind::Int) => {
                 let (int_val, float_val) = if tag_a == TypeTagKind::Int {
-                    ((*(a as *mut IntObj)).value, (*(b as *mut FloatObj)).value)
+                    (Value(a as u64).unwrap_int(), (*(b as *mut FloatObj)).value)
                 } else {
-                    ((*(b as *mut IntObj)).value, (*(a as *mut FloatObj)).value)
+                    (Value(b as u64).unwrap_int(), (*(a as *mut FloatObj)).value)
                 };
                 float_val.fract() == 0.0 && float_val.is_finite() && float_val as i64 == int_val
-            }
-            (TypeTagKind::Bool, TypeTagKind::Float) | (TypeTagKind::Float, TypeTagKind::Bool) => {
-                let (bool_val, float_val) = if tag_a == TypeTagKind::Bool {
-                    (
-                        if (*(a as *mut BoolObj)).value {
-                            1i64
-                        } else {
-                            0
-                        },
-                        (*(b as *mut FloatObj)).value,
-                    )
-                } else {
-                    (
-                        if (*(b as *mut BoolObj)).value {
-                            1i64
-                        } else {
-                            0
-                        },
-                        (*(a as *mut FloatObj)).value,
-                    )
-                };
-                float_val.fract() == 0.0 && float_val.is_finite() && float_val as i64 == bool_val
             }
             _ => false,
         };
     }
     match tag_a {
-        TypeTagKind::Int => {
-            let int_a = a as *mut IntObj;
-            let int_b = b as *mut IntObj;
-            (*int_a).value == (*int_b).value
-        }
         TypeTagKind::Str => {
             let str_a = a as *mut StrObj;
             let str_b = b as *mut StrObj;
@@ -161,11 +172,6 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
             let data_a = (*str_a).data.as_ptr();
             let data_b = (*str_b).data.as_ptr();
             std::slice::from_raw_parts(data_a, len) == std::slice::from_raw_parts(data_b, len)
-        }
-        TypeTagKind::Bool => {
-            let bool_a = a as *mut BoolObj;
-            let bool_b = b as *mut BoolObj;
-            (*bool_a).value == (*bool_b).value
         }
         TypeTagKind::Float => {
             let float_a = a as *mut FloatObj;
@@ -178,45 +184,11 @@ pub unsafe fn eq_hashable_obj(a: *mut Obj, b: *mut Obj) -> bool {
             if (*tuple_a).len != (*tuple_b).len {
                 return false;
             }
-            let tag_a = (*tuple_a).elem_tag;
-            let tag_b = (*tuple_b).elem_tag;
             for i in 0..(*tuple_a).len {
                 let ea = *(*tuple_a).data.as_ptr().add(i);
                 let eb = *(*tuple_b).data.as_ptr().add(i);
-                // If both elements are heap objects, use recursive equality
-                // If both are raw, compare as bits
-                // If mixed (e.g., one ELEM_RAW_INT, one ELEM_HEAP_OBJ), use recursive equality
-                // to handle cross-type cases like (1,) == (True,)
-                if tag_a == ELEM_HEAP_OBJ || tag_b == ELEM_HEAP_OBJ {
-                    // At least one side uses heap objects — need semantic comparison
-                    if tag_a == ELEM_HEAP_OBJ && tag_b == ELEM_HEAP_OBJ {
-                        if !eq_hashable_obj(ea, eb) {
-                            return false;
-                        }
-                    } else {
-                        // Mixed storage: one side ELEM_RAW_INT, the other ELEM_HEAP_OBJ.
-                        // Handle the common case: raw i64 vs boxed IntObj.
-                        // If the heap side is not an IntObj the types are incompatible.
-                        let (raw_val, heap_ptr) = if tag_a == ELEM_RAW_INT {
-                            (ea as i64, eb)
-                        } else {
-                            (eb as i64, ea)
-                        };
-                        if heap_ptr.is_null() {
-                            return false;
-                        }
-                        if (*heap_ptr).type_tag() != TypeTagKind::Int {
-                            return false;
-                        }
-                        if (*(heap_ptr as *mut IntObj)).value != raw_val {
-                            return false;
-                        }
-                    }
-                } else {
-                    // Both raw values (ELEM_RAW_INT, ELEM_RAW_BOOL): compare as raw bits
-                    if ea != eb {
-                        return false;
-                    }
+                if !eq_hashable_obj(ea.0 as *mut Obj, eb.0 as *mut Obj) {
+                    return false;
                 }
             }
             true

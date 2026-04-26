@@ -1,9 +1,9 @@
 //! List min/max operations
 
-use super::load_value_as_raw;
 use crate::minmax_utils::find_extremum_float;
 use crate::object::{ListObj, Obj};
 use crate::sorted::compare_key_values;
+use pyaot_core_defs::Value;
 
 /// Generic list min/max for int and float elements.
 /// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float.
@@ -30,28 +30,27 @@ pub extern "C" fn rt_list_minmax(list: *mut Obj, is_min: u8, elem_kind: u8) -> i
         }
         let data = (*list_obj).data;
         let len = (*list_obj).len;
-        let elem_tag = (*list_obj).elem_tag;
         let want_min = is_min == 0;
         if elem_kind == 1 {
-            // Float: `data` points at a `[Value]` whose heap slots wrap
-            // `*mut FloatObj`. Since `Value::from_ptr` preserves aligned
-            // pointer bits verbatim, casting to `*const usize` still yields
-            // valid FloatObj pointers, and `find_extremum_float` works
-            // unchanged. (Raw-float lists don't exist — floats are always
-            // heap-boxed per §2.2.)
+            // Float: heap-boxed FloatObj pointers; find_extremum_float works unchanged.
             find_extremum_float(data as *const usize, len, want_min).to_bits() as i64
         } else {
-            // Int: walk the `[Value]` slots directly, converting each slot
-            // back to its ABI `i64` form via `load_value_as_raw` so the
-            // logic handles both ELEM_RAW_INT (tagged immediate) and
-            // ELEM_HEAP_OBJ (pointer to IntObj — though the typed caller
-            // normally picks `rt_list_get_typed`, we handle both defensively).
+            // Int: dispatch on Value::tag() to extract the raw i64.
+            let load_int = |slot: Value| -> i64 {
+                if slot.is_int() {
+                    slot.unwrap_int()
+                } else if slot.is_bool() {
+                    i64::from(slot.unwrap_bool())
+                } else {
+                    slot.0 as i64
+                }
+            };
             if len == 0 {
                 return 0;
             }
-            let mut extremum = load_value_as_raw(*data, elem_tag) as i64;
+            let mut extremum = load_int(*data);
             for i in 1..len {
-                let val = load_value_as_raw(*data.add(i), elem_tag) as i64;
+                let val = load_int(*data.add(i));
                 if want_min {
                     if val < extremum {
                         extremum = val;
@@ -66,24 +65,24 @@ pub extern "C" fn rt_list_minmax(list: *mut Obj, is_min: u8, elem_kind: u8) -> i
 }
 
 /// Generic list min/max with key function.
-/// is_min: 0=min, 1=max
+/// `key_return_tag`: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1).
 #[no_mangle]
 pub extern "C" fn rt_list_minmax_with_key(
     list: *mut Obj,
     key_fn: i64,
-    elem_tag: i64,
     captures: *mut Obj,
     capture_count: i64,
     is_min: u8,
+    key_return_tag: u8,
 ) -> *mut Obj {
     unsafe {
         find_extremum_with_key(
             list,
             key_fn,
-            elem_tag,
             captures,
             capture_count as u8,
             is_min == 0,
+            key_return_tag,
         )
     }
 }
@@ -102,12 +101,12 @@ unsafe fn call_key_fn(
 unsafe fn find_extremum_with_key(
     list: *mut Obj,
     key_fn: i64,
-    elem_tag: i64,
     captures: *mut Obj,
     capture_count: u8,
     is_min: bool,
+    key_return_tag: u8,
 ) -> *mut Obj {
-    use crate::object::ELEM_RAW_INT;
+    use crate::sorted::{unwrap_slot_for_key_fn, wrap_key_result};
 
     if list.is_null() {
         return std::ptr::null_mut();
@@ -131,44 +130,47 @@ unsafe fn find_extremum_with_key(
     }
 
     let data = (*list_obj).data;
-    // Storage unwrapping always uses the list's own `elem_tag`. The
-    // `elem_tag` parameter that codegen passes is a key-function hint
-    // (whether to box before calling key_fn) and may disagree with the
-    // real storage tag — for example, `min([int], key=identity)` passes
-    // ELEM_HEAP_OBJ as a "don't box" hint while the list stores raw ints.
-    let storage_tag = (*list_obj).elem_tag;
 
-    // Apply key function to first element.
-    let mut extremum_elem = load_value_as_raw(*data, storage_tag);
-    let boxed_elem = if elem_tag == ELEM_RAW_INT as i64 {
-        crate::boxing::rt_box_int(extremum_elem as i64)
-    } else {
-        extremum_elem
-    };
-    let mut extremum_key = call_key_fn(key_fn, captures, capture_count, boxed_elem);
+    let mut extremum_slot = *data;
+    let mut extremum_key = wrap_key_result(
+        call_key_fn(
+            key_fn,
+            captures,
+            capture_count,
+            unwrap_slot_for_key_fn(extremum_slot, key_return_tag),
+        ),
+        key_return_tag,
+    );
 
-    // Compare remaining elements
     for i in 1..len {
-        let elem = load_value_as_raw(*data.add(i), storage_tag);
-        let boxed_elem = if elem_tag == ELEM_RAW_INT as i64 {
-            crate::boxing::rt_box_int(elem as i64)
-        } else {
-            elem
-        };
-        let key = call_key_fn(key_fn, captures, capture_count, boxed_elem);
+        let slot = *data.add(i);
+        let key = wrap_key_result(
+            call_key_fn(
+                key_fn,
+                captures,
+                capture_count,
+                unwrap_slot_for_key_fn(slot, key_return_tag),
+            ),
+            key_return_tag,
+        );
 
-        let cmp = compare_key_values(key, extremum_key);
+        let cmp = compare_key_values(key.0 as *mut Obj, extremum_key.0 as *mut Obj);
         let is_better = if is_min {
             cmp == std::cmp::Ordering::Less
         } else {
             cmp == std::cmp::Ordering::Greater
         };
-
         if is_better {
-            extremum_elem = elem;
+            extremum_slot = slot;
             extremum_key = key;
         }
     }
 
-    extremum_elem // Return original element (in raw ABI form), not key!
+    if extremum_slot.is_int() {
+        extremum_slot.unwrap_int() as *mut Obj
+    } else if extremum_slot.is_bool() {
+        i64::from(extremum_slot.unwrap_bool()) as *mut Obj
+    } else {
+        extremum_slot.0 as *mut Obj
+    }
 }

@@ -162,22 +162,10 @@ impl<'a> Lowering<'a> {
         // Determine element type from container type
         let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
 
-        // Determine elem_tag for boxing raw elements before calling key function.
-        // Only builtin wrappers need boxing - user functions work with raw values.
-        // Compute before elem_type is moved.
-        let elem_tag = sort_kwargs
-            .key_func
-            .as_ref()
-            .map(|kf| Self::elem_tag_for_key_func(kf, &elem_type))
-            .unwrap_or(0);
-
-        // Compute elem_tag for Set/Dict sorted result before elem_type is moved
-        let result_elem_tag = crate::type_dispatch::elem_tag_for_type(&elem_type);
-
-        // Create result local with List type (sorted always returns a list)
+        // After §F.7c: containers store uniform tagged Values; runtime no
+        // longer needs an elem_tag hint.
         let result_local = self.alloc_and_add_local(Type::List(Box::new(elem_type)), mir_func);
 
-        // Select appropriate sortable kind based on container type
         let source = match &arg_type {
             Type::List(_) => mir::SortableKind::List,
             Type::Tuple(_) => mir::SortableKind::Tuple,
@@ -187,16 +175,12 @@ impl<'a> Lowering<'a> {
             _ => mir::SortableKind::List,
         };
 
-        // Container tag operand for generic dispatch
         let container_tag_operand =
             mir::Operand::Constant(mir::Constant::Int(source.to_tag() as i64));
 
-        // If key function is provided, use the with_key variant
         if let Some(resolved) =
             self.emit_key_func_with_captures(sort_kwargs.key_func.as_ref(), hir_module, mir_func)?
         {
-            let elem_tag_operand = mir::Operand::Constant(mir::Constant::Int(elem_tag));
-
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
                 func: mir::RuntimeFunc::Call(source.sorted_def(true)),
@@ -204,25 +188,17 @@ impl<'a> Lowering<'a> {
                     arg_operand,
                     sort_kwargs.reverse,
                     resolved.func_addr,
-                    elem_tag_operand,
                     resolved.captures,
                     resolved.capture_count,
                     container_tag_operand,
+                    resolved.key_return_tag,
                 ],
             });
         } else {
-            // No key function - use generic rt_sorted(obj, reverse, elem_tag, container_tag)
-            let elem_tag_operand = mir::Operand::Constant(mir::Constant::Int(result_elem_tag));
-
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
                 func: mir::RuntimeFunc::Call(source.sorted_def(false)),
-                args: vec![
-                    arg_operand,
-                    sort_kwargs.reverse,
-                    elem_tag_operand,
-                    container_tag_operand,
-                ],
+                args: vec![arg_operand, sort_kwargs.reverse, container_tag_operand],
             });
         }
 

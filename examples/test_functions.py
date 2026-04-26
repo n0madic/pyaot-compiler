@@ -390,6 +390,52 @@ def test_lambda_chain_capture() -> None:
     result: int = middle()
     assert result == 10, "lambda chain capture should equal 10"
 
+def test_curried_chain_three_call_int() -> None:
+    """Curried 3-level closure factory called externally as `chain(a)(b)(c)`,
+    result assigned to an `int`-typed local. The dispatcher synthesized by
+    `emit_capture_dispatch` allocates each n_captures branch with a uniform
+    `result_ty`, but the static call-graph filter narrows different branches
+    to functions with different return types (inner1 → Any/closure, inner2 →
+    Int). Without `abi_repair`'s Refine bridge at the Call→CallDirect
+    narrowing point, `type_inference` widens the dispatch dest to Union, and
+    the merge-block Phi boxes Int sources into tagged `Value` bits — printing
+    `49` for payload `6` (`(6 << 3) | 1`) instead of `6`."""
+    def chain(a: int):
+        def inner1(b: int):
+            def inner2(c: int) -> int:
+                return a + b + c
+            return inner2
+        return inner1
+    result: int = chain(1)(2)(3)
+    assert result == 6, "curried chain(1)(2)(3) with int annotation should equal 6"
+
+def test_curried_chain_three_call_no_annotation() -> None:
+    """Same curried 3-level factory, but the result variable has no
+    annotation — exercises the no-anno path where the assignment's
+    `var_type` is widened to Union by prescan, forcing the value to be
+    boxed before storage. Pre-fix this either printed garbage or SEGV-d
+    when downstream consumers (`rt_print_obj`) decoded raw int bits as
+    a heap pointer."""
+    def chain(a: int):
+        def inner1(b: int):
+            def inner2(c: int) -> int:
+                return a + b + c
+            return inner2
+        return inner1
+    result_no_anno = chain(1)(2)(3)
+    assert result_no_anno == 6, "curried chain(1)(2)(3) no annotation should equal 6"
+
+# Note: `print(chain(a)(b)(c))` directly (without binding to a typed
+# local first) is a known limitation in the multi-candidate indirect
+# dispatch case. When several modules-level functions each define their
+# own `chain`/`inner2` helpers, the static call-graph filter sees more
+# than one return-type-Int candidate. The unification falls back to
+# `Any`, the indirect Call writes raw Int bits into an Any-typed dest,
+# and `rt_print_obj` then SEGV-s reading raw 6 (low bits 0b110, no
+# valid tag) as a heap pointer. Binding to a typed local first
+# (covered by the two tests above) goes through the narrowed
+# `CallDirect` path which does box correctly.
+
 # ===== SECTION: nonlocal statement =====
 
 def test_basic_nonlocal() -> None:
@@ -655,6 +701,8 @@ test_four_level_nonlocal()
 test_returned_closure_three_levels()
 test_mixed_capture_levels()
 test_lambda_chain_capture()
+test_curried_chain_three_call_int()
+test_curried_chain_three_call_no_annotation()
 
 # Run all nonlocal tests
 test_basic_nonlocal()

@@ -506,8 +506,8 @@ pub enum GeneratorIntrinsic {
         idx: u32,
         value: ExprId,
     },
-    /// `rt_generator_set_local_type(gen, idx, type_tag) -> void`
-    SetLocalType { gen: ExprId, idx: u32, type_tag: u8 },
+    // §F.7b: SetLocalType removed — per-slot tag side-array deleted; locals are
+    // tagged Values walked uniformly by GC via Value::is_ptr().
     /// `rt_generator_set_exhausted(gen) -> void`
     SetExhausted(ExprId),
     /// `rt_generator_is_exhausted(gen) -> bool`

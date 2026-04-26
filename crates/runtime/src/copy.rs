@@ -29,9 +29,8 @@ pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
             let orig = obj as *mut ListObj;
             let len = (*orig).len;
             let capacity = (*orig).capacity;
-            let elem_tag = (*orig).elem_tag;
 
-            let new_list = crate::list::rt_make_list(capacity as i64, elem_tag) as *mut ListObj;
+            let new_list = crate::list::rt_make_list(capacity as i64) as *mut ListObj;
             if len > 0 {
                 std::ptr::copy_nonoverlapping((*orig).data, (*new_list).data, len);
             }
@@ -60,8 +59,12 @@ pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
                 for i in 0..(*orig).entries_len {
                     let entry = (*orig).entries.add(i);
                     let key = (*entry).key;
-                    if !key.is_null() {
-                        crate::dict::rt_dict_set(roots[0], key, (*entry).value);
+                    if key.0 != 0 {
+                        crate::dict::rt_dict_set(
+                            roots[0],
+                            key.0 as *mut Obj,
+                            (*entry).value.0 as *mut Obj,
+                        );
                     }
                 }
 
@@ -98,11 +101,11 @@ pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
                     let elem = (*entry).elem;
 
                     // Skip empty slots (TOMBSTONE or null)
-                    if elem.is_null() || elem == crate::object::TOMBSTONE {
+                    if elem.0 == 0 || elem == crate::object::TOMBSTONE {
                         continue;
                     }
 
-                    crate::set::rt_set_add(roots[0], elem);
+                    crate::set::rt_set_add(roots[0], elem.0 as *mut Obj);
                 }
 
                 gc_pop();
@@ -129,8 +132,8 @@ pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
             let field_count = (*orig).field_count;
             let vtable = (*orig).vtable;
 
-            let size =
-                std::mem::size_of::<InstanceObj>() + field_count * std::mem::size_of::<*mut Obj>();
+            let size = std::mem::size_of::<InstanceObj>()
+                + field_count * std::mem::size_of::<pyaot_core_defs::Value>();
             let new_inst = gc_alloc(size, TypeTagKind::Instance.tag()) as *mut InstanceObj;
 
             (*new_inst).class_id = class_id;
@@ -207,13 +210,11 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
 
             let orig = obj as *mut TupleObj;
             let len = (*orig).len;
-            let elem_tag = (*orig).elem_tag;
 
             // Allocate new tuple
             let size = std::mem::size_of::<TupleObj>() + len * std::mem::size_of::<*mut Obj>();
             let new_tuple = gc_alloc(size, TypeTagKind::Tuple.tag()) as *mut TupleObj;
             (*new_tuple).len = len;
-            (*new_tuple).elem_tag = elem_tag;
 
             // Register in memo before recursing (for cycle detection)
             memo.insert(obj_addr, new_tuple as *mut Obj);
@@ -231,9 +232,9 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
                 let orig_data = (*(obj as *mut TupleObj)).data.as_ptr();
                 for i in 0..len {
                     let elem = *orig_data.add(i);
-                    let new_elem = deep_copy_recursive(elem, memo);
+                    let new_elem = deep_copy_recursive(elem.0 as *mut Obj, memo);
                     let nt = roots[0] as *mut TupleObj;
-                    *(*nt).data.as_mut_ptr().add(i) = new_elem;
+                    *(*nt).data.as_mut_ptr().add(i) = pyaot_core_defs::Value::from_ptr(new_elem);
                     // Keep memo entry current after the GC may have moved nothing
                     // (mark-sweep doesn't move, but keep memo consistent)
                     memo.insert(obj_addr, roots[0]);
@@ -256,10 +257,9 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
 
             let orig = obj as *mut ListObj;
             let len = (*orig).len;
-            let elem_tag = (*orig).elem_tag;
 
             // Create new list with same capacity
-            let new_list = crate::list::rt_make_list(len as i64, elem_tag);
+            let new_list = crate::list::rt_make_list(len as i64);
 
             // Register in memo before recursing
             memo.insert(obj_addr, new_list);
@@ -277,7 +277,7 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
 
                 let orig_list = obj as *mut ListObj;
                 for i in 0..len {
-                    let elem = crate::list::list_slot_raw(orig_list, i);
+                    let elem = (*(*orig_list).data.add(i)).0 as *mut crate::object::Obj;
                     let new_elem = deep_copy_recursive(elem, memo);
                     crate::list::rt_list_push(roots[0], new_elem);
                     memo.insert(obj_addr, roots[0]);
@@ -320,10 +320,10 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
                 for i in 0..(*orig).entries_len {
                     let entry = (*orig).entries.add(i);
                     let key = (*entry).key;
-                    if !key.is_null() {
+                    if key.0 != 0 {
                         let value = (*entry).value;
-                        let new_key = deep_copy_recursive(key, memo);
-                        let new_value = deep_copy_recursive(value, memo);
+                        let new_key = deep_copy_recursive(key.0 as *mut Obj, memo);
+                        let new_value = deep_copy_recursive(value.0 as *mut Obj, memo);
                         crate::dict::rt_dict_set(roots[0], new_key, new_value);
                         memo.insert(obj_addr, roots[0]);
                     }
@@ -371,11 +371,11 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
                     let elem = (*entry).elem;
 
                     // Skip empty slots
-                    if elem.is_null() || elem == crate::object::TOMBSTONE {
+                    if elem.0 == 0 || elem == crate::object::TOMBSTONE {
                         continue;
                     }
 
-                    let new_elem = deep_copy_recursive(elem, memo);
+                    let new_elem = deep_copy_recursive(elem.0 as *mut Obj, memo);
                     crate::set::rt_set_add(roots[0], new_elem);
                     memo.insert(obj_addr, roots[0]);
                 }
@@ -411,8 +411,8 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
             let vtable = (*orig).vtable;
 
             // Allocate new instance
-            let size =
-                std::mem::size_of::<InstanceObj>() + field_count * std::mem::size_of::<*mut Obj>();
+            let size = std::mem::size_of::<InstanceObj>()
+                + field_count * std::mem::size_of::<pyaot_core_defs::Value>();
             let new_inst = gc_alloc(size, TypeTagKind::Instance.tag()) as *mut InstanceObj;
 
             (*new_inst).class_id = class_id;
@@ -422,11 +422,11 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
             // Register in memo before recursing
             memo.insert(obj_addr, new_inst as *mut Obj);
 
-            // Deep copy each field, using heap_field_mask to distinguish
-            // pointer fields from raw int/float/bool fields. Bits set in the
-            // mask correspond to fields that hold heap pointers; unset bits
-            // hold raw scalar bit-patterns (int/float/bool) that must be
-            // copied verbatim — interpreting them as pointers would be UB.
+            // §F.1+§F.7: every field slot is a properly-tagged `Value`.
+            // Pointer slots (heap shapes, boxed FloatObj) recurse;
+            // immediate slots (Value::from_int / from_bool) are copied
+            // verbatim. `Value::is_ptr()` distinguishes the two without
+            // a per-class mask.
             if field_count > 0 {
                 // Root new_inst across recursive allocs
                 let mut roots: [*mut Obj; 1] = [new_inst as *mut Obj];
@@ -438,16 +438,15 @@ unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>
                 gc_push(&mut frame);
                 memo.insert(obj_addr, roots[0]);
 
-                let heap_mask = crate::vtable::get_class_heap_field_mask(class_id);
                 let orig_fields = (*(obj as *mut InstanceObj)).fields.as_ptr();
                 for i in 0..field_count {
-                    let raw: *mut Obj = *orig_fields.add(i);
-                    let copied: *mut Obj = if heap_mask & (1u64 << i) != 0 {
+                    let raw: pyaot_core_defs::Value = *orig_fields.add(i);
+                    let copied: pyaot_core_defs::Value = if raw.is_ptr() {
                         // Heap pointer field: recurse to produce a deep copy
-                        deep_copy_recursive(raw, memo)
+                        let ptr = deep_copy_recursive(raw.0 as *mut Obj, memo);
+                        pyaot_core_defs::Value(ptr as u64)
                     } else {
-                        // Raw scalar field (int / float bits / bool): copy the
-                        // bit-pattern verbatim without treating it as a pointer
+                        // Immediate Value (tagged int/bool): copy verbatim
                         raw
                     };
                     let ni = roots[0] as *mut InstanceObj;

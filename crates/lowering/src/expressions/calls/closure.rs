@@ -25,8 +25,13 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        // Lower captured expressions first (these are prepended to args)
-        // For cell variables (used by nonlocal), pass the cell pointer directly
+        // Lower captured expressions first (these are prepended to args).
+        // Stage E (unified closure ABI): the callee's primitive capture
+        // params are typed `Type::Any` and unbox once in the prologue —
+        // Primitive captures are wrapped as tagged Values (ValueFromInt/ValueFromBool)
+        // so the direct CallDirect path delivers the same tagged Value bits as
+        // the trampoline / HOF dispatcher paths.
+        // For cell variables (used by nonlocal), pass the cell pointer directly.
         let mut all_args = Vec::new();
         for capture_id in captures {
             let capture_expr = &hir_module.exprs[*capture_id];
@@ -41,7 +46,11 @@ impl<'a> Lowering<'a> {
             } else {
                 self.lower_expr(capture_expr, hir_module, mir_func)?
             };
-            all_args.push(capture_op);
+            // Box int/bool/float primitives to tagged Value bits; cells and
+            // heap objects pass through `box_primitive_if_needed` unchanged.
+            let op_type = self.operand_type(&capture_op, mir_func);
+            let stored_op = self.box_primitive_if_needed(capture_op, &op_type, mir_func);
+            all_args.push(stored_op);
         }
 
         // Lower regular call arguments. When the function definition is available, use
@@ -312,19 +321,32 @@ impl<'a> Lowering<'a> {
             else_block: direct_id,
         };
 
-        // === Closure case: extract func_ptr from closure, prepend captures to args ===
+        // === Closure case: extract func_ptr from closure, deliver captures
+        // and args to the callee ===
+        //
+        // Stage E: replaces the legacy `rt_tuple_concat` +
+        // `rt_call_with_tuple_args` combo. `rt_call_with_captures_and_args`
+        // walks captures (tagged Values) and args (raw scalars) separately
+        // so each side is unwrapped correctly.
         self.push_block(closure_bb);
         {
-            // Extract func_ptr from closure tuple index 0
-            let real_func = self.emit_runtime_call(
+            // Extract func_ptr from closure tuple index 0 — stored as a
+            // `Value::from_int` tagged Value (§F.5); unwrap to recover the
+            // raw i64 function pointer the trampoline expects.
+            let tagged_func = self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
                 vec![
                     mir::Operand::Local(func_local),
                     mir::Operand::Constant(mir::Constant::Int(0)),
                 ],
-                Type::Any,
+                Type::HeapAny,
                 mir_func,
             );
+            let real_func = self.alloc_stack_local(Type::Int, mir_func);
+            self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                dest: real_func,
+                src: mir::Operand::Local(tagged_func),
+            });
 
             // Extract captures tuple from closure tuple index 1
             let captures_tuple = self.emit_runtime_call(
@@ -337,23 +359,15 @@ impl<'a> Lowering<'a> {
                 mir_func,
             );
 
-            // Concatenate captures + args into a single tuple
-            let combined = self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_CONCAT),
-                vec![
-                    mir::Operand::Local(captures_tuple),
-                    mir::Operand::Local(args_tuple_local),
-                ],
-                Type::Any,
-                mir_func,
-            );
-
-            // Call via trampoline with combined args
+            // Call via the captures+args-aware trampoline.
             let closure_result = self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CALL_WITH_TUPLE_ARGS),
+                mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_CALL_WITH_CAPTURES_AND_ARGS,
+                ),
                 vec![
                     mir::Operand::Local(real_func),
-                    mir::Operand::Local(combined),
+                    mir::Operand::Local(captures_tuple),
+                    mir::Operand::Local(args_tuple_local),
                 ],
                 result_ty.clone(),
                 mir_func,
@@ -416,16 +430,23 @@ impl<'a> Lowering<'a> {
         // Result local shared across all branches
         let result_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
 
-        // Extract func_ptr from index 0
-        let func_ptr_local = self.emit_runtime_call(
+        // Extract func_ptr from index 0 — stored as a `Value::from_int`
+        // tagged Value (§F.5); unwrap to recover the raw i64 function
+        // pointer the dispatcher needs.
+        let tagged_func = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
             vec![
                 mir::Operand::Local(closure_local),
                 mir::Operand::Constant(mir::Constant::Int(0)),
             ],
-            Type::Any,
+            Type::HeapAny,
             mir_func,
         );
+        let func_ptr_local = self.alloc_stack_local(Type::Int, mir_func);
+        self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+            dest: func_ptr_local,
+            src: mir::Operand::Local(tagged_func),
+        });
 
         // Extract captures tuple from index 1
         let captures_tuple = self.emit_runtime_call(

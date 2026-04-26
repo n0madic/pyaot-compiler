@@ -173,7 +173,18 @@ pub unsafe extern "C" fn rt_reduce(
     captures: *mut Obj,
     capture_count: i64,
 ) -> *mut Obj {
-    let capture_count = capture_count as u8;
+    // Encoding (after §F.7c BigBang):
+    //   bits 0-7 : capture count (legacy bit 7 is needs_boxing — unused)
+    //   bits 8-15: elem_unbox_kind (0=passthrough, 1=int, 2=bool)
+    let cc_byte = capture_count as u8;
+    let elem_unbox_kind = (capture_count >> 8) as u8;
+    let unbox = |v: *mut Obj| -> *mut Obj {
+        match elem_unbox_kind {
+            1 => pyaot_core_defs::Value(v as u64).unwrap_int() as *mut Obj,
+            2 => i64::from(pyaot_core_defs::Value(v as u64).unwrap_bool()) as *mut Obj,
+            _ => v,
+        }
+    };
 
     // Initialize accumulator
     let mut acc = if has_initial == 0 {
@@ -181,15 +192,14 @@ pub unsafe extern "C" fn rt_reduce(
         let first_elem = rt_iter_next_internal(iter, false);
         let inner_iter = iter as *mut IteratorObj;
         if (*inner_iter).exhausted {
-            // Iterator is empty and no initial value
             raise_exc!(
                 pyaot_core_defs::BuiltinExceptionKind::TypeError,
                 "reduce() of empty iterable with no initial value"
             );
         }
-        first_elem
+        unbox(first_elem)
     } else {
-        // Use provided initial value
+        // Initial value comes raw from the caller — no unbox.
         initial
     };
 
@@ -198,11 +208,9 @@ pub unsafe extern "C" fn rt_reduce(
         let elem = rt_iter_next_internal(iter, false);
         let inner_iter = iter as *mut IteratorObj;
         if (*inner_iter).exhausted {
-            // Iterator exhausted, return accumulated value
             return acc;
         }
-
         // Call reduction function: acc = func(acc, elem)
-        acc = call_reduce_with_captures(func_ptr, captures, capture_count, acc, elem);
+        acc = call_reduce_with_captures(func_ptr, captures, cc_byte, acc, unbox(elem));
     }
 }

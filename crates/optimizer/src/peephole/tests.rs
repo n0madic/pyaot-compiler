@@ -3,7 +3,7 @@
 use indexmap::IndexMap;
 use pyaot_mir::{
     BasicBlock, BinOp, Constant, Function, Instruction, InstructionKind, Local, Module, Operand,
-    RuntimeFunc, Terminator, UnOp,
+    Terminator, UnOp,
 };
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, FuncId, LocalId};
@@ -360,23 +360,21 @@ fn test_xor_self() {
 
 #[test]
 fn test_box_unbox_elimination() {
-    // _1 = BoxInt(_0)
-    // _2 = UnboxInt(_1)  →  _2 = Copy(_0)
+    // _1 = ValueFromInt(_0)
+    // _2 = UnwrapValueInt(_1)  →  _2 = Copy(_0)
     let locals = vec![
         make_local(0, Type::Int),
         make_local(1, Type::Int),
         make_local(2, Type::Int),
     ];
     let instructions = vec![
-        InstructionKind::RuntimeCall {
+        InstructionKind::ValueFromInt {
             dest: LocalId::from(1u32),
-            func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_INT),
-            args: vec![Operand::Local(LocalId::from(0u32))],
+            src: Operand::Local(LocalId::from(0u32)),
         },
-        InstructionKind::RuntimeCall {
+        InstructionKind::UnwrapValueInt {
             dest: LocalId::from(2u32),
-            func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_INT),
-            args: vec![Operand::Local(LocalId::from(1u32))],
+            src: Operand::Local(LocalId::from(1u32)),
         },
     ];
 
@@ -384,10 +382,10 @@ fn test_box_unbox_elimination() {
     super::run_peephole(&mut module);
 
     let insts = get_instructions(&module);
-    // First instruction unchanged (BoxInt)
+    // First instruction unchanged (ValueFromInt)
     assert!(matches!(
         &insts[0].kind,
-        InstructionKind::RuntimeCall { .. }
+        InstructionKind::ValueFromInt { .. }
     ));
     // Second instruction replaced with Copy
     match &insts[1].kind {

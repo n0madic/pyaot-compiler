@@ -1,8 +1,8 @@
 //! Empty container type refinement
 //!
 //! When `li = []` has no type annotation, the type planner infers `List(Any)`.
-//! This causes elem_tag=ELEM_HEAP_OBJ at runtime, but the lowering passes raw
-//! i64 values for int appends, causing a mismatch that leads to segfaults.
+//! Without refinement, appending raw int Values into a List(Any) container
+//! could cause type mismatches that lead to segfaults.
 //!
 //! This pass scans statement blocks for empty container assignments and refines
 //! their element type from subsequent method calls (append, insert, add, etc.).

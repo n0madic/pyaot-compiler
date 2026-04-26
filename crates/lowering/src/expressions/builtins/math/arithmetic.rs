@@ -283,10 +283,12 @@ impl<'a> Lowering<'a> {
             // Header: call next(), check exhausted
             self.push_block(loop_header);
 
-            let next_local = self.emit_runtime_call(
+            // After §F.7c BigBang: iter_next returns tagged Value bits; unbox
+            // for typed Int/Bool element types so BinOp Add sees raw scalars.
+            let raw_local = self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
                 vec![mir::Operand::Local(iter_local)],
-                Type::Int,
+                Type::HeapAny,
                 mir_func,
             );
 
@@ -307,6 +309,26 @@ impl<'a> Lowering<'a> {
 
             // Body: accumulate
             self.push_block(loop_body);
+
+            let next_local = match &element_type {
+                Type::Int => {
+                    let dest = self.alloc_and_add_local(Type::Int, mir_func);
+                    self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                        dest,
+                        src: mir::Operand::Local(raw_local),
+                    });
+                    dest
+                }
+                Type::Bool => {
+                    let dest = self.alloc_and_add_local(Type::Bool, mir_func);
+                    self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+                        dest,
+                        src: mir::Operand::Local(raw_local),
+                    });
+                    dest
+                }
+                _ => raw_local,
+            };
 
             let item_operand = if result_type == Type::Float {
                 self.promote_to_float_if_needed(
@@ -385,33 +407,14 @@ impl<'a> Lowering<'a> {
         // Loop body: item = iterable[counter]; result += item; counter++
         self.push_block(loop_body);
 
-        // Get item at index
-        // For floats, ListGet returns a boxed pointer (i64), not the float value
-        let item_type = if element_type == Type::Float {
-            Type::HeapAny // Guaranteed heap pointer (*mut Obj) returned by ListGet for floats
-        } else {
-            element_type.clone()
-        };
-        // Note: For floats, we need special gc_root handling
-        let item_local = self.emit_runtime_call(
-            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
-            vec![iterable_operand.clone(), mir::Operand::Local(counter_local)],
-            item_type,
+        // Get item at index; emit_list_get handles Int/Bool/Float unwrapping.
+        let item_local = self.emit_list_get(
+            iterable_operand.clone(),
+            mir::Operand::Local(counter_local),
+            &element_type,
             mir_func,
         );
-
-        // Unbox float elements (ListGet returns boxed pointer for floats)
-        let unboxed_item = if element_type == Type::Float {
-            let unboxed_local = self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT),
-                vec![mir::Operand::Local(item_local)],
-                Type::Float,
-                mir_func,
-            );
-            mir::Operand::Local(unboxed_local)
-        } else {
-            mir::Operand::Local(item_local)
-        };
+        let unboxed_item = mir::Operand::Local(item_local);
 
         // Promote item to float if needed (when summing int list with float start)
         let item_operand = if result_type == Type::Float {
@@ -502,44 +505,22 @@ impl<'a> Lowering<'a> {
             right: b_operand,
         });
 
-        // For int results use ELEM_RAW_INT (1), for float use ELEM_HEAP_OBJ (0)
-        let elem_tag: i64 = if is_float { 0 } else { 1 };
-
-        // Create tuple (quot, rem)
+        // After §F.7c: tuples store uniform tagged Values; box every primitive.
+        let _ = is_float;
         let result_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
-            vec![
-                mir::Operand::Constant(mir::Constant::Int(2)),
-                mir::Operand::Constant(mir::Constant::Int(elem_tag)),
-            ],
+            vec![mir::Operand::Constant(mir::Constant::Int(2))],
             Type::Tuple(vec![result_elem_ty.clone(), result_elem_ty.clone()]),
             mir_func,
         );
 
-        // Box float results before storing in tuple
-        let quot_operand = if is_float {
-            let boxed = self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
-                vec![mir::Operand::Local(quot_local)],
-                Type::HeapAny,
-                mir_func,
-            );
-            mir::Operand::Local(boxed)
-        } else {
-            mir::Operand::Local(quot_local)
-        };
-
-        let rem_operand = if is_float {
-            let boxed = self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
-                vec![mir::Operand::Local(rem_local)],
-                Type::HeapAny,
-                mir_func,
-            );
-            mir::Operand::Local(boxed)
-        } else {
-            mir::Operand::Local(rem_local)
-        };
+        let quot_operand = self.box_primitive_if_needed(
+            mir::Operand::Local(quot_local),
+            &result_elem_ty,
+            mir_func,
+        );
+        let rem_operand =
+            self.box_primitive_if_needed(mir::Operand::Local(rem_local), &result_elem_ty, mir_func);
 
         // Set tuple elements
         self.emit_instruction(mir::InstructionKind::RuntimeCall {

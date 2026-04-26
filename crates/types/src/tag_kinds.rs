@@ -7,7 +7,7 @@
 //!
 //! # Adding New Type Tags
 //!
-//! To add a new type tag, edit `crates/core-defs/src/type_tags.rs`.
+//! To add a new type tag, edit `crates/core-defs/src/tag_kinds.rs`.
 //! The change will automatically propagate to both the types and runtime crates.
 
 #![forbid(unsafe_code)]

@@ -156,7 +156,7 @@ impl<'a> Lowering<'a> {
 
         // If target is a global variable, sync the global with the local at start of each iteration
         // This is necessary because the loop uses a local for efficiency, but code inside
-        // the loop body will use GlobalGet(ValueKind::Int) to read the variable
+        // the loop body will use the Int-typed RT_GLOBAL_GET_INT to read the variable
         if self.is_global(&target) {
             let runtime_func = self.get_global_set_func(&Type::Int);
             let effective_var_id = self.get_effective_var_id(target);

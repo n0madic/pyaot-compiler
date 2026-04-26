@@ -63,39 +63,27 @@ impl<'a> Lowering<'a> {
             }
             Type::List(elem_ty) => {
                 // List indexing returns element type
-                // Use ListGet which returns raw value for ELEM_RAW_INT lists
-                // or *mut Obj for ELEM_HEAP_OBJ lists
+                // Use ListGet which returns tagged Value bits (unwrapped to raw scalar by caller)
                 // For Bool/Float elements, add unboxing step since they're stored as boxed objects
                 match **elem_ty {
                     Type::Bool => {
-                        // ListGet returns *mut Obj (boxed bool), need to unbox to i8
-                        let boxed_local = self.alloc_local_id();
-                        mir_func.add_local(mir::Local {
-                            id: boxed_local,
-                            name: None,
-                            ty: Type::Str, // Placeholder for *mut Obj
-                            is_gc_root: false,
-                        });
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: boxed_local,
-                            func: mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_LIST_GET,
-                            ),
-                            args: vec![obj_operand, index_operand],
-                        });
-                        // Unbox to bool
+                        // rt_list_get_typed(list, idx, KIND_BOOL=2) returns raw 0/1 as i64.
+                        // Codegen truncates i64→i8 automatically via ireduce.
                         mir_func.add_local(mir::Local {
                             id: result_local,
                             name: None,
                             ty: Type::Bool,
                             is_gc_root: false,
                         });
+                        let kind_tag = mir::Operand::Constant(mir::Constant::Int(
+                            mir::GetElementKind::Bool.to_tag() as i64,
+                        ));
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: result_local,
                             func: mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL,
+                                &pyaot_core_defs::runtime_func_def::RT_LIST_GET_TYPED,
                             ),
-                            args: vec![mir::Operand::Local(boxed_local)],
+                            args: vec![obj_operand, index_operand, kind_tag],
                         });
                     }
                     Type::Float => {
@@ -130,7 +118,7 @@ impl<'a> Lowering<'a> {
                         });
                     }
                     Type::Int => {
-                        // rt_list_get_typed(Int) handles both ELEM_RAW_INT and ELEM_HEAP_OBJ.
+                        // rt_list_get_typed(Int) decodes the tagged Value int.
                         mir_func.add_local(mir::Local {
                             id: result_local,
                             name: None,
@@ -194,66 +182,30 @@ impl<'a> Lowering<'a> {
                     Type::normalize_union(elem_types.clone())
                 };
 
-                // Determine if this tuple uses ELEM_HEAP_OBJ storage.
-                // Tuples only use ELEM_RAW_INT when ALL elements are Int.
-                // Otherwise, primitives are boxed and need typed getters to unbox.
-                let uses_heap_obj =
-                    elem_types.is_empty() || !elem_types.iter().all(|t| *t == Type::Int);
-
-                // When element type is Any and storage is ELEM_HEAP_OBJ,
-                // the result is a heap pointer → use HeapAny for print/compare dispatch.
-                let result_ty = if matches!(elem_ty, Type::Any) && uses_heap_obj {
+                // After §F.4, rt_tuple_get always returns raw tagged Value bits;
+                // emit_tuple_get applies the appropriate unbox for primitive elem types.
+                // When element type is Any, result is a heap pointer → HeapAny.
+                let eff_elem_ty = if matches!(elem_ty, Type::Any) {
                     Type::HeapAny
                 } else {
                     elem_ty.clone()
                 };
-                mir_func.add_local(mir::Local {
-                    id: result_local,
-                    name: None,
-                    ty: result_ty.clone(),
-                    is_gc_root: result_ty.is_heap(),
-                });
-
-                // Choose the appropriate getter based on element type and storage
-                let runtime_func = if uses_heap_obj {
-                    crate::type_dispatch::tuple_get_func(&elem_ty)
-                } else {
-                    // ELEM_RAW_INT storage - all elements are raw i64
-                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
-                };
-
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: runtime_func,
-                    args: vec![obj_operand, index_operand],
-                });
+                let value_local =
+                    self.emit_tuple_get(obj_operand, index_operand, eff_elem_ty, mir_func);
+                return Ok(mir::Operand::Local(value_local));
             }
             Type::TupleVar(elem_ty_box) => {
                 // Variable-length tuple — every index returns the element type.
                 // Runtime bounds-check is done by rt_tuple_get.
                 let elem_ty = (**elem_ty_box).clone();
-                let uses_heap_obj = !matches!(elem_ty, Type::Int);
-                let result_ty = if matches!(elem_ty, Type::Any) && uses_heap_obj {
+                let eff_elem_ty = if matches!(elem_ty, Type::Any) {
                     Type::HeapAny
                 } else {
                     elem_ty.clone()
                 };
-                mir_func.add_local(mir::Local {
-                    id: result_local,
-                    name: None,
-                    ty: result_ty.clone(),
-                    is_gc_root: result_ty.is_heap(),
-                });
-                let runtime_func = if uses_heap_obj {
-                    crate::type_dispatch::tuple_get_func(&elem_ty)
-                } else {
-                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
-                };
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: runtime_func,
-                    args: vec![obj_operand, index_operand],
-                });
+                let value_local =
+                    self.emit_tuple_get(obj_operand, index_operand, eff_elem_ty, mir_func);
+                return Ok(mir::Operand::Local(value_local));
             }
             Type::Dict(_key_ty, value_ty) => {
                 // Dict indexing: dict[key] returns value type
@@ -268,10 +220,11 @@ impl<'a> Lowering<'a> {
                 let index_type = self.seed_expr_type(index, hir_module);
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
 
-                // Check if value type needs unboxing
-                let unbox_func = Self::unbox_func_for_type(value_ty.as_ref());
+                // Check if value type needs unboxing — `unbox_if_needed`
+                // emits ValueFromInt/Bool MIR or rt_unbox_float.
+                let needs_unbox = matches!(**value_ty, Type::Int | Type::Float | Type::Bool);
 
-                if let Some(unbox_func) = unbox_func {
+                if needs_unbox {
                     // Get returns a boxed pointer, need to unbox
                     let boxed_local = self.emit_runtime_call(
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_GET),
@@ -279,10 +232,14 @@ impl<'a> Lowering<'a> {
                         Type::HeapAny,
                         mir_func,
                     );
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    let unboxed = self.unbox_if_needed(
+                        mir::Operand::Local(boxed_local),
+                        value_ty.as_ref(),
+                        mir_func,
+                    );
+                    self.emit_instruction(mir::InstructionKind::Copy {
                         dest: result_local,
-                        func: unbox_func,
-                        args: vec![mir::Operand::Local(boxed_local)],
+                        src: unboxed,
                     });
                 } else {
                     // Heap types can be returned directly
@@ -307,9 +264,9 @@ impl<'a> Lowering<'a> {
                 let index_type = self.seed_expr_type(index, hir_module);
                 let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
 
-                let unbox_func = Self::unbox_func_for_type(value_ty.as_ref());
+                let needs_unbox = matches!(**value_ty, Type::Int | Type::Float | Type::Bool);
 
-                if let Some(unbox_func) = unbox_func {
+                if needs_unbox {
                     let boxed_local = self.emit_runtime_call(
                         mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_DEFAULT_DICT_GET,
@@ -318,10 +275,14 @@ impl<'a> Lowering<'a> {
                         Type::HeapAny,
                         mir_func,
                     );
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    let unboxed = self.unbox_if_needed(
+                        mir::Operand::Local(boxed_local),
+                        value_ty.as_ref(),
+                        mir_func,
+                    );
+                    self.emit_instruction(mir::InstructionKind::Copy {
                         dest: result_local,
-                        func: unbox_func,
-                        args: vec![mir::Operand::Local(boxed_local)],
+                        src: unboxed,
                     });
                 } else {
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {

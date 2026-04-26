@@ -100,13 +100,9 @@ impl<'a> Lowering<'a> {
                         .emit_key_func_with_captures(Some(&key_source), hir_module, mir_func)?
                         .expect("key_source is Some");
 
-                    // Determine elem_tag for boxing raw elements before calling key function.
-                    // Only builtin wrappers need boxing - user functions work with raw values.
-                    let elem_tag =
-                        Self::elem_tag_for_func_or_builtin(func_or_builtin, elem_type.as_ref());
-                    let elem_tag_operand = mir::Operand::Constant(mir::Constant::Int(elem_tag));
-
-                    // Result type matches element type (for heap types, use heap object type)
+                    // After §F.7c: list slots are tagged Values; runtime no
+                    // longer needs an elem_tag hint.
+                    let _ = func_or_builtin;
                     let result_type = elem_type.as_ref().clone();
                     let is_min_operand =
                         mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
@@ -115,10 +111,10 @@ impl<'a> Lowering<'a> {
                         vec![
                             list_operand,
                             resolved.func_addr,
-                            elem_tag_operand,
                             resolved.captures,
                             resolved.capture_count,
                             is_min_operand,
+                            resolved.key_return_tag,
                         ],
                         result_type,
                         mir_func,
@@ -174,13 +170,10 @@ impl<'a> Lowering<'a> {
                         .emit_key_func_with_captures(Some(&key_source), hir_module, mir_func)?
                         .expect("key_source is Some");
 
-                    // Determine elem_tag for boxing raw elements before calling key function.
+                    // After §F.7c: tuple slots are tagged Values; runtime no
+                    // longer needs an elem_tag hint.
+                    let _ = func_or_builtin;
                     let first_elem_type = elem_types.first().cloned().unwrap_or(Type::Int);
-                    let elem_tag =
-                        Self::elem_tag_for_func_or_builtin(func_or_builtin, &first_elem_type);
-                    let elem_tag_operand = mir::Operand::Constant(mir::Constant::Int(elem_tag));
-
-                    // Result type matches first element type (for heterogeneous tuples)
                     let is_min_operand =
                         mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
                     let result_local = self.emit_runtime_call(
@@ -188,10 +181,10 @@ impl<'a> Lowering<'a> {
                         vec![
                             tuple_operand,
                             resolved.func_addr,
-                            elem_tag_operand,
                             resolved.captures,
                             resolved.capture_count,
                             is_min_operand,
+                            resolved.key_return_tag,
                         ],
                         first_elem_type,
                         mir_func,
@@ -247,59 +240,25 @@ impl<'a> Lowering<'a> {
                         .emit_key_func_with_captures(Some(&key_source), hir_module, mir_func)?
                         .expect("key_source is Some");
 
-                    // For sets, the semantics of the third parameter is different:
-                    // - needs_unbox=0: builtin key functions expect boxed objects (no unboxing)
-                    // - needs_unbox=1: user functions expect raw values (unbox integers)
-                    let needs_unbox = match (func_or_builtin, elem_type.as_ref()) {
-                        (FuncOrBuiltin::UserFunc(_, _), Type::Int) => 1,
-                        _ => 0,
-                    };
-                    let needs_unbox_operand =
-                        mir::Operand::Constant(mir::Constant::Int(needs_unbox));
-
-                    // Runtime returns *mut Obj, need to unbox for primitives
+                    let _ = func_or_builtin;
+                    let result_type = elem_type.as_ref().clone();
                     let is_min_operand =
                         mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
-                    let heap_result_local = self.emit_runtime_call(
+                    let result_local = self.emit_runtime_call(
                         mir::RuntimeFunc::Call(ContainerKind::Set.minmax_with_key_def()),
                         vec![
                             set_operand,
                             resolved.func_addr,
-                            needs_unbox_operand,
                             resolved.captures,
                             resolved.capture_count,
                             is_min_operand,
+                            resolved.key_return_tag,
                         ],
-                        Type::Int,
+                        result_type,
                         mir_func,
                     );
 
-                    // Unbox the result if it's a primitive type
-                    let elem_t = elem_type.as_ref();
-                    if matches!(elem_t, Type::Int) {
-                        let unboxed_local = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_UNBOX_INT,
-                            ),
-                            vec![mir::Operand::Local(heap_result_local)],
-                            Type::Int,
-                            mir_func,
-                        );
-                        return Ok(mir::Operand::Local(unboxed_local));
-                    } else if matches!(elem_t, Type::Float) {
-                        let unboxed_local = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
-                            ),
-                            vec![mir::Operand::Local(heap_result_local)],
-                            Type::Float,
-                            mir_func,
-                        );
-                        return Ok(mir::Operand::Local(unboxed_local));
-                    } else {
-                        // For heap types (str, etc.), return the pointer directly
-                        return Ok(mir::Operand::Local(heap_result_local));
-                    }
+                    return Ok(mir::Operand::Local(result_local));
                 }
 
                 // Original logic for non-key case
@@ -372,15 +331,25 @@ impl<'a> Lowering<'a> {
                     mir::BinOp::Gt
                 };
 
-                // Get first element to initialize result.
-                // IterNextNoExc always returns a raw i64 (either an integer value or float
-                // bits). Allocate first_local as Int to match this return type.
-                let first_local = self.emit_runtime_call(
+                // After §F.7c BigBang: IterNextNoExc returns tagged Value bits.
+                // For float iter, the bits are a heap pointer to FloatObj (RT_UNBOX_FLOAT
+                // handles that path below). For int iter, unwrap to raw i64 here.
+                let first_raw = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
                     vec![mir::Operand::Local(iter_local)],
-                    Type::Int,
+                    Type::HeapAny,
                     mir_func,
                 );
+                let first_local = if is_float_iter {
+                    first_raw
+                } else {
+                    let dest = self.alloc_and_add_local(Type::Int, mir_func);
+                    self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                        dest,
+                        src: mir::Operand::Local(first_raw),
+                    });
+                    dest
+                };
 
                 // Empty iterable → ValueError, matching CPython (§G.12).
                 let first_exhausted = self.emit_runtime_call(
@@ -419,8 +388,7 @@ impl<'a> Lowering<'a> {
 
                 let result_local = self.alloc_and_add_local(iter_result_type.clone(), mir_func);
                 if is_float_iter {
-                    // The iterator yields a pointer to a boxed float object (since list[float]
-                    // always uses ELEM_HEAP_OBJ storage). Unbox to get the raw f64 value.
+                    // The iterator yields a pointer to a boxed FloatObj. Unbox to get raw f64.
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: mir::RuntimeFunc::Call(
@@ -447,13 +415,23 @@ impl<'a> Lowering<'a> {
 
                 // Header: call next(), check exhausted
                 self.push_block(loop_header);
-                // next_local receives the raw i64 from IterNextNoExc.
-                let next_local = self.emit_runtime_call(
+                // After §F.7c BigBang: IterNextNoExc returns tagged Value bits.
+                let raw_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
                     vec![mir::Operand::Local(iter_local)],
-                    Type::Int,
+                    Type::HeapAny,
                     mir_func,
                 );
+                let next_local = if is_float_iter {
+                    raw_local
+                } else {
+                    let dest = self.alloc_and_add_local(Type::Int, mir_func);
+                    self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                        dest,
+                        src: mir::Operand::Local(raw_local),
+                    });
+                    dest
+                };
 
                 let exhausted_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(
@@ -473,9 +451,7 @@ impl<'a> Lowering<'a> {
                 // Body: compare and update result
                 self.push_block(loop_body);
 
-                // For float iterators, unbox the boxed float pointer from IterNextNoExc
-                // to get a raw f64 for comparison (list[float] uses ELEM_HEAP_OBJ storage,
-                // so the iterator returns a pointer to a boxed float, not raw float bits).
+                // For float iterators, unbox the boxed FloatObj pointer from IterNextNoExc.
                 let item_operand = if is_float_iter {
                     let float_local = self.emit_runtime_call(
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT),

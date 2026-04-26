@@ -97,11 +97,9 @@ impl<'a> Lowering<'a> {
         if matches!(&obj_type, Type::BuiltinException(_)) {
             if attr_name == "args" {
                 // .args is field 0 on built-in exception instances
-                let result_local = self.emit_runtime_call(
-                    mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
-                    ),
-                    vec![obj_operand, mir::Operand::Constant(mir::Constant::Int(0))],
+                let result_local = self.emit_instance_get_field(
+                    obj_operand,
+                    0,
                     Type::Tuple(vec![Type::Str]),
                     mir_func,
                 );
@@ -171,26 +169,17 @@ impl<'a> Lowering<'a> {
                     // flowing into `self.<field>` across all constructor call
                     // sites. WPA param inference narrows the `__init__`
                     // parameter to the same type, so runtime storage matches
-                    // the refined label (raw primitive for Int / Float / Bool,
-                    // pointer for heap shapes). Relabel the result local
-                    // directly — emitting an unbox would crash when the slot
-                    // holds a raw primitive that was stored without boxing.
+                    // the refined label (raw primitive for Int / Bool, boxed
+                    // FloatObj pointer for Float — see §F.1, pointer for heap
+                    // shapes). `emit_instance_get_field` emits the unbox for
+                    // Float fields automatically and relabels other reads.
                     let read_type = self
                         .get_refined_class_field_type(class_id, &attr)
                         .cloned()
                         .unwrap_or(storage_type);
 
-                    let result_local = self.emit_runtime_call(
-                        mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
-                        ),
-                        vec![
-                            obj_operand,
-                            mir::Operand::Constant(mir::Constant::Int(offset as i64)),
-                        ],
-                        read_type,
-                        mir_func,
-                    );
+                    let result_local =
+                        self.emit_instance_get_field(obj_operand, offset, read_type, mir_func);
 
                     return Ok(mir::Operand::Local(result_local));
                 }
@@ -224,17 +213,8 @@ impl<'a> Lowering<'a> {
                         .cloned()
                         .unwrap_or(Type::Any);
 
-                    let result_local = self.emit_runtime_call(
-                        mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
-                        ),
-                        vec![
-                            obj_operand,
-                            mir::Operand::Constant(mir::Constant::Int(offset as i64)),
-                        ],
-                        field_type.clone(),
-                        mir_func,
-                    );
+                    let result_local =
+                        self.emit_instance_get_field(obj_operand, offset, field_type, mir_func);
 
                     return Ok(mir::Operand::Local(result_local));
                 }

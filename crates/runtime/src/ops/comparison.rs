@@ -2,9 +2,9 @@
 
 use crate::exceptions::ExceptionType;
 use crate::object::{
-    BoolObj, BytesObj, DictObj, FloatObj, IntObj, ListObj, Obj, SetObj, StrObj, TupleObj,
-    TypeTagKind, ELEM_RAW_BOOL, ELEM_RAW_INT,
+    BytesObj, DictObj, FloatObj, ListObj, Obj, SetObj, StrObj, TupleObj, TypeTagKind,
 };
+use pyaot_core_defs::Value;
 
 /// Helper to get type name for error messages.
 /// Delegates to TypeTagKind::type_name() from core-defs (single source of truth).
@@ -34,55 +34,72 @@ pub extern "C" fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
         }
     }
 
+    // Apply Value tag dispatch first before any pointer dereference.
+    let va = Value(a as u64);
+    let vb = Value(b as u64);
+
+    // Both tagged primitives: compare by type + value.
+    if !va.is_ptr() && !vb.is_ptr() {
+        // Same tagged kind → bit-for-bit comparison covers Int==Int and Bool==Bool.
+        // Cross-kind (Int vs Bool): unwrap both as integers (True==1, False==0).
+        if va.is_int() && vb.is_int() {
+            return if va.unwrap_int() == vb.unwrap_int() {
+                1
+            } else {
+                0
+            };
+        }
+        if va.is_bool() && vb.is_bool() {
+            return if va.unwrap_bool() == vb.unwrap_bool() {
+                1
+            } else {
+                0
+            };
+        }
+        // Int/Bool cross-type equality (Python: 1 == True, 0 == False)
+        if (va.is_int() && vb.is_bool()) || (va.is_bool() && vb.is_int()) {
+            let ia = if va.is_int() {
+                va.unwrap_int()
+            } else {
+                va.unwrap_bool() as i64
+            };
+            let ib = if vb.is_int() {
+                vb.unwrap_int()
+            } else {
+                vb.unwrap_bool() as i64
+            };
+            return if ia == ib { 1 } else { 0 };
+        }
+        // None == None
+        if va.is_none() && vb.is_none() {
+            return 1;
+        }
+        return 0;
+    }
+
+    // One primitive, one heap pointer → different types, cannot be equal
+    // (unless the primitive is None-tagged and the heap object is a NoneObj,
+    //  but that case is irrelevant for Stage C since both still arrive as *mut Obj).
+    if !va.is_ptr() || !vb.is_ptr() {
+        return 0;
+    }
+
+    // Both are real heap pointers — safe to dereference.
     unsafe {
         let tag_a = (*a).type_tag();
         let tag_b = (*b).type_tag();
 
-        // Int/Bool cross-type equality (Python: 1 == True, 0 == False)
-        if (tag_a == TypeTagKind::Int && tag_b == TypeTagKind::Bool)
-            || (tag_a == TypeTagKind::Bool && tag_b == TypeTagKind::Int)
-        {
-            let va = if tag_a == TypeTagKind::Int {
-                (*(a as *mut IntObj)).value
-            } else {
-                (*(a as *mut BoolObj)).value as i64
-            };
-            let vb = if tag_b == TypeTagKind::Int {
-                (*(b as *mut IntObj)).value
-            } else {
-                (*(b as *mut BoolObj)).value as i64
-            };
-            return if va == vb { 1 } else { 0 };
-        }
-
-        // Different types → not equal
+        // Different types → not equal (float/int cross-type not handled here;
+        // the Union equality path goes through hash_table_utils::eq_hashable_obj)
         if tag_a != tag_b {
             return 0;
         }
 
         match tag_a {
-            TypeTagKind::Int => {
-                let va = (*(a as *mut IntObj)).value;
-                let vb = (*(b as *mut IntObj)).value;
-                if va == vb {
-                    1
-                } else {
-                    0
-                }
-            }
             TypeTagKind::Float => {
-                let va = (*(a as *mut FloatObj)).value;
-                let vb = (*(b as *mut FloatObj)).value;
-                if va == vb {
-                    1
-                } else {
-                    0
-                }
-            }
-            TypeTagKind::Bool => {
-                let va = (*(a as *mut BoolObj)).value;
-                let vb = (*(b as *mut BoolObj)).value;
-                if va == vb {
+                let fa = (*(a as *mut FloatObj)).value;
+                let fb = (*(b as *mut FloatObj)).value;
+                if fa == fb {
                     1
                 } else {
                     0
@@ -116,6 +133,62 @@ pub(super) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ord
         );
     }
 
+    // Check Value tags first — Int and Bool are tagged primitives, not heap pointers.
+    let va = Value(a as u64);
+    let vb = Value(b as u64);
+
+    // Int/Int ordering
+    if va.is_int() && vb.is_int() {
+        return va.unwrap_int().cmp(&vb.unwrap_int());
+    }
+    // Bool/Bool ordering
+    if va.is_bool() && vb.is_bool() {
+        return va.unwrap_bool().cmp(&vb.unwrap_bool());
+    }
+    // Int/Bool or Bool/Int cross-type ordering (Python: bool is int subtype)
+    if (va.is_int() || va.is_bool()) && (vb.is_int() || vb.is_bool()) {
+        let ia: i64 = if va.is_int() {
+            va.unwrap_int()
+        } else {
+            va.unwrap_bool() as i64
+        };
+        let ib: i64 = if vb.is_int() {
+            vb.unwrap_int()
+        } else {
+            vb.unwrap_bool() as i64
+        };
+        return ia.cmp(&ib);
+    }
+    // Int (tagged) vs Float (heap) — promote int to float
+    if va.is_int() && vb.is_ptr() && (*b).type_tag() == TypeTagKind::Float {
+        let fa = va.unwrap_int() as f64;
+        let fb = (*(b as *mut FloatObj)).value;
+        return fa.partial_cmp(&fb).unwrap_or(Ordering::Greater);
+    }
+    if vb.is_int() && va.is_ptr() && (*a).type_tag() == TypeTagKind::Float {
+        let fa = (*(a as *mut FloatObj)).value;
+        let fb = vb.unwrap_int() as f64;
+        return fa.partial_cmp(&fb).unwrap_or(Ordering::Greater);
+    }
+    // Bool (tagged) vs Float (heap) — same as Int vs Float
+    if va.is_bool() && vb.is_ptr() && (*b).type_tag() == TypeTagKind::Float {
+        let fa = va.unwrap_bool() as i64 as f64;
+        let fb = (*(b as *mut FloatObj)).value;
+        return fa.partial_cmp(&fb).unwrap_or(Ordering::Greater);
+    }
+    if vb.is_bool() && va.is_ptr() && (*a).type_tag() == TypeTagKind::Float {
+        let fa = (*(a as *mut FloatObj)).value;
+        let fb = vb.unwrap_bool() as i64 as f64;
+        return fa.partial_cmp(&fb).unwrap_or(Ordering::Greater);
+    }
+    // Tagged None is not orderable
+    if va.is_none() || vb.is_none() {
+        raise_exc!(
+            ExceptionType::TypeError,
+            "'<' not supported between instances of 'NoneType' and other types"
+        );
+    }
+    // Both must be real heap pointers from here on.
     let tag_a = (*a).type_tag();
     let tag_b = (*b).type_tag();
 
@@ -130,21 +203,11 @@ pub(super) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ord
     // Same type comparisons
     if tag_a == tag_b {
         return match tag_a {
-            TypeTagKind::Int => {
-                let va = (*(a as *mut IntObj)).value;
-                let vb = (*(b as *mut IntObj)).value;
-                va.cmp(&vb)
-            }
             TypeTagKind::Float => {
-                let va = (*(a as *mut FloatObj)).value;
-                let vb = (*(b as *mut FloatObj)).value;
+                let fa = (*(a as *mut FloatObj)).value;
+                let fb = (*(b as *mut FloatObj)).value;
                 // NaN sorts to the end (Greater) to provide a stable ordering for sorted()
-                va.partial_cmp(&vb).unwrap_or(Ordering::Greater)
-            }
-            TypeTagKind::Bool => {
-                let va = (*(a as *mut BoolObj)).value;
-                let vb = (*(b as *mut BoolObj)).value;
-                va.cmp(&vb)
+                fa.partial_cmp(&fb).unwrap_or(Ordering::Greater)
             }
             TypeTagKind::Str => {
                 let str_a = a as *mut StrObj;
@@ -166,22 +229,21 @@ pub(super) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ord
         };
     }
 
-    // Mixed int/float - promote int to float
-    if (tag_a == TypeTagKind::Int && tag_b == TypeTagKind::Float)
-        || (tag_a == TypeTagKind::Float && tag_b == TypeTagKind::Int)
-    {
-        let va = if tag_a == TypeTagKind::Int {
-            (*(a as *mut IntObj)).value as f64
-        } else {
+    // Mixed heap types (e.g., Float vs something else)
+    if (tag_a == TypeTagKind::Float) || (tag_b == TypeTagKind::Float) {
+        let fa = if tag_a == TypeTagKind::Float {
             (*(a as *mut FloatObj)).value
-        };
-        let vb = if tag_b == TypeTagKind::Int {
-            (*(b as *mut IntObj)).value as f64
         } else {
-            (*(b as *mut FloatObj)).value
+            // tag_b is Float; tag_a is something non-numeric — fall through to error
+            crate::raise_exc!(
+                ExceptionType::TypeError,
+                "'<' not supported between instances of '{}' and '{}'",
+                type_name(tag_a),
+                type_name(tag_b)
+            );
         };
-        // NaN sorts to the end (Greater) to provide a stable ordering for sorted()
-        return va.partial_cmp(&vb).unwrap_or(Ordering::Greater);
+        let fb = (*(b as *mut FloatObj)).value;
+        return fa.partial_cmp(&fb).unwrap_or(Ordering::Greater);
     }
 
     // Incompatible types
@@ -201,20 +263,20 @@ unsafe fn involves_nan(a: *mut Obj, b: *mut Obj) -> bool {
     if a.is_null() || b.is_null() {
         return false;
     }
-    let tag_a = (*a).type_tag();
-    let tag_b = (*b).type_tag();
-
-    if tag_a == TypeTagKind::Float {
-        let va = (*(a as *mut FloatObj)).value;
-        if va.is_nan() {
-            return true;
-        }
+    // Tagged Int/Bool are never NaN.
+    let va = Value(a as u64);
+    let vb = Value(b as u64);
+    if va.is_ptr()
+        && (*a).type_tag() == TypeTagKind::Float
+        && (*(a as *mut FloatObj)).value.is_nan()
+    {
+        return true;
     }
-    if tag_b == TypeTagKind::Float {
-        let vb = (*(b as *mut FloatObj)).value;
-        if vb.is_nan() {
-            return true;
-        }
+    if vb.is_ptr()
+        && (*b).type_tag() == TypeTagKind::Float
+        && (*(b as *mut FloatObj)).value.is_nan()
+    {
+        return true;
     }
     false
 }
@@ -269,14 +331,7 @@ pub extern "C" fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
                         "list index out of range"
                     );
                 }
-                // Post-S2.3: list slots are `Value`; convert back to the raw
-                // ABI form before the ELEM_RAW_INT branch boxes.
-                let elem = crate::list::list_slot_raw(list, actual_idx as usize);
-                if (*list).elem_tag == ELEM_RAW_INT {
-                    crate::boxing::rt_box_int(elem as i64)
-                } else {
-                    elem
-                }
+                (*(*list).data.add(actual_idx as usize)).0 as *mut Obj
             }
             TypeTagKind::Tuple => {
                 let tuple = obj as *mut TupleObj;
@@ -288,18 +343,14 @@ pub extern "C" fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
                         "tuple index out of range"
                     );
                 }
+                // Slots are uniformly tagged Values; return as-is.
                 let elem = *(*tuple).data.as_ptr().add(actual_idx as usize);
-                // Check heap_field_mask: if this field is NOT a heap pointer, box it
-                let is_heap = (*tuple).heap_field_mask & (1u64 << actual_idx as u64) != 0;
-                if !is_heap && (*tuple).elem_tag == ELEM_RAW_INT {
-                    crate::boxing::rt_box_int(elem as i64)
-                } else {
-                    elem
-                }
+                elem.0 as *mut Obj
             }
             TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
                 // Dict subscript needs a boxed key
-                let boxed_key = crate::boxing::rt_box_int(index);
+                let boxed_key =
+                    pyaot_core_defs::Value::from_int(index).0 as *mut crate::object::Obj;
                 crate::dict::rt_dict_get(obj, boxed_key)
             }
             TypeTagKind::Str => {
@@ -366,7 +417,7 @@ unsafe fn rt_list_contains_value(list: *mut Obj, value: *mut Obj) -> i8 {
     }
 
     for i in 0..len {
-        let elem = crate::list::list_slot_raw(list_obj, i);
+        let elem = (*(*list_obj).data.add(i)).0 as *mut Obj;
         if rt_obj_eq(elem, value) == 1 {
             return 1;
         }
@@ -377,85 +428,57 @@ unsafe fn rt_list_contains_value(list: *mut Obj, value: *mut Obj) -> i8 {
 
 /// Check if tuple contains value using value equality
 unsafe fn rt_tuple_contains_value(tuple: *mut Obj, value: *mut Obj) -> i8 {
+    use crate::hash_table_utils::eq_hashable_obj;
     let tuple_obj = tuple as *mut TupleObj;
     let len = (*tuple_obj).len;
     let data = (*tuple_obj).data.as_ptr();
-    let elem_tag = (*tuple_obj).elem_tag;
 
-    match elem_tag {
-        ELEM_RAW_INT => {
-            // Elements are raw i64 values — unbox the search value to compare
-            if value.is_null() {
-                return 0;
-            }
-            let search_val = match (*value).header.type_tag {
-                TypeTagKind::Int => (*(value as *mut IntObj)).value,
-                TypeTagKind::Bool => (*(value as *mut BoolObj)).value as i8 as i64,
-                _ => return 0,
-            };
-            for i in 0..len {
-                let elem_raw = *data.add(i) as i64;
-                if elem_raw == search_val {
-                    return 1;
-                }
-            }
-            0
-        }
-        ELEM_RAW_BOOL => {
-            // Elements are raw i8 values cast to pointer
-            if value.is_null() {
-                return 0;
-            }
-            let search_val: i8 = match (*value).header.type_tag {
-                TypeTagKind::Bool => (*(value as *mut BoolObj)).value as i8,
-                TypeTagKind::Int => {
-                    let v = (*(value as *mut IntObj)).value;
-                    if v == 0 {
-                        0
-                    } else {
-                        1
-                    }
-                }
-                _ => return 0,
-            };
-            for i in 0..len {
-                let elem_raw = *data.add(i) as i8;
-                if elem_raw == search_val {
-                    return 1;
-                }
-            }
-            0
-        }
-        _ => {
-            // Elements are *mut Obj pointers — use value equality
-            for i in 0..len {
-                let elem = *data.add(i);
-                if rt_obj_eq(elem, value) == 1 {
-                    return 1;
-                }
-            }
-            0
+    for i in 0..len {
+        let elem = *data.add(i);
+        if eq_hashable_obj(elem.0 as *mut Obj, value) {
+            return 1;
         }
     }
+    0
 }
 
 /// Check if bytes contains an integer value
 pub(super) unsafe fn rt_bytes_contains_value(bytes: *mut Obj, value: *mut Obj) -> i8 {
-    // value should be an integer
-    if value.is_null() || (*value).type_tag() != TypeTagKind::Int {
-        let type_str = if value.is_null() {
-            "NoneType"
-        } else {
-            type_name((*value).type_tag())
-        };
+    // value should be an integer — check the Value tag first.
+    let int_val: i64 = if value.is_null() {
         crate::raise_exc!(
             ExceptionType::TypeError,
-            "a bytes-like object is required, not '{}'",
-            type_str
+            "a bytes-like object is required, not 'NoneType'"
         );
-    }
-
-    let int_val = (*(value as *mut IntObj)).value;
+    } else {
+        let vv = Value(value as u64);
+        if vv.is_int() {
+            vv.unwrap_int()
+        } else if vv.is_bool() {
+            vv.unwrap_bool() as i64
+        } else if vv.is_none() {
+            crate::raise_exc!(
+                ExceptionType::TypeError,
+                "a bytes-like object is required, not 'NoneType'"
+            );
+        } else {
+            // Heap pointer — must be Int type tag for bytes containment check.
+            let tag = (*value).type_tag();
+            if tag != TypeTagKind::Int {
+                crate::raise_exc!(
+                    ExceptionType::TypeError,
+                    "a bytes-like object is required, not '{}'",
+                    type_name(tag)
+                );
+            }
+            // Heap Int is no longer valid post-Stage B, but handle defensively.
+            // TODO stageD: remove heap-Int fallback once boxing is fully eliminated.
+            crate::raise_exc!(
+                ExceptionType::TypeError,
+                "a bytes-like object is required, not 'int'"
+            );
+        }
+    };
     if !(0..=255).contains(&int_val) {
         return 0; // Not a valid byte value
     }
@@ -484,8 +507,12 @@ pub(super) unsafe fn rt_bytes_contains_value(bytes: *mut Obj, value: *mut Obj) -
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_is_none(obj: *mut Obj) -> i8 {
-    if obj.is_null() {
+    let v = pyaot_core_defs::Value(obj as u64);
+    if obj.is_null() || v.is_none() {
         return 1;
+    }
+    if !v.is_ptr() {
+        return 0;
     }
     unsafe {
         if (*obj).type_tag() == TypeTagKind::None {
@@ -508,25 +535,21 @@ pub extern "C" fn rt_is_truthy(obj: *mut Obj) -> i8 {
         return 0;
     }
 
+    // Check Value-tagged primitives before any heap pointer dereference.
+    let v = Value(obj as u64);
+    if v.is_int() {
+        return if v.unwrap_int() != 0 { 1 } else { 0 };
+    }
+    if v.is_bool() {
+        return if v.unwrap_bool() { 1 } else { 0 };
+    }
+    if v.is_none() {
+        return 0;
+    }
+
     unsafe {
         match (*obj).type_tag() {
             TypeTagKind::None => 0,
-            TypeTagKind::Bool => {
-                let bool_obj = obj as *mut BoolObj;
-                if (*bool_obj).value {
-                    1
-                } else {
-                    0
-                }
-            }
-            TypeTagKind::Int => {
-                let int_obj = obj as *mut IntObj;
-                if (*int_obj).value != 0 {
-                    1
-                } else {
-                    0
-                }
-            }
             TypeTagKind::Float => {
                 let float_obj = obj as *mut FloatObj;
                 if (*float_obj).value != 0.0 {

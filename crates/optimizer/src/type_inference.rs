@@ -1191,6 +1191,10 @@ fn instruction_dest(kind: &InstructionKind) -> Option<LocalId> {
         | InstructionKind::IntToFloat { dest, .. }
         | InstructionKind::FloatBits { dest, .. }
         | InstructionKind::IntBitsToFloat { dest, .. }
+        | InstructionKind::ValueFromInt { dest, .. }
+        | InstructionKind::UnwrapValueInt { dest, .. }
+        | InstructionKind::ValueFromBool { dest, .. }
+        | InstructionKind::UnwrapValueBool { dest, .. }
         | InstructionKind::FloatAbs { dest, .. }
         | InstructionKind::ExcGetType { dest }
         | InstructionKind::ExcHasException { dest }
@@ -1390,18 +1394,12 @@ fn logical_operand_type(
             InstructionKind::IntToFloat { .. } | InstructionKind::IntBitsToFloat { .. } => {
                 Type::Float
             }
-            InstructionKind::RuntimeCall {
-                func: RuntimeFunc::Call(def),
-                ..
-            } if ptr::eq(*def, &pyaot_core_defs::runtime_func_def::RT_BOX_INT) => Type::Int,
+            InstructionKind::ValueFromInt { .. } => Type::Int,
+            InstructionKind::ValueFromBool { .. } => Type::Bool,
             InstructionKind::RuntimeCall {
                 func: RuntimeFunc::Call(def),
                 ..
             } if ptr::eq(*def, &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT) => Type::Float,
-            InstructionKind::RuntimeCall {
-                func: RuntimeFunc::Call(def),
-                ..
-            } if ptr::eq(*def, &pyaot_core_defs::runtime_func_def::RT_BOX_BOOL) => Type::Bool,
             InstructionKind::RuntimeCall {
                 func: RuntimeFunc::Call(def),
                 ..
@@ -1637,7 +1635,23 @@ fn materialize_inferred_types(module: &mut Module, table: &TypeTable) {
 }
 
 fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
+    // Stage E: lambda-like callees (`__lambda_*`, `__nested_*`,
+    // `__genexp_*`) intentionally ship primitive captured params as
+    // ABI-facing `Type::Any` slots — the value arrives tagged from the
+    // closure trampoline / HOF dispatcher / wrapper CallDirect, and the
+    // function body unboxes it once in a prologue. If WPA were allowed
+    // to refine those slots back to Int/Bool/Float here, the Cranelift
+    // signature would no longer match the boxed ABI emitted by every
+    // caller, and the prologue `UnwrapValueInt` would interpret a raw
+    // primitive as tagged bits.
+    let is_lambda_like = func.name.starts_with("__lambda_")
+        || func.name.starts_with("__nested_")
+        || func.name.starts_with("__genexp_");
+
     for param in &mut func.params {
+        if is_lambda_like && matches!(param.ty, Type::Any) {
+            continue;
+        }
         if let Some(new_ty) = types
             .get(&param.id)
             .filter(|ty| !matches!(ty, Type::Never))
@@ -1649,6 +1663,14 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
     }
 
     for local in func.locals.values_mut() {
+        // Mirror the param guard: a lambda-like local that corresponds to
+        // a Type::Any param entry is part of the ABI and must stay Any.
+        if is_lambda_like
+            && matches!(local.ty, Type::Any)
+            && func.params.iter().any(|p| p.id == local.id)
+        {
+            continue;
+        }
         if let Some(new_ty) = types
             .get(&local.id)
             .filter(|ty| !matches!(ty, Type::Never))

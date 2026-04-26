@@ -107,7 +107,7 @@ impl<'a> Lowering<'a> {
 
         // If target is a global variable, sync the global with the local at start of each iteration
         // This is necessary because the loop uses a local for efficiency, but code inside
-        // the loop body will use GlobalGet(ValueKind) to read the variable
+        // the loop body will use the type-specific RT_GLOBAL_GET_* to read the variable
         if self.is_global(&target) {
             let runtime_func = self.get_global_set_func(&elem_type);
             let effective_var_id = self.get_effective_var_id(target);

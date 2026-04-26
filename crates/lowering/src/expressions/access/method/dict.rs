@@ -9,21 +9,24 @@ use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
     /// Emit a runtime call and optionally unbox the result for primitive dict values.
-    /// Returns the final result local (unboxed if needed).
+    /// Returns the final result local (unboxed if needed). For Int/Bool the
+    /// unbox is an inline `UnwrapValue*` MIR instruction; for Float it's a
+    /// `rt_unbox_float` call.
     fn emit_dict_call_and_unbox(
         &mut self,
         result_local: LocalId,
-        unbox_func: Option<mir::RuntimeFunc>,
+        value_ty: &Type,
         call_func: mir::RuntimeFunc,
         args: Vec<mir::Operand>,
         mir_func: &mut mir::Function,
     ) {
-        if let Some(unbox_func) = unbox_func {
+        if matches!(value_ty, Type::Int | Type::Float | Type::Bool) {
             let boxed_local = self.emit_runtime_call(call_func, args, Type::HeapAny, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            let unboxed =
+                self.unbox_if_needed(mir::Operand::Local(boxed_local), value_ty, mir_func);
+            self.emit_instruction(mir::InstructionKind::Copy {
                 dest: result_local,
-                func: unbox_func,
-                args: vec![mir::Operand::Local(boxed_local)],
+                src: unboxed,
             });
         } else {
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -44,9 +47,6 @@ impl<'a> Lowering<'a> {
         value_ty: Box<Type>,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        // Determine if value type needs unboxing
-        let unbox_func = Self::unbox_func_for_type(value_ty.as_ref());
-
         match method_name {
             "get" => {
                 // .get(key) or .get(key, default)
@@ -60,7 +60,7 @@ impl<'a> Lowering<'a> {
                         self.box_primitive_if_needed(arg_operands[1].clone(), &value_ty, mir_func);
                     self.emit_dict_call_and_unbox(
                         result_local,
-                        unbox_func,
+                        value_ty.as_ref(),
                         mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_DICT_GET_DEFAULT,
                         ),
@@ -77,7 +77,7 @@ impl<'a> Lowering<'a> {
                     // rt_dict_get_default expects i64 for the default parameter)
                     self.emit_dict_call_and_unbox(
                         result_local,
-                        unbox_func,
+                        value_ty.as_ref(),
                         mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_DICT_GET_DEFAULT,
                         ),
@@ -100,7 +100,7 @@ impl<'a> Lowering<'a> {
                 let boxed_key = self.box_primitive_if_needed(key_arg, &key_ty, mir_func);
                 self.emit_dict_call_and_unbox(
                     result_local,
-                    unbox_func,
+                    value_ty.as_ref(),
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
                     vec![obj_operand, boxed_key],
                     mir_func,
@@ -131,15 +131,10 @@ impl<'a> Lowering<'a> {
                 Ok(mir::Operand::Local(result_local))
             }
             "keys" => {
-                // .keys() - returns list of keys
-                let key_elem_tag = crate::type_dispatch::elem_tag_for_type(&key_ty);
-
+                // .keys() - returns list of keys (post-§F.7c, no elem_tag arg).
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
-                    vec![
-                        obj_operand,
-                        mir::Operand::Constant(mir::Constant::Int(key_elem_tag)),
-                    ],
+                    vec![obj_operand],
                     Type::List(key_ty.clone()),
                     mir_func,
                 );
@@ -147,15 +142,10 @@ impl<'a> Lowering<'a> {
                 Ok(mir::Operand::Local(result_local))
             }
             "values" => {
-                // .values() - returns list of values
-                let value_elem_tag = crate::type_dispatch::elem_tag_for_type(&value_ty);
-
+                // .values() - returns list of values (post-§F.7c, no elem_tag arg).
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_VALUES),
-                    vec![
-                        obj_operand,
-                        mir::Operand::Constant(mir::Constant::Int(value_elem_tag)),
-                    ],
+                    vec![obj_operand],
                     Type::List(value_ty.clone()),
                     mir_func,
                 );
@@ -206,7 +196,7 @@ impl<'a> Lowering<'a> {
 
                 self.emit_dict_call_and_unbox(
                     result_local,
-                    unbox_func,
+                    value_ty.as_ref(),
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET_DEFAULT),
                     vec![obj_operand, boxed_key, boxed_default],
                     mir_func,

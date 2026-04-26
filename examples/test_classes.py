@@ -2390,4 +2390,74 @@ assert abs(_g13_leaf.grad - 2.0) < 1e-9, f"_g13_leaf.grad expected 2.0, got {_g1
 
 print("isinstance-narrowing rebind (§G.13): PASS")
 
+
+# §F.1 — Float fields in instance slots are stored as boxed FloatObj
+# pointers wrapped via Value::from_ptr. The GC walks fields with
+# heap_field_mask and follows every Float field as a heap pointer; the
+# read path emits rt_unbox_float after RT_INSTANCE_GET_FIELD. Stress this
+# under heavy allocation to flush out boxing/unboxing mismatches.
+class _F1Point:
+    x: float
+    y: float
+
+    def __init__(self, x: float, y: float):
+        self.x = x
+        self.y = y
+
+
+def _f1_make_points(n: int) -> float:
+    total = 0.0
+    for i in range(n):
+        # Allocate two FloatObj per iteration (x, y) plus the InstanceObj
+        # so the slab gets churned and the marker has plenty of work.
+        p = _F1Point(float(i) * 0.5, float(i) * 0.25)
+        total = total + p.x + p.y
+    return total
+
+
+_f1_total = _f1_make_points(200)
+# Sum_{i=0..199} (0.5i + 0.25i) = 0.75 * (199*200/2) = 0.75 * 19900 = 14925.0
+assert abs(_f1_total - 14925.0) < 1e-9, f"§F.1 sum mismatch: got {_f1_total}"
+
+
+# Heterogeneous fields: int (raw) + float (boxed pointer post-§F.1)
+# + str (heap pointer). GC must distinguish raw int slots from heap
+# pointer slots.
+class _F1Mixed:
+    n: int
+    f: float
+    label: str
+
+    def __init__(self, n: int, f: float, label: str):
+        self.n = n
+        self.f = f
+        self.label = label
+
+
+_f1_mixed_list: list[_F1Mixed] = []
+for _i in range(150):
+    _f1_mixed_list.append(_F1Mixed(_i, float(_i) + 0.5, f"obj_{_i}"))
+
+# After all that allocation a sweep should have run; verify every field
+# survives intact.
+for _i in range(150):
+    _entry: _F1Mixed = _f1_mixed_list[_i]
+    assert _entry.n == _i, f"§F.1 mixed.n mismatch at {_i}"
+    assert abs(_entry.f - (float(_i) + 0.5)) < 1e-9, f"§F.1 mixed.f mismatch at {_i}"
+    assert _entry.label == f"obj_{_i}", f"§F.1 mixed.label mismatch at {_i}"
+
+
+# Reassignment exercises the SET path with non-zero existing FloatObj —
+# the old pointer becomes garbage and must be safely freed by the next
+# sweep without touching the live new value.
+_f1_p = _F1Point(1.0, 2.0)
+for _k in range(300):
+    _f1_p.x = float(_k) + 0.125
+    _f1_p.y = float(_k) * 2.0
+assert abs(_f1_p.x - 299.125) < 1e-9, f"§F.1 reassign x: {_f1_p.x}"
+assert abs(_f1_p.y - 598.0) < 1e-9, f"§F.1 reassign y: {_f1_p.y}"
+
+
+print("Float field GC stress (§F.1): PASS")
+
 print("All class tests passed!")

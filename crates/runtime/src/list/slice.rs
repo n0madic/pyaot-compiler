@@ -2,7 +2,7 @@
 
 use super::core::rt_make_list;
 use crate::gc::{gc_pop, gc_push, ShadowFrame};
-use crate::object::{ListObj, Obj, ELEM_HEAP_OBJ};
+use crate::object::{ListObj, Obj};
 use crate::slice_utils::{collect_step_indices, normalize_slice_indices, slice_length};
 
 /// Slice a list: list[start:end]
@@ -12,7 +12,7 @@ use crate::slice_utils::{collect_step_indices, normalize_slice_indices, slice_le
 #[no_mangle]
 pub extern "C" fn rt_list_slice(list: *mut Obj, start: i64, end: i64) -> *mut Obj {
     if list.is_null() {
-        return rt_make_list(0, ELEM_HEAP_OBJ);
+        return rt_make_list(0);
     }
 
     unsafe {
@@ -22,7 +22,6 @@ pub extern "C" fn rt_list_slice(list: *mut Obj, start: i64, end: i64) -> *mut Ob
         // Normalize indices using shared utility (step=1 for simple slice)
         let (start, end) = normalize_slice_indices(start, end, len, 1);
         let slice_len = slice_length(start, end);
-        let elem_tag = (*src).elem_tag;
 
         // Root `list` across rt_make_list → gc_alloc so the source data is
         // not freed by GC before we copy the elements.
@@ -34,8 +33,7 @@ pub extern "C" fn rt_list_slice(list: *mut Obj, start: i64, end: i64) -> *mut Ob
         };
         gc_push(&mut frame);
 
-        // Create new list with same elem_tag
-        let new_list = rt_make_list(slice_len as i64, elem_tag);
+        let new_list = rt_make_list(slice_len as i64);
 
         gc_pop();
 
@@ -68,7 +66,7 @@ pub extern "C" fn rt_list_slice(list: *mut Obj, start: i64, end: i64) -> *mut Ob
 #[no_mangle]
 pub extern "C" fn rt_list_slice_step(list: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj {
     if list.is_null() || step == 0 {
-        return rt_make_list(0, ELEM_HEAP_OBJ);
+        return rt_make_list(0);
     }
 
     unsafe {
@@ -77,7 +75,6 @@ pub extern "C" fn rt_list_slice_step(list: *mut Obj, start: i64, end: i64, step:
 
         // Normalize indices using shared utility
         let (start, end) = normalize_slice_indices(start, end, len, step);
-        let elem_tag = (*src).elem_tag;
 
         // Collect indices using shared utility (pure computation, no GC)
         let indices = collect_step_indices(start, end, step);
@@ -93,7 +90,7 @@ pub extern "C" fn rt_list_slice_step(list: *mut Obj, start: i64, end: i64, step:
         };
         gc_push(&mut frame);
 
-        let new_list = rt_make_list(result_len as i64, elem_tag);
+        let new_list = rt_make_list(result_len as i64);
 
         gc_pop();
 

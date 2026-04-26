@@ -242,16 +242,12 @@ impl<'a> Lowering<'a> {
         let capacity = args.len() as i64;
         let list_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
-            vec![
-                mir::Operand::Constant(mir::Constant::Int(capacity)),
-                mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
-            ],
+            vec![mir::Operand::Constant(mir::Constant::Int(capacity))],
             Type::List(Box::new(Type::Str)),
             mir_func,
         );
 
-        // Add each argument to the list, boxing primitives as required since the list
-        // uses ELEM_HEAP_OBJ storage (float, bool, and None are stored as heap objects).
+        // Add each argument to the list, boxing primitives as needed.
         for arg_id in args {
             let arg_type = self.seed_expr_type(*arg_id, hir_module);
             let arg_expr = &hir_module.exprs[*arg_id];

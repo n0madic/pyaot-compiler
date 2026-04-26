@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn abi_repair_unboxes_field_write_to_materialized_field_type() {
+    fn abi_repair_field_write_passes_value_through_for_int_field() {
         let mut interner = StringInterner::default();
         let class_name = interner.intern("BoxedField");
         let field_name = interner.intern("data");
@@ -595,19 +595,16 @@ mod tests {
         crate::abi_repair::repair_mir_abi_from_types(&mut module)
             .expect("field-write repair should succeed");
 
+        // §F.7c: `InstanceObj.fields` stores uniform tagged `Value` words.
+        // Field-write paths coerce primitives to `HeapAny` (via Value-tag
+        // wrapping) instead of unboxing — value flows through to
+        // `rt_instance_set_field` as already-tagged bits.
         let init = &module.functions[&FuncId::from(50u32)];
         let block = &init.blocks[&init.entry_block];
-        assert_eq!(block.instructions.len(), 2);
-        assert!(matches!(
-            block.instructions[0].kind,
-            InstructionKind::RuntimeCall {
-                dest,
-                func: pyaot_mir::RuntimeFunc::Call(def),
-                ..
-            } if dest == LocalId::from(3u32)
-                && std::ptr::eq(def, &pyaot_core_defs::runtime_func_def::RT_UNBOX_INT)
-        ));
-        match &block.instructions[1].kind {
+        // Source operand has type `Any` here, which already matches the
+        // HeapAny ABI shape — no extra wrap/unwrap is emitted.
+        assert_eq!(block.instructions.len(), 1);
+        match &block.instructions[0].kind {
             InstructionKind::RuntimeCall {
                 func: pyaot_mir::RuntimeFunc::Call(def),
                 args,
@@ -617,9 +614,9 @@ mod tests {
                     *def,
                     &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD
                 ));
-                assert!(matches!(args[2], Operand::Local(local) if local == LocalId::from(3u32)));
+                assert!(matches!(args[2], Operand::Local(local) if local == LocalId::from(1u32)));
             }
-            other => panic!("expected repaired field write, got {other:?}"),
+            other => panic!("expected pass-through field write, got {other:?}"),
         }
     }
 }

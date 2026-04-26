@@ -49,10 +49,10 @@ pub extern "C" fn rt_set_add(set: *mut Obj, elem: *mut Obj) {
 
         if slot >= 0 {
             let entry = (*set_obj).entries.add(slot as usize);
-            let is_new = (*entry).elem.is_null() || (*entry).elem == TOMBSTONE;
+            let is_new = (*entry).elem.0 == 0 || (*entry).elem == TOMBSTONE;
             if is_new {
                 (*entry).hash = hash;
-                (*entry).elem = elem;
+                (*entry).elem = pyaot_core_defs::Value(elem as u64);
                 (*set_obj).len += 1;
             }
             // If element already exists, do nothing
@@ -152,7 +152,7 @@ pub extern "C" fn rt_set_clear(set: *mut Obj) {
         for i in 0..capacity {
             let entry = entries.add(i);
             (*entry).hash = 0;
-            (*entry).elem = std::ptr::null_mut();
+            (*entry).elem = pyaot_core_defs::Value(0);
         }
         (*set_obj).len = 0;
     }
@@ -191,8 +191,8 @@ pub extern "C" fn rt_set_copy(set: *mut Obj) -> *mut Obj {
         for i in 0..capacity {
             let src_entry = (*src).entries.add(i);
             let elem = (*src_entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                rt_set_add(roots[0], elem);
+            if elem.0 != 0 && elem != TOMBSTONE {
+                rt_set_add(roots[0], elem.0 as *mut Obj);
             }
         }
 
@@ -225,11 +225,11 @@ pub extern "C" fn rt_set_pop(set: *mut Obj) -> *mut Obj {
         for i in 0..capacity {
             let entry = (*set_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
+            if elem.0 != 0 && elem != TOMBSTONE {
                 // Mark as tombstone and decrease length
                 (*entry).elem = TOMBSTONE;
                 (*set_obj).len -= 1;
-                return elem;
+                return elem.0 as *mut Obj;
             }
         }
 
@@ -259,8 +259,8 @@ pub extern "C" fn rt_set_update(set: *mut Obj, other: *mut Obj) {
         for i in 0..capacity {
             let entry = (*other_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                rt_set_add(set, elem);
+            if elem.0 != 0 && elem != TOMBSTONE {
+                rt_set_add(set, elem.0 as *mut Obj);
             }
         }
     }
@@ -284,7 +284,7 @@ pub extern "C" fn rt_set_intersection_update(set: *mut Obj, other: *mut Obj) {
         for i in 0..capacity {
             let entry = (*set_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE && rt_set_contains(other, elem) == 0 {
+            if elem.0 != 0 && elem != TOMBSTONE && rt_set_contains(other, elem.0 as *mut Obj) == 0 {
                 // Not in other, remove from set
                 (*entry).elem = TOMBSTONE;
                 (*set_obj).len -= 1;
@@ -311,7 +311,7 @@ pub extern "C" fn rt_set_difference_update(set: *mut Obj, other: *mut Obj) {
         for i in 0..capacity {
             let entry = (*set_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE && rt_set_contains(other, elem) != 0 {
+            if elem.0 != 0 && elem != TOMBSTONE && rt_set_contains(other, elem.0 as *mut Obj) != 0 {
                 // In other, remove from set
                 (*entry).elem = TOMBSTONE;
                 (*set_obj).len -= 1;
@@ -343,8 +343,8 @@ pub extern "C" fn rt_set_symmetric_difference_update(set: *mut Obj, other: *mut 
         for i in 0..other_capacity {
             let entry = (*other_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE && rt_set_contains(set, elem) == 0 {
-                to_add.push(elem);
+            if elem.0 != 0 && elem != TOMBSTONE && rt_set_contains(set, elem.0 as *mut Obj) == 0 {
+                to_add.push(elem.0 as *mut Obj);
             }
         }
 
@@ -354,7 +354,7 @@ pub extern "C" fn rt_set_symmetric_difference_update(set: *mut Obj, other: *mut 
         for i in 0..capacity {
             let entry = (*set_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE && rt_set_contains(other, elem) != 0 {
+            if elem.0 != 0 && elem != TOMBSTONE && rt_set_contains(other, elem.0 as *mut Obj) != 0 {
                 (*entry).elem = TOMBSTONE;
                 (*set_obj).len -= 1;
             }

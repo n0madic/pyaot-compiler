@@ -1,7 +1,8 @@
 //! Arithmetic operations for Python runtime (int, float, and boxed Union arithmetic)
 
 use crate::exceptions::ExceptionType;
-use crate::object::{FloatObj, IntObj, Obj, TypeTagKind};
+use crate::object::{FloatObj, Obj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 // ==================== Primitive int arithmetic ====================
 
@@ -114,15 +115,33 @@ pub extern "C" fn rt_div_float(a: f64, b: f64) -> f64 {
 /// Returns (left_f64, right_f64, both_int, left_int, right_int)
 #[inline]
 pub(super) unsafe fn extract_numeric_pair(a: *mut Obj, b: *mut Obj) -> (f64, f64, bool, i64, i64) {
-    let tag_a = (*a).type_tag();
-    let tag_b = (*b).type_tag();
+    let va = Value(a as u64);
+    let vb = Value(b as u64);
+    let tag_a = if va.is_ptr() {
+        (*a).type_tag()
+    } else {
+        va.primitive_type().unwrap()
+    };
+    let tag_b = if vb.is_ptr() {
+        (*b).type_tag()
+    } else {
+        vb.primitive_type().unwrap()
+    };
     let va_int = if tag_a == TypeTagKind::Int {
-        (*(a as *mut IntObj)).value
+        if va.is_int() {
+            va.unwrap_int()
+        } else {
+            0
+        }
     } else {
         0
     };
     let vb_int = if tag_b == TypeTagKind::Int {
-        (*(b as *mut IntObj)).value
+        if vb.is_int() {
+            vb.unwrap_int()
+        } else {
+            0
+        }
     } else {
         0
     };
@@ -144,16 +163,27 @@ pub(super) unsafe fn extract_numeric_pair(a: *mut Obj, b: *mut Obj) -> (f64, f64
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
-        let tag_a = (*a).type_tag();
-        let tag_b = (*b).type_tag();
-        // String concatenation
+        let (va_f, vb_f, both_int, vai, vbi) = extract_numeric_pair(a, b);
+        // Reconstruct type tags using Value so tagged primitives are handled correctly.
+        let va = Value(a as u64);
+        let vb = Value(b as u64);
+        let tag_a = if va.is_ptr() {
+            (*a).type_tag()
+        } else {
+            va.primitive_type().unwrap()
+        };
+        let tag_b = if vb.is_ptr() {
+            (*b).type_tag()
+        } else {
+            vb.primitive_type().unwrap()
+        };
+        // String concatenation (only possible for heap Str objects)
         if tag_a == TypeTagKind::Str && tag_b == TypeTagKind::Str {
             return crate::string::rt_str_concat(a, b);
         }
-        let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
             match vai.checked_add(vbi) {
-                Some(v) => crate::boxing::rt_box_int(v),
+                Some(v) => Value::from_int(v).0 as *mut crate::object::Obj,
                 None => {
                     raise_exc!(ExceptionType::OverflowError, "integer overflow");
                 }
@@ -161,7 +191,7 @@ pub extern "C" fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         } else if (tag_a == TypeTagKind::Int || tag_a == TypeTagKind::Float)
             && (tag_b == TypeTagKind::Int || tag_b == TypeTagKind::Float)
         {
-            crate::boxing::rt_box_float(va + vb)
+            crate::boxing::rt_box_float(va_f + vb_f)
         } else {
             crate::raise_exc!(
                 ExceptionType::TypeError,
@@ -180,7 +210,7 @@ pub extern "C" fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
             match vai.checked_sub(vbi) {
-                Some(v) => crate::boxing::rt_box_int(v),
+                Some(v) => Value::from_int(v).0 as *mut crate::object::Obj,
                 None => {
                     raise_exc!(ExceptionType::OverflowError, "integer overflow");
                 }
@@ -195,19 +225,39 @@ pub extern "C" fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
-        let tag_a = (*a).type_tag();
-        let tag_b = (*b).type_tag();
+        let va_tagged = Value(a as u64);
+        let vb_tagged = Value(b as u64);
+        let tag_a = if va_tagged.is_ptr() {
+            (*a).type_tag()
+        } else {
+            va_tagged.primitive_type().unwrap()
+        };
+        let tag_b = if vb_tagged.is_ptr() {
+            (*b).type_tag()
+        } else {
+            vb_tagged.primitive_type().unwrap()
+        };
         // String repetition: str * int or int * str
         if tag_a == TypeTagKind::Str && tag_b == TypeTagKind::Int {
-            return crate::string::rt_str_mul(a, (*(b as *mut IntObj)).value);
+            let count = if vb_tagged.is_int() {
+                vb_tagged.unwrap_int()
+            } else {
+                0
+            };
+            return crate::string::rt_str_mul(a, count);
         }
         if tag_a == TypeTagKind::Int && tag_b == TypeTagKind::Str {
-            return crate::string::rt_str_mul(b, (*(a as *mut IntObj)).value);
+            let count = if va_tagged.is_int() {
+                va_tagged.unwrap_int()
+            } else {
+                0
+            };
+            return crate::string::rt_str_mul(b, count);
         }
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
             match vai.checked_mul(vbi) {
-                Some(v) => crate::boxing::rt_box_int(v),
+                Some(v) => Value::from_int(v).0 as *mut crate::object::Obj,
                 None => {
                     raise_exc!(ExceptionType::OverflowError, "integer overflow");
                 }
@@ -248,7 +298,7 @@ pub extern "C" fn rt_obj_floordiv(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             let d = vai / vbi;
             let r = vai % vbi;
             let result = if r != 0 && (r ^ vbi) < 0 { d - 1 } else { d };
-            crate::boxing::rt_box_int(result)
+            Value::from_int(result).0 as *mut crate::object::Obj
         } else {
             if vb == 0.0 {
                 raise_exc!(
@@ -278,7 +328,7 @@ pub extern "C" fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             }
             let r = vai % vbi;
             let result = if r != 0 && (r ^ vbi) < 0 { r + vbi } else { r };
-            crate::boxing::rt_box_int(result)
+            Value::from_int(result).0 as *mut crate::object::Obj
         } else {
             if vb == 0.0 {
                 raise_exc!(
@@ -326,7 +376,7 @@ pub extern "C" fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
             if overflow {
                 raise_exc!(ExceptionType::OverflowError, "integer overflow");
             }
-            crate::boxing::rt_box_int(result)
+            Value::from_int(result).0 as *mut crate::object::Obj
         } else {
             crate::boxing::rt_box_float(va.powf(vb))
         }

@@ -30,33 +30,7 @@ pub unsafe extern "C" fn rt_generator_next(gen: *mut Obj) -> *mut Obj {
     __pyaot_generator_resume(gen)
 }
 
-/// RAII guard for type_tags allocation to prevent memory leaks on panic
-struct TypeTagKindsGuard {
-    ptr: *mut u8,
-    layout: std::alloc::Layout,
-}
-
-impl TypeTagKindsGuard {
-    fn new(ptr: *mut u8, layout: std::alloc::Layout) -> Self {
-        Self { ptr, layout }
-    }
-
-    /// Transfer ownership - prevents deallocation on drop
-    fn into_raw(mut self) -> *mut u8 {
-        let ptr = self.ptr;
-        self.ptr = std::ptr::null_mut();
-        std::mem::forget(self);
-        ptr
-    }
-}
-
-impl Drop for TypeTagKindsGuard {
-    fn drop(&mut self) {
-        if !self.ptr.is_null() {
-            unsafe { std::alloc::dealloc(self.ptr, self.layout) }
-        }
-    }
-}
+// §F.7b: TypeTagKindsGuard removed — per-slot tag side-array deleted.
 
 /// Create a new generator object
 ///
@@ -64,12 +38,10 @@ impl Drop for TypeTagKindsGuard {
 /// The returned pointer must be treated as a GC-managed object.
 #[no_mangle]
 pub unsafe extern "C" fn rt_make_generator(func_id: u32, num_locals: u32) -> *mut Obj {
-    use std::alloc::{alloc, Layout};
-
     // Calculate size: header + fixed fields + locals array
     // Use checked arithmetic to prevent overflow
     let locals_size = (num_locals as usize)
-        .checked_mul(size_of::<i64>())
+        .checked_mul(size_of::<pyaot_core_defs::Value>())
         .unwrap_or_else(|| {
             raise_exc!(ExceptionType::MemoryError, "generator locals size overflow");
         });
@@ -91,43 +63,13 @@ pub unsafe extern "C" fn rt_make_generator(func_id: u32, num_locals: u32) -> *mu
     (*gen).exhausted = false;
     (*gen).closing = false;
     (*gen).num_locals = num_locals;
-    (*gen).sent_value = 0; // No sent value initially (0 = None)
+    // §F.7b: sent_value is a tagged Value; Value(0) encodes None (int tag, value 0).
+    (*gen).sent_value = pyaot_core_defs::Value(0);
 
-    // Allocate type tags array (not GC-managed, just raw allocation)
-    // Use RAII guard to ensure deallocation if panic occurs during initialization
-    if num_locals > 0 {
-        let layout =
-            Layout::array::<u8>(num_locals as usize).expect("Invalid layout for type_tags");
-        let type_tags = alloc(layout);
-        if type_tags.is_null() {
-            std::process::abort();
-        }
-
-        // Guard takes ownership - will dealloc on panic
-        let guard = TypeTagKindsGuard::new(type_tags, layout);
-
-        // Initialize all type tags to LOCAL_TYPE_RAW_INT (safest default - won't be traced)
-        use crate::object::LOCAL_TYPE_RAW_INT;
-        for i in 0..num_locals as usize {
-            *type_tags.add(i) = LOCAL_TYPE_RAW_INT;
-        }
-
-        // Zero-initialize locals (gc_alloc should have zeroed, but be explicit)
-        let locals_ptr = (*gen).locals.as_mut_ptr();
-        for i in 0..num_locals as usize {
-            *locals_ptr.add(i) = 0;
-        }
-
-        // All initialization successful - transfer ownership to generator
-        (*gen).type_tags = guard.into_raw();
-    } else {
-        (*gen).type_tags = std::ptr::null_mut();
-
-        // Zero-initialize locals (gc_alloc should have zeroed, but be explicit)
-        let locals_ptr = (*gen).locals.as_mut_ptr();
-        for i in 0..num_locals as usize {
-            *locals_ptr.add(i) = 0;
-        }
+    // Zero-initialize locals (Value(0) = tagged-None / zero int)
+    let locals_ptr = (*gen).locals.as_mut_ptr();
+    for i in 0..num_locals as usize {
+        *locals_ptr.add(i) = pyaot_core_defs::Value(0);
     }
 
     obj
@@ -170,7 +112,7 @@ pub unsafe extern "C" fn rt_generator_get_local(gen: *mut Obj, index: u32) -> i6
         std::process::abort();
     }
     let locals_ptr = (*gen).locals.as_ptr();
-    *locals_ptr.add(index as usize)
+    (*locals_ptr.add(index as usize)).0 as i64
 }
 
 /// Set a local variable in the generator (as i64)
@@ -190,7 +132,7 @@ pub unsafe extern "C" fn rt_generator_set_local(gen: *mut Obj, index: u32, value
         std::process::abort();
     }
     let locals_ptr = (*gen).locals.as_mut_ptr();
-    *locals_ptr.add(index as usize) = value;
+    *locals_ptr.add(index as usize) = pyaot_core_defs::Value(value as u64);
 }
 
 /// Get a local variable from the generator as a pointer
@@ -210,7 +152,7 @@ pub unsafe extern "C" fn rt_generator_get_local_ptr(gen: *mut Obj, index: u32) -
         std::process::abort();
     }
     let locals_ptr = (*gen).locals.as_ptr();
-    *locals_ptr.add(index as usize) as *mut Obj
+    (*locals_ptr.add(index as usize)).0 as *mut Obj
 }
 
 /// Set a local variable in the generator as a pointer
@@ -230,22 +172,10 @@ pub unsafe extern "C" fn rt_generator_set_local_ptr(gen: *mut Obj, index: u32, v
         std::process::abort();
     }
     let locals_ptr = (*gen).locals.as_mut_ptr();
-    *locals_ptr.add(index as usize) = value as i64;
+    *locals_ptr.add(index as usize) = pyaot_core_defs::Value(value as u64);
 }
 
-/// Set the type tag for a generator local variable (for precise GC tracking)
-///
-/// # Safety
-/// `gen` must be a valid pointer to a GeneratorObj.
-/// `index` must be less than the generator's num_locals.
-/// `type_tag` should be one of LOCAL_TYPE_RAW_INT, LOCAL_TYPE_RAW_FLOAT, LOCAL_TYPE_RAW_BOOL, or LOCAL_TYPE_PTR.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_set_local_type(gen: *mut Obj, index: u32, type_tag: u8) {
-    let gen = gen as *mut GeneratorObj;
-    if !(*gen).type_tags.is_null() && index < (*gen).num_locals {
-        *(*gen).type_tags.add(index as usize) = type_tag;
-    }
-}
+// §F.7b: rt_generator_set_local_type removed — per-slot tag side-array deleted.
 
 /// Mark the generator as exhausted
 ///
@@ -337,8 +267,8 @@ pub unsafe extern "C" fn rt_generator_send(gen: *mut Obj, value: i64) -> *mut Ob
         );
     }
 
-    // Store the sent value
-    (*gen_obj).sent_value = value;
+    // Store the sent value (wire format i64 reinterpreted as tagged Value bits)
+    (*gen_obj).sent_value = pyaot_core_defs::Value(value as u64);
 
     // Call the resume function
     __pyaot_generator_resume(gen)
@@ -351,7 +281,7 @@ pub unsafe extern "C" fn rt_generator_send(gen: *mut Obj, value: i64) -> *mut Ob
 #[no_mangle]
 pub unsafe extern "C" fn rt_generator_get_sent_value(gen: *mut Obj) -> i64 {
     let gen_obj = gen as *mut GeneratorObj;
-    (*gen_obj).sent_value
+    (*gen_obj).sent_value.0 as i64
 }
 
 /// Close a generator
@@ -413,22 +343,5 @@ pub unsafe extern "C" fn rt_generator_is_closing(gen: *mut Obj) -> i8 {
     }
 }
 
-/// Finalize a generator object (free type_tags array)
-/// Called by GC during sweep phase before freeing the generator object
-///
-/// # Safety
-/// `gen` must be a valid pointer to a GeneratorObj that will be freed.
-pub(crate) unsafe fn finalize_generator(gen: *mut Obj) {
-    use std::alloc::{dealloc, Layout};
-
-    let gen_obj = gen as *mut GeneratorObj;
-    let num_locals = (*gen_obj).num_locals;
-
-    // Free the type_tags array if it exists
-    if !(*gen_obj).type_tags.is_null() && num_locals > 0 {
-        let layout =
-            Layout::array::<u8>(num_locals as usize).expect("Invalid layout for type_tags");
-        dealloc((*gen_obj).type_tags, layout);
-        (*gen_obj).type_tags = std::ptr::null_mut();
-    }
-}
+// §F.7b: finalize_generator removed — per-slot tag side-array deleted; no
+// separate heap allocation to free on sweep.

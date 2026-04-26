@@ -68,8 +68,7 @@ impl AstToHir {
 
         // 4. Create empty list initialization: __comp_N: list[T] = []
         //    Try to infer element type from the comprehension to set the correct
-        //    elem_tag on the list. This avoids storing raw ints with ELEM_HEAP_OBJ
-        //    tag, which causes GC warnings and potential corruption in debug builds.
+        //    element type on the list, enabling typed fast paths in lowering.
         let elem_type = self.infer_comprehension_elem_type(&comp.elt, &comp.generators);
         let list_type = elem_type.map(|et| Type::List(Box::new(et)));
         let empty_list = self.module.exprs.alloc(Expr {
@@ -282,7 +281,7 @@ impl AstToHir {
         //    module-level assignment completes) plus `module.globals` for
         //    anything already finalized. Without this, module-level vars would
         //    be treated as captures, which loses the deep-type propagation the
-        //    global path provides (zip-of-lists → `rt_tuple_get_int`).
+        //    global path provides (zip-of-lists → typed `emit_tuple_get`).
         let (global_propagation, captured_names): (Vec<_>, Vec<_>) =
             free_vars.into_iter().partition(|name| {
                 if let Some(&var_id) = self.symbols.var_map.get(name) {

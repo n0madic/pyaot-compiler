@@ -44,7 +44,7 @@ fn test_debug_assert_type_tag_macro_correct_type() {
     gc::init();
 
     // Create a List object
-    let list_obj = list::rt_make_list(8, 0);
+    let list_obj = list::rt_make_list(8);
 
     // Use the macro - this should NOT panic
     unsafe {
@@ -82,7 +82,7 @@ fn test_debug_assert_type_tag_dict_vs_list() {
         .unwrap_or_else(|e| e.into_inner());
     gc::init();
 
-    let list_obj = list::rt_make_list(4, 0);
+    let list_obj = list::rt_make_list(4);
 
     unsafe {
         debug_assert_type_tag!(list_obj, object::TypeTagKind::Dict, "test");
@@ -118,7 +118,7 @@ fn test_correct_types_no_panic() {
     unsafe {
         // Allocate all objects and root them together so GC stress mode does not
         // sweep earlier allocations when later ones trigger a collection.
-        let list_obj = list::rt_make_list(4, 0);
+        let list_obj = list::rt_make_list(4);
         let mut roots: [*mut object::Obj; 4] = [
             list_obj,
             std::ptr::null_mut(),
@@ -134,7 +134,7 @@ fn test_correct_types_no_panic() {
 
         roots[1] = dict::rt_make_dict(4);
         roots[2] = set::rt_make_set(4);
-        roots[3] = tuple::rt_make_tuple(2, 0);
+        roots[3] = tuple::rt_make_tuple(2);
 
         gc::gc_pop();
 

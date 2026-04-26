@@ -297,6 +297,22 @@ fn shape_infer_type(
 
         hir::ExprKind::Var(vid) => resolve_var_type(m, vmap, *vid, depth + 1, interner),
 
+        hir::ExprKind::IfExpr {
+            then_val, else_val, ..
+        } => {
+            // Ternary: union the two branches' types — if either resolves to
+            // a primitive (Int/Bool/Float/Str) and they agree, propagate it
+            // so the enclosing yield's return type is concrete.
+            let then_ty = shape_infer_type(m, vmap, *then_val, depth + 1, interner);
+            let else_ty = shape_infer_type(m, vmap, *else_val, depth + 1, interner);
+            match (then_ty, else_ty) {
+                (Some(a), Some(b)) if a == b => Some(a),
+                (Some(a), Some(b)) => Some(Type::normalize_union(vec![a, b])),
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                (None, None) => None,
+            }
+        }
+
         hir::ExprKind::BuiltinCall {
             builtin: hir::Builtin::Zip,
             args,
@@ -428,29 +444,9 @@ fn mk_set_local(
     )
 }
 
-/// Emit `SetLocalType(gen, idx, LOCAL_TYPE_PTR)` — marks slot `idx` as a
-/// heap pointer so GC traces it on mark. Call immediately after
-/// `mk_set_local` when the captured value is a heap type (`Type::is_heap()`).
-/// The `type_tag` value (3) must stay in sync with `LOCAL_TYPE_PTR` in
-/// `crates/runtime/src/object.rs`.
-fn mk_set_local_type_ptr(
-    m: &mut hir::Module,
-    gen_obj_var: VarId,
-    idx: u32,
-    span: Span,
-) -> hir::ExprId {
-    let g = mk_var(m, gen_obj_var, Type::HeapAny, span);
-    mk_expr(
-        m,
-        hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::SetLocalType {
-            gen: g,
-            idx,
-            type_tag: 3,
-        }),
-        Some(Type::Int),
-        span,
-    )
-}
+// §F.7b: mk_set_local_type_ptr removed — per-slot tag side-array deleted.
+// SetLocal now boxes primitives via box_primitive_if_needed so GC can walk
+// locals uniformly via Value::is_ptr() without a separate type tag array.
 
 /// Allocate a `GeneratorIntrinsic::SetState` expression.
 fn mk_set_state(m: &mut hir::Module, gen_obj_var: VarId, state: i64, span: Span) -> hir::ExprId {
@@ -620,11 +616,8 @@ fn emit_save_vars_where(
         let vr = mk_var(m, gv.var_id, gv.ty.clone(), span);
         let set = mk_set_local(m, gen_obj_var, gv.gen_local_idx, vr, span);
         body.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set), span));
-        // Mark heap-typed captures so GC traces the slot (§G.3).
-        if gv.ty.is_heap() {
-            let set_ty = mk_set_local_type_ptr(m, gen_obj_var, gv.gen_local_idx, span);
-            body.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set_ty), span));
-        }
+        // §F.7b: No SetLocalType needed — SetLocal now boxes primitives via
+        // box_primitive_if_needed so GC walks locals via Value::is_ptr().
     }
 }
 
@@ -719,8 +712,8 @@ impl<'a> Lowering<'a> {
         // `lower_closure_call` prepends capture values to the call args,
         // so the creator's first N params *are* the captures. The frontend
         // creates those params with `ty: None`, but the resume function's
-        // for-loop element type (used for `rt_tuple_get_int` vs the
-        // generic `rt_tuple_get`) is inferred here at desugar time via
+        // for-loop element type (used to select the right unbox step via
+        // `emit_tuple_get`) is inferred here at desugar time via
         // `VarTypeMap`, which only sees typed params. Without this pass a
         // nested gen-expr like
         //     [sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]
@@ -1109,11 +1102,8 @@ fn build_creator_body(
             let pv = mk_var(m, gv.var_id, gv.ty.clone(), span);
             let set = mk_set_local(m, creator_gen_var, gv.gen_local_idx, pv, span);
             stmts.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set), span));
-            // Mark heap-typed captures so GC traces the slot (§G.3).
-            if gv.ty.is_heap() {
-                let set_ty = mk_set_local_type_ptr(m, creator_gen_var, gv.gen_local_idx, span);
-                stmts.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set_ty), span));
-            }
+            // §F.7b: No SetLocalType needed — SetLocal now boxes primitives via
+            // box_primitive_if_needed so GC walks locals via Value::is_ptr().
         }
     }
 
@@ -1170,20 +1160,8 @@ fn build_creator_body(
         );
         let set_iter = mk_set_local(m, creator_gen_var, 0, iter_call, span);
         stmts.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set_iter), span));
-
-        // Mark slot 0 as heap pointer for GC
-        let g = mk_var(m, creator_gen_var, Type::HeapAny, span);
-        let set_type = mk_expr(
-            m,
-            hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::SetLocalType {
-                gen: g,
-                idx: 0,
-                type_tag: 3, // LOCAL_TYPE_PTR
-            }),
-            Some(Type::Int),
-            span,
-        );
-        stmts.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set_type), span));
+        // §F.7b: No SetLocalType needed — SetLocal boxes the iterator pointer
+        // via box_primitive_if_needed; GC follows it via Value::is_ptr().
     }
 
     // return gen_obj
@@ -1566,7 +1544,10 @@ fn build_for_loop_resume(
     *next_var_id += 1;
 
     // iter = __gen_get_local(gen_obj, 0)
-    let iter_ty = Type::Iterator(Box::new(Type::Any));
+    // After §F.7c BigBang: carry the actual elem type through so IterNextNoExc
+    // lowering picks the correct UnwrapValue path for typed Int/Bool.
+    let elem_ty_for_iter = iter_elem_type(m, fg, interner);
+    let iter_ty = Type::Iterator(Box::new(elem_ty_for_iter));
     let get_iter = mk_get_local(m, gen_obj_var, 0, iter_ty.clone(), span);
     stmts.push(mk_leaf_stmt(
         m,
@@ -1625,13 +1606,13 @@ fn build_for_loop_direct(
     interner: &StringInterner,
 ) {
     // Element type yielded per iteration. Required so `lower_binding_target`
-    // picks the right runtime call (`RT_TUPLE_GET_INT` vs `RT_LIST_GET`) when
+    // picks the right unbox step (via `emit_tuple_get`) vs `RT_LIST_GET` when
     // the target is a Tuple. Falls back to `Any` for iterables whose element
     // type is only known after type planning.
     let elem_ty = iter_elem_type(m, fg, interner);
 
     // next_val = __iter_next_no_exc(iter)
-    let ir = mk_var(m, iter_var, Type::Iterator(Box::new(Type::Any)), span);
+    let ir = mk_var(m, iter_var, Type::Iterator(Box::new(elem_ty.clone())), span);
     let nv = mk_expr(
         m,
         hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::IterNextNoExc(ir)),
@@ -1740,7 +1721,7 @@ fn build_for_loop_filtered(
     let mut loop_body = Vec::new();
 
     // next_val = __iter_next_no_exc(iter)
-    let ir = mk_var(m, iter_var, Type::Iterator(Box::new(Type::Any)), span);
+    let ir = mk_var(m, iter_var, Type::Iterator(Box::new(elem_ty.clone())), span);
     let nv = mk_expr(
         m,
         hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::IterNextNoExc(ir)),

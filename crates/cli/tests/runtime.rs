@@ -187,3 +187,44 @@ runtime_cases!(
          done"
     ),
 );
+
+// -O (full optimisation) regression cases. Default-opts run reaches every
+// codegen path; these add coverage for optimizer/codegen interaction —
+// especially the `--inline` pass, which the default suite does not
+// exercise. Stage E (closure ABI) introduced an inline-pass bug where
+// the moved CallDirect terminator's target Phi sources kept referring
+// to the old call_block_id, causing
+// "phi has no source for predecessor block — arity violation" at
+// codegen time. Re-running the full decorator-factory suite under -O
+// catches that regression.
+#[test]
+fn runtime_decorator_factory_optimized() {
+    let py_path = crate::common::workspace_root()
+        .join("examples")
+        .join("test_decorator_factory.py");
+    crate::common::run_pyaot_optimized("runtime_decorator_factory_optimized", &py_path, None, &[]);
+}
+
+#[test]
+fn runtime_functions_optimized() {
+    let py_path = crate::common::workspace_root()
+        .join("examples")
+        .join("test_functions.py");
+    crate::common::run_pyaot_optimized("runtime_functions_optimized", &py_path, None, &[]);
+}
+
+#[test]
+fn runtime_iteration_optimized() {
+    let py_path = crate::common::workspace_root()
+        .join("examples")
+        .join("test_iteration.py");
+    crate::common::run_pyaot_optimized("runtime_iteration_optimized", &py_path, None, &[]);
+}
+
+#[test]
+fn runtime_builtins_optimized() {
+    let py_path = crate::common::workspace_root()
+        .join("examples")
+        .join("test_builtins.py");
+    crate::common::run_pyaot_optimized("runtime_builtins_optimized", &py_path, None, &[]);
+}

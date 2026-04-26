@@ -303,6 +303,54 @@ fn perform_inline(
         caller.blocks.insert(id, block);
     }
 
+    // Rewrite Phi sources in any block reachable from `continuation_block`'s
+    // (former call_block's) terminator: their predecessor was `call_block_id`
+    // before the split, but after inlining the same edge originates from
+    // `continuation_block_id`. Without this fix, codegen later panics with
+    // "phi has no source for predecessor block — arity violation".
+    let successor_targets =
+        terminator_successors(&caller.blocks[&continuation_block_id].terminator);
+    for target_id in successor_targets {
+        if let Some(target_block) = caller.blocks.get_mut(&target_id) {
+            for inst in &mut target_block.instructions {
+                let InstructionKind::Phi { sources, .. } = &mut inst.kind else {
+                    break;
+                };
+                for (pred, _) in sources.iter_mut() {
+                    if *pred == call_block_id {
+                        *pred = continuation_block_id;
+                    }
+                }
+            }
+        }
+    }
+
     caller.invalidate_dom_tree();
     true
+}
+
+/// Collect every successor block id a terminator can jump to.
+fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
+    match term {
+        Terminator::Goto(b) => vec![*b],
+        Terminator::Branch {
+            then_block,
+            else_block,
+            ..
+        } => vec![*then_block, *else_block],
+        Terminator::TrySetjmp {
+            try_body,
+            handler_entry,
+            ..
+        } => vec![*try_body, *handler_entry],
+        // Diverging / no-successor terminators
+        Terminator::Return(_)
+        | Terminator::Unreachable
+        | Terminator::Raise { .. }
+        | Terminator::RaiseCustom { .. }
+        | Terminator::Reraise => Vec::new(),
+        // Anything else (try-end, etc.) — be conservative and walk it later if
+        // we hit a panic; for now those don't appear in inlinable callers.
+        _ => Vec::new(),
+    }
 }

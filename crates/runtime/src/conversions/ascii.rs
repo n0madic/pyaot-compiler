@@ -11,6 +11,17 @@ pub(super) unsafe fn obj_to_ascii_string(obj: *mut Obj) -> String {
         return "None".to_string();
     }
 
+    let v = pyaot_core_defs::Value(obj as u64);
+    if v.is_none() {
+        return "None".to_string();
+    }
+    if v.is_int() {
+        return v.unwrap_int().to_string();
+    }
+    if v.is_bool() {
+        return if v.unwrap_bool() { "True" } else { "False" }.to_string();
+    }
+
     let header = obj as *mut ObjHeader;
     match (*header).type_tag {
         TypeTagKind::Str => {
@@ -57,7 +68,7 @@ pub(super) unsafe fn obj_to_ascii_string(obj: *mut Obj) -> String {
                 if i > 0 {
                     s.push_str(", ");
                 }
-                let elem = crate::list::list_slot_raw(list, i);
+                let elem = (*(*list).data.add(i)).0 as *mut crate::object::Obj;
                 s.push_str(&obj_to_ascii_string(elem));
             }
             s.push(']');
@@ -74,7 +85,7 @@ pub(super) unsafe fn obj_to_ascii_string(obj: *mut Obj) -> String {
                     s.push_str(", ");
                 }
                 let elem = *data.add(i);
-                s.push_str(&obj_to_ascii_string(elem));
+                s.push_str(&obj_to_ascii_string(elem.0 as *mut Obj));
             }
             if len == 1 {
                 s.push(',');
@@ -92,14 +103,14 @@ pub(super) unsafe fn obj_to_ascii_string(obj: *mut Obj) -> String {
             for i in 0..entries_len {
                 let entry = entries.add(i);
                 let key = (*entry).key;
-                if !key.is_null() {
+                if key.0 != 0 {
                     if !first {
                         s.push_str(", ");
                     }
                     first = false;
-                    s.push_str(&obj_to_ascii_string(key));
+                    s.push_str(&obj_to_ascii_string(key.0 as *mut Obj));
                     s.push_str(": ");
-                    s.push_str(&obj_to_ascii_string((*entry).value));
+                    s.push_str(&obj_to_ascii_string((*entry).value.0 as *mut Obj));
                 }
             }
             s.push('}');
@@ -113,19 +124,17 @@ pub(super) unsafe fn obj_to_ascii_string(obj: *mut Obj) -> String {
             }
             let capacity = (*set).capacity;
             let entries = (*set).entries;
-            const SET_TOMBSTONE: *mut Obj = std::ptr::dangling_mut::<Obj>();
-
             let mut s = String::from("{");
             let mut first = true;
             for i in 0..capacity {
                 let entry = entries.add(i);
                 let elem = (*entry).elem;
-                if !elem.is_null() && elem != SET_TOMBSTONE {
+                if elem.0 != 0 && elem != crate::object::TOMBSTONE {
                     if !first {
                         s.push_str(", ");
                     }
                     first = false;
-                    s.push_str(&obj_to_ascii_string(elem));
+                    s.push_str(&obj_to_ascii_string(elem.0 as *mut Obj));
                 }
             }
             s.push('}');

@@ -31,7 +31,7 @@ unsafe fn extract_string_list(obj: *mut Obj) -> Vec<String> {
 
     let mut result = Vec::with_capacity(len);
     for i in 0..len {
-        let item = crate::list::list_slot_raw(list_obj, i);
+        let item = (*(*list_obj).data.add(i)).0 as *mut crate::object::Obj;
         if let Some(s) = crate::utils::extract_str_checked(item) {
             result.push(s);
         }

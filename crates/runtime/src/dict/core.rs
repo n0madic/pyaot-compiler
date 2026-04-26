@@ -58,7 +58,7 @@ pub(super) unsafe fn lookup_entry(dict: *mut DictObj, key: *mut Obj, hash: u64) 
         (*dict).indices_capacity,
         hash,
         |slot| *(*dict).indices.add(slot),
-        |ei| (*(*dict).entries.add(ei as usize)).key,
+        |ei| (*(*dict).entries.add(ei as usize)).key.0 as *mut Obj,
         |ei| (*(*dict).entries.add(ei as usize)).hash,
         CompactProbeConfig {
             empty: EMPTY_INDEX,
@@ -84,7 +84,7 @@ pub(super) unsafe fn find_insert_slot(
         (*dict).indices_capacity,
         hash,
         |slot| *(*dict).indices.add(slot),
-        |ei| (*(*dict).entries.add(ei as usize)).key,
+        |ei| (*(*dict).entries.add(ei as usize)).key.0 as *mut Obj,
         |ei| (*(*dict).entries.add(ei as usize)).hash,
         CompactProbeConfig {
             empty: EMPTY_INDEX,
@@ -141,8 +141,8 @@ pub(super) unsafe fn dict_resize(dict: *mut DictObj) {
     for i in 0..old_entries_len {
         let old_entry = old_entries.add(i);
         let key = (*old_entry).key;
-        if key.is_null() {
-            continue; // Skip deleted entries
+        if key.0 == 0 {
+            continue; // Skip deleted entries (Value(0) = empty/deleted)
         }
 
         // Copy entry to new position

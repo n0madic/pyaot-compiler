@@ -19,12 +19,11 @@
 #![forbid(unsafe_code)]
 
 pub mod builtins;
-pub mod elem_tags;
 pub mod exceptions;
 pub mod layout;
 pub mod runtime_func_def;
 pub mod tag;
-pub mod type_tags;
+pub mod tag_kinds;
 pub mod value;
 
 pub use exceptions::{
@@ -33,11 +32,9 @@ pub use exceptions::{
     RESERVED_STDLIB_EXCEPTION_SLOTS,
 };
 
-pub use type_tags::{is_type_tag_name, type_tag_to_name, TypeTagKind, TYPE_TAG_COUNT};
+pub use tag_kinds::{is_type_tag_name, type_tag_to_name, TypeTagKind, TYPE_TAG_COUNT};
 
 pub use builtins::{BuiltinFunctionKind, BUILTIN_FUNCTION_COUNT};
-
-pub use elem_tags::{ELEM_HEAP_OBJ, ELEM_RAW_BOOL, ELEM_RAW_INT};
 
 pub use runtime_func_def::{ParamType, ReturnType, RuntimeFuncDef};
 

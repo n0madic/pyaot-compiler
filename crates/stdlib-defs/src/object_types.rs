@@ -699,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn test_all_type_tags_unique() {
+    fn test_all_tag_kinds_unique() {
         let mut seen = std::collections::HashSet::new();
         for obj_def in ALL_OBJECT_TYPES {
             assert!(

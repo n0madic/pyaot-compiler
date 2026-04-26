@@ -90,11 +90,11 @@ mod tests {
     #[test]
     fn test_is_truthy_int() {
         let _guard = init_runtime();
-        let zero = crate::boxing::rt_box_int(0);
+        let zero = pyaot_core_defs::Value::from_int(0).0 as *mut crate::object::Obj;
         assert_eq!(rt_is_truthy(zero), 0);
-        let one = crate::boxing::rt_box_int(1);
+        let one = pyaot_core_defs::Value::from_int(1).0 as *mut crate::object::Obj;
         assert_eq!(rt_is_truthy(one), 1);
-        let neg = crate::boxing::rt_box_int(-1);
+        let neg = pyaot_core_defs::Value::from_int(-1).0 as *mut crate::object::Obj;
         assert_eq!(rt_is_truthy(neg), 1);
     }
 }

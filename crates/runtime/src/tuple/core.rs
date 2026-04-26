@@ -3,21 +3,17 @@
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::gc;
-use crate::object::{Obj, TypeTagKind, ELEM_HEAP_OBJ};
+use crate::object::{Obj, TypeTagKind};
 use crate::slice_utils::{collect_step_indices, normalize_slice_indices, slice_length};
 
-/// Create a new tuple with given size and element tag
-/// elem_tag: ELEM_HEAP_OBJ (0), ELEM_RAW_INT (1), or ELEM_RAW_BOOL (2)
+/// Create a new tuple with given size.
 /// Returns: pointer to allocated TupleObj
 #[no_mangle]
-pub extern "C" fn rt_make_tuple(size: i64, elem_tag: u8) -> *mut Obj {
+pub extern "C" fn rt_make_tuple(size: i64) -> *mut Obj {
     use crate::object::{TupleObj, TypeTagKind};
 
     let size = size.max(0) as usize;
 
-    // Calculate size: base struct size + inline data array
-    // TupleObj has: ObjHeader(16) + len(8) + elem_tag(1) + padding(7) + data[0]
-    // Use size_of::<TupleObj> for the base size (includes alignment padding)
     let data_size = match size.checked_mul(std::mem::size_of::<*mut Obj>()) {
         Some(s) => s,
         None => unsafe {
@@ -43,37 +39,15 @@ pub extern "C" fn rt_make_tuple(size: i64, elem_tag: u8) -> *mut Obj {
     unsafe {
         let tuple = obj as *mut TupleObj;
         (*tuple).len = size;
-        (*tuple).elem_tag = elem_tag;
-        // Default heap_field_mask: all fields are heap objects when ELEM_HEAP_OBJ,
-        // no fields are heap objects when ELEM_RAW_INT/ELEM_RAW_BOOL.
-        (*tuple).heap_field_mask = if elem_tag == ELEM_HEAP_OBJ {
-            u64::MAX
-        } else {
-            0
-        };
 
-        // Initialize all elements to null
+        // Initialize all elements to Value(0) (null pointer encoding)
         let data_ptr = (*tuple).data.as_mut_ptr();
         for i in 0..size {
-            *data_ptr.add(i) = std::ptr::null_mut();
+            *data_ptr.add(i) = pyaot_core_defs::Value(0);
         }
     }
 
     obj
-}
-
-/// Set the heap_field_mask on a tuple.
-/// Called after rt_make_tuple when the caller knows per-field GC tracing info.
-/// mask: bitmask where bit i = 1 means field i is a heap pointer.
-#[no_mangle]
-pub extern "C" fn rt_tuple_set_heap_mask(tuple: *mut Obj, mask: i64) {
-    if tuple.is_null() {
-        return;
-    }
-    unsafe {
-        let tuple_obj = tuple as *mut crate::object::TupleObj;
-        (*tuple_obj).heap_field_mask = mask as u64;
-    }
 }
 
 /// Set element in tuple at given index (used during tuple construction)
@@ -93,18 +67,18 @@ pub extern "C" fn rt_tuple_set(tuple: *mut Obj, index: i64, value: *mut Obj) {
             return;
         }
 
-        // Note: no validate_elem_tag! for tuples — the GC uses heap_field_mask for
-        // precise per-field tracing, making the elem_tag-based validation unnecessary.
-        // Mixed-type tuples (captures, *args) are safely handled by the mask.
-
         let data_ptr = (*tuple_obj).data.as_mut_ptr();
-        *data_ptr.add(index as usize) = value;
+        // After F.7c values arrive as tagged Value bit-patterns; identity store.
+        *data_ptr.add(index as usize) = pyaot_core_defs::Value(value as u64);
     }
 }
 
-/// Get element from tuple at given index
-/// Supports negative indexing
-/// Returns: pointer to element or null if out of bounds
+/// Get element from tuple at given index.
+/// Supports negative indexing.
+/// Returns: the raw tagged `Value` bits as `*mut Obj`. After §F.4, the
+/// caller is responsible for unboxing (UnwrapValueInt / UnwrapValueBool /
+/// rt_unbox_float) based on the statically-known element type.
+/// Returns null if out of bounds.
 #[no_mangle]
 pub extern "C" fn rt_tuple_get(tuple: *mut Obj, index: i64) -> *mut Obj {
     if tuple.is_null() {
@@ -125,7 +99,9 @@ pub extern "C" fn rt_tuple_get(tuple: *mut Obj, index: i64) -> *mut Obj {
         }
 
         let data_ptr = (*tuple_obj).data.as_ptr();
-        *data_ptr.add(idx as usize)
+        let val = *data_ptr.add(idx as usize);
+        // Always return the raw Value bits; lowering applies unboxing at call-site.
+        val.0 as *mut Obj
     }
 }
 
@@ -152,7 +128,7 @@ pub extern "C" fn rt_tuple_slice(tuple: *mut Obj, start: i64, end: i64) -> *mut 
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if tuple.is_null() {
-        return rt_make_tuple(0, ELEM_HEAP_OBJ);
+        return rt_make_tuple(0);
     }
 
     unsafe {
@@ -173,9 +149,7 @@ pub extern "C" fn rt_tuple_slice(tuple: *mut Obj, start: i64, end: i64) -> *mut 
         };
         gc_push(&mut frame);
 
-        // Read elem_tag from the (still live) source before allocation.
-        let elem_tag = (*(roots[0] as *mut crate::object::TupleObj)).elem_tag;
-        let new_tuple = rt_make_tuple(slice_len as i64, elem_tag);
+        let new_tuple = rt_make_tuple(slice_len as i64);
 
         gc_pop();
 
@@ -186,23 +160,10 @@ pub extern "C" fn rt_tuple_slice(tuple: *mut Obj, start: i64, end: i64) -> *mut 
             let src_data = (*src).data.as_ptr();
             let dst_data = (*new_tuple_obj).data.as_mut_ptr();
 
-            // Copy element pointers (shallow copy)
+            // Copy element Values (shallow copy)
             for i in 0..slice_len {
                 *dst_data.add(i) = *src_data.add(start as usize + i);
             }
-
-            // Propagate heap_field_mask: extract bits [start..start+slice_len) from the
-            // source mask and place them at [0..slice_len) in the new tuple's mask.
-            // A right-shift by `start` aligns the relevant bits to position 0.
-            let src_shift = start as u32;
-            let shifted = (*src).heap_field_mask >> src_shift;
-            // Build a mask covering exactly slice_len bits to clear any bits beyond the slice.
-            let keep_mask = if slice_len >= 64 {
-                u64::MAX
-            } else {
-                (1u64 << slice_len) - 1
-            };
-            (*new_tuple_obj).heap_field_mask = shifted & keep_mask;
         }
 
         new_tuple
@@ -220,7 +181,7 @@ pub extern "C" fn rt_tuple_slice_to_list(tuple: *mut Obj, start: i64, end: i64) 
     use crate::list::rt_make_list;
 
     if tuple.is_null() {
-        return rt_make_list(0, ELEM_HEAP_OBJ);
+        return rt_make_list(0);
     }
 
     unsafe {
@@ -241,8 +202,7 @@ pub extern "C" fn rt_tuple_slice_to_list(tuple: *mut Obj, start: i64, end: i64) 
         };
         gc_push(&mut frame);
 
-        let elem_tag = (*(roots[0] as *mut crate::object::TupleObj)).elem_tag;
-        let new_list = rt_make_list(slice_len as i64, elem_tag);
+        let new_list = rt_make_list(slice_len as i64);
 
         gc_pop();
 
@@ -253,12 +213,9 @@ pub extern "C" fn rt_tuple_slice_to_list(tuple: *mut Obj, start: i64, end: i64) 
             let src_data = (*src).data.as_ptr();
             let dst_data = (*new_list_obj).data;
 
-            // Tuple storage is still `*mut Obj` (migration is S2.4). Convert
-            // each slot into a tagged `Value` before writing to the
-            // Value-backed list storage.
+            // Both tuple and list now use Value storage — direct copy.
             for i in 0..slice_len {
-                let raw = *src_data.add(start as usize + i);
-                *dst_data.add(i) = crate::list::store_raw_as_value(raw, elem_tag);
+                *dst_data.add(i) = *src_data.add(start as usize + i);
             }
             // Set the actual length
             (*new_list_obj).len = slice_len;
@@ -283,7 +240,7 @@ pub extern "C" fn rt_tuple_slice_step(
     step: i64,
 ) -> *mut Obj {
     if tuple.is_null() || step == 0 {
-        return rt_make_tuple(0, ELEM_HEAP_OBJ);
+        return rt_make_tuple(0);
     }
 
     unsafe {
@@ -296,7 +253,7 @@ pub extern "C" fn rt_tuple_slice_step(
         // Collect indices using shared utility
         let indices = collect_step_indices(start, end, step);
         let result_len = indices.len();
-        let new_tuple = rt_make_tuple(result_len as i64, (*src).elem_tag);
+        let new_tuple = rt_make_tuple(result_len as i64);
         let new_tuple_obj = new_tuple as *mut crate::object::TupleObj;
 
         if result_len > 0 {
@@ -312,150 +269,6 @@ pub extern "C" fn rt_tuple_slice_step(
     }
 }
 
-/// Get integer element from tuple, unboxing if necessary
-/// Handles both raw integer storage and boxed IntObj storage transparently
-#[no_mangle]
-pub extern "C" fn rt_tuple_get_int(tuple: *mut Obj, index: i64) -> i64 {
-    use crate::object::{IntObj, ELEM_HEAP_OBJ, ELEM_RAW_INT};
-
-    if tuple.is_null() {
-        return 0;
-    }
-
-    unsafe {
-        debug_assert_type_tag!(tuple, TypeTagKind::Tuple, "rt_tuple_get_int");
-        let tuple_obj = tuple as *mut crate::object::TupleObj;
-        let len = (*tuple_obj).len as i64;
-
-        // Handle negative index
-        let idx = if index < 0 { len + index } else { index };
-
-        // Bounds check
-        if idx < 0 || idx >= len {
-            return 0;
-        }
-
-        let data_ptr = (*tuple_obj).data.as_ptr();
-        let elem = *data_ptr.add(idx as usize);
-        let elem_tag = (*tuple_obj).elem_tag;
-
-        match elem_tag {
-            ELEM_RAW_INT => {
-                // Element is stored as raw i64
-                elem as i64
-            }
-            ELEM_HEAP_OBJ => {
-                // Element is boxed - unbox it
-                if elem.is_null() {
-                    return 0;
-                }
-                let int_obj = elem as *mut IntObj;
-                (*int_obj).value
-            }
-            _ => {
-                // Unknown tag, treat as raw
-                elem as i64
-            }
-        }
-    }
-}
-
-/// Get float element from tuple, unboxing if necessary
-/// Handles both raw float storage (as bitcast i64) and boxed FloatObj storage
-#[no_mangle]
-pub extern "C" fn rt_tuple_get_float(tuple: *mut Obj, index: i64) -> f64 {
-    use crate::object::{FloatObj, ELEM_HEAP_OBJ};
-
-    if tuple.is_null() {
-        return 0.0;
-    }
-
-    unsafe {
-        debug_assert_type_tag!(tuple, TypeTagKind::Tuple, "rt_tuple_get_float");
-        let tuple_obj = tuple as *mut crate::object::TupleObj;
-        let len = (*tuple_obj).len as i64;
-
-        // Handle negative index
-        let idx = if index < 0 { len + index } else { index };
-
-        // Bounds check
-        if idx < 0 || idx >= len {
-            return 0.0;
-        }
-
-        let data_ptr = (*tuple_obj).data.as_ptr();
-        let elem = *data_ptr.add(idx as usize);
-        let elem_tag = (*tuple_obj).elem_tag;
-
-        match elem_tag {
-            ELEM_HEAP_OBJ => {
-                // Element is boxed - unbox it
-                if elem.is_null() {
-                    return 0.0;
-                }
-                let float_obj = elem as *mut FloatObj;
-                (*float_obj).value
-            }
-            _ => {
-                // Raw storage: element is f64 bitcast to pointer
-                f64::from_bits(elem as u64)
-            }
-        }
-    }
-}
-
-/// Get bool element from tuple, unboxing if necessary
-/// Handles both raw bool storage (as i8 cast to pointer) and boxed BoolObj storage
-#[no_mangle]
-pub extern "C" fn rt_tuple_get_bool(tuple: *mut Obj, index: i64) -> i8 {
-    use crate::object::{BoolObj, ELEM_HEAP_OBJ, ELEM_RAW_BOOL};
-
-    if tuple.is_null() {
-        return 0;
-    }
-
-    unsafe {
-        debug_assert_type_tag!(tuple, TypeTagKind::Tuple, "rt_tuple_get_bool");
-        let tuple_obj = tuple as *mut crate::object::TupleObj;
-        let len = (*tuple_obj).len as i64;
-
-        // Handle negative index
-        let idx = if index < 0 { len + index } else { index };
-
-        // Bounds check
-        if idx < 0 || idx >= len {
-            return 0;
-        }
-
-        let data_ptr = (*tuple_obj).data.as_ptr();
-        let elem = *data_ptr.add(idx as usize);
-        let elem_tag = (*tuple_obj).elem_tag;
-
-        match elem_tag {
-            ELEM_RAW_BOOL => {
-                // Element is stored as raw i8
-                elem as i8
-            }
-            ELEM_HEAP_OBJ => {
-                // Element is boxed - unbox it
-                if elem.is_null() {
-                    return 0;
-                }
-                let bool_obj = elem as *mut BoolObj;
-                if (*bool_obj).value {
-                    1
-                } else {
-                    0
-                }
-            }
-            _ => {
-                // Unknown tag, treat as raw
-                elem as i8
-            }
-        }
-    }
-}
-
 /// Create a tuple from a list
 /// Returns: pointer to new TupleObj
 #[no_mangle]
@@ -463,25 +276,23 @@ pub extern "C" fn rt_tuple_from_list(list: *mut Obj) -> *mut Obj {
     use crate::object::ListObj;
 
     if list.is_null() {
-        return rt_make_tuple(0, ELEM_HEAP_OBJ);
+        return rt_make_tuple(0);
     }
 
     unsafe {
         let list_obj = list as *mut ListObj;
         let len = (*list_obj).len;
-        let elem_tag = (*list_obj).elem_tag;
 
-        let tuple = rt_make_tuple(len as i64, elem_tag);
+        let tuple = rt_make_tuple(len as i64);
         let tuple_obj = tuple as *mut crate::object::TupleObj;
 
         if len > 0 {
             let dst_data = (*tuple_obj).data.as_mut_ptr();
 
-            // List storage is `[Value]`; tuple storage is still `[*mut Obj]`
-            // (S2.4). Convert each list slot back to raw ABI form before
-            // writing to the tuple.
+            // Both list and tuple storage are `[Value]`; direct slot copy.
+            let src_data = (*list_obj).data;
             for i in 0..len {
-                *dst_data.add(i) = crate::list::list_slot_raw(list_obj, i);
+                *dst_data.add(i) = *src_data.add(i);
             }
         }
 
@@ -498,7 +309,7 @@ pub extern "C" fn rt_tuple_from_str(str_obj: *mut Obj) -> *mut Obj {
     use crate::string::rt_make_str;
 
     if str_obj.is_null() {
-        return rt_make_tuple(0, ELEM_HEAP_OBJ);
+        return rt_make_tuple(0);
     }
 
     unsafe {
@@ -506,7 +317,7 @@ pub extern "C" fn rt_tuple_from_str(str_obj: *mut Obj) -> *mut Obj {
         let len = (*str).len;
         let data = (*str).data.as_ptr();
 
-        let tuple = rt_make_tuple(len as i64, ELEM_HEAP_OBJ);
+        let tuple = rt_make_tuple(len as i64);
 
         if len == 0 {
             return tuple;
@@ -538,10 +349,8 @@ pub extern "C" fn rt_tuple_from_str(str_obj: *mut Obj) -> *mut Obj {
 /// Returns: pointer to new TupleObj
 #[no_mangle]
 pub extern "C" fn rt_tuple_from_range(start: i64, stop: i64, step: i64) -> *mut Obj {
-    use crate::object::ELEM_RAW_INT;
-
     if step == 0 {
-        return rt_make_tuple(0, ELEM_RAW_INT);
+        return rt_make_tuple(0);
     }
 
     let len = if step > 0 {
@@ -556,7 +365,7 @@ pub extern "C" fn rt_tuple_from_range(start: i64, stop: i64, step: i64) -> *mut 
         0
     };
 
-    let tuple = rt_make_tuple(len as i64, ELEM_RAW_INT);
+    let tuple = rt_make_tuple(len as i64);
 
     unsafe {
         let tuple_obj = tuple as *mut crate::object::TupleObj;
@@ -564,7 +373,7 @@ pub extern "C" fn rt_tuple_from_range(start: i64, stop: i64, step: i64) -> *mut 
 
         let mut current = start;
         for i in 0..len {
-            *data.add(i) = current as *mut Obj;
+            *data.add(i) = pyaot_core_defs::Value::from_int(current);
             current += step;
         }
     }
@@ -580,11 +389,11 @@ pub extern "C" fn rt_tuple_from_iter(iter: *mut Obj) -> *mut Obj {
     use crate::list::{rt_list_push, rt_make_list};
 
     if iter.is_null() {
-        return rt_make_tuple(0, ELEM_HEAP_OBJ);
+        return rt_make_tuple(0);
     }
 
     // First collect into a list (since we don't know the size)
-    let list = rt_make_list(8, ELEM_HEAP_OBJ);
+    let list = rt_make_list(8);
 
     loop {
         let elem = rt_iter_next_no_exc(iter);
@@ -616,7 +425,7 @@ pub extern "C" fn rt_tuple_from_dict(dict: *mut Obj) -> *mut Obj {
     use crate::dict::rt_dict_keys;
 
     // First get keys as list, then convert to tuple
-    let list = rt_dict_keys(dict, crate::object::ELEM_HEAP_OBJ);
+    let list = rt_dict_keys(dict);
     rt_tuple_from_list(list)
 }
 
@@ -629,7 +438,7 @@ pub extern "C" fn rt_tuple_concat(tuple1: *mut Obj, tuple2: *mut Obj) -> *mut Ob
 
     // Handle null cases
     if tuple1.is_null() && tuple2.is_null() {
-        return rt_make_tuple(0, ELEM_HEAP_OBJ);
+        return rt_make_tuple(0);
     }
     if tuple1.is_null() {
         return tuple2;
@@ -645,15 +454,8 @@ pub extern "C" fn rt_tuple_concat(tuple1: *mut Obj, tuple2: *mut Obj) -> *mut Ob
         let len2 = (*t2).len;
         let total_len = len1 + len2;
 
-        // Use elem_tag from the first tuple (or HEAP_OBJ if first is empty)
-        let elem_tag = if len1 > 0 {
-            (*t1).elem_tag
-        } else {
-            (*t2).elem_tag
-        };
-
         // Create new tuple
-        let result = rt_make_tuple(total_len as i64, elem_tag);
+        let result = rt_make_tuple(total_len as i64);
         let result_obj = result as *mut TupleObj;
 
         // Copy elements from tuple1
@@ -686,321 +488,386 @@ pub extern "C" fn rt_tuple_concat(tuple1: *mut Obj, tuple2: *mut Obj) -> *mut Ob
 /// total args (`func + 7 captures + 1 user arg`), so keep headroom here.
 const MAX_CALL_ARGS: usize = 16;
 
+/// Extract elements from a tuple into a fixed-size argument array (args path).
+/// Unwraps tagged Values to raw scalars: Int→i64, Bool→i64, Ptr→bits as i64.
+/// Used when the callee expects raw primitive params (user-visible args).
+unsafe fn extract_tuple_unwrapping_values(
+    tuple: *mut Obj,
+    out_args: &mut [i64; MAX_CALL_ARGS],
+    start_idx: usize,
+) -> usize {
+    use crate::object::TupleObj;
+    if tuple.is_null() {
+        return 0;
+    }
+    let tuple_obj = tuple as *mut TupleObj;
+    let len = (*tuple_obj).len;
+    if len == 0 {
+        return 0;
+    }
+    let data_ptr = (*tuple_obj).data.as_ptr();
+    let avail = MAX_CALL_ARGS - start_idx;
+    let n = len.min(avail);
+    for i in 0..n {
+        let val = *data_ptr.add(i);
+        out_args[start_idx + i] = if val.is_int() {
+            val.unwrap_int()
+        } else if val.is_bool() {
+            i64::from(val.unwrap_bool())
+        } else {
+            val.0 as i64
+        };
+    }
+    n
+}
+
+/// Extract elements from a tuple into a fixed-size argument array (captures path).
+/// Keeps tagged Value bit-patterns intact so the callee's prologue unbox decodes them.
+unsafe fn extract_tuple_keeping_values(
+    tuple: *mut Obj,
+    out_args: &mut [i64; MAX_CALL_ARGS],
+    start_idx: usize,
+) -> usize {
+    use crate::object::TupleObj;
+    if tuple.is_null() {
+        return 0;
+    }
+    let tuple_obj = tuple as *mut TupleObj;
+    let len = (*tuple_obj).len;
+    if len == 0 {
+        return 0;
+    }
+    let data_ptr = (*tuple_obj).data.as_ptr();
+    let avail = MAX_CALL_ARGS - start_idx;
+    let n = len.min(avail);
+    for i in 0..n {
+        out_args[start_idx + i] = (*data_ptr.add(i)).0 as i64;
+    }
+    n
+}
+
+/// Dispatch a call to `func_ptr` with `total` arguments from `call_args`.
+/// All arguments are passed as i64 (raw ints, raw bools as i64, heap
+/// pointers cast to i64). Function pointer uses SystemV calling
+/// convention. Returns the function's i64 result.
+unsafe fn dispatch_call_with_args(
+    func_ptr: i64,
+    call_args: &[i64; MAX_CALL_ARGS],
+    total: usize,
+) -> i64 {
+    type F0 = extern "C" fn() -> i64;
+    type F1 = extern "C" fn(i64) -> i64;
+    type F2 = extern "C" fn(i64, i64) -> i64;
+    type F3 = extern "C" fn(i64, i64, i64) -> i64;
+    type F4 = extern "C" fn(i64, i64, i64, i64) -> i64;
+    type F5 = extern "C" fn(i64, i64, i64, i64, i64) -> i64;
+    type F6 = extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64;
+    type F7 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64;
+    type F8 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+    type F9 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+    type F10 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+    type F11 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+    type F12 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+    type F13 =
+        extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+    type F14 =
+        extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
+    type F15 = extern "C" fn(
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+    ) -> i64;
+    type F16 = extern "C" fn(
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+    ) -> i64;
+
+    match total {
+        0 => {
+            let f: F0 = std::mem::transmute(func_ptr as usize);
+            f()
+        }
+        1 => {
+            let f: F1 = std::mem::transmute(func_ptr as usize);
+            f(call_args[0])
+        }
+        2 => {
+            let f: F2 = std::mem::transmute(func_ptr as usize);
+            f(call_args[0], call_args[1])
+        }
+        3 => {
+            let f: F3 = std::mem::transmute(func_ptr as usize);
+            f(call_args[0], call_args[1], call_args[2])
+        }
+        4 => {
+            let f: F4 = std::mem::transmute(func_ptr as usize);
+            f(call_args[0], call_args[1], call_args[2], call_args[3])
+        }
+        5 => {
+            let f: F5 = std::mem::transmute(func_ptr as usize);
+            f(
+                call_args[0],
+                call_args[1],
+                call_args[2],
+                call_args[3],
+                call_args[4],
+            )
+        }
+        6 => {
+            let f: F6 = std::mem::transmute(func_ptr as usize);
+            f(
+                call_args[0],
+                call_args[1],
+                call_args[2],
+                call_args[3],
+                call_args[4],
+                call_args[5],
+            )
+        }
+        7 => {
+            let f: F7 = std::mem::transmute(func_ptr as usize);
+            f(
+                call_args[0],
+                call_args[1],
+                call_args[2],
+                call_args[3],
+                call_args[4],
+                call_args[5],
+                call_args[6],
+            )
+        }
+        8 => {
+            let f: F8 = std::mem::transmute(func_ptr as usize);
+            f(
+                call_args[0],
+                call_args[1],
+                call_args[2],
+                call_args[3],
+                call_args[4],
+                call_args[5],
+                call_args[6],
+                call_args[7],
+            )
+        }
+        9 => {
+            let f: F9 = std::mem::transmute(func_ptr as usize);
+            f(
+                call_args[0],
+                call_args[1],
+                call_args[2],
+                call_args[3],
+                call_args[4],
+                call_args[5],
+                call_args[6],
+                call_args[7],
+                call_args[8],
+            )
+        }
+        10 => {
+            let f: F10 = std::mem::transmute(func_ptr as usize);
+            f(
+                call_args[0],
+                call_args[1],
+                call_args[2],
+                call_args[3],
+                call_args[4],
+                call_args[5],
+                call_args[6],
+                call_args[7],
+                call_args[8],
+                call_args[9],
+            )
+        }
+        11 => {
+            let f: F11 = std::mem::transmute(func_ptr as usize);
+            f(
+                call_args[0],
+                call_args[1],
+                call_args[2],
+                call_args[3],
+                call_args[4],
+                call_args[5],
+                call_args[6],
+                call_args[7],
+                call_args[8],
+                call_args[9],
+                call_args[10],
+            )
+        }
+        12 => {
+            let f: F12 = std::mem::transmute(func_ptr as usize);
+            f(
+                call_args[0],
+                call_args[1],
+                call_args[2],
+                call_args[3],
+                call_args[4],
+                call_args[5],
+                call_args[6],
+                call_args[7],
+                call_args[8],
+                call_args[9],
+                call_args[10],
+                call_args[11],
+            )
+        }
+        13 => {
+            let f: F13 = std::mem::transmute(func_ptr as usize);
+            f(
+                call_args[0],
+                call_args[1],
+                call_args[2],
+                call_args[3],
+                call_args[4],
+                call_args[5],
+                call_args[6],
+                call_args[7],
+                call_args[8],
+                call_args[9],
+                call_args[10],
+                call_args[11],
+                call_args[12],
+            )
+        }
+        14 => {
+            let f: F14 = std::mem::transmute(func_ptr as usize);
+            f(
+                call_args[0],
+                call_args[1],
+                call_args[2],
+                call_args[3],
+                call_args[4],
+                call_args[5],
+                call_args[6],
+                call_args[7],
+                call_args[8],
+                call_args[9],
+                call_args[10],
+                call_args[11],
+                call_args[12],
+                call_args[13],
+            )
+        }
+        15 => {
+            let f: F15 = std::mem::transmute(func_ptr as usize);
+            f(
+                call_args[0],
+                call_args[1],
+                call_args[2],
+                call_args[3],
+                call_args[4],
+                call_args[5],
+                call_args[6],
+                call_args[7],
+                call_args[8],
+                call_args[9],
+                call_args[10],
+                call_args[11],
+                call_args[12],
+                call_args[13],
+                call_args[14],
+            )
+        }
+        16 => {
+            let f: F16 = std::mem::transmute(func_ptr as usize);
+            f(
+                call_args[0],
+                call_args[1],
+                call_args[2],
+                call_args[3],
+                call_args[4],
+                call_args[5],
+                call_args[6],
+                call_args[7],
+                call_args[8],
+                call_args[9],
+                call_args[10],
+                call_args[11],
+                call_args[12],
+                call_args[13],
+                call_args[14],
+                call_args[15],
+            )
+        }
+        _ => 0, // Unsupported arity
+    }
+}
+
 /// Call a function pointer with arguments unpacked from a tuple.
 /// Used for *args forwarding in decorator wrappers: `func(*args)`.
 ///
-/// All arguments are passed as i64 (raw ints stay as i64, heap objects as pointers cast to i64).
-/// The function pointer must use the SystemV calling convention.
+/// All arguments are passed as i64 (raw ints stay as i64, heap objects as
+/// pointers cast to i64). The function pointer must use the SystemV
+/// calling convention.
 #[no_mangle]
 pub extern "C" fn rt_call_with_tuple_args(func_ptr: i64, args_tuple: *mut Obj) -> i64 {
-    use crate::object::TupleObj;
-
     if func_ptr == 0 {
         return 0;
     }
-
     unsafe {
-        let len = if args_tuple.is_null() {
-            0
-        } else {
-            let tuple_obj = args_tuple as *mut TupleObj;
-            (*tuple_obj).len
-        };
-
-        // Extract arguments from tuple
         let mut call_args = [0i64; MAX_CALL_ARGS];
-        if !args_tuple.is_null() && len > 0 {
-            let tuple_obj = args_tuple as *mut TupleObj;
-            let data_ptr = (*tuple_obj).data.as_ptr();
-            for (slot, i) in (0..len.min(MAX_CALL_ARGS)).enumerate() {
-                call_args[slot] = *data_ptr.add(i) as i64;
-            }
-        }
+        let n = extract_tuple_unwrapping_values(args_tuple, &mut call_args, 0);
+        dispatch_call_with_args(func_ptr, &call_args, n)
+    }
+}
 
-        // Dispatch based on argument count
-        type F0 = extern "C" fn() -> i64;
-        type F1 = extern "C" fn(i64) -> i64;
-        type F2 = extern "C" fn(i64, i64) -> i64;
-        type F3 = extern "C" fn(i64, i64, i64) -> i64;
-        type F4 = extern "C" fn(i64, i64, i64, i64) -> i64;
-        type F5 = extern "C" fn(i64, i64, i64, i64, i64) -> i64;
-        type F6 = extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64;
-        type F7 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64;
-        type F8 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
-        type F9 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
-        type F10 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
-        type F11 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
-        type F12 = extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
-        type F13 =
-            extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
-        type F14 = extern "C" fn(
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-        ) -> i64;
-        type F15 = extern "C" fn(
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-        ) -> i64;
-        type F16 = extern "C" fn(
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-        ) -> i64;
-
-        match len {
-            0 => {
-                let f: F0 = std::mem::transmute(func_ptr as usize);
-                f()
-            }
-            1 => {
-                let f: F1 = std::mem::transmute(func_ptr as usize);
-                f(call_args[0])
-            }
-            2 => {
-                let f: F2 = std::mem::transmute(func_ptr as usize);
-                f(call_args[0], call_args[1])
-            }
-            3 => {
-                let f: F3 = std::mem::transmute(func_ptr as usize);
-                f(call_args[0], call_args[1], call_args[2])
-            }
-            4 => {
-                let f: F4 = std::mem::transmute(func_ptr as usize);
-                f(call_args[0], call_args[1], call_args[2], call_args[3])
-            }
-            5 => {
-                let f: F5 = std::mem::transmute(func_ptr as usize);
-                f(
-                    call_args[0],
-                    call_args[1],
-                    call_args[2],
-                    call_args[3],
-                    call_args[4],
-                )
-            }
-            6 => {
-                let f: F6 = std::mem::transmute(func_ptr as usize);
-                f(
-                    call_args[0],
-                    call_args[1],
-                    call_args[2],
-                    call_args[3],
-                    call_args[4],
-                    call_args[5],
-                )
-            }
-            7 => {
-                let f: F7 = std::mem::transmute(func_ptr as usize);
-                f(
-                    call_args[0],
-                    call_args[1],
-                    call_args[2],
-                    call_args[3],
-                    call_args[4],
-                    call_args[5],
-                    call_args[6],
-                )
-            }
-            8 => {
-                let f: F8 = std::mem::transmute(func_ptr as usize);
-                f(
-                    call_args[0],
-                    call_args[1],
-                    call_args[2],
-                    call_args[3],
-                    call_args[4],
-                    call_args[5],
-                    call_args[6],
-                    call_args[7],
-                )
-            }
-            9 => {
-                let f: F9 = std::mem::transmute(func_ptr as usize);
-                f(
-                    call_args[0],
-                    call_args[1],
-                    call_args[2],
-                    call_args[3],
-                    call_args[4],
-                    call_args[5],
-                    call_args[6],
-                    call_args[7],
-                    call_args[8],
-                )
-            }
-            10 => {
-                let f: F10 = std::mem::transmute(func_ptr as usize);
-                f(
-                    call_args[0],
-                    call_args[1],
-                    call_args[2],
-                    call_args[3],
-                    call_args[4],
-                    call_args[5],
-                    call_args[6],
-                    call_args[7],
-                    call_args[8],
-                    call_args[9],
-                )
-            }
-            11 => {
-                let f: F11 = std::mem::transmute(func_ptr as usize);
-                f(
-                    call_args[0],
-                    call_args[1],
-                    call_args[2],
-                    call_args[3],
-                    call_args[4],
-                    call_args[5],
-                    call_args[6],
-                    call_args[7],
-                    call_args[8],
-                    call_args[9],
-                    call_args[10],
-                )
-            }
-            12 => {
-                let f: F12 = std::mem::transmute(func_ptr as usize);
-                f(
-                    call_args[0],
-                    call_args[1],
-                    call_args[2],
-                    call_args[3],
-                    call_args[4],
-                    call_args[5],
-                    call_args[6],
-                    call_args[7],
-                    call_args[8],
-                    call_args[9],
-                    call_args[10],
-                    call_args[11],
-                )
-            }
-            13 => {
-                let f: F13 = std::mem::transmute(func_ptr as usize);
-                f(
-                    call_args[0],
-                    call_args[1],
-                    call_args[2],
-                    call_args[3],
-                    call_args[4],
-                    call_args[5],
-                    call_args[6],
-                    call_args[7],
-                    call_args[8],
-                    call_args[9],
-                    call_args[10],
-                    call_args[11],
-                    call_args[12],
-                )
-            }
-            14 => {
-                let f: F14 = std::mem::transmute(func_ptr as usize);
-                f(
-                    call_args[0],
-                    call_args[1],
-                    call_args[2],
-                    call_args[3],
-                    call_args[4],
-                    call_args[5],
-                    call_args[6],
-                    call_args[7],
-                    call_args[8],
-                    call_args[9],
-                    call_args[10],
-                    call_args[11],
-                    call_args[12],
-                    call_args[13],
-                )
-            }
-            15 => {
-                let f: F15 = std::mem::transmute(func_ptr as usize);
-                f(
-                    call_args[0],
-                    call_args[1],
-                    call_args[2],
-                    call_args[3],
-                    call_args[4],
-                    call_args[5],
-                    call_args[6],
-                    call_args[7],
-                    call_args[8],
-                    call_args[9],
-                    call_args[10],
-                    call_args[11],
-                    call_args[12],
-                    call_args[13],
-                    call_args[14],
-                )
-            }
-            16 => {
-                let f: F16 = std::mem::transmute(func_ptr as usize);
-                f(
-                    call_args[0],
-                    call_args[1],
-                    call_args[2],
-                    call_args[3],
-                    call_args[4],
-                    call_args[5],
-                    call_args[6],
-                    call_args[7],
-                    call_args[8],
-                    call_args[9],
-                    call_args[10],
-                    call_args[11],
-                    call_args[12],
-                    call_args[13],
-                    call_args[14],
-                    call_args[15],
-                )
-            }
-            _ => 0, // Unsupported arity
-        }
+/// Stage E (unified closure ABI): closure-trampoline call entry point that
+/// extracts captures and user-args from SEPARATE tuples respecting each
+/// tuple's own elem_tag. Replaces the prior `rt_tuple_concat` +
+/// `rt_call_with_tuple_args` combo, which forced both halves into the
+/// first tuple's captures and then delivered user-args as tagged Value bits
+/// to a callee that still expected raw primitives in user-visible param slots.
+///
+/// Capture slots arrive as tagged Values (ValueFromInt/ValueFromBool); the
+/// callee's prologue unwraps them. Args slots arrive as raw scalars; the
+/// helper unwraps them so user-visible Int/Bool params receive raw values.
+#[no_mangle]
+pub extern "C" fn rt_call_with_captures_and_args(
+    func_ptr: i64,
+    captures_tuple: *mut Obj,
+    args_tuple: *mut Obj,
+) -> i64 {
+    if func_ptr == 0 {
+        return 0;
+    }
+    unsafe {
+        let mut call_args = [0i64; MAX_CALL_ARGS];
+        let n_caps = extract_tuple_keeping_values(captures_tuple, &mut call_args, 0);
+        let n_args = extract_tuple_unwrapping_values(args_tuple, &mut call_args, n_caps);
+        dispatch_call_with_args(func_ptr, &call_args, n_caps + n_args)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{rt_call_with_tuple_args, rt_make_tuple, rt_tuple_set};
-    use crate::object::{Obj, ELEM_RAW_INT};
+    use crate::object::Obj;
 
     extern "C" fn sum9(
         a0: i64,
@@ -1023,9 +890,11 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         crate::gc::init();
 
-        let tuple = rt_make_tuple(9, ELEM_RAW_INT);
-        for i in 0..9 {
-            rt_tuple_set(tuple, i, (i as usize + 1) as *mut Obj);
+        // After F.7c values are tagged Value bits — use Value::from_int for int args.
+        let tuple = rt_make_tuple(9);
+        for i in 0..9i64 {
+            let val = pyaot_core_defs::Value::from_int(i + 1);
+            rt_tuple_set(tuple, i, val.0 as *mut Obj);
         }
 
         let result = rt_call_with_tuple_args(sum9 as *const () as usize as i64, tuple);

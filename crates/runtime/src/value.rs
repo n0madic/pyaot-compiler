@@ -5,10 +5,11 @@
 //! dereferencing a heap [`Obj`] — notably the full runtime-type lookup —
 //! live here because `core-defs` is a leaf crate that forbids `unsafe`.
 //!
-//! This module is additive Phase 2 foundation. Lowering still emits
-//! `rt_box_int` / `rt_unbox_int` / etc. at MIR time; replacing those call
-//! sites with inline tag arithmetic is scoped to S2.7 once the codegen
-//! migration lands.
+//! Phase 2 §F.7d.3 deleted the four primitive box/unbox externs;
+//! lowering and codegen now emit inline `ValueFromInt` /
+//! `ValueFromBool` / `UnwrapValueInt` / `UnwrapValueBool` MIR
+//! instructions for Int and Bool. Float still uses the heap-boxed
+//! `rt_box_float` / `rt_unbox_float` extern shims.
 
 pub use pyaot_core_defs::Value;
 

@@ -5,11 +5,13 @@
 //! - `calls`: CallDirect, CallNamed, Call, CallVirtual, CallVirtualNamed, FuncAddr, BuiltinAddr
 //! - `copy`: Copy with type coercion
 //! - `conversions`: FloatToInt, BoolToInt, IntToFloat, FloatAbs, FloatBits, IntBitsToFloat
+//! - `tag`: ValueFromInt, UnwrapValueInt, ValueFromBool, UnwrapValueBool
 
 pub(crate) mod arithmetic;
 pub(crate) mod calls;
 pub(crate) mod conversions;
 pub(crate) mod copy;
+pub(crate) mod tag;
 
 use cranelift_codegen::ir::types as cltypes;
 use cranelift_codegen::ir::InstBuilder;
@@ -160,6 +162,20 @@ pub fn compile_instruction(
         }
         mir::InstructionKind::IntBitsToFloat { dest, src } => {
             conversions::compile_int_bits_to_float(builder, dest, src, ctx);
+        }
+
+        // Value tag boxing/unboxing instructions
+        mir::InstructionKind::ValueFromInt { dest, src } => {
+            tag::compile_value_from_int(builder, dest, src, ctx);
+        }
+        mir::InstructionKind::UnwrapValueInt { dest, src } => {
+            tag::compile_unwrap_value_int(builder, dest, src, ctx);
+        }
+        mir::InstructionKind::ValueFromBool { dest, src } => {
+            tag::compile_value_from_bool(builder, dest, src, ctx);
+        }
+        mir::InstructionKind::UnwrapValueBool { dest, src } => {
+            tag::compile_unwrap_value_bool(builder, dest, src, ctx);
         }
 
         // GC instructions are handled at the function level (prologue/epilogue)

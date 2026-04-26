@@ -5,7 +5,7 @@ use crate::context::Lowering;
 use indexmap::IndexMap;
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir as hir;
-use pyaot_mir::{self as mir, ValueKind};
+use pyaot_mir as mir;
 use pyaot_types::Type;
 
 impl<'a> Lowering<'a> {
@@ -119,9 +119,13 @@ impl<'a> Lowering<'a> {
                         .and_then(|fid| self.get_default_slot(&(fid, i + param_index_offset)));
 
                     if let Some(slot) = stored_slot {
-                        // Load the pre-evaluated default from global storage
+                        // Load the pre-evaluated default from global storage —
+                        // pre-evaluated defaults are heap pointers (boxed),
+                        // so use the Ptr variant of the typed extern.
                         let default_local = self.emit_runtime_call_gc(
-                            mir::RuntimeFunc::Call(ValueKind::Ptr.global_get_def()),
+                            mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_GLOBAL_GET_PTR,
+                            ),
                             vec![mir::Operand::Constant(mir::Constant::Int(slot as i64))],
                             Type::Any,
                             mir_func,

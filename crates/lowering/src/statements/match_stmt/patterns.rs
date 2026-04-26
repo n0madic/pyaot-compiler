@@ -361,16 +361,7 @@ impl<'a> Lowering<'a> {
             _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
         };
 
-        // Get element access function
-        let get_func = match subject_type {
-            Type::List(_) => {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
-            }
-            Type::Tuple(_) => {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET)
-            }
-            _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
-        };
+        // Element access is dispatched per-call (list uses emit_list_get for typed unwrap).
 
         // Check length
         let len_local =
@@ -452,12 +443,20 @@ impl<'a> Lowering<'a> {
                 value: mir::Constant::Int(i as i64),
             });
 
-            let elem_local = self.emit_runtime_call(
-                get_func,
-                vec![subject.clone(), mir::Operand::Local(idx_local)],
-                idx_elem_type.clone(),
-                mir_func,
-            );
+            let elem_local = match subject_type {
+                Type::Tuple(_) => self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+                    vec![subject.clone(), mir::Operand::Local(idx_local)],
+                    idx_elem_type.clone(),
+                    mir_func,
+                ),
+                _ => self.emit_list_get(
+                    subject.clone(),
+                    mir::Operand::Local(idx_local),
+                    &idx_elem_type,
+                    mir_func,
+                ),
+            };
 
             // Check pattern against element
             let (elem_cond, elem_bindings) = self.generate_pattern_check(
@@ -583,12 +582,22 @@ impl<'a> Lowering<'a> {
                         right: mir::Operand::Local(one_local),
                     });
 
-                    let elem_local = self.emit_runtime_call(
-                        get_func,
-                        vec![subject.clone(), mir::Operand::Local(final_idx_local)],
-                        elem_type.clone(),
-                        mir_func,
-                    );
+                    let elem_local = match subject_type {
+                        Type::Tuple(_) => self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_TUPLE_GET,
+                            ),
+                            vec![subject.clone(), mir::Operand::Local(final_idx_local)],
+                            elem_type.clone(),
+                            mir_func,
+                        ),
+                        _ => self.emit_list_get(
+                            subject.clone(),
+                            mir::Operand::Local(final_idx_local),
+                            &elem_type,
+                            mir_func,
+                        ),
+                    };
 
                     // Check pattern against element
                     let (elem_cond, elem_bindings) = self.generate_pattern_check(
@@ -698,21 +707,21 @@ impl<'a> Lowering<'a> {
             self.push_block(get_bb);
 
             // DictGet returns a boxed *mut Obj for all values.
-            // Primitive types (Int, Float, Bool) need unboxing.
-            let unbox_func = Self::unbox_func_for_type(&value_type);
-
+            // Primitive types (Int, Float, Bool) need unboxing — `unbox_if_needed`
+            // emits ValueFromInt/Bool MIR or rt_unbox_float as appropriate.
             let value_local = self.alloc_and_add_local(value_type.clone(), mir_func);
-            if let Some(unbox_func) = unbox_func {
+            if matches!(value_type, Type::Int | Type::Float | Type::Bool) {
                 let boxed_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_GET),
                     vec![ctx.subject.clone(), key_operand],
                     Type::HeapAny,
                     mir_func,
                 );
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                let unboxed =
+                    self.unbox_if_needed(mir::Operand::Local(boxed_local), &value_type, mir_func);
+                self.emit_instruction(mir::InstructionKind::Copy {
                     dest: value_local,
-                    func: unbox_func,
-                    args: vec![mir::Operand::Local(boxed_local)],
+                    src: unboxed,
                 });
             } else {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -918,13 +927,55 @@ impl<'a> Lowering<'a> {
                             value: mir::Constant::Int(offset as i64),
                         });
 
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                            dest: attr_local,
-                            func: mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
-                            ),
-                            args: vec![ctx.subject.clone(), mir::Operand::Local(offset_local)],
-                        });
+                        // §F.7c: fields are uniform tagged Values.
+                        // Float → unbox via rt_unbox_float; Int/Bool → UnwrapValue*;
+                        // heap/dynamic → label the read with attr_type directly.
+                        if matches!(attr_type, Type::Float) {
+                            let boxed_local = self.alloc_gc_local(Type::HeapAny, mir_func);
+                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                                dest: boxed_local,
+                                func: mir::RuntimeFunc::Call(
+                                    &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
+                                ),
+                                args: vec![ctx.subject.clone(), mir::Operand::Local(offset_local)],
+                            });
+                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                                dest: attr_local,
+                                func: mir::RuntimeFunc::Call(
+                                    &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
+                                ),
+                                args: vec![mir::Operand::Local(boxed_local)],
+                            });
+                        } else if matches!(attr_type, Type::Int | Type::Bool) {
+                            let boxed_local = self.alloc_gc_local(Type::HeapAny, mir_func);
+                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                                dest: boxed_local,
+                                func: mir::RuntimeFunc::Call(
+                                    &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
+                                ),
+                                args: vec![ctx.subject.clone(), mir::Operand::Local(offset_local)],
+                            });
+                            let src = mir::Operand::Local(boxed_local);
+                            self.emit_instruction(if matches!(attr_type, Type::Int) {
+                                mir::InstructionKind::UnwrapValueInt {
+                                    dest: attr_local,
+                                    src,
+                                }
+                            } else {
+                                mir::InstructionKind::UnwrapValueBool {
+                                    dest: attr_local,
+                                    src,
+                                }
+                            });
+                        } else {
+                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                                dest: attr_local,
+                                func: mir::RuntimeFunc::Call(
+                                    &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
+                                ),
+                                args: vec![ctx.subject.clone(), mir::Operand::Local(offset_local)],
+                            });
+                        }
                     }
                 }
             }

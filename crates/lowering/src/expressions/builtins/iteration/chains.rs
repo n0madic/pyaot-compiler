@@ -65,15 +65,22 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         let num_iters = args.len() as i64;
 
-        // Create a list to hold all iterators (elem_tag=0 for heap objects)
+        // Derive the chain's element type from the first arg's element type so
+        // the for-loop binding sees `Iterator[Int]` (not `Iterator[Any]`) and
+        // emits UnwrapValueInt where needed.
+        let chain_elem_type = args
+            .first()
+            .map(|first_arg| {
+                let first_ty = self.seed_expr_type(*first_arg, hir_module);
+                crate::type_planning::infer::extract_iterable_first_element_type(&first_ty)
+            })
+            .unwrap_or(Type::Any);
+
         let iters_list_local = self.alloc_and_add_local(Type::List(Box::new(Type::Any)), mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: iters_list_local,
             func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
-            args: vec![
-                mir::Operand::Constant(mir::Constant::Int(num_iters)),
-                mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
-            ],
+            args: vec![mir::Operand::Constant(mir::Constant::Int(num_iters))],
         });
 
         // Create iterators for each argument and add to list
@@ -146,7 +153,7 @@ impl<'a> Lowering<'a> {
                 mir::Operand::Local(iters_list_local),
                 mir::Operand::Constant(mir::Constant::Int(num_iters)),
             ],
-            Type::Iterator(Box::new(Type::Any)),
+            Type::Iterator(Box::new(chain_elem_type)),
             mir_func,
         );
 

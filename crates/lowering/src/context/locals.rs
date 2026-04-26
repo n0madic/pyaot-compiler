@@ -144,4 +144,105 @@ impl<'a> Lowering<'a> {
         self.emit_instruction(mir::InstructionKind::RuntimeCall { dest, func, args });
         dest
     }
+
+    /// Emit `RT_TUPLE_GET(tuple, index)` and unbox the result if the declared
+    /// element type is a primitive. After §F.4, `rt_tuple_get` always returns
+    /// the raw tagged `Value` bits; this helper applies `UnwrapValueInt` /
+    /// `UnwrapValueBool` / `rt_unbox_float` based on `elem_type`.
+    /// Other types pass through as `HeapAny` / pointer.
+    pub(crate) fn emit_tuple_get(
+        &mut self,
+        tuple_operand: mir::Operand,
+        index_operand: mir::Operand,
+        elem_type: Type,
+        mir_func: &mut mir::Function,
+    ) -> LocalId {
+        let needs_unbox = matches!(elem_type, Type::Int | Type::Bool | Type::Float);
+        // For primitives, emit the raw call into HeapAny then unbox.
+        // For other types, label the result with the declared element type so
+        // downstream comparison/dispatch paths see the right type (e.g. Union or
+        // HeapAny for `Any` elements) rather than losing the type information.
+        let raw_result_type = if needs_unbox {
+            Type::HeapAny
+        } else {
+            elem_type.clone()
+        };
+        let tagged_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+            vec![tuple_operand, index_operand],
+            raw_result_type,
+            mir_func,
+        );
+        if needs_unbox {
+            let unboxed =
+                self.unbox_if_needed(mir::Operand::Local(tagged_local), &elem_type, mir_func);
+            match unboxed {
+                mir::Operand::Local(id) => id,
+                other => panic!("unexpected non-local unbox result: {other:?}"),
+            }
+        } else {
+            tagged_local
+        }
+    }
+
+    /// Emit `RT_INSTANCE_GET_FIELD(obj, offset)` and recover the typed
+    /// value. After Phase 2 §F.7c, fields are uniform tagged `Value`s:
+    /// `Float` slots hold `Value::from_ptr(*FloatObj)` recovered via
+    /// `rt_unbox_float`; `Int` slots hold `Value::from_int(n)` recovered
+    /// via `UnwrapValueInt`; `Bool` slots hold `Value::from_bool(b)`
+    /// recovered via `UnwrapValueBool`; heap/dynamic shapes are loaded
+    /// directly with `read_type` as the result label.
+    pub(crate) fn emit_instance_get_field(
+        &mut self,
+        obj_operand: mir::Operand,
+        offset: usize,
+        read_type: Type,
+        mir_func: &mut mir::Function,
+    ) -> LocalId {
+        if matches!(read_type, Type::Float) {
+            let boxed_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD),
+                vec![
+                    obj_operand,
+                    mir::Operand::Constant(mir::Constant::Int(offset as i64)),
+                ],
+                Type::HeapAny,
+                mir_func,
+            );
+            return self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT),
+                vec![mir::Operand::Local(boxed_local)],
+                Type::Float,
+                mir_func,
+            );
+        }
+        if matches!(read_type, Type::Int | Type::Bool) {
+            let boxed_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD),
+                vec![
+                    obj_operand,
+                    mir::Operand::Constant(mir::Constant::Int(offset as i64)),
+                ],
+                Type::HeapAny,
+                mir_func,
+            );
+            let dest = self.alloc_and_add_local(read_type.clone(), mir_func);
+            let src = mir::Operand::Local(boxed_local);
+            self.emit_instruction(if matches!(read_type, Type::Int) {
+                mir::InstructionKind::UnwrapValueInt { dest, src }
+            } else {
+                mir::InstructionKind::UnwrapValueBool { dest, src }
+            });
+            return dest;
+        }
+        self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD),
+            vec![
+                obj_operand,
+                mir::Operand::Constant(mir::Constant::Int(offset as i64)),
+            ],
+            read_type,
+            mir_func,
+        )
+    }
 }

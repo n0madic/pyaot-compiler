@@ -103,28 +103,6 @@ pub unsafe fn extract_str_unchecked(obj: *mut Obj) -> String {
     String::from_utf8_lossy(bytes).to_string()
 }
 
-/// Check if a pointer looks like a valid heap object (vs a raw primitive value)
-///
-/// This uses a heuristic approach because container values can be:
-/// 1. Heap objects (actual pointers to allocated objects with headers)
-/// 2. Raw primitive values (integers stored directly as pointer values, e.g., (void*)42)
-///
-/// We cannot safely dereference case 2, so we use address heuristics:
-/// - Valid heap pointers are aligned (multiple of 8) and at high addresses (>= 0x10000)
-/// - Raw integers are typically small values (< 0x10000)
-///
-/// Note: This heuristic can theoretically fail for:
-/// - Very small heap addresses (unlikely on modern systems)
-/// - Very large integer values that happen to be aligned (unlikely in typical use)
-///
-/// # Safety
-/// This function is safe to call with any pointer value.
-#[inline]
-pub unsafe fn is_heap_obj(ptr: *mut Obj) -> bool {
-    let addr = ptr as usize;
-    addr >= 0x10000 && (addr & 0x7) == 0
-}
-
 /// Raise a ValueError exception with the given message
 ///
 /// # Safety

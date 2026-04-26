@@ -1,6 +1,7 @@
 //! Conversions to string: rt_*_to_str variants and related helpers
 
-use crate::object::{BoolObj, FloatObj, IntObj, Obj, TypeTagKind};
+use crate::object::{FloatObj, Obj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 /// Convert an integer to a string
 /// Returns: pointer to new allocated StrObj
@@ -215,19 +216,23 @@ pub extern "C" fn rt_obj_to_str(obj: *mut Obj) -> *mut Obj {
         return rt_none_to_str();
     }
 
+    // Check Value-tagged primitives before heap pointer dereference.
+    let v = Value(obj as u64);
+    if v.is_int() {
+        return rt_int_to_str(v.unwrap_int());
+    }
+    if v.is_bool() {
+        return rt_bool_to_str(if v.unwrap_bool() { 1 } else { 0 });
+    }
+    if v.is_none() {
+        return rt_none_to_str();
+    }
+
     unsafe {
         match (*obj).type_tag() {
-            TypeTagKind::Int => {
-                let value = (*(obj as *mut IntObj)).value;
-                rt_int_to_str(value)
-            }
             TypeTagKind::Float => {
                 let value = (*(obj as *mut FloatObj)).value;
                 rt_float_to_str(value)
-            }
-            TypeTagKind::Bool => {
-                let value = (*(obj as *mut BoolObj)).value;
-                rt_bool_to_str(if value { 1 } else { 0 })
             }
             TypeTagKind::Str => obj, // already a string
             TypeTagKind::None => rt_none_to_str(),
@@ -249,16 +254,24 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
         return "None".to_string();
     }
 
+    // Check Value-tagged primitives before heap pointer dereference.
+    let v = Value(obj as u64);
+    if v.is_int() {
+        return format!("{}", v.unwrap_int());
+    }
+    if v.is_bool() {
+        return if v.unwrap_bool() {
+            "True".to_string()
+        } else {
+            "False".to_string()
+        };
+    }
+    if v.is_none() {
+        return "None".to_string();
+    }
+
     match (*obj).type_tag() {
-        TypeTagKind::Int => format!("{}", (*(obj as *mut IntObj)).value),
         TypeTagKind::Float => crate::utils::format_float_python((*(obj as *mut FloatObj)).value),
-        TypeTagKind::Bool => {
-            if (*(obj as *mut BoolObj)).value {
-                "True".to_string()
-            } else {
-                "False".to_string()
-            }
-        }
         TypeTagKind::Str => {
             let str_obj = obj as *mut StrObj;
             let len = (*str_obj).len;
@@ -293,14 +306,13 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
         TypeTagKind::List => {
             let list = obj as *mut ListObj;
             let len = (*list).len;
-            let elem_tag = (*list).elem_tag;
             let mut s = String::from("[");
             for i in 0..len {
                 if i > 0 {
                     s.push_str(", ");
                 }
-                let elem = crate::list::list_slot_raw(list, i);
-                elem_repr_string(&mut s, elem, elem_tag);
+                let val = *(*list).data.add(i);
+                elem_repr_string(&mut s, val.0 as *mut Obj);
             }
             s.push(']');
             s
@@ -309,14 +321,13 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             let tuple = obj as *mut TupleObj;
             let len = (*tuple).len;
             let data = (*tuple).data.as_ptr();
-            let elem_tag = (*tuple).elem_tag;
             let mut s = String::from("(");
             for i in 0..len {
                 if i > 0 {
                     s.push_str(", ");
                 }
-                let elem = *data.add(i);
-                elem_repr_string(&mut s, elem, elem_tag);
+                let val = *data.add(i);
+                elem_repr_string(&mut s, val.0 as *mut Obj);
             }
             if len == 1 {
                 s.push(',');
@@ -333,14 +344,14 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             for i in 0..entries_len {
                 let entry = entries.add(i);
                 let key = (*entry).key;
-                if !key.is_null() {
+                if key.0 != 0 {
                     if !first {
                         s.push_str(", ");
                     }
                     first = false;
-                    obj_repr_string(&mut s, key);
+                    obj_repr_string(&mut s, key.0 as *mut Obj);
                     s.push_str(": ");
-                    maybe_raw_repr_string(&mut s, (*entry).value);
+                    maybe_raw_repr_string(&mut s, (*entry).value.0 as *mut Obj);
                 }
             }
             s.push('}');
@@ -354,18 +365,17 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
             }
             let capacity = (*set).capacity;
             let entries = (*set).entries;
-            const TOMBSTONE: *mut Obj = std::ptr::dangling_mut::<Obj>();
             let mut s = String::from("{");
             let mut first = true;
             for i in 0..capacity {
                 let entry = entries.add(i);
                 let elem = (*entry).elem;
-                if !elem.is_null() && elem != TOMBSTONE {
+                if elem.0 != 0 && elem != crate::object::TOMBSTONE {
                     if !first {
                         s.push_str(", ");
                     }
                     first = false;
-                    obj_repr_string(&mut s, elem);
+                    obj_repr_string(&mut s, elem.0 as *mut Obj);
                 }
             }
             s.push('}');
@@ -375,34 +385,14 @@ pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {
     }
 }
 
-/// Write repr of a value that may be a heap object or raw primitive
+/// Write repr of a value that may be a heap object or Value-tagged primitive
 pub(super) unsafe fn maybe_raw_repr_string(s: &mut String, ptr: *mut Obj) {
-    use std::fmt::Write;
-
-    if crate::utils::is_heap_obj(ptr) {
-        obj_repr_string(s, ptr);
-    } else {
-        let _ = write!(s, "{}", ptr as i64);
-    }
+    obj_repr_string(s, ptr);
 }
 
-/// Write repr of a single element to a string, based on elem_tag
-pub(super) unsafe fn elem_repr_string(s: &mut String, elem: *mut Obj, elem_tag: u8) {
-    use crate::object::*;
-    use std::fmt::Write;
-
-    match elem_tag {
-        ELEM_RAW_INT => {
-            let _ = write!(s, "{}", elem as i64);
-        }
-        ELEM_RAW_BOOL => {
-            let val = elem as i64;
-            s.push_str(if val != 0 { "True" } else { "False" });
-        }
-        _ => {
-            obj_repr_string(s, elem);
-        }
-    }
+/// Write repr of a single element to a string, dispatching on Value tag
+pub(super) unsafe fn elem_repr_string(s: &mut String, elem: *mut Obj) {
+    obj_repr_string(s, elem);
 }
 
 /// Write repr of a boxed heap object to a string (strings get quotes)
@@ -414,21 +404,25 @@ pub(super) unsafe fn obj_repr_string(s: &mut String, obj: *mut Obj) {
         s.push_str("None");
         return;
     }
+    // Check Value-tagged primitives before heap pointer dereference.
+    let v = Value(obj as u64);
+    if v.is_int() {
+        let _ = write!(s, "{}", v.unwrap_int());
+        return;
+    }
+    if v.is_bool() {
+        s.push_str(if v.unwrap_bool() { "True" } else { "False" });
+        return;
+    }
+    if v.is_none() {
+        s.push_str("None");
+        return;
+    }
     match (*obj).type_tag() {
-        TypeTagKind::Int => {
-            let _ = write!(s, "{}", (*(obj as *mut IntObj)).value);
-        }
         TypeTagKind::Float => {
             s.push_str(&crate::utils::format_float_python(
                 (*(obj as *mut FloatObj)).value,
             ));
-        }
-        TypeTagKind::Bool => {
-            s.push_str(if (*(obj as *mut BoolObj)).value {
-                "True"
-            } else {
-                "False"
-            });
         }
         TypeTagKind::Str => {
             let str_obj = obj as *mut StrObj;

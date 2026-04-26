@@ -38,11 +38,12 @@ unsafe fn for_each_str_entry<F: FnMut(String, String)>(dict: *mut Obj, mut f: F)
     let entries = (*d).entries;
     for i in 0..entries_len {
         let entry = entries.add(i);
-        let key_obj = (*entry).key;
-        if key_obj.is_null() {
+        let key_val = (*entry).key;
+        if key_val.0 == 0 {
             continue; // deleted slot
         }
-        let val_obj = (*entry).value;
+        let key_obj = key_val.0 as *mut Obj;
+        let val_obj = (*entry).value.0 as *mut Obj;
         if (*key_obj).header.type_tag != TypeTagKind::Str
             || val_obj.is_null()
             || (*val_obj).header.type_tag != TypeTagKind::Str
@@ -725,7 +726,7 @@ pub extern "C" fn rt_urlretrieve(
         };
         gc_push(&mut frame);
 
-        let tuple = crate::tuple::rt_make_tuple(2, 0); // ELEM_HEAP_OBJ
+        let tuple = crate::tuple::rt_make_tuple(2);
         roots[3] = tuple;
         crate::tuple::rt_tuple_set(roots[3], 0, roots[1]);
         crate::tuple::rt_tuple_set(roots[3], 1, roots[2]);

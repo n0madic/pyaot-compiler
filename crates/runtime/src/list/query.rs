@@ -1,27 +1,13 @@
 //! List query operations: index, count, copy
 
 use super::core::rt_make_list;
-use super::load_value_as_raw;
 use crate::exceptions::ExceptionType;
 use crate::hash_table_utils::eq_hashable_obj;
-use crate::object::{ListObj, Obj, ELEM_HEAP_OBJ};
+use crate::object::{ListObj, Obj};
 
-/// Compare two list elements for equality.
-/// For heap objects, uses value equality (eq_hashable_obj).
-/// For raw values (int, bool), uses bitwise equality.
-#[inline]
-unsafe fn elem_eq(a: *mut Obj, b: *mut Obj, elem_tag: u8) -> bool {
-    if elem_tag == ELEM_HEAP_OBJ {
-        eq_hashable_obj(a, b)
-    } else {
-        // Raw int/bool: compare as raw bits
-        a == b
-    }
-}
-
-/// Find first occurrence of value in list
-/// Uses value equality for heap objects, raw equality for primitives
-/// Returns: index of first occurrence, or -1 if not found
+/// Find first occurrence of value in list. After §F.7c: slots are tagged
+/// Values; pass raw Value bits to `eq_hashable_obj` which dispatches on
+/// `Value::tag()`. Lowering boxes the search value to match.
 #[no_mangle]
 pub extern "C" fn rt_list_index(list: *mut Obj, value: *mut Obj) -> i64 {
     if list.is_null() {
@@ -32,15 +18,14 @@ pub extern "C" fn rt_list_index(list: *mut Obj, value: *mut Obj) -> i64 {
         let list_obj = list as *mut ListObj;
         let len = (*list_obj).len;
         let data = (*list_obj).data;
-        let elem_tag = (*list_obj).elem_tag;
 
         if data.is_null() {
             return -1;
         }
 
         for i in 0..len {
-            let elem = load_value_as_raw(*data.add(i), elem_tag);
-            if elem_eq(elem, value, elem_tag) {
+            let slot = *data.add(i);
+            if eq_hashable_obj(slot.0 as *mut Obj, value) {
                 return i as i64;
             }
         }
@@ -49,9 +34,7 @@ pub extern "C" fn rt_list_index(list: *mut Obj, value: *mut Obj) -> i64 {
     }
 }
 
-/// Count occurrences of value in list
-/// Uses value equality for heap objects, raw equality for primitives
-/// Returns: count of occurrences
+/// Count occurrences of value in list (post-§F.7c uniform Value semantics).
 #[no_mangle]
 pub extern "C" fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
     if list.is_null() {
@@ -62,7 +45,6 @@ pub extern "C" fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
         let list_obj = list as *mut ListObj;
         let len = (*list_obj).len;
         let data = (*list_obj).data;
-        let elem_tag = (*list_obj).elem_tag;
 
         if data.is_null() {
             return 0;
@@ -70,8 +52,8 @@ pub extern "C" fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
 
         let mut count = 0i64;
         for i in 0..len {
-            let elem = load_value_as_raw(*data.add(i), elem_tag);
-            if elem_eq(elem, value, elem_tag) {
+            let slot = *data.add(i);
+            if eq_hashable_obj(slot.0 as *mut Obj, value) {
                 count += 1;
             }
         }
@@ -87,13 +69,12 @@ pub extern "C" fn rt_list_copy(list: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if list.is_null() {
-        return rt_make_list(0, crate::object::ELEM_HEAP_OBJ);
+        return rt_make_list(0);
     }
 
     unsafe {
         let src = list as *mut ListObj;
         let len = (*src).len;
-        let elem_tag = (*src).elem_tag;
 
         // Root the source list across rt_make_list (which calls gc_alloc) so that
         // a GC collection triggered during that call cannot free the source list.
@@ -105,7 +86,7 @@ pub extern "C" fn rt_list_copy(list: *mut Obj) -> *mut Obj {
         };
         gc_push(&mut frame);
 
-        let new_list = rt_make_list(len as i64, elem_tag);
+        let new_list = rt_make_list(len as i64);
         let new_list_obj = new_list as *mut ListObj;
 
         gc_pop();
@@ -130,7 +111,7 @@ pub extern "C" fn rt_list_concat(list1: *mut Obj, list2: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if list1.is_null() && list2.is_null() {
-        return rt_make_list(0, crate::object::ELEM_HEAP_OBJ);
+        return rt_make_list(0);
     }
     if list1.is_null() {
         return rt_list_copy(list2);
@@ -151,12 +132,6 @@ pub extern "C" fn rt_list_concat(list1: *mut Obj, list2: *mut Obj) -> *mut Obj {
             }
         };
 
-        let elem_tag = if len1 > 0 {
-            (*src1).elem_tag
-        } else {
-            (*src2).elem_tag
-        };
-
         // Root both source lists across rt_make_list (which calls gc_alloc) so
         // that a GC collection triggered during that call cannot free them.
         let mut roots: [*mut Obj; 2] = [list1, list2];
@@ -167,7 +142,7 @@ pub extern "C" fn rt_list_concat(list1: *mut Obj, list2: *mut Obj) -> *mut Obj {
         };
         gc_push(&mut frame);
 
-        let new_list = rt_make_list(total_len as i64, elem_tag);
+        let new_list = rt_make_list(total_len as i64);
         let new_list_obj = new_list as *mut ListObj;
 
         gc_pop();

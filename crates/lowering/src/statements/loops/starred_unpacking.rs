@@ -400,22 +400,29 @@ impl<'a> Lowering<'a> {
         for (i, &target) in before_star.iter().enumerate() {
             let target_ty = target_types.get(i).cloned().unwrap_or(Type::Any);
 
-            let func = if is_tuple {
-                crate::type_dispatch::tuple_get_func(&target_ty)
-            } else {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
-            };
-
             self.insert_var_type(target, target_ty.clone());
-            let target_local = self.get_or_create_local(target, target_ty, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: target_local,
-                func,
-                args: vec![
+            let target_local = self.get_or_create_local(target, target_ty.clone(), mir_func);
+            if is_tuple {
+                let value_local = self.emit_tuple_get(
                     value_operand.clone(),
                     mir::Operand::Constant(mir::Constant::Int(i as i64)),
-                ],
-            });
+                    target_ty,
+                    mir_func,
+                );
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: target_local,
+                    src: mir::Operand::Local(value_local),
+                });
+            } else {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: target_local,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+                    args: vec![
+                        value_operand.clone(),
+                        mir::Operand::Constant(mir::Constant::Int(i as i64)),
+                    ],
+                });
+            }
         }
 
         // Extract starred portion (if any) using slicing
@@ -488,22 +495,29 @@ impl<'a> Lowering<'a> {
 
             let negative_idx = -((after_star.len() - i) as i64);
 
-            let func = if is_tuple {
-                crate::type_dispatch::tuple_get_func(&target_ty)
-            } else {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
-            };
-
             self.insert_var_type(target, target_ty.clone());
-            let target_local = self.get_or_create_local(target, target_ty, mir_func);
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                dest: target_local,
-                func,
-                args: vec![
+            let target_local = self.get_or_create_local(target, target_ty.clone(), mir_func);
+            if is_tuple {
+                let value_local = self.emit_tuple_get(
                     value_operand.clone(),
                     mir::Operand::Constant(mir::Constant::Int(negative_idx)),
-                ],
-            });
+                    target_ty,
+                    mir_func,
+                );
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: target_local,
+                    src: mir::Operand::Local(value_local),
+                });
+            } else {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: target_local,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+                    args: vec![
+                        value_operand.clone(),
+                        mir::Operand::Constant(mir::Constant::Int(negative_idx)),
+                    ],
+                });
+            }
         }
 
         Ok(())

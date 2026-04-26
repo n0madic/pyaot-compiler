@@ -50,31 +50,20 @@ impl<'a> Lowering<'a> {
             list_type = Type::List(Box::new(inferred_elem.unwrap_or(Type::Any)));
         }
 
-        // Determine elem_tag based on element type
         let elem_type = match &list_type {
             Type::List(elem_ty) => (**elem_ty).clone(),
             _ => Type::Any,
         };
-        // NOTE: ELEM_RAW_BOOL (2) is not used because ListPush requires pointer parameter,
-        // and converting i8 -> i64 in lowering is complex. Bool lists use ELEM_HEAP_OBJ.
-        let elem_tag: i64 = match &elem_type {
-            Type::Int => 1, // ELEM_RAW_INT
-            _ => 0,         // ELEM_HEAP_OBJ (Bool, Float, Str, Union, List, etc.)
-        };
 
-        // Create list with capacity and elem_tag
+        // After §F.7c: containers store uniform tagged Values; box every element below.
         let capacity = elements.len() as i64;
         let result_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
-            vec![
-                mir::Operand::Constant(mir::Constant::Int(capacity)),
-                mir::Operand::Constant(mir::Constant::Int(elem_tag)),
-            ],
+            vec![mir::Operand::Constant(mir::Constant::Int(capacity))],
             list_type.clone(),
             mir_func,
         );
 
-        // Push each element
         for elem_id in elements {
             let elem_expr = &hir_module.exprs[*elem_id];
             let elem_operand = self.lower_expr_expecting(
@@ -90,27 +79,12 @@ impl<'a> Lowering<'a> {
                 elem_operand
             };
 
-            // Box elements before pushing to list:
-            // - Float elements always need boxing
-            // - Union element types need boxing for primitive values
-            // - Bool elements: box for heap lists, extend to i64 for raw bool lists
-            let push_operand = if elem_type == Type::Float {
-                self.box_primitive_if_needed(elem_operand, &Type::Float, mir_func)
-            } else if elem_type == Type::Bool {
-                // ELEM_HEAP_OBJ: box bools
-                let boxed_local = self.emit_runtime_call(
-                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
-                    vec![elem_operand],
-                    Type::HeapAny,
-                    mir_func,
-                );
-                mir::Operand::Local(boxed_local)
-            } else if matches!(elem_type, Type::Union(_)) {
-                // Box primitives for Union element types
-                self.box_primitive_if_needed(elem_operand, &actual_elem_type, mir_func)
+            let box_type = if matches!(elem_type, Type::Union(_) | Type::Any) {
+                actual_elem_type
             } else {
-                elem_operand
+                elem_type.clone()
             };
+            let push_operand = self.box_primitive_if_needed(elem_operand, &box_type, mir_func);
 
             self.emit_runtime_call_void(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_PUSH),
@@ -152,36 +126,15 @@ impl<'a> Lowering<'a> {
             );
         }
 
-        // Determine elem_tag for tuple
-        // If all elements have the same primitive type, use that tag
-        // Otherwise use ELEM_HEAP_OBJ (0)
-        // NOTE: ELEM_RAW_BOOL (2) is not used because TupleSet requires pointer parameter,
-        // and converting i8 -> i64 in lowering is complex. Bool tuples use ELEM_HEAP_OBJ.
-        let elem_tag: i64 = if let Type::Tuple(ref elem_types) = tuple_type {
-            if !elem_types.is_empty() && elem_types.iter().all(|t| *t == Type::Int) {
-                1 // ELEM_RAW_INT
-            } else {
-                0 // ELEM_HEAP_OBJ (including bool tuples)
-            }
-        } else if matches!(tuple_type, Type::TupleVar(ref elem_type) if **elem_type == Type::Int) {
-            1 // ELEM_RAW_INT for homogeneous tuple[int, ...]
-        } else {
-            0
-        };
-
-        // Create tuple with size and elem_tag
+        // After §F.7c: containers store uniform tagged Values; box every element below.
         let size = elements.len() as i64;
         let result_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
-            vec![
-                mir::Operand::Constant(mir::Constant::Int(size)),
-                mir::Operand::Constant(mir::Constant::Int(elem_tag)),
-            ],
+            vec![mir::Operand::Constant(mir::Constant::Int(size))],
             tuple_type.clone(),
             mir_func,
         );
 
-        // Set each element
         for (i, elem_id) in elements.iter().enumerate() {
             let elem_expr = &hir_module.exprs[*elem_id];
             let expected_elem_type = match &tuple_type {
@@ -191,46 +144,9 @@ impl<'a> Lowering<'a> {
             };
             let elem_operand =
                 self.lower_expr_expecting(elem_expr, expected_elem_type, hir_module, mir_func)?;
-
-            // Box primitive values when elem_tag is ELEM_HEAP_OBJ
-            let final_operand = if elem_tag == 0 {
-                // ELEM_HEAP_OBJ - need to box primitives
-                let elem_type = self.seed_expr_type(*elem_id, hir_module);
-                match elem_type {
-                    Type::Int => {
-                        let boxed_local = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_INT),
-                            vec![elem_operand],
-                            Type::HeapAny,
-                            mir_func,
-                        );
-                        mir::Operand::Local(boxed_local)
-                    }
-                    Type::Bool => {
-                        let boxed_local = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
-                            vec![elem_operand],
-                            Type::HeapAny,
-                            mir_func,
-                        );
-                        mir::Operand::Local(boxed_local)
-                    }
-                    Type::Float => {
-                        let boxed_local = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT,
-                            ),
-                            vec![elem_operand],
-                            Type::HeapAny,
-                            mir_func,
-                        );
-                        mir::Operand::Local(boxed_local)
-                    }
-                    _ => elem_operand, // Already a heap object
-                }
-            } else {
-                elem_operand // ELEM_RAW_INT, already i64
-            };
+            let actual_elem_type = self.seed_expr_type(*elem_id, hir_module);
+            let final_operand =
+                self.box_primitive_if_needed(elem_operand, &actual_elem_type, mir_func);
 
             self.emit_runtime_call_void(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),

@@ -933,4 +933,120 @@ assert union_double(1.5) == 3.0, "Union function float arithmetic"
 
 print("Union function param/arithmetic tests passed!")
 
+# Union return type with primitive returns. The Return-terminator codegen
+# must box int/bool/float operands so callers see well-formed `Value` bits
+# instead of raw scalars — pre-fix this would SEGV when downstream
+# `rt_print_obj` reads raw int 42 (low 3 bits 0b010, no valid tag) and
+# falls to the heap-pointer dispatch arm.
+
+def union_return_int_or_str(b: bool):
+    if b:
+        return 42
+    return "hello"
+
+union_int_branch = union_return_int_or_str(True)
+assert union_int_branch == 42, "Union return: int branch"
+union_str_branch = union_return_int_or_str(False)
+assert union_str_branch == "hello", "Union return: str branch"
+
+def union_return_bool_or_str(b: bool):
+    if b:
+        return True
+    return "false-branch"
+
+union_bool_branch = union_return_bool_or_str(True)
+assert union_bool_branch == True, "Union return: bool branch"
+
+def union_return_float_or_str(b: bool):
+    if b:
+        return 1.5
+    return "small"
+
+union_float_branch = union_return_float_or_str(True)
+assert union_float_branch == 1.5, "Union return: float branch"
+union_str_branch2 = union_return_float_or_str(False)
+assert union_str_branch2 == "small", "Union return: str branch (mixed with float)"
+
+# Numeric-tower promotion at Return: when a function returns either a Float
+# or an Int (e.g. `return 1.5` / `return 0`), type inference promotes the
+# function's return type to `Float` (`int ⊂ float`) and emits the function
+# signature as `f64`. The Int return branch's operand is a raw `i64` —
+# without the (I64, F64) and (I8, F64) coercion arms in the Return
+# terminator codegen, Cranelift's verifier rejects the function with
+# "result has type i64, must match function signature of f64". The
+# function-typed local annotation here uses `-> float` so the call result
+# is unambiguously `Float` and the assignment storage path is uniform.
+def numeric_tower_return(b: bool) -> float:
+    if b:
+        return 1.5
+    return 0
+
+ntr_float_result: float = numeric_tower_return(True)
+assert ntr_float_result == 1.5, "Numeric-tower return: float branch"
+ntr_int_result: float = numeric_tower_return(False)
+assert ntr_int_result == 0.0, "Numeric-tower return: int branch promoted to float"
+
+def numeric_tower_return_bool(b: bool) -> float:
+    if b:
+        return 1.5
+    return True
+
+ntrb_float_result: float = numeric_tower_return_bool(True)
+assert ntrb_float_result == 1.5, "Numeric-tower return: float branch (bool variant)"
+ntrb_bool_result: float = numeric_tower_return_bool(False)
+assert ntrb_bool_result == 1.0, "Numeric-tower return: bool branch promoted to float"
+
+# Numeric-tower promotion via `join_return_types` for *unannotated*
+# functions. Pre-fix: `def f(b: bool): return 1.5 if b else 0` was inferred
+# as `Union[int, float]` (because `join_return_types` used
+# `Type::normalize_union` which doesn't promote), prescan stored
+# `Union[int, float]` as `x`'s var_type, the assignment routed through
+# Ptr storage, and the raw F64 return was mis-stored as a tagged pointer
+# — SEGV at the next reader. Post-fix `join_return_types` uses
+# `Type::unify_field_type` (numeric tower), so the inferred return is
+# `Float`, prescan stores `Float`, and F64 storage is uniform end-to-end.
+
+def unannotated_mixed_return(b: bool):
+    if b:
+        return 1.5
+    return 0
+
+unann_float_branch: float = unannotated_mixed_return(True)
+assert unann_float_branch == 1.5, "Unannotated mixed return: float branch"
+unann_int_branch: float = unannotated_mixed_return(False)
+assert unann_int_branch == 0.0, "Unannotated mixed return: int branch promoted"
+
+# Same pattern bound to an unannotated local — exercises the prescan
+# var_type path that used to SEGV. With pyaot's numeric-tower promotion,
+# `unann_y`'s value is `0.0` (Float storage); CPython would return raw
+# `0`. Don't print the values directly to avoid CPython differential
+# noise — the assertions cover correctness via `==` (0.0 == 0).
+unann_x = unannotated_mixed_return(True)
+assert unann_x == 1.5, "Unannotated mixed return: bound to unannotated local"
+unann_y = unannotated_mixed_return(False)
+assert unann_y == 0.0, "Unannotated mixed return: int branch via unannotated local"
+assert unann_y == 0, "Unannotated mixed return: numeric equality across types"
+
+# Bool + Int → Int promotion (`bool ⊂ int`).
+def unannotated_bool_or_int(b: bool):
+    if b:
+        return 1
+    return False
+
+unann_bi_int: int = unannotated_bool_or_int(True)
+assert unann_bi_int == 1, "Unannotated bool|int return: int branch"
+unann_bi_bool: int = unannotated_bool_or_int(False)
+assert unann_bi_bool == 0, "Unannotated bool|int return: bool branch promoted to int"
+
+print("Numeric-tower unannotated-return tests passed!")
+
+# Exercise through `print` so `rt_print_obj` decodes the tagged bits.
+print(union_return_int_or_str(True))
+print(union_return_int_or_str(False))
+print(union_return_bool_or_str(True))
+print(union_return_float_or_str(True))
+print(union_return_float_or_str(False))
+
+print("Union return primitive-boxing tests passed!")
+
 print("All type system tests passed!")

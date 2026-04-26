@@ -336,13 +336,10 @@ impl<'a> Lowering<'a> {
 
         // Handle dict/set conversion to list for iteration
         let (actual_iter_local, _converted) = if iterable_kind == IterableKind::Dict {
-            let key_elem_tag = crate::type_dispatch::elem_tag_for_type(&elem_type);
+            // After §F.7c: rt_dict_keys takes only the dict argument.
             let keys_local = self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
-                vec![
-                    mir::Operand::Local(iter_local),
-                    mir::Operand::Constant(mir::Constant::Int(key_elem_tag)),
-                ],
+                vec![mir::Operand::Local(iter_local)],
                 Type::List(Box::new(elem_type.clone())),
                 mir_func,
             );
@@ -646,10 +643,9 @@ impl<'a> Lowering<'a> {
             Type::Any,
             mir_func,
         );
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+        self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
             dest: counter_local,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_INT),
-            args: vec![mir::Operand::Local(boxed_counter)],
+            src: mir::Operand::Local(boxed_counter),
         });
 
         // Unpack elem (index 1)

@@ -63,7 +63,7 @@ pub extern "C" fn rt_iter_dict(dict: *mut Obj) -> *mut Obj {
 
     // Get keys list — this is a gc_alloc. Root it before the next gc_alloc
     // (the iterator allocation below) so GC stress test cannot collect it.
-    let keys_list = rt_dict_keys(dict, crate::object::ELEM_HEAP_OBJ);
+    let keys_list = rt_dict_keys(dict);
 
     let mut roots: [*mut Obj; 1] = [keys_list];
     let mut frame = ShadowFrame {
@@ -243,7 +243,7 @@ pub extern "C" fn rt_iter_reversed_dict(dict: *mut Obj) -> *mut Obj {
 
     // Get keys list — this is a gc_alloc. Root it before the next gc_alloc
     // (the iterator allocation below) so GC stress test cannot collect it.
-    let keys_list = rt_dict_keys(dict, crate::object::ELEM_HEAP_OBJ);
+    let keys_list = rt_dict_keys(dict);
 
     let mut roots: [*mut Obj; 1] = [keys_list];
     let mut frame = ShadowFrame {

@@ -25,6 +25,9 @@ pub fn simplify_instruction(kind: &mut InstructionKind) -> bool {
 ///
 /// Patterns detected:
 /// - `BoxInt(x)` then `UnboxInt(box_result)` → replace unbox with `Copy { dest, src: x }`
+/// - `UnboxInt(x)` then `BoxInt(unbox_result)` → replace box with `Copy { dest, src: x }`
+///   (Stage E: same-block pattern after closure capture unbox + re-box for
+///   nested closure dispatch)
 /// - `FloatBits(x)` then `IntBitsToFloat(bits_result)` → replace second with `Copy`
 /// - Double negation: `Neg(Neg(x))`, `Not(Not(x))`, `Invert(Invert(x))`
 pub fn simplify_pairs(instructions: &mut [Instruction]) -> bool {
@@ -61,28 +64,114 @@ fn match_pair_pattern(
     second: &InstructionKind,
 ) -> Option<InstructionKind> {
     // Box/Unbox elimination: UnboxT(BoxT(x)) → Copy(x)
+    // Inverse:                BoxT(UnboxT(x))  → Copy(x)
+    //
+    // Both directions are valid for tagged Values: `Value::from_int` and
+    // `Value::unwrap_int` are exact inverses, and the peephole pass only
+    // matches when the inner producer is a single-def temporary, so SSA
+    // type discipline guarantees the inner type matches the outer call.
+    // The inverse fires after Stage E whenever a captured value is
+    // unboxed in the lambda prologue and then immediately re-boxed for
+    // passing into a nested closure (decorator-of-decorator chains).
     if let (
         InstructionKind::RuntimeCall {
-            dest: box_dest,
-            func: box_func,
-            args: box_args,
+            dest: first_dest,
+            func: first_func,
+            args: first_args,
         },
         InstructionKind::RuntimeCall {
-            dest: unbox_dest,
-            func: unbox_func,
-            args: unbox_args,
+            dest: second_dest,
+            func: second_func,
+            args: second_args,
         },
     ) = (first, second)
     {
-        // Check: unbox takes box's result as its sole argument
-        if box_args.len() == 1
-            && unbox_args.len() == 1
-            && matches!(&unbox_args[0], Operand::Local(id) if *id == *box_dest)
-            && is_matching_box_unbox(box_func, unbox_func)
+        if first_args.len() == 1
+            && second_args.len() == 1
+            && matches!(&second_args[0], Operand::Local(id) if *id == *first_dest)
+            && (is_matching_box_unbox(first_func, second_func)
+                || is_matching_box_unbox(second_func, first_func))
         {
             return Some(InstructionKind::Copy {
-                dest: *unbox_dest,
-                src: box_args[0].clone(),
+                dest: *second_dest,
+                src: first_args[0].clone(),
+            });
+        }
+    }
+
+    // Round-trip elimination for ValueFromInt / UnwrapValueInt (and Bool variants).
+    // ValueFromInt(UnwrapValueInt(x)) → Copy(x)
+    // UnwrapValueInt(ValueFromInt(x)) → Copy(x)
+    // (Same for Bool variants.)
+    if let (
+        InstructionKind::ValueFromInt {
+            dest: first_dest,
+            src: orig_src,
+        },
+        InstructionKind::UnwrapValueInt {
+            dest: second_dest,
+            src: inner_src,
+        },
+    ) = (first, second)
+    {
+        if matches!(inner_src, Operand::Local(id) if *id == *first_dest) {
+            return Some(InstructionKind::Copy {
+                dest: *second_dest,
+                src: orig_src.clone(),
+            });
+        }
+    }
+    if let (
+        InstructionKind::UnwrapValueInt {
+            dest: first_dest,
+            src: orig_src,
+        },
+        InstructionKind::ValueFromInt {
+            dest: second_dest,
+            src: inner_src,
+        },
+    ) = (first, second)
+    {
+        if matches!(inner_src, Operand::Local(id) if *id == *first_dest) {
+            return Some(InstructionKind::Copy {
+                dest: *second_dest,
+                src: orig_src.clone(),
+            });
+        }
+    }
+    if let (
+        InstructionKind::ValueFromBool {
+            dest: first_dest,
+            src: orig_src,
+        },
+        InstructionKind::UnwrapValueBool {
+            dest: second_dest,
+            src: inner_src,
+        },
+    ) = (first, second)
+    {
+        if matches!(inner_src, Operand::Local(id) if *id == *first_dest) {
+            return Some(InstructionKind::Copy {
+                dest: *second_dest,
+                src: orig_src.clone(),
+            });
+        }
+    }
+    if let (
+        InstructionKind::UnwrapValueBool {
+            dest: first_dest,
+            src: orig_src,
+        },
+        InstructionKind::ValueFromBool {
+            dest: second_dest,
+            src: inner_src,
+        },
+    ) = (first, second)
+    {
+        if matches!(inner_src, Operand::Local(id) if *id == *first_dest) {
+            return Some(InstructionKind::Copy {
+                dest: *second_dest,
+                src: orig_src.clone(),
             });
         }
     }
@@ -156,15 +245,15 @@ fn match_pair_pattern(
     None
 }
 
-/// Check if a box/unbox RuntimeFunc pair cancel out.
+/// Check if a box/unbox RuntimeFunc pair cancel out (Float path only).
+/// Int/Bool round-trips are now handled by `ValueFromInt`/`UnwrapValueInt`
+/// and `ValueFromBool`/`UnwrapValueBool` MIR instructions (see below).
 fn is_matching_box_unbox(box_func: &RuntimeFunc, unbox_func: &RuntimeFunc) -> bool {
     use pyaot_core_defs::runtime_func_def::*;
     matches!(
         (box_func, unbox_func),
         (RuntimeFunc::Call(b), RuntimeFunc::Call(u))
-            if (std::ptr::eq(*b, &RT_BOX_INT) && std::ptr::eq(*u, &RT_UNBOX_INT))
-            || (std::ptr::eq(*b, &RT_BOX_FLOAT) && std::ptr::eq(*u, &RT_UNBOX_FLOAT))
-            || (std::ptr::eq(*b, &RT_BOX_BOOL) && std::ptr::eq(*u, &RT_UNBOX_BOOL))
+            if std::ptr::eq(*b, &RT_BOX_FLOAT) && std::ptr::eq(*u, &RT_UNBOX_FLOAT)
     )
 }
 

@@ -971,8 +971,7 @@ impl<'a> Lowering<'a> {
                         observed_arg_types,
                     ),
                 hir::GeneratorIntrinsic::SetState { gen, .. }
-                | hir::GeneratorIntrinsic::GetLocal { gen, .. }
-                | hir::GeneratorIntrinsic::SetLocalType { gen, .. } => self
+                | hir::GeneratorIntrinsic::GetLocal { gen, .. } => self
                     .scan_constructor_calls_in_expr(
                         *gen,
                         hir_module,
@@ -1300,47 +1299,12 @@ impl<'a> Lowering<'a> {
                 mir_func,
             );
 
-            // Compute heap field mask: bit i is set if field i is a heap type (pointer)
-            // that needs GC tracing. Raw values (Int, Float, Bool, None) are NOT heap.
-            // Use class_info.field_types (which includes inherited + own fields in correct
-            // absolute order) to ensure inherited heap fields are also tracked by the GC.
-            let mut heap_field_mask: i64 = 0;
-            if let Some(class_info) = self.get_class_info(class_id) {
-                if class_info.field_types.len() > 64 {
-                    let class_name = self.resolve(class_def.name);
-                    eprintln!(
-                        "warning: class '{}' has {} fields (max 64 for GC heap field tracking); \
-                         fields beyond index 63 will not have precise GC tracing",
-                        class_name,
-                        class_info.field_types.len()
-                    );
-                }
-                for (i, (_name, ty)) in class_info.field_types.iter().enumerate() {
-                    if i >= 64 {
-                        break;
-                    }
-                    let is_heap = !matches!(
-                        ty,
-                        pyaot_types::Type::Int
-                            | pyaot_types::Type::Float
-                            | pyaot_types::Type::Bool
-                            | pyaot_types::Type::None
-                    );
-                    if is_heap {
-                        heap_field_mask |= 1i64 << i;
-                    }
-                }
-            }
-            self.emit_runtime_call_void(
-                mir::RuntimeFunc::Call(
-                    &pyaot_core_defs::runtime_func_def::RT_REGISTER_CLASS_FIELDS,
-                ),
-                vec![
-                    mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
-                    mir::Operand::Constant(mir::Constant::Int(heap_field_mask)),
-                ],
-                mir_func,
-            );
+            // §F.7: per-class field-heap mask eliminated. Every instance
+            // field slot is a properly-tagged `Value` (Int/Bool via
+            // ValueFromInt/Bool, Float as boxed FloatObj pointer per
+            // §F.1, heap shapes as pointers). The GC's `mark_object`
+            // walk uses `Value::is_ptr()` per slot — no per-class mask
+            // is needed.
 
             // Register field count for object.__new__ support
             let total_field_count = self

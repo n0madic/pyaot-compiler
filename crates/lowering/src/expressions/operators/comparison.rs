@@ -421,10 +421,12 @@ impl<'a> Lowering<'a> {
                     });
                 }
                 Type::List(_) => {
-                    // elem in list - use rt_list_index and check if >= 0
+                    // elem in list - use rt_list_index and check if >= 0.
+                    // After §F.7c, list slots store tagged Values; box the search.
+                    let boxed_elem = self.box_primitive_if_needed(left_op, &left_type, mir_func);
                     let idx_local = self.emit_runtime_call(
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_INDEX),
-                        vec![right_op, left_op], // (list, value)
+                        vec![right_op, boxed_elem], // (list, value)
                         Type::Int,
                         mir_func,
                     );
@@ -935,10 +937,9 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) {
         let tmp = self.alloc_and_add_local(Type::Bool, mir_func);
-        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+        self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
             dest: tmp,
-            func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL),
-            args: vec![mir::Operand::Local(src)],
+            src: mir::Operand::Local(src),
         });
         self.emit_instruction(mir::InstructionKind::Copy {
             dest,

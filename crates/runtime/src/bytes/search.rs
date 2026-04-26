@@ -194,10 +194,10 @@ pub extern "C" fn rt_bytes_contains(bytes: *mut Obj, sub: *mut Obj) -> i64 {
 pub extern "C" fn rt_bytes_split(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::list::{rt_list_push, rt_make_list};
-    use crate::object::{BytesObj, ELEM_HEAP_OBJ};
+    use crate::object::BytesObj;
 
     if bytes.is_null() {
-        return rt_make_list(0, ELEM_HEAP_OBJ);
+        return rt_make_list(0);
     }
 
     unsafe {
@@ -205,7 +205,7 @@ pub extern "C" fn rt_bytes_split(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64) 
         let bytes_len = (*bytes_obj).len;
         let bytes_data = (*bytes_obj).data.as_ptr();
 
-        let list = rt_make_list(0, ELEM_HEAP_OBJ);
+        let list = rt_make_list(0);
         let max = if maxsplit < 0 { i64::MAX } else { maxsplit };
 
         // Protect list from GC
@@ -296,10 +296,10 @@ pub extern "C" fn rt_bytes_split(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64) 
 pub extern "C" fn rt_bytes_rsplit(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::list::{rt_list_push, rt_make_list};
-    use crate::object::{BytesObj, ListObj, ELEM_HEAP_OBJ};
+    use crate::object::{BytesObj, ListObj};
 
     if bytes.is_null() {
-        return rt_make_list(0, ELEM_HEAP_OBJ);
+        return rt_make_list(0);
     }
 
     unsafe {
@@ -307,7 +307,7 @@ pub extern "C" fn rt_bytes_rsplit(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64)
         let bytes_len = (*bytes_obj).len;
         let bytes_data = (*bytes_obj).data.as_ptr();
 
-        let list = rt_make_list(0, ELEM_HEAP_OBJ);
+        let list = rt_make_list(0);
         let max = if maxsplit < 0 { i64::MAX } else { maxsplit };
 
         let mut roots: [*mut Obj; 1] = [list];
@@ -447,7 +447,7 @@ pub extern "C" fn rt_bytes_join(sep: *mut Obj, iterable: *mut Obj) -> *mut Obj {
         // Calculate total length
         let mut total_len = 0;
         for i in 0..len as usize {
-            let item = crate::list::list_slot_raw(list, i);
+            let item = (*(*list).data.add(i)).0 as *mut crate::object::Obj;
             if !item.is_null() {
                 let item_bytes = item as *mut BytesObj;
                 total_len += (*item_bytes).len;
@@ -477,7 +477,7 @@ pub extern "C" fn rt_bytes_join(sep: *mut Obj, iterable: *mut Obj) -> *mut Obj {
                 dst_idx += sep_len;
             }
 
-            let item = crate::list::list_slot_raw(list, i);
+            let item = (*(*list).data.add(i)).0 as *mut crate::object::Obj;
             if !item.is_null() {
                 let item_bytes = item as *mut BytesObj;
                 let item_len = (*item_bytes).len;

@@ -26,19 +26,18 @@ Non-obvious insights, gotchas, and hard-won knowledge about the Python AOT Compi
 
 **Debug-only `#[should_panic]` tests don't run under `--release`.** The workspace release profile sets `panic = "abort"`, which turns an expected panic into an abort (test fails). The overflow/wrong-tag tests in `core-defs/src/value.rs` are gated on `cfg(debug_assertions)` for this reason. Any new `#[should_panic]` assertion that rests on `debug_assert!` needs the same gate.
 
-**List storage flipped to `[Value]` in S2.3 — extern ABI unchanged.** `ListObj.data` is now `*mut Value`; every slot holds a properly-tagged `Value`. `ListObj.elem_tag` is retained purely for boundary conversion (`list::store_raw_as_value` / `list::load_value_as_raw` / `list::list_slot_raw`) because lowering/codegen still emit `rt_list_*` calls with the pre-S2.3 `*mut Obj` / `i64` parameter types. The GC scan uses `Value::is_ptr()` — no more `elem_tag` branch. When writing new code that touches `list.data` directly, always convert via the list-module helpers; raw `(*list).data.add(i)` reads now yield `Value`, not `*mut Obj`.
+**Container storage is uniform `[Value]` after S2.7 (Phase 2 §F.7c BigBang).** `ListObj.data`, `TupleObj.data`, `DequeObj.data`, `DictEntry.{key,value}`, `SetEntry.elem`, `InstanceObj.fields`, and `GeneratorObj.locals` all hold properly-tagged `Value` words. The dual-storage `elem_tag` and the per-slot tagging side-arrays (`heap_field_mask`, `type_tags`) are gone, along with the `ELEM_*` constants and the `store_raw_as_value` / `load_value_as_raw` / `list_slot_raw` boundary helpers. Every read of `(*list).data.add(i)` now yields `Value`; lowering wraps raw `Int`/`Bool` operands via `ValueFromInt` / `ValueFromBool` MIR instructions before passing them to runtime, and unwraps via `UnwrapValueInt` / `UnwrapValueBool` when consuming a typed slot.
 
-**Key-taking runtime funcs: parameter `elem_tag` ≠ storage tag.** `rt_list_sort_with_key`, `rt_list_minmax_with_key`, and `rt_sorted*_with_key` receive an `elem_tag: i64` argument from codegen that is a *hint about the key function*, not the list's actual storage. For `min([int], key=identity_int)` codegen passes `ELEM_HEAP_OBJ` as a "do not box before calling key_fn" flag, even though the list stores raw ints. Always use `(*list).elem_tag` (storage) for `load_value_as_raw`, and keep the parameter only for the `if elem_tag == ELEM_RAW_INT { rt_box_int(...) }` boxing decision. Mixing these up round-trips tagged `Value` bits back to callers instead of raw ints — symptom: `min(...)` returns 9 instead of 1.
+**Key-function ABI: tag = 0/1/2/3.** `rt_list_sort_with_key`, `rt_list_minmax_with_key`, `rt_tuple_minmax_with_key`, `rt_set_minmax_with_key`, and `rt_sorted_with_key` accept a `key_return_tag: u8` parameter that drives the `unwrap_slot_for_key_fn` / `wrap_key_result` helpers in `runtime/src/sorted.rs`:
 
-**`gc::mark_object` takes `Value`, not `*mut Obj` (S2.6).** The GC's canonical entrypoint is `fn mark_object(v: Value)` — it checks `is_ptr()` first, unwraps to `*mut Obj` on the heap path, and applies the legacy address-heuristic filter (`< 0x1000`, non-8-aligned, null) as a belt-and-braces guard. Callers inside `gc.rs` that still hold a raw `*mut Obj` — every match arm except `List`, plus all four root scanners (shadow stack, globals, class attrs, sys, exceptions) — wrap at the boundary via `pyaot_core_defs::Value::from_ptr(ptr)`. The list arm (from S2.3) feeds its `Value` slots to `mark_object` directly without any `is_ptr`/`unwrap`/null dance. The heuristic filter and the `heap_field_mask`/`type_tags` reads survive until S2.7 flips the remaining containers' storage to `Value` and teaches codegen to tag raw function pointers via `Value::from_int`; at that point `mark_object` collapses to a three-line `is_ptr` + recurse function and the filter can be deleted.
+* `0` — user function returning a heap pointer (slot is unwrapped before the call; result is pass-through).
+* `1` — user function returning raw `Int`; slot unwrapped, result wrapped via `Value::from_int`.
+* `2` — user function returning raw `Bool`; slot unwrapped, result wrapped via `Value::from_bool`.
+* `3` — first-class builtin (`rt_builtin_*`); accepts and returns tagged `Value` bits, so both unwrap and wrap are pass-through. Lowering's `key_return_tag_for_builtin` returns `3` unconditionally.
 
-**Tuple / Dict / Set storage migration is NOT a runtime-only refactor.** S2.3 worked for lists because every list slot access funnels through `rt_list_*` extern functions — the runtime can change the internal bit layout freely and convert at the boundary. Tuples/dicts/sets break that model:
+Callers that pass a lambda without an explicit return-type annotation get the inferred return type from `func_return_types` (populated by the type-planning pass and topped up for `list.sort(key=...)` method calls in `closure_scan`).
 
-1. *Closure tuples mix raw function pointers with heap captures in the same `ELEM_HEAP_OBJ` tuple.* The raw function pointer is an aligned text-section address (low bit = 0), so if you wrap it with `Value::from_ptr`, `Value::is_ptr()` reports "pointer" and a GC walk dereferences a code address — segfault. Pre-S2.4 this worked because `TupleObj.heap_field_mask` told the GC "slot 0 is raw, skip it". Removing the mask before codegen emits `Value::from_int` for raw function pointers is unsafe.
-2. *Raw f64 bits smuggled into `ELEM_RAW_INT` slots* (`rt_list_tail_to_tuple_float`, similar tuple helpers) don't survive the 61-bit `Value::from_int` encoding — a 64-bit f64 bit pattern gets truncated. The fix is to use heap-boxed FloatObj slots (ELEM_HEAP_OBJ), but that's a semantics change that needs to ripple through every caller that reads the tuple.
-3. *Codegen sometimes emits a direct memory load into `tuple.data`* for hot paths like closure-dispatch. Pre-S2.4 that gives raw bits; post-S2.4 it gives tagged `Value` bits, which the downstream dispatch misinterprets.
-
-Therefore S2.4 and S2.5 cannot land ahead of codegen changes. The Phase 2 plan now folds both sessions into S2.7 (see `ARCHITECTURE_REFACTOR.md` §2.3 Amendment 2): flip storage, delete `heap_field_mask` / `type_tags`, and switch codegen to emit `Value::from_int` for raw function pointers in one atomic session (likely split into S2.7a..e). Lists are the outlier because every list op was already an extern call.
+**`gc::mark_object` takes `Value`.** Entry point is `fn mark_object(v: Value)`: early-return on `!v.is_ptr()`, residual alignment / low-page guard (`obj < 0x1000` or misaligned), `TypeTagKind::from_tag` validation, then per-tag dispatch. The Instance arm walks `(*instance).fields` uniformly with `Value::is_ptr()` (no per-class mask). The Generator arm walks `(*gen).locals` uniformly (no `type_tags` side-array). The Deque arm walks `(*deque).data` uniformly (no `elem_tag == 0` guard). The address-heuristic and `TypeTagKind::from_tag` filters are retained because gc_stress reproducibly trips on them — there are residual pointer-shaped non-objects in code paths that are not yet airtight; flagged for follow-up cleanup.
 
 ## setjmp Must Be Called Directly From Cranelift Code
 
@@ -50,21 +49,24 @@ Therefore S2.4 and S2.5 cannot land ahead of codegen changes. The Phase 2 plan n
 
 ---
 
-## List Element Storage: `elem_tag` Controls Everything
+## List Element Storage: Uniform Tagged `Value`
 
-Lists have a dual storage mode controlled by `elem_tag` on `ListObj` (`runtime/src/list/core.rs`):
+After Phase 2 S2.7 (BigBang) every list slot is a `pyaot_core_defs::Value` —
+the dual-storage `elem_tag` is gone, along with the `ELEM_*` constants and
+the `store_raw_as_value` / `load_value_as_raw` / `list_slot_raw` boundary
+helpers. `ListObj.data: *mut Value`; reads/writes use `Value::tag()` to
+distinguish `Int` (low 3 bits = `001`), `Bool` (`011`), `None` (`101`),
+and heap pointer (`000`).
 
-| Tag | Constant | Storage |
-|-----|----------|---------|
-| 0 | `ELEM_HEAP_OBJ` | Elements are `*mut Obj` pointers to boxed heap objects |
-| 1 | `ELEM_RAW_INT` | Elements are raw `i64` values packed directly into data array |
-| 2 | `ELEM_RAW_BOOL` | Elements are raw `i8` values |
+The compiler emits `ValueFromInt` / `ValueFromBool` MIR instructions
+before storing into a list and `UnwrapValueInt` / `UnwrapValueBool` when
+loading into a typed local. Float elements are stored as
+`Value::from_ptr(*mut FloatObj)` — heap-boxed; `RT_UNBOX_FLOAT` recovers the
+`f64` after a `RT_LIST_GET` / `RT_LIST_POP`.
 
-**Using the wrong tag causes silent corruption in release builds.** The `validate_elem_tag!` macro only checks in debug builds. For example, calling `rt_list_get_int()` on an `ELEM_HEAP_OBJ` list interprets a pointer as an i64.
-
-The compiler must pass the correct `elem_tag` when creating lists. This is especially important for `list(iterator)` — `rt_list_from_iter` takes `elem_tag` as a second parameter from the compiler since iterators can yield either raw ints or heap objects depending on the source.
-
-**Debug builds** (`cargo build --workspace` without `--release`) enable type tag assertions that catch these mismatches at runtime.
+**Debug builds** (`cargo build --workspace` without `--release`) enable
+`debug_assert_type_tag!` checks that catch wrong-type accesses on the
+container header itself.
 
 ---
 

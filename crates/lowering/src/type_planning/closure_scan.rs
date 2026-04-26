@@ -22,30 +22,61 @@ impl<'a> Lowering<'a> {
     /// §1.17b-d/f — all HIR functions, including the synthetic module-init
     /// function, are scanned through their CFG blocks in allocation order.
     pub(crate) fn precompute_closure_capture_types(&mut self, hir_module: &hir::Module) {
-        // Track local variable types as we scan each function's CFG blocks.
-        for func_id in &hir_module.functions {
-            if let Some(func) = hir_module.func_defs.get(func_id) {
-                let mut func_var_types: IndexMap<VarId, Type> = IndexMap::new();
-                for param in &func.params {
-                    if let Some(ref ty) = param.ty {
-                        func_var_types.insert(param.var, ty.clone());
+        // Fixpoint scan: lifted closures (e.g. `level3` in
+        // outer→level1→level2→level3 chains) appear BEFORE their parent in
+        // `hir_module.functions`, so a single top-to-bottom traversal cannot
+        // see the parent's var_types when computing the child's captures.
+        // Each pass populates `closure_capture_types` for every closure
+        // expression encountered, seeding `var_types` from each function's
+        // own previously-computed `closure_capture_types`. We iterate until
+        // no slot improves (`Any → concrete`), capped by a small constant
+        // so a pathological input cannot loop forever — Python closure
+        // nesting in real code is at most a handful of levels deep, and
+        // each pass strictly refines an `Any` slot to a concrete type.
+        let max_passes = 16;
+        for _ in 0..max_passes {
+            let snapshot = self.closures.closure_capture_types.clone();
+            for func_id in &hir_module.functions {
+                if let Some(func) = hir_module.func_defs.get(func_id) {
+                    let mut func_var_types: IndexMap<VarId, Type> = IndexMap::new();
+                    // Seed from declared param types first.
+                    for param in &func.params {
+                        if let Some(ref ty) = param.ty {
+                            func_var_types.insert(param.var, ty.clone());
+                        }
+                    }
+                    // For lifted closures, also seed from this function's own
+                    // closure_capture_types (computed by a parent's scan in
+                    // an earlier pass). Matches captures to the leading
+                    // positional params.
+                    if let Some(capture_types) = self.get_closure_capture_types(func_id).cloned() {
+                        for (i, ty) in capture_types.iter().enumerate() {
+                            if let Some(param) = func.params.get(i) {
+                                func_var_types
+                                    .entry(param.var)
+                                    .or_insert_with(|| ty.clone());
+                            }
+                        }
+                    }
+                    for block in func.blocks.values() {
+                        for &stmt_id in &block.stmts {
+                            self.scan_stmt_for_closures(stmt_id, hir_module, &mut func_var_types);
+                        }
+                        // Terminators carry exprs (cond / return value / raise
+                        // exc+cause / yield value / iter-has-next) that can
+                        // contain inline closures — scan them so
+                        // `[x for x in <closure-producing expr>]` records its
+                        // capture types.
+                        self.scan_terminator_for_closures(
+                            &block.terminator,
+                            hir_module,
+                            &mut func_var_types,
+                        );
                     }
                 }
-                for block in func.blocks.values() {
-                    for &stmt_id in &block.stmts {
-                        self.scan_stmt_for_closures(stmt_id, hir_module, &mut func_var_types);
-                    }
-                    // Terminators carry exprs (cond / return value / raise
-                    // exc+cause / yield value / iter-has-next) that can
-                    // contain inline closures — scan them so
-                    // `[x for x in <closure-producing expr>]` records its
-                    // capture types.
-                    self.scan_terminator_for_closures(
-                        &block.terminator,
-                        hir_module,
-                        &mut func_var_types,
-                    );
-                }
+            }
+            if self.closures.closure_capture_types == snapshot {
+                break;
             }
         }
     }
@@ -209,15 +240,30 @@ impl<'a> Lowering<'a> {
     ) {
         match &expr.kind {
             hir::ExprKind::Closure { func, captures } => {
-                // Found an inline closure - record its capture types
-                if !self.has_closure_capture_types(func) {
-                    let mut capture_types = Vec::new();
-                    for capture_id in captures {
-                        let capture_expr = &hir_module.exprs[*capture_id];
-                        let capture_type =
-                            self.seed_infer_expr_type(capture_expr, hir_module, var_types);
-                        capture_types.push(capture_type);
+                // Found an inline closure — record its capture types. Second
+                // pass of `precompute_closure_capture_types` may refine an
+                // earlier approximation: if the new inference produces a
+                // strictly more concrete type than the one already stored,
+                // overwrite. A strictly-monotone refinement rule
+                // (`Any → concrete`) keeps the fixpoint trivially
+                // convergent.
+                let mut capture_types = Vec::new();
+                for capture_id in captures {
+                    let capture_expr = &hir_module.exprs[*capture_id];
+                    let capture_type =
+                        self.seed_infer_expr_type(capture_expr, hir_module, var_types);
+                    capture_types.push(capture_type);
+                }
+                let refine = match self.get_closure_capture_types(func) {
+                    None => true,
+                    Some(existing) => {
+                        existing.len() == capture_types.len()
+                            && existing.iter().zip(capture_types.iter()).any(|(old, new)| {
+                                matches!(old, Type::Any) && !matches!(new, Type::Any)
+                            })
                     }
+                };
+                if refine {
                     self.insert_closure_capture_types(*func, capture_types);
                 }
             }
@@ -305,10 +351,35 @@ impl<'a> Lowering<'a> {
                 }
             }
             hir::ExprKind::MethodCall {
-                obj, args, kwargs, ..
+                obj,
+                method,
+                args,
+                kwargs,
             } => {
                 let obj_expr = &hir_module.exprs[*obj];
                 self.scan_expr_for_closures(obj_expr, hir_module, var_types);
+
+                // list.sort(key=...) — register lambda hints with the list's element type.
+                if self.interner.resolve(*method) == "sort" {
+                    let key_func = kwargs.iter().find_map(|kw| {
+                        if self.interner.resolve(kw.name) == "key" {
+                            Some(&hir_module.exprs[kw.value])
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(key_expr) = key_func {
+                        self.register_lambda_hints_from_iterable(
+                            key_expr,
+                            obj_expr,
+                            hir_module,
+                            var_types,
+                            1,
+                            |elem| vec![elem],
+                        );
+                    }
+                }
+
                 for arg_id in args {
                     let arg_expr = &hir_module.exprs[*arg_id];
                     self.scan_expr_for_closures(arg_expr, hir_module, var_types);

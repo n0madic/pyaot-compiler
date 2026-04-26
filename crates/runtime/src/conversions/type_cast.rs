@@ -162,9 +162,19 @@ pub extern "C" fn rt_float_fmt_grouped(f: f64, precision: i64, sep: i64) -> *mut
 /// Uses type_class() from core-defs as the single source of truth.
 #[no_mangle]
 pub extern "C" fn rt_type_name(obj: *mut Obj) -> *mut Obj {
-    if obj.is_null() {
-        // Null pointer represents None
+    let v = pyaot_core_defs::Value(obj as u64);
+    if obj.is_null() || v.is_none() {
         let s = TypeTagKind::None.type_class();
+        let bytes = s.as_bytes();
+        return unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) };
+    }
+    if v.is_int() {
+        let s = TypeTagKind::Int.type_class();
+        let bytes = s.as_bytes();
+        return unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) };
+    }
+    if v.is_bool() {
+        let s = TypeTagKind::Bool.type_class();
         let bytes = s.as_bytes();
         return unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) };
     }

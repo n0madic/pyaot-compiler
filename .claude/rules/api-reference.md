@@ -9,7 +9,7 @@
 - **Classes**: `Type::Class { class_id, name }`
 - **Exceptions**: `Type::BuiltinException(BuiltinExceptionKind)`
 - **Any vs HeapAny**: `Any` = ambiguous (raw i64 or pointer), `HeapAny` = guaranteed `*mut Obj` (safe for runtime dispatch in print/compare)
-- **Tuple variants**: `Type::Tuple` and `Type::TupleVar` share the same runtime (`TupleObj` + `elem_tag`); the distinction is compile-time only. Fixed tuples support per-slot typed indexing and static bounds checks; variable tuples emit `rt_tuple_get` with runtime bounds checks and return the homogeneous element type. Merge rule: `Type::unify_tuple_shapes(a, b)` — same-length → element-wise union keeping fixed shape; different-lengths → collapse to `TupleVar`; empty absorbs into any other tuple.
+- **Tuple variants**: `Type::Tuple` and `Type::TupleVar` share the same runtime (`TupleObj` with uniform `[Value]` storage); the distinction is compile-time only. Fixed tuples support per-slot typed indexing and static bounds checks; variable tuples emit `rt_tuple_get` with runtime bounds checks and return the homogeneous element type. Merge rule: `Type::unify_tuple_shapes(a, b)` — same-length → element-wise union keeping fixed shape; different-lengths → collapse to `TupleVar`; empty absorbs into any other tuple.
 - **Numeric tower helpers (Area E §E.1)**:
   - `Type::promote_numeric(a, b) -> Option<Type>` — PEP 3141 tower (`bool ⊂ int ⊂ float`); `None` for non-numeric pairs.
   - `Type::unify_numeric(a, b) -> Type` — promote if both numeric, else `normalize_union`.
@@ -48,7 +48,7 @@ TypeTagKind::from_name("StructTime") -> Some(TypeTagKind::StructTime)
 ```
 
 **Adding new type tag:**
-1. Edit `define_type_tags!` macro in `core-defs/src/type_tags.rs`
+1. Edit `define_type_tags!` macro in `core-defs/src/tag_kinds.rs`
 2. Add entry: `NewType = N => "NewType" => "<class 'module.NewType'>" => "module.NewType"`
 3. Runtime and compiler automatically pick up the new definition
 
@@ -60,7 +60,6 @@ MIR uses parameterized enums to reduce `RuntimeFunc` variants. See `crates/mir/s
 
 | Enum | Purpose |
 |------|---------|
-| `ValueKind` | Storage ops (cells, globals, class attrs) |
 | `PrintKind` | Print operations by type |
 | `ReprTargetKind` + `StringFormat` | repr()/ascii() |
 | `CompareKind` + `ComparisonOp` | Comparisons |
@@ -69,7 +68,11 @@ MIR uses parameterized enums to reduce `RuntimeFunc` variants. See `crates/mir/s
 | `SortableKind` | sorted() |
 | `ConversionTypeKind` | Type conversions |
 
-Use `type_to_value_kind()` in `runtime_selector.rs` for mapping types.
+After Phase 2 §F.6 the storage layer (cells, globals, class attrs) uses
+uniform `Value`-typed externs (`RT_GLOBAL_GET`/`SET`, `RT_CLASS_ATTR_GET`/
+`SET`, `RT_MAKE_CELL`, `RT_CELL_GET`/`SET`); lowering inserts
+`UnwrapValueInt` / `UnwrapValueBool` after the load when the destination
+local is typed `Int` / `Bool`.
 
 ## GC (Shadow-stack Mark-sweep)
 
@@ -87,7 +90,7 @@ pub struct ShadowFrame {
 - Codegen: `gc_push` on entry, `gc_pop` on exit (skipped when `nroots == 0`)
 - Lock-free: GC state accessed via `AtomicPtr<GcState>`, no mutex
 - Slab allocator: objects ≤ 64 bytes bump-allocated from 4KB pages (`slab.rs`), not tracked in `GcState.objects` Vec
-- **Per-slot tagging** on compound objects (`TupleObj.heap_field_mask: u64`, `ClassInfo.heap_field_mask: u64`, `GeneratorObj.type_tags: *mut u8`) lets the GC distinguish heap pointers from raw ints/floats/bools per slot. For generators, `rt_generator_set_local_type(gen, idx, LOCAL_TYPE_PTR)` (tag `3`) is emitted after `rt_generator_set_local` for any heap capture — gen-expr desugaring does this automatically for every `__capture_*` param whose type `is_heap()` (Area G §G.3).
+- **Uniform tagged-`Value` storage** (Phase 2 §F.7c BigBang): every compound-object slot is a `pyaot_core_defs::Value`. `Value::is_ptr()` is the GC's primary filter; the residual alignment / low-page / `TypeTagKind::from_tag` guards in `mark_object` reject pointer-shaped non-objects from any code path that hasn't been fully cleaned up. The legacy per-slot side-arrays (`TupleObj.heap_field_mask`, `ClassInfo.heap_field_mask`, `GeneratorObj.type_tags`, `ListObj.elem_tag`, `DequeObj.elem_tag`) and the corresponding `rt_*` setters were removed; lowering wraps raw `Int`/`Bool` operands via `ValueFromInt` / `ValueFromBool` MIR before any container store, so the GC walker no longer needs an out-of-band tag.
 
 ## Runtime Object Header
 

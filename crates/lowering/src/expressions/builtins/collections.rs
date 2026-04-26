@@ -155,7 +155,9 @@ impl<'a> Lowering<'a> {
         // Loop header: try to get next element
         self.push_block(loop_header);
 
-        let elem_local = self.alloc_and_add_local(elem_type.clone(), mir_func);
+        // After §F.7c BigBang: RT_ITER_NEXT returns tagged Value bits which is
+        // exactly what RT_SET_ADD wants — pass through without re-boxing.
+        let elem_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
 
         // Push exception frame to catch StopIteration
         let exc_frame_local = self.alloc_and_add_local(Type::Int, mir_func);
@@ -195,13 +197,14 @@ impl<'a> Lowering<'a> {
         // Loop body: add element to set
         self.push_block(loop_body);
 
-        // Box element if needed
-        let boxed_elem =
-            self.box_primitive_if_needed(mir::Operand::Local(elem_local), &elem_type, mir_func);
+        let _ = elem_type;
 
         self.emit_runtime_call_void(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_ADD),
-            vec![mir::Operand::Local(result_local), boxed_elem],
+            vec![
+                mir::Operand::Local(result_local),
+                mir::Operand::Local(elem_local),
+            ],
             mir_func,
         );
 
@@ -235,10 +238,7 @@ impl<'a> Lowering<'a> {
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
                 func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
-                args: vec![
-                    mir::Operand::Constant(mir::Constant::Int(0)),
-                    mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
-                ],
+                args: vec![mir::Operand::Constant(mir::Constant::Int(0))],
             });
             return Ok(mir::Operand::Local(result_local));
         }
@@ -261,8 +261,7 @@ impl<'a> Lowering<'a> {
 
         // Use the lowered operand type if the HIR type is unknown (Any).
         // map/filter infer Iterator(Int) during lowering, but the HIR may still say Any.
-        // We always use ELEM_HEAP_OBJ for map/filter iterators because the map callback
-        // ABI returns *mut Obj (boxed), and ListGetTyped(Int) can transparently unbox both.
+        // map/filter iterators store tagged Values; ListGetTyped(Int) can transparently unbox.
         let lowered_type = self.operand_type(&source_operand, mir_func);
         let iter_type = match &hir_type {
             Type::Any if matches!(lowered_type, Type::Iterator(_)) => lowered_type,
@@ -316,18 +315,12 @@ impl<'a> Lowering<'a> {
                 });
             }
             Type::Iterator(_) => {
-                // Always use ELEM_HEAP_OBJ for generic iterators (map, filter, etc.)
-                // because the iterator protocol returns *mut Obj. ListGetTyped(Int/Bool)
-                // transparently handles unboxing from ELEM_HEAP_OBJ storage.
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::Call(
                         &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_ITER,
                     ),
-                    args: vec![
-                        source_operand,
-                        mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
-                    ],
+                    args: vec![source_operand],
                 });
             }
             _ => {
@@ -337,10 +330,7 @@ impl<'a> Lowering<'a> {
                     func: mir::RuntimeFunc::Call(
                         &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_ITER,
                     ),
-                    args: vec![
-                        source_operand,
-                        mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
-                    ],
+                    args: vec![source_operand],
                 });
             }
         }
@@ -411,10 +401,7 @@ impl<'a> Lowering<'a> {
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
                 func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
-                args: vec![
-                    mir::Operand::Constant(mir::Constant::Int(0)),
-                    mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
-                ],
+                args: vec![mir::Operand::Constant(mir::Constant::Int(0))],
             });
             return Ok(mir::Operand::Local(result_local));
         }

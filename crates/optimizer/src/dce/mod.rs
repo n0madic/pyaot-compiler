@@ -102,6 +102,10 @@ pub(crate) fn instruction_dest(kind: &InstructionKind) -> Option<LocalId> {
         | InstructionKind::IntToFloat { dest, .. }
         | InstructionKind::FloatBits { dest, .. }
         | InstructionKind::IntBitsToFloat { dest, .. }
+        | InstructionKind::ValueFromInt { dest, .. }
+        | InstructionKind::UnwrapValueInt { dest, .. }
+        | InstructionKind::ValueFromBool { dest, .. }
+        | InstructionKind::UnwrapValueBool { dest, .. }
         | InstructionKind::FloatAbs { dest, .. }
         | InstructionKind::ExcGetType { dest, .. }
         | InstructionKind::ExcHasException { dest, .. }
@@ -139,6 +143,10 @@ pub(crate) fn instruction_is_pure(kind: &InstructionKind) -> bool {
             | InstructionKind::IntToFloat { .. }
             | InstructionKind::FloatBits { .. }
             | InstructionKind::IntBitsToFloat { .. }
+            | InstructionKind::ValueFromInt { .. }
+            | InstructionKind::UnwrapValueInt { .. }
+            | InstructionKind::ValueFromBool { .. }
+            | InstructionKind::UnwrapValueBool { .. }
             | InstructionKind::FloatAbs { .. }
             | InstructionKind::Phi { .. }
             | InstructionKind::Refine { .. }
@@ -194,6 +202,10 @@ pub(crate) fn instruction_used_locals(kind: &InstructionKind) -> Vec<LocalId> {
         | InstructionKind::IntToFloat { src, .. }
         | InstructionKind::FloatBits { src, .. }
         | InstructionKind::IntBitsToFloat { src, .. }
+        | InstructionKind::ValueFromInt { src, .. }
+        | InstructionKind::UnwrapValueInt { src, .. }
+        | InstructionKind::ValueFromBool { src, .. }
+        | InstructionKind::UnwrapValueBool { src, .. }
         | InstructionKind::FloatAbs { src, .. } => {
             collect_operand_locals(src, &mut locals);
         }

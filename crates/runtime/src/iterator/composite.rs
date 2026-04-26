@@ -2,10 +2,9 @@
 //!
 //! These iterators wrap other iterators to transform or combine them.
 
-use crate::gc;
-use crate::object::{Obj, TypeTagKind, ELEM_HEAP_OBJ};
-
 use super::next::rt_iter_next_no_exc;
+use crate::gc;
+use crate::object::{Obj, TypeTagKind};
 
 // ==================== Function Type Aliases ====================
 
@@ -334,7 +333,7 @@ pub extern "C" fn rt_zip_next(zip_obj: *mut Obj) -> *mut Obj {
         }
 
         // Create tuple with both items
-        let tuple = rt_make_tuple(2, ELEM_HEAP_OBJ);
+        let tuple = rt_make_tuple(2);
         rt_tuple_set(tuple, 0, item1);
         rt_tuple_set(tuple, 1, item2);
 
@@ -413,10 +412,14 @@ pub extern "C" fn rt_map_new(
         let map_iter = obj as *mut MapIterObj;
         (*map_iter).kind = IteratorKind::Map as u8;
         (*map_iter).exhausted = false;
-        // Bit 7 of capture_count encodes needs_boxing flag (set by compiler).
-        // Lower 4 bits = actual capture count (0-4).
+        // Encoding (after §F.7c BigBang):
+        //   bits 0-7  : capture count (low byte) — bit 7 is legacy needs_boxing
+        //   bits 8-15 : elem_unbox_kind   (0=passthrough, 1=int, 2=bool)
+        //   bits 16-23: result_box_kind   (0=passthrough, 1=int, 2=bool)
         (*map_iter).capture_count = capture_count as u8;
-        (*map_iter)._pad = [0; 5];
+        (*map_iter).elem_unbox_kind = (capture_count >> 8) as u8;
+        (*map_iter).result_box_kind = (capture_count >> 16) as u8;
+        (*map_iter)._pad = [0; 3];
         (*map_iter).func_ptr = func_ptr;
         (*map_iter).inner_iter = iter;
         (*map_iter).captures = captures;
@@ -429,7 +432,6 @@ pub extern "C" fn rt_map_new(
 
 /// Create a filter iterator from a predicate and an iterator
 /// func_ptr: 0 for truthiness filtering (filter(None, ...)), otherwise predicate function pointer
-/// elem_tag: ELEM_HEAP_OBJ (0), ELEM_RAW_INT (1), or ELEM_RAW_BOOL (2)
 /// captures: tuple of captured values (null for no captures)
 /// capture_count: number of captures (0-4)
 /// Returns: new iterator that yields elements where predicate returns true
@@ -437,7 +439,6 @@ pub extern "C" fn rt_map_new(
 pub extern "C" fn rt_filter_new(
     func_ptr: i64,
     iter: *mut Obj,
-    elem_tag: i64,
     captures: *mut Obj,
     capture_count: i64,
 ) -> *mut Obj {
@@ -450,8 +451,8 @@ pub extern "C" fn rt_filter_new(
         let filter_iter = obj as *mut FilterIterObj;
         (*filter_iter).kind = IteratorKind::Filter as u8;
         (*filter_iter).exhausted = false;
-        (*filter_iter).elem_tag = elem_tag as u8;
         (*filter_iter).capture_count = capture_count as u8;
+        (*filter_iter).elem_unbox_kind = (capture_count >> 8) as u8;
         (*filter_iter)._pad = [0; 4];
         (*filter_iter).func_ptr = func_ptr;
         (*filter_iter).inner_iter = iter;

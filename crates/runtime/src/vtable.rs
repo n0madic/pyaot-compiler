@@ -20,11 +20,6 @@ const NO_PARENT: u8 = 255;
 pub struct ClassInfo {
     /// Parent class ID (NO_PARENT = no parent, i.e., base class)
     pub parent_class_id: u8,
-    /// Bitmask of which fields are heap objects (pointers) that the GC must trace.
-    /// Bit i is set if field i is a heap type (str, list, dict, tuple, set, class instance, etc.)
-    /// Bit i is clear if field i is a raw value (int, float, bool, None).
-    /// Supports up to 64 fields per class.
-    pub heap_field_mask: u64,
     /// Total field count including inherited fields (for object.__new__ support)
     pub field_count: u16,
 }
@@ -40,7 +35,6 @@ unsafe impl<T: Copy, const N: usize> Sync for RegistryStorage<T, N> {}
 static CLASS_REGISTRY: RegistryStorage<ClassInfo, MAX_CLASSES> = RegistryStorage(UnsafeCell::new(
     [ClassInfo {
         parent_class_id: NO_PARENT,
-        heap_field_mask: 0, // Default: treat no fields as heap (fail-safe; classes must register)
         field_count: 0,
     }; MAX_CLASSES],
 ));
@@ -82,21 +76,6 @@ pub extern "C" fn rt_register_class(class_id: u8, parent_class_id: u8) {
     unsafe {
         (*CLASS_REGISTRY.0.get())[class_id as usize].parent_class_id = parent_class_id;
     }
-}
-
-/// Register the heap field mask for a class (tells GC which fields are heap pointers)
-/// Passed as i64 for Cranelift ABI compatibility; bit pattern is preserved as u64.
-#[no_mangle]
-pub extern "C" fn rt_register_class_fields(class_id: u8, heap_field_mask: i64) {
-    unsafe {
-        (*CLASS_REGISTRY.0.get())[class_id as usize].heap_field_mask = heap_field_mask as u64;
-    }
-}
-
-/// Get the heap field mask for a class (used by GC during marking)
-#[inline]
-pub fn get_class_heap_field_mask(class_id: u8) -> u64 {
-    unsafe { (*CLASS_REGISTRY.0.get())[class_id as usize].heap_field_mask }
 }
 
 /// Register the field count for a class (for object.__new__ support)
@@ -249,14 +228,12 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
         // BaseException (28) - ultimate root, no parent
         registry[pyaot_core_defs::BuiltinExceptionKind::BaseException.tag() as usize] = ClassInfo {
             parent_class_id: NO_PARENT,
-            heap_field_mask: u64::MAX,
             field_count: 0,
         };
 
         // Exception (0) inherits from BaseException (28)
         registry[pyaot_core_defs::BuiltinExceptionKind::Exception.tag() as usize] = ClassInfo {
             parent_class_id: pyaot_core_defs::BuiltinExceptionKind::BaseException.tag(),
-            heap_field_mask: u64::MAX,
             field_count: 0,
         };
 
@@ -269,7 +246,6 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
         ] {
             registry[tag as usize] = ClassInfo {
                 parent_class_id: base_exc_tag,
-                heap_field_mask: u64::MAX,
                 field_count: 0,
             };
         }
@@ -289,7 +265,6 @@ pub extern "C" fn rt_init_builtin_exception_classes() {
             }
             registry[tag as usize] = ClassInfo {
                 parent_class_id: exception_tag,
-                heap_field_mask: u64::MAX,
                 field_count: 0,
             };
         }

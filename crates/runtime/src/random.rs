@@ -329,7 +329,6 @@ pub unsafe extern "C" fn rt_random_gauss(mu: f64, sigma: f64) -> f64 {
 
 /// random.choices(population, weights, k) - weighted random sampling with replacement
 /// population and weights are *mut Obj (ListObj), k is count
-/// Preserves the population's elem_tag in the result list.
 #[no_mangle]
 pub unsafe extern "C" fn rt_random_choices(
     population: *mut Obj,
@@ -339,7 +338,6 @@ pub unsafe extern "C" fn rt_random_choices(
     crate::debug_assert_type_tag!(population, TypeTagKind::List, "rt_random_choices");
     let pop_list = population as *mut ListObj;
     let pop_len = (*pop_list).len;
-    let pop_elem_tag = (*pop_list).elem_tag;
 
     if pop_len == 0 {
         raise_exc!(
@@ -357,14 +355,14 @@ pub unsafe extern "C" fn rt_random_choices(
         let weights_list = weights as *mut ListObj;
         let mut total = 0.0f64;
         for i in 0..pop_len {
-            let w_obj = crate::list::list_slot_raw(weights_list, i);
+            let w_obj = (*(*weights_list).data.add(i)).0 as *mut crate::object::Obj;
             let w = crate::boxing::rt_unbox_float(w_obj);
             total += w;
             cum_weights.push(total);
         }
     } else {
         // No weights: use floor(random() * n) like CPython
-        let result = crate::list::rt_make_list(k as i64, pop_elem_tag);
+        let result = crate::list::rt_make_list(k as i64);
         let result_list = result as *mut ListObj;
         RNG.with(|rng| {
             let mut rng = rng.borrow_mut();
@@ -382,8 +380,8 @@ pub unsafe extern "C" fn rt_random_choices(
         .last()
         .expect("cumulative weights must be non-empty");
 
-    // Build result list with same elem_tag as population
-    let result = crate::list::rt_make_list(k as i64, pop_elem_tag);
+    // Build result list
+    let result = crate::list::rt_make_list(k as i64);
     let result_list = result as *mut ListObj;
 
     RNG.with(|rng| {
@@ -425,7 +423,7 @@ pub unsafe extern "C" fn rt_random_choice(seq: *mut Obj) -> *mut Obj {
     }
     // CPython: choice(seq) = seq[randbelow(len)]
     let idx = RNG.with(|rng| rng.borrow_mut().randbelow(len));
-    crate::list::list_slot_raw(list, idx)
+    (*(*list).data.add(idx)).0 as *mut crate::object::Obj
 }
 
 /// random.shuffle(seq) - shuffle list in-place using Fisher-Yates
@@ -480,9 +478,8 @@ pub unsafe extern "C" fn rt_random_sample(population: *mut Obj, k: i64) -> *mut 
         }
     });
 
-    // Build result list preserving population's elem_tag
-    let pop_elem_tag = (*list).elem_tag;
-    let result = crate::list::rt_make_list(k as i64, pop_elem_tag);
+    // Build result list
+    let result = crate::list::rt_make_list(k as i64);
     let result_list = result as *mut ListObj;
     for (i, &src_idx) in indices.iter().take(k).enumerate() {
         let elem = *(*list).data.add(src_idx);

@@ -3,7 +3,7 @@
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::gc;
-use crate::object::{ListObj, Obj, SetObj, TypeTagKind, ELEM_HEAP_OBJ, TOMBSTONE};
+use crate::object::{ListObj, Obj, SetObj, TypeTagKind, TOMBSTONE};
 use pyaot_core_defs::Value;
 use std::alloc::{alloc_zeroed, Layout};
 
@@ -57,7 +57,6 @@ pub extern "C" fn rt_set_to_list(set: *mut Obj) -> *mut Obj {
             Layout::array::<Value>(set_len).expect("Allocation size overflow - capacity too large");
         let data = alloc_zeroed(data_layout) as *mut Value;
 
-        (*list).elem_tag = ELEM_HEAP_OBJ;
         (*list).len = set_len;
         (*list).capacity = set_len;
         (*list).data = data;
@@ -68,8 +67,8 @@ pub extern "C" fn rt_set_to_list(set: *mut Obj) -> *mut Obj {
         for i in 0..capacity {
             let entry = (*set_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                *data.add(list_idx) = Value::from_ptr(elem);
+            if elem.0 != 0 && elem != TOMBSTONE {
+                *data.add(list_idx) = elem;
                 list_idx += 1;
             }
         }

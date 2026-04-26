@@ -1,7 +1,7 @@
 //! Central definition of runtime type tags.
 //!
 //! This module provides a single source of truth for all runtime type tags,
-//! their numeric values (0-18), and lookup functions. The `define_type_tags!` macro
+//! their numeric values (0-18), and lookup functions. The `define_tag_kinds!` macro
 //! generates the `TypeTagKind` enum and all lookup functions at compile time.
 //!
 //! # Usage
@@ -25,7 +25,7 @@
 //!
 //! # Adding New Type Tags
 //!
-//! To add a new type tag, simply add a new entry to `define_type_tags!`
+//! To add a new type tag, simply add a new entry to `define_tag_kinds!`
 //! macro invocation below. Everything else is generated automatically by the macro.
 //! Both the `types` and `runtime` crates will pick up the change automatically.
 
@@ -42,7 +42,7 @@
 /// - type_name: Short Python type name (e.g., "time.struct_time")
 ///
 /// This ensures compile-time generation with zero runtime overhead.
-macro_rules! define_type_tags {
+macro_rules! define_tag_kinds {
     ($($variant:ident = $tag:expr => $name:literal => $type_class:literal => $type_name:literal),* $(,)?) => {
         /// Runtime type tag kind enum - single source of truth.
         /// These tags identify the type of heap objects at runtime.
@@ -146,7 +146,7 @@ macro_rules! define_type_tags {
 //
 // Format: Variant = tag => "debug_name" => "type_class" => "type_name"
 
-define_type_tags! {
+define_tag_kinds! {
     Int = 0 => "Int" => "<class 'int'>" => "int",
     Float = 1 => "Float" => "<class 'float'>" => "float",
     Bool = 2 => "Bool" => "<class 'bool'>" => "bool",

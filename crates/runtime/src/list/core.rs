@@ -8,13 +8,10 @@ use crate::object::{ListObj, Obj, TypeTagKind};
 use pyaot_core_defs::Value;
 use std::alloc::{alloc_zeroed, realloc, Layout};
 
-use super::{load_value_as_raw, store_raw_as_value};
-
-/// Create a new list with given capacity and element tag
-/// elem_tag: ELEM_HEAP_OBJ (0), ELEM_RAW_INT (1), or ELEM_RAW_BOOL (2)
+/// Create a new list with given capacity.
 /// Returns: pointer to allocated ListObj
 #[no_mangle]
-pub extern "C" fn rt_make_list(capacity: i64, elem_tag: u8) -> *mut Obj {
+pub extern "C" fn rt_make_list(capacity: i64) -> *mut Obj {
     let capacity = capacity.max(0) as usize;
 
     // Calculate size for ListObj (header + len + capacity + data pointer + elem_tag)
@@ -27,7 +24,6 @@ pub extern "C" fn rt_make_list(capacity: i64, elem_tag: u8) -> *mut Obj {
         let list = obj as *mut ListObj;
         (*list).len = 0;
         (*list).capacity = capacity;
-        (*list).elem_tag = elem_tag;
 
         // Allocate data array separately if capacity > 0.
         // Physical layout is 8 bytes per slot — identical to the pre-S2.3
@@ -67,13 +63,9 @@ pub extern "C" fn rt_list_set(list: *mut Obj, index: i64, value: *mut Obj) {
             return;
         }
 
-        // Validate elem_tag matches value type (debug mode only)
-        crate::validate_elem_tag!("list", idx, (*list_obj).elem_tag, value);
-
         let data = (*list_obj).data;
         if !data.is_null() {
-            let elem_tag = (*list_obj).elem_tag;
-            *data.add(idx as usize) = store_raw_as_value(value, elem_tag);
+            *data.add(idx as usize) = Value(value as u64);
         }
     }
 }
@@ -106,7 +98,7 @@ pub extern "C" fn rt_list_get(list: *mut Obj, index: i64) -> *mut Obj {
         }
 
         let v = *data.add(idx as usize);
-        load_value_as_raw(v, (*list_obj).elem_tag)
+        v.0 as *mut Obj
     }
 }
 
@@ -124,95 +116,45 @@ pub extern "C" fn rt_list_len(list: *mut Obj) -> i64 {
     }
 }
 
-/// Shared bounds-checking and element access for typed list getters.
-/// Returns the raw-ABI element pointer (after Value→raw conversion) on
-/// success, or `None` if out of bounds / null.
-unsafe fn list_get_element(list: *mut Obj, index: i64) -> Option<*mut Obj> {
+/// Bounds-check helper returning the raw `Value` stored at `index`, or `None`.
+unsafe fn list_get_value(list: *mut Obj, index: i64) -> Option<Value> {
     if list.is_null() {
         return None;
     }
-
-    debug_assert_type_tag!(list, TypeTagKind::List, "list_get_element");
+    debug_assert_type_tag!(list, TypeTagKind::List, "list_get_value");
     let list_obj = list as *mut ListObj;
     let len = (*list_obj).len as i64;
-
     let idx = if index < 0 { len + index } else { index };
-
     if idx < 0 || idx >= len {
         return None;
     }
-
     let data = (*list_obj).data;
     if data.is_null() {
         return None;
     }
-
-    let v = *data.add(idx as usize);
-    Some(load_value_as_raw(v, (*list_obj).elem_tag))
+    Some(*data.add(idx as usize))
 }
 
-/// Get a typed scalar element from a list, unboxing if necessary. Always returns i64.
+/// Get a typed scalar element from a list. Always returns i64.
 ///
-/// `elem_kind` selects the element type:
-/// - 0 = Int:   returns raw i64 (unboxes IntObj when stored as ELEM_HEAP_OBJ)
-/// - 1 = Float: returns f64 bit-pattern as i64 (unboxes FloatObj when stored as ELEM_HEAP_OBJ)
-/// - 2 = Bool:  returns i8 zero-extended to i64 (unboxes BoolObj when stored as ELEM_HEAP_OBJ)
-///
-/// Replaces the three separate `rt_list_get_int`, `rt_list_get_float`, `rt_list_get_bool`
-/// functions. The caller (generated code) passes the statically-known elem_kind tag; the
-/// codegen descriptor system handles the I64→F64 bitcast for float destinations.
+/// `elem_kind`:
+/// - 0 = Int:   raw i64 (`Value::unwrap_int`)
+/// - 1 = Float: f64 bit-pattern from the heap-boxed `FloatObj`
+/// - 2 = Bool:  0/1 i64 (`Value::unwrap_bool`)
 #[no_mangle]
 pub extern "C" fn rt_list_get_typed(list: *mut Obj, index: i64, elem_kind: u8) -> i64 {
-    use crate::object::{BoolObj, FloatObj, IntObj, ELEM_HEAP_OBJ, ELEM_RAW_BOOL, ELEM_RAW_INT};
+    use crate::object::FloatObj;
 
+    let v = match unsafe { list_get_value(list, index) } {
+        Some(v) => v,
+        None => return 0,
+    };
     unsafe {
-        let elem = match list_get_element(list, index) {
-            Some(e) => e,
-            None => return 0,
-        };
-        let stored_tag = (*(list as *mut ListObj)).elem_tag;
-
         match elem_kind {
-            0 => {
-                // Int: raw i64 or unbox IntObj
-                match stored_tag {
-                    ELEM_RAW_INT => elem as i64,
-                    ELEM_HEAP_OBJ => {
-                        if elem.is_null() {
-                            return 0;
-                        }
-                        (*(elem as *mut IntObj)).value
-                    }
-                    _ => elem as i64,
-                }
-            }
-            1 => {
-                // Float: unbox FloatObj or treat raw bits as f64
-                let f = match stored_tag {
-                    ELEM_HEAP_OBJ => {
-                        if elem.is_null() {
-                            return 0;
-                        }
-                        (*(elem as *mut FloatObj)).value
-                    }
-                    _ => f64::from_bits(elem as u64),
-                };
-                f.to_bits() as i64
-            }
-            _ => {
-                // Bool (elem_kind=2): raw i8 or unbox BoolObj
-                let b: i8 = match stored_tag {
-                    ELEM_RAW_BOOL => elem as i8,
-                    ELEM_HEAP_OBJ => {
-                        if elem.is_null() {
-                            return 0;
-                        }
-                        i8::from((*(elem as *mut BoolObj)).value)
-                    }
-                    _ => elem as i8,
-                };
-                b as i64
-            }
+            0 => v.unwrap_int(),
+            1 => (*(v.0 as *mut FloatObj)).value.to_bits() as i64,
+            2 => i64::from(v.unwrap_bool()),
+            _ => unreachable!("invalid elem_kind: {elem_kind}"),
         }
     }
 }
@@ -263,14 +205,10 @@ pub extern "C" fn rt_list_push(list: *mut Obj, value: *mut Obj) {
             (*list_obj).capacity = new_capacity;
         }
 
-        // Validate elem_tag matches value type (debug mode only)
-        crate::validate_elem_tag!("list.push", len, (*list_obj).elem_tag, value);
-
         // Add element
         let data = (*list_obj).data;
         if !data.is_null() {
-            let elem_tag = (*list_obj).elem_tag;
-            *data.add(len) = store_raw_as_value(value, elem_tag);
+            *data.add(len) = Value(value as u64);
             (*list_obj).len = len + 1;
         }
     }

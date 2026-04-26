@@ -12,11 +12,12 @@
 //! on any 64-bit platform.  The constants and low-level helpers live in
 //! `dict.rs` so that `dict_resize` and `dict_finalize` can also use them.
 
-use crate::boxing::{rt_box_float, rt_box_int};
+use crate::boxing::rt_box_float;
 use crate::dict::{
     real_entries_capacity, rt_dict_get, rt_dict_set, CAPACITY_MASK, FACTORY_TAG_SHIFT,
 };
 use crate::object::{DictObj, Obj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 /// Factory tags for default value creation
 const FACTORY_INT: u8 = 0;
@@ -118,8 +119,8 @@ unsafe fn rt_dict_get_or_null(dict: *mut DictObj, key: *mut Obj) -> *mut Obj {
             continue;
         }
         let entry = (*dict).entries.add(entry_idx as usize);
-        if (*entry).hash == hash && eq_hashable_obj((*entry).key, key) {
-            return (*entry).value;
+        if (*entry).hash == hash && eq_hashable_obj((*entry).key.0 as *mut Obj, key) {
+            return (*entry).value.0 as *mut Obj;
         }
     }
 
@@ -129,11 +130,11 @@ unsafe fn rt_dict_get_or_null(dict: *mut DictObj, key: *mut Obj) -> *mut Obj {
 /// Create a default value based on factory_tag
 unsafe fn create_default_value(factory_tag: u8) -> *mut Obj {
     match factory_tag {
-        FACTORY_INT => rt_box_int(0),
+        FACTORY_INT => Value::from_int(0).0 as *mut crate::object::Obj,
         FACTORY_FLOAT => rt_box_float(0.0),
         FACTORY_STR => crate::string::rt_make_str(std::ptr::null(), 0),
-        FACTORY_BOOL => crate::boxing::rt_box_bool(0),
-        FACTORY_LIST => crate::list::rt_make_list(0, 0),
+        FACTORY_BOOL => Value::from_bool(false).0 as *mut crate::object::Obj,
+        FACTORY_LIST => crate::list::rt_make_list(0),
         FACTORY_DICT => crate::dict::rt_make_dict(0),
         FACTORY_SET => crate::set::rt_make_set(0),
         _ => crate::boxing::rt_box_none(),

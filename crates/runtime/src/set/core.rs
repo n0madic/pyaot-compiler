@@ -25,9 +25,9 @@ pub(super) fn find_set_slot(set: *mut SetObj, elem: *mut Obj, hash: u64, for_ins
             (*set).capacity,
             hash,
             for_insert,
-            |i| (*(*set).entries.add(i)).elem,
+            |i| (*(*set).entries.add(i)).elem.0 as *mut Obj,
             |i| (*(*set).entries.add(i)).hash,
-            TOMBSTONE,
+            TOMBSTONE.0 as *mut Obj,
             elem,
         )
     }
@@ -50,7 +50,7 @@ pub(super) fn set_resize(set: *mut SetObj, new_capacity: usize) {
         for i in 0..new_capacity {
             let entry = new_entries.add(i);
             (*entry).hash = 0;
-            (*entry).elem = std::ptr::null_mut();
+            (*entry).elem = pyaot_core_defs::Value(0);
         }
 
         // Update set with new entries
@@ -63,7 +63,7 @@ pub(super) fn set_resize(set: *mut SetObj, new_capacity: usize) {
         for i in 0..old_capacity {
             let old_entry = old_entries.add(i);
             let elem = (*old_entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
+            if elem.0 != 0 && elem != TOMBSTONE {
                 let hash = (*old_entry).hash;
                 let base = hash as usize;
 
@@ -92,7 +92,7 @@ pub(super) fn set_resize(set: *mut SetObj, new_capacity: usize) {
                     let offset = (probe_i * (probe_i + 1)) >> 1;
                     let index = (base + offset) & mask;
                     let entry = new_entries.add(index);
-                    if (*entry).elem.is_null() {
+                    if (*entry).elem.0 == 0 {
                         (*entry).hash = hash;
                         (*entry).elem = elem;
                         (*set).len += 1;
@@ -146,7 +146,7 @@ pub extern "C" fn rt_make_set(capacity: i64) -> *mut Obj {
         for i in 0..capacity {
             let entry = entries_ptr.add(i);
             (*entry).hash = 0;
-            (*entry).elem = std::ptr::null_mut();
+            (*entry).elem = pyaot_core_defs::Value(0);
         }
     }
 
@@ -198,7 +198,7 @@ pub unsafe fn set_finalize(set: *mut Obj) {
 /// Returns i64 (for float, result is f64::to_bits()).
 #[no_mangle]
 pub extern "C" fn rt_set_minmax(set: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
-    use crate::object::{FloatObj, IntObj};
+    use crate::object::FloatObj;
 
     if set.is_null() {
         return 0;
@@ -233,8 +233,8 @@ pub extern "C" fn rt_set_minmax(set: *mut Obj, is_min: u8, elem_kind: u8) -> i64
             for i in 0..capacity {
                 let entry = entries.add(i);
                 let elem = (*entry).elem;
-                if !elem.is_null() && elem != TOMBSTONE {
-                    let val = (*(elem as *mut FloatObj)).value;
+                if elem.0 != 0 && elem != TOMBSTONE {
+                    let val = (*(elem.0 as *mut FloatObj)).value;
                     match result {
                         None => result = Some(val),
                         Some(current) => {
@@ -252,8 +252,8 @@ pub extern "C" fn rt_set_minmax(set: *mut Obj, is_min: u8, elem_kind: u8) -> i64
             for i in 0..capacity {
                 let entry = entries.add(i);
                 let elem = (*entry).elem;
-                if !elem.is_null() && elem != TOMBSTONE {
-                    let val = (*(elem as *mut IntObj)).value;
+                if elem.0 != 0 && elem != TOMBSTONE {
+                    let val = elem.unwrap_int();
                     match result {
                         None => result = Some(val),
                         Some(current) => {
@@ -270,40 +270,41 @@ pub extern "C" fn rt_set_minmax(set: *mut Obj, is_min: u8, elem_kind: u8) -> i64
 }
 
 /// Generic set min/max with key function.
+/// `key_return_tag`: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1).
 /// is_min: 0=min, 1=max
 #[no_mangle]
 pub extern "C" fn rt_set_minmax_with_key(
     set: *mut Obj,
     key_fn: i64,
-    needs_unbox: i64,
     captures: *mut Obj,
     capture_count: i64,
     is_min: u8,
+    key_return_tag: u8,
 ) -> *mut Obj {
     unsafe {
         find_set_extremum_with_key(
             set,
             key_fn,
-            needs_unbox,
             captures,
             capture_count as u8,
             is_min == 0,
+            key_return_tag,
         )
     }
 }
 
-/// Find extremum (min or max) element in a set using a key function
+/// Find extremum (min or max) element in a set using a key function.
+/// Set entries store tagged Values; `key_return_tag` tells how to wrap the key fn result.
 unsafe fn find_set_extremum_with_key(
     set: *mut Obj,
     key_fn: i64,
-    needs_unbox: i64,
     captures: *mut Obj,
     capture_count: u8,
     is_min: bool,
+    key_return_tag: u8,
 ) -> *mut Obj {
     use crate::iterator::call_map_with_captures;
-    use crate::object::{IntObj, TypeTagKind};
-    use crate::sorted::compare_key_values;
+    use crate::sorted::{compare_key_values, unwrap_slot_for_key_fn, wrap_key_result};
 
     if set.is_null() {
         return std::ptr::null_mut();
@@ -328,38 +329,38 @@ unsafe fn find_set_extremum_with_key(
     }
 
     let entries = (*set_obj).entries;
-    let mut extremum_elem: *mut Obj = std::ptr::null_mut();
-    let mut extremum_key: *mut Obj = std::ptr::null_mut();
+    let mut extremum_slot = pyaot_core_defs::Value(0);
+    let mut extremum_key = pyaot_core_defs::Value(0);
     let mut found_first = false;
 
-    // Helper to prepare element for key function based on needs_unbox
-    let prepare_elem_for_key = |elem: *mut Obj| -> *mut Obj {
-        if needs_unbox != 0 && !elem.is_null() {
-            let header = &(*elem).header;
-            if header.type_tag == TypeTagKind::Int {
-                let int_obj = elem as *mut IntObj;
-                let raw_value = (*int_obj).value;
-                return raw_value as *mut Obj;
-            }
-        }
-        elem
-    };
-
-    // Find extremum by iterating through all valid elements
     for i in 0..capacity {
         let entry = entries.add(i);
         let elem = (*entry).elem;
-        if !elem.is_null() && elem != TOMBSTONE {
+        if elem.0 != 0 && elem != TOMBSTONE {
             if !found_first {
-                extremum_elem = elem;
-                let key_input = prepare_elem_for_key(elem);
-                extremum_key = call_map_with_captures(key_fn, captures, capture_count, key_input);
+                extremum_slot = elem;
+                extremum_key = wrap_key_result(
+                    call_map_with_captures(
+                        key_fn,
+                        captures,
+                        capture_count,
+                        unwrap_slot_for_key_fn(elem, key_return_tag),
+                    ),
+                    key_return_tag,
+                );
                 found_first = true;
             } else {
-                let key_input = prepare_elem_for_key(elem);
-                let key = call_map_with_captures(key_fn, captures, capture_count, key_input);
+                let key = wrap_key_result(
+                    call_map_with_captures(
+                        key_fn,
+                        captures,
+                        capture_count,
+                        unwrap_slot_for_key_fn(elem, key_return_tag),
+                    ),
+                    key_return_tag,
+                );
 
-                let cmp = compare_key_values(key, extremum_key);
+                let cmp = compare_key_values(key.0 as *mut Obj, extremum_key.0 as *mut Obj);
                 let is_better = if is_min {
                     cmp == std::cmp::Ordering::Less
                 } else {
@@ -367,7 +368,7 @@ unsafe fn find_set_extremum_with_key(
                 };
 
                 if is_better {
-                    extremum_elem = elem;
+                    extremum_slot = elem;
                     extremum_key = key;
                 }
             }
@@ -378,5 +379,11 @@ unsafe fn find_set_extremum_with_key(
         return std::ptr::null_mut();
     }
 
-    extremum_elem
+    if extremum_slot.is_int() {
+        extremum_slot.unwrap_int() as *mut Obj
+    } else if extremum_slot.is_bool() {
+        i64::from(extremum_slot.unwrap_bool()) as *mut Obj
+    } else {
+        extremum_slot.0 as *mut Obj
+    }
 }

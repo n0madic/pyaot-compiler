@@ -2,30 +2,13 @@
 
 use super::core::rt_list_push;
 use super::timsort;
-use super::{load_value_as_raw, store_raw_as_value};
+
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::exceptions::ExceptionType;
-use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind, ELEM_HEAP_OBJ, ELEM_RAW_INT};
+use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind};
 use pyaot_core_defs::Value;
 use std::alloc::{alloc_zeroed, realloc, Layout};
-
-/// Update the elem_tag of an empty list.
-/// Called by the compiler before the first append when the list was created with
-/// ELEM_HEAP_OBJ (e.g., `li = []` without type annotation) but the actual element
-/// type is known (e.g., int). Only updates if the list is currently empty.
-#[no_mangle]
-pub extern "C" fn rt_list_set_elem_tag(list: *mut Obj, tag: u8) {
-    if list.is_null() {
-        return;
-    }
-    unsafe {
-        let list_obj = list as *mut ListObj;
-        if (*list_obj).len == 0 {
-            (*list_obj).elem_tag = tag;
-        }
-    }
-}
 
 /// Append element to list (mutates list)
 /// This is the same as rt_list_push, but named to match Python's .append()
@@ -62,11 +45,10 @@ pub extern "C" fn rt_list_pop(list: *mut Obj, index: i64) -> *mut Obj {
 
         let idx = idx as usize;
         let data = (*list_obj).data;
-        let elem_tag = (*list_obj).elem_tag;
 
         // Get the element to return (convert stored Value back to ABI *mut Obj).
         let stored = *data.add(idx);
-        let result = load_value_as_raw(stored, elem_tag);
+        let result = stored.0 as *mut Obj;
 
         // Shift remaining elements left
         let new_len = len as usize - 1;
@@ -138,9 +120,8 @@ pub extern "C" fn rt_list_insert(list: *mut Obj, index: i64, value: *mut Obj) {
             for i in (idx..len).rev() {
                 *data.add(i + 1) = *data.add(i);
             }
-            // Insert the new element (convert ABI *mut Obj to tagged Value).
-            let elem_tag = (*list_obj).elem_tag;
-            *data.add(idx) = store_raw_as_value(value, elem_tag);
+            // Insert the new element (value is already a tagged Value bit-pattern).
+            *data.add(idx) = Value(value as u64);
             (*list_obj).len = len + 1;
         }
     }
@@ -165,19 +146,12 @@ pub extern "C" fn rt_list_remove(list: *mut Obj, value: *mut Obj) -> i8 {
             return 0;
         }
 
-        let elem_tag = (*list_obj).elem_tag;
-
-        // Find the element using value equality for heap objects, raw equality
-        // for primitives. Convert the stored `Value` back to ABI form so the
-        // comparison semantics match the pre-S2.3 behavior byte-for-byte.
+        // After F.7c slots are tagged Values; pass bits directly to eq_hashable_obj.
+        // The search `value` is also a tagged Value (boxed by box_primitive_if_needed).
         for i in 0..len {
             let stored = *data.add(i);
-            let elem = load_value_as_raw(stored, elem_tag);
-            let found = if elem_tag == ELEM_HEAP_OBJ {
-                crate::hash_table_utils::eq_hashable_obj(elem, value)
-            } else {
-                elem == value // Raw value comparison (ELEM_RAW_INT, ELEM_RAW_BOOL)
-            };
+            let elem = stored.0 as *mut Obj;
+            let found = crate::hash_table_utils::eq_hashable_obj(elem, value);
             if found {
                 // Shift remaining elements left
                 for j in i..(len - 1) {
@@ -328,106 +302,86 @@ pub extern "C" fn rt_list_extend(list: *mut Obj, other: *mut Obj) {
     }
 }
 
-/// Compare two objects for sorting
+/// Compare two objects for sorting. Values are uniform tagged Values after F.7c.
 /// Returns -1 if a < b, 0 if a == b, 1 if a > b
-unsafe fn compare_objects(a: *mut Obj, b: *mut Obj, elem_tag: u8) -> i32 {
-    if elem_tag == ELEM_RAW_INT {
-        // For raw integers, compare as signed i64
-        let a_val = a as i64;
-        let b_val = b as i64;
-        if a_val < b_val {
+unsafe fn compare_objects(a: *mut Obj, b: *mut Obj) -> i32 {
+    // Check Value tags before dereferencing as a heap pointer.
+    let va = Value(a as u64);
+    let vb = Value(b as u64);
+
+    if va.is_int() && vb.is_int() {
+        let av = va.unwrap_int();
+        let bv = vb.unwrap_int();
+        return if av < bv {
             -1
-        } else if a_val > b_val {
+        } else if av > bv {
+            1
+        } else {
+            0
+        };
+    }
+    if va.is_bool() && vb.is_bool() {
+        let av = va.unwrap_bool();
+        let bv = vb.unwrap_bool();
+        return if !av && bv {
+            -1
+        } else if av && !bv {
+            1
+        } else {
+            0
+        };
+    }
+
+    if a.is_null() && b.is_null() {
+        return 0;
+    }
+    if a.is_null() {
+        return -1;
+    }
+    if b.is_null() {
+        return 1;
+    }
+
+    let a_header = a as *mut ObjHeader;
+    let a_type = (*a_header).type_tag;
+
+    if a_type == TypeTagKind::Str {
+        let a_str = a as *mut StrObj;
+        let b_str = b as *mut StrObj;
+        let a_len = (*a_str).len;
+        let b_len = (*b_str).len;
+        let min_len = a_len.min(b_len);
+
+        let a_data = (*a_str).data.as_ptr();
+        let b_data = (*b_str).data.as_ptr();
+
+        for i in 0..min_len {
+            let a_byte = *a_data.add(i);
+            let b_byte = *b_data.add(i);
+            if a_byte < b_byte {
+                return -1;
+            }
+            if a_byte > b_byte {
+                return 1;
+            }
+        }
+        if a_len < b_len {
+            -1
+        } else if a_len > b_len {
             1
         } else {
             0
         }
-    } else if elem_tag == ELEM_HEAP_OBJ {
-        // For heap objects, check the type
-        if a.is_null() && b.is_null() {
-            return 0;
-        }
-        if a.is_null() {
-            return -1;
-        }
-        if b.is_null() {
-            return 1;
-        }
-
-        let a_header = a as *mut ObjHeader;
-        let a_type = (*a_header).type_tag;
-
-        if a_type == TypeTagKind::Str {
-            // String comparison
-            let a_str = a as *mut StrObj;
-            let b_str = b as *mut StrObj;
-            let a_len = (*a_str).len;
-            let b_len = (*b_str).len;
-            let min_len = a_len.min(b_len);
-
-            let a_data = (*a_str).data.as_ptr();
-            let b_data = (*b_str).data.as_ptr();
-
-            for i in 0..min_len {
-                let a_byte = *a_data.add(i);
-                let b_byte = *b_data.add(i);
-                if a_byte < b_byte {
-                    return -1;
-                }
-                if a_byte > b_byte {
-                    return 1;
-                }
-            }
-            // If all compared bytes are equal, shorter string comes first
-            if a_len < b_len {
-                -1
-            } else if a_len > b_len {
-                1
-            } else {
-                0
-            }
-        } else if a_type == TypeTagKind::Int {
-            let a_val = (*(a as *mut crate::object::IntObj)).value;
-            let b_val = (*(b as *mut crate::object::IntObj)).value;
-            if a_val < b_val {
-                -1
-            } else if a_val > b_val {
-                1
-            } else {
-                0
-            }
-        } else if a_type == TypeTagKind::Float {
-            let a_val = (*(a as *mut crate::object::FloatObj)).value;
-            let b_val = (*(b as *mut crate::object::FloatObj)).value;
-            match a_val.partial_cmp(&b_val) {
-                Some(std::cmp::Ordering::Less) => -1,
-                Some(std::cmp::Ordering::Greater) => 1,
-                // NaN sorts to the end (Greater) to provide stable ordering
-                None => 1,
-                _ => 0,
-            }
-        } else if a_type == TypeTagKind::Bool {
-            let a_val = (*(a as *mut crate::object::BoolObj)).value;
-            let b_val = (*(b as *mut crate::object::BoolObj)).value;
-            if !a_val && b_val {
-                -1
-            } else if a_val && !b_val {
-                1
-            } else {
-                0
-            }
-        } else {
-            // For other objects, fall back to pointer comparison
-            if a < b {
-                -1
-            } else if a > b {
-                1
-            } else {
-                0
-            }
+    } else if a_type == TypeTagKind::Float {
+        let a_val = (*(a as *mut crate::object::FloatObj)).value;
+        let b_val = (*(b as *mut crate::object::FloatObj)).value;
+        match a_val.partial_cmp(&b_val) {
+            Some(std::cmp::Ordering::Less) => -1,
+            Some(std::cmp::Ordering::Greater) => 1,
+            None => 1, // NaN sorts to the end
+            _ => 0,
         }
     } else {
-        // Unknown element type, use pointer comparison
         if a < b {
             -1
         } else if a > b {
@@ -460,48 +414,25 @@ pub extern "C" fn rt_list_sort(list: *mut Obj, reverse: i8) {
             return;
         }
 
-        let elem_tag = (*list_obj).elem_tag;
-
         // Use Timsort for O(n log n) performance.
-        //
-        // Under S2.3 Value-backed storage:
-        //   ELEM_RAW_INT slot = ((raw_i64 << 3) | INT_TAG). The tag shift
-        //   preserves signed i64 ordering (within the 61-bit representable
-        //   range), so sorting the tagged bit pattern as i64 yields the
-        //   same permutation as sorting the untagged raw ints.
-        if elem_tag == ELEM_RAW_INT {
-            let slice = std::slice::from_raw_parts_mut(data as *mut i64, len);
-            timsort::timsort_int(slice);
-
+        // After F.7c all slots are uniform tagged Values — dispatch on Value::tag() at compare time.
+        let slice = std::slice::from_raw_parts_mut(data, len);
+        timsort::timsort_with_cmp(slice, |a, b| {
+            let cmp = compare_objects((*a).0 as *mut Obj, (*b).0 as *mut Obj);
             if reverse != 0 {
-                slice.reverse();
-            }
-        } else {
-            // For heap objects / bools, convert each slot to the raw ABI
-            // form expected by `compare_objects`.
-            let slice = std::slice::from_raw_parts_mut(data, len);
-            timsort::timsort_with_cmp(slice, |a, b| {
-                let cmp = compare_objects(
-                    load_value_as_raw(*a, elem_tag),
-                    load_value_as_raw(*b, elem_tag),
-                    elem_tag,
-                );
-                if reverse != 0 {
-                    // Reverse comparison for descending order
-                    match cmp {
-                        c if c < 0 => std::cmp::Ordering::Greater,
-                        c if c > 0 => std::cmp::Ordering::Less,
-                        _ => std::cmp::Ordering::Equal,
-                    }
-                } else {
-                    match cmp {
-                        c if c < 0 => std::cmp::Ordering::Less,
-                        c if c > 0 => std::cmp::Ordering::Greater,
-                        _ => std::cmp::Ordering::Equal,
-                    }
+                match cmp {
+                    c if c < 0 => std::cmp::Ordering::Greater,
+                    c if c > 0 => std::cmp::Ordering::Less,
+                    _ => std::cmp::Ordering::Equal,
                 }
-            });
-        }
+            } else {
+                match cmp {
+                    c if c < 0 => std::cmp::Ordering::Less,
+                    c if c > 0 => std::cmp::Ordering::Greater,
+                    _ => std::cmp::Ordering::Equal,
+                }
+            }
+        });
     }
 }
 
@@ -523,19 +454,20 @@ unsafe fn compare_key_objects(a: *mut Obj, b: *mut Obj) -> i32 {
 /// Sort list in place with a key function
 /// key_fn: function pointer for key extraction
 /// reverse: 0 = ascending, non-zero = descending
-/// elem_tag: element storage type (0=ELEM_HEAP_OBJ, 1=ELEM_RAW_INT, 2=ELEM_RAW_BOOL)
 /// captures: tuple of captured variables (null if no captures)
 /// capture_count: number of captured variables
+/// key_return_tag: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1)
 #[no_mangle]
 pub extern "C" fn rt_list_sort_with_key(
     list: *mut Obj,
     reverse: i8,
     key_fn: i64,
-    elem_tag: i64,
     captures: *mut Obj,
     capture_count: i64,
+    key_return_tag: u8,
 ) {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
+    use crate::sorted::{unwrap_slot_for_key_fn, wrap_key_result};
 
     if list.is_null() {
         return;
@@ -555,11 +487,6 @@ pub extern "C" fn rt_list_sort_with_key(
             return;
         }
 
-        // Root `list` for the entire key-building phase.  rt_box_int and the
-        // user-supplied key_fn may trigger gc_alloc, which under gc_stress_test
-        // runs a full collection on every allocation.  Without rooting, the
-        // ListObj (and its element array) could be swept while we are still
-        // iterating over it.
         let mut roots: [*mut Obj; 1] = [list];
         let mut frame = ShadowFrame {
             prev: std::ptr::null_mut(),
@@ -568,29 +495,14 @@ pub extern "C" fn rt_list_sort_with_key(
         };
         gc_push(&mut frame);
 
-        // Apply key function to each element and store (key_value, original_slot) pairs.
-        // `original_slot` is the raw `Value` as stored in the list — keeping the
-        // tagged form means the write-back phase below doesn't need to re-convert.
-        // Use the list's own storage tag for unwrapping: the `elem_tag` parameter
-        // is only a key-function hint (whether to box) and may disagree with the
-        // actual storage (see minmax.rs for the same pattern).
         let cc = capture_count as u8;
-        let storage_tag = (*list_obj).elem_tag;
         let mut key_value_pairs: Vec<(*mut Obj, Value)> = Vec::with_capacity(len);
         for i in 0..len {
-            // Re-derive data pointer after each gc_alloc (list is non-moving,
-            // but we re-read through the rooted list pointer to be explicit).
             let current_data = (*(list as *mut ListObj)).data;
             let stored = *current_data.add(i);
-            let elem_raw = load_value_as_raw(stored, storage_tag);
-            // Box raw elements before passing to key function
-            let boxed_elem = if elem_tag == ELEM_RAW_INT as i64 {
-                crate::boxing::rt_box_int(elem_raw as i64)
-            } else {
-                elem_raw
-            };
-            let key_value =
-                crate::iterator::call_map_with_captures(key_fn, captures, cc, boxed_elem);
+            let raw_elem = unwrap_slot_for_key_fn(stored, key_return_tag);
+            let raw_key = crate::iterator::call_map_with_captures(key_fn, captures, cc, raw_elem);
+            let key_value = wrap_key_result(raw_key, key_return_tag).0 as *mut Obj;
             key_value_pairs.push((key_value, stored));
         }
 

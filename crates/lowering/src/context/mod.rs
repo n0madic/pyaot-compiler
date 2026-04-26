@@ -42,6 +42,8 @@ pub struct ResolvedKeyFunc {
     pub captures: mir::Operand,
     /// Capture count operand
     pub capture_count: mir::Operand,
+    /// 0 = heap (ptr, low bits 0), 1 = Int (raw i64), 2 = Bool (raw 0/1)
+    pub key_return_tag: mir::Operand,
 }
 
 /// Parsed sort kwargs (key= and reverse=) for list.sort() and sorted()
@@ -241,6 +243,7 @@ pub enum IterState {
     /// calls next FIRST, then checks exhausted) and consumed by
     /// IterAdvance (which just binds value_local to target). Matches
     /// tree walker's `lower_for_iterator` semantics exactly.
+    ///
     Protocol {
         iter_local: LocalId,
         value_local: LocalId,

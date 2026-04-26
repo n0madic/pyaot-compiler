@@ -3,7 +3,7 @@
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
 | `cli` | Entry point, orchestrates pipeline | `main.rs` |
-| `core-defs` | Shared definitions (leaf crate) | `exceptions.rs`, `type_tags.rs` |
+| `core-defs` | Shared definitions (leaf crate) | `exceptions.rs`, `tag_kinds.rs`, `value.rs` |
 | `stdlib-defs` | Stdlib module definitions | `types.rs`, `registry.rs`, `modules/*.rs` |
 | `frontend-python` | Python parsing → HIR | `ast_to_hir/` |
 | `hir` | High-level IR | `lib.rs` |

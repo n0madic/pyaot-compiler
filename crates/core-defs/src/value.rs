@@ -23,7 +23,7 @@
 use core::fmt;
 
 use crate::tag::{int_fits, BOOL_SHIFT, BOOL_TAG, INT_SHIFT, INT_TAG, NONE_TAG, PTR_TAG, TAG_MASK};
-use crate::type_tags::TypeTagKind;
+use crate::tag_kinds::TypeTagKind;
 
 /// A 64-bit tagged value. Transparent over `u64` so Cranelift lowers it as a
 /// plain `I64` without any wrapping overhead.

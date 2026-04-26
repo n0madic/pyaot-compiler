@@ -4,7 +4,7 @@
 
 pub mod dunders;
 pub mod exceptions;
-pub mod type_tags;
+pub mod tag_kinds;
 
 pub use exceptions::{
     exception_name_to_tag, exception_tag_to_name, is_builtin_exception_name, BuiltinException,
@@ -12,7 +12,7 @@ pub use exceptions::{
     RESERVED_STDLIB_EXCEPTION_SLOTS,
 };
 
-pub use type_tags::{is_type_tag_name, type_tag_to_name, TypeTagKind, TYPE_TAG_COUNT};
+pub use tag_kinds::{is_type_tag_name, type_tag_to_name, TypeTagKind, TYPE_TAG_COUNT};
 
 use pyaot_utils::{ClassId, InternedString};
 

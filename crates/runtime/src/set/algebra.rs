@@ -45,8 +45,8 @@ pub extern "C" fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         for i in 0..b_capacity {
             let entry = (*b_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                rt_set_add(roots[0], elem);
+            if elem.0 != 0 && elem != TOMBSTONE {
+                rt_set_add(roots[0], elem.0 as *mut Obj);
             }
         }
 
@@ -94,11 +94,12 @@ pub extern "C" fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         for i in 0..a_capacity {
             let entry = (*a_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                let hash = hash_hashable_obj(elem);
-                let slot = find_set_slot(b_obj, elem, hash, false);
+            if elem.0 != 0 && elem != TOMBSTONE {
+                let elem_ptr = elem.0 as *mut Obj;
+                let hash = hash_hashable_obj(elem_ptr);
+                let slot = find_set_slot(b_obj, elem_ptr, hash, false);
                 if slot >= 0 {
-                    rt_set_add(roots[0], elem);
+                    rt_set_add(roots[0], elem_ptr);
                 }
             }
         }
@@ -147,11 +148,12 @@ pub extern "C" fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         for i in 0..a_capacity {
             let entry = (*a_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                let hash = hash_hashable_obj(elem);
-                let slot = find_set_slot(b_obj, elem, hash, false);
+            if elem.0 != 0 && elem != TOMBSTONE {
+                let elem_ptr = elem.0 as *mut Obj;
+                let hash = hash_hashable_obj(elem_ptr);
+                let slot = find_set_slot(b_obj, elem_ptr, hash, false);
                 if slot < 0 {
-                    rt_set_add(roots[0], elem);
+                    rt_set_add(roots[0], elem_ptr);
                 }
             }
         }
@@ -200,11 +202,12 @@ pub extern "C" fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut 
         for i in 0..a_capacity {
             let entry = (*a_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                let hash = hash_hashable_obj(elem);
-                let slot = find_set_slot(b_obj, elem, hash, false);
+            if elem.0 != 0 && elem != TOMBSTONE {
+                let elem_ptr = elem.0 as *mut Obj;
+                let hash = hash_hashable_obj(elem_ptr);
+                let slot = find_set_slot(b_obj, elem_ptr, hash, false);
                 if slot < 0 {
-                    rt_set_add(roots[0], elem);
+                    rt_set_add(roots[0], elem_ptr);
                 }
             }
         }
@@ -214,11 +217,12 @@ pub extern "C" fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut 
         for i in 0..b_capacity {
             let entry = (*b_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                let hash = hash_hashable_obj(elem);
-                let slot = find_set_slot(a_obj, elem, hash, false);
+            if elem.0 != 0 && elem != TOMBSTONE {
+                let elem_ptr = elem.0 as *mut Obj;
+                let hash = hash_hashable_obj(elem_ptr);
+                let slot = find_set_slot(a_obj, elem_ptr, hash, false);
                 if slot < 0 {
-                    rt_set_add(roots[0], elem);
+                    rt_set_add(roots[0], elem_ptr);
                 }
             }
         }

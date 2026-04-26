@@ -388,7 +388,25 @@ impl<'a> Lowering<'a> {
             if concrete.is_empty() {
                 Type::Any
             } else {
-                Type::normalize_union(concrete)
+                // Apply the binding-site numeric tower (`int ⊂ float`,
+                // `bool ⊂ int`) when merging branch return types of an
+                // unannotated function. Without this, `def f(b): return
+                // 1.5 if b else 0` infers as `Union[Int, Float]`,
+                // prescan stores `var_type = Union[Int, Float]` for
+                // `x = f(...)`, the assignment routes through Ptr
+                // storage, and the raw F64 bits returned by the call
+                // get mis-stored as a tagged pointer — SEGV at the
+                // next reader. Promotion to `Float` gives the
+                // assignment a uniform F64 ABI end-to-end.
+                //
+                // Heterogeneous pairs (e.g. `{Int, Str}`) fall through
+                // `unify_field_type` → `unify_numeric` →
+                // `Type::normalize_union`, preserving the existing
+                // `Union[…]` shape for the only-actually-union cases.
+                concrete
+                    .into_iter()
+                    .reduce(|a, b| Type::unify_field_type(&a, &b))
+                    .expect("non-empty after `concrete.is_empty()` guard")
             }
         }
     }

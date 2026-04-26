@@ -76,20 +76,21 @@ pub extern "C" fn rt_hash_tuple(tuple_obj: *mut Obj) -> i64 {
         let tuple = tuple_obj as *mut crate::object::TupleObj;
         let len = (*tuple).len;
         let data = (*tuple).data.as_ptr();
-        let elem_tag = (*tuple).elem_tag;
 
         // Python uses: hash = hash * 1000003 ^ element_hash
         // Start with a seed based on length
         let mut hash: u64 = 0x345678;
 
         for i in 0..len {
-            let elem = *data.add(i);
-            let elem_hash = match elem_tag {
-                crate::object::ELEM_RAW_INT => rt_hash_int(elem as i64),
-                crate::object::ELEM_RAW_BOOL => {
-                    rt_hash_bool(if (elem as i64) != 0 { 1 } else { 0 })
-                }
-                _ => hash_any_obj(elem), // ELEM_HEAP_OBJ: elements are boxed pointers
+            let val = *data.add(i);
+            let elem_hash = if val.is_int() {
+                rt_hash_int(val.unwrap_int())
+            } else if val.is_bool() {
+                rt_hash_bool(if val.unwrap_bool() { 1 } else { 0 })
+            } else if val.is_none() {
+                0 // hash(None) == 0
+            } else {
+                hash_any_obj(val.0 as *mut Obj)
             };
             // Python's tuple hash combination algorithm
             hash = hash.wrapping_mul(1000003) ^ (elem_hash as u64);
@@ -114,17 +115,19 @@ unsafe fn hash_any_obj(obj: *mut Obj) -> i64 {
         return 0; // hash(None) == 0
     }
 
+    // Check Value-tagged primitives before heap pointer dereference.
+    let val = pyaot_core_defs::Value(obj as u64);
+    if val.is_int() {
+        return rt_hash_int(val.unwrap_int());
+    }
+    if val.is_bool() {
+        return rt_hash_int(if val.unwrap_bool() { 1 } else { 0 });
+    }
+    if val.is_none() {
+        return 0;
+    }
+
     match (*obj).header.type_tag {
-        crate::object::TypeTagKind::Int => {
-            // Boxed int
-            let int_obj = obj as *mut crate::object::IntObj;
-            rt_hash_int((*int_obj).value)
-        }
-        crate::object::TypeTagKind::Bool => {
-            // Boxed bool — True == 1, False == 0 in Python; use int hash for cross-type invariant
-            let bool_obj = obj as *mut crate::object::BoolObj;
-            rt_hash_int(if (*bool_obj).value { 1 } else { 0 })
-        }
         crate::object::TypeTagKind::Float => {
             // Boxed float — integer-valued floats must hash identically to the equivalent int
             let float_obj = obj as *mut crate::object::FloatObj;

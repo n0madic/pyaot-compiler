@@ -190,14 +190,10 @@ impl<'a> Lowering<'a> {
 
         // For dict and set iteration, we need to convert to list first, then iterate by index
         let (actual_iter_local, converted_list_local) = if iterable_kind == IterableKind::Dict {
-            // Get dict keys as a list
-            let key_elem_tag = crate::type_dispatch::elem_tag_for_type(&elem_type);
+            // Get dict keys as a list (after §F.7c, no elem_tag arg needed).
             let keys_local = self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
-                vec![
-                    mir::Operand::Local(iter_local),
-                    mir::Operand::Constant(mir::Constant::Int(key_elem_tag)),
-                ],
+                vec![mir::Operand::Local(iter_local)],
                 Type::List(Box::new(elem_type.clone())),
                 mir_func,
             );
@@ -321,7 +317,8 @@ impl<'a> Lowering<'a> {
         let elem_kind_for_typed = match iterable_kind {
             IterableKind::List => match &elem_type {
                 Type::Int => Some(mir::GetElementKind::Int),
-                // Bool and Float are boxed in regular lists, so use generic get + typed dispatch
+                Type::Bool => Some(mir::GetElementKind::Bool),
+                Type::Float => Some(mir::GetElementKind::Float),
                 _ => None,
             },
             IterableKind::Dict | IterableKind::Set => {
@@ -347,9 +344,19 @@ impl<'a> Lowering<'a> {
                     kind_tag,
                 ],
             });
+        } else if iterable_kind == IterableKind::Tuple {
+            let value_local = self.emit_tuple_get(
+                mir::Operand::Local(iter_to_index),
+                mir::Operand::Local(idx_local),
+                elem_type.clone(),
+                mir_func,
+            );
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest: target_local,
+                src: mir::Operand::Local(value_local),
+            });
         } else {
             let get_func = match iterable_kind {
-                IterableKind::Tuple => crate::type_dispatch::tuple_get_func(&elem_type),
                 IterableKind::Str => {
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_STR_GETCHAR)
                 }
@@ -370,7 +377,7 @@ impl<'a> Lowering<'a> {
 
         // If target is a global variable, sync the global with the local at start of each iteration
         // This is necessary because the loop uses a local for efficiency, but code inside
-        // the loop body will use GlobalGet(ValueKind) to read the variable
+        // the loop body will use the type-specific RT_GLOBAL_GET_* to read the variable
         if self.is_global(&target) {
             let runtime_func = self.get_global_set_func(&elem_type);
             let effective_var_id = self.get_effective_var_id(target);

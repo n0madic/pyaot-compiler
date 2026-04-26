@@ -431,7 +431,7 @@ pub(super) unsafe fn create_builtin_exception_instance(
     exc: &ExceptionObject,
 ) -> *mut crate::object::Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
-    use crate::object::{Obj, ELEM_HEAP_OBJ};
+    use crate::object::Obj;
 
     // Determine class_id: use custom_class_id if set, otherwise use exc_type tag
     let class_id = if exc.custom_class_id != NOT_CUSTOM_CLASS {
@@ -465,7 +465,7 @@ pub(super) unsafe fn create_builtin_exception_instance(
     roots[1] = msg_str;
 
     // Create a 1-element tuple for .args (may trigger GC; both are rooted)
-    let args_tuple = crate::tuple::rt_make_tuple(1, ELEM_HEAP_OBJ);
+    let args_tuple = crate::tuple::rt_make_tuple(1);
 
     gc_pop();
 

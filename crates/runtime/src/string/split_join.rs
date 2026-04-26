@@ -4,7 +4,7 @@
 
 use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
 use crate::list::{rt_list_len, rt_list_push, rt_make_list};
-use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind, ELEM_HEAP_OBJ};
+use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind};
 use crate::string::search::{bmh_find_from, build_bad_char_table, BMH_THRESHOLD};
 
 use super::core::rt_make_str;
@@ -14,7 +14,7 @@ use super::core::rt_make_str;
 #[no_mangle]
 pub extern "C" fn rt_str_split(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj {
     if str_obj.is_null() {
-        return rt_make_list(0, ELEM_HEAP_OBJ);
+        return rt_make_list(0);
     }
 
     unsafe {
@@ -23,7 +23,7 @@ pub extern "C" fn rt_str_split(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) 
         let src_data = (*src).data.as_ptr();
 
         // Create result list (for string elements)
-        let list = rt_make_list(0, ELEM_HEAP_OBJ);
+        let list = rt_make_list(0);
         let max = if maxsplit < 0 { i64::MAX } else { maxsplit };
 
         // CRITICAL: Protect the list from GC during construction.
@@ -170,7 +170,7 @@ pub extern "C" fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
         // Calculate total length
         let mut total_len = 0;
         for i in 0..len as usize {
-            let item = crate::list::list_slot_raw(list, i);
+            let item = (*(*list).data.add(i)).0 as *mut crate::object::Obj;
             if !item.is_null() {
                 let item_str = item as *mut StrObj;
                 total_len += (*item_str).len;
@@ -214,7 +214,7 @@ pub extern "C" fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
                 dst_idx += sep_len;
             }
 
-            let item = crate::list::list_slot_raw(list, i);
+            let item = (*(*list).data.add(i)).0 as *mut crate::object::Obj;
             if !item.is_null() {
                 let item_str = item as *mut StrObj;
                 let item_len = (*item_str).len;
@@ -240,7 +240,7 @@ pub extern "C" fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
 #[no_mangle]
 pub extern "C" fn rt_str_splitlines(s: *mut Obj) -> *mut Obj {
     if s.is_null() {
-        return rt_make_list(0, ELEM_HEAP_OBJ);
+        return rt_make_list(0);
     }
 
     unsafe {
@@ -249,7 +249,7 @@ pub extern "C" fn rt_str_splitlines(s: *mut Obj) -> *mut Obj {
         let str_data = (*str_obj).data.as_ptr();
 
         // Create result list
-        let list = rt_make_list(0, ELEM_HEAP_OBJ);
+        let list = rt_make_list(0);
 
         // Protect list from GC during string allocations
         let mut roots: [*mut Obj; 1] = [list];
@@ -346,7 +346,7 @@ pub extern "C" fn rt_str_partition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
                 roots: roots.as_mut_ptr(),
             };
             gc_push(&mut frame);
-            let tuple = rt_make_tuple(3, ELEM_HEAP_OBJ);
+            let tuple = rt_make_tuple(3);
             gc_pop();
             rt_tuple_set(tuple, 0, s);
             rt_tuple_set(tuple, 1, empty);
@@ -402,7 +402,7 @@ pub extern "C" fn rt_str_partition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
         };
         gc_push(&mut frame);
 
-        let tuple = rt_make_tuple(3, ELEM_HEAP_OBJ);
+        let tuple = rt_make_tuple(3);
         // Publish tuple to the shadow frame so GC keeps it alive.
         // SAFETY: roots is on the stack and frame.roots == roots.as_mut_ptr().
         std::ptr::write(roots.as_mut_ptr().add(2), tuple);
@@ -453,7 +453,7 @@ pub extern "C" fn rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
                 roots: roots.as_mut_ptr(),
             };
             gc_push(&mut frame);
-            let tuple = rt_make_tuple(3, ELEM_HEAP_OBJ);
+            let tuple = rt_make_tuple(3);
             gc_pop();
             rt_tuple_set(tuple, 0, empty);
             rt_tuple_set(tuple, 1, empty);
@@ -507,7 +507,7 @@ pub extern "C" fn rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
         };
         gc_push(&mut frame);
 
-        let tuple = rt_make_tuple(3, ELEM_HEAP_OBJ);
+        let tuple = rt_make_tuple(3);
         std::ptr::write(roots.as_mut_ptr().add(2), tuple);
 
         if let Some(pos) = found_pos {
@@ -541,7 +541,7 @@ pub extern "C" fn rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
 #[no_mangle]
 pub extern "C" fn rt_str_rsplit(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj {
     if str_obj.is_null() {
-        return rt_make_list(0, ELEM_HEAP_OBJ);
+        return rt_make_list(0);
     }
 
     unsafe {
@@ -550,7 +550,7 @@ pub extern "C" fn rt_str_rsplit(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64)
         let src_data = (*src).data.as_ptr();
 
         // Create result list (for string elements)
-        let list = rt_make_list(0, ELEM_HEAP_OBJ);
+        let list = rt_make_list(0);
         let max = if maxsplit < 0 { i64::MAX } else { maxsplit };
 
         // CRITICAL: Protect the list from GC during construction

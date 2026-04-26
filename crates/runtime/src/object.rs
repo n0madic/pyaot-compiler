@@ -5,6 +5,7 @@
 // of truth from core-defs.
 use pyaot_core_defs::layout;
 pub use pyaot_core_defs::TypeTagKind;
+pub use pyaot_core_defs::Value;
 
 /// Iterator kind for different container types
 #[repr(u8)]
@@ -90,25 +91,11 @@ impl Obj {
     }
 }
 
-/// Integer object
-#[repr(C)]
-pub struct IntObj {
-    pub header: ObjHeader,
-    pub value: i64,
-}
-
 /// Float object
 #[repr(C)]
 pub struct FloatObj {
     pub header: ObjHeader,
     pub value: f64,
-}
-
-/// Boolean object
-#[repr(C)]
-pub struct BoolObj {
-    pub header: ObjHeader,
-    pub value: bool,
 }
 
 /// String object
@@ -127,9 +114,6 @@ pub struct BytesObj {
     pub data: [u8; 0], // Flexible array member
 }
 
-// Re-export element storage tags from core-defs (single source of truth)
-pub use pyaot_core_defs::{ELEM_HEAP_OBJ, ELEM_RAW_BOOL, ELEM_RAW_INT};
-
 /// Tombstone marker for deleted entries in hash tables (dict and set).
 /// Using the alignment of Obj as the marker value because:
 /// 1. It matches what std::ptr::dangling_mut::<Obj>() returns
@@ -139,112 +123,33 @@ pub use pyaot_core_defs::{ELEM_HEAP_OBJ, ELEM_RAW_BOOL, ELEM_RAW_INT};
 ///
 /// Note: We can't use std::ptr::dangling_mut::<Obj>() directly because
 /// it's not a const function, so we compute the same value manually.
-#[allow(clippy::manual_dangling_ptr)]
-pub const TOMBSTONE: *mut Obj = std::mem::align_of::<Obj>() as *mut Obj;
+pub const TOMBSTONE: pyaot_core_defs::Value = pyaot_core_defs::Value(0b111);
 
-/// Type tags for generator local variables (for precise GC tracking)
-pub const LOCAL_TYPE_RAW_INT: u8 = 0; // Raw i64 value (not a pointer)
-pub const LOCAL_TYPE_RAW_FLOAT: u8 = 1; // Raw f64 value (bit-cast to i64, not a pointer)
-pub const LOCAL_TYPE_RAW_BOOL: u8 = 2; // Raw bool value (not a pointer)
-pub const LOCAL_TYPE_PTR: u8 = 3; // Heap pointer (*mut Obj)
-
-/// Macro to validate that elem_tag matches the value being stored in a collection.
-/// This helps catch bugs where GC might treat raw integers as pointers (causing crashes)
-/// or ignore heap pointers (causing use-after-free).
-///
-/// Only enabled in debug builds to avoid runtime overhead in release.
-///
-/// For tuples with `heap_field_mask`, use the 5-argument form which checks the mask
-/// before warning about small integers.
-#[macro_export]
-macro_rules! validate_elem_tag {
-    // 5-arg form: with heap_field_mask (for tuples)
-    ($container_type:expr, $index:expr, $elem_tag:expr, $value:expr, $heap_mask:expr) => {
-        #[cfg(debug_assertions)]
-        {
-            let value_as_i64 = $value as i64;
-            const MIN_HEAP_ADDR: i64 = 0x1000;
-            const MAX_HEAP_ADDR: i64 = 0x0000_7FFF_FFFF_FFFF;
-            let idx = $index as u64;
-
-            match $elem_tag {
-                $crate::object::ELEM_RAW_INT | $crate::object::ELEM_RAW_BOOL => {
-                    if (MIN_HEAP_ADDR..=MAX_HEAP_ADDR).contains(&value_as_i64) {
-                        eprintln!(
-                            "WARNING: {}[{}] elem_tag={} (raw value) but value={:#x} looks like a heap pointer.",
-                            $container_type, $index, $elem_tag, value_as_i64
-                        );
-                    }
-                }
-                $crate::object::ELEM_HEAP_OBJ => {
-                    // Check heap_field_mask: if bit is NOT set, this field is raw — skip warning
-                    let field_is_heap = idx < 64 && ($heap_mask & (1u64 << idx)) != 0;
-                    if field_is_heap && !($value as *mut $crate::object::Obj).is_null() {
-                        if value_as_i64 > 0 && value_as_i64 < MIN_HEAP_ADDR {
-                            eprintln!(
-                                "WARNING: {}[{}] elem_tag={} (heap object) but value={:#x} looks like a small integer. \
-                                GC will ignore this value and it may be freed prematurely.",
-                                $container_type, $index, $elem_tag, value_as_i64
-                            );
-                        }
-                    }
-                }
-                _ => {
-                    eprintln!(
-                        "WARNING: {}[{}] has unknown elem_tag={}",
-                        $container_type, $index, $elem_tag
-                    );
-                }
-            }
-        }
-    };
-    // 4-arg form: without heap_field_mask (for lists and other containers)
-    ($container_type:expr, $index:expr, $elem_tag:expr, $value:expr) => {
-        $crate::validate_elem_tag!($container_type, $index, $elem_tag, $value, u64::MAX)
-    };
-}
-
-/// List object.
-///
-/// Phase 2 S2.3 migration (2026-04-24): `data` now points at a uniform
-/// `[Value]` array — every slot is a properly-tagged `Value` regardless of
-/// the surface `elem_tag`. The physical layout is unchanged (8 bytes per
-/// slot, 8-byte alignment), so pre-existing allocation math and GC header
-/// assertions still hold. `elem_tag` is retained as a boundary-conversion
-/// hint: callers across the extern ABI still pass raw `i64` / `i8` / heap
-/// pointers encoded as `*mut Obj`, and the list module converts to/from
-/// `Value` using `elem_tag` at the ABI boundary. The field and the
-/// `ELEM_*` constants will be removed in S2.7 once codegen stops emitting
-/// the old boxing calls.
+/// List object — `data` is a uniform `[Value]` array; every slot is a
+/// properly-tagged `Value` (Int/Bool immediate or heap pointer).
 #[repr(C)]
 pub struct ListObj {
     pub header: ObjHeader,
     pub len: usize,
     pub capacity: usize,
     pub data: *mut pyaot_core_defs::Value,
-    pub elem_tag: u8,
 }
 
-/// Tuple object (immutable, inline data)
+/// Tuple object (immutable, inline data).
+/// `data` is a flexible array of tagged `Value` slots.
 #[repr(C)]
 pub struct TupleObj {
     pub header: ObjHeader,
     pub len: usize,
-    pub elem_tag: u8,
-    /// Per-field bitmask: bit i = 1 means field i is a heap pointer that GC must trace.
-    /// Bit i = 0 means field i is a raw value (int, float, bool, func_ptr) — GC skips it.
-    /// Supports up to 64 fields. For homogeneous tuples (all ELEM_RAW_INT or all ELEM_HEAP_OBJ),
-    /// set to 0 or u64::MAX respectively. For mixed captures, set per-field bits.
-    pub heap_field_mask: u64,
-    pub data: [*mut Obj; 0], // Flexible array member
+    pub data: [Value; 0],
 }
 
 /// Dictionary entry (stored in insertion-order dense array)
 #[repr(C)]
 pub struct DictEntry {
     pub hash: u64,
-    pub key: *mut Obj, // null = deleted entry
-    pub value: *mut Obj,
+    pub key: pyaot_core_defs::Value, // Value(0) = deleted/empty entry
+    pub value: pyaot_core_defs::Value,
 }
 
 /// Dictionary object (compact hash table preserving insertion order)
@@ -270,19 +175,18 @@ pub struct DictObj {
 #[repr(C)]
 pub struct DequeObj {
     pub header: ObjHeader,
-    pub data: *mut *mut Obj,
+    pub data: *mut pyaot_core_defs::Value,
     pub capacity: usize,
     pub head: usize,
     pub len: usize,
     pub maxlen: i64, // -1 for unbounded
-    pub elem_tag: u8,
 }
 
 /// Set entry (for open-addressing hash table)
 #[repr(C)]
 pub struct SetEntry {
     pub hash: u64,
-    pub elem: *mut Obj, // null = empty slot, TOMBSTONE = deleted
+    pub elem: pyaot_core_defs::Value, // Value(0) = empty slot, TOMBSTONE = deleted
 }
 
 /// Set object (hash table with open addressing, values only)
@@ -299,10 +203,10 @@ pub struct SetObj {
 #[repr(C)]
 pub struct InstanceObj {
     pub header: ObjHeader,
-    pub vtable: *const u8,     // Pointer to class vtable for virtual dispatch
-    pub class_id: u8,          // ID of the class this is an instance of
-    pub field_count: usize,    // Number of fields
-    pub fields: [*mut Obj; 0], // Flexible array of field pointers
+    pub vtable: *const u8,  // Pointer to class vtable for virtual dispatch
+    pub class_id: u8,       // ID of the class this is an instance of
+    pub field_count: usize, // Number of fields
+    pub fields: [pyaot_core_defs::Value; 0], // Flexible array of field values (Value-tagged)
 }
 
 // Compile-time assertion: vtable field offset must match the layout constant
@@ -327,18 +231,20 @@ pub struct IteratorObj {
 
 /// Generator object for generator functions
 /// Stores the execution state and local variables across yield points
+///
+/// §F.7b: locals is a [Value] array walked uniformly by GC via Value::is_ptr().
+/// sent_value is also a tagged Value. The per-slot tag side-array and
+/// sent_value_tag field are deleted.
 #[repr(C)]
 pub struct GeneratorObj {
     pub header: ObjHeader,
-    pub func_id: u32,       // Which generator function this is
+    pub func_id: u32,                        // Which generator function this is
     pub state: u32, // Current state (0=initial, 1..N=after yield points, u32::MAX=exhausted)
     pub exhausted: bool, // True when generator is exhausted
     pub closing: bool, // True when close() was called (GeneratorExit pending)
     pub num_locals: u32, // Number of local variables stored
-    pub sent_value: i64, // Value sent via send() (stored as i64, could be ptr or int)
-    pub sent_value_tag: u8, // Type tag for sent_value (LOCAL_TYPE_PTR if heap pointer)
-    pub type_tags: *mut u8, // Type tag array for each local (for precise GC)
-    pub locals: [i64; 0], // Flexible array: local variables (i64 for int/float/bool/ptr)
+    pub sent_value: pyaot_core_defs::Value, // Value sent via send() — tagged Value
+    pub locals: [pyaot_core_defs::Value; 0], // Flexible array: local variables (Value-tagged)
 }
 
 // Compile-time assertion: func_id field offset must match the layout constant
@@ -463,7 +369,9 @@ pub struct MapIterObj {
     pub kind: u8,             // Always IteratorKind::Map
     pub exhausted: bool,      // True when inner iterator is exhausted
     pub capture_count: u8,    // Number of captures (0-4 supported)
-    pub _pad: [u8; 5],        // Padding for alignment
+    pub elem_unbox_kind: u8,  // After §F.7c BigBang: 0=passthrough, 1=int unbox, 2=bool unbox
+    pub result_box_kind: u8,  // After §F.7c BigBang: 0=passthrough, 1=int box, 2=bool box
+    pub _pad: [u8; 3],        // Padding for alignment
     pub func_ptr: i64,        // Function pointer (extern "C" fn(*mut Obj) -> *mut Obj)
     pub inner_iter: *mut Obj, // Inner iterator
     pub captures: *mut Obj,   // Captures tuple (null if no captures)
@@ -476,8 +384,8 @@ pub struct FilterIterObj {
     pub header: ObjHeader,
     pub kind: u8,             // Always IteratorKind::Filter
     pub exhausted: bool,      // True when inner iterator is exhausted
-    pub elem_tag: u8,         // Element storage tag for truthiness checking
     pub capture_count: u8,    // Number of captures (0-4 supported)
+    pub elem_unbox_kind: u8,  // 0=passthrough, 1=int unbox, 2=bool unbox
     pub _pad: [u8; 4],        // Padding for alignment
     pub func_ptr: i64, // Predicate function pointer (extern "C" fn(*mut Obj) -> i64), 0 for None
     pub inner_iter: *mut Obj, // Inner iterator

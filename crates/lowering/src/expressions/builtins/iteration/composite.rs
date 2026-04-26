@@ -304,11 +304,27 @@ impl<'a> Lowering<'a> {
                         func: func_id,
                     });
 
+                    // After §F.7c BigBang: encode elem_unbox_kind in bits 8-15 and
+                    // result_box_kind in bits 16-23 so iter_next_map unboxes tagged
+                    // Values for typed Int/Bool elem params and re-tags the lambda's
+                    // raw scalar return so callers receive uniform tagged bits.
+                    let elem_unbox_kind =
+                        self.callback_elem_unbox_kind(func_id, captures.len(), hir_module);
+
+                    // Determine result element type from the callback function's return type
+                    let result_type = self.infer_callback_return_type(func_id, hir_module);
+                    let result_box_kind = match &result_type {
+                        Type::Int => 1i64,
+                        Type::Bool => 2i64,
+                        _ => 0i64,
+                    };
+                    let encoding = (result_box_kind << 16) | (elem_unbox_kind << 8);
+
                     // Lower captures to a tuple (if any)
                     let (cap_op, cap_count) = if captures.is_empty() {
                         (
                             mir::Operand::Constant(mir::Constant::Int(0)), // null pointer
-                            mir::Operand::Constant(mir::Constant::Int(0)),
+                            mir::Operand::Constant(mir::Constant::Int(encoding)),
                         )
                     } else {
                         let captures_tuple =
@@ -316,12 +332,9 @@ impl<'a> Lowering<'a> {
                         let count = captures.len() as i64;
                         (
                             captures_tuple,
-                            mir::Operand::Constant(mir::Constant::Int(count)),
+                            mir::Operand::Constant(mir::Constant::Int(encoding | count)),
                         )
                     };
-
-                    // Determine result element type from the callback function's return type
-                    let result_type = self.infer_callback_return_type(func_id, hir_module);
 
                     (
                         mir::Operand::Local(func_ptr_local),
@@ -338,8 +351,9 @@ impl<'a> Lowering<'a> {
                         builtin: builtin_kind,
                     });
 
-                    // Builtins have no captures. Set bit 7 (0x80) in capture_count
-                    // to signal the runtime to box raw int elements before calling.
+                    // Builtins accept *mut Obj (tagged Value bits) — pass through.
+                    // Bit 7 of low byte is the legacy needs_boxing flag (no-op now
+                    // since iter_next_* return tagged Values; kept to avoid ABI churn).
                     let cap_op = mir::Operand::Constant(mir::Constant::Int(0));
                     let cap_count = mir::Operand::Constant(mir::Constant::Int(0x80));
 
@@ -392,11 +406,14 @@ impl<'a> Lowering<'a> {
     }
 
     /// Lower captured expressions to a tuple
-    /// Used by map/filter to store closure captures at runtime
+    /// Used by map/filter/reduce/sorted-key= to store HOF callback captures
+    /// at runtime.
     ///
-    /// Captures are stored as raw values (i64 for int/float/bool cast as pointer)
-    /// because the lambda function expects them in the same format as direct closure calls.
-    /// The runtime extracts them with rt_tuple_get() which preserves the raw i64 value.
+    /// Unified closure ABI: captures tuple stores primitive captures as tagged
+    /// Values (ValueFromInt/ValueFromBool). The HOF runtime dispatcher extracts
+    /// captures via `rt_tuple_get` which returns raw tagged bits, and the
+    /// lambda's prologue unwrap turns those back into concrete primitives.
+    /// Symmetric with the regular closure path in `statements/assign/mod.rs`.
     pub(crate) fn lower_captures_to_tuple(
         &mut self,
         captures: &[hir::ExprId],
@@ -412,42 +429,26 @@ impl<'a> Lowering<'a> {
             capture_operands.push(self.lower_expr(capture_expr, hir_module, mir_func)?);
         }
 
-        // Determine elem_tag from actual operand types (more reliable than expr types).
-        // Use ELEM_RAW_INT when no capture needs GC tracing (all primitives),
-        // ELEM_HEAP_OBJ when any capture is a heap type (str, list, cell, etc.)
-        let capture_op_types: Vec<Type> = capture_operands
-            .iter()
-            .map(|op| self.operand_type(op, mir_func))
-            .collect();
-        let any_needs_gc = capture_op_types.iter().any(Type::is_heap);
-        let capture_elem_tag: i64 = if any_needs_gc { 0 } else { 1 };
-
+        // After §F.7c: tuples store uniform tagged Values; no elem_tag needed.
         let tuple_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
-            vec![
-                mir::Operand::Constant(mir::Constant::Int(count as i64)),
-                mir::Operand::Constant(mir::Constant::Int(capture_elem_tag)),
-            ],
+            vec![mir::Operand::Constant(mir::Constant::Int(count as i64))],
             Type::Tuple(vec![Type::Any; count]),
             mir_func,
         );
 
-        // Set per-field heap_field_mask for mixed-type captures
-        if capture_elem_tag == 0 {
-            self.emit_heap_field_mask(tuple_local, &capture_op_types, mir_func);
-        }
-
-        // Set each capture into the tuple
-        // Captures are stored as-is (raw i64 for primitives, pointers for heap types)
-        // This matches how closures pass captures directly in lower_closure_call
+        // Box primitives before storing so retrieval delivers tagged Value
+        // bits to the lambda's prologue unbox.
         for (i, capture_operand) in capture_operands.into_iter().enumerate() {
+            let op_type = self.operand_type(&capture_operand, mir_func);
+            let stored_op = self.box_primitive_if_needed(capture_operand, &op_type, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: tuple_local,
                 func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                 args: vec![
                     mir::Operand::Local(tuple_local),
                     mir::Operand::Constant(mir::Constant::Int(i as i64)),
-                    capture_operand,
+                    stored_op,
                 ],
             });
         }
@@ -513,11 +514,17 @@ impl<'a> Lowering<'a> {
                     func: func_id,
                 });
 
+                // After §F.7c BigBang: lambda's elem param (params[capture_count+1])
+                // is the iter element. Encode its unbox kind in bits 8-15 so
+                // rt_reduce unboxes tagged Values for typed Int/Bool params.
+                let elem_unbox_kind =
+                    self.callback_elem_unbox_kind(func_id, captures.len() + 1, hir_module);
+
                 // Lower captures to a tuple (if any)
                 let (cap_op, cap_count) = if captures.is_empty() {
                     (
                         mir::Operand::Constant(mir::Constant::Int(0)),
-                        mir::Operand::Constant(mir::Constant::Int(0)),
+                        mir::Operand::Constant(mir::Constant::Int(elem_unbox_kind << 8)),
                     )
                 } else {
                     let captures_tuple =
@@ -525,7 +532,7 @@ impl<'a> Lowering<'a> {
                     let count = captures.len() as i64;
                     (
                         captures_tuple,
-                        mir::Operand::Constant(mir::Constant::Int(count)),
+                        mir::Operand::Constant(mir::Constant::Int((elem_unbox_kind << 8) | count)),
                     )
                 };
 
@@ -645,11 +652,15 @@ impl<'a> Lowering<'a> {
                         func: func_id,
                     });
 
+                    // After §F.7c BigBang: encode elem_unbox_kind in bits 8-15.
+                    let elem_unbox_kind =
+                        self.callback_elem_unbox_kind(func_id, captures.len(), hir_module);
+
                     // Lower captures to a tuple (if any)
                     let (cap_op, cap_count) = if captures.is_empty() {
                         (
                             mir::Operand::Constant(mir::Constant::Int(0)),
-                            mir::Operand::Constant(mir::Constant::Int(0)),
+                            mir::Operand::Constant(mir::Constant::Int(elem_unbox_kind << 8)),
                         )
                     } else {
                         let captures_tuple =
@@ -657,7 +668,9 @@ impl<'a> Lowering<'a> {
                         let count = captures.len() as i64;
                         (
                             captures_tuple,
-                            mir::Operand::Constant(mir::Constant::Int(count)),
+                            mir::Operand::Constant(mir::Constant::Int(
+                                (elem_unbox_kind << 8) | count,
+                            )),
                         )
                     };
 
@@ -671,7 +684,7 @@ impl<'a> Lowering<'a> {
                         builtin: builtin_kind,
                     });
 
-                    // Builtins have no captures
+                    // Builtins have no captures and accept tagged Values directly.
                     (
                         mir::Operand::Local(func_ptr_local),
                         mir::Operand::Constant(mir::Constant::Int(0)),
@@ -690,22 +703,13 @@ impl<'a> Lowering<'a> {
         let elem_type =
             crate::type_planning::infer::extract_iterable_first_element_type(&iterable_type);
 
-        // Determine elem_tag for truthiness filtering
-        // Match how list literals store elements (see collections.rs):
-        // - Int uses ELEM_RAW_INT (1) - stored as raw i64
-        // - Bool uses ELEM_HEAP_OBJ (0) - stored as boxed bools
-        // - All others use ELEM_HEAP_OBJ (0)
-        let elem_tag: i64 = match &elem_type {
-            Type::Int => 1, // ELEM_RAW_INT
-            _ => 0,         // ELEM_HEAP_OBJ (Bool, Float, Str, etc. - all boxed)
-        };
-
+        // After §F.7c: containers store uniform tagged Values; rt_filter no
+        // longer needs an elem_tag hint.
         let result_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILTER_NEW),
             vec![
                 func_ptr_operand,
                 inner_iter,
-                mir::Operand::Constant(mir::Constant::Int(elem_tag)),
                 captures_operand,
                 capture_count,
             ],

@@ -6,34 +6,29 @@
 //! - json.dump(obj, fp) -> None (serialize Python object to JSON file)
 //! - json.load(fp) -> obj (deserialize JSON object from JSON file)
 
-use crate::object::{
-    BoolObj, DictObj, FloatObj, IntObj, ListObj, Obj, TupleObj, TypeTagKind, ELEM_HEAP_OBJ,
-    ELEM_RAW_BOOL, ELEM_RAW_INT,
-};
+use crate::object::{DictObj, FloatObj, ListObj, Obj, TupleObj, TypeTagKind};
 use crate::utils::make_str_from_rust;
+use pyaot_core_defs::Value as RuntimeValue;
 use serde_json::{Map, Number, Value};
 
-/// Convert a list/tuple element to JSON, respecting elem_tag
-unsafe fn elem_to_json_value(elem: *mut Obj, elem_tag: u8) -> Value {
-    match elem_tag {
-        ELEM_RAW_INT => Value::Number(Number::from(elem as i64)),
-        ELEM_RAW_BOOL => Value::Bool((elem as i64) != 0),
-        _ => obj_to_json_value(elem), // ELEM_HEAP_OBJ
+/// Convert a list/tuple element to JSON, dispatching on Value tag
+unsafe fn elem_to_json_value(elem: *mut Obj) -> Value {
+    let v = RuntimeValue(elem as u64);
+    if v.is_int() {
+        Value::Number(Number::from(v.unwrap_int()))
+    } else if v.is_bool() {
+        Value::Bool(v.unwrap_bool())
+    } else if v.is_none() {
+        Value::Null
+    } else {
+        obj_to_json_value(elem)
     }
 }
 
 /// Convert a dict value pointer to JSON
-/// Dict values may be raw primitives (stored as pointer-sized integers) or heap objects
+/// Dict values may be Value-tagged primitives or heap object pointers.
 unsafe fn maybe_raw_to_json_value(ptr: *mut Obj) -> Value {
-    if ptr.is_null() {
-        return Value::Null;
-    }
-    if crate::utils::is_heap_obj(ptr) {
-        obj_to_json_value(ptr)
-    } else {
-        // Raw integer value stored as pointer
-        Value::Number(Number::from(ptr as i64))
-    }
+    obj_to_json_value(ptr)
 }
 
 /// Convert a Python runtime object to a serde_json::Value
@@ -42,16 +37,20 @@ unsafe fn obj_to_json_value(obj: *mut Obj) -> Value {
         return Value::Null;
     }
 
+    // Check Value-tagged primitives before heap pointer dereference.
+    let rv = RuntimeValue(obj as u64);
+    if rv.is_int() {
+        return Value::Number(Number::from(rv.unwrap_int()));
+    }
+    if rv.is_bool() {
+        return Value::Bool(rv.unwrap_bool());
+    }
+    if rv.is_none() {
+        return Value::Null;
+    }
+
     match (*obj).header.type_tag {
         TypeTagKind::None => Value::Null,
-        TypeTagKind::Bool => {
-            let bool_obj = obj as *const BoolObj;
-            Value::Bool((*bool_obj).value)
-        }
-        TypeTagKind::Int => {
-            let int_obj = obj as *const IntObj;
-            Value::Number(Number::from((*int_obj).value))
-        }
         TypeTagKind::Float => {
             let float_obj = obj as *const FloatObj;
             let val = (*float_obj).value;
@@ -74,22 +73,20 @@ unsafe fn obj_to_json_value(obj: *mut Obj) -> Value {
         TypeTagKind::List => {
             let list_obj = obj as *mut ListObj;
             let len = (*list_obj).len;
-            let elem_tag = (*list_obj).elem_tag;
             let mut arr = Vec::with_capacity(len);
             for i in 0..len {
-                let elem = crate::list::list_slot_raw(list_obj, i);
-                arr.push(elem_to_json_value(elem, elem_tag));
+                let elem = (*(*list_obj).data.add(i)).0 as *mut Obj;
+                arr.push(elem_to_json_value(elem));
             }
             Value::Array(arr)
         }
         TypeTagKind::Tuple => {
             let tuple_obj = obj as *const TupleObj;
             let len = (*tuple_obj).len;
-            let elem_tag = (*tuple_obj).elem_tag;
             let mut arr = Vec::with_capacity(len);
             for i in 0..len {
                 let elem = *(*tuple_obj).data.as_ptr().add(i);
-                arr.push(elem_to_json_value(elem, elem_tag));
+                arr.push(elem_to_json_value(elem.0 as *mut Obj));
             }
             Value::Array(arr)
         }
@@ -100,17 +97,18 @@ unsafe fn obj_to_json_value(obj: *mut Obj) -> Value {
             for i in 0..entries_len {
                 let entry = (*dict_obj).entries.add(i);
                 let key = (*entry).key;
-                if key.is_null() {
+                if key.0 == 0 {
                     continue;
                 }
+                let key_ptr = key.0 as *mut Obj;
                 // Keys must be strings for JSON
-                if (*key).header.type_tag != TypeTagKind::Str {
+                if (*key_ptr).header.type_tag != TypeTagKind::Str {
                     crate::utils::raise_value_error(
                         "TypeError: keys must be strings for JSON serialization",
                     );
                 }
-                let key_str = crate::utils::extract_str_unchecked(key);
-                let value = maybe_raw_to_json_value((*entry).value);
+                let key_str = crate::utils::extract_str_unchecked(key_ptr);
+                let value = maybe_raw_to_json_value((*entry).value.0 as *mut Obj);
                 map.insert(key_str, value);
             }
             Value::Object(map)
@@ -135,10 +133,10 @@ unsafe fn json_value_to_obj(value: &Value, depth: u32) -> *mut Obj {
 
     match value {
         Value::Null => crate::object::none_obj(),
-        Value::Bool(b) => crate::boxing::rt_box_bool(if *b { 1 } else { 0 }),
+        Value::Bool(b) => pyaot_core_defs::Value::from_bool(*b).0 as *mut crate::object::Obj,
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                crate::boxing::rt_box_int(i)
+                pyaot_core_defs::Value::from_int(i).0 as *mut crate::object::Obj
             } else if let Some(f) = n.as_f64() {
                 crate::boxing::rt_box_float(f)
             } else {
@@ -148,7 +146,7 @@ unsafe fn json_value_to_obj(value: &Value, depth: u32) -> *mut Obj {
         }
         Value::String(s) => make_str_from_rust(s),
         Value::Array(arr) => {
-            let list = crate::list::rt_make_list(arr.len() as i64, ELEM_HEAP_OBJ);
+            let list = crate::list::rt_make_list(arr.len() as i64);
             // Root the list so GC triggered by recursive allocs does not collect it.
             let mut roots: [*mut Obj; 1] = [list];
             let mut frame = crate::gc::ShadowFrame {

@@ -1,10 +1,8 @@
 //! Print operations for Python runtime
 
-use crate::object::{
-    BoolObj, DictObj, FloatObj, IntObj, ListObj, Obj, SetObj, StrObj, TupleObj, TypeTagKind,
-    ELEM_RAW_BOOL, ELEM_RAW_INT,
-};
+use crate::object::{DictObj, FloatObj, ListObj, Obj, SetObj, StrObj, TupleObj, TypeTagKind};
 use crate::print::{rt_print_bytes_obj, rt_print_str_obj};
+use pyaot_core_defs::Value;
 
 // === Print functions for print() builtin ===
 
@@ -66,24 +64,9 @@ pub extern "C" fn rt_flush_stdout() {
 
 // === Runtime type dispatch printing operations for Union types ===
 
-/// Print a single element from a container, respecting elem_tag
-/// For repr mode, strings get quotes
-unsafe fn print_elem_repr(elem: *mut Obj, elem_tag: u8) {
-    match elem_tag {
-        ELEM_RAW_INT => {
-            // Element is a raw i64 value stored as pointer
-            print!("{}", elem as i64);
-        }
-        ELEM_RAW_BOOL => {
-            // Element is a raw bool stored as pointer
-            let val = elem as i64;
-            print!("{}", if val != 0 { "True" } else { "False" });
-        }
-        _ => {
-            // ELEM_HEAP_OBJ: element is a *mut Obj with valid header
-            print_obj_repr(elem);
-        }
-    }
+/// Print a single element from a container, dispatching on Value tag
+unsafe fn print_elem_repr(elem: *mut Obj) {
+    print_obj_repr(elem);
 }
 
 /// Print Python repr of any boxed object (strings get quotes).
@@ -100,18 +83,37 @@ unsafe fn print_obj_repr(obj: *mut Obj) {
         print!("None");
         return;
     }
+    // Check Value-tagged primitives before heap pointer dereference.
+    let v = Value(obj as u64);
+    if v.is_int() {
+        print!("{}", v.unwrap_int());
+        return;
+    }
+    if v.is_bool() {
+        print!("{}", if v.unwrap_bool() { "True" } else { "False" });
+        return;
+    }
+    if v.is_none() {
+        print!("None");
+        return;
+    }
     match (*obj).type_tag() {
-        TypeTagKind::Int => {
-            let int_obj = obj as *mut IntObj;
-            print!("{}", (*int_obj).value);
+        // Int/Bool handled above via Value tag checks; these arms are unreachable
+        // for correctly-tagged values but required for exhaustiveness.
+        TypeTagKind::Int => print!("{}", Value(obj as u64).unwrap_int()),
+        TypeTagKind::Bool => {
+            print!(
+                "{}",
+                if Value(obj as u64).unwrap_bool() {
+                    "True"
+                } else {
+                    "False"
+                }
+            )
         }
         TypeTagKind::Float => {
             let float_obj = obj as *mut FloatObj;
             print!("{}", crate::utils::format_float_python((*float_obj).value));
-        }
-        TypeTagKind::Bool => {
-            let bool_obj = obj as *mut BoolObj;
-            print!("{}", if (*bool_obj).value { "True" } else { "False" });
         }
         TypeTagKind::Str => {
             // In repr mode, strings get single quotes with proper escaping
@@ -175,15 +177,14 @@ unsafe fn print_list_repr(obj: *mut Obj) {
     let list = obj as *mut ListObj;
     let len = (*list).len;
     let data = (*list).data;
-    let elem_tag = (*list).elem_tag;
 
     print!("[");
     for i in 0..len {
         if i > 0 {
             print!(", ");
         }
-        let elem = crate::list::load_value_as_raw(*data.add(i), elem_tag);
-        print_elem_repr(elem, elem_tag);
+        let elem = (*data.add(i)).0 as *mut Obj;
+        print_elem_repr(elem);
     }
     print!("]");
 }
@@ -193,15 +194,14 @@ unsafe fn print_tuple_repr(obj: *mut Obj) {
     let tuple = obj as *mut TupleObj;
     let len = (*tuple).len;
     let data = (*tuple).data.as_ptr();
-    let elem_tag = (*tuple).elem_tag;
 
     print!("(");
     for i in 0..len {
         if i > 0 {
             print!(", ");
         }
-        let elem = *data.add(i);
-        print_elem_repr(elem, elem_tag);
+        let elem = (*data.add(i)).0 as *mut Obj;
+        print_elem_repr(elem);
     }
     if len == 1 {
         print!(",");
@@ -209,14 +209,9 @@ unsafe fn print_tuple_repr(obj: *mut Obj) {
     print!(")");
 }
 
-/// Print a value that may be a heap object or a raw primitive (for dict/set values)
+/// Print a value that may be a heap object or a Value-tagged primitive.
 unsafe fn print_maybe_raw_repr(ptr: *mut Obj) {
-    if crate::utils::is_heap_obj(ptr) {
-        print_obj_repr(ptr);
-    } else {
-        // Raw integer value stored as pointer
-        print!("{}", ptr as i64);
-    }
+    print_obj_repr(ptr);
 }
 
 /// Print dict repr: {key: value, ...}
@@ -231,14 +226,14 @@ unsafe fn print_dict_repr(obj: *mut Obj) {
     for i in 0..entries_len {
         let entry = entries.add(i);
         let key = (*entry).key;
-        if !key.is_null() {
+        if key.0 != 0 {
             if !first {
                 print!(", ");
             }
             first = false;
-            print_obj_repr(key);
+            print_obj_repr(key.0 as *mut Obj);
             print!(": ");
-            print_maybe_raw_repr((*entry).value);
+            print_maybe_raw_repr((*entry).value.0 as *mut Obj);
         }
     }
     print!("}}");
@@ -251,7 +246,7 @@ unsafe fn print_set_repr(obj: *mut Obj) {
     let len = (*set).len;
     let capacity = (*set).capacity;
     let entries = (*set).entries;
-    const TOMBSTONE: *mut Obj = std::ptr::dangling_mut::<Obj>();
+    use crate::object::TOMBSTONE;
 
     if len == 0 {
         print!("set()");
@@ -263,12 +258,12 @@ unsafe fn print_set_repr(obj: *mut Obj) {
     for i in 0..capacity {
         let entry = entries.add(i);
         let elem = (*entry).elem;
-        if !elem.is_null() && elem != TOMBSTONE {
+        if elem.0 != 0 && elem != TOMBSTONE {
             if !first {
                 print!(", ");
             }
             first = false;
-            print_obj_repr(elem);
+            print_obj_repr(elem.0 as *mut Obj);
         }
     }
     print!("}}");
@@ -283,19 +278,37 @@ pub extern "C" fn rt_print_obj(obj: *mut Obj) {
         print!("None");
         return;
     }
+    // Check Value-tagged primitives before heap pointer dereference.
+    let v = Value(obj as u64);
+    if v.is_int() {
+        print!("{}", v.unwrap_int());
+        return;
+    }
+    if v.is_bool() {
+        print!("{}", if v.unwrap_bool() { "True" } else { "False" });
+        return;
+    }
+    if v.is_none() {
+        print!("None");
+        return;
+    }
     unsafe {
         match (*obj).type_tag() {
-            TypeTagKind::Int => {
-                let int_obj = obj as *mut IntObj;
-                print!("{}", (*int_obj).value);
+            // Int/Bool handled above via Value tag checks; arms required for exhaustiveness.
+            TypeTagKind::Int => print!("{}", Value(obj as u64).unwrap_int()),
+            TypeTagKind::Bool => {
+                print!(
+                    "{}",
+                    if Value(obj as u64).unwrap_bool() {
+                        "True"
+                    } else {
+                        "False"
+                    }
+                )
             }
             TypeTagKind::Float => {
                 let float_obj = obj as *mut FloatObj;
                 print!("{}", crate::utils::format_float_python((*float_obj).value));
-            }
-            TypeTagKind::Bool => {
-                let bool_obj = obj as *mut BoolObj;
-                print!("{}", if (*bool_obj).value { "True" } else { "False" });
             }
             TypeTagKind::Str => rt_print_str_obj(obj),
             TypeTagKind::Bytes => rt_print_bytes_obj(obj),

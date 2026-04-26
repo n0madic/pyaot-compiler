@@ -26,7 +26,6 @@ unsafe fn create_match_obj(
     original: *mut Obj,
 ) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push};
-    use crate::object::ELEM_HEAP_OBJ;
     use crate::tuple::{rt_make_tuple, rt_tuple_set};
 
     if !matched {
@@ -36,14 +35,15 @@ unsafe fn create_match_obj(
 
     let groups_count = groups.len();
 
-    // Allocate the groups tuple using rt_make_tuple so that heap_field_mask is
-    // set to u64::MAX (ELEM_HEAP_OBJ).  Without this the GC sees mask==0 and
-    // skips tracing the tuple's elements, allowing group strings to be swept.
+    // Allocate the groups tuple via rt_make_tuple so the slots are
+    // tagged Values that the GC walk can follow (str pointers).
+    // Pre-§F.7 we needed a per-tuple heap mask to make the walk
+    // safe; post-§F.7 every tuple slot is uniformly tagged.
     //
     // Root both the groups tuple and original across all allocating calls:
     //   - make_str_from_rust / gc_alloc for each group string
     //   - gc_alloc for the MatchObj
-    let groups_tuple = rt_make_tuple(groups_count as i64, ELEM_HEAP_OBJ);
+    let groups_tuple = rt_make_tuple(groups_count as i64);
 
     // roots[0] = groups_tuple, roots[1] = original (the source string)
     let mut roots: [*mut Obj; 2] = [groups_tuple, original];
@@ -263,7 +263,8 @@ pub extern "C" fn rt_match_group(m: *mut Obj, n: i64) -> *mut Obj {
             return crate::object::none_obj();
         }
 
-        *(*tuple).data.as_ptr().add(n as usize)
+        let val = *(*tuple).data.as_ptr().add(n as usize);
+        val.0 as *mut Obj
     }
 }
 
@@ -393,8 +394,6 @@ pub extern "C" fn rt_match_groups(m: *mut Obj) -> *mut Obj {
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_match_span(m: *mut Obj) -> *mut Obj {
-    use crate::object::ELEM_RAW_INT;
-
     unsafe {
         let (start, end) = if m.is_null() || (*m).header.type_tag != TypeTagKind::Match {
             (-1i64, -1i64)
@@ -403,7 +402,7 @@ pub extern "C" fn rt_match_span(m: *mut Obj) -> *mut Obj {
             ((*match_obj).start, (*match_obj).end)
         };
 
-        // Create a 2-element tuple with raw int storage
+        // Create a 2-element tuple storing tagged int Values
         let tuple_size = std::mem::size_of::<TupleObj>() + 2 * std::mem::size_of::<*mut Obj>();
         let tuple_ptr = gc::gc_alloc(tuple_size, TypeTagKind::Tuple as u8) as *mut TupleObj;
 
@@ -413,11 +412,10 @@ pub extern "C" fn rt_match_span(m: *mut Obj) -> *mut Obj {
             size: tuple_size,
         };
         (*tuple_ptr).len = 2;
-        (*tuple_ptr).elem_tag = ELEM_RAW_INT;
 
-        // Store start and end as raw i64 values
-        *(*tuple_ptr).data.as_mut_ptr().add(0) = start as *mut Obj;
-        *(*tuple_ptr).data.as_mut_ptr().add(1) = end as *mut Obj;
+        // Store start and end as tagged Value::from_int
+        *(*tuple_ptr).data.as_mut_ptr().add(0) = pyaot_core_defs::Value::from_int(start);
+        *(*tuple_ptr).data.as_mut_ptr().add(1) = pyaot_core_defs::Value::from_int(end);
 
         tuple_ptr as *mut Obj
     }

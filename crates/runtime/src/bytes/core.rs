@@ -120,11 +120,7 @@ pub extern "C" fn rt_make_bytes_from_list(list: *mut Obj) -> *mut Obj {
         let list_obj = list as *mut ListObj;
         let bytes_data = (*bytes_obj).data.as_mut_ptr();
         for i in 0..len {
-            let elem = crate::list::list_slot_raw(list_obj, i);
-            // Elements are raw i64 values (ELEM_RAW_INT); list_slot_raw
-            // already unwrapped the tagged `Value`.
-            let value = elem as i64;
-            // Clamp to 0-255
+            let value = (*(*list_obj).data.add(i)).unwrap_int();
             *bytes_data.add(i) = (value & 0xFF) as u8;
         }
 

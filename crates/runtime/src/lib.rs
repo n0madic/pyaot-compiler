@@ -198,8 +198,6 @@ pub unsafe extern "C" fn rt_init(argc: i32, argv: *const *const i8) {
     exceptions::assert_jmp_buf_size();
     gc::init();
     string::init_string_pool();
-    boxing::init_small_int_pool();
-    boxing::init_bool_pool();
     globals::init_globals();
     class_attrs::init_class_attrs();
     vtable::rt_init_builtin_exception_classes();
@@ -214,8 +212,6 @@ pub extern "C" fn rt_shutdown() {
 
     class_attrs::shutdown_class_attrs();
     globals::shutdown_globals();
-    boxing::shutdown_bool_pool();
-    boxing::shutdown_small_int_pool();
     string::shutdown_string_pool();
     gc::shutdown();
 }

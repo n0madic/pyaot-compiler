@@ -743,14 +743,9 @@ impl<'a> Lowering<'a> {
                                 .cloned()
                                 .unwrap_or(Type::Any);
 
-                            let result_local = self.emit_runtime_call(
-                                mir::RuntimeFunc::Call(
-                                    &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
-                                ),
-                                vec![
-                                    obj_operand,
-                                    mir::Operand::Constant(mir::Constant::Int(offset as i64)),
-                                ],
+                            let result_local = self.emit_instance_get_field(
+                                obj_operand,
+                                offset,
                                 field_type,
                                 mir_func,
                             );
@@ -886,6 +881,20 @@ impl<'a> Lowering<'a> {
                     // Use lookup to find the interned string
                     if let Some(attr_interned) = self.lookup_interned(&attr_str) {
                         if let Some(&offset) = class_info.field_offsets.get(&attr_interned) {
+                            // §F.1: float fields hold a boxed FloatObj
+                            // pointer; box numeric values before storing.
+                            let value_ty = self.seed_expr_type(args[2], hir_module);
+                            let field_ty = class_info
+                                .field_types
+                                .get(&attr_interned)
+                                .cloned()
+                                .unwrap_or(Type::Any);
+                            let coerced = self.coerce_for_instance_field_store(
+                                value_operand,
+                                &value_ty,
+                                &field_ty,
+                                mir_func,
+                            );
                             let _dummy_local = self.emit_runtime_call(
                                 mir::RuntimeFunc::Call(
                                     &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD,
@@ -893,7 +902,7 @@ impl<'a> Lowering<'a> {
                                 vec![
                                     obj_operand,
                                     mir::Operand::Constant(mir::Constant::Int(offset as i64)),
-                                    value_operand,
+                                    coerced,
                                 ],
                                 Type::None,
                                 mir_func,

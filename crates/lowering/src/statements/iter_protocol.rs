@@ -222,13 +222,9 @@ impl<'a> Lowering<'a> {
                 // the raw container directly.
                 let (container_local, indexed_kind, len_func) = match kind {
                     IterableKind::Dict => {
-                        let key_elem_tag = crate::type_dispatch::elem_tag_for_type(&elem_type);
                         let keys_local = self.emit_runtime_call(
                             mir::RuntimeFunc::Call(&runtime_func_def::RT_DICT_KEYS),
-                            vec![
-                                mir::Operand::Local(raw_container_local),
-                                mir::Operand::Constant(mir::Constant::Int(key_elem_tag)),
-                            ],
+                            vec![mir::Operand::Local(raw_container_local)],
                             Type::List(Box::new(elem_type.clone())),
                             mir_func,
                         );
@@ -357,6 +353,7 @@ impl<'a> Lowering<'a> {
         // be populated by IterHasNext (calls next first) and read by
         // IterAdvance.
         let value_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
+
         self.codegen.iter_cache.insert(
             iter_id,
             IterState::Protocol {
@@ -454,13 +451,13 @@ impl<'a> Lowering<'a> {
                 };
 
                 let target_type = elem_type.clone();
-                let value_local = self.alloc_and_add_local(target_type.clone(), mir_func);
 
-                if let Some(elem_kind) = elem_kind_for_typed {
+                let value_local = if let Some(elem_kind) = elem_kind_for_typed {
+                    let dest = self.alloc_and_add_local(target_type.clone(), mir_func);
                     let kind_tag =
                         mir::Operand::Constant(mir::Constant::Int(elem_kind.to_tag() as i64));
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: value_local,
+                        dest,
                         func: mir::RuntimeFunc::Call(&runtime_func_def::RT_LIST_GET_TYPED),
                         args: vec![
                             mir::Operand::Local(container_local),
@@ -468,30 +465,53 @@ impl<'a> Lowering<'a> {
                             kind_tag,
                         ],
                     });
+                    dest
                 } else {
-                    let get_func = match kind {
-                        IterableKindCached::Tuple => {
-                            crate::type_dispatch::tuple_get_func(&elem_type)
-                        }
-                        IterableKindCached::List => {
-                            mir::RuntimeFunc::Call(&runtime_func_def::RT_LIST_GET)
-                        }
-                        IterableKindCached::Str => {
-                            mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_GETCHAR)
-                        }
-                        IterableKindCached::Bytes => {
-                            mir::RuntimeFunc::Call(&runtime_func_def::RT_BYTES_GET)
-                        }
-                    };
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: value_local,
-                        func: get_func,
-                        args: vec![
+                    match kind {
+                        IterableKindCached::Tuple => self.emit_tuple_get(
                             mir::Operand::Local(container_local),
                             mir::Operand::Local(idx_local),
-                        ],
-                    });
-                }
+                            elem_type.clone(),
+                            mir_func,
+                        ),
+                        IterableKindCached::List => {
+                            let dest = self.alloc_and_add_local(target_type.clone(), mir_func);
+                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                                dest,
+                                func: mir::RuntimeFunc::Call(&runtime_func_def::RT_LIST_GET),
+                                args: vec![
+                                    mir::Operand::Local(container_local),
+                                    mir::Operand::Local(idx_local),
+                                ],
+                            });
+                            dest
+                        }
+                        IterableKindCached::Str => {
+                            let dest = self.alloc_and_add_local(target_type.clone(), mir_func);
+                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                                dest,
+                                func: mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_GETCHAR),
+                                args: vec![
+                                    mir::Operand::Local(container_local),
+                                    mir::Operand::Local(idx_local),
+                                ],
+                            });
+                            dest
+                        }
+                        IterableKindCached::Bytes => {
+                            let dest = self.alloc_and_add_local(target_type.clone(), mir_func);
+                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                                dest,
+                                func: mir::RuntimeFunc::Call(&runtime_func_def::RT_BYTES_GET),
+                                args: vec![
+                                    mir::Operand::Local(container_local),
+                                    mir::Operand::Local(idx_local),
+                                ],
+                            });
+                            dest
+                        }
+                    }
+                };
 
                 // Bind the value to the target BEFORE incrementing idx,
                 // so the bound value corresponds to the pre-increment
@@ -524,30 +544,28 @@ impl<'a> Lowering<'a> {
                 elem_type,
                 ..
             } => {
-                // §1.17b-c — Protocol's IterAdvance just reads the cached
-                // value_local populated by IterHasNext (tree-walker
-                // semantics: next is called BEFORE has-next check).
-                //
-                // `rt_iter_next_no_exc` returns different shapes
-                // depending on the iterator kind:
-                // - Generators (Type::Iterator): `rt_generator_next`
-                //   returns the yielded value DIRECTLY as raw i64 —
-                //   no boxing applied. This matches tree walker's
-                //   `lower_for_iterator` which types next_local as
-                //   Int/Str/etc and copies directly.
-                // - Non-generator iterators (shouldn't reach here
-                //   post-Indexed-extension — List/Tuple/Dict/Set/Str/
-                //   Bytes all go through Indexed now).
-                //
-                // So we DON'T unbox for the Protocol path — the value
-                // is already in the target's representation.
-                self.lower_binding_target(
-                    target,
-                    mir::Operand::Local(value_local),
-                    &elem_type,
-                    hir_module,
-                    mir_func,
-                )?;
+                // After §F.7c BigBang: list/dict/tuple/set iterators return tagged
+                // Value bits. Unwrap Int/Bool here so typed locals see raw scalars.
+                let bound_operand = match &elem_type {
+                    Type::Int => {
+                        let int_local = self.alloc_and_add_local(Type::Int, mir_func);
+                        self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                            dest: int_local,
+                            src: mir::Operand::Local(value_local),
+                        });
+                        mir::Operand::Local(int_local)
+                    }
+                    Type::Bool => {
+                        let bool_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                        self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+                            dest: bool_local,
+                            src: mir::Operand::Local(value_local),
+                        });
+                        mir::Operand::Local(bool_local)
+                    }
+                    _ => mir::Operand::Local(value_local),
+                };
+                self.lower_binding_target(target, bound_operand, &elem_type, hir_module, mir_func)?;
                 self.sync_global_if_needed(target, &elem_type, mir_func);
                 Ok(())
             }

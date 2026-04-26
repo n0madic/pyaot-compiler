@@ -608,16 +608,17 @@ pub extern "C" fn rt_exc_instance_str(
         let data_ptr = (*tuple_obj).data.as_ptr();
         let first_elem = *data_ptr;
 
-        if first_elem.is_null() {
+        if first_elem.0 == 0 {
             return crate::string::rt_make_str(std::ptr::null(), 0);
         }
 
-        let elem_header = &*(first_elem as *const crate::object::ObjHeader);
+        let elem_ptr = first_elem.0 as *const crate::object::ObjHeader;
+        let elem_header = &*elem_ptr;
         if elem_header.type_tag == crate::object::TypeTagKind::Str {
-            return first_elem;
+            return elem_ptr as *mut crate::object::Obj;
         }
 
-        crate::conversions::rt_obj_to_str(first_elem)
+        crate::conversions::rt_obj_to_str(elem_ptr as *mut crate::object::Obj)
     }
 }
 

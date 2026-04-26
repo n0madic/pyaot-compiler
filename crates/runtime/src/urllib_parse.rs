@@ -317,16 +317,20 @@ pub extern "C" fn rt_urlencode(params: *mut Obj) -> *mut Obj {
             let entry = entries.add(i);
             let key = (*entry).key;
 
-            if !key.is_null() {
-                let key_str = str_obj_to_rust_string(key);
+            if key.0 != 0 {
+                let key_ptr = key.0 as *mut Obj;
+                let key_str = str_obj_to_rust_string(key_ptr);
                 let value = (*entry).value;
-                if value.is_null() || (*value).header.type_tag != crate::object::TypeTagKind::Str {
+                let value_ptr = value.0 as *mut Obj;
+                if value_ptr.is_null()
+                    || (*value_ptr).header.type_tag != crate::object::TypeTagKind::Str
+                {
                     raise_exc!(
                         pyaot_core_defs::BuiltinExceptionKind::TypeError,
                         "urlencode values must be strings"
                     );
                 }
-                let value_str = str_obj_to_rust_string(value);
+                let value_str = str_obj_to_rust_string(value_ptr);
 
                 let encoded_key = percent_encode_plus(&key_str);
                 let encoded_value = percent_encode_plus(&value_str);
@@ -518,7 +522,7 @@ pub extern "C" fn rt_parse_qs(query: *mut Obj) -> *mut Obj {
 
             if existing.is_null() {
                 // Create new list with this value — dict/key/value all stay rooted.
-                let list = rt_make_list(1, crate::object::ELEM_HEAP_OBJ);
+                let list = rt_make_list(1);
                 let list_obj = list as *mut ListObj;
                 (*list_obj).len = 1;
                 *(*list_obj).data = pyaot_core_defs::Value::from_ptr(roots[2]);

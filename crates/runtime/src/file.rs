@@ -450,7 +450,7 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
         );
     }
 
-    let list = crate::list::rt_make_list(0, crate::object::ELEM_HEAP_OBJ);
+    let list = crate::list::rt_make_list(0);
 
     // Root [list, line_obj_slot] across all allocating calls (rt_make_str,
     // rt_make_bytes, rt_list_push).  Without rooting, a GC triggered by any

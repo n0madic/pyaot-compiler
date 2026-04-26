@@ -49,8 +49,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         let value_arg = crate::first_arg_or_none(arg_operands);
-        // Only box the value if it's a heap type; raw types (int, bool, float)
-        // are stored unboxed in ELEM_RAW_INT tuples and must not be boxed.
+        // Only box the value if it's a heap type; raw types pass through directly.
         let value_type = arg_types.first().cloned().unwrap_or(Type::Any);
         let search_value = if value_type.is_heap() {
             self.box_primitive_if_needed(value_arg, &value_type, mir_func)

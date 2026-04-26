@@ -78,8 +78,28 @@ impl<'a> Lowering<'a> {
                 let left_type = self.get_literal_type(left_expr);
                 let right_type = self.get_literal_type(right_expr);
 
+                // Also pick up types of already-inferred Var operands (e.g. captures
+                // typed via `closure_capture_types`). This lets `lambda x: x * cap`
+                // propagate the capture's Int/Float type to the elem param.
+                let left_known = if let hir::ExprKind::Var(var_id) = &left_expr.kind {
+                    var_to_index
+                        .get(var_id)
+                        .and_then(|&idx| inferred_types[idx].clone())
+                        .or_else(|| left_type.clone())
+                } else {
+                    left_type.clone()
+                };
+                let right_known = if let hir::ExprKind::Var(var_id) = &right_expr.kind {
+                    var_to_index
+                        .get(var_id)
+                        .and_then(|&idx| inferred_types[idx].clone())
+                        .or_else(|| right_type.clone())
+                } else {
+                    right_type.clone()
+                };
+
                 // For string operations, infer string types
-                if matches!(left_type, Some(Type::Str)) || matches!(right_type, Some(Type::Str)) {
+                if matches!(left_known, Some(Type::Str)) || matches!(right_known, Some(Type::Str)) {
                     if let hir::ExprKind::Var(var_id) = &left_expr.kind {
                         if let Some(&idx) = var_to_index.get(var_id) {
                             if inferred_types[idx].is_none() {
@@ -94,8 +114,8 @@ impl<'a> Lowering<'a> {
                             }
                         }
                     }
-                } else if matches!(left_type, Some(Type::Float))
-                    || matches!(right_type, Some(Type::Float))
+                } else if matches!(left_known, Some(Type::Float))
+                    || matches!(right_known, Some(Type::Float))
                     || matches!(op, hir::BinOp::Div)
                 {
                     // Float operations
@@ -113,9 +133,24 @@ impl<'a> Lowering<'a> {
                             }
                         }
                     }
-                } else {
-                    // No literal context — leave as None (becomes Type::Any)
-                    // Cannot assume Int: could be string concatenation, float arithmetic, etc.
+                } else if matches!(left_known, Some(Type::Int))
+                    || matches!(right_known, Some(Type::Int))
+                {
+                    // Int from a captured/known Var — propagate to the unknown side.
+                    if let hir::ExprKind::Var(var_id) = &left_expr.kind {
+                        if let Some(&idx) = var_to_index.get(var_id) {
+                            if inferred_types[idx].is_none() {
+                                inferred_types[idx] = Some(Type::Int);
+                            }
+                        }
+                    }
+                    if let hir::ExprKind::Var(var_id) = &right_expr.kind {
+                        if let Some(&idx) = var_to_index.get(var_id) {
+                            if inferred_types[idx].is_none() {
+                                inferred_types[idx] = Some(Type::Int);
+                            }
+                        }
+                    }
                 }
 
                 // Recurse into subexpressions
@@ -211,6 +246,46 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::Str(_) => Some(Type::Str),
             hir::ExprKind::None => Some(Type::None),
             _ => None,
+        }
+    }
+
+    /// Determine the elem unbox kind for a callback's element parameter.
+    ///
+    /// After §F.7c BigBang, list/dict/tuple/set/range/bytes iterators return
+    /// tagged Value bits. When the callback's elem parameter is a typed
+    /// scalar (Int/Bool), the runtime must unbox the tagged Value before
+    /// calling the function. Returns:
+    /// - `0`: pass-through (callback wants `*mut Obj` / pre-tagged Value)
+    /// - `1`: unbox int (tagged Int → raw i64)
+    /// - `2`: unbox bool (tagged Bool → raw i8 in i64)
+    ///
+    /// `capture_count` is the number of pre-bound captures; the elem param
+    /// follows the captures in `func.params`.
+    pub(crate) fn callback_elem_unbox_kind(
+        &self,
+        func_id: pyaot_utils::FuncId,
+        capture_count: usize,
+        hir_module: &hir::Module,
+    ) -> i64 {
+        let Some(func_def) = hir_module.func_defs.get(&func_id) else {
+            return 0;
+        };
+        if capture_count >= func_def.params.len() {
+            return 0;
+        }
+        let elem_param = &func_def.params[capture_count];
+        let param_ty = match &elem_param.ty {
+            Some(ty) => ty.clone(),
+            None => {
+                // Lambda without explicit annotation — try inference.
+                let inferred = self.infer_lambda_param_types(func_def, hir_module);
+                inferred.get(capture_count).cloned().unwrap_or(Type::Any)
+            }
+        };
+        match param_ty {
+            Type::Int => 1,
+            Type::Bool => 2,
+            _ => 0,
         }
     }
 

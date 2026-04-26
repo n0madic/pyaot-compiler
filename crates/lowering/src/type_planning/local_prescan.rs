@@ -689,8 +689,7 @@ fn rewrite_expr_vars(expr_id: hir::ExprId, hir_module: &mut hir::Module, state: 
                 rewrite_expr_vars(expr_id, hir_module, state);
             }
             hir::GeneratorIntrinsic::SetState { gen, .. }
-            | hir::GeneratorIntrinsic::GetLocal { gen, .. }
-            | hir::GeneratorIntrinsic::SetLocalType { gen, .. } => {
+            | hir::GeneratorIntrinsic::GetLocal { gen, .. } => {
                 rewrite_expr_vars(gen, hir_module, state);
             }
             hir::GeneratorIntrinsic::SetLocal { gen, value, .. } => {

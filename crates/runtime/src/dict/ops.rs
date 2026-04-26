@@ -30,7 +30,11 @@ pub extern "C" fn rt_dict_set(dict: *mut Obj, mut key: *mut Obj, value: *mut Obj
         // rt_make_str_interned calls gc_alloc which may trigger a full collection.
         // Root dict, key, and value across the call so none of them are freed.
         // `data` is an interior pointer into `key`, so `key` must stay alive.
-        if (*key).header.type_tag == TypeTagKind::Str {
+        //
+        // Guard: tagged primitives (int/bool/none, bit0=1) are not heap objects;
+        // skip the dereference entirely and go straight to hash/lookup.
+        if pyaot_core_defs::Value(key as u64).is_ptr() && (*key).header.type_tag == TypeTagKind::Str
+        {
             let str_obj = key as *mut StrObj;
             let len = (*str_obj).len;
 
@@ -69,7 +73,7 @@ pub extern "C" fn rt_dict_set(dict: *mut Obj, mut key: *mut Obj, value: *mut Obj
         if entry_idx >= 0 {
             // Key exists — update value in place
             let entry = (*dict_obj).entries.add(entry_idx as usize);
-            (*entry).value = value;
+            (*entry).value = pyaot_core_defs::Value(value as u64);
         } else {
             // New key — append to entries array
             let new_idx = (*dict_obj).entries_len;
@@ -84,13 +88,13 @@ pub extern "C" fn rt_dict_set(dict: *mut Obj, mut key: *mut Obj, value: *mut Obj
                 let (slot2, entry_idx2) = find_insert_slot(dict_obj, key, hash);
                 if entry_idx2 >= 0 {
                     let entry = (*dict_obj).entries.add(entry_idx2 as usize);
-                    (*entry).value = value;
+                    (*entry).value = pyaot_core_defs::Value(value as u64);
                 } else {
                     let new_idx2 = (*dict_obj).entries_len;
                     let entry = (*dict_obj).entries.add(new_idx2);
                     (*entry).hash = hash;
-                    (*entry).key = key;
-                    (*entry).value = value;
+                    (*entry).key = pyaot_core_defs::Value(key as u64);
+                    (*entry).value = pyaot_core_defs::Value(value as u64);
                     *(*dict_obj).indices.add(slot2) = new_idx2 as i64;
                     (*dict_obj).entries_len += 1;
                     (*dict_obj).len += 1;
@@ -100,8 +104,8 @@ pub extern "C" fn rt_dict_set(dict: *mut Obj, mut key: *mut Obj, value: *mut Obj
 
             let entry = (*dict_obj).entries.add(new_idx);
             (*entry).hash = hash;
-            (*entry).key = key;
-            (*entry).value = value;
+            (*entry).key = pyaot_core_defs::Value(key as u64);
+            (*entry).value = pyaot_core_defs::Value(value as u64);
 
             // Update indices table
             *(*dict_obj).indices.add(slot) = new_idx as i64;
@@ -128,7 +132,7 @@ pub extern "C" fn rt_dict_get(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
 
         if entry_idx >= 0 {
             let entry = (*dict_obj).entries.add(entry_idx as usize);
-            (*entry).value
+            (*entry).value.0 as *mut Obj
         } else {
             std::ptr::null_mut()
         }
@@ -206,12 +210,12 @@ pub extern "C" fn rt_dict_pop(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
             }
 
             let entry = (*dict_obj).entries.add(entry_idx as usize);
-            if (*entry).hash == hash && eq_hashable_obj((*entry).key, key) {
-                let value = (*entry).value;
+            if (*entry).hash == hash && eq_hashable_obj((*entry).key.0 as *mut Obj, key) {
+                let value = (*entry).value.0 as *mut Obj;
 
                 // Mark entry as deleted
-                (*entry).key = std::ptr::null_mut();
-                (*entry).value = std::ptr::null_mut();
+                (*entry).key = pyaot_core_defs::Value(0);
+                (*entry).value = pyaot_core_defs::Value(0);
 
                 // Mark index slot as dummy (tombstone for probe chain)
                 *(*dict_obj).indices.add(slot) = DUMMY_INDEX;
@@ -245,8 +249,8 @@ pub extern "C" fn rt_dict_clear(dict: *mut Obj) {
         for i in 0..(*dict_obj).entries_len {
             let entry = (*dict_obj).entries.add(i);
             (*entry).hash = 0;
-            (*entry).key = std::ptr::null_mut();
-            (*entry).value = std::ptr::null_mut();
+            (*entry).key = pyaot_core_defs::Value(0);
+            (*entry).value = pyaot_core_defs::Value(0);
         }
 
         (*dict_obj).len = 0;
@@ -286,9 +290,9 @@ pub extern "C" fn rt_dict_copy(dict: *mut Obj) -> *mut Obj {
             let src_dict = roots[0] as *mut DictObj;
             let entry = (*src_dict).entries.add(i);
             let key = (*entry).key;
-            if !key.is_null() {
+            if key.0 != 0 {
                 let value = (*entry).value;
-                rt_dict_set(roots[1], key, value);
+                rt_dict_set(roots[1], key.0 as *mut Obj, value.0 as *mut Obj);
             }
         }
 
@@ -325,9 +329,9 @@ pub extern "C" fn rt_dict_update(dict: *mut Obj, other: *mut Obj) {
             let other_dict = roots[1] as *mut DictObj;
             let entry = (*other_dict).entries.add(i);
             let key = (*entry).key;
-            if !key.is_null() {
+            if key.0 != 0 {
                 let value = (*entry).value;
-                rt_dict_set(roots[0], key, value);
+                rt_dict_set(roots[0], key.0 as *mut Obj, value.0 as *mut Obj);
             }
         }
 
@@ -365,7 +369,6 @@ pub extern "C" fn rt_dict_setdefault(dict: *mut Obj, key: *mut Obj, default: *mu
 #[no_mangle]
 pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
     use crate::exceptions::ExceptionType;
-    use crate::object::ELEM_HEAP_OBJ;
     use crate::tuple::{rt_make_tuple, rt_tuple_set};
 
     if dict.is_null() {
@@ -387,14 +390,15 @@ pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
         while last_idx > 0 {
             last_idx -= 1;
             let entry = (*dict_obj).entries.add(last_idx);
-            if !(*entry).key.is_null() {
+            if (*entry).key.0 != 0 {
                 // Save entry data BEFORE allocating tuple (which may trigger GC)
-                let key = (*entry).key;
-                let value = (*entry).value;
+                let key_val = (*entry).key; // Value
+                let value_val = (*entry).value; // Value
                 let hash = (*entry).hash;
 
                 // Root dict and key/value on shadow stack during tuple allocation
-                let mut roots: [*mut Obj; 3] = [dict, key, value];
+                let mut roots: [*mut Obj; 3] =
+                    [dict, key_val.0 as *mut Obj, value_val.0 as *mut Obj];
                 let mut frame = crate::gc::ShadowFrame {
                     prev: std::ptr::null_mut(),
                     nroots: 3,
@@ -403,7 +407,7 @@ pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
                 crate::gc::gc_push(&mut frame);
 
                 // Create result tuple (may trigger GC)
-                let tuple = rt_make_tuple(2, ELEM_HEAP_OBJ);
+                let tuple = rt_make_tuple(2);
                 rt_tuple_set(tuple, 0, roots[1]); // Use rooted key
                 rt_tuple_set(tuple, 1, roots[2]); // Use rooted value
 
@@ -411,8 +415,8 @@ pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
 
                 // Delete the entry: null out key/value in entries, mark index as dummy
                 let entry = (*dict_obj).entries.add(last_idx);
-                (*entry).key = std::ptr::null_mut();
-                (*entry).value = std::ptr::null_mut();
+                (*entry).key = pyaot_core_defs::Value(0);
+                (*entry).value = pyaot_core_defs::Value(0);
 
                 // Find and mark the corresponding index slot as DUMMY
                 // Must skip DUMMY_INDEX entries (tombstones) to follow the full probe chain
@@ -438,7 +442,7 @@ pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
                 // Shrink entries_len if we removed the last entry
                 while (*dict_obj).entries_len > 0 {
                     let e = (*dict_obj).entries.add((*dict_obj).entries_len - 1);
-                    if (*e).key.is_null() {
+                    if (*e).key.0 == 0 {
                         (*dict_obj).entries_len -= 1;
                     } else {
                         break;
@@ -485,7 +489,7 @@ pub extern "C" fn rt_dict_fromkeys(keys_list: *mut Obj, value: *mut Obj) -> *mut
 
         for i in 0..len as usize {
             let list_obj = roots[1] as *mut ListObj;
-            let key = crate::list::list_slot_raw(list_obj, i);
+            let key = (*(*list_obj).data.add(i)).0 as *mut crate::object::Obj;
             // When no value is supplied, Python uses None as the default.
             // Storing null would make rt_dict_get indistinguishable from a
             // missing key, so we store the None singleton instead.
@@ -527,10 +531,10 @@ pub extern "C" fn rt_dict_merge(dict1: *mut Obj, dict2: *mut Obj) -> *mut Obj {
             for i in 0..entries_len {
                 let d1 = roots[1] as *mut DictObj;
                 let entry = (*d1).entries.add(i);
-                if !(*entry).key.is_null() {
+                if (*entry).key.0 != 0 {
                     let key = (*entry).key;
                     let value = (*entry).value;
-                    rt_dict_set(roots[0], key, value);
+                    rt_dict_set(roots[0], key.0 as *mut Obj, value.0 as *mut Obj);
                 }
             }
         }
@@ -543,10 +547,10 @@ pub extern "C" fn rt_dict_merge(dict1: *mut Obj, dict2: *mut Obj) -> *mut Obj {
             for i in 0..entries_len {
                 let d2 = roots[2] as *mut DictObj;
                 let entry = (*d2).entries.add(i);
-                if !(*entry).key.is_null() {
+                if (*entry).key.0 != 0 {
                     let key = (*entry).key;
                     let value = (*entry).value;
-                    rt_dict_set(roots[0], key, value);
+                    rt_dict_set(roots[0], key.0 as *mut Obj, value.0 as *mut Obj);
                 }
             }
         }
@@ -586,8 +590,7 @@ pub extern "C" fn rt_dict_from_pairs(pairs: *mut Obj) -> *mut Obj {
         let len = (*(roots[1] as *mut ListObj)).len;
         for i in 0..len {
             let list = roots[1] as *mut ListObj;
-            // ELEM_HEAP_OBJ list of 2-tuples — extract the raw pointer.
-            let pair = crate::list::list_slot_raw(list, i);
+            let pair = (*(*list).data.add(i)).0 as *mut crate::object::Obj;
             if pair.is_null() {
                 continue;
             }
@@ -595,8 +598,8 @@ pub extern "C" fn rt_dict_from_pairs(pairs: *mut Obj) -> *mut Obj {
             // Each pair should be a 2-tuple
             let tuple = pair as *mut TupleObj;
             if (*tuple).len >= 2 {
-                let key = *(*tuple).data.as_ptr();
-                let value = *(*tuple).data.as_ptr().add(1);
+                let key = (*(*tuple).data.as_ptr()).0 as *mut Obj;
+                let value = (*(*tuple).data.as_ptr().add(1)).0 as *mut Obj;
                 rt_dict_set(roots[0], key, value);
             }
         }

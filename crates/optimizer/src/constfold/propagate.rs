@@ -175,6 +175,10 @@ fn substitute_instruction_operands(
         | InstructionKind::IntToFloat { src, .. }
         | InstructionKind::FloatBits { src, .. }
         | InstructionKind::IntBitsToFloat { src, .. }
+        | InstructionKind::ValueFromInt { src, .. }
+        | InstructionKind::UnwrapValueInt { src, .. }
+        | InstructionKind::ValueFromBool { src, .. }
+        | InstructionKind::UnwrapValueBool { src, .. }
         | InstructionKind::FloatAbs { src, .. } => {
             changed |= substitute_operand(src, props);
         }

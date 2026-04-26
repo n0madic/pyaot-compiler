@@ -288,7 +288,7 @@ unsafe fn finalize_object(obj_ptr: *mut Obj) {
             crate::set::set_finalize(obj_ptr);
         }
         TypeTagKind::Generator => {
-            crate::generator::finalize_generator(obj_ptr);
+            // §F.7b: no per-slot tag array to free; GeneratorObj is fully GC-managed.
         }
         TypeTagKind::StringBuilder => {
             crate::string::string_builder_finalize(obj_ptr);

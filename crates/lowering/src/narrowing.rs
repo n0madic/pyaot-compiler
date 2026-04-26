@@ -134,18 +134,17 @@ impl<'a> Lowering<'a> {
         narrowed_type: &Type,
         mir_func: &mut mir::Function,
     ) -> pyaot_utils::LocalId {
-        if Self::narrowing_requires_unbox(original_type, narrowed_type) {
-            if let Some(unbox_func) = Self::unbox_func_for_type(narrowed_type) {
-                let unboxed =
-                    self.emit_runtime_call(unbox_func, vec![src], narrowed_type.clone(), mir_func);
-                let dest = self.alloc_and_add_local(narrowed_type.clone(), mir_func);
-                self.emit_instruction(mir::InstructionKind::Refine {
-                    dest,
-                    src: mir::Operand::Local(unboxed),
-                    ty: narrowed_type.clone(),
-                });
-                return dest;
-            }
+        if Self::narrowing_requires_unbox(original_type, narrowed_type)
+            && matches!(narrowed_type, Type::Int | Type::Float | Type::Bool)
+        {
+            let unboxed = self.unbox_if_needed(src, narrowed_type, mir_func);
+            let dest = self.alloc_and_add_local(narrowed_type.clone(), mir_func);
+            self.emit_instruction(mir::InstructionKind::Refine {
+                dest,
+                src: unboxed,
+                ty: narrowed_type.clone(),
+            });
+            return dest;
         }
 
         let dest = self.alloc_and_add_local(narrowed_type.clone(), mir_func);
@@ -890,16 +889,10 @@ mod tests {
         let instructions = lowering.current_block_mut().instructions.clone();
         assert_eq!(instructions.len(), 2);
         match &instructions[0].kind {
-            InstructionKind::RuntimeCall { func, .. } => match func {
-                mir::RuntimeFunc::Call(def) => {
-                    assert!(std::ptr::eq(
-                        *def,
-                        &pyaot_core_defs::runtime_func_def::RT_UNBOX_INT
-                    ));
-                }
-                other => panic!("expected runtime unbox call, got {other:?}"),
-            },
-            other => panic!("expected RuntimeCall, got {other:?}"),
+            // §F.2: Int unbox is now an inline `UnwrapValueInt` MIR
+            // instruction, not a runtime call.
+            InstructionKind::UnwrapValueInt { .. } => {}
+            other => panic!("expected UnwrapValueInt, got {other:?}"),
         }
         match &instructions[1].kind {
             InstructionKind::Refine { ty, .. } => assert_eq!(ty, &Type::Int),
@@ -952,16 +945,10 @@ mod tests {
         let instructions = lowering.current_block_mut().instructions.clone();
         assert_eq!(instructions.len(), 2);
         match &instructions[0].kind {
-            InstructionKind::RuntimeCall { func, .. } => match func {
-                mir::RuntimeFunc::Call(def) => {
-                    assert!(std::ptr::eq(
-                        *def,
-                        &pyaot_core_defs::runtime_func_def::RT_UNBOX_INT
-                    ));
-                }
-                other => panic!("expected runtime unbox call, got {other:?}"),
-            },
-            other => panic!("expected RuntimeCall, got {other:?}"),
+            // §F.2: Int unbox is now an inline `UnwrapValueInt` MIR
+            // instruction, not a runtime call.
+            InstructionKind::UnwrapValueInt { .. } => {}
+            other => panic!("expected UnwrapValueInt, got {other:?}"),
         }
         match &instructions[1].kind {
             InstructionKind::Refine { ty, .. } => assert_eq!(ty, &Type::Int),

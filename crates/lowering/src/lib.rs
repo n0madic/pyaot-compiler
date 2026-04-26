@@ -62,14 +62,20 @@ impl<'a> Lowering<'a> {
         mir::Operand::Local(boxed_local)
     }
 
-    /// Box a primitive value to an object pointer when needed.
+    /// Box a primitive value to a tagged `Value` when needed.
     ///
-    /// Primitives (Int, Bool, Float, None) must be boxed to `*mut Obj` for storage in
-    /// dict keys/values, union-typed variables, and any other context requiring heap pointers.
-    /// Heap types (Str, List, Dict, Tuple, Set, class instances, etc.) are already pointers
-    /// and pass through unchanged.
+    /// Primitives (Int, Bool, Float, None) must be box-tagged for storage in
+    /// dict keys/values, union-typed variables, and any other context
+    /// requiring heap-shaped slots. After §F.2:
+    /// - `Int`/`Bool` emit inline `ValueFromInt` / `ValueFromBool` MIR
+    ///   instructions (`(x << 3) | TAG`) — no runtime call.
+    /// - `Float` boxes via `rt_box_float` (heap-allocated `FloatObj`).
+    /// - `None` boxes via `rt_box_none` (singleton `NoneObj`).
+    /// - Heap types (Str, List, Dict, Tuple, Set, class instances, etc.)
+    ///   are already pointers and pass through unchanged.
     ///
-    /// Uses `Type::HeapAny` for the boxed result type since boxing produces a generic heap pointer.
+    /// Uses `Type::HeapAny` for the boxed result so callers see a uniform
+    /// pointer-shaped local.
     pub(crate) fn box_primitive_if_needed(
         &mut self,
         operand: mir::Operand,
@@ -77,18 +83,16 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
         match ty {
-            Type::Int => self.emit_box_primitive(
-                operand,
-                Type::HeapAny,
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_INT),
-                mir_func,
-            ),
-            Type::Bool => self.emit_box_primitive(
-                operand,
-                Type::HeapAny,
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
-                mir_func,
-            ),
+            Type::Int => {
+                let dest = self.alloc_stack_local(Type::HeapAny, mir_func);
+                self.emit_instruction(mir::InstructionKind::ValueFromInt { dest, src: operand });
+                mir::Operand::Local(dest)
+            }
+            Type::Bool => {
+                let dest = self.alloc_stack_local(Type::HeapAny, mir_func);
+                self.emit_instruction(mir::InstructionKind::ValueFromBool { dest, src: operand });
+                mir::Operand::Local(dest)
+            }
             Type::Float => self.emit_box_primitive(
                 operand,
                 Type::HeapAny,
@@ -106,38 +110,73 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Get the unbox runtime function for a primitive type stored in a heap container.
-    /// Returns `None` for heap types that don't need unboxing.
-    fn unbox_func_for_type(ty: &Type) -> Option<mir::RuntimeFunc> {
-        match ty {
-            Type::Int => Some(mir::RuntimeFunc::Call(
-                &pyaot_core_defs::runtime_func_def::RT_UNBOX_INT,
-            )),
-            Type::Float => Some(mir::RuntimeFunc::Call(
-                &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
-            )),
-            Type::Bool => Some(mir::RuntimeFunc::Call(
-                &pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL,
-            )),
-            _ => None,
-        }
-    }
-
-    /// Unbox a heap-stored value to a primitive type if needed.
-    /// For primitive types (Int, Float, Bool), fetches from the boxed pointer.
-    /// For heap types, returns the operand unchanged.
-    fn unbox_if_needed(
+    /// Unbox a heap-stored value to a primitive type if needed. After §F.2:
+    /// - `Int`/`Bool` emit inline `UnwrapValueInt` / `UnwrapValueBool` MIR
+    ///   instructions (arithmetic shift) — no runtime call.
+    /// - `Float` calls `rt_unbox_float` (heap-boxed FloatObj).
+    /// - Other types pass through unchanged.
+    pub(crate) fn unbox_if_needed(
         &mut self,
         operand: mir::Operand,
         target_type: &Type,
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
-        if let Some(unbox_func) = Self::unbox_func_for_type(target_type) {
-            let unboxed_local =
-                self.emit_runtime_call(unbox_func, vec![operand], target_type.clone(), mir_func);
-            mir::Operand::Local(unboxed_local)
-        } else {
-            operand
+        match target_type {
+            Type::Int => {
+                let dest = self.alloc_stack_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::UnwrapValueInt { dest, src: operand });
+                mir::Operand::Local(dest)
+            }
+            Type::Bool => {
+                let dest = self.alloc_stack_local(Type::Bool, mir_func);
+                self.emit_instruction(mir::InstructionKind::UnwrapValueBool { dest, src: operand });
+                mir::Operand::Local(dest)
+            }
+            Type::Float => {
+                let unboxed_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT),
+                    vec![operand],
+                    Type::Float,
+                    mir_func,
+                );
+                mir::Operand::Local(unboxed_local)
+            }
+            _ => operand,
+        }
+    }
+
+    /// Emit `rt_list_get(list, index)` with correct typed unwrapping.
+    ///
+    /// After F.7c BigBang Step 2, `rt_list_get` returns the slot's tagged
+    /// `Value` bit-pattern. Int/Bool callers must unwrap; Float callers must
+    /// unbox. This helper centralises the dispatch so every list-element
+    /// read site stays correct after Step 2.
+    pub(crate) fn emit_list_get(
+        &mut self,
+        list_operand: mir::Operand,
+        index_operand: mir::Operand,
+        elem_ty: &Type,
+        mir_func: &mut mir::Function,
+    ) -> LocalId {
+        match elem_ty {
+            Type::Int | Type::Bool | Type::Float => {
+                let heap_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+                    vec![list_operand, index_operand],
+                    Type::HeapAny,
+                    mir_func,
+                );
+                match self.unbox_if_needed(mir::Operand::Local(heap_local), elem_ty, mir_func) {
+                    mir::Operand::Local(id) => id,
+                    _ => heap_local,
+                }
+            }
+            _ => self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+                vec![list_operand, index_operand],
+                elem_ty.clone(),
+                mir_func,
+            ),
         }
     }
 
@@ -421,45 +460,21 @@ impl<'a> Lowering<'a> {
         operand_types: Option<&[Type]>,
         mir_func: &mut mir::Function,
     ) -> LocalId {
-        // Determine elem_tag based on element types.
-        // Use ELEM_RAW_INT (1) when no element needs GC tracing,
-        // ELEM_HEAP_OBJ (0) when any element is a heap type.
-        let elem_tag: i64 = if *elem_type == Type::Int {
-            1 // ELEM_RAW_INT — all elements are ints
-        } else if let Some(types) = operand_types {
-            // Per-operand types available: check if any needs GC
-            if types.iter().any(Type::is_heap) {
-                0 // ELEM_HEAP_OBJ
-            } else {
-                1 // ELEM_RAW_INT — all operands are primitives
-            }
-        } else {
-            0 // ELEM_HEAP_OBJ — unknown types, be safe
-        };
-
-        // Emit: MakeTuple(size, elem_tag)
+        // After §F.7c: tuples store uniform tagged Values; box every primitive.
         let tuple_local = self.emit_runtime_call_gc(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
-            vec![
-                mir::Operand::Constant(mir::Constant::Int(operands.len() as i64)),
-                mir::Operand::Constant(mir::Constant::Int(elem_tag)),
-            ],
+            vec![mir::Operand::Constant(mir::Constant::Int(
+                operands.len() as i64
+            ))],
             Type::Tuple(vec![elem_type.clone()]),
             mir_func,
         );
 
-        // Emit: TupleSet for each element
         for (i, op) in operands.iter().enumerate() {
-            // Box primitive values when elem_tag is ELEM_HEAP_OBJ
-            let final_operand = if elem_tag == 0 {
-                // Use per-operand type if available, otherwise use common elem_type
-                let op_type = operand_types
-                    .and_then(|types| types.get(i))
-                    .unwrap_or(elem_type);
-                self.box_primitive_if_needed(op.clone(), op_type, mir_func)
-            } else {
-                op.clone() // ELEM_RAW_INT, already i64
-            };
+            let op_type = operand_types
+                .and_then(|types| types.get(i))
+                .unwrap_or(elem_type);
+            let final_operand = self.box_primitive_if_needed(op.clone(), op_type, mir_func);
 
             self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
@@ -474,31 +489,6 @@ impl<'a> Lowering<'a> {
         }
 
         tuple_local
-    }
-
-    /// Emit a TupleSetHeapMask instruction for a tuple with mixed types.
-    /// Computes a bitmask from operand types and emits the runtime call.
-    fn emit_heap_field_mask(
-        &mut self,
-        tuple_local: pyaot_utils::LocalId,
-        operand_types: &[Type],
-        mir_func: &mut mir::Function,
-    ) {
-        let mut mask: u64 = 0;
-        for (i, ty) in operand_types.iter().enumerate() {
-            if i < 64 && ty.is_heap() {
-                mask |= 1u64 << i;
-            }
-        }
-        self.emit_runtime_call(
-            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET_HEAP_MASK),
-            vec![
-                mir::Operand::Local(tuple_local),
-                mir::Operand::Constant(mir::Constant::Int(mask as i64)),
-            ],
-            Type::None,
-            mir_func,
-        );
     }
 
     /// Create a combined varargs tuple from extra positional operands + pre-built list tail tuple

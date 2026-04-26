@@ -68,42 +68,46 @@ impl<'a> Lowering<'a> {
 
             hir::GeneratorIntrinsic::GetLocal { gen, idx } => {
                 let gen_op = self.lower_expr(&hir_module.exprs[*gen], hir_module, mir_func)?;
-                let dest = self.emit_runtime_call(
+                // §F.7b: locals are uniformly tagged Values. Load the raw
+                // Value bits and unbox to the typed representation:
+                // - Float: rt_unbox_float (boxed FloatObj pointer)
+                // - Int: UnwrapValueInt (inline tag arithmetic)
+                // - Bool: UnwrapValueBool (inline tag arithmetic)
+                // - None/heap/Any: pass the Value bits through unchanged
+                let read_ty = expr.ty.clone().unwrap_or(Type::Int);
+                let loaded = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&RT_GENERATOR_GET_LOCAL),
                     vec![
                         gen_op,
                         mir::Operand::Constant(mir::Constant::Int(*idx as i64)),
                     ],
-                    Type::Int,
+                    Type::HeapAny,
                     mir_func,
                 );
-                Ok(mir::Operand::Local(dest))
+                let result = self.unbox_if_needed(mir::Operand::Local(loaded), &read_ty, mir_func);
+                Ok(result)
             }
 
             hir::GeneratorIntrinsic::SetLocal { gen, idx, value } => {
                 let gen_op = self.lower_expr(&hir_module.exprs[*gen], hir_module, mir_func)?;
                 let val_op = self.lower_expr(&hir_module.exprs[*value], hir_module, mir_func)?;
+                // §F.7b: every value stored into a generator local must be a
+                // properly-tagged Value so the GC can walk locals uniformly
+                // via `Value::is_ptr()`. Use `box_primitive_if_needed` to
+                // produce the tagged Value for all primitive types:
+                // - Int  → ValueFromInt  (inline tag arithmetic, no alloc)
+                // - Bool → ValueFromBool (inline tag arithmetic, no alloc)
+                // - Float → rt_box_float (heap-allocated FloatObj pointer)
+                // - None → rt_box_none (singleton NoneObj pointer)
+                // - Heap/Any → pass through (already a tagged Value/pointer)
+                let value_ty = self.seed_expr_type(*value, hir_module);
+                let stored_op = self.box_primitive_if_needed(val_op, &value_ty, mir_func);
                 let dest = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&RT_GENERATOR_SET_LOCAL),
                     vec![
                         gen_op,
                         mir::Operand::Constant(mir::Constant::Int(*idx as i64)),
-                        val_op,
-                    ],
-                    Type::Int,
-                    mir_func,
-                );
-                Ok(mir::Operand::Local(dest))
-            }
-
-            hir::GeneratorIntrinsic::SetLocalType { gen, idx, type_tag } => {
-                let gen_op = self.lower_expr(&hir_module.exprs[*gen], hir_module, mir_func)?;
-                let dest = self.emit_runtime_call(
-                    mir::RuntimeFunc::Call(&RT_GENERATOR_SET_LOCAL_TYPE),
-                    vec![
-                        gen_op,
-                        mir::Operand::Constant(mir::Constant::Int(*idx as i64)),
-                        mir::Operand::Constant(mir::Constant::Int(*type_tag as i64)),
+                        stored_op,
                     ],
                     Type::Int,
                     mir_func,
@@ -150,23 +154,45 @@ impl<'a> Lowering<'a> {
             hir::GeneratorIntrinsic::IterNextNoExc(iter_expr_id) => {
                 let iter_op =
                     self.lower_expr(&hir_module.exprs[*iter_expr_id], hir_module, mir_func)?;
-                // Derive the destination type from the iterator's element
-                // type so tuple iterators (e.g. `zip(a, b)`) propagate
-                // `Tuple<..>` downstream to `lower_binding_target`. The
-                // runtime always returns raw i64 (a value or heap pointer),
-                // so the MIR type is just bookkeeping — the bits are the
-                // same.
+                // After §F.7c BigBang: list/dict/tuple/set iterators return tagged
+                // Value bits. Read into HeapAny, then unwrap Int/Bool for typed callers.
                 let iter_ty = self.seed_expr_type(*iter_expr_id, hir_module);
                 let dest_ty = crate::utils::get_iterable_info(&iter_ty)
                     .map(|(_k, elem)| elem)
                     .or_else(|| expr.ty.clone())
                     .unwrap_or(Type::Int);
-                let dest = self.emit_runtime_call(
+                let raw = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&RT_ITER_NEXT_NO_EXC),
                     vec![iter_op],
-                    dest_ty,
+                    Type::HeapAny,
                     mir_func,
                 );
+                let dest = match &dest_ty {
+                    Type::Int => {
+                        let d = self.alloc_and_add_local(Type::Int, mir_func);
+                        self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                            dest: d,
+                            src: mir::Operand::Local(raw),
+                        });
+                        d
+                    }
+                    Type::Bool => {
+                        let d = self.alloc_and_add_local(Type::Bool, mir_func);
+                        self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+                            dest: d,
+                            src: mir::Operand::Local(raw),
+                        });
+                        d
+                    }
+                    _ => {
+                        let d = self.alloc_and_add_local(dest_ty.clone(), mir_func);
+                        self.emit_instruction(mir::InstructionKind::Copy {
+                            dest: d,
+                            src: mir::Operand::Local(raw),
+                        });
+                        d
+                    }
+                };
                 Ok(mir::Operand::Local(dest))
             }
 

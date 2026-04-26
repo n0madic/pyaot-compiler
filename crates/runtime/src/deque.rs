@@ -5,7 +5,7 @@
 
 use crate::exceptions::ExceptionType;
 use crate::gc;
-use crate::object::{DequeObj, Obj, TypeTagKind, ELEM_HEAP_OBJ};
+use crate::object::{DequeObj, Obj, TypeTagKind};
 
 /// Minimum ring buffer capacity (power of 2)
 const MIN_CAPACITY: usize = 8;
@@ -25,7 +25,6 @@ pub extern "C" fn rt_make_deque(maxlen: i64) -> *mut Obj {
         (*deque).head = 0;
         (*deque).len = 0;
         (*deque).maxlen = maxlen;
-        (*deque).elem_tag = ELEM_HEAP_OBJ;
     }
 
     obj
@@ -86,7 +85,7 @@ pub extern "C" fn rt_deque_append(deque: *mut Obj, elem: *mut Obj) {
         ensure_capacity(d);
 
         let idx = ((*d).head + (*d).len) % (*d).capacity;
-        *(*d).data.add(idx) = elem;
+        *(*d).data.add(idx) = pyaot_core_defs::Value(elem as u64);
         (*d).len += 1;
     }
 }
@@ -113,7 +112,7 @@ pub extern "C" fn rt_deque_appendleft(deque: *mut Obj, elem: *mut Obj) {
         } else {
             (*d).head - 1
         };
-        *(*d).data.add((*d).head) = elem;
+        *(*d).data.add((*d).head) = pyaot_core_defs::Value(elem as u64);
         (*d).len += 1;
     }
 }
@@ -128,7 +127,7 @@ pub extern "C" fn rt_deque_pop(deque: *mut Obj) -> *mut Obj {
         }
         (*d).len -= 1;
         let idx = ((*d).head + (*d).len) % (*d).capacity;
-        *(*d).data.add(idx)
+        (*(*d).data.add(idx)).0 as *mut Obj
     }
 }
 
@@ -140,7 +139,7 @@ pub extern "C" fn rt_deque_popleft(deque: *mut Obj) -> *mut Obj {
         if (*d).len == 0 {
             raise_exc!(ExceptionType::IndexError, "pop from an empty deque");
         }
-        let elem = *(*d).data.add((*d).head);
+        let elem = (*(*d).data.add((*d).head)).0 as *mut Obj;
         (*d).head = ((*d).head + 1) % (*d).capacity;
         (*d).len -= 1;
         elem
@@ -237,7 +236,7 @@ pub extern "C" fn rt_deque_get(deque: *mut Obj, index: i64) -> *mut Obj {
             raise_exc!(ExceptionType::IndexError, "deque index out of range");
         }
         let ring_idx = ((*d).head + actual_idx as usize) % (*d).capacity;
-        *(*d).data.add(ring_idx)
+        (*(*d).data.add(ring_idx)).0 as *mut Obj
     }
 }
 
@@ -252,7 +251,7 @@ pub extern "C" fn rt_deque_set(deque: *mut Obj, index: i64, value: *mut Obj) {
             raise_exc!(ExceptionType::IndexError, "deque index out of range");
         }
         let ring_idx = ((*d).head + actual_idx as usize) % (*d).capacity;
-        *(*d).data.add(ring_idx) = value;
+        *(*d).data.add(ring_idx) = pyaot_core_defs::Value(value as u64);
     }
 }
 
@@ -294,7 +293,7 @@ pub extern "C" fn rt_deque_copy(deque: *mut Obj) -> *mut Obj {
         let _new_d = new_obj as *mut DequeObj;
         for i in 0..(*d).len {
             let idx = ((*d).head + i) % (*d).capacity;
-            let elem = *(*d).data.add(idx);
+            let elem = (*(*d).data.add(idx)).0 as *mut Obj;
             rt_deque_append(new_obj, elem);
         }
         new_obj
@@ -309,7 +308,7 @@ pub extern "C" fn rt_deque_count(deque: *mut Obj, value: *mut Obj) -> i64 {
         let mut count: i64 = 0;
         for i in 0..(*d).len {
             let idx = ((*d).head + i) % (*d).capacity;
-            let elem = *(*d).data.add(idx);
+            let elem = (*(*d).data.add(idx)).0 as *mut Obj;
             if crate::hash_table_utils::eq_hashable_obj(elem, value) {
                 count += 1;
             }
@@ -324,7 +323,8 @@ pub unsafe fn deque_finalize(obj: *mut Obj) {
     let d = obj as *mut DequeObj;
     let cap = (*d).capacity;
     if !(*d).data.is_null() && cap > 0 {
-        let layout = Layout::array::<*mut Obj>(cap).expect("Allocation size overflow");
+        let layout =
+            Layout::array::<pyaot_core_defs::Value>(cap).expect("Allocation size overflow");
         dealloc((*d).data as *mut u8, layout);
         (*d).data = std::ptr::null_mut();
     }
@@ -335,10 +335,11 @@ pub unsafe fn deque_finalize(obj: *mut Obj) {
 // =============================================================================
 
 /// Allocate a ring buffer of the given capacity
-fn alloc_ring_buffer(capacity: usize) -> *mut *mut Obj {
+fn alloc_ring_buffer(capacity: usize) -> *mut pyaot_core_defs::Value {
     use std::alloc::{alloc_zeroed, Layout};
-    let layout = Layout::array::<*mut Obj>(capacity).expect("Allocation size overflow");
-    unsafe { alloc_zeroed(layout) as *mut *mut Obj }
+    let layout =
+        Layout::array::<pyaot_core_defs::Value>(capacity).expect("Allocation size overflow");
+    unsafe { alloc_zeroed(layout) as *mut pyaot_core_defs::Value }
 }
 
 /// Ensure the ring buffer has room for one more element
@@ -361,7 +362,8 @@ unsafe fn ensure_capacity(d: *mut DequeObj) {
     // Free old buffer
     if !(*d).data.is_null() && old_cap > 0 {
         use std::alloc::{dealloc, Layout};
-        let layout = Layout::array::<*mut Obj>(old_cap).expect("Allocation size overflow");
+        let layout =
+            Layout::array::<pyaot_core_defs::Value>(old_cap).expect("Allocation size overflow");
         dealloc((*d).data as *mut u8, layout);
     }
 

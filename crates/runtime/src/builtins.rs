@@ -9,7 +9,8 @@
 //! Functions that return int/float/bool box their result for uniform handling.
 
 use crate::boxing;
-use crate::object::{BoolObj, BytesObj, FloatObj, IntObj, Obj, StrObj, TypeTagKind};
+use crate::object::{BytesObj, FloatObj, Obj, StrObj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 // =============================================================================
 // BUILTIN WRAPPER FUNCTIONS
@@ -37,6 +38,9 @@ pub extern "C" fn rt_builtin_len(obj: *mut Obj) -> *mut Obj {
         // SAFETY: static byte string literal is valid for the duration of the call.
         unsafe { raise_type_error("len() argument is None") };
     }
+    if !pyaot_core_defs::Value(obj as u64).is_ptr() {
+        unsafe { raise_type_error("object of this type has no len()") };
+    }
     let len = unsafe {
         match (*obj).type_tag() {
             TypeTagKind::List => crate::list::rt_list_len(obj),
@@ -49,7 +53,7 @@ pub extern "C" fn rt_builtin_len(obj: *mut Obj) -> *mut Obj {
         }
     };
     // Box the result
-    boxing::rt_box_int(len)
+    pyaot_core_defs::Value::from_int(len).0 as *mut crate::object::Obj
 }
 
 /// str(obj) -> *mut Obj (StrObj)
@@ -67,25 +71,25 @@ pub extern "C" fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
         // SAFETY: static byte string literal.
         unsafe { raise_type_error("int() argument is None") };
     }
-    let value = unsafe {
-        match (*obj).type_tag() {
-            TypeTagKind::Int => (*(obj as *mut IntObj)).value,
-            TypeTagKind::Float => (*(obj as *mut FloatObj)).value as i64,
-            TypeTagKind::Bool => {
-                if (*(obj as *mut BoolObj)).value {
-                    1
-                } else {
-                    0
-                }
+    // Check tagged primitives before heap dereference.
+    let v = Value(obj as u64);
+    let value = if v.is_int() {
+        v.unwrap_int()
+    } else if v.is_bool() {
+        v.unwrap_bool() as i64
+    } else {
+        unsafe {
+            match (*obj).type_tag() {
+                TypeTagKind::Float => (*(obj as *mut FloatObj)).value as i64,
+                TypeTagKind::Str => crate::conversions::rt_str_to_int(obj),
+                _ => raise_type_error(
+                    "int() argument must be a string, a bytes-like object or a real number",
+                ),
             }
-            TypeTagKind::Str => crate::conversions::rt_str_to_int(obj),
-            _ => raise_type_error(
-                "int() argument must be a string, a bytes-like object or a real number",
-            ),
         }
     };
     // Box the result
-    boxing::rt_box_int(value)
+    pyaot_core_defs::Value::from_int(value).0 as *mut crate::object::Obj
 }
 
 /// float(obj) -> *mut Obj (boxed Float)
@@ -96,19 +100,23 @@ pub extern "C" fn rt_builtin_float(obj: *mut Obj) -> *mut Obj {
         // SAFETY: static byte string literal.
         unsafe { raise_type_error("float() argument is None") };
     }
-    let result: f64 = unsafe {
-        match (*obj).type_tag() {
-            TypeTagKind::Float => (*(obj as *mut FloatObj)).value,
-            TypeTagKind::Int => (*(obj as *mut IntObj)).value as f64,
-            TypeTagKind::Bool => {
-                if (*(obj as *mut BoolObj)).value {
-                    1.0
-                } else {
-                    0.0
-                }
+    // Check tagged primitives before heap dereference.
+    let v = Value(obj as u64);
+    let result: f64 = if v.is_int() {
+        v.unwrap_int() as f64
+    } else if v.is_bool() {
+        if v.unwrap_bool() {
+            1.0
+        } else {
+            0.0
+        }
+    } else {
+        unsafe {
+            match (*obj).type_tag() {
+                TypeTagKind::Float => (*(obj as *mut FloatObj)).value,
+                TypeTagKind::Str => crate::conversions::rt_str_to_float(obj),
+                _ => raise_type_error("float() argument must be a string or a real number"),
             }
-            TypeTagKind::Str => crate::conversions::rt_str_to_float(obj),
-            _ => raise_type_error("float() argument must be a string or a real number"),
         }
     };
     // Box the result
@@ -119,13 +127,17 @@ pub extern "C" fn rt_builtin_float(obj: *mut Obj) -> *mut Obj {
 /// Returns truthiness of any object.
 #[no_mangle]
 pub extern "C" fn rt_builtin_bool(obj: *mut Obj) -> *mut Obj {
-    let value = if obj.is_null() {
+    // Check tagged primitives first (null = None = falsy).
+    let v = Value(obj as u64);
+    let value = if obj.is_null() || v.is_none() {
         false // None is falsy
+    } else if v.is_int() {
+        v.unwrap_int() != 0
+    } else if v.is_bool() {
+        v.unwrap_bool()
     } else {
         unsafe {
             match (*obj).type_tag() {
-                TypeTagKind::Bool => (*(obj as *mut BoolObj)).value,
-                TypeTagKind::Int => (*(obj as *mut IntObj)).value != 0,
                 TypeTagKind::Float => (*(obj as *mut FloatObj)).value != 0.0,
                 TypeTagKind::Str => {
                     let str_obj = obj as *mut StrObj;
@@ -146,7 +158,7 @@ pub extern "C" fn rt_builtin_bool(obj: *mut Obj) -> *mut Obj {
         }
     };
     // Box the result
-    boxing::rt_box_bool(if value { 1 } else { 0 })
+    pyaot_core_defs::Value::from_bool(value).0 as *mut crate::object::Obj
 }
 
 /// abs(obj) -> *mut Obj (boxed Int or Float)
@@ -157,20 +169,21 @@ pub extern "C" fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
         // SAFETY: static byte string literal.
         unsafe { raise_type_error("abs() argument is None") };
     }
+    // Check tagged primitives before heap dereference.
+    let v = Value(obj as u64);
+    if v.is_int() {
+        return pyaot_core_defs::Value::from_int(v.unwrap_int().abs()).0 as *mut crate::object::Obj;
+    }
+    if v.is_bool() {
+        // abs(True) = 1, abs(False) = 0
+        return pyaot_core_defs::Value::from_int(v.unwrap_bool() as i64).0
+            as *mut crate::object::Obj;
+    }
     unsafe {
         match (*obj).type_tag() {
-            TypeTagKind::Int => {
-                let value = (*(obj as *mut IntObj)).value;
-                boxing::rt_box_int(value.abs())
-            }
             TypeTagKind::Float => {
                 let value = (*(obj as *mut FloatObj)).value;
                 boxing::rt_box_float(value.abs())
-            }
-            TypeTagKind::Bool => {
-                // abs(True) = 1, abs(False) = 0
-                let value = if (*(obj as *mut BoolObj)).value { 1 } else { 0 };
-                boxing::rt_box_int(value)
             }
             _ => raise_type_error("bad operand type for abs()"),
         }
@@ -181,30 +194,28 @@ pub extern "C" fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
 /// Returns hash value of hashable object.
 #[no_mangle]
 pub extern "C" fn rt_builtin_hash(obj: *mut Obj) -> *mut Obj {
-    let value = if obj.is_null() {
+    // Check tagged primitives before heap dereference.
+    let v = Value(obj as u64);
+    let value = if obj.is_null() || v.is_none() {
         0 // hash(None) == 0
+    } else if v.is_int() {
+        crate::hash::rt_hash_int(v.unwrap_int())
+    } else if v.is_bool() {
+        crate::hash::rt_hash_bool(if v.unwrap_bool() { 1 } else { 0 })
     } else {
         unsafe {
             match (*obj).type_tag() {
-                TypeTagKind::Int => {
-                    let int_obj = obj as *mut IntObj;
-                    crate::hash::rt_hash_int((*int_obj).value)
-                }
-                TypeTagKind::Bool => {
-                    let bool_obj = obj as *mut BoolObj;
-                    crate::hash::rt_hash_bool(if (*bool_obj).value { 1 } else { 0 })
-                }
                 TypeTagKind::Float => {
                     let float_obj = obj as *mut FloatObj;
-                    let v = (*float_obj).value;
-                    if v == 0.0 {
+                    let fv = (*float_obj).value;
+                    if fv == 0.0 {
                         0 // hash(-0.0) == hash(0.0) == 0
-                    } else if v.fract() == 0.0 && v.is_finite() {
+                    } else if fv.fract() == 0.0 && fv.is_finite() {
                         // Integer-valued float: same hash as the equivalent integer
-                        crate::hash::rt_hash_int(v as i64)
+                        crate::hash::rt_hash_int(fv as i64)
                     } else {
                         // Non-integer float: use bit representation as input to the scramble
-                        crate::hash::rt_hash_int(v.to_bits() as i64)
+                        crate::hash::rt_hash_int(fv.to_bits() as i64)
                     }
                 }
                 TypeTagKind::Str => crate::hash::rt_hash_str(obj),
@@ -215,7 +226,7 @@ pub extern "C" fn rt_builtin_hash(obj: *mut Obj) -> *mut Obj {
         }
     };
     // Box the result
-    boxing::rt_box_int(value)
+    pyaot_core_defs::Value::from_int(value).0 as *mut crate::object::Obj
 }
 
 /// ord(obj) -> *mut Obj (boxed Int)
@@ -223,7 +234,7 @@ pub extern "C" fn rt_builtin_hash(obj: *mut Obj) -> *mut Obj {
 #[no_mangle]
 pub extern "C" fn rt_builtin_ord(obj: *mut Obj) -> *mut Obj {
     let value = crate::conversions::rt_chr_to_int(obj);
-    boxing::rt_box_int(value)
+    pyaot_core_defs::Value::from_int(value).0 as *mut crate::object::Obj
 }
 
 /// chr(obj) -> *mut Obj (StrObj)
@@ -235,13 +246,12 @@ pub extern "C" fn rt_builtin_chr(obj: *mut Obj) -> *mut Obj {
         // SAFETY: static byte string literal.
         unsafe { raise_type_error("chr() argument is None") };
     }
-    unsafe {
-        let codepoint = match (*obj).type_tag() {
-            TypeTagKind::Int => (*(obj as *mut IntObj)).value,
-            _ => raise_type_error("an integer is required for chr()"),
-        };
-        crate::conversions::rt_int_to_chr(codepoint)
+    let v = Value(obj as u64);
+    if v.is_int() {
+        return crate::conversions::rt_int_to_chr(v.unwrap_int());
     }
+    // SAFETY: static byte string literal is valid for the duration of the call.
+    unsafe { raise_type_error("an integer is required for chr()") }
 }
 
 /// repr(obj) -> *mut Obj (StrObj)

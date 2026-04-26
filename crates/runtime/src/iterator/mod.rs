@@ -20,7 +20,7 @@ pub use factory::{
 pub(crate) use next::rt_iter_next_internal;
 pub use next::{rt_iter_is_exhausted, rt_iter_next, rt_iter_next_no_exc};
 
-use crate::object::{Obj, TypeTagKind};
+use crate::object::Obj;
 
 /// Sentinel value indicating iterator exhaustion.
 /// Using usize::MAX as sentinel because:
@@ -28,48 +28,3 @@ use crate::object::{Obj, TypeTagKind};
 /// 2. For raw integers, it's an extremely unlikely value in practice
 /// 3. Even if a list contains MAX_INT, comparing pointers will use the actual storage value
 pub(crate) const EXHAUSTED_SENTINEL: *mut Obj = usize::MAX as *mut Obj;
-
-/// Helper to box an element if it came from a raw-value iterator (list[int], tuple[int,...], range, bytes)
-/// Returns the element as-is if it's already a heap object, or boxes it if raw
-pub(crate) unsafe fn box_if_raw_int_iterator(iter: *mut Obj, elem: *mut Obj) -> *mut Obj {
-    use crate::boxing::rt_box_int;
-    use crate::object::{IteratorKind, IteratorObj, ListObj, TupleObj, ELEM_RAW_INT};
-
-    if iter.is_null() {
-        return elem;
-    }
-
-    let type_tag = (*iter).header.type_tag;
-
-    if type_tag == TypeTagKind::Iterator {
-        let iter_obj = iter as *mut IteratorObj;
-        let kind = IteratorKind::try_from((*iter_obj).kind)
-            .expect("box_if_raw_int_iterator: invalid iterator kind");
-
-        match kind {
-            IteratorKind::Range | IteratorKind::Bytes => {
-                // These always yield raw integers
-                return rt_box_int(elem as i64);
-            }
-            IteratorKind::List => {
-                // Check list's elem_tag
-                let list = (*iter_obj).source as *mut ListObj;
-                if (*list).elem_tag == ELEM_RAW_INT {
-                    return rt_box_int(elem as i64);
-                }
-            }
-            IteratorKind::Tuple => {
-                // Check tuple's elem_tag
-                let tuple = (*iter_obj).source as *mut TupleObj;
-                if (*tuple).elem_tag == ELEM_RAW_INT {
-                    return rt_box_int(elem as i64);
-                }
-            }
-            _ => {
-                // Other iterator types (Map, Filter, etc.) yield heap objects
-            }
-        }
-    }
-
-    elem
-}

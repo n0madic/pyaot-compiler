@@ -135,8 +135,7 @@ impl<'a> Lowering<'a> {
         let is_tuple = matches!(source_type, Type::Tuple(_));
 
         // Mirror the heap-obj promotion from `lower_unpack_assign` so nested
-        // `Any` elements route through `HeapAny` when the container backs
-        // them with `ELEM_HEAP_OBJ` storage.
+        // `Any` elements route through `HeapAny` for heap-typed containers.
         let uses_heap_obj = match source_type {
             Type::Tuple(elem_types) => {
                 elem_types.is_empty() || !elem_types.iter().all(|t| *t == Type::Int)
@@ -185,20 +184,21 @@ impl<'a> Lowering<'a> {
                 let mut temps: Vec<(usize, LocalId, Type)> = Vec::with_capacity(elts.len());
                 for (i, _leaf) in elts.iter().enumerate() {
                     let elem_ty = elem_type_at(i, elts.len());
-                    let get_func = if is_tuple {
-                        crate::type_dispatch::tuple_get_func(&elem_ty)
-                    } else {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
-                    };
-                    let temp_local = self.emit_runtime_call(
-                        get_func,
-                        vec![
+                    let temp_local = if is_tuple {
+                        self.emit_tuple_get(
                             source.clone(),
                             mir::Operand::Constant(mir::Constant::Int(i as i64)),
-                        ],
-                        elem_ty.clone(),
-                        mir_func,
-                    );
+                            elem_ty.clone(),
+                            mir_func,
+                        )
+                    } else {
+                        self.emit_list_get(
+                            source.clone(),
+                            mir::Operand::Constant(mir::Constant::Int(i as i64)),
+                            &elem_ty,
+                            mir_func,
+                        )
+                    };
                     temps.push((i, temp_local, elem_ty));
                 }
                 for (i, leaf) in elts.iter().enumerate() {
@@ -225,20 +225,21 @@ impl<'a> Lowering<'a> {
                 let mut before_temps: Vec<(LocalId, Type)> = Vec::with_capacity(before.len());
                 for (i, _) in before.iter().enumerate() {
                     let elem_ty = elem_type_at(i, elts.len());
-                    let get_func = if is_tuple {
-                        crate::type_dispatch::tuple_get_func(&elem_ty)
-                    } else {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
-                    };
-                    let temp_local = self.emit_runtime_call(
-                        get_func,
-                        vec![
+                    let temp_local = if is_tuple {
+                        self.emit_tuple_get(
                             source.clone(),
                             mir::Operand::Constant(mir::Constant::Int(i as i64)),
-                        ],
-                        elem_ty.clone(),
-                        mir_func,
-                    );
+                            elem_ty.clone(),
+                            mir_func,
+                        )
+                    } else {
+                        self.emit_list_get(
+                            source.clone(),
+                            mir::Operand::Constant(mir::Constant::Int(i as i64)),
+                            &elem_ty,
+                            mir_func,
+                        )
+                    };
                     before_temps.push((temp_local, elem_ty));
                 }
 
@@ -288,20 +289,21 @@ impl<'a> Lowering<'a> {
                 for (i, _) in after.iter().enumerate() {
                     let neg_index = -((after.len() - i) as i64);
                     let elem_ty = elem_type_at_neg(neg_index);
-                    let get_func = if is_tuple {
-                        crate::type_dispatch::tuple_get_func(&elem_ty)
-                    } else {
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET)
-                    };
-                    let temp_local = self.emit_runtime_call(
-                        get_func,
-                        vec![
+                    let temp_local = if is_tuple {
+                        self.emit_tuple_get(
                             source.clone(),
                             mir::Operand::Constant(mir::Constant::Int(neg_index)),
-                        ],
-                        elem_ty.clone(),
-                        mir_func,
-                    );
+                            elem_ty.clone(),
+                            mir_func,
+                        )
+                    } else {
+                        self.emit_list_get(
+                            source.clone(),
+                            mir::Operand::Constant(mir::Constant::Int(neg_index)),
+                            &elem_ty,
+                            mir_func,
+                        )
+                    };
                     after_temps.push((temp_local, elem_ty));
                 }
 
@@ -413,8 +415,12 @@ impl<'a> Lowering<'a> {
                         .get(&field)
                         .cloned()
                         .unwrap_or(Type::Any);
-                    let coerced =
-                        self.coerce_to_field_type(value_operand, value_type, &field_ty, mir_func);
+                    let coerced = self.coerce_for_instance_field_store(
+                        value_operand,
+                        value_type,
+                        &field_ty,
+                        mir_func,
+                    );
                     self.emit_runtime_call(
                         mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD,
@@ -497,6 +503,58 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Coerce `value_operand` for storage into an instance field via
+    /// `RT_INSTANCE_SET_FIELD`. After §F.7c, `InstanceObj.fields` holds a
+    /// uniform `[Value]`: `Float` fields store `Value::from_ptr(*FloatObj)`
+    /// (heap-boxed via `rt_box_float`), `Int` fields store
+    /// `Value::from_int(n)` (via the `ValueFromInt` MIR), `Bool` fields store
+    /// `Value::from_bool(b)` (via `ValueFromBool`); heap and dynamic shapes
+    /// fall through to `coerce_to_field_type`.
+    pub(crate) fn coerce_for_instance_field_store(
+        &mut self,
+        value_operand: mir::Operand,
+        value_ty: &Type,
+        field_ty: &Type,
+        mir_func: &mut mir::Function,
+    ) -> mir::Operand {
+        if matches!(field_ty, Type::Float) {
+            let f64_operand = self.promote_to_float_if_needed(mir_func, value_operand, value_ty);
+            let boxed_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
+                vec![f64_operand],
+                Type::HeapAny,
+                mir_func,
+            );
+            return mir::Operand::Local(boxed_local);
+        }
+        if matches!(field_ty, Type::Int) {
+            // For Bool→Int field, widen i8→i64 first (PEP 3141 tower).
+            let int_operand = if matches!(value_ty, Type::Bool) {
+                let int_dest = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::BoolToInt {
+                    dest: int_dest,
+                    src: value_operand,
+                });
+                mir::Operand::Local(int_dest)
+            } else {
+                self.coerce_to_field_type(value_operand, value_ty, field_ty, mir_func)
+            };
+            let dest = self.alloc_and_add_local(Type::HeapAny, mir_func);
+            self.emit_instruction(mir::InstructionKind::ValueFromInt {
+                dest,
+                src: int_operand,
+            });
+            return mir::Operand::Local(dest);
+        }
+        if matches!(field_ty, Type::Bool) {
+            let coerced = self.coerce_to_field_type(value_operand, value_ty, field_ty, mir_func);
+            let dest = self.alloc_and_add_local(Type::HeapAny, mir_func);
+            self.emit_instruction(mir::InstructionKind::ValueFromBool { dest, src: coerced });
+            return mir::Operand::Local(dest);
+        }
+        self.coerce_to_field_type(value_operand, value_ty, field_ty, mir_func)
+    }
+
     /// Bind an already-lowered RHS operand into `obj[index]`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn bind_index_op(
@@ -534,25 +592,13 @@ impl<'a> Lowering<'a> {
                 );
             }
             Type::List(elem_ty) => {
-                let store_operand = if **elem_ty == Type::Float {
-                    let boxed_local = self.emit_runtime_call(
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
-                        vec![value_operand],
-                        Type::HeapAny,
-                        mir_func,
-                    );
-                    mir::Operand::Local(boxed_local)
-                } else if **elem_ty == Type::Bool {
-                    let boxed_local = self.emit_runtime_call(
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
-                        vec![value_operand],
-                        Type::HeapAny,
-                        mir_func,
-                    );
-                    mir::Operand::Local(boxed_local)
+                // After §F.7c: list slots store uniform tagged Values; box every primitive.
+                let box_type = if matches!(**elem_ty, Type::Union(_) | Type::Any) {
+                    value_type
                 } else {
-                    value_operand
+                    elem_ty.as_ref()
                 };
+                let store_operand = self.box_primitive_if_needed(value_operand, box_type, mir_func);
                 self.emit_runtime_call_void(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SET),
                     vec![obj_operand, index_operand, store_operand],

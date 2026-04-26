@@ -109,7 +109,7 @@ pub extern "C" fn rt_os_path_join(parts: *mut Obj) -> *mut Obj {
 
         // Join each component
         for i in 0..len {
-            let elem = crate::list::list_slot_raw(list_obj, i);
+            let elem = (*(*list_obj).data.add(i)).0 as *mut crate::object::Obj;
             if let Some(s) = crate::utils::extract_str_checked(elem) {
                 path.push(&s);
             }
@@ -289,7 +289,7 @@ pub extern "C" fn rt_os_listdir(path: *mut Obj) -> *mut Obj {
                 // Build list using rt_make_list + rt_list_push so GC ownership
                 // and finalization are handled correctly by list_finalize.
                 let count = names.len() as i64;
-                let list_ptr = crate::list::rt_make_list(count, 0 /* ELEM_HEAP_OBJ */);
+                let list_ptr = crate::list::rt_make_list(count);
 
                 // Root list_ptr so GC triggered by make_str_from_rust does not collect it.
                 let mut roots: [*mut Obj; 1] = [list_ptr];
@@ -493,7 +493,7 @@ pub extern "C" fn rt_os_path_split(path: *mut Obj) -> *mut Obj {
 
         // Create tuple with 2 string elements.
         // Root tuple and dirname_obj so they survive subsequent allocs.
-        let tuple = crate::tuple::rt_make_tuple(2, 0); // ELEM_HEAP_OBJ
+        let tuple = crate::tuple::rt_make_tuple(2);
         let mut roots: [*mut Obj; 2] = [tuple, std::ptr::null_mut()];
         let mut frame = ShadowFrame {
             prev: std::ptr::null_mut(),

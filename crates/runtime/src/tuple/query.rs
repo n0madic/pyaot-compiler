@@ -27,7 +27,7 @@ pub extern "C" fn rt_tuple_index(tuple: *mut Obj, value: *mut Obj) -> i64 {
         // Search for value using value equality
         for i in 0..len {
             let elem = *data.add(i);
-            if crate::ops::rt_obj_eq(elem, value) == 1 {
+            if crate::ops::rt_obj_eq(elem.0 as *mut Obj, value) == 1 {
                 return i as i64;
             }
         }
@@ -58,7 +58,7 @@ pub extern "C" fn rt_tuple_count(tuple: *mut Obj, value: *mut Obj) -> i64 {
         // Count occurrences using value equality
         for i in 0..len {
             let elem = *data.add(i);
-            if crate::ops::rt_obj_eq(elem, value) == 1 {
+            if crate::ops::rt_obj_eq(elem.0 as *mut Obj, value) == 1 {
                 count += 1;
             }
         }
@@ -97,46 +97,47 @@ pub extern "C" fn rt_tuple_minmax(tuple: *mut Obj, is_min: u8, elem_kind: u8) ->
         if elem_kind == 1 {
             find_extremum_float(data, len, want_min).to_bits() as i64
         } else {
-            find_extremum_int(data, len, want_min)
+            // Slots store tagged Values; find_extremum_int preserves ordering
+            // (sign-extending shift), but returns tagged bits — unwrap to raw int.
+            pyaot_core_defs::Value(find_extremum_int(data, len, want_min) as u64).unwrap_int()
         }
     }
 }
 
 /// Generic tuple min/max with key function.
-/// is_min: 0=min, 1=max
+/// `key_return_tag`: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1).
 #[no_mangle]
 pub extern "C" fn rt_tuple_minmax_with_key(
     tuple: *mut Obj,
     key_fn: i64,
-    elem_tag: i64,
     captures: *mut Obj,
     capture_count: i64,
     is_min: u8,
+    key_return_tag: u8,
 ) -> *mut Obj {
     unsafe {
         find_tuple_extremum_with_key(
             tuple,
             key_fn,
-            elem_tag,
             captures,
             capture_count as u8,
             is_min == 0,
+            key_return_tag,
         )
     }
 }
 
-/// Find extremum (min or max) element in a tuple using a key function
+/// Find extremum (min or max) element in a tuple using a key function.
 unsafe fn find_tuple_extremum_with_key(
     tuple: *mut Obj,
     key_fn: i64,
-    elem_tag: i64,
     captures: *mut Obj,
     capture_count: u8,
     is_min: bool,
+    key_return_tag: u8,
 ) -> *mut Obj {
     use crate::iterator::call_map_with_captures;
-    use crate::object::ELEM_RAW_INT;
-    use crate::sorted::compare_key_values;
+    use crate::sorted::{compare_key_values, unwrap_slot_for_key_fn, wrap_key_result};
 
     if tuple.is_null() {
         return std::ptr::null_mut();
@@ -161,26 +162,30 @@ unsafe fn find_tuple_extremum_with_key(
 
     let data = (*tuple_obj).data.as_ptr();
 
-    // Apply key function to first element
-    let mut extremum_elem = *data;
-    let boxed_elem = if elem_tag == ELEM_RAW_INT as i64 {
-        crate::boxing::rt_box_int(extremum_elem as i64)
-    } else {
-        extremum_elem
-    };
-    let mut extremum_key = call_map_with_captures(key_fn, captures, capture_count, boxed_elem);
+    let mut extremum_slot = *data;
+    let mut extremum_key = wrap_key_result(
+        call_map_with_captures(
+            key_fn,
+            captures,
+            capture_count,
+            unwrap_slot_for_key_fn(extremum_slot, key_return_tag),
+        ),
+        key_return_tag,
+    );
 
-    // Compare remaining elements
     for i in 1..len {
-        let elem = *data.add(i);
-        let boxed_elem = if elem_tag == ELEM_RAW_INT as i64 {
-            crate::boxing::rt_box_int(elem as i64)
-        } else {
-            elem
-        };
-        let key = call_map_with_captures(key_fn, captures, capture_count, boxed_elem);
+        let slot = *data.add(i);
+        let key = wrap_key_result(
+            call_map_with_captures(
+                key_fn,
+                captures,
+                capture_count,
+                unwrap_slot_for_key_fn(slot, key_return_tag),
+            ),
+            key_return_tag,
+        );
 
-        let cmp = compare_key_values(key, extremum_key);
+        let cmp = compare_key_values(key.0 as *mut Obj, extremum_key.0 as *mut Obj);
         let is_better = if is_min {
             cmp == std::cmp::Ordering::Less
         } else {
@@ -188,10 +193,16 @@ unsafe fn find_tuple_extremum_with_key(
         };
 
         if is_better {
-            extremum_elem = elem;
+            extremum_slot = slot;
             extremum_key = key;
         }
     }
 
-    extremum_elem // Return original element, not key!
+    if extremum_slot.is_int() {
+        extremum_slot.unwrap_int() as *mut Obj
+    } else if extremum_slot.is_bool() {
+        i64::from(extremum_slot.unwrap_bool()) as *mut Obj
+    } else {
+        extremum_slot.0 as *mut Obj
+    }
 }

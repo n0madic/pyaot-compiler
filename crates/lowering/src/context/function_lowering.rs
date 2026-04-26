@@ -2,8 +2,9 @@
 
 use pyaot_diagnostics::{CompilerWarnings, Result};
 use pyaot_hir as hir;
-use pyaot_mir::{self as mir, ValueKind};
+use pyaot_mir as mir;
 use pyaot_types::Type;
+use pyaot_utils::{LocalId, VarId};
 
 use super::Lowering;
 
@@ -161,7 +162,7 @@ impl<'a> Lowering<'a> {
         // (see `desugar_generator_expression` in frontend-python/comprehensions.rs).
         // Reuse the lambda capture-type inference path so those params get the
         // concrete outer-var types instead of defaulting to `Any`, which would
-        // mis-tag raw-int lists as ELEM_HEAP_OBJ in iterator setup.
+        // apply wrong types in iterator setup.
         let is_genexp_creator = func_name.starts_with("__genexp_");
         let is_module_init = func_name == "__pyaot_module_init__";
 
@@ -171,6 +172,34 @@ impl<'a> Lowering<'a> {
         } else {
             Vec::new()
         };
+
+        // Stage E (unified closure ABI): primitive-typed CAPTURE params of
+        // lambda-like callees take the tagged Value ABI. Captures arrive
+        // tagged from `rt_tuple_get` regardless of dispatch path (closure
+        // trampoline / HOF dispatcher / wrapper CallDirect — all three
+        // build their captures tuple with primitives boxed as tagged Values).
+        // The MIR slot is `Type::Any`; prologue `rt_unbox_*`
+        // writes a fresh concrete-typed local so body code keeps the
+        // raw-int / raw-bool / raw-float fast paths.
+        //
+        // User-visible params keep raw declared types: HOF runtime
+        // delivers iterable elements raw, and direct callers coerce via
+        // `box_primitive_if_needed` only when the param is Any-typed.
+        // Trampoline closure-dispatch must keep its args-tuple in a form
+        // that yields raw values when extracted alongside HEAP_OBJ
+        // captures — see `lower_indirect_call_with_varargs`.
+        let is_lambda_like = is_lambda || is_genexp_creator;
+        let capture_count = if is_lambda_like {
+            self.get_closure_capture_types(&func.id)
+                .map(|v| v.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Params deferred to after entry_block is set up. Each tuple is
+        // (var_id, param_local, concrete_base_ty).
+        let mut prologue_unboxes: Vec<(VarId, LocalId, Type)> = Vec::new();
 
         // Convert parameters from HIR to MIR
         let mut params = Vec::new();
@@ -195,14 +224,28 @@ impl<'a> Lowering<'a> {
                 self.closures.varargs_params.insert(hir_param.var);
             }
 
+            // Stage E: primitive-typed CAPTURE params of lambda-like
+            // functions take the tagged Value ABI. See block-level comment
+            // above for the design rationale.
+            let needs_prologue_unbox = is_lambda_like
+                && i < capture_count
+                && !is_cell_param
+                && hir_param.kind != hir::ParamKind::VarPositional
+                && matches!(base_ty, Type::Int | Type::Bool | Type::Float);
+
             // For nonlocal parameters, the type is a cell pointer (heap object pointer)
             let param_ty = if is_cell_param {
                 Type::HeapAny
+            } else if needs_prologue_unbox {
+                Type::Any
             } else {
-                base_ty
+                base_ty.clone()
             };
 
-            // Register parameter variable
+            // Register parameter variable. For prologue-unboxed params the
+            // binding is later overridden to point at the concrete local; the
+            // initial mapping is harmless because no expressions have been
+            // lowered yet.
             self.insert_var_local(hir_param.var, local_id);
             // Track parameter type for type inference (use the underlying value type, not cell type)
             // This is needed so that reading from the cell returns the correct type
@@ -215,7 +258,14 @@ impl<'a> Lowering<'a> {
                 };
                 self.insert_var_type(hir_param.var, value_ty);
             } else {
-                self.insert_var_type(hir_param.var, param_ty.clone());
+                // Body-facing var type is the concrete type (base_ty) even when
+                // the ABI slot is Any — downstream lookups see the unboxed
+                // concrete value via the redirected local.
+                self.insert_var_type(hir_param.var, base_ty.clone());
+            }
+
+            if needs_prologue_unbox {
+                prologue_unboxes.push((hir_param.var, local_id, base_ty.clone()));
             }
 
             let mir_param = mir::Local {
@@ -312,6 +362,48 @@ impl<'a> Lowering<'a> {
 
         let entry_block = self.new_block();
         self.push_block(entry_block);
+
+        // Stage E prologue: for lambda-like functions, unbox primitive-typed
+        // CAPTURE params once on entry and redirect the HIR var to the
+        // concrete-typed local. Bridges the tagged-Value ABI used by every
+        // lambda invocation path (closure trampoline, HOF dispatcher,
+        // wrapper CallDirect) with body-side raw-scalar code paths.
+        // Must run before cell initialization below, since `cell_vars` may
+        // contain a param whose initial value should already be unboxed.
+        for (var_id, param_local, base_ty) in prologue_unboxes {
+            let concrete_local = self.alloc_and_add_local(base_ty.clone(), &mut mir_func);
+            match base_ty {
+                Type::Int => {
+                    self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                        dest: concrete_local,
+                        src: mir::Operand::Local(param_local),
+                    });
+                }
+                Type::Bool => {
+                    self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+                        dest: concrete_local,
+                        src: mir::Operand::Local(param_local),
+                    });
+                }
+                Type::Float => {
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: concrete_local,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
+                        ),
+                        args: vec![mir::Operand::Local(param_local)],
+                    });
+                }
+                _ => unreachable!(
+                    "prologue_unboxes invariant violated: base_ty must be Int/Bool/Float"
+                ),
+            }
+            // Redirect subsequent reads of `var_id` to the unboxed local.
+            // `insert_var_type` already points at the concrete base_ty (set
+            // in the param loop above), so body-side type dispatch remains
+            // the concrete-primitive fast path.
+            self.insert_var_local(var_id, concrete_local);
+        }
 
         // Initialize cells for cell_vars (variables used by inner functions via nonlocal)
         // These need to be wrapped in cells from the start
@@ -487,7 +579,7 @@ impl<'a> Lowering<'a> {
 
                 // Store in global slot - mutable defaults are always heap types (ptr)
                 self.emit_runtime_call(
-                    mir::RuntimeFunc::Call(ValueKind::Ptr.global_set_def()),
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GLOBAL_SET_PTR),
                     vec![
                         mir::Operand::Constant(mir::Constant::Int(slot as i64)),
                         default_operand,

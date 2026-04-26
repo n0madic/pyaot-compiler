@@ -256,8 +256,7 @@ pub(crate) fn resolve_index_type(obj_ty: &Type, index_expr: &hir::Expr) -> Type 
                 let actual_idx = if *idx < 0 { len + idx } else { *idx };
                 if actual_idx >= 0 && (actual_idx as usize) < elems.len() {
                     let t = elems[actual_idx as usize].clone();
-                    // Tuple with ELEM_HEAP_OBJ stores elements as *mut Obj.
-                    // When element type is Any, promote to HeapAny.
+                    // Tuple slots are tagged Values; Any elements are promoted to HeapAny.
                     return if matches!(t, Type::Any) {
                         Type::HeapAny
                     } else {
@@ -541,7 +540,15 @@ pub(crate) fn resolve_builtin_call_type(
         }
 
         // === Chain ===
-        Builtin::Chain => Some(Type::Iterator(Box::new(Type::Any))),
+        Builtin::Chain => {
+            // Derive elem type from the first arg so for-loop unpack picks
+            // the right unwrap path (mirrors lower_chain).
+            let elem_type = arg_types
+                .first()
+                .map(extract_iterable_element_type)
+                .unwrap_or(Type::Any);
+            Some(Type::Iterator(Box::new(elem_type)))
+        }
 
         // === ISlice ===
         Builtin::ISlice => {

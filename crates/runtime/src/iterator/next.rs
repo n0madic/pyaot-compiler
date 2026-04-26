@@ -2,9 +2,9 @@
 //!
 //! Core iteration logic for all iterator types.
 
-use super::{box_if_raw_int_iterator, EXHAUSTED_SENTINEL};
+use super::EXHAUSTED_SENTINEL;
 use crate::exceptions;
-use crate::object::{GeneratorObj, Obj, TypeTagKind, ELEM_HEAP_OBJ};
+use crate::object::{GeneratorObj, Obj, TypeTagKind};
 
 use super::composite::{call_filter_with_captures, call_map_with_captures};
 
@@ -127,7 +127,10 @@ unsafe fn iter_next_list(
         return EXHAUSTED_SENTINEL;
     }
 
-    let result = crate::list::list_slot_raw(list, idx as usize);
+    // After §F.7c BigBang: return tagged Value bits unchanged. Typed Int/Bool
+    // consumers emit UnwrapValueInt/UnwrapValueBool in lowering; Union/Any/Heap
+    // consumers pass through as *mut Obj.
+    let result = (*(*list).data.add(idx as usize)).0 as *mut Obj;
     if reversed {
         (*iter).index -= 1;
     } else {
@@ -158,7 +161,9 @@ unsafe fn iter_next_tuple(
         return EXHAUSTED_SENTINEL;
     }
 
-    let result = *(*tuple).data.as_ptr().add(idx as usize);
+    // After §F.7c BigBang: return tagged Value bits unchanged. Typed Int/Bool
+    // consumers emit UnwrapValueInt/UnwrapValueBool in lowering.
+    let result = (*(*tuple).data.as_ptr().add(idx as usize)).0 as *mut Obj;
     if reversed {
         (*iter).index -= 1;
     } else {
@@ -189,7 +194,8 @@ unsafe fn iter_next_dict(
         return EXHAUSTED_SENTINEL;
     }
 
-    let result = crate::list::list_slot_raw(keys_list, idx as usize);
+    // After §F.7c BigBang: return tagged Value bits unchanged.
+    let result = (*(*keys_list).data.add(idx as usize)).0 as *mut Obj;
     if reversed {
         (*iter).index -= 1;
     } else {
@@ -222,7 +228,8 @@ unsafe fn iter_next_range(
     }
 
     (*iter).index += step;
-    current as *mut Obj
+    // After §F.7c BigBang: tag the integer so all iter_next_* return tagged Values.
+    pyaot_core_defs::Value::from_int(current).0 as *mut Obj
 }
 
 /// Next for set iterator
@@ -240,9 +247,10 @@ unsafe fn iter_next_set(
     while idx < capacity {
         let entry = entries.add(idx);
         let elem = (*entry).elem;
-        if !elem.is_null() && elem != TOMBSTONE {
+        if elem.0 != 0 && elem != TOMBSTONE {
             (*iter).index = (idx + 1) as i64;
-            return elem;
+            // After §F.7c BigBang: return tagged Value bits unchanged.
+            return elem.0 as *mut Obj;
         }
         idx += 1;
     }
@@ -282,7 +290,8 @@ unsafe fn iter_next_bytes(
     } else {
         (*iter).index += 1;
     }
-    byte_val as *mut Obj
+    // After §F.7c BigBang: tag the byte so all iter_next_* return tagged Values.
+    pyaot_core_defs::Value::from_int(byte_val).0 as *mut Obj
 }
 
 /// Next for enumerate iterator
@@ -308,9 +317,9 @@ unsafe fn iter_next_enumerate(
     let counter = (*iter).index;
     (*iter).index += 1;
 
-    // rt_box_int (counter > 256) and box_if_raw_int_iterator both call gc_alloc.
-    // rt_make_tuple also calls gc_alloc.  Root each intermediate result before
-    // the next allocation so GC stress test cannot collect them.
+    // Value::from_int (counter > 256) and rt_make_tuple both call gc_alloc.
+    // Root each intermediate result before the next allocation so GC stress
+    // test cannot collect them.
 
     // Step 1: box the counter; root elem across this call.
     let mut roots1: [*mut Obj; 1] = [elem];
@@ -320,7 +329,7 @@ unsafe fn iter_next_enumerate(
         roots: roots1.as_mut_ptr(),
     };
     gc_push(&mut frame1);
-    let boxed_counter = crate::boxing::rt_box_int(counter);
+    let boxed_counter = pyaot_core_defs::Value::from_int(counter).0 as *mut crate::object::Obj;
     gc_pop();
 
     // Step 2: box elem; root boxed_counter across this call.
@@ -331,7 +340,7 @@ unsafe fn iter_next_enumerate(
         roots: roots2.as_mut_ptr(),
     };
     gc_push(&mut frame2);
-    let boxed_elem = box_if_raw_int_iterator(inner, elem);
+    let boxed_elem = elem;
     gc_pop();
 
     // Step 3: allocate the tuple; root both boxed values.
@@ -342,12 +351,12 @@ unsafe fn iter_next_enumerate(
         roots: roots3.as_mut_ptr(),
     };
     gc_push(&mut frame3);
-    let tuple = crate::tuple::rt_make_tuple(2, ELEM_HEAP_OBJ);
+    let tuple = crate::tuple::rt_make_tuple(2);
     gc_pop();
 
     let tuple_obj = tuple as *mut TupleObj;
-    *(*tuple_obj).data.as_mut_ptr().add(0) = boxed_counter;
-    *(*tuple_obj).data.as_mut_ptr().add(1) = boxed_elem;
+    *(*tuple_obj).data.as_mut_ptr().add(0) = pyaot_core_defs::Value::from_ptr(boxed_counter);
+    *(*tuple_obj).data.as_mut_ptr().add(1) = pyaot_core_defs::Value::from_ptr(boxed_elem);
     tuple
 }
 
@@ -383,8 +392,7 @@ unsafe fn iter_next_zip(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
         return EXHAUSTED_SENTINEL;
     }
 
-    // box_if_raw_int_iterator and rt_make_tuple both call gc_alloc — root all
-    // live heap pointers before each allocation.
+    // rt_make_tuple calls gc_alloc — root all live heap pointers before each allocation.
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     // Step 1: box item1; root item2 (item1 itself may be raw, boxed result needs rooting
@@ -396,7 +404,7 @@ unsafe fn iter_next_zip(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
         roots: r1.as_mut_ptr(),
     };
     gc_push(&mut f1);
-    let boxed_item1 = box_if_raw_int_iterator((*zip_iter).iter1, item1);
+    let boxed_item1 = item1;
     gc_pop();
 
     // Step 2: box item2; root boxed_item1.
@@ -407,7 +415,7 @@ unsafe fn iter_next_zip(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
         roots: r2.as_mut_ptr(),
     };
     gc_push(&mut f2);
-    let boxed_item2 = box_if_raw_int_iterator((*zip_iter).iter2, item2);
+    let boxed_item2 = item2;
     gc_pop();
 
     // Step 3: allocate tuple; root both boxed items.
@@ -418,7 +426,7 @@ unsafe fn iter_next_zip(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
         roots: r3.as_mut_ptr(),
     };
     gc_push(&mut f3);
-    let tuple = crate::tuple::rt_make_tuple(2, ELEM_HEAP_OBJ);
+    let tuple = crate::tuple::rt_make_tuple(2);
     gc_pop();
 
     crate::tuple::rt_tuple_set(tuple, 0, boxed_item1);
@@ -466,8 +474,7 @@ unsafe fn iter_next_zip3(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
         return EXHAUSTED_SENTINEL;
     }
 
-    // box_if_raw_int_iterator and rt_make_tuple both call gc_alloc — root all
-    // live heap pointers before each allocation.
+    // rt_make_tuple calls gc_alloc — root all live heap pointers before each allocation.
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     // Step 1: box item1; root the two remaining raw items.
@@ -478,7 +485,7 @@ unsafe fn iter_next_zip3(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
         roots: r1.as_mut_ptr(),
     };
     gc_push(&mut f1);
-    let boxed_item1 = box_if_raw_int_iterator((*zip_iter).iter1, item1);
+    let boxed_item1 = item1;
     gc_pop();
 
     // Step 2: box item2; root boxed_item1 and the remaining raw item.
@@ -489,7 +496,7 @@ unsafe fn iter_next_zip3(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
         roots: r2.as_mut_ptr(),
     };
     gc_push(&mut f2);
-    let boxed_item2 = box_if_raw_int_iterator((*zip_iter).iter2, item2);
+    let boxed_item2 = item2;
     gc_pop();
 
     // Step 3: box item3; root the two already-boxed items.
@@ -500,7 +507,7 @@ unsafe fn iter_next_zip3(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
         roots: r3.as_mut_ptr(),
     };
     gc_push(&mut f3);
-    let boxed_item3 = box_if_raw_int_iterator((*zip_iter).iter3, item3);
+    let boxed_item3 = item3;
     gc_pop();
 
     // Step 4: allocate tuple; root all three boxed items.
@@ -511,7 +518,7 @@ unsafe fn iter_next_zip3(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
         roots: r4.as_mut_ptr(),
     };
     gc_push(&mut f4);
-    let tuple = crate::tuple::rt_make_tuple(3, ELEM_HEAP_OBJ);
+    let tuple = crate::tuple::rt_make_tuple(3);
     gc_pop();
 
     crate::tuple::rt_tuple_set(tuple, 0, boxed_item1);
@@ -540,8 +547,7 @@ unsafe fn iter_next_zipn(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
     // but is not a GC object, so it won't be collected.
     let mut items: Vec<(*mut Obj, *mut Obj)> = Vec::with_capacity(count); // (iter, item)
     for i in 0..count {
-        // iters_list is ELEM_HEAP_OBJ (iterators are always heap); extract the pointer.
-        let iter_i = crate::list::list_slot_raw(iters_list, i);
+        let iter_i = (*(*iters_list).data.add(i)).0 as *mut Obj;
         let item = rt_iter_next_internal(iter_i, false);
         if item == EXHAUSTED_SENTINEL {
             (*zip_iter).exhausted = true;
@@ -553,25 +559,12 @@ unsafe fn iter_next_zipn(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut O
         items.push((iter_i, item));
     }
 
-    // Allocate the result tuple, then box and store each item.
-    // box_if_raw_int_iterator calls gc_alloc, so the tuple must be rooted while we
-    // box each element.  We use a single-element root slot and keep it updated.
-    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+    let root_tuple: *mut Obj = crate::tuple::rt_make_tuple(count as i64);
 
-    let mut root_tuple: *mut Obj = crate::tuple::rt_make_tuple(count as i64, ELEM_HEAP_OBJ);
-    let mut frame = ShadowFrame {
-        prev: std::ptr::null_mut(),
-        nroots: 1,
-        roots: &mut root_tuple as *mut *mut Obj,
-    };
-    gc_push(&mut frame);
-
-    for (i, &(iter_i, item)) in items.iter().enumerate() {
-        let boxed_item = box_if_raw_int_iterator(iter_i, item);
-        crate::tuple::rt_tuple_set(root_tuple, i as i64, boxed_item);
+    for (i, &(_iter_i, item)) in items.iter().enumerate() {
+        crate::tuple::rt_tuple_set(root_tuple, i as i64, item);
     }
 
-    gc_pop();
     root_tuple
 }
 
@@ -609,31 +602,40 @@ unsafe fn iter_next_map(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Ob
         return EXHAUSTED_SENTINEL;
     }
 
-    // Bit 7 of capture_count encodes whether raw int elements need boxing
-    // before calling the map function (set for builtins that expect *mut Obj).
+    // capture_count encoding (after §F.7c BigBang):
+    //   bits 0-7 of low byte: capture count (bit 7 is legacy needs_boxing — no-op now)
+    //   elem_unbox_kind:      separate field, set by lowering based on lambda's
+    //                         first non-capture param type
     let raw_cc = (*map_iter).capture_count;
-    let needs_boxing = raw_cc & 0x80 != 0;
     let actual_cc = raw_cc & 0x7F;
 
-    let elem_for_call = if needs_boxing {
-        box_if_raw_int_iterator((*map_iter).inner_iter, elem)
-    } else {
-        elem
+    let elem_for_call = match (*map_iter).elem_unbox_kind {
+        1 => pyaot_core_defs::Value(elem as u64).unwrap_int() as *mut Obj,
+        2 => i64::from(pyaot_core_defs::Value(elem as u64).unwrap_bool()) as *mut Obj,
+        _ => elem,
     };
 
     // Call map function with captures (if any)
     // Captures are prepended to the argument list: func(c0, c1, ..., elem)
-    call_map_with_captures(
+    let result = call_map_with_captures(
         (*map_iter).func_ptr,
         (*map_iter).captures,
         actual_cc,
         elem_for_call,
-    )
+    );
+
+    // After §F.7c BigBang: re-tag raw scalar return values so callers (for-loops,
+    // chained iterators) see uniform tagged Value bits.
+    match (*map_iter).result_box_kind {
+        1 => pyaot_core_defs::Value::from_int(result as i64).0 as *mut Obj,
+        2 => pyaot_core_defs::Value::from_bool((result as i64) != 0).0 as *mut Obj,
+        _ => result,
+    }
 }
 
 /// Next for filter iterator
 unsafe fn iter_next_filter(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Obj {
-    use crate::object::{FilterIterObj, IteratorObj, ELEM_RAW_INT};
+    use crate::object::{FilterIterObj, IteratorObj};
 
     let filter_iter = iter_obj as *mut FilterIterObj;
 
@@ -670,26 +672,21 @@ unsafe fn iter_next_filter(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut
         // Check if we should use truthiness filtering (func_ptr == 0)
         // or call a predicate function
         let passes = if (*filter_iter).func_ptr == 0 {
-            // filter(None, iterable) - use truthiness check
-            // Handle raw values vs heap objects based on elem_tag
-            match (*filter_iter).elem_tag {
-                ELEM_RAW_INT => {
-                    // Raw i64: truthy if non-zero
-                    (elem as i64) != 0
-                }
-                _ => {
-                    // Heap object (ELEM_HEAP_OBJ): use full truthiness check
-                    // Note: Bool is boxed in lists, so uses this path
-                    crate::ops::rt_is_truthy(elem) != 0
-                }
-            }
+            // filter(None, iterable) — elem is already a tagged Value after BigBang.
+            crate::ops::rt_is_truthy(elem) != 0
         } else {
-            // filter(func, iterable) - call predicate function with captures
+            // filter(func, iterable) - call predicate function with captures.
+            // Unbox tagged Value for typed Int/Bool predicate params.
+            let elem_for_call = match (*filter_iter).elem_unbox_kind {
+                1 => pyaot_core_defs::Value(elem as u64).unwrap_int() as *mut Obj,
+                2 => i64::from(pyaot_core_defs::Value(elem as u64).unwrap_bool()) as *mut Obj,
+                _ => elem,
+            };
             call_filter_with_captures(
                 (*filter_iter).func_ptr,
                 (*filter_iter).captures,
-                (*filter_iter).capture_count,
-                elem,
+                (*filter_iter).capture_count & 0x7F,
+                elem_for_call,
             )
         };
 
@@ -718,7 +715,7 @@ unsafe fn iter_next_chain(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut 
     while (*chain_iter).current_idx < (*chain_iter).num_iters {
         let iters_list = (*chain_iter).iters as *mut ListObj;
         let current_iter =
-            crate::list::list_slot_raw(iters_list, (*chain_iter).current_idx as usize);
+            (*(*iters_list).data.add((*chain_iter).current_idx as usize)).0 as *mut Obj;
 
         let elem = rt_iter_next_internal(current_iter, false);
         if elem != EXHAUSTED_SENTINEL {

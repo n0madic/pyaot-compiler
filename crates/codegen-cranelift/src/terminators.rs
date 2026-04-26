@@ -8,6 +8,7 @@ use cranelift_codegen::ir::InstBuilder;
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
+use pyaot_core_defs::tag::{BOOL_SHIFT, BOOL_TAG, INT_SHIFT, INT_TAG};
 use pyaot_diagnostics::Result;
 use pyaot_mir as mir;
 use pyaot_types::Type;
@@ -19,6 +20,27 @@ use crate::exceptions::{
 };
 use crate::instructions::calls::box_primitive;
 use crate::utils::{declare_runtime_function, get_call_result, load_operand, type_to_cranelift};
+
+/// Inline `Value::from_int(x)` — `(x << 3) | INT_TAG`. Same shape as
+/// `instructions::tag::compile_value_from_int` but reusable from
+/// terminator codegen without going through a MIR instruction.
+fn box_int_inline(
+    builder: &mut FunctionBuilder,
+    value: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    let shifted = builder.ins().ishl_imm(value, INT_SHIFT as i64);
+    builder.ins().bor_imm(shifted, INT_TAG as i64)
+}
+
+/// Inline `Value::from_bool(b)` — zero-extend i8 to i64, `(b << 3) | BOOL_TAG`.
+fn box_bool_inline(
+    builder: &mut FunctionBuilder,
+    value: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    let extended = builder.ins().uextend(cltypes::I64, value);
+    let shifted = builder.ins().ishl_imm(extended, BOOL_SHIFT as i64);
+    builder.ins().bor_imm(shifted, BOOL_TAG as i64)
+}
 
 /// Compile a MIR terminator to Cranelift IR
 pub fn compile_terminator(
@@ -64,27 +86,84 @@ pub fn compile_terminator(
                     builder.ins().return_(&[boxed_none]);
                 } else {
                     let ret_val = load_operand(builder, operand, ctx.symbols.var_map);
-                    // Coerce the return value to the expected return type if needed
-                    let expected_type = type_to_cranelift(ctx.debug.return_type);
-                    let val_type = builder.func.dfg.value_type(ret_val);
-                    let coerced_val = if val_type != expected_type {
-                        match (val_type, expected_type) {
-                            // i8 to i64 - unsigned extend (for bool values in Union types)
-                            (cltypes::I8, cltypes::I64) => {
-                                builder.ins().uextend(cltypes::I64, ret_val)
-                            }
-                            // f64 to i64 - bitcast (resume functions return i64 but field
-                            // loads may produce f64; bits are preserved for boxing/unboxing)
-                            (cltypes::F64, cltypes::I64) => builder.ins().bitcast(
-                                cltypes::I64,
-                                cranelift_codegen::ir::MemFlags::new(),
+                    // When the function's declared return type is a tagged-Value
+                    // slot (`Union[…]` / `Any` / `HeapAny`), box primitive operands
+                    // so callers see well-formed `Value` bits — immediate Int/Bool/
+                    // None tags or 8-byte-aligned heap pointers — instead of raw
+                    // scalars that downstream consumers (`rt_print_obj`, Phi merges
+                    // typed Union, etc.) would mis-decode as invalid pointers and
+                    // SEGV when dereferenced. Mirrors the merge-block boxing in
+                    // `coerce_phi_source_for_dest` below.
+                    //
+                    // After §F.7c BigBang: generator `*$resume` functions are
+                    // treated like any other function returning a tagged-Value
+                    // slot. The for-loop / next() consumer applies the same
+                    // UnwrapValue unwrapping as for List/Dict/Tuple/Set
+                    // iterators, so yields must arrive as tagged Value bits.
+                    let is_generator_resume = ctx.debug.function_name.ends_with("$resume");
+                    let coerced_val = if is_generator_resume
+                        || matches!(
+                            ctx.debug.return_type,
+                            Type::Union(_) | Type::Any | Type::HeapAny
+                        ) {
+                        let source_ty = operand_semantic_type(operand, ctx);
+                        match source_ty {
+                            // §F.7d.2: Int/Bool boxing happens inline as
+                            // tagged `Value` bits — no runtime call.
+                            Type::Int => box_int_inline(builder, ret_val),
+                            Type::Bool => box_bool_inline(builder, ret_val),
+                            Type::Float => box_primitive(
+                                builder,
+                                ctx.module,
+                                "rt_box_float",
+                                cltypes::F64,
                                 ret_val,
-                            ),
-                            // Other cases - return as-is
+                            )?,
+                            Type::None => box_none(builder, ctx)?,
+                            // Already heap-typed (Str/List/Dict/Tuple/…), Any, or
+                            // HeapAny — bits are already a valid tagged Value or an
+                            // 8-byte-aligned heap pointer; pass through.
                             _ => ret_val,
                         }
                     } else {
-                        ret_val
+                        // Same-shape return: keep the existing Cranelift-level
+                        // coercion (i8→i64 uextend for Bool stored as i8, f64→i64
+                        // bitcast for resume-function returns whose dfg type is
+                        // F64 but whose ABI is I64). Also promote Int/Bool → Float
+                        // for numeric-tower-promoted return types: when a function
+                        // returns either `1.5` or `0`, type inference unifies the
+                        // return type to `Float` (`int ⊂ float`), but the Int
+                        // branch's Return operand is still raw I64 — without the
+                        // (I64|I8, F64) arms below, Cranelift's verifier rejects
+                        // the function ("result has type i64, must match function
+                        // signature of f64").
+                        let expected_type = type_to_cranelift(ctx.debug.return_type);
+                        let val_type = builder.func.dfg.value_type(ret_val);
+                        if val_type != expected_type {
+                            match (val_type, expected_type) {
+                                (cltypes::I8, cltypes::I64) => {
+                                    builder.ins().uextend(cltypes::I64, ret_val)
+                                }
+                                (cltypes::F64, cltypes::I64) => builder.ins().bitcast(
+                                    cltypes::I64,
+                                    cranelift_codegen::ir::MemFlags::new(),
+                                    ret_val,
+                                ),
+                                // Int → Float: signed-int-to-float conversion.
+                                (cltypes::I64, cltypes::F64) => {
+                                    builder.ins().fcvt_from_sint(cltypes::F64, ret_val)
+                                }
+                                // Bool (i8) → Float: extend to i64 first, then
+                                // signed-int-to-float (False→0.0, True→1.0).
+                                (cltypes::I8, cltypes::F64) => {
+                                    let extended = builder.ins().uextend(cltypes::I64, ret_val);
+                                    builder.ins().fcvt_from_sint(cltypes::F64, extended)
+                                }
+                                _ => ret_val,
+                            }
+                        } else {
+                            ret_val
+                        }
                     };
                     builder.ins().return_(&[coerced_val]);
                 }
@@ -226,9 +305,10 @@ fn coerce_phi_source_for_dest(
 
     let source_ty = operand_semantic_type(source_op, ctx);
     match source_ty {
-        Type::Int => box_primitive(builder, ctx.module, "rt_box_int", cltypes::I64, value),
+        // §F.7d.2: Int/Bool inlined as tagged Value bits.
+        Type::Int => Ok(box_int_inline(builder, value)),
+        Type::Bool => Ok(box_bool_inline(builder, value)),
         Type::Float => box_primitive(builder, ctx.module, "rt_box_float", cltypes::F64, value),
-        Type::Bool => box_primitive(builder, ctx.module, "rt_box_bool", cltypes::I8, value),
         Type::None => box_none(builder, ctx),
         _ => Ok(value),
     }

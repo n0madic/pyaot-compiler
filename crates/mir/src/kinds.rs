@@ -2,104 +2,16 @@
 //!
 //! These enums classify values and operations to reduce the number of
 //! RuntimeFunc variants through parameterization.
-
-/// Value kind for typed storage operations (cells, globals, class attrs)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ValueKind {
-    Int,   // i64
-    Float, // f64
-    Bool,  // i8 (also used for None)
-    Ptr,   // *mut Obj (heap types)
-}
-
-impl ValueKind {
-    /// Runtime function suffix: "_int", "_float", "_bool", "_ptr"
-    pub fn suffix(&self) -> &'static str {
-        match self {
-            ValueKind::Int => "_int",
-            ValueKind::Float => "_float",
-            ValueKind::Bool => "_bool",
-            ValueKind::Ptr => "_ptr",
-        }
-    }
-
-    /// Get static RuntimeFuncDef for GlobalGet of this kind
-    pub fn global_get_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
-        use pyaot_core_defs::runtime_func_def::*;
-        match self {
-            ValueKind::Int => &RT_GLOBAL_GET_INT,
-            ValueKind::Float => &RT_GLOBAL_GET_FLOAT,
-            ValueKind::Bool => &RT_GLOBAL_GET_BOOL,
-            ValueKind::Ptr => &RT_GLOBAL_GET_PTR,
-        }
-    }
-
-    /// Get static RuntimeFuncDef for GlobalSet of this kind
-    pub fn global_set_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
-        use pyaot_core_defs::runtime_func_def::*;
-        match self {
-            ValueKind::Int => &RT_GLOBAL_SET_INT,
-            ValueKind::Float => &RT_GLOBAL_SET_FLOAT,
-            ValueKind::Bool => &RT_GLOBAL_SET_BOOL,
-            ValueKind::Ptr => &RT_GLOBAL_SET_PTR,
-        }
-    }
-
-    /// Get static RuntimeFuncDef for ClassAttrGet of this kind
-    pub fn class_attr_get_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
-        use pyaot_core_defs::runtime_func_def::*;
-        match self {
-            ValueKind::Int => &RT_CLASS_ATTR_GET_INT,
-            ValueKind::Float => &RT_CLASS_ATTR_GET_FLOAT,
-            ValueKind::Bool => &RT_CLASS_ATTR_GET_BOOL,
-            ValueKind::Ptr => &RT_CLASS_ATTR_GET_PTR,
-        }
-    }
-
-    /// Get static RuntimeFuncDef for ClassAttrSet of this kind
-    pub fn class_attr_set_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
-        use pyaot_core_defs::runtime_func_def::*;
-        match self {
-            ValueKind::Int => &RT_CLASS_ATTR_SET_INT,
-            ValueKind::Float => &RT_CLASS_ATTR_SET_FLOAT,
-            ValueKind::Bool => &RT_CLASS_ATTR_SET_BOOL,
-            ValueKind::Ptr => &RT_CLASS_ATTR_SET_PTR,
-        }
-    }
-
-    /// Get static RuntimeFuncDef for MakeCell of this kind
-    pub fn make_cell_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
-        use pyaot_core_defs::runtime_func_def::*;
-        match self {
-            ValueKind::Int => &RT_MAKE_CELL_INT,
-            ValueKind::Float => &RT_MAKE_CELL_FLOAT,
-            ValueKind::Bool => &RT_MAKE_CELL_BOOL,
-            ValueKind::Ptr => &RT_MAKE_CELL_PTR,
-        }
-    }
-
-    /// Get static RuntimeFuncDef for CellGet of this kind
-    pub fn cell_get_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
-        use pyaot_core_defs::runtime_func_def::*;
-        match self {
-            ValueKind::Int => &RT_CELL_GET_INT,
-            ValueKind::Float => &RT_CELL_GET_FLOAT,
-            ValueKind::Bool => &RT_CELL_GET_BOOL,
-            ValueKind::Ptr => &RT_CELL_GET_PTR,
-        }
-    }
-
-    /// Get static RuntimeFuncDef for CellSet of this kind
-    pub fn cell_set_def(&self) -> &'static pyaot_core_defs::RuntimeFuncDef {
-        use pyaot_core_defs::runtime_func_def::*;
-        match self {
-            ValueKind::Int => &RT_CELL_SET_INT,
-            ValueKind::Float => &RT_CELL_SET_FLOAT,
-            ValueKind::Bool => &RT_CELL_SET_BOOL,
-            ValueKind::Ptr => &RT_CELL_SET_PTR,
-        }
-    }
-}
+//!
+//! Phase 2 §F.6 deleted the previous storage-kind enum and its
+//! `*_def()` accessors; storage selectors now live in
+//! `crates/lowering/src/runtime_selector.rs::pick_storage_def`. The
+//! eight runtime-side function families they pointed at
+//! (rt_global_get/set, rt_class_attr_get/set, rt_make_cell,
+//! rt_cell_get/set; each with int/float/bool/ptr variants) are slated to
+//! collapse to seven uniform `Value`-typed externs in a follow-up
+//! refactor; for now they remain available for callers that already
+//! pre-tag/box on the lowering side.
 
 /// String format for repr/ascii operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

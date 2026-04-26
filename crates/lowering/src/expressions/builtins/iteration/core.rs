@@ -178,19 +178,48 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // Determine element type from iterator type
+        // After §F.7c BigBang: list/dict/tuple/set iterators return tagged
+        // Value bits. Bind to HeapAny first, then unwrap Int/Bool for typed callers.
         let elem_type = match &arg_type {
             Type::Iterator(elem) => (**elem).clone(),
-            _ => Type::Any, // If not an iterator type, default to Any
+            _ => Type::Any,
         };
 
-        // Create result local with element type
-        let result_local = self.emit_runtime_call(
+        let raw_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT),
             vec![arg_operand],
-            elem_type,
+            Type::HeapAny,
             mir_func,
         );
+
+        let result_local = match &elem_type {
+            Type::Int => {
+                let dest = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                    dest,
+                    src: mir::Operand::Local(raw_local),
+                });
+                dest
+            }
+            Type::Bool => {
+                let dest = self.alloc_and_add_local(Type::Bool, mir_func);
+                self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+                    dest,
+                    src: mir::Operand::Local(raw_local),
+                });
+                dest
+            }
+            _ => {
+                // Re-tag the local with the proper element type so downstream
+                // type-aware lowering sees the right type.
+                let dest = self.alloc_and_add_local(elem_type.clone(), mir_func);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest,
+                    src: mir::Operand::Local(raw_local),
+                });
+                dest
+            }
+        };
 
         Ok(mir::Operand::Local(result_local))
     }

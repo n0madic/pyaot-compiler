@@ -27,9 +27,10 @@ pub extern "C" fn rt_set_issubset(a: *mut Obj, b: *mut Obj) -> i8 {
         for i in 0..a_capacity {
             let entry = (*a_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                let hash = hash_hashable_obj(elem);
-                let slot = find_set_slot(b_obj, elem, hash, false);
+            if elem.0 != 0 && elem != TOMBSTONE {
+                let elem_ptr = elem.0 as *mut Obj;
+                let hash = hash_hashable_obj(elem_ptr);
+                let slot = find_set_slot(b_obj, elem_ptr, hash, false);
                 if slot < 0 {
                     return 0; // Found element in a that is not in b
                 }
@@ -68,9 +69,10 @@ pub extern "C" fn rt_set_isdisjoint(a: *mut Obj, b: *mut Obj) -> i8 {
         for i in 0..a_capacity {
             let entry = (*a_obj).entries.add(i);
             let elem = (*entry).elem;
-            if !elem.is_null() && elem != TOMBSTONE {
-                let hash = hash_hashable_obj(elem);
-                let slot = find_set_slot(b_obj, elem, hash, false);
+            if elem.0 != 0 && elem != TOMBSTONE {
+                let elem_ptr = elem.0 as *mut Obj;
+                let hash = hash_hashable_obj(elem_ptr);
+                let slot = find_set_slot(b_obj, elem_ptr, hash, false);
                 if slot >= 0 {
                     return 0; // Found element in both sets
                 }

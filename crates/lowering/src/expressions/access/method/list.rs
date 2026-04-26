@@ -23,54 +23,15 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         match method_name {
             "append" => {
-                // .append(value) - mutates list, returns None
+                // After §F.7c: list slots store uniform tagged Values; box every primitive.
                 let value_operand = crate::first_arg_or_none(arg_operands);
-
-                // When elem_ty is Any (e.g., `li = []` without annotation), the list was
-                // created with ELEM_HEAP_OBJ. If the actual value is Int, we need to
-                // update the list's elem_tag to ELEM_RAW_INT before storing the raw value.
-                let actual_value_ty = arg_types.first();
-                if *elem_ty == Type::Any {
-                    if let Some(Type::Int) = actual_value_ty {
-                        let _dummy = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_LIST_SET_ELEM_TAG,
-                            ),
-                            vec![
-                                obj_operand.clone(),
-                                mir::Operand::Constant(mir::Constant::Int(1)), // ELEM_RAW_INT
-                            ],
-                            Type::None,
-                            mir_func,
-                        );
-                    }
-                }
-
-                // Box the value if the element type requires it
-                // Bool and Float elements are stored as boxed objects (ELEM_HEAP_OBJ)
-                let push_operand = match &*elem_ty {
-                    Type::Bool => {
-                        let boxed_local = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
-                            vec![value_operand],
-                            Type::HeapAny,
-                            mir_func,
-                        );
-                        mir::Operand::Local(boxed_local)
-                    }
-                    Type::Float => {
-                        let boxed_local = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT,
-                            ),
-                            vec![value_operand],
-                            Type::HeapAny,
-                            mir_func,
-                        );
-                        mir::Operand::Local(boxed_local)
-                    }
-                    _ => value_operand,
+                let actual_value_ty = arg_types.first().cloned().unwrap_or(Type::Any);
+                let box_type = if matches!(*elem_ty, Type::Union(_) | Type::Any) {
+                    actual_value_ty
+                } else {
+                    (*elem_ty).clone()
                 };
+                let push_operand = self.box_primitive_if_needed(value_operand, &box_type, mir_func);
 
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_APPEND),
@@ -102,14 +63,11 @@ impl<'a> Lowering<'a> {
                             Type::HeapAny,
                             mir_func,
                         );
-                        let result_local = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL,
-                            ),
-                            vec![mir::Operand::Local(boxed_local)],
-                            Type::Bool,
-                            mir_func,
-                        );
+                        let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
+                        self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+                            dest: result_local,
+                            src: mir::Operand::Local(boxed_local),
+                        });
                         Ok(mir::Operand::Local(result_local))
                     }
                     Type::Float => {
@@ -127,6 +85,20 @@ impl<'a> Lowering<'a> {
                             Type::Float,
                             mir_func,
                         );
+                        Ok(mir::Operand::Local(result_local))
+                    }
+                    Type::Int => {
+                        let boxed_local = self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_POP),
+                            vec![obj_operand, index_arg],
+                            Type::HeapAny,
+                            mir_func,
+                        );
+                        let result_local = self.alloc_and_add_local(Type::Int, mir_func);
+                        self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                            dest: result_local,
+                            src: mir::Operand::Local(boxed_local),
+                        });
                         Ok(mir::Operand::Local(result_local))
                     }
                     _ => {
@@ -153,13 +125,20 @@ impl<'a> Lowering<'a> {
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
 
                 let boxed_value = match &*elem_ty {
+                    Type::Int => {
+                        let tagged_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
+                        self.emit_instruction(mir::InstructionKind::ValueFromInt {
+                            dest: tagged_local,
+                            src: value_operand,
+                        });
+                        mir::Operand::Local(tagged_local)
+                    }
                     Type::Bool => {
-                        let boxed_local = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
-                            vec![value_operand],
-                            Type::HeapAny,
-                            mir_func,
-                        );
+                        let boxed_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
+                        self.emit_instruction(mir::InstructionKind::ValueFromBool {
+                            dest: boxed_local,
+                            src: value_operand,
+                        });
                         mir::Operand::Local(boxed_local)
                     }
                     Type::Float => {
@@ -186,33 +165,15 @@ impl<'a> Lowering<'a> {
                 Ok(mir::Operand::Local(result_local))
             }
             "remove" => {
-                // .remove(value) - mutates list, returns None (or 1/0 internally)
-                // Box the search value if the element type requires it (Bool/Float)
+                // .remove(value): box search value (slots are tagged Values post-§F.7c).
                 let value_operand = crate::first_arg_or_none(arg_operands);
-
-                let boxed_value = match &*elem_ty {
-                    Type::Bool => {
-                        let boxed_local = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
-                            vec![value_operand],
-                            Type::HeapAny,
-                            mir_func,
-                        );
-                        mir::Operand::Local(boxed_local)
-                    }
-                    Type::Float => {
-                        let boxed_local = self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT,
-                            ),
-                            vec![value_operand],
-                            Type::HeapAny,
-                            mir_func,
-                        );
-                        mir::Operand::Local(boxed_local)
-                    }
-                    _ => value_operand,
+                let actual_ty = arg_types.first().cloned().unwrap_or(Type::Any);
+                let box_type = if matches!(*elem_ty, Type::Union(_) | Type::Any) {
+                    actual_ty
+                } else {
+                    (*elem_ty).clone()
                 };
+                let boxed_value = self.box_primitive_if_needed(value_operand, &box_type, mir_func);
 
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_REMOVE),
@@ -235,24 +196,36 @@ impl<'a> Lowering<'a> {
                 Ok(mir::Operand::Local(result_local))
             }
             "index" => {
-                // .index(value) - returns int index or -1 if not found
-                let mut all_args = vec![obj_operand];
-                all_args.extend(arg_operands);
+                // .index(value): box the search value because slots are tagged Values.
+                let value_operand = crate::first_arg_or_none(arg_operands);
+                let actual_ty = arg_types.first().cloned().unwrap_or(Type::Any);
+                let box_type = if matches!(*elem_ty, Type::Union(_) | Type::Any) {
+                    actual_ty
+                } else {
+                    (*elem_ty).clone()
+                };
+                let boxed_value = self.box_primitive_if_needed(value_operand, &box_type, mir_func);
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_INDEX),
-                    all_args,
+                    vec![obj_operand, boxed_value],
                     Type::Int,
                     mir_func,
                 );
                 Ok(mir::Operand::Local(result_local))
             }
             "count" => {
-                // .count(value) - returns int count
-                let mut all_args = vec![obj_operand];
-                all_args.extend(arg_operands);
+                // .count(value): box the search value (slots are tagged Values).
+                let value_operand = crate::first_arg_or_none(arg_operands);
+                let actual_ty = arg_types.first().cloned().unwrap_or(Type::Any);
+                let box_type = if matches!(*elem_ty, Type::Union(_) | Type::Any) {
+                    actual_ty
+                } else {
+                    (*elem_ty).clone()
+                };
+                let boxed_value = self.box_primitive_if_needed(value_operand, &box_type, mir_func);
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_COUNT),
-                    all_args,
+                    vec![obj_operand, boxed_value],
                     Type::Int,
                     mir_func,
                 );
@@ -326,15 +299,8 @@ impl<'a> Lowering<'a> {
                     hir_module,
                     mir_func,
                 )? {
-                    // Determine elem_tag for boxing raw elements before calling key function.
-                    // Only builtin wrappers need boxing - user functions work with raw values.
-                    let elem_tag = sort_kwargs
-                        .key_func
-                        .as_ref()
-                        .map(|kf| Self::elem_tag_for_key_func(kf, &elem_ty))
-                        .unwrap_or(0);
-                    let elem_tag_operand = mir::Operand::Constant(mir::Constant::Int(elem_tag));
-
+                    // After §F.7c: list slots are tagged Values; runtime no
+                    // longer needs an elem_tag hint.
                     self.emit_runtime_call(
                         mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_LIST_SORT_WITH_KEY,
@@ -343,9 +309,9 @@ impl<'a> Lowering<'a> {
                             obj_operand,
                             sort_kwargs.reverse,
                             resolved.func_addr,
-                            elem_tag_operand,
                             resolved.captures,
                             resolved.capture_count,
+                            resolved.key_return_tag,
                         ],
                         Type::None,
                         mir_func,

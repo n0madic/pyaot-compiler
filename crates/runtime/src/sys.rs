@@ -116,7 +116,7 @@ unsafe fn create_argv_list(argc: i32, argv: *const *const i8) -> *mut Obj {
         // explicit and avoids any confusion about which pointer is authoritative.
         let list_ptr = roots[0] as *mut ListObj;
 
-        // Add to list (ELEM_HEAP_OBJ: wrap the string pointer as Value).
+        // Add to list (wrap the string pointer as a tagged pointer Value).
         *(*list_ptr).data.add(i as usize) = pyaot_core_defs::Value::from_ptr(str_ptr as *mut Obj);
         (*list_ptr).len += 1;
     }

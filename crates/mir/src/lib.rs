@@ -22,7 +22,7 @@ pub use instructions::{Instruction, InstructionKind};
 pub use kinds::{
     CompareKind, ComparisonOp, ContainerKind, ConversionTypeKind, ElementKind, GetElementKind,
     IterDirection, IterSourceKind, MinMaxOp, PrintKind, ReprTargetKind, SearchOp, SortableKind,
-    StringFormat, ValueKind,
+    StringFormat,
 };
 pub use operands::{Constant, Operand};
 pub use operators::{BinOp, UnOp};

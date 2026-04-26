@@ -112,6 +112,30 @@ pub fn run_pyaot(
     expected_output: Option<&str>,
     allowed_diffs: &[AllowedDiff],
 ) {
+    run_pyaot_with_opts(test_name, py_file, expected_output, allowed_diffs, false);
+}
+
+/// Same as `run_pyaot` but enables full optimisation (`-O`: inline +
+/// constfold + dce + devirtualize + flatten-properties). Used by tests
+/// that must exercise the optimizer pipeline — notably to catch
+/// `--inline` regressions like the Stage E phi-arity panic that the
+/// default-opts run cannot reach.
+pub fn run_pyaot_optimized(
+    test_name: &str,
+    py_file: &Path,
+    expected_output: Option<&str>,
+    allowed_diffs: &[AllowedDiff],
+) {
+    run_pyaot_with_opts(test_name, py_file, expected_output, allowed_diffs, true);
+}
+
+fn run_pyaot_with_opts(
+    test_name: &str,
+    py_file: &Path,
+    expected_output: Option<&str>,
+    allowed_diffs: &[AllowedDiff],
+    optimize: bool,
+) {
     ensure_runtime_built();
 
     let runtime_lib = runtime_lib_path();
@@ -135,6 +159,11 @@ pub fn run_pyaot(
             input: py_file.to_path_buf(),
             output: output_bin.clone(),
             runtime_lib,
+            inline: optimize,
+            dce: optimize,
+            constfold: optimize,
+            devirtualize: optimize,
+            flatten_properties: optimize,
             ..Default::default()
         })
     };

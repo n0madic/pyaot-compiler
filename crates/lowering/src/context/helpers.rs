@@ -474,13 +474,15 @@ impl<'a> Lowering<'a> {
             return Ok(None);
         };
         let key_fn_local = self.alloc_and_add_local(Type::Int, mir_func);
-        let (captures_op, count_op) = match source {
+        let (captures_op, count_op, key_return_tag) = match source {
             KeyFuncSource::UserFunc(func_id, captures) => {
                 self.emit_instruction(mir::InstructionKind::FuncAddr {
                     dest: key_fn_local,
                     func: *func_id,
                 });
-                if captures.is_empty() {
+                let ret_tag =
+                    key_return_tag_for_func(*func_id, hir_module, &self.func_return_types.inner);
+                let (cap_op, cnt_op) = if captures.is_empty() {
                     (
                         mir::Operand::Constant(mir::Constant::Int(0)),
                         mir::Operand::Constant(mir::Constant::Int(0)),
@@ -502,16 +504,19 @@ impl<'a> Lowering<'a> {
                         captures_tuple,
                         mir::Operand::Constant(mir::Constant::Int(count)),
                     )
-                }
+                };
+                (cap_op, cnt_op, ret_tag)
             }
             KeyFuncSource::Builtin(builtin_kind) => {
                 self.emit_instruction(mir::InstructionKind::BuiltinAddr {
                     dest: key_fn_local,
                     builtin: *builtin_kind,
                 });
+                let ret_tag = key_return_tag_for_builtin(builtin_kind);
                 (
                     mir::Operand::Constant(mir::Constant::Int(0)),
                     mir::Operand::Constant(mir::Constant::Int(0)),
+                    ret_tag,
                 )
             }
         };
@@ -519,6 +524,7 @@ impl<'a> Lowering<'a> {
             func_addr: mir::Operand::Local(key_fn_local),
             captures: captures_op,
             capture_count: count_op,
+            key_return_tag: mir::Operand::Constant(mir::Constant::Int(key_return_tag as i64)),
         }))
     }
 
@@ -575,51 +581,34 @@ impl<'a> Lowering<'a> {
 
         Ok(mir::Operand::Local(result_local))
     }
+}
 
-    /// Determine the elem_tag to pass to runtime for key functions.
-    ///
-    /// Returns the elem_tag value based on:
-    /// - Whether the key function is a builtin wrapper (needs boxing) or user function
-    /// - The element type of the container
-    ///
-    /// Builtin wrappers (rt_builtin_abs, rt_builtin_str, etc.) expect boxed *mut Obj
-    /// arguments, so raw elements (like list[int]) need to be boxed before calling them.
-    ///
-    /// User-defined key functions are compiled with the appropriate parameter types
-    /// matching the container element type, so they don't need boxing.
-    pub(crate) fn elem_tag_for_key_func(key_func: &super::KeyFuncSource, elem_type: &Type) -> i64 {
-        use super::KeyFuncSource;
-        match key_func {
-            KeyFuncSource::Builtin(_) => {
-                // Builtin wrappers need boxing for raw element types
-                crate::type_dispatch::elem_tag_for_type(elem_type)
-            }
-            KeyFuncSource::UserFunc(..) => {
-                // User functions work with raw values - no boxing needed
-                0 // ELEM_HEAP_OBJ (no boxing)
-            }
-        }
+/// Map a user-defined function's return type to a key_return_tag value.
+/// 0 = heap (pointer, low bits 0), 1 = Int (raw i64), 2 = Bool (raw 0/1)
+/// Checks explicit annotation first, then falls back to the inferred return type map.
+fn key_return_tag_for_func(
+    func_id: FuncId,
+    hir_module: &hir::Module,
+    func_return_types: &indexmap::IndexMap<FuncId, Type>,
+) -> u8 {
+    let return_type = hir_module
+        .func_defs
+        .get(&func_id)
+        .and_then(|f| f.return_type.as_ref())
+        .or_else(|| func_return_types.get(&func_id));
+    match return_type {
+        Some(Type::Int) => 1,
+        Some(Type::Bool) => 2,
+        _ => 0,
     }
+}
 
-    /// Determine the elem_tag to pass to runtime for key functions (FuncOrBuiltin variant).
-    ///
-    /// Same logic as `elem_tag_for_key_func` but accepts `FuncOrBuiltin` type
-    /// which is used in min/max lowering.
-    pub(crate) fn elem_tag_for_func_or_builtin(
-        func_or_builtin: &FuncOrBuiltin,
-        elem_type: &Type,
-    ) -> i64 {
-        match func_or_builtin {
-            FuncOrBuiltin::Builtin(_) => {
-                // Builtin wrappers need boxing for raw element types
-                crate::type_dispatch::elem_tag_for_type(elem_type)
-            }
-            FuncOrBuiltin::UserFunc(_, _) => {
-                // User functions work with raw values - no boxing needed
-                0 // ELEM_HEAP_OBJ (no boxing)
-            }
-        }
-    }
+/// Map a builtin function's return type to a key_return_tag value.
+/// First-class builtin dispatchers (`rt_builtin_*`) accept and return tagged
+/// `Value` bits — the runtime treats tag = 3 as "pass-through both directions"
+/// (no input unwrap, no output wrap).
+fn key_return_tag_for_builtin(_kind: &mir::BuiltinFunctionKind) -> u8 {
+    3
 }
 
 #[cfg(test)]

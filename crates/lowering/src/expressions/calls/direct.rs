@@ -347,7 +347,7 @@ impl<'a> Lowering<'a> {
                 // Load the closure tuple/function pointer from the global
                 let effective_var_id = self.get_effective_var_id(*var_id);
                 let closure_local = self.emit_runtime_call(
-                    mir::RuntimeFunc::Call(mir::ValueKind::Ptr.global_get_def()),
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GLOBAL_GET_PTR),
                     vec![mir::Operand::Constant(mir::Constant::Int(effective_var_id))],
                     Type::Any,
                     mir_func,

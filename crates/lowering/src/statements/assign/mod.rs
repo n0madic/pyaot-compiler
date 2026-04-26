@@ -100,10 +100,22 @@ impl<'a> Lowering<'a> {
                 } else {
                     // Create nested closure tuple: (func_ptr, (cap0, cap1, ...))
                     // Outer tuple always has exactly 2 elements for uniform dispatch
-                    let func_addr_local = self.alloc_and_add_local(Type::Any, mir_func);
+                    let func_addr_local = self.alloc_and_add_local(Type::Int, mir_func);
                     self.emit_instruction(mir::InstructionKind::FuncAddr {
                         dest: func_addr_local,
                         func: *func,
+                    });
+
+                    // §F.5: wrap the raw i64 function pointer as a tagged
+                    // `Value::from_int` so the closure tuple slot 0 reads
+                    // as `is_ptr() == false`. Without this, the GC's mark
+                    // walk would treat the function-code address as a heap
+                    // pointer and either follow it (SEGV) or rely on the
+                    // address-heuristic filter, which §F.8 removes.
+                    let func_addr_value = self.alloc_stack_local(Type::HeapAny, mir_func);
+                    self.emit_instruction(mir::InstructionKind::ValueFromInt {
+                        dest: func_addr_value,
+                        src: mir::Operand::Local(func_addr_local),
                     });
 
                     // Lower all capture expressions
@@ -125,51 +137,22 @@ impl<'a> Lowering<'a> {
                         capture_operands.push(capture_operand);
                     }
 
-                    // Determine elem_tag for captures tuple based on actual types.
-                    // Use ELEM_RAW_INT when no capture needs GC tracing.
-                    // Cell variables are always heap pointers that need GC tracing.
-                    let capture_elem_tag: i64 = {
-                        let any_needs_gc = captures.iter().enumerate().any(|(i, capture_id)| {
-                            let capture_expr = &hir_module.exprs[*capture_id];
-                            if let hir::ExprKind::Var(var_id) = &capture_expr.kind {
-                                if self.get_nonlocal_cell(var_id).is_some() {
-                                    return true;
-                                }
-                            }
-                            let op_type = self.operand_type(&capture_operands[i], mir_func);
-                            op_type.is_heap()
-                        });
-                        if any_needs_gc {
-                            0
-                        } else {
-                            1
-                        }
-                    };
-
-                    // Collect per-operand types for heap_field_mask
-                    let capture_types: Vec<Type> = capture_operands
-                        .iter()
-                        .map(|op| self.operand_type(op, mir_func))
-                        .collect();
-
-                    // Create inner captures tuple
+                    // After §F.7c: captures tuple stores uniform tagged Values;
+                    // primitives are boxed below.
                     let captures_tuple = self.emit_runtime_call(
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
-                        vec![
-                            mir::Operand::Constant(mir::Constant::Int(captures.len() as i64)),
-                            mir::Operand::Constant(mir::Constant::Int(capture_elem_tag)),
-                        ],
+                        vec![mir::Operand::Constant(mir::Constant::Int(
+                            captures.len() as i64
+                        ))],
                         Type::Any,
                         mir_func,
                     );
 
-                    // Set per-field heap_field_mask when tuple has mixed types (ELEM_HEAP_OBJ)
-                    if capture_elem_tag == 0 {
-                        self.emit_heap_field_mask(captures_tuple, &capture_types, mir_func);
-                    }
-
                     // Store each capture in the inner tuple at index 0, 1, ...
                     for (i, capture_op) in capture_operands.iter().enumerate() {
+                        let op_type = self.operand_type(capture_op, mir_func);
+                        let stored_op =
+                            self.box_primitive_if_needed(capture_op.clone(), &op_type, mir_func);
                         self.emit_runtime_call_void(
                             mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_TUPLE_SET,
@@ -177,38 +160,29 @@ impl<'a> Lowering<'a> {
                             vec![
                                 mir::Operand::Local(captures_tuple),
                                 mir::Operand::Constant(mir::Constant::Int(i as i64)),
-                                capture_op.clone(),
+                                stored_op,
                             ],
                             mir_func,
                         );
                     }
 
-                    // Create outer tuple (func_ptr, captures_tuple) - always size 2
-                    // heap_field_mask: bit 0 = 0 (func_ptr is raw), bit 1 = 1 (captures_tuple is heap)
+                    // Create outer tuple (func_ptr, captures_tuple) - size 2.
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: dest_local,
                         func: mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE,
                         ),
-                        args: vec![
-                            mir::Operand::Constant(mir::Constant::Int(2)),
-                            mir::Operand::Constant(mir::Constant::Int(0)), // ELEM_HEAP_OBJ
-                        ],
+                        args: vec![mir::Operand::Constant(mir::Constant::Int(2))],
                     });
-                    // Set mask: only index 1 (captures_tuple) is a heap pointer
-                    self.emit_heap_field_mask(
-                        dest_local,
-                        &[Type::Int, Type::Any], // func_ptr=raw, captures=heap
-                        mir_func,
-                    );
 
-                    // Store func_ptr at index 0
+                    // Store func_ptr at index 0 — tagged as `Value::from_int`
+                    // so the slot is_ptr() == false (see §F.5 above).
                     self.emit_runtime_call_void(
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                         vec![
                             mir::Operand::Local(dest_local),
                             mir::Operand::Constant(mir::Constant::Int(0)),
-                            mir::Operand::Local(func_addr_local),
+                            mir::Operand::Local(func_addr_value),
                         ],
                         mir_func,
                     );

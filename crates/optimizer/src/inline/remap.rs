@@ -175,6 +175,22 @@ impl InlineRemapper {
                 dest: self.remap_local(*dest),
                 src: self.remap_operand(src),
             },
+            InstructionKind::ValueFromInt { dest, src } => InstructionKind::ValueFromInt {
+                dest: self.remap_local(*dest),
+                src: self.remap_operand(src),
+            },
+            InstructionKind::UnwrapValueInt { dest, src } => InstructionKind::UnwrapValueInt {
+                dest: self.remap_local(*dest),
+                src: self.remap_operand(src),
+            },
+            InstructionKind::ValueFromBool { dest, src } => InstructionKind::ValueFromBool {
+                dest: self.remap_local(*dest),
+                src: self.remap_operand(src),
+            },
+            InstructionKind::UnwrapValueBool { dest, src } => InstructionKind::UnwrapValueBool {
+                dest: self.remap_local(*dest),
+                src: self.remap_operand(src),
+            },
             // Exception handling instructions - remap but preserve structure
             InstructionKind::ExcPushFrame { frame_local } => InstructionKind::ExcPushFrame {
                 frame_local: self.remap_local(*frame_local),

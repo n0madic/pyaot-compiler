@@ -73,14 +73,9 @@ impl<'a> Lowering<'a> {
                     if let Type::Tuple(elem_types) = tuple_type {
                         // Extract each element from the tuple
                         for (i, elem_type) in elem_types.iter().enumerate() {
-                            let get_func = crate::type_dispatch::tuple_get_func(elem_type);
-
-                            let elem_local = self.emit_runtime_call(
-                                get_func,
-                                vec![
-                                    tuple_operand.clone(),
-                                    mir::Operand::Constant(mir::Constant::Int(i as i64)),
-                                ],
+                            let elem_local = self.emit_tuple_get(
+                                tuple_operand.clone(),
+                                mir::Operand::Constant(mir::Constant::Int(i as i64)),
                                 elem_type.clone(),
                                 mir_func,
                             );

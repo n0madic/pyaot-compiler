@@ -197,12 +197,13 @@ pub static RT_HASH_TUPLE: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_hash
 pub static RT_ID_OBJ: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_id_obj");
 
 // ===== Boxing operations =====
+//
+// §F.7d.3: the typed Int/Bool primitive boxing externs are gone.
+// Lowering and codegen tag/untag Int and Bool inline via the
+// `ValueFromInt` / `ValueFromBool` / `UnwrapValueInt` / `UnwrapValueBool`
+// MIR instructions (see `crates/codegen-cranelift/src/instructions/tag.rs`).
+// Float remains heap-boxed and uses the extern shims below.
 
-/// rt_box_int(value: i64) -> *mut Obj
-pub static RT_BOX_INT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_box_int");
-/// rt_box_bool(value: i8) -> *mut Obj
-pub static RT_BOX_BOOL: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_box_bool", &[PI8], Some(RI64), true);
 /// rt_box_float(value: f64) -> *mut Obj
 pub static RT_BOX_FLOAT: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_box_float", &[PF64], Some(RI64), true);
@@ -217,13 +218,9 @@ pub static RT_NOT_IMPLEMENTED_SINGLETON: RuntimeFuncDef =
 
 // ===== Unboxing operations =====
 
-/// rt_unbox_int(obj: *mut Obj) -> i64
-pub static RT_UNBOX_INT: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_unbox_int");
 /// rt_unbox_float(obj: *mut Obj) -> f64
 pub static RT_UNBOX_FLOAT: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_unbox_float", &[PI64], Some(RF64), false);
-/// rt_unbox_bool(obj: *mut Obj) -> i8
-pub static RT_UNBOX_BOOL: RuntimeFuncDef = RuntimeFuncDef::unary_to_i8("rt_unbox_bool");
 
 // ===== File I/O operations =====
 
@@ -350,12 +347,10 @@ pub static RT_DICT_POP: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_dict_pop
 pub static RT_DICT_CLEAR: RuntimeFuncDef = RuntimeFuncDef::void("rt_dict_clear", &[PI64]);
 /// rt_dict_copy(dict: *mut Obj) -> *mut Obj
 pub static RT_DICT_COPY: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_dict_copy");
-/// rt_dict_keys(dict: *mut Obj, elem_tag: i8) -> *mut Obj
-pub static RT_DICT_KEYS: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_dict_keys", &[PI64, PI8], Some(RI64), true);
-/// rt_dict_values(dict: *mut Obj, elem_tag: i8) -> *mut Obj
-pub static RT_DICT_VALUES: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_dict_values", &[PI64, PI8], Some(RI64), true);
+/// rt_dict_keys(dict: *mut Obj) -> *mut Obj
+pub static RT_DICT_KEYS: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_dict_keys");
+/// rt_dict_values(dict: *mut Obj) -> *mut Obj
+pub static RT_DICT_VALUES: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_dict_values");
 /// rt_dict_items(dict: *mut Obj) -> *mut Obj
 pub static RT_DICT_ITEMS: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_dict_items");
 /// rt_dict_update(dict: *mut Obj, other: *mut Obj) -> void
@@ -386,9 +381,9 @@ pub static RT_MAKE_DEQUE_FROM_ITER: RuntimeFuncDef =
 
 // ===== List operations =====
 
-/// rt_make_list(capacity: i64, elem_tag: i8) -> *mut Obj
+/// rt_make_list(capacity: i64) -> *mut Obj
 pub static RT_MAKE_LIST: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_make_list", &[PI64, PI8], Some(RI64), true);
+    RuntimeFuncDef::new("rt_make_list", &[PI64], Some(RI64), true);
 /// rt_list_push(list: *mut Obj, elem: i64) -> void
 pub static RT_LIST_PUSH: RuntimeFuncDef = RuntimeFuncDef::void("rt_list_push", &[PI64, PI64]);
 /// rt_list_set(list: *mut Obj, index: i64, value: i64) -> void
@@ -409,9 +404,6 @@ pub static RT_LIST_SLICE_STEP: RuntimeFuncDef =
     RuntimeFuncDef::ptr_quaternary("rt_list_slice_step");
 /// rt_list_append(list: *mut Obj, elem: i64) -> void
 pub static RT_LIST_APPEND: RuntimeFuncDef = RuntimeFuncDef::void("rt_list_append", &[PI64, PI64]);
-/// rt_list_set_elem_tag(list: *mut Obj, tag: u8) -> void
-pub static RT_LIST_SET_ELEM_TAG: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_list_set_elem_tag", &[PI64, PI8]);
 /// rt_list_pop(list: *mut Obj, index: i64) -> *mut Obj
 pub static RT_LIST_POP: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_list_pop");
 /// rt_list_insert(list: *mut Obj, index: i64, elem: i64) -> void
@@ -433,20 +425,17 @@ pub static RT_LIST_REVERSE: RuntimeFuncDef = RuntimeFuncDef::void("rt_list_rever
 pub static RT_LIST_EXTEND: RuntimeFuncDef = RuntimeFuncDef::void("rt_list_extend", &[PI64, PI64]);
 /// rt_list_sort(list: *mut Obj, reverse: i8) -> void
 pub static RT_LIST_SORT: RuntimeFuncDef = RuntimeFuncDef::void("rt_list_sort", &[PI64, PI8]);
-/// rt_list_sort_with_key(list: *mut Obj, reverse: i8, key_fn: i64, elem_tag: i64, captures: i64, capture_count: i64) -> void
-pub static RT_LIST_SORT_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::void(
-    "rt_list_sort_with_key",
-    &[PI64, PI8, PI64, PI64, PI64, PI64],
-);
+/// rt_list_sort_with_key(list, reverse, key_fn, captures, capture_count, key_return_tag) -> void
+pub static RT_LIST_SORT_WITH_KEY: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_list_sort_with_key", &[PI64, PI8, PI64, PI64, PI64, PI8]);
 /// rt_list_from_tuple(tuple: *mut Obj) -> *mut Obj
 pub static RT_LIST_FROM_TUPLE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_tuple");
 /// rt_list_from_str(str: *mut Obj) -> *mut Obj
 pub static RT_LIST_FROM_STR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_str");
 /// rt_list_from_range(start: i64, stop: i64, step: i64) -> *mut Obj
 pub static RT_LIST_FROM_RANGE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_list_from_range");
-/// rt_list_from_iter(iter: *mut Obj, elem_tag: i64) -> *mut Obj
-pub static RT_LIST_FROM_ITER: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_list_from_iter", &[PI64, PI64], Some(RI64), false);
+/// rt_list_from_iter(iter: *mut Obj) -> *mut Obj
+pub static RT_LIST_FROM_ITER: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_iter");
 /// rt_list_from_set(set: *mut Obj) -> *mut Obj
 pub static RT_LIST_FROM_SET: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_list_from_set");
 /// rt_list_from_dict(dict: *mut Obj) -> *mut Obj
@@ -465,14 +454,10 @@ pub static RT_LIST_CONCAT: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_list_
 
 // ===== Tuple operations =====
 
-/// rt_make_tuple(size: i64, elem_tag: i8) -> *mut Obj
-pub static RT_MAKE_TUPLE: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_make_tuple", &[PI64, PI8], Some(RI64), true);
+/// rt_make_tuple(size: i64) -> *mut Obj
+pub static RT_MAKE_TUPLE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_make_tuple");
 /// rt_tuple_set(tuple: *mut Obj, index: i64, value: i64) -> void
 pub static RT_TUPLE_SET: RuntimeFuncDef = RuntimeFuncDef::void("rt_tuple_set", &[PI64, PI64, PI64]);
-/// rt_tuple_set_heap_mask(tuple: *mut Obj, mask: i64) -> void
-pub static RT_TUPLE_SET_HEAP_MASK: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_tuple_set_heap_mask", &[PI64, PI64]);
 /// rt_tuple_get(tuple: *mut Obj, index: i64) -> *mut Obj
 pub static RT_TUPLE_GET: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_tuple_get");
 /// rt_tuple_len(tuple: *mut Obj) -> i64
@@ -485,13 +470,6 @@ pub static RT_TUPLE_SLICE_STEP: RuntimeFuncDef =
 /// rt_tuple_slice_to_list(tuple: *mut Obj, start: i64, stop: i64) -> *mut Obj
 pub static RT_TUPLE_SLICE_TO_LIST: RuntimeFuncDef =
     RuntimeFuncDef::ptr_ternary("rt_tuple_slice_to_list");
-/// rt_tuple_get_int(tuple: *mut Obj, index: i64) -> i64
-pub static RT_TUPLE_GET_INT: RuntimeFuncDef = RuntimeFuncDef::binary_to_i64("rt_tuple_get_int");
-/// rt_tuple_get_float(tuple: *mut Obj, index: i64) -> f64
-pub static RT_TUPLE_GET_FLOAT: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_tuple_get_float", &[PI64, PI64], Some(RF64), false);
-/// rt_tuple_get_bool(tuple: *mut Obj, index: i64) -> i8
-pub static RT_TUPLE_GET_BOOL: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_tuple_get_bool");
 /// rt_tuple_from_list(list: *mut Obj) -> *mut Obj
 pub static RT_TUPLE_FROM_LIST: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_tuple_from_list");
 /// rt_tuple_from_str(str: *mut Obj) -> *mut Obj
@@ -513,6 +491,17 @@ pub static RT_TUPLE_COUNT: RuntimeFuncDef = RuntimeFuncDef::binary_to_i64("rt_tu
 /// rt_call_with_tuple_args(func_ptr: i64, args_tuple: *mut Obj) -> i64
 pub static RT_CALL_WITH_TUPLE_ARGS: RuntimeFuncDef =
     RuntimeFuncDef::binary_to_i64("rt_call_with_tuple_args");
+/// rt_call_with_captures_and_args(func_ptr: i64, captures_tuple: *mut Obj, args_tuple: *mut Obj) -> i64
+///
+/// Stage E: closure-trampoline entry point that respects each tuple's own
+/// elem_tag when extracting arguments. See `rt_call_with_captures_and_args`
+/// in `runtime/src/tuple/core.rs`.
+pub static RT_CALL_WITH_CAPTURES_AND_ARGS: RuntimeFuncDef = RuntimeFuncDef {
+    symbol: "rt_call_with_captures_and_args",
+    params: &[PI64, PI64, PI64],
+    returns: Some(RI64),
+    gc_roots_result: false,
+};
 
 // ===== Bytes operations =====
 
@@ -642,38 +631,39 @@ pub static RT_DICT_MINMAX: RuntimeFuncDef =
 /// rt_str_minmax(str: *mut Obj, is_min: i8, elem_kind: i8) -> i64
 pub static RT_STR_MINMAX: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_str_minmax", &[PI64, PI8, PI8], Some(RI64), false);
-/// rt_list_minmax_with_key(list: *mut Obj, key_fn: i64, elem_tag: i64, captures: i64, count: i64, is_min: i8) -> *mut Obj
+// After §F.7c+key_return_tag: rt_{container}_minmax_with_key(container, key_fn, captures, count, is_min, key_return_tag) -> *mut Obj
+/// rt_list_minmax_with_key
 pub static RT_LIST_MINMAX_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
     "rt_list_minmax_with_key",
-    &[PI64, PI64, PI64, PI64, PI64, PI8],
+    &[PI64, PI64, PI64, PI64, PI8, PI8],
     Some(RI64),
     true,
 );
-/// rt_tuple_minmax_with_key(tuple: *mut Obj, key_fn: i64, elem_tag: i64, captures: i64, count: i64, is_min: i8) -> *mut Obj
+/// rt_tuple_minmax_with_key
 pub static RT_TUPLE_MINMAX_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
     "rt_tuple_minmax_with_key",
-    &[PI64, PI64, PI64, PI64, PI64, PI8],
+    &[PI64, PI64, PI64, PI64, PI8, PI8],
     Some(RI64),
     true,
 );
-/// rt_set_minmax_with_key(set: *mut Obj, key_fn: i64, elem_tag: i64, captures: i64, count: i64, is_min: i8) -> *mut Obj
+/// rt_set_minmax_with_key — Set still passes a `needs_unbox: i64` hint instead of elem_tag
 pub static RT_SET_MINMAX_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
     "rt_set_minmax_with_key",
-    &[PI64, PI64, PI64, PI64, PI64, PI8],
+    &[PI64, PI64, PI64, PI64, PI8, PI8],
     Some(RI64),
     true,
 );
-/// rt_dict_minmax_with_key(dict: *mut Obj, key_fn: i64, elem_tag: i64, captures: i64, count: i64, is_min: i8) -> *mut Obj
+/// rt_dict_minmax_with_key
 pub static RT_DICT_MINMAX_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
     "rt_dict_minmax_with_key",
-    &[PI64, PI64, PI64, PI64, PI64, PI8],
+    &[PI64, PI64, PI64, PI64, PI8],
     Some(RI64),
     true,
 );
-/// rt_str_minmax_with_key(str: *mut Obj, key_fn: i64, elem_tag: i64, captures: i64, count: i64, is_min: i8) -> *mut Obj
+/// rt_str_minmax_with_key
 pub static RT_STR_MINMAX_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
     "rt_str_minmax_with_key",
-    &[PI64, PI64, PI64, PI64, PI64, PI8],
+    &[PI64, PI64, PI64, PI64, PI8],
     Some(RI64),
     true,
 );
@@ -964,13 +954,13 @@ pub static RT_ITER_ENUMERATE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_it
 pub static RT_SORTED_RANGE: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_sorted_range");
 
 // --- Sorted: generic dispatchers ---
-/// rt_sorted(obj, reverse, elem_tag, container_tag) -> *mut Obj
+/// rt_sorted(obj, reverse, container_tag) -> *mut Obj
 pub static RT_SORTED: RuntimeFuncDef =
-    RuntimeFuncDef::new("rt_sorted", &[PI64, PI64, PI8, PI8], Some(RI64), true);
-/// rt_sorted_with_key(obj, reverse, key_fn, elem_tag, captures, capture_count, container_tag) -> *mut Obj
+    RuntimeFuncDef::new("rt_sorted", &[PI64, PI64, PI8], Some(RI64), true);
+/// rt_sorted_with_key(obj, reverse, key_fn, captures, capture_count, container_tag, key_return_tag) -> *mut Obj
 pub static RT_SORTED_WITH_KEY: RuntimeFuncDef = RuntimeFuncDef::new(
     "rt_sorted_with_key",
-    &[PI64, PI64, PI64, PI64, PI64, PI64, PI8],
+    &[PI64, PI64, PI64, PI64, PI64, PI8, PI8],
     Some(RI64),
     true,
 );
@@ -988,13 +978,8 @@ pub static RT_ZIP_NEXT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_zip_next"
 // --- Map/Filter/Reduce ---
 /// rt_map_new(func_ptr: i64, iter: *mut Obj, captures: *mut Obj, capture_count: i64) -> *mut Obj
 pub static RT_MAP_NEW: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_map_new");
-/// rt_filter_new(func_ptr: i64, iter: *mut Obj, elem_tag: i64, captures: *mut Obj, capture_count: i64) -> *mut Obj
-pub static RT_FILTER_NEW: RuntimeFuncDef = RuntimeFuncDef::new(
-    "rt_filter_new",
-    &[PI64, PI64, PI64, PI64, PI64],
-    Some(RI64),
-    true,
-);
+/// rt_filter_new(func_ptr: i64, iter: *mut Obj, captures: *mut Obj, capture_count: i64) -> *mut Obj
+pub static RT_FILTER_NEW: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_filter_new");
 /// rt_reduce(func_ptr, iter, initial, has_initial, captures, capture_count) -> *mut Obj
 pub static RT_REDUCE: RuntimeFuncDef = RuntimeFuncDef::new(
     "rt_reduce",
@@ -1036,9 +1021,7 @@ pub static RT_GENERATOR_GET_LOCAL_PTR: RuntimeFuncDef = RuntimeFuncDef::new(
 /// rt_generator_set_local_ptr(gen: *mut Obj, index: u32, value: *mut Obj) -> void
 pub static RT_GENERATOR_SET_LOCAL_PTR: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_generator_set_local_ptr", &[PI64, PI32, PI64]);
-/// rt_generator_set_local_type(gen: *mut Obj, index: u32, type_tag: u8) -> void
-pub static RT_GENERATOR_SET_LOCAL_TYPE: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_generator_set_local_type", &[PI64, PI32, PI8]);
+// §F.7b: RT_GENERATOR_SET_LOCAL_TYPE removed — per-slot tag side-array deleted.
 /// rt_generator_set_exhausted(gen: *mut Obj) -> void
 pub static RT_GENERATOR_SET_EXHAUSTED: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_generator_set_exhausted", &[PI64]);
@@ -1145,9 +1128,6 @@ pub static RT_ISINSTANCE_CLASS_INHERITED: RuntimeFuncDef = RuntimeFuncDef::new(
 /// rt_register_class(class_id: i8, parent_class_id: i8) -> void
 pub static RT_REGISTER_CLASS: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_register_class", &[PI8, PI8]);
-/// rt_register_class_fields(class_id: i8, heap_field_mask: i64) -> void
-pub static RT_REGISTER_CLASS_FIELDS: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_register_class_fields", &[PI8, PI64]);
 /// rt_register_class_field_count(class_id: i8, field_count: i64) -> void
 pub static RT_REGISTER_CLASS_FIELD_COUNT: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_register_class_field_count", &[PI8, PI64]);

@@ -6,6 +6,32 @@ Development roadmap for the Python AOT Compiler. Items are grouped by area and r
 
 ---
 
+## 0. Phase 3 — performance recovery after S2.7 close
+
+After Phase 2 (S2.7 atomic Value migration) closed on 2026-04-27 with
+**three of five** §G hard gates met, two performance gates were
+deferred to a follow-on stage:
+
+* 🔴 **Polymorphic arithmetic** (+54% slower on `polymorphic.py` vs
+  Phase 1; gate target was +20% improvement). Plan: peephole-fold
+  abi_repair-injected wrap/unwrap round-trips, devirtualise stable
+  monomorphic CallVirtual sites, optionally hoist instance-field reads
+  out of inner loops. See [`PHASE3_OPTIMIZATION_PLAN.md`](PHASE3_OPTIMIZATION_PLAN.md) §P.1.
+* 🔴 **GC scan time** (+3% slower on `gc_stress`; gate target was +15%
+  improvement). The `mark_object` alignment / low-page /
+  `TypeTagKind::from_tag` guards still exist because closure /
+  decorator-factory / generator paths emit values that pass
+  `is_ptr()` without being heap objects. Plan: same diagnostic
+  protocol as F.10 (commit `ca3aa18`), fix at the source, then
+  delete the guards. See [`PHASE3_OPTIMIZATION_PLAN.md`](PHASE3_OPTIMIZATION_PLAN.md) §P.2.
+
+Correctness invariants from S2.7 are intact: 514/514 workspace tests
+pass, 39/39 `gc_stress` runtime tests pass, §3 hard grep over the
+14 banned symbols returns 0, binary size flat within ±0.05% of
+Phase 0.
+
+---
+
 ## 1. Debugging & Diagnostics
 
 ### ✅ DWARF Debug Information (MVP — done)

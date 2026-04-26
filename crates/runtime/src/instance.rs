@@ -16,12 +16,14 @@ pub extern "C" fn rt_make_instance(class_id: u8, field_count: i64) -> *mut Obj {
 
     let field_count = field_count.max(0) as usize;
 
-    // Warn if field count exceeds the GC's heap_field_mask capacity (64 bits).
-    // Fields beyond index 63 won't be traced by GC, risking use-after-free.
+    // Pre-§F.7 the GC used a per-class 64-bit mask, so classes with
+    // more than 64 fields lost precise tracing. With §F.7 the mark
+    // walk is mask-free (`Value::is_ptr()` per slot), so this limit is
+    // gone; the warning is retained as a soft hint that very wide
+    // classes may still indicate a design smell.
     if field_count > 64 {
         eprintln!(
-            "WARNING: class_id {} has {} fields, exceeding GC heap_field_mask capacity of 64. \
-             Fields beyond index 63 will NOT be traced by GC.",
+            "WARNING: class_id {} has {} fields. Consider splitting wide classes.",
             class_id, field_count
         );
     }
@@ -31,7 +33,8 @@ pub extern "C" fn rt_make_instance(class_id: u8, field_count: i64) -> *mut Obj {
     // on 64-bit targets) is accounted for correctly. The flexible array member
     // `fields: [*mut Obj; 0]` contributes 0 bytes, so we add the field storage
     // separately.
-    let size = std::mem::size_of::<InstanceObj>() + field_count * std::mem::size_of::<*mut Obj>();
+    let size = std::mem::size_of::<InstanceObj>()
+        + field_count * std::mem::size_of::<pyaot_core_defs::Value>();
 
     // Allocate using GC
     let obj = gc::gc_alloc(size, TypeTagKind::Instance as u8);
@@ -43,10 +46,10 @@ pub extern "C" fn rt_make_instance(class_id: u8, field_count: i64) -> *mut Obj {
         (*instance).class_id = class_id;
         (*instance).field_count = field_count;
 
-        // Initialize all fields to null
+        // Initialize all fields to empty (Value(0))
         let fields_ptr = (*instance).fields.as_mut_ptr();
         for i in 0..field_count {
-            *fields_ptr.add(i) = std::ptr::null_mut();
+            *fields_ptr.add(i) = pyaot_core_defs::Value(0);
         }
     }
 
@@ -78,9 +81,8 @@ pub extern "C" fn rt_instance_get_field(inst: *mut Obj, offset: i64) -> i64 {
             return 0;
         }
 
-        // Fields are stored as i64 values (raw primitives or pointers)
-        let fields_ptr = (*instance).fields.as_ptr() as *const i64;
-        *fields_ptr.add(offset as usize)
+        let fields_ptr = (*instance).fields.as_ptr();
+        (*fields_ptr.add(offset as usize)).0 as i64
     }
 }
 
@@ -109,9 +111,8 @@ pub extern "C" fn rt_instance_set_field(inst: *mut Obj, offset: i64, value: i64)
             return;
         }
 
-        // Fields are stored as i64 values
-        let fields_ptr = (*instance).fields.as_mut_ptr() as *mut i64;
-        *fields_ptr.add(offset as usize) = value;
+        let fields_ptr = (*instance).fields.as_mut_ptr();
+        *fields_ptr.add(offset as usize) = pyaot_core_defs::Value(value as u64);
     }
 }
 
@@ -142,11 +143,15 @@ pub extern "C" fn rt_get_type_tag(obj: *mut Obj) -> i64 {
     if obj.is_null() {
         return crate::object::TypeTagKind::None as i64;
     }
-    // Validate alignment: Obj requires 8-byte alignment (due to usize field).
-    // Non-aligned pointers (e.g., 4-byte aligned function pointers from code
-    // section) are not valid Obj pointers — return Instance tag as fallback.
-    if !(obj as usize).is_multiple_of(std::mem::align_of::<Obj>()) {
-        return -1; // Invalid pointer, not a valid object
+    let v = pyaot_core_defs::Value(obj as u64);
+    if v.is_int() {
+        return crate::object::TypeTagKind::Int as i64;
+    }
+    if v.is_bool() {
+        return crate::object::TypeTagKind::Bool as i64;
+    }
+    if v.is_none() {
+        return crate::object::TypeTagKind::None as i64;
     }
     unsafe { (*obj).type_tag() as i64 }
 }

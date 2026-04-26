@@ -395,6 +395,10 @@ fn instruction_def(kind: &InstructionKind) -> Option<LocalId> {
         | IntToFloat { dest, .. }
         | FloatBits { dest, .. }
         | IntBitsToFloat { dest, .. }
+        | ValueFromInt { dest, .. }
+        | UnwrapValueInt { dest, .. }
+        | ValueFromBool { dest, .. }
+        | UnwrapValueBool { dest, .. }
         | FloatAbs { dest, .. }
         | ExcGetType { dest }
         | ExcHasException { dest }
@@ -439,6 +443,10 @@ fn instruction_uses(kind: &InstructionKind) -> Vec<LocalId> {
         | IntToFloat { src, .. }
         | FloatBits { src, .. }
         | IntBitsToFloat { src, .. }
+        | ValueFromInt { src, .. }
+        | UnwrapValueInt { src, .. }
+        | ValueFromBool { src, .. }
+        | UnwrapValueBool { src, .. }
         | FloatAbs { src, .. } => push_op(src, &mut out),
         Call { func, args, .. } => {
             push_op(func, &mut out);

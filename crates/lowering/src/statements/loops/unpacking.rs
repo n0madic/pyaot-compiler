@@ -200,15 +200,15 @@ impl<'a> Lowering<'a> {
         for (i, &target_local) in target_locals.iter().enumerate() {
             let target_ty = target_types.get(i).cloned().unwrap_or(Type::Any);
 
-            let func = crate::type_dispatch::tuple_get_func(&target_ty);
-
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            let value_local = self.emit_tuple_get(
+                mir::Operand::Local(tuple_elem_local),
+                mir::Operand::Constant(mir::Constant::Int(i as i64)),
+                target_ty,
+                mir_func,
+            );
+            self.emit_instruction(mir::InstructionKind::Copy {
                 dest: target_local,
-                func,
-                args: vec![
-                    mir::Operand::Local(tuple_elem_local),
-                    mir::Operand::Constant(mir::Constant::Int(i as i64)),
-                ],
+                src: mir::Operand::Local(value_local),
             });
         }
 
@@ -338,15 +338,15 @@ impl<'a> Lowering<'a> {
         for (i, &target_local) in target_locals.iter().enumerate() {
             let target_ty = target_types.get(i).cloned().unwrap_or(Type::Any);
 
-            let func = crate::type_dispatch::tuple_get_func(&target_ty);
-
-            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+            let value_local = self.emit_tuple_get(
+                mir::Operand::Local(next_local),
+                mir::Operand::Constant(mir::Constant::Int(i as i64)),
+                target_ty,
+                mir_func,
+            );
+            self.emit_instruction(mir::InstructionKind::Copy {
                 dest: target_local,
-                func,
-                args: vec![
-                    mir::Operand::Local(next_local),
-                    mir::Operand::Constant(mir::Constant::Int(i as i64)),
-                ],
+                src: mir::Operand::Local(value_local),
             });
         }
 

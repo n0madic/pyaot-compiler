@@ -99,6 +99,10 @@ fn build_def_map(func: &Function) -> HashMap<LocalId, InstructionKind> {
                 | InstructionKind::IntToFloat { dest, .. }
                 | InstructionKind::FloatBits { dest, .. }
                 | InstructionKind::IntBitsToFloat { dest, .. }
+                | InstructionKind::ValueFromInt { dest, .. }
+                | InstructionKind::UnwrapValueInt { dest, .. }
+                | InstructionKind::ValueFromBool { dest, .. }
+                | InstructionKind::UnwrapValueBool { dest, .. }
                 | InstructionKind::FloatAbs { dest, .. }
                 | InstructionKind::ExcGetType { dest }
                 | InstructionKind::ExcHasException { dest }
@@ -172,23 +176,13 @@ fn boxed_value_hint(
             InstructionKind::IntToFloat { .. } | InstructionKind::IntBitsToFloat { .. } => {
                 Some(Type::Float)
             }
-            InstructionKind::RuntimeCall {
-                func: RuntimeFunc::Call(def),
-                ..
-            } if std::ptr::eq(def, &pyaot_core_defs::runtime_func_def::RT_BOX_INT) => {
-                Some(Type::Int)
-            }
+            InstructionKind::ValueFromInt { .. } => Some(Type::Int),
+            InstructionKind::ValueFromBool { .. } => Some(Type::Bool),
             InstructionKind::RuntimeCall {
                 func: RuntimeFunc::Call(def),
                 ..
             } if std::ptr::eq(def, &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT) => {
                 Some(Type::Float)
-            }
-            InstructionKind::RuntimeCall {
-                func: RuntimeFunc::Call(def),
-                ..
-            } if std::ptr::eq(def, &pyaot_core_defs::runtime_func_def::RT_BOX_BOOL) => {
-                Some(Type::Bool)
             }
             InstructionKind::RuntimeCall {
                 func: RuntimeFunc::Call(def),
@@ -487,12 +481,9 @@ fn coerce_operand(
                 Some(Type::Bool) => {
                     let bool_dest = alloc_temp_local(func, next_local_id, Type::Bool);
                     emitted.push(Instruction {
-                        kind: InstructionKind::RuntimeCall {
+                        kind: InstructionKind::UnwrapValueBool {
                             dest: bool_dest,
-                            func: RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL,
-                            ),
-                            args: vec![operand],
+                            src: operand,
                         },
                         span,
                     });
@@ -510,13 +501,7 @@ fn coerce_operand(
                 _ => {
                     let dest = alloc_temp_local(func, next_local_id, Type::Int);
                     emitted.push(Instruction {
-                        kind: InstructionKind::RuntimeCall {
-                            dest,
-                            func: RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_UNBOX_INT,
-                            ),
-                            args: vec![operand],
-                        },
+                        kind: InstructionKind::UnwrapValueInt { dest, src: operand },
                         span,
                     });
                     Ok(Operand::Local(dest))
@@ -560,12 +545,9 @@ fn coerce_operand(
                 Some(Type::Int) => {
                     let int_dest = alloc_temp_local(func, next_local_id, Type::Int);
                     emitted.push(Instruction {
-                        kind: InstructionKind::RuntimeCall {
+                        kind: InstructionKind::UnwrapValueInt {
                             dest: int_dest,
-                            func: RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_UNBOX_INT,
-                            ),
-                            args: vec![operand],
+                            src: operand,
                         },
                         span,
                     });
@@ -582,12 +564,9 @@ fn coerce_operand(
                 Some(Type::Bool) => {
                     let bool_dest = alloc_temp_local(func, next_local_id, Type::Bool);
                     emitted.push(Instruction {
-                        kind: InstructionKind::RuntimeCall {
+                        kind: InstructionKind::UnwrapValueBool {
                             dest: bool_dest,
-                            func: RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL,
-                            ),
-                            args: vec![operand],
+                            src: operand,
                         },
                         span,
                     });
@@ -634,11 +613,7 @@ fn coerce_operand(
             _ if is_runtime_unbox_source(&actual) => {
                 let dest = alloc_temp_local(func, next_local_id, Type::Bool);
                 emitted.push(Instruction {
-                    kind: InstructionKind::RuntimeCall {
-                        dest,
-                        func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_BOOL),
-                        args: vec![operand],
-                    },
+                    kind: InstructionKind::UnwrapValueBool { dest, src: operand },
                     span,
                 });
                 Ok(Operand::Local(dest))
@@ -659,11 +634,7 @@ fn coerce_operand(
             Type::Int => {
                 let dest = alloc_temp_local(func, next_local_id, expected.clone());
                 emitted.push(Instruction {
-                    kind: InstructionKind::RuntimeCall {
-                        dest,
-                        func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_INT),
-                        args: vec![operand],
-                    },
+                    kind: InstructionKind::ValueFromInt { dest, src: operand },
                     span,
                 });
                 Ok(Operand::Local(dest))
@@ -683,11 +654,7 @@ fn coerce_operand(
             Type::Bool => {
                 let dest = alloc_temp_local(func, next_local_id, expected.clone());
                 emitted.push(Instruction {
-                    kind: InstructionKind::RuntimeCall {
-                        dest,
-                        func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_BOOL),
-                        args: vec![operand],
-                    },
+                    kind: InstructionKind::ValueFromBool { dest, src: operand },
                     span,
                 });
                 Ok(Operand::Local(dest))
@@ -706,12 +673,57 @@ fn coerce_operand(
             }
             _ => Ok(operand),
         },
-        _ if matches!(expected, Type::HeapAny) => match abi_shape(&actual) {
-            AbiShape::Heap => Ok(operand),
-            _ => Err(CompilerError::codegen_error(
-                format!("cannot coerce {:?} to heap ABI at call site", actual),
-                None,
-            )),
+        _ if matches!(expected, Type::HeapAny) => match actual {
+            // §F.7c: container slots and field-write paths expect tagged
+            // `Value` bits. Wrap raw primitives via the appropriate boxer
+            // before the call so the runtime sees a uniform Value.
+            Type::Int => {
+                let dest = alloc_temp_local(func, next_local_id, Type::HeapAny);
+                emitted.push(Instruction {
+                    kind: InstructionKind::ValueFromInt { dest, src: operand },
+                    span,
+                });
+                Ok(Operand::Local(dest))
+            }
+            Type::Bool => {
+                let dest = alloc_temp_local(func, next_local_id, Type::HeapAny);
+                emitted.push(Instruction {
+                    kind: InstructionKind::ValueFromBool { dest, src: operand },
+                    span,
+                });
+                Ok(Operand::Local(dest))
+            }
+            Type::Float => {
+                let dest = alloc_temp_local(func, next_local_id, Type::HeapAny);
+                emitted.push(Instruction {
+                    kind: InstructionKind::RuntimeCall {
+                        dest,
+                        func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
+                        args: vec![operand],
+                    },
+                    span,
+                });
+                Ok(Operand::Local(dest))
+            }
+            Type::None => {
+                let dest = alloc_temp_local(func, next_local_id, Type::HeapAny);
+                emitted.push(Instruction {
+                    kind: InstructionKind::RuntimeCall {
+                        dest,
+                        func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_NONE),
+                        args: vec![operand],
+                    },
+                    span,
+                });
+                Ok(Operand::Local(dest))
+            }
+            _ => match abi_shape(&actual) {
+                AbiShape::Heap => Ok(operand),
+                _ => Err(CompilerError::codegen_error(
+                    format!("cannot coerce {:?} to heap ABI at call site", actual),
+                    None,
+                )),
+            },
         },
         _ if expected.is_heap() => match actual {
             Type::None => match operand {
@@ -930,14 +942,132 @@ pub fn repair_mir_abi_from_types(module: &mut Module) -> Result<()> {
                             block_id,
                         )?;
                         match abi.singleton_target {
-                            Some(callee) => repaired.push(Instruction {
-                                kind: InstructionKind::CallDirect {
-                                    dest,
-                                    func: callee,
-                                    args: new_args,
-                                },
-                                span: inst.span,
-                            }),
+                            Some(callee) => {
+                                // Preserve the dispatch's original dest type when
+                                // narrowing `Call(func_ptr, ...)` to `CallDirect(callee, ...)`.
+                                //
+                                // emit_capture_dispatch in lowering allocates each
+                                // branch's `branch_result` with a uniform `result_ty`
+                                // (the user-declared return type, e.g. `Int`). At
+                                // runtime only one branch matches `n_captures` and
+                                // executes — the others are dead. But the static
+                                // call-graph + arity filter narrows each Call to
+                                // whichever address-taken function matches that arity,
+                                // which may have a different return type (e.g. the
+                                // outer closure factory returns `Any`/`HeapAny`).
+                                //
+                                // Without the bridge below, `type_inference`'s
+                                // `CallDirect` rule overwrites the dest's type with
+                                // the callee's return type, which then widens through
+                                // the merge-block Phi to `Union[Int, Any]`. The Phi
+                                // codegen then mishandles the join, and downstream
+                                // raw-int consumers (`rt_global_set_int`,
+                                // `rt_print_int_value`) receive tagged `Value` bits
+                                // instead of raw int — printing `(payload << 3) | 1`
+                                // (e.g. 49 for payload 6) or SEGV-ing when raw bits
+                                // are misread as a heap pointer.
+                                //
+                                // Fix: emit `CallDirect` into a fresh temp typed by
+                                // the callee, then bridge to the original dest:
+                                //
+                                //   - Narrowing (callee returns wider, dest narrower —
+                                //     e.g. `Any → Int`): use `Refine`. This is a
+                                //     compile-time narrowing hint with no runtime
+                                //     conversion. Live branches by construction
+                                //     return the matching type, and dead branches
+                                //     (statically unreachable for the runtime
+                                //     `n_captures` value) simply carry a stale type
+                                //     label whose bits are never observed. Avoids
+                                //     `UnwrapValueInt` in inlined branches that
+                                //     produce raw bits directly.
+                                //
+                                //   - Widening (callee returns narrower, dest wider
+                                //     — e.g. `Int → Any`): emit `ValueFromInt` /
+                                //     `ValueFromBool` (MIR inline boxing) or
+                                //     `RT_BOX_FLOAT` / `RT_BOX_NONE` so the bits
+                                //     are properly tagged. The Phi merge stays
+                                //     uniform under the dest's wider type, and
+                                //     consumers (`rt_print_obj`, `rt_global_set_ptr`)
+                                //     see well-formed `Value`-tagged bits rather than
+                                //     raw scalars that would mis-decode as invalid
+                                //     pointers.
+                                let original_dest_ty = func
+                                    .locals
+                                    .get(&dest)
+                                    .map(|local| local.ty.clone())
+                                    .unwrap_or(Type::Any);
+                                if abi.return_type == original_dest_ty {
+                                    repaired.push(Instruction {
+                                        kind: InstructionKind::CallDirect {
+                                            dest,
+                                            func: callee,
+                                            args: new_args,
+                                        },
+                                        span: inst.span,
+                                    });
+                                } else {
+                                    let temp_dest = alloc_temp_local(
+                                        func,
+                                        &mut next_local_id,
+                                        abi.return_type.clone(),
+                                    );
+                                    repaired.push(Instruction {
+                                        kind: InstructionKind::CallDirect {
+                                            dest: temp_dest,
+                                            func: callee,
+                                            args: new_args,
+                                        },
+                                        span: inst.span,
+                                    });
+                                    let widening_to_heap = matches!(
+                                        original_dest_ty,
+                                        Type::Any | Type::HeapAny | Type::Union(_)
+                                    ) && matches!(
+                                        abi.return_type,
+                                        Type::Int | Type::Bool | Type::Float | Type::None
+                                    );
+                                    if widening_to_heap {
+                                        let box_inst = match abi.return_type {
+                                            Type::Int => InstructionKind::ValueFromInt {
+                                                dest,
+                                                src: Operand::Local(temp_dest),
+                                            },
+                                            Type::Bool => InstructionKind::ValueFromBool {
+                                                dest,
+                                                src: Operand::Local(temp_dest),
+                                            },
+                                            Type::Float => InstructionKind::RuntimeCall {
+                                                dest,
+                                                func: RuntimeFunc::Call(
+                                                    &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT,
+                                                ),
+                                                args: vec![Operand::Local(temp_dest)],
+                                            },
+                                            Type::None => InstructionKind::RuntimeCall {
+                                                dest,
+                                                func: RuntimeFunc::Call(
+                                                    &pyaot_core_defs::runtime_func_def::RT_BOX_NONE,
+                                                ),
+                                                args: Vec::new(),
+                                            },
+                                            _ => unreachable!(),
+                                        };
+                                        repaired.push(Instruction {
+                                            kind: box_inst,
+                                            span: inst.span,
+                                        });
+                                    } else {
+                                        repaired.push(Instruction {
+                                            kind: InstructionKind::Refine {
+                                                dest,
+                                                src: Operand::Local(temp_dest),
+                                                ty: original_dest_ty,
+                                            },
+                                            span: inst.span,
+                                        });
+                                    }
+                                }
+                            }
                             None => repaired.push(Instruction {
                                 kind: InstructionKind::Call {
                                     dest,
@@ -1185,9 +1315,25 @@ pub fn repair_mir_abi_from_types(module: &mut Module) -> Result<()> {
                             if let Some(field_ty) =
                                 lookup_field_type(&module_field_types, func, &args[0], &args[1])
                             {
+                                // §F.7c: `InstanceObj.fields` stores uniform
+                                // tagged `Value` words. For every primitive
+                                // field type (Float/Int/Bool/None) the value
+                                // reaching `rt_instance_set_field` is already
+                                // a `Value` (`Value::from_ptr` for Float,
+                                // `Value::from_int` for Int, `Value::from_bool`
+                                // for Bool, `Value::NONE` for None). Coerce
+                                // to `HeapAny` so abi_repair does not try to
+                                // unwrap the freshly-wrapped value back to a
+                                // raw scalar.
+                                let expected_arg_ty = match field_ty {
+                                    Type::Float | Type::Int | Type::Bool | Type::None => {
+                                        Type::HeapAny
+                                    }
+                                    other => other,
+                                };
                                 let repaired_value = coerce_operand(
                                     args[2].clone(),
-                                    &field_ty,
+                                    &expected_arg_ty,
                                     func,
                                     &def_map,
                                     &mut repaired,

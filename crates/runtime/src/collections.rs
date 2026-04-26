@@ -5,7 +5,7 @@
 use crate::dict::{real_entries_capacity, rt_dict_set, set_real_entries_capacity};
 use crate::exceptions::ExceptionType;
 use crate::hash_table_utils::{eq_hashable_obj, hash_hashable_obj};
-use crate::object::{DictEntry, DictObj, Obj, ELEM_HEAP_OBJ};
+use crate::object::{DictEntry, DictObj, Obj};
 use crate::tuple::{rt_make_tuple, rt_tuple_set};
 
 // =============================================================================
@@ -48,10 +48,15 @@ pub extern "C" fn rt_dict_move_to_end(dict: *mut Obj, key: *mut Obj, last: i64) 
         if last != 0 {
             // Move to end: shrink trailing nulls, then use rt_dict_set
             shrink_trailing_nulls(dict_obj);
-            rt_dict_set(dict, saved_key, saved_value);
+            rt_dict_set(dict, saved_key.0 as *mut Obj, saved_value.0 as *mut Obj);
         } else {
             // Move to beginning: rebuild entries with this entry first
-            rebuild_with_entry_first(dict_obj, saved_key, saved_value, hash);
+            rebuild_with_entry_first(
+                dict_obj,
+                saved_key.0 as *mut Obj,
+                saved_value.0 as *mut Obj,
+                hash,
+            );
         }
     }
 }
@@ -108,7 +113,7 @@ unsafe fn lookup_entry_index(dict: *mut DictObj, key: *mut Obj, hash: u64) -> i6
             continue;
         }
         let entry = (*dict).entries.add(entry_idx as usize);
-        if (*entry).hash == hash && eq_hashable_obj((*entry).key, key) {
+        if (*entry).hash == hash && eq_hashable_obj((*entry).key.0 as *mut Obj, key) {
             return entry_idx;
         }
     }
@@ -138,8 +143,8 @@ unsafe fn mark_index_as_dummy(dict: *mut DictObj, hash: u64, entry_idx: usize) {
 /// Delete an entry: null key/value, mark index as DUMMY, decrement len
 unsafe fn delete_entry(dict: *mut DictObj, entry_idx: usize, hash: u64) {
     let entry = (*dict).entries.add(entry_idx);
-    (*entry).key = std::ptr::null_mut();
-    (*entry).value = std::ptr::null_mut();
+    (*entry).key = pyaot_core_defs::Value(0);
+    (*entry).value = pyaot_core_defs::Value(0);
     mark_index_as_dummy(dict, hash, entry_idx);
     (*dict).len -= 1;
 }
@@ -148,7 +153,7 @@ unsafe fn delete_entry(dict: *mut DictObj, entry_idx: usize, hash: u64) {
 unsafe fn shrink_trailing_nulls(dict: *mut DictObj) {
     while (*dict).entries_len > 0 {
         let e = (*dict).entries.add((*dict).entries_len - 1);
-        if (*e).key.is_null() {
+        if (*e).key.0 == 0 {
             (*dict).entries_len -= 1;
         } else {
             break;
@@ -174,14 +179,14 @@ unsafe fn rebuild_with_entry_first(dict: *mut DictObj, key: *mut Obj, value: *mu
     // Place the target entry first
     let first = new_entries;
     (*first).hash = hash;
-    (*first).key = key;
-    (*first).value = value;
+    (*first).key = pyaot_core_defs::Value(key as u64);
+    (*first).value = pyaot_core_defs::Value(value as u64);
     let mut new_len: usize = 1;
 
     // Copy remaining active entries in order
     for i in 0..old_entries_len {
         let old_entry = old_entries.add(i);
-        if !(*old_entry).key.is_null() {
+        if (*old_entry).key.0 != 0 {
             let dst = new_entries.add(new_len);
             (*dst).hash = (*old_entry).hash;
             (*dst).key = (*old_entry).key;
@@ -230,7 +235,7 @@ unsafe fn pop_last_entry(dict: *mut DictObj) -> *mut Obj {
     while last_idx > 0 {
         last_idx -= 1;
         let entry = (*dict).entries.add(last_idx);
-        if !(*entry).key.is_null() {
+        if (*entry).key.0 != 0 {
             return pop_entry_at(dict, last_idx);
         }
     }
@@ -243,7 +248,7 @@ unsafe fn pop_first_entry(dict: *mut DictObj) -> *mut Obj {
     let entries_len = (*dict).entries_len;
     for i in 0..entries_len {
         let entry = (*dict).entries.add(i);
-        if !(*entry).key.is_null() {
+        if (*entry).key.0 != 0 {
             return pop_entry_at(dict, i);
         }
     }
@@ -258,9 +263,9 @@ unsafe fn pop_entry_at(dict: *mut DictObj, idx: usize) -> *mut Obj {
     let value = (*entry).value;
     let hash = (*entry).hash;
 
-    let tuple = rt_make_tuple(2, ELEM_HEAP_OBJ);
-    rt_tuple_set(tuple, 0, key);
-    rt_tuple_set(tuple, 1, value);
+    let tuple = rt_make_tuple(2);
+    rt_tuple_set(tuple, 0, key.0 as *mut Obj);
+    rt_tuple_set(tuple, 1, value.0 as *mut Obj);
 
     delete_entry(dict, idx, hash);
     shrink_trailing_nulls(dict);
