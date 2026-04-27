@@ -221,6 +221,15 @@ impl<'a> Lowering<'a> {
 
     /// Check if object type matches the isinstance check type (compile-time)
     pub(crate) fn types_match_isinstance(&self, obj_type: &Type, check_type: &Type) -> bool {
+        if obj_type.is_list_like() && check_type.is_list_like() {
+            return true;
+        }
+        if obj_type.is_tuple_like() && check_type.is_tuple_like() {
+            return true;
+        }
+        if obj_type.is_dict_like() && check_type.is_dict_like() {
+            return true;
+        }
         match (obj_type, check_type) {
             (Type::Int, Type::Int) => true,
             (Type::Float, Type::Float) => true,
@@ -230,9 +239,6 @@ impl<'a> Lowering<'a> {
             (Type::Int, Type::Bool) => false,
             (Type::Str, Type::Str) => true,
             (Type::None, Type::None) => true,
-            (Type::List(_), Type::List(_)) => true,
-            (Type::Tuple(_), Type::Tuple(_)) => true,
-            (Type::Dict(_, _), Type::Dict(_, _)) => true,
             (Type::Class { class_id: id1, .. }, Type::Class { class_id: id2, .. }) => id1 == id2,
             _ => false,
         }
@@ -271,31 +277,55 @@ impl<'a> Lowering<'a> {
             (left, Type::Union(right)) => right
                 .iter()
                 .any(|member| self.types_compatible_for_annotation(left, member, hir_module)),
-            (Type::List(a), Type::List(b)) | (Type::Set(a), Type::Set(b)) => {
-                **a == Type::Any
-                    || **b == Type::Any
+            _ if actual.list_elem().is_some() && expected.list_elem().is_some() => {
+                let (a, b) = (actual.list_elem().unwrap(), expected.list_elem().unwrap());
+                *a == Type::Any
+                    || *b == Type::Any
                     || self.types_compatible_for_annotation(a, b, hir_module)
             }
-            (Type::Dict(k1, v1), Type::Dict(k2, v2))
-            | (Type::DefaultDict(k1, v1), Type::DefaultDict(k2, v2))
-            | (Type::DefaultDict(k1, v1), Type::Dict(k2, v2)) => {
-                (**k1 == Type::Any
-                    || **k2 == Type::Any
+            _ if actual.set_elem().is_some() && expected.set_elem().is_some() => {
+                let (a, b) = (actual.set_elem().unwrap(), expected.set_elem().unwrap());
+                *a == Type::Any
+                    || *b == Type::Any
+                    || self.types_compatible_for_annotation(a, b, hir_module)
+            }
+            _ if actual.dict_kv().is_some() && expected.dict_kv().is_some() => {
+                let (k1, v1) = actual.dict_kv().unwrap();
+                let (k2, v2) = expected.dict_kv().unwrap();
+                (*k1 == Type::Any
+                    || *k2 == Type::Any
                     || self.types_compatible_for_annotation(k1, k2, hir_module))
-                    && (**v1 == Type::Any
-                        || **v2 == Type::Any
+                    && (*v1 == Type::Any
+                        || *v2 == Type::Any
                         || self.types_compatible_for_annotation(v1, v2, hir_module))
             }
-            (Type::Tuple(ts1), Type::Tuple(ts2)) => {
+            _ if actual.tuple_elems().is_some() && expected.tuple_elems().is_some() => {
+                let (ts1, ts2) = (
+                    actual.tuple_elems().unwrap(),
+                    expected.tuple_elems().unwrap(),
+                );
                 ts1.len() == ts2.len()
                     && ts1.iter().zip(ts2.iter()).all(|(t1, t2)| {
                         *t1 == Type::Any || self.types_compatible_for_annotation(t1, t2, hir_module)
                     })
             }
-            (Type::Tuple(ts), Type::TupleVar(elem)) => ts.iter().all(|t| {
-                *t == Type::Any || self.types_compatible_for_annotation(t, elem, hir_module)
-            }),
-            (Type::TupleVar(a), Type::TupleVar(b)) | (Type::Iterator(a), Type::Iterator(b)) => {
+            _ if actual.tuple_elems().is_some() && expected.tuple_var_elem().is_some() => {
+                let (ts, elem) = (
+                    actual.tuple_elems().unwrap(),
+                    expected.tuple_var_elem().unwrap(),
+                );
+                ts.iter().all(|t| {
+                    *t == Type::Any || self.types_compatible_for_annotation(t, elem, hir_module)
+                })
+            }
+            _ if actual.tuple_var_elem().is_some() && expected.tuple_var_elem().is_some() => {
+                let (a, b) = (
+                    actual.tuple_var_elem().unwrap(),
+                    expected.tuple_var_elem().unwrap(),
+                );
+                *a == Type::Any || self.types_compatible_for_annotation(a, b, hir_module)
+            }
+            (Type::Iterator(a), Type::Iterator(b)) => {
                 **a == Type::Any || self.types_compatible_for_annotation(a, b, hir_module)
             }
             (
@@ -345,12 +375,12 @@ impl<'a> Lowering<'a> {
             Type::Bool => Some(TypeTagKind::Bool.tag() as i64),
             Type::Str => Some(TypeTagKind::Str.tag() as i64),
             Type::None => Some(TypeTagKind::None.tag() as i64),
-            Type::List(_) => Some(TypeTagKind::List.tag() as i64),
-            Type::Tuple(_) => Some(TypeTagKind::Tuple.tag() as i64),
-            Type::Dict(_, _) => Some(TypeTagKind::Dict.tag() as i64),
+            _ if ty.is_list_like() => Some(TypeTagKind::List.tag() as i64),
+            _ if ty.is_tuple_like() => Some(TypeTagKind::Tuple.tag() as i64),
+            _ if ty.is_dict_like() => Some(TypeTagKind::Dict.tag() as i64),
             Type::Class { .. } => Some(TypeTagKind::Instance.tag() as i64),
             Type::Iterator(_) => Some(TypeTagKind::Iterator.tag() as i64),
-            Type::Set(_) => Some(TypeTagKind::Set.tag() as i64),
+            _ if ty.is_set_like() => Some(TypeTagKind::Set.tag() as i64),
             Type::Bytes => Some(TypeTagKind::Bytes.tag() as i64),
             Type::File(_) => Some(TypeTagKind::File.tag() as i64),
             _ => None, // Unknown type
@@ -556,7 +586,7 @@ impl<'a> Lowering<'a> {
         let result_local = self.emit_runtime_call(
             runtime_func,
             vec![obj_operand, sep_operand, maxsplit_operand],
-            Type::List(Box::new(elem_type)),
+            Type::list_of(elem_type),
             mir_func,
         );
 
@@ -709,14 +739,14 @@ mod tests {
             .class_info
             .insert(circle_id, stub_class_info(Some(shape_id)));
 
-        let actual = Type::List(Box::new(Type::Class {
+        let actual = Type::list_of(Type::Class {
             class_id: circle_id,
             name: circle_name,
-        }));
-        let expected = Type::List(Box::new(Type::Class {
+        });
+        let expected = Type::list_of(Type::Class {
             class_id: shape_id,
             name: shape_name,
-        }));
+        });
 
         assert!(lowering.types_compatible_for_annotation(&actual, &expected, &module));
     }
