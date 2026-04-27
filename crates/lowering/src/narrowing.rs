@@ -584,6 +584,19 @@ impl<'a> Lowering<'a> {
     /// This static method handles all non-class types; for class inheritance, use the
     /// instance method `types_compatible_for_isinstance_full`.
     fn types_compatible_for_isinstance(actual: &Type, target: &Type) -> bool {
+        // Container types match by kind using accessor predicates
+        if actual.is_list_like() && target.is_list_like() {
+            return true;
+        }
+        if actual.is_dict_like() && target.is_dict_like() {
+            return true;
+        }
+        if actual.is_set_like() && target.is_set_like() {
+            return true;
+        }
+        if actual.is_tuple_like() && target.is_tuple_like() {
+            return true;
+        }
         match (actual, target) {
             // Exact matches
             (Type::Int, Type::Int) => true,
@@ -593,11 +606,6 @@ impl<'a> Lowering<'a> {
             (Type::Str, Type::Str) => true,
             (Type::Bytes, Type::Bytes) => true,
             (Type::None, Type::None) => true,
-            // Container types match by kind
-            (Type::List(_), Type::List(_)) => true,
-            (Type::Dict(_, _), Type::Dict(_, _)) => true,
-            (Type::Set(_), Type::Set(_)) => true,
-            (Type::Tuple(_), Type::Tuple(_)) => true,
             // Class types: exact match only (inheritance checked separately)
             (Type::Class { class_id: id1, .. }, Type::Class { class_id: id2, .. }) => id1 == id2,
             // Everything else is incompatible
@@ -739,12 +747,12 @@ mod tests {
 
         // Test container types match by kind
         assert!(Lowering::types_compatible_for_isinstance(
-            &Type::List(Box::new(Type::Int)),
-            &Type::List(Box::new(Type::Any))
+            &Type::list_of(Type::Int),
+            &Type::list_of(Type::Any)
         ));
         assert!(Lowering::types_compatible_for_isinstance(
-            &Type::Dict(Box::new(Type::Str), Box::new(Type::Int)),
-            &Type::Dict(Box::new(Type::Any), Box::new(Type::Any))
+            &Type::dict_of(Type::Str, Type::Int),
+            &Type::dict_of(Type::Any, Type::Any)
         ));
     }
 
@@ -846,9 +854,9 @@ mod tests {
         assert_eq!(narrowed, Type::Str);
 
         // Union[list[int], None] - list has [] as falsy
-        let optional_list = Type::Union(vec![Type::List(Box::new(Type::Int)), Type::None]);
+        let optional_list = Type::Union(vec![Type::list_of(Type::Int), Type::None]);
         let narrowed = optional_list.minus(&Type::None);
-        assert_eq!(narrowed, Type::List(Box::new(Type::Int)));
+        assert_eq!(narrowed, Type::list_of(Type::Int));
     }
 
     #[test]
