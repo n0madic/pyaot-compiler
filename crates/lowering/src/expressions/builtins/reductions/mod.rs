@@ -93,9 +93,15 @@ impl<'a> Lowering<'a> {
         }
         let iterable_expr = &hir_module.exprs[args[0]];
         let iterable_type = self.seed_expr_type(args[0], hir_module);
-        let elem_ty = match &iterable_type {
-            Type::List(t) | Type::Iterator(t) | Type::Set(t) => (**t).clone(),
-            _ => return Ok(None),
+        let elem_ty = if let Some(t) = iterable_type
+            .list_elem()
+            .or_else(|| iterable_type.set_elem())
+        {
+            t.clone()
+        } else if let Type::Iterator(t) = &iterable_type {
+            (**t).clone()
+        } else {
+            return Ok(None);
         };
         let class_ty = match &elem_ty {
             Type::Class { .. } => elem_ty.clone(),
@@ -409,11 +415,14 @@ impl<'a> Lowering<'a> {
             return (iter_local, iterable_ty.clone());
         }
 
-        let source_kind = match iterable_ty {
-            Type::List(_) => mir::IterSourceKind::List,
-            Type::Set(_) => mir::IterSourceKind::Set,
-            Type::Tuple(_) => mir::IterSourceKind::Tuple,
-            _ => mir::IterSourceKind::List,
+        let source_kind = if iterable_ty.is_list_like() {
+            mir::IterSourceKind::List
+        } else if iterable_ty.is_set_like() {
+            mir::IterSourceKind::Set
+        } else if iterable_ty.is_tuple_like() {
+            mir::IterSourceKind::Tuple
+        } else {
+            mir::IterSourceKind::List
         };
         let iter_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(source_kind.iterator_def(mir::IterDirection::Forward)),
@@ -444,20 +453,25 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<Option<mir::Operand>> {
         let iterable_type = self.seed_expr_type(arg, hir_module);
-        let elem_ty = match &iterable_type {
-            Type::List(t) | Type::Iterator(t) | Type::Set(t) => (**t).clone(),
-            Type::Tuple(types) => {
-                // Only homogeneous tuples can be treated as class-iterables;
-                // mixed-element tuples fall through to the primitive path.
-                let Some(first) = types.first() else {
-                    return Ok(None);
-                };
-                if types.iter().any(|t| t != first) {
-                    return Ok(None);
-                }
-                first.clone()
+        let elem_ty = if let Some(t) = iterable_type
+            .list_elem()
+            .or_else(|| iterable_type.set_elem())
+        {
+            t.clone()
+        } else if let Type::Iterator(t) = &iterable_type {
+            (**t).clone()
+        } else if let Some(types) = iterable_type.tuple_elems() {
+            // Only homogeneous tuples can be treated as class-iterables;
+            // mixed-element tuples fall through to the primitive path.
+            let Some(first) = types.first() else {
+                return Ok(None);
+            };
+            if types.iter().any(|t| t != first) {
+                return Ok(None);
             }
-            _ => return Ok(None),
+            first.clone()
+        } else {
+            return Ok(None);
         };
         let class_ty = match &elem_ty {
             Type::Class { .. } => elem_ty.clone(),

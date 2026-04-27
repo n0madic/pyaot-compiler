@@ -80,7 +80,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_COPY),
                     vec![obj_operand],
-                    Type::Set(Box::new(elem_ty.clone())),
+                    Type::set_of(elem_ty.clone()),
                     mir_func,
                 );
 
@@ -92,7 +92,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_UNION),
                     vec![obj_operand, other_arg],
-                    Type::Set(Box::new(Type::Any)),
+                    Type::set_of(Type::Any),
                     mir_func,
                 );
                 Ok(mir::Operand::Local(result_local))
@@ -103,7 +103,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_INTERSECTION),
                     vec![obj_operand, other_arg],
-                    Type::Set(Box::new(Type::Any)),
+                    Type::set_of(Type::Any),
                     mir_func,
                 );
                 Ok(mir::Operand::Local(result_local))
@@ -114,7 +114,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_DIFFERENCE),
                     vec![obj_operand, other_arg],
-                    Type::Set(Box::new(Type::Any)),
+                    Type::set_of(Type::Any),
                     mir_func,
                 );
                 Ok(mir::Operand::Local(result_local))
@@ -127,7 +127,7 @@ impl<'a> Lowering<'a> {
                         &pyaot_core_defs::runtime_func_def::RT_SET_SYMMETRIC_DIFFERENCE,
                     ),
                     vec![obj_operand, other_arg],
-                    Type::Set(Box::new(Type::Any)),
+                    Type::set_of(Type::Any),
                     mir_func,
                 );
                 Ok(mir::Operand::Local(result_local))

@@ -544,18 +544,29 @@ fn infer_iterator_runtime_return_type(
 }
 
 fn iterable_element_type(ty: &Type) -> Option<Type> {
-    match ty {
-        Type::List(elem) | Type::Set(elem) | Type::Iterator(elem) | Type::TupleVar(elem) => {
-            Some((**elem).clone())
-        }
-        Type::Tuple(elem_types) => Some(
+    if let Some(elem) = ty
+        .list_elem()
+        .or_else(|| ty.set_elem())
+        .or_else(|| ty.tuple_var_elem())
+    {
+        return Some(elem.clone());
+    }
+    if let Type::Iterator(elem) = ty {
+        return Some((**elem).clone());
+    }
+    if let Some(elem_types) = ty.tuple_elems() {
+        return Some(
             elem_types
                 .iter()
                 .cloned()
                 .reduce(|a, b| a.join(&b))
                 .unwrap_or(Type::Never),
-        ),
-        Type::Dict(key, _) => Some((**key).clone()),
+        );
+    }
+    if let Some((key, _)) = ty.dict_kv() {
+        return Some(key.clone());
+    }
+    match ty {
         Type::Str => Some(Type::Str),
         Type::Bytes => Some(Type::Int),
         _ => None,
@@ -2286,7 +2297,7 @@ mod tests {
         func.block_mut(bb0).instructions.push(Instruction {
             kind: InstructionKind::GcAlloc {
                 dest,
-                ty: Type::List(Box::new(Type::Int)),
+                ty: Type::list_of(Type::Int),
                 size: 16,
             },
             span: None,
@@ -2295,7 +2306,7 @@ mod tests {
 
         func.is_ssa = true;
         let types = infer_function(&func, None);
-        assert_eq!(types.get(&dest), Some(&Type::List(Box::new(Type::Int))));
+        assert_eq!(types.get(&dest), Some(&Type::list_of(Type::Int)));
     }
 
     // ========================================================================

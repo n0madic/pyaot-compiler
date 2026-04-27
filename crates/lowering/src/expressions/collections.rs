@@ -19,8 +19,13 @@ impl<'a> Lowering<'a> {
         let mut list_type = expr.ty.clone().unwrap_or(Type::Any);
 
         if matches!(list_type, Type::Any) {
-            if let Some(Type::List(ref expected_elem)) = self.codegen.expected_type {
-                list_type = Type::List(expected_elem.clone());
+            if let Some(expected_elem) = self
+                .codegen
+                .expected_type
+                .as_ref()
+                .and_then(|t| t.list_elem())
+            {
+                list_type = Type::list_of(expected_elem.clone());
             }
         }
 
@@ -28,13 +33,18 @@ impl<'a> Lowering<'a> {
         // the assignment context (e.g., `x: list[int] = []` or `x = []` where x
         // was previously declared as list[int]).
         if elements.is_empty() {
-            if let Some(Type::List(ref expected_elem)) = self.codegen.expected_type {
+            if let Some(expected_elem) = self
+                .codegen
+                .expected_type
+                .as_ref()
+                .and_then(|t| t.list_elem())
+            {
                 match &list_type {
                     Type::Any => {
-                        list_type = Type::List(expected_elem.clone());
+                        list_type = Type::list_of(expected_elem.clone());
                     }
-                    Type::List(elem_ty) if **elem_ty == Type::Any => {
-                        list_type = Type::List(expected_elem.clone());
+                    _ if list_type.list_elem() == Some(&Type::Any) => {
+                        list_type = Type::list_of(expected_elem.clone());
                     }
                     _ => {}
                 }
@@ -47,12 +57,12 @@ impl<'a> Lowering<'a> {
                     None => next,
                 })
             });
-            list_type = Type::List(Box::new(inferred_elem.unwrap_or(Type::Any)));
+            list_type = Type::list_of(inferred_elem.unwrap_or(Type::Any));
         }
 
-        let elem_type = match &list_type {
-            Type::List(elem_ty) => (**elem_ty).clone(),
-            _ => Type::Any,
+        let elem_type = match list_type.list_elem() {
+            Some(elem_ty) => elem_ty.clone(),
+            None => Type::Any,
         };
 
         // After §F.7c: containers store uniform tagged Values; box every element below.
@@ -107,18 +117,18 @@ impl<'a> Lowering<'a> {
         let mut tuple_type = expr.ty.clone().unwrap_or(Type::Any);
 
         if matches!(tuple_type, Type::Any) {
-            match self.codegen.expected_type.clone() {
-                Some(Type::Tuple(expected)) => {
-                    tuple_type = Type::Tuple(expected);
+            match self.codegen.expected_type.as_ref() {
+                Some(t) if t.tuple_elems().is_some() => {
+                    tuple_type = t.clone();
                 }
-                Some(Type::TupleVar(expected)) => {
-                    tuple_type = Type::TupleVar(expected);
+                Some(t) if t.tuple_var_elem().is_some() => {
+                    tuple_type = t.clone();
                 }
                 _ => {}
             }
         }
         if matches!(tuple_type, Type::Any) {
-            tuple_type = Type::Tuple(
+            tuple_type = Type::tuple_of(
                 elements
                     .iter()
                     .map(|elem_id| self.seed_expr_type(*elem_id, hir_module))
@@ -137,10 +147,12 @@ impl<'a> Lowering<'a> {
 
         for (i, elem_id) in elements.iter().enumerate() {
             let elem_expr = &hir_module.exprs[*elem_id];
-            let expected_elem_type = match &tuple_type {
-                Type::Tuple(elem_types) => elem_types.get(i).cloned(),
-                Type::TupleVar(elem_type) => Some((**elem_type).clone()),
-                _ => None,
+            let expected_elem_type = if let Some(elems) = tuple_type.tuple_elems() {
+                elems.get(i).cloned()
+            } else if let Some(elem) = tuple_type.tuple_var_elem() {
+                Some(elem.clone())
+            } else {
+                None
             };
             let elem_operand =
                 self.lower_expr_expecting(elem_expr, expected_elem_type, hir_module, mir_func)?;
@@ -172,26 +184,30 @@ impl<'a> Lowering<'a> {
         let mut dict_type = expr.ty.clone().unwrap_or(Type::Any);
 
         if matches!(dict_type, Type::Any) {
-            if let Some(Type::Dict(ref expected_key, ref expected_val)) = self.codegen.expected_type
+            if let Some((expected_key, expected_val)) = self
+                .codegen
+                .expected_type
+                .as_ref()
+                .and_then(|t| t.dict_kv())
             {
-                dict_type = Type::Dict(expected_key.clone(), expected_val.clone());
+                dict_type = Type::dict_of(expected_key.clone(), expected_val.clone());
             }
         }
 
         // Bidirectional: for empty dicts, use expected_type from context
         if pairs.is_empty() {
-            if let Some(Type::Dict(ref expected_key, ref expected_val)) = self.codegen.expected_type
+            if let Some((expected_key, expected_val)) = self
+                .codegen
+                .expected_type
+                .as_ref()
+                .and_then(|t| t.dict_kv())
             {
-                match &dict_type {
-                    Type::Any => {
-                        dict_type = Type::Dict(expected_key.clone(), expected_val.clone());
-                    }
-                    Type::Dict(key_ty, val_ty)
-                        if **key_ty == Type::Any && **val_ty == Type::Any =>
-                    {
-                        dict_type = Type::Dict(expected_key.clone(), expected_val.clone());
-                    }
-                    _ => {}
+                let needs_update = match dict_type.dict_kv() {
+                    None => matches!(dict_type, Type::Any),
+                    Some((k, v)) => *k == Type::Any && *v == Type::Any,
+                };
+                if needs_update {
+                    dict_type = Type::dict_of(expected_key.clone(), expected_val.clone());
                 }
             }
         } else if matches!(dict_type, Type::Any) {
@@ -209,9 +225,9 @@ impl<'a> Lowering<'a> {
                     None => next,
                 })
             });
-            dict_type = Type::Dict(
-                Box::new(inferred_key.unwrap_or(Type::Any)),
-                Box::new(inferred_val.unwrap_or(Type::Any)),
+            dict_type = Type::dict_of(
+                inferred_key.unwrap_or(Type::Any),
+                inferred_val.unwrap_or(Type::Any),
             );
         }
 
@@ -225,9 +241,9 @@ impl<'a> Lowering<'a> {
         );
 
         // Insert each key-value pair
-        let (dict_key_type, dict_value_type) = match &dict_type {
-            Type::Dict(key_ty, value_ty) => ((**key_ty).clone(), (**value_ty).clone()),
-            _ => (Type::Any, Type::Any),
+        let (dict_key_type, dict_value_type) = match dict_type.dict_kv() {
+            Some((k, v)) => (k.clone(), v.clone()),
+            None => (Type::Any, Type::Any),
         };
         for (key_id, value_id) in pairs {
             let key_type = self.seed_expr_type(*key_id, hir_module);
@@ -298,22 +314,30 @@ impl<'a> Lowering<'a> {
         let mut set_type = expr.ty.clone().unwrap_or(Type::Any);
 
         if matches!(set_type, Type::Any) {
-            if let Some(Type::Set(ref expected_elem)) = self.codegen.expected_type {
-                set_type = Type::Set(expected_elem.clone());
+            if let Some(expected_elem) = self
+                .codegen
+                .expected_type
+                .as_ref()
+                .and_then(|t| t.set_elem())
+            {
+                set_type = Type::set_of(expected_elem.clone());
             }
         }
 
         // Bidirectional: for empty sets, use expected_type from context
         if elements.is_empty() {
-            if let Some(Type::Set(ref expected_elem)) = self.codegen.expected_type {
-                match &set_type {
-                    Type::Any => {
-                        set_type = Type::Set(expected_elem.clone());
-                    }
-                    Type::Set(elem_ty) if **elem_ty == Type::Any => {
-                        set_type = Type::Set(expected_elem.clone());
-                    }
-                    _ => {}
+            if let Some(expected_elem) = self
+                .codegen
+                .expected_type
+                .as_ref()
+                .and_then(|t| t.set_elem())
+            {
+                let needs_update = match set_type.set_elem() {
+                    None => matches!(set_type, Type::Any),
+                    Some(e) => *e == Type::Any,
+                };
+                if needs_update {
+                    set_type = Type::set_of(expected_elem.clone());
                 }
             }
         } else if matches!(set_type, Type::Any) {
@@ -324,7 +348,7 @@ impl<'a> Lowering<'a> {
                     None => next,
                 })
             });
-            set_type = Type::Set(Box::new(inferred_elem.unwrap_or(Type::Any)));
+            set_type = Type::set_of(inferred_elem.unwrap_or(Type::Any));
         }
 
         // Create set with capacity
@@ -340,21 +364,18 @@ impl<'a> Lowering<'a> {
         for elem_id in elements {
             let elem_type = self.seed_expr_type(*elem_id, hir_module);
             let elem_expr = &hir_module.exprs[*elem_id];
-            let expected_elem_type = match &set_type {
-                Type::Set(inner) => Some((**inner).clone()),
-                _ => None,
-            };
+            let expected_elem_type = set_type.set_elem().cloned();
             let elem_operand =
                 self.lower_expr_expecting(elem_expr, expected_elem_type, hir_module, mir_func)?;
-            let elem_operand = if matches!(set_type, Type::Set(ref inner) if **inner == Type::Float)
-            {
+            let is_float_set = set_type.set_elem() == Some(&Type::Float);
+            let elem_operand = if is_float_set {
                 self.coerce_for_storage(elem_operand, &elem_type, &Type::Float, mir_func)
             } else {
                 elem_operand
             };
 
             // Box non-heap elements (int, bool) so set can use them as object pointers
-            let boxed_elem = if matches!(set_type, Type::Set(ref inner) if **inner == Type::Float) {
+            let boxed_elem = if is_float_set {
                 self.emit_value_slot(elem_operand, &Type::Float, mir_func)
             } else {
                 self.emit_value_slot(elem_operand, &elem_type, mir_func)

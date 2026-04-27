@@ -511,20 +511,32 @@ fn rewrite_binding_target_defs(
             *slot = chosen;
             state.record_write(chosen, rhs_ty);
         }
-        hir::BindingTarget::Tuple { elts, .. } => match rhs_ty {
-            Type::Tuple(types) if types.len() == elts.len() => {
-                for (elt, ty) in elts.iter_mut().zip(types) {
-                    rewrite_binding_target_defs(
-                        elt,
-                        ty,
-                        hir_module,
-                        state,
-                        cell_vars,
-                        nonlocal_vars,
-                    );
+        hir::BindingTarget::Tuple { elts, .. } => {
+            if let Some(types) = rhs_ty.tuple_elems() {
+                if types.len() == elts.len() {
+                    for (elt, ty) in elts.iter_mut().zip(types) {
+                        rewrite_binding_target_defs(
+                            elt,
+                            ty,
+                            hir_module,
+                            state,
+                            cell_vars,
+                            nonlocal_vars,
+                        );
+                    }
+                } else {
+                    for elt in elts {
+                        rewrite_binding_target_defs(
+                            elt,
+                            &Type::Any,
+                            hir_module,
+                            state,
+                            cell_vars,
+                            nonlocal_vars,
+                        );
+                    }
                 }
-            }
-            Type::TupleVar(elem_ty) => {
+            } else if let Some(elem_ty) = rhs_ty.tuple_var_elem() {
                 for elt in elts {
                     rewrite_binding_target_defs(
                         elt,
@@ -535,8 +547,7 @@ fn rewrite_binding_target_defs(
                         nonlocal_vars,
                     );
                 }
-            }
-            _ => {
+            } else {
                 for elt in elts {
                     rewrite_binding_target_defs(
                         elt,
@@ -548,9 +559,9 @@ fn rewrite_binding_target_defs(
                     );
                 }
             }
-        },
+        }
         hir::BindingTarget::Starred { inner, .. } => {
-            let starred_ty = Type::List(Box::new(rhs_ty.clone()));
+            let starred_ty = Type::list_of(rhs_ty.clone());
             rewrite_binding_target_defs(
                 inner,
                 &starred_ty,
@@ -788,18 +799,29 @@ fn absorb_into_targets(
             loop_depth,
             from_for_bind,
         ),
-        hir::BindingTarget::Tuple { elts, .. } => match rhs_ty {
-            Type::Tuple(types) if types.len() == elts.len() => {
-                for (elt, t) in elts.iter().zip(types) {
-                    absorb_into_targets(elt, t, scratch, loop_only, loop_depth, from_for_bind);
+        hir::BindingTarget::Tuple { elts, .. } => {
+            if let Some(types) = rhs_ty.tuple_elems() {
+                if types.len() == elts.len() {
+                    for (elt, t) in elts.iter().zip(types) {
+                        absorb_into_targets(elt, t, scratch, loop_only, loop_depth, from_for_bind);
+                    }
+                } else {
+                    for elt in elts {
+                        absorb_into_targets(
+                            elt,
+                            &Type::Any,
+                            scratch,
+                            loop_only,
+                            loop_depth,
+                            from_for_bind,
+                        );
+                    }
                 }
-            }
-            Type::TupleVar(elem) => {
+            } else if let Some(elem) = rhs_ty.tuple_var_elem() {
                 for elt in elts {
                     absorb_into_targets(elt, elem, scratch, loop_only, loop_depth, from_for_bind);
                 }
-            }
-            _ => {
+            } else {
                 for elt in elts {
                     absorb_into_targets(
                         elt,
@@ -811,12 +833,12 @@ fn absorb_into_targets(
                     );
                 }
             }
-        },
+        }
         hir::BindingTarget::Starred { inner, .. } => {
             // Starred captures a list of the outer element type.
             absorb_into_targets(
                 inner,
-                &Type::List(Box::new(rhs_ty.clone())),
+                &Type::list_of(rhs_ty.clone()),
                 scratch,
                 loop_only,
                 loop_depth,
@@ -873,13 +895,7 @@ fn merge_var(
                     Type::Int | Type::Bool | Type::Float
                 )
             );
-            let is_tuple_pair = matches!(
-                (&prev, &new_ty),
-                (
-                    Type::Tuple(_) | Type::TupleVar(_),
-                    Type::Tuple(_) | Type::TupleVar(_)
-                )
-            );
+            let is_tuple_pair = prev.is_tuple_like() && new_ty.is_tuple_like();
             let prev_is_any = matches!(prev, Type::Any | Type::HeapAny);
             if is_numeric_pair || is_tuple_pair {
                 let merged = prev.join(&new_ty);
@@ -914,16 +930,31 @@ fn merge_var(
 /// anything else returns `Type::Any` and the caller treats the loop var
 /// as untyped.
 fn elem_type_of_iterable(ty: &Type) -> Type {
+    if let Some(e) = ty.list_elem() {
+        return e.clone();
+    }
+    if let Some(e) = ty.set_elem() {
+        return e.clone();
+    }
+    if let Some(elems) = ty.tuple_elems() {
+        return if !elems.is_empty() {
+            elems
+                .iter()
+                .cloned()
+                .reduce(|a, b| a.join(&b))
+                .unwrap_or(Type::Never)
+        } else {
+            Type::Any
+        };
+    }
+    if let Some(e) = ty.tuple_var_elem() {
+        return e.clone();
+    }
+    if let Some((k, _)) = ty.dict_kv() {
+        return k.clone();
+    }
     match ty {
-        Type::List(e) | Type::Set(e) | Type::Iterator(e) => (**e).clone(),
-        Type::Tuple(types) if !types.is_empty() => types
-            .iter()
-            .cloned()
-            .reduce(|a, b| a.join(&b))
-            .unwrap_or(Type::Never),
-        Type::Tuple(_) => Type::Any,
-        Type::TupleVar(e) => (**e).clone(),
-        Type::Dict(k, _) | Type::DefaultDict(k, _) => (**k).clone(),
+        Type::Iterator(e) => (**e).clone(),
         Type::Str => Type::Str,
         Type::Bytes => Type::Int,
         _ => Type::Any,

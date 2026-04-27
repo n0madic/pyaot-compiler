@@ -60,7 +60,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FILE_READLINES),
                     vec![obj_operand],
-                    Type::List(Box::new(str_or_bytes)),
+                    Type::list_of(str_or_bytes),
                     mir_func,
                 );
 

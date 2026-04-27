@@ -309,9 +309,9 @@ impl AstToHir {
 
             let vararg_type = if let Some(annotation) = &vararg_param.annotation {
                 let element_type = self.convert_type_annotation(annotation)?;
-                Some(Type::Tuple(vec![element_type]))
+                Some(Type::tuple_of(vec![element_type]))
             } else {
-                Some(Type::Tuple(vec![Type::Any]))
+                Some(Type::tuple_of(vec![Type::Any]))
             };
 
             params.push(Param {
@@ -362,9 +362,9 @@ impl AstToHir {
 
             let kwarg_type = if let Some(annotation) = &kwarg_param.annotation {
                 let value_type = self.convert_type_annotation(annotation)?;
-                Some(Type::Dict(Box::new(Type::Str), Box::new(value_type)))
+                Some(Type::dict_of(Type::Str, value_type))
             } else {
-                Some(Type::Dict(Box::new(Type::Str), Box::new(Type::Any)))
+                Some(Type::dict_of(Type::Str, Type::Any))
             };
 
             params.push(Param {

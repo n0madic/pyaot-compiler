@@ -27,12 +27,7 @@ enum RawType {
     HeapAny,
     File(bool),
     Never,
-    List(Box<RawType>),
-    Dict(Box<RawType>, Box<RawType>),
     DefaultDict(Box<RawType>, Box<RawType>),
-    Set(Box<RawType>),
-    Tuple(Vec<RawType>),
-    TupleVar(Box<RawType>),
     Union(Vec<RawType>),
     Function {
         params: Vec<RawType>,
@@ -46,6 +41,10 @@ enum RawType {
     Iterator(Box<RawType>),
     BuiltinException(BuiltinExceptionKind),
     RuntimeObject(TypeTagKind),
+    Generic {
+        base: ClassId,
+        args: Vec<RawType>,
+    },
 }
 
 /// Serialize a `Type` from a source module's interner into an interner-free
@@ -64,24 +63,10 @@ fn type_to_raw(ty: &Type, source_interner: &StringInterner, class_id_offset: u32
         Type::HeapAny => RawType::HeapAny,
         Type::File(binary) => RawType::File(*binary),
         Type::Never => RawType::Never,
-        Type::List(t) => RawType::List(Box::new(type_to_raw(t, source_interner, class_id_offset))),
-        Type::Dict(k, v) => RawType::Dict(
-            Box::new(type_to_raw(k, source_interner, class_id_offset)),
-            Box::new(type_to_raw(v, source_interner, class_id_offset)),
-        ),
         Type::DefaultDict(k, v) => RawType::DefaultDict(
             Box::new(type_to_raw(k, source_interner, class_id_offset)),
             Box::new(type_to_raw(v, source_interner, class_id_offset)),
         ),
-        Type::Set(t) => RawType::Set(Box::new(type_to_raw(t, source_interner, class_id_offset))),
-        Type::Tuple(ts) => RawType::Tuple(
-            ts.iter()
-                .map(|t| type_to_raw(t, source_interner, class_id_offset))
-                .collect(),
-        ),
-        Type::TupleVar(t) => {
-            RawType::TupleVar(Box::new(type_to_raw(t, source_interner, class_id_offset)))
-        }
         Type::Union(ts) => RawType::Union(
             ts.iter()
                 .map(|t| type_to_raw(t, source_interner, class_id_offset))
@@ -120,6 +105,33 @@ fn type_to_raw(ty: &Type, source_interner: &StringInterner, class_id_offset: u32
         // appear in a cross-module signature. Serialize as `Any` so that a
         // stale appearance does not crash the merger.
         Type::NotImplementedT => RawType::Any,
+        // Builtin-class Generic IDs are stable (reserved range, never offset).
+        // User-class Generic IDs are remapped like Type::Class.
+        Type::Generic { base, args } => {
+            use pyaot_types::{
+                BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID,
+                BUILTIN_TUPLE_CLASS_ID, BUILTIN_TUPLE_VAR_CLASS_ID,
+            };
+            let remapped_base = if matches!(
+                *base,
+                _ if *base == BUILTIN_LIST_CLASS_ID
+                    || *base == BUILTIN_DICT_CLASS_ID
+                    || *base == BUILTIN_SET_CLASS_ID
+                    || *base == BUILTIN_TUPLE_CLASS_ID
+                    || *base == BUILTIN_TUPLE_VAR_CLASS_ID
+            ) {
+                *base
+            } else {
+                ClassId(base.0.saturating_add(class_id_offset))
+            };
+            RawType::Generic {
+                base: remapped_base,
+                args: args
+                    .iter()
+                    .map(|t| type_to_raw(t, source_interner, class_id_offset))
+                    .collect(),
+            }
+        }
     }
 }
 
@@ -137,20 +149,10 @@ fn raw_to_type(raw: &RawType, caller_interner: &mut StringInterner) -> Type {
         RawType::HeapAny => Type::HeapAny,
         RawType::File(binary) => Type::File(*binary),
         RawType::Never => Type::Never,
-        RawType::List(t) => Type::List(Box::new(raw_to_type(t, caller_interner))),
-        RawType::Dict(k, v) => Type::Dict(
-            Box::new(raw_to_type(k, caller_interner)),
-            Box::new(raw_to_type(v, caller_interner)),
-        ),
         RawType::DefaultDict(k, v) => Type::DefaultDict(
             Box::new(raw_to_type(k, caller_interner)),
             Box::new(raw_to_type(v, caller_interner)),
         ),
-        RawType::Set(t) => Type::Set(Box::new(raw_to_type(t, caller_interner))),
-        RawType::Tuple(ts) => {
-            Type::Tuple(ts.iter().map(|t| raw_to_type(t, caller_interner)).collect())
-        }
-        RawType::TupleVar(t) => Type::TupleVar(Box::new(raw_to_type(t, caller_interner))),
         RawType::Union(ts) => {
             Type::Union(ts.iter().map(|t| raw_to_type(t, caller_interner)).collect())
         }
@@ -169,6 +171,13 @@ fn raw_to_type(raw: &RawType, caller_interner: &mut StringInterner) -> Type {
         RawType::Iterator(t) => Type::Iterator(Box::new(raw_to_type(t, caller_interner))),
         RawType::BuiltinException(k) => Type::BuiltinException(*k),
         RawType::RuntimeObject(k) => Type::RuntimeObject(*k),
+        RawType::Generic { base, args } => Type::Generic {
+            base: *base,
+            args: args
+                .iter()
+                .map(|t| raw_to_type(t, caller_interner))
+                .collect(),
+        },
     }
 }
 
@@ -648,12 +657,10 @@ impl MirMerger {
                         hir::ExprKind::Bool(_) => Type::Bool,
                         hir::ExprKind::Str(_) => Type::Str,
                         hir::ExprKind::None => Type::None,
-                        hir::ExprKind::List(_) => Type::List(Box::new(Type::Any)),
-                        hir::ExprKind::Dict(_) => {
-                            Type::Dict(Box::new(Type::Any), Box::new(Type::Any))
-                        }
-                        hir::ExprKind::Tuple(_) => Type::Tuple(vec![]),
-                        hir::ExprKind::Set(_) => Type::Set(Box::new(Type::Any)),
+                        hir::ExprKind::List(_) => Type::list_of(Type::Any),
+                        hir::ExprKind::Dict(_) => Type::dict_of(Type::Any, Type::Any),
+                        hir::ExprKind::Tuple(_) => Type::tuple_of(vec![]),
+                        hir::ExprKind::Set(_) => Type::set_of(Type::Any),
                         _ => Type::Any,
                     };
                 }
@@ -861,15 +868,20 @@ fn rewrite_class_type(
                 *name = interner.intern(class_name);
             }
         }
-        Type::List(inner) | Type::Set(inner) | Type::Iterator(inner) => {
+        Type::Iterator(inner) => {
             rewrite_class_type(inner, remap, interner);
         }
-        Type::Dict(k, v) | Type::DefaultDict(k, v) => {
+        Type::DefaultDict(k, v) => {
             rewrite_class_type(k, remap, interner);
             rewrite_class_type(v, remap, interner);
         }
-        Type::Tuple(elems) | Type::Union(elems) => {
+        Type::Union(elems) => {
             for t in elems.iter_mut() {
+                rewrite_class_type(t, remap, interner);
+            }
+        }
+        Type::Generic { args, .. } => {
+            for t in args.iter_mut() {
                 rewrite_class_type(t, remap, interner);
             }
         }

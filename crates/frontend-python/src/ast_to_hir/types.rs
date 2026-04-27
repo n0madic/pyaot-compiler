@@ -151,7 +151,7 @@ impl AstToHir {
                         // Handle both PEP 585 (list[int]) and typing module (List[int])
                         "list" | "List" if name_str == "list" || is_typing_import => {
                             let elem_type = self.convert_type_annotation(&sub.slice)?;
-                            Ok(Type::List(Box::new(elem_type)))
+                            Ok(Type::list_of(elem_type))
                         }
                         "dict" | "Dict" if name_str == "dict" || is_typing_import => {
                             // dict[K, V]
@@ -159,7 +159,7 @@ impl AstToHir {
                                 if tuple.elts.len() == 2 {
                                     let key_type = self.convert_type_annotation(&tuple.elts[0])?;
                                     let val_type = self.convert_type_annotation(&tuple.elts[1])?;
-                                    return Ok(Type::Dict(Box::new(key_type), Box::new(val_type)));
+                                    return Ok(Type::dict_of(key_type, val_type));
                                 }
                             }
                             Err(CompilerError::parse_error(
@@ -170,7 +170,7 @@ impl AstToHir {
                         "set" | "Set" if name_str == "set" || is_typing_import => {
                             // set[T]
                             let elem_type = self.convert_type_annotation(&sub.slice)?;
-                            Ok(Type::Set(Box::new(elem_type)))
+                            Ok(Type::set_of(elem_type))
                         }
                         "tuple" | "Tuple" if name_str == "tuple" || is_typing_import => {
                             // PEP 484 / PEP 585 variable-length form: `tuple[T, ...]`.
@@ -183,15 +183,17 @@ impl AstToHir {
                                     )
                                 {
                                     let elem_ty = self.convert_type_annotation(&tuple.elts[0])?;
-                                    return Ok(Type::TupleVar(Box::new(elem_ty)));
+                                    return Ok(Type::tuple_var_of(elem_ty));
                                 }
                                 let mut types = Vec::new();
                                 for elem in &tuple.elts {
                                     types.push(self.convert_type_annotation(elem)?);
                                 }
-                                Ok(Type::Tuple(types))
+                                Ok(Type::tuple_of(types))
                             } else {
-                                Ok(Type::Tuple(vec![self.convert_type_annotation(&sub.slice)?]))
+                                Ok(Type::tuple_of(vec![
+                                    self.convert_type_annotation(&sub.slice)?
+                                ]))
                             }
                         }
                         "Optional" if is_typing_import => {
@@ -378,10 +380,10 @@ impl AstToHir {
                     "bool" => Type::Bool,
                     "str" => Type::Str,
                     "bytes" => Type::Bytes,
-                    "list" => Type::List(Box::new(Type::Any)),
-                    "tuple" => Type::Tuple(vec![]),
-                    "dict" => Type::Dict(Box::new(Type::Any), Box::new(Type::Any)),
-                    "set" => Type::Set(Box::new(Type::Any)),
+                    "list" => Type::list_of(Type::Any),
+                    "tuple" => Type::tuple_of(vec![]),
+                    "dict" => Type::dict_of(Type::Any, Type::Any),
+                    "set" => Type::set_of(Type::Any),
                     "NoneType" => Type::None,
                     _ => {
                         return Err(CompilerError::parse_error(

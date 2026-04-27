@@ -68,11 +68,11 @@ impl<'a> Lowering<'a> {
             "sample" | "choices" => args
                 .first()
                 .map(|arg_id| {
-                    Type::List(Box::new(
+                    Type::list_of(
                         crate::type_planning::infer::extract_iterable_first_element_type(
                             &self.seed_expr_type(*arg_id, hir_module),
                         ),
-                    ))
+                    )
                 })
                 .unwrap_or(Type::Any),
             _ => declared,
@@ -243,7 +243,7 @@ impl<'a> Lowering<'a> {
         let list_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
             vec![mir::Operand::Constant(mir::Constant::Int(capacity))],
-            Type::List(Box::new(Type::Str)),
+            Type::list_of(Type::Str),
             mir_func,
         );
 

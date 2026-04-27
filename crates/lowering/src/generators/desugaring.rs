@@ -266,21 +266,21 @@ fn shape_infer_type(
                 .iter()
                 .map(|e| shape_infer_type(m, vmap, *e, depth + 1, interner).unwrap_or(Type::Any))
                 .collect();
-            Some(Type::Tuple(elem_types))
+            Some(Type::tuple_of(elem_types))
         }
         hir::ExprKind::List(items) => {
             let elem_ty = items
                 .first()
                 .and_then(|first| shape_infer_type(m, vmap, *first, depth + 1, interner))
                 .unwrap_or(Type::Any);
-            Some(Type::List(Box::new(elem_ty)))
+            Some(Type::list_of(elem_ty))
         }
         hir::ExprKind::Set(items) => {
             let elem_ty = items
                 .first()
                 .and_then(|first| shape_infer_type(m, vmap, *first, depth + 1, interner))
                 .unwrap_or(Type::Any);
-            Some(Type::Set(Box::new(elem_ty)))
+            Some(Type::set_of(elem_ty))
         }
         hir::ExprKind::Dict(pairs) => {
             let (key_ty, val_ty) = pairs
@@ -292,7 +292,7 @@ fn shape_infer_type(
                     )
                 })
                 .unwrap_or((Type::Any, Type::Any));
-            Some(Type::Dict(Box::new(key_ty), Box::new(val_ty)))
+            Some(Type::dict_of(key_ty, val_ty))
         }
 
         hir::ExprKind::Var(vid) => resolve_var_type(m, vmap, *vid, depth + 1, interner),
@@ -322,7 +322,7 @@ fn shape_infer_type(
                 .iter()
                 .map(|a| arg_elem_type(m, vmap, *a, depth + 1, interner).unwrap_or(Type::Any))
                 .collect();
-            Some(Type::Iterator(Box::new(Type::Tuple(tuple_elems))))
+            Some(Type::Iterator(Box::new(Type::tuple_of(tuple_elems))))
         }
         hir::ExprKind::BuiltinCall {
             builtin: hir::Builtin::Enumerate,
@@ -333,7 +333,7 @@ fn shape_infer_type(
                 .first()
                 .and_then(|a| arg_elem_type(m, vmap, *a, depth + 1, interner))
                 .unwrap_or(Type::Any);
-            Some(Type::Iterator(Box::new(Type::Tuple(vec![
+            Some(Type::Iterator(Box::new(Type::tuple_of(vec![
                 Type::Int,
                 inner,
             ]))))
@@ -349,14 +349,14 @@ fn shape_infer_type(
             // `arg_elem_type` then extracts per-iteration elements from it.
             let method_name = interner.resolve(*method);
             let obj_ty = shape_infer_type(m, vmap, *obj, depth + 1, interner)?;
-            let (kt, vt) = match &obj_ty {
-                Type::Dict(k, v) | Type::DefaultDict(k, v) => ((**k).clone(), (**v).clone()),
-                _ => return None,
+            let (kt, vt) = match obj_ty.dict_kv() {
+                Some((k, v)) => (k.clone(), v.clone()),
+                None => return None,
             };
             match method_name {
-                "items" => Some(Type::List(Box::new(Type::Tuple(vec![kt, vt])))),
-                "keys" => Some(Type::List(Box::new(kt))),
-                "values" => Some(Type::List(Box::new(vt))),
+                "items" => Some(Type::list_of(Type::tuple_of(vec![kt, vt]))),
+                "keys" => Some(Type::list_of(kt)),
+                "values" => Some(Type::list_of(vt)),
                 _ => None,
             }
         }
@@ -1043,19 +1043,23 @@ fn shape_infer_yield_expr(
 }
 
 fn augment_target_var_types(target: &hir::BindingTarget, ty: &Type, augmented: &mut VarTypeMap) {
-    match (target, ty) {
-        (hir::BindingTarget::Var(vid), _) => {
+    match target {
+        hir::BindingTarget::Var(vid) => {
             augmented.by_param.insert(*vid, ty.clone());
         }
-        (hir::BindingTarget::Tuple { elts, .. }, Type::Tuple(elem_tys)) => {
-            for (elt, elem_ty) in elts.iter().zip(elem_tys.iter()) {
-                augment_target_var_types(elt, elem_ty, augmented);
+        hir::BindingTarget::Tuple { elts, .. } => {
+            if let Some(elem_tys) = ty.tuple_elems() {
+                for (elt, elem_ty) in elts.iter().zip(elem_tys.iter()) {
+                    augment_target_var_types(elt, elem_ty, augmented);
+                }
             }
         }
-        (hir::BindingTarget::Starred { inner, .. }, Type::List(elem_ty))
-        | (hir::BindingTarget::Starred { inner, .. }, Type::TupleVar(elem_ty))
-        | (hir::BindingTarget::Starred { inner, .. }, Type::Iterator(elem_ty)) => {
-            augment_target_var_types(inner, &Type::List(elem_ty.clone()), augmented);
+        hir::BindingTarget::Starred { inner, .. } => {
+            if let Some(elem_ty) = ty.list_elem().or_else(|| ty.tuple_var_elem()) {
+                augment_target_var_types(inner, &Type::list_of(elem_ty.clone()), augmented);
+            } else if let Type::Iterator(elem_ty) = ty {
+                augment_target_var_types(inner, &Type::list_of((**elem_ty).clone()), augmented);
+            }
         }
         _ => {}
     }
@@ -1866,12 +1870,12 @@ mod tests {
         });
         let tuple_expr = module.exprs.alloc(hir::Expr {
             kind: hir::ExprKind::Tuple(vec![one, two]),
-            ty: Some(Type::Tuple(vec![Type::Int, Type::Int])),
+            ty: Some(Type::tuple_of(vec![Type::Int, Type::Int])),
             span,
         });
         let yield_expr = module.exprs.alloc(hir::Expr {
             kind: hir::ExprKind::Yield(Some(tuple_expr)),
-            ty: Some(Type::Tuple(vec![Type::Int, Type::Int])),
+            ty: Some(Type::tuple_of(vec![Type::Int, Type::Int])),
             span,
         });
         let yield_stmt = module.stmts.alloc(hir::Stmt {

@@ -254,7 +254,7 @@ impl AstToHir {
             "set" => self.create_simple_builtin(
                 call,
                 Builtin::Set,
-                Some(Type::Set(Box::new(Type::Any))),
+                Some(Type::set_of(Type::Any)),
                 kwargs,
                 call_span,
             ),
@@ -263,7 +263,7 @@ impl AstToHir {
             "divmod" => self.create_simple_builtin(
                 call,
                 Builtin::Divmod,
-                Some(Type::Tuple(vec![Type::Int, Type::Int])),
+                Some(Type::tuple_of(vec![Type::Int, Type::Int])),
                 kwargs,
                 call_span,
             ),

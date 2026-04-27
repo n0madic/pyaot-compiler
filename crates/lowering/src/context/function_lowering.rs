@@ -753,10 +753,10 @@ impl<'a> Lowering<'a> {
                         global_var_types.insert(*rest_var, context_type.clone());
                     }
                 }
-                let value_type = match context_type {
-                    Type::Dict(_, v) => (**v).clone(),
-                    _ => Type::Any,
-                };
+                let value_type = context_type
+                    .dict_kv()
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or(Type::Any);
                 for p in patterns {
                     Self::scan_match_pattern_global_types(
                         p,
@@ -767,20 +767,17 @@ impl<'a> Lowering<'a> {
                 }
             }
             hir::Pattern::MatchSequence { patterns } => {
-                let elem_type = match context_type {
-                    Type::List(t) => (**t).clone(),
-                    _ => Type::Any,
-                };
+                let elem_type = context_type.list_elem().cloned().unwrap_or(Type::Any);
                 for p in patterns {
                     Self::scan_match_pattern_global_types(p, &elem_type, globals, global_var_types);
                 }
             }
             hir::Pattern::MatchStar(Some(var_id)) => {
                 if globals.contains(var_id) {
-                    let list_type = match context_type {
-                        Type::List(t) => Type::List(t.clone()),
-                        _ => Type::Any,
-                    };
+                    let list_type = context_type
+                        .list_elem()
+                        .map(|t| Type::list_of(t.clone()))
+                        .unwrap_or(Type::Any);
                     global_var_types.insert(*var_id, list_type);
                 }
             }

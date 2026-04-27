@@ -492,7 +492,7 @@ impl<'a> Lowering<'a> {
         if matches!(obj_ty, Type::BuiltinException(_)) {
             let attr_name = self.resolve(attr);
             return Some(match attr_name {
-                "args" => Type::Tuple(vec![Type::Str]),
+                "args" => Type::tuple_of(vec![Type::Str]),
                 "__class__" => Type::Str,
                 _ => Type::Any,
             });
@@ -680,7 +680,7 @@ impl<'a> Lowering<'a> {
                     .iter()
                     .map(|e| self.seed_expr_type_by_id(*e, hir_module))
                     .collect();
-                Type::Tuple(elem_types)
+                Type::tuple_of(elem_types)
             }
             hir::ExprKind::Dict(pairs) => {
                 let key_types: Vec<Type> = pairs
@@ -741,9 +741,9 @@ impl<'a> Lowering<'a> {
                             "sample" | "choices" => args
                                 .first()
                                 .map(|arg_id| {
-                                    Type::List(Box::new(extract_iterable_first_element_type(
+                                    Type::list_of(extract_iterable_first_element_type(
                                         &self.seed_expr_type_by_id(*arg_id, hir_module),
-                                    )))
+                                    ))
                                 })
                                 .unwrap_or(Type::Any),
                             _ => annotated,
@@ -928,7 +928,7 @@ impl<'a> Lowering<'a> {
                         self.infer_seed_expr_type_inner(&module.exprs[*e], module, param_types)
                     })
                     .collect();
-                Type::Tuple(elem_types)
+                Type::tuple_of(elem_types)
             }
             hir::ExprKind::Dict(pairs) => {
                 let key_types: Vec<Type> = pairs
@@ -1005,13 +1005,13 @@ impl<'a> Lowering<'a> {
                             "sample" | "choices" => args
                                 .first()
                                 .map(|arg_id| {
-                                    Type::List(Box::new(extract_iterable_first_element_type(
+                                    Type::list_of(extract_iterable_first_element_type(
                                         &self.infer_seed_expr_type_inner(
                                             &module.exprs[*arg_id],
                                             module,
                                             param_types,
                                         ),
-                                    )))
+                                    ))
                                 })
                                 .unwrap_or(Type::Any),
                             _ => annotated,
@@ -1146,17 +1146,30 @@ impl<'a> Lowering<'a> {
 
 /// Extract the element type from an iterable type.
 pub(crate) fn extract_iterable_element_type(ty: &Type) -> Type {
+    if let Some(elem) = ty.list_elem() {
+        return elem.clone();
+    }
+    if let Some(elems) = ty.tuple_elems() {
+        return if !elems.is_empty() {
+            elems
+                .iter()
+                .cloned()
+                .reduce(|a, b| a.join(&b))
+                .unwrap_or(Type::Never)
+        } else {
+            Type::Any
+        };
+    }
+    if let Some(elem) = ty.tuple_var_elem() {
+        return elem.clone();
+    }
+    if let Some(elem) = ty.set_elem() {
+        return elem.clone();
+    }
+    if let Some((key, _)) = ty.dict_kv() {
+        return key.clone();
+    }
     match ty {
-        Type::List(elem) => (**elem).clone(),
-        Type::Tuple(elems) if !elems.is_empty() => elems
-            .iter()
-            .cloned()
-            .reduce(|a, b| a.join(&b))
-            .unwrap_or(Type::Never),
-        Type::Tuple(_) => Type::Any,
-        Type::TupleVar(elem) => (**elem).clone(),
-        Type::Set(elem) => (**elem).clone(),
-        Type::Dict(key, _) => (**key).clone(),
         Type::Str => Type::Str,
         Type::Bytes => Type::Int,
         Type::Iterator(elem) => (**elem).clone(),
@@ -1169,13 +1182,26 @@ pub(crate) fn extract_iterable_element_type(ty: &Type) -> Type {
 /// this returns only the first tuple element type — appropriate for iteration over
 /// homogeneous containers where the first element represents the common type.
 pub(crate) fn extract_iterable_first_element_type(ty: &Type) -> Type {
+    if let Some(elem) = ty.list_elem() {
+        return elem.clone();
+    }
+    if let Some(elems) = ty.tuple_elems() {
+        return if !elems.is_empty() {
+            elems[0].clone()
+        } else {
+            Type::Any
+        };
+    }
+    if let Some(elem) = ty.tuple_var_elem() {
+        return elem.clone();
+    }
+    if let Some(elem) = ty.set_elem() {
+        return elem.clone();
+    }
+    if let Some((key, _)) = ty.dict_kv() {
+        return key.clone();
+    }
     match ty {
-        Type::List(elem) => (**elem).clone(),
-        Type::Tuple(elems) if !elems.is_empty() => elems[0].clone(),
-        Type::Tuple(_) => Type::Any,
-        Type::TupleVar(elem) => (**elem).clone(),
-        Type::Set(elem) => (**elem).clone(),
-        Type::Dict(key, _) => (**key).clone(),
         Type::Str => Type::Str,
         Type::Bytes => Type::Int,
         Type::Iterator(elem) => (**elem).clone(),

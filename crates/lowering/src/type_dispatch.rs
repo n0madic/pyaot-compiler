@@ -21,6 +21,9 @@ pub(crate) fn select_print_func(ty: &Type) -> &'static RuntimeFuncDef {
     if ty.is_union() {
         return &runtime_func_def::RT_PRINT_OBJ;
     }
+    if ty.is_list_like() || ty.is_tuple_like() || ty.is_dict_like() || ty.is_set_like() {
+        return &runtime_func_def::RT_PRINT_OBJ;
+    }
     match ty {
         Type::Int => &runtime_func_def::RT_PRINT_INT,
         Type::Float => &runtime_func_def::RT_PRINT_FLOAT,
@@ -35,15 +38,9 @@ pub(crate) fn select_print_func(ty: &Type) -> &'static RuntimeFuncDef {
         // print garbage (e.g. `49` for payload `6`) or SEGV when the
         // value is a real heap pointer.
         Type::Any | Type::HeapAny => &runtime_func_def::RT_PRINT_OBJ,
-        Type::List(_)
-        | Type::Tuple(_)
-        | Type::TupleVar(_)
-        | Type::Dict(_, _)
-        | Type::DefaultDict(_, _)
-        | Type::Set(_)
-        | Type::Iterator(_)
-        | Type::RuntimeObject(_)
-        | Type::File(_) => &runtime_func_def::RT_PRINT_OBJ,
+        Type::Iterator(_) | Type::RuntimeObject(_) | Type::File(_) => {
+            &runtime_func_def::RT_PRINT_OBJ
+        }
         _ => &runtime_func_def::RT_PRINT_INT,
     }
 }
@@ -55,12 +52,20 @@ pub(crate) fn select_print_func(ty: &Type) -> &'static RuntimeFuncDef {
 /// Select the runtime function for `len(arg)` based on arg type.
 /// Returns `None` for types that need special handling (e.g., Class with __len__, Any).
 pub(crate) fn select_len_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
+    if ty.is_list_like() {
+        return Some(&runtime_func_def::RT_LIST_LEN);
+    }
+    if ty.is_tuple_like() {
+        return Some(&runtime_func_def::RT_TUPLE_LEN);
+    }
+    if ty.is_dict_like() {
+        return Some(&runtime_func_def::RT_DICT_LEN);
+    }
+    if ty.is_set_like() {
+        return Some(&runtime_func_def::RT_SET_LEN);
+    }
     match ty {
         Type::Str => Some(&runtime_func_def::RT_STR_LEN_INT),
-        Type::List(_) => Some(&runtime_func_def::RT_LIST_LEN),
-        Type::Tuple(_) | Type::TupleVar(_) => Some(&runtime_func_def::RT_TUPLE_LEN),
-        Type::Dict(_, _) | Type::DefaultDict(_, _) => Some(&runtime_func_def::RT_DICT_LEN),
-        Type::Set(_) => Some(&runtime_func_def::RT_SET_LEN),
         Type::Bytes => Some(&runtime_func_def::RT_BYTES_LEN),
         // Counter is dict-based
         Type::RuntimeObject(pyaot_core_defs::TypeTagKind::Counter) => {
@@ -97,11 +102,19 @@ pub(crate) fn type_to_conversion_kind(ty: &Type) -> Option<mir::ConversionTypeKi
 
 /// Map a container Type to its `IterSourceKind` for iterator creation.
 pub(crate) fn type_to_iter_source(ty: &Type) -> mir::IterSourceKind {
+    if ty.is_list_like() {
+        return mir::IterSourceKind::List;
+    }
+    if ty.is_tuple_like() {
+        return mir::IterSourceKind::Tuple;
+    }
+    if ty.is_dict_like() {
+        return mir::IterSourceKind::Dict;
+    }
+    if ty.is_set_like() {
+        return mir::IterSourceKind::Set;
+    }
     match ty {
-        Type::List(_) => mir::IterSourceKind::List,
-        Type::Tuple(_) | Type::TupleVar(_) => mir::IterSourceKind::Tuple,
-        Type::Dict(_, _) | Type::DefaultDict(_, _) => mir::IterSourceKind::Dict,
-        Type::Set(_) => mir::IterSourceKind::Set,
         Type::Str => mir::IterSourceKind::Str,
         Type::Bytes => mir::IterSourceKind::Bytes,
         Type::Iterator(_) => mir::IterSourceKind::Generator,
@@ -116,10 +129,14 @@ pub(crate) fn type_to_iter_source(ty: &Type) -> mir::IterSourceKind {
 /// Select the runtime function for simple slicing (no step) by object type.
 /// Returns `None` for types that need special handling or do not support slicing.
 pub(crate) fn select_slicing_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
+    if ty.is_list_like() {
+        return Some(&runtime_func_def::RT_LIST_SLICE);
+    }
+    if ty.is_tuple_like() {
+        return Some(&runtime_func_def::RT_TUPLE_SLICE);
+    }
     match ty {
         Type::Str => Some(&runtime_func_def::RT_STR_SLICE),
-        Type::List(_) => Some(&runtime_func_def::RT_LIST_SLICE),
-        Type::Tuple(_) | Type::TupleVar(_) => Some(&runtime_func_def::RT_TUPLE_SLICE),
         Type::Bytes => Some(&runtime_func_def::RT_BYTES_SLICE),
         _ => None,
     }
@@ -128,10 +145,14 @@ pub(crate) fn select_slicing_func(ty: &Type) -> Option<&'static RuntimeFuncDef> 
 /// Select the runtime function for step slicing (with step) by object type.
 /// Returns `None` for types that need special handling or do not support slicing.
 pub(crate) fn select_slicing_step_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
+    if ty.is_list_like() {
+        return Some(&runtime_func_def::RT_LIST_SLICE_STEP);
+    }
+    if ty.is_tuple_like() {
+        return Some(&runtime_func_def::RT_TUPLE_SLICE_STEP);
+    }
     match ty {
         Type::Str => Some(&runtime_func_def::RT_STR_SLICE_STEP),
-        Type::List(_) => Some(&runtime_func_def::RT_LIST_SLICE_STEP),
-        Type::Tuple(_) | Type::TupleVar(_) => Some(&runtime_func_def::RT_TUPLE_SLICE_STEP),
         Type::Bytes => Some(&runtime_func_def::RT_BYTES_SLICE_STEP),
         _ => None,
     }
@@ -162,6 +183,18 @@ pub(crate) enum TruthinessStrategy {
 
 /// Select the truthiness conversion strategy for a type.
 pub(crate) fn select_truthiness(ty: &Type) -> TruthinessStrategy {
+    if ty.is_list_like() {
+        return TruthinessStrategy::LenBased(&runtime_func_def::RT_LIST_LEN);
+    }
+    if ty.is_tuple_like() {
+        return TruthinessStrategy::LenBased(&runtime_func_def::RT_TUPLE_LEN);
+    }
+    if ty.is_dict_like() {
+        return TruthinessStrategy::LenBased(&runtime_func_def::RT_DICT_LEN);
+    }
+    if ty.is_set_like() {
+        return TruthinessStrategy::LenBased(&runtime_func_def::RT_SET_LEN);
+    }
     match ty {
         Type::Bool => TruthinessStrategy::AlreadyBool,
         Type::Int => TruthinessStrategy::IntNotZero,
@@ -169,14 +202,6 @@ pub(crate) fn select_truthiness(ty: &Type) -> TruthinessStrategy {
         Type::Str => TruthinessStrategy::LenBased(&runtime_func_def::RT_STR_LEN_INT),
         Type::None => TruthinessStrategy::AlwaysFalse,
         Type::Bytes => TruthinessStrategy::LenBased(&runtime_func_def::RT_BYTES_LEN),
-        Type::List(_) => TruthinessStrategy::LenBased(&runtime_func_def::RT_LIST_LEN),
-        Type::Tuple(_) | Type::TupleVar(_) => {
-            TruthinessStrategy::LenBased(&runtime_func_def::RT_TUPLE_LEN)
-        }
-        Type::Dict(_, _) | Type::DefaultDict(_, _) => {
-            TruthinessStrategy::LenBased(&runtime_func_def::RT_DICT_LEN)
-        }
-        Type::Set(_) => TruthinessStrategy::LenBased(&runtime_func_def::RT_SET_LEN),
         Type::Class { .. } => TruthinessStrategy::ClassInstance,
         Type::Union(_) | Type::Any => TruthinessStrategy::RuntimeIsTruthy,
         _ => TruthinessStrategy::RuntimeIsTruthy,

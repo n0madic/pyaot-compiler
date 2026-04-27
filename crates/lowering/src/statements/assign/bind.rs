@@ -58,20 +58,20 @@ impl<'a> Lowering<'a> {
                 // Refine Dict(Any, Any) type based on actual key/value types.
                 // For patterns like `d = defaultdict(); d["k"] = 42`, infer
                 // the dict element types from the first index assignment.
-                let refined_obj_type = if let Type::Dict(ref key_ty, ref val_ty) = obj_type {
-                    if **key_ty == Type::Any || **val_ty == Type::Any {
+                let refined_obj_type = if let Some((key_ty, val_ty)) = obj_type.dict_kv() {
+                    if *key_ty == Type::Any || *val_ty == Type::Any {
                         if let hir::ExprKind::Var(var_id) = &obj_expr.kind {
-                            let refined_key = if **key_ty == Type::Any && index_type != Type::Any {
-                                Box::new(index_type.clone())
+                            let refined_key = if *key_ty == Type::Any && index_type != Type::Any {
+                                index_type.clone()
                             } else {
                                 key_ty.clone()
                             };
-                            let refined_val = if **val_ty == Type::Any && *value_type != Type::Any {
-                                Box::new(value_type.clone())
+                            let refined_val = if *val_ty == Type::Any && *value_type != Type::Any {
+                                value_type.clone()
                             } else {
                                 val_ty.clone()
                             };
-                            let refined = Type::Dict(refined_key, refined_val);
+                            let refined = Type::dict_of(refined_key, refined_val);
                             self.insert_var_type(*var_id, refined.clone());
                             if let Some(local_id) = self.get_var_local(var_id) {
                                 if let Some(local) = mir_func.locals.get_mut(&local_id) {
@@ -132,15 +132,14 @@ impl<'a> Lowering<'a> {
         let star_idx = elts
             .iter()
             .position(|e| matches!(e, hir::BindingTarget::Starred { .. }));
-        let is_tuple = matches!(source_type, Type::Tuple(_));
+        let is_tuple = source_type.is_tuple_like();
 
         // Mirror the heap-obj promotion from `lower_unpack_assign` so nested
         // `Any` elements route through `HeapAny` for heap-typed containers.
-        let uses_heap_obj = match source_type {
-            Type::Tuple(elem_types) => {
-                elem_types.is_empty() || !elem_types.iter().all(|t| *t == Type::Int)
-            }
-            _ => true,
+        let uses_heap_obj = if let Some(elem_types) = source_type.tuple_elems() {
+            elem_types.is_empty() || !elem_types.iter().all(|t| *t == Type::Int)
+        } else {
+            true
         };
         let promote_any = |t: Type| -> Type {
             if uses_heap_obj && matches!(t, Type::Any) {
@@ -151,10 +150,12 @@ impl<'a> Lowering<'a> {
         };
 
         let elem_type_at = |index: usize, total: usize| -> Type {
-            let raw = match source_type {
-                Type::Tuple(types) => types.get(index).cloned().unwrap_or(Type::Any),
-                Type::List(inner) => (**inner).clone(),
-                _ => Type::Any,
+            let raw = if let Some(types) = source_type.tuple_elems() {
+                types.get(index).cloned().unwrap_or(Type::Any)
+            } else if let Some(inner) = source_type.list_elem() {
+                inner.clone()
+            } else {
+                Type::Any
             };
             // `total` reserved for future variable-tuple element computation;
             // currently unused but kept in the signature so the closure can
@@ -164,14 +165,14 @@ impl<'a> Lowering<'a> {
         };
 
         let elem_type_at_neg = |neg_index: i64| -> Type {
-            let raw = match source_type {
-                Type::Tuple(types) => {
-                    let len = types.len() as i64;
-                    let actual = (len + neg_index) as usize;
-                    types.get(actual).cloned().unwrap_or(Type::Any)
-                }
-                Type::List(inner) => (**inner).clone(),
-                _ => Type::Any,
+            let raw = if let Some(types) = source_type.tuple_elems() {
+                let len = types.len() as i64;
+                let actual = (len + neg_index) as usize;
+                types.get(actual).cloned().unwrap_or(Type::Any)
+            } else if let Some(inner) = source_type.list_elem() {
+                inner.clone()
+            } else {
+                Type::Any
             };
             promote_any(raw)
         };
@@ -251,25 +252,24 @@ impl<'a> Lowering<'a> {
                 } else {
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SLICE)
                 };
-                let starred_elem_type = match source_type {
-                    Type::List(elem_ty) => (**elem_ty).clone(),
-                    Type::Tuple(elem_types) => {
-                        let middle_start = before.len();
-                        let middle_end = elem_types.len().saturating_sub(after.len());
-                        if middle_start < middle_end {
-                            let middle_types: Vec<_> =
-                                elem_types[middle_start..middle_end].to_vec();
-                            middle_types
-                                .into_iter()
-                                .reduce(|a, b| a.join(&b))
-                                .unwrap_or(Type::Never)
-                        } else {
-                            Type::Any
-                        }
+                let starred_elem_type = if let Some(elem_ty) = source_type.list_elem() {
+                    elem_ty.clone()
+                } else if let Some(elem_types) = source_type.tuple_elems() {
+                    let middle_start = before.len();
+                    let middle_end = elem_types.len().saturating_sub(after.len());
+                    if middle_start < middle_end {
+                        let middle_types: Vec<_> = elem_types[middle_start..middle_end].to_vec();
+                        middle_types
+                            .into_iter()
+                            .reduce(|a, b| a.join(&b))
+                            .unwrap_or(Type::Never)
+                    } else {
+                        Type::Any
                     }
-                    _ => Type::Any,
+                } else {
+                    Type::Any
                 };
-                let starred_type = Type::List(Box::new(starred_elem_type));
+                let starred_type = Type::list_of(starred_elem_type);
                 let start_idx = before.len() as i64;
                 let end_idx = if after.is_empty() {
                     i64::MAX
@@ -572,7 +572,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<()> {
         match obj_type {
-            Type::Dict(_, _) => {
+            _ if obj_type.is_dict_like() && !matches!(obj_type, Type::DefaultDict(_, _)) => {
                 let boxed_key = self.emit_value_slot(index_operand, index_type, mir_func);
                 let boxed_value = self.emit_value_slot(value_operand, value_type, mir_func);
                 self.emit_runtime_call_void(
@@ -595,12 +595,13 @@ impl<'a> Lowering<'a> {
                     mir_func,
                 );
             }
-            Type::List(elem_ty) => {
+            _ if obj_type.is_list_like() => {
+                let elem_ty = obj_type.list_elem().expect("is_list_like invariant");
                 // After §F.7c: list slots store uniform tagged Values; box every primitive.
-                let box_type = if matches!(**elem_ty, Type::Union(_) | Type::Any) {
+                let box_type = if matches!(*elem_ty, Type::Union(_) | Type::Any) {
                     value_type
                 } else {
-                    elem_ty.as_ref()
+                    elem_ty
                 };
                 let store_operand = self.emit_value_slot(value_operand, box_type, mir_func);
                 self.emit_runtime_call_void(

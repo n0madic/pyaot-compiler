@@ -42,7 +42,7 @@ impl<'a> Lowering<'a> {
             if let hir::ExprKind::Var(var_id) = &left_expr.kind {
                 if *var_id == target {
                     let left_ty = self.seed_expr_type(*left, hir_module);
-                    if matches!(left_ty, Type::Dict(_, _)) {
+                    if left_ty.is_dict_like() {
                         let dict_operand = self.lower_expr(left_expr, hir_module, mir_func)?;
                         let right_expr = &hir_module.exprs[*right];
                         let right_operand = self.lower_expr(right_expr, hir_module, mir_func)?;

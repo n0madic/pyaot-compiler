@@ -20,9 +20,10 @@ impl<'a> Lowering<'a> {
         let elem_type = vararg_param
             .ty
             .as_ref()
-            .and_then(|t| match t {
-                Type::Tuple(types) if !types.is_empty() => Some(types[0].clone()),
-                _ => None,
+            .and_then(|t| {
+                t.tuple_elems()
+                    .filter(|types| !types.is_empty())
+                    .map(|types| types[0].clone())
             })
             .unwrap_or(Type::Any);
 
@@ -91,7 +92,7 @@ impl<'a> Lowering<'a> {
                             mir::Operand::Local(key_local),
                             value_op.clone(),
                         ],
-                        Type::Dict(Box::new(Type::Str), Box::new(Type::Any)),
+                        Type::dict_of(Type::Str, Type::Any),
                         mir_func,
                     );
                 }
@@ -144,7 +145,7 @@ impl<'a> Lowering<'a> {
             let remaining_dict = self.emit_runtime_call_gc(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_COPY),
                 vec![mir::Operand::Local(dict_local)],
-                Type::Dict(Box::new(Type::Str), Box::new(value_type.clone())),
+                Type::dict_of(Type::Str, value_type.clone()),
                 mir_func,
             );
 

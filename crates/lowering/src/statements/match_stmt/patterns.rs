@@ -351,14 +351,10 @@ impl<'a> Lowering<'a> {
             crate::type_planning::infer::extract_iterable_first_element_type(subject_type);
 
         // Get length check function
-        let len_func = match subject_type {
-            Type::List(_) => {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN)
-            }
-            Type::Tuple(_) => {
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN)
-            }
-            _ => mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
+        let len_func = if subject_type.is_tuple_like() {
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN)
+        } else {
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN)
         };
 
         // Element access is dispatched per-call (list uses emit_list_get for typed unwrap).
@@ -429,11 +425,14 @@ impl<'a> Lowering<'a> {
             // For tuples we use the statically-known per-position type; for
             // all other sequence types (list, unknown) we fall back to the
             // uniform elem_type computed above.
-            let idx_elem_type = match subject_type {
-                Type::Tuple(elems) if !elems.is_empty() => {
+            let idx_elem_type = if let Some(elems) = subject_type.tuple_elems() {
+                if !elems.is_empty() {
                     elems.get(i).cloned().unwrap_or_else(|| elems[0].clone())
+                } else {
+                    elem_type.clone()
                 }
-                _ => elem_type.clone(),
+            } else {
+                elem_type.clone()
             };
 
             // Get element at index i
@@ -443,19 +442,20 @@ impl<'a> Lowering<'a> {
                 value: mir::Constant::Int(i as i64),
             });
 
-            let elem_local = match subject_type {
-                Type::Tuple(_) => self.emit_runtime_call(
+            let elem_local = if subject_type.is_tuple_like() {
+                self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
                     vec![subject.clone(), mir::Operand::Local(idx_local)],
                     idx_elem_type.clone(),
                     mir_func,
-                ),
-                _ => self.emit_list_get(
+                )
+            } else {
+                self.emit_list_get(
                     subject.clone(),
                     mir::Operand::Local(idx_local),
                     &idx_elem_type,
                     mir_func,
-                ),
+                )
             };
 
             // Check pattern against element
@@ -512,19 +512,15 @@ impl<'a> Lowering<'a> {
                     });
 
                     // Create slice for starred variable
-                    let slice_func = match subject_type {
-                        Type::List(_) => mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_LIST_SLICE,
-                        ),
-                        Type::Tuple(_) => mir::RuntimeFunc::Call(
+                    let slice_func = if subject_type.is_tuple_like() {
+                        mir::RuntimeFunc::Call(
                             &pyaot_core_defs::runtime_func_def::RT_TUPLE_SLICE_TO_LIST,
-                        ),
-                        _ => mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_LIST_SLICE,
-                        ),
+                        )
+                    } else {
+                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SLICE)
                     };
 
-                    let star_elem_type = Type::List(Box::new(elem_type.clone()));
+                    let star_elem_type = Type::list_of(elem_type.clone());
                     let slice_local = self.emit_runtime_call(
                         slice_func,
                         vec![
@@ -582,21 +578,22 @@ impl<'a> Lowering<'a> {
                         right: mir::Operand::Local(one_local),
                     });
 
-                    let elem_local = match subject_type {
-                        Type::Tuple(_) => self.emit_runtime_call(
+                    let elem_local = if subject_type.is_tuple_like() {
+                        self.emit_runtime_call(
                             mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_TUPLE_GET,
                             ),
                             vec![subject.clone(), mir::Operand::Local(final_idx_local)],
                             elem_type.clone(),
                             mir_func,
-                        ),
-                        _ => self.emit_list_get(
+                        )
+                    } else {
+                        self.emit_list_get(
                             subject.clone(),
                             mir::Operand::Local(final_idx_local),
                             &elem_type,
                             mir_func,
-                        ),
+                        )
                     };
 
                     // Check pattern against element
@@ -656,10 +653,11 @@ impl<'a> Lowering<'a> {
         let bindings: Vec<(pyaot_utils::VarId, mir::Operand, Type)> = Vec::new();
 
         // Determine value type from dict type
-        let value_type = match ctx.subject_type {
-            Type::Dict(_, v) => (**v).clone(),
-            _ => Type::Any,
-        };
+        let value_type = ctx
+            .subject_type
+            .dict_kv()
+            .map(|(_, v)| v.clone())
+            .unwrap_or(Type::Any);
 
         // Start with true condition
         let true_local = self.alloc_and_add_local(Type::Bool, mir_func);

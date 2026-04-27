@@ -107,7 +107,7 @@ impl<'a> Lowering<'a> {
                     let tuple_operand = self.lower_expr(tuple_expr, hir_module, mir_func)?;
 
                     // Extract element types
-                    if let Type::Tuple(elem_types) = tuple_type {
+                    if let Some(elem_types) = tuple_type.tuple_elems() {
                         // Extract each element from the tuple
                         for (i, elem_type) in elem_types.iter().enumerate() {
                             let elem_local = self.emit_tuple_get(

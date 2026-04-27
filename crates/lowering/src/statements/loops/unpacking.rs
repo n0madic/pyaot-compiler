@@ -34,7 +34,7 @@ impl<'a> Lowering<'a> {
             return self.lower_for_unpack_iterator(
                 targets,
                 iter_id,
-                Type::Tuple(elem_types),
+                Type::tuple_of(elem_types),
                 body,
                 else_block,
                 hir_module,
@@ -73,9 +73,10 @@ impl<'a> Lowering<'a> {
         }
 
         // Determine the types of unpacked elements from the tuple element type
-        let target_types: Vec<Type> = match &elem_type {
-            Type::Tuple(types) => types.clone(),
-            _ => vec![Type::Any; targets.len()],
+        let target_types: Vec<Type> = if let Some(types) = elem_type.tuple_elems() {
+            types.to_vec()
+        } else {
+            vec![Type::Any; targets.len()]
         };
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
@@ -278,9 +279,10 @@ impl<'a> Lowering<'a> {
         });
 
         // Determine element types
-        let target_types: Vec<Type> = match &elem_type {
-            Type::Tuple(types) => types.clone(),
-            _ => vec![Type::Any; targets.len()],
+        let target_types: Vec<Type> = if let Some(types) = elem_type.tuple_elems() {
+            types.to_vec()
+        } else {
+            vec![Type::Any; targets.len()]
         };
 
         // Create target locals

@@ -3,13 +3,13 @@
 ## Type System
 
 - **Primitives**: `int` (i64), `float` (f64), `bool` (i8), `str`, `None`
-- **Containers**: `list[T]`, `dict[K,V]`, `defaultdict[K,V]`, `tuple[T1,...,Tn]` (fixed-length heterogeneous → `Type::Tuple(Vec<Type>)`), `tuple[T, ...]` (variable-length homogeneous → `Type::TupleVar(Box<Type>)`, PEP 484/585), `set[T]`, `bytes`
+- **Containers**: `list[T]`, `dict[K,V]`, `defaultdict[K,V]`, `tuple[T1,...,Tn]` (fixed-length heterogeneous → `Type::Generic{BUILTIN_TUPLE_CLASS_ID, [T1..Tn]}`), `tuple[T, ...]` (variable-length homogeneous → `Type::Generic{BUILTIN_TUPLE_VAR_CLASS_ID, [T]}`, PEP 484/585), `set[T]`, `bytes`. **All five builtin container types use `Type::Generic{base, args}`** since S3.2c. Construct via `Type::list_of(T)`, `Type::dict_of(K,V)`, `Type::set_of(T)`, `Type::tuple_of(elems)`, `Type::tuple_var_of(T)`; query via `list_elem()`, `dict_kv()`, `set_elem()`, `tuple_elems()`, `tuple_var_elem()`, `is_list_like()`, `is_dict_like()`, `is_set_like()`, `is_tuple_like()`.
 - **Special**: `Union[T, U]`, `Optional[T]`, `Iterator[T]`, `Any`, `HeapAny`, `NotImplementedT`
 - **Collections**: `Type::DefaultDict(K, V)`, `Type::RuntimeObject(TypeTagKind::Counter)`, `Type::RuntimeObject(TypeTagKind::Deque)`
 - **Classes**: `Type::Class { class_id, name }`
 - **Exceptions**: `Type::BuiltinException(BuiltinExceptionKind)`
 - **Any vs HeapAny**: `Any` = ambiguous (raw i64 or pointer), `HeapAny` = guaranteed `*mut Obj` (safe for runtime dispatch in print/compare)
-- **Tuple variants**: `Type::Tuple` and `Type::TupleVar` share the same runtime (`TupleObj` with uniform `[Value]` storage); the distinction is compile-time only. Fixed tuples support per-slot typed indexing and static bounds checks; variable tuples emit `rt_tuple_get` with runtime bounds checks and return the homogeneous element type. Merge rule: `a.join(&b)` via `TypeLattice` — same-length tuples merge element-wise (fixed shape); different-length tuples → `Union[...]`; `TupleVar` ⊔ `Tuple` → `TupleVar(element join)`.
+- **Tuple variants** (both now `Type::Generic`): `Generic{TUPLE_ID, [T1..Tn]}` (fixed-length) and `Generic{TUPLE_VAR_ID, [T]}` (variable-length) share the same runtime (`TupleObj` with uniform `[Value]` storage); the distinction is compile-time only. Fixed tuples support per-slot typed indexing and static bounds checks; variable tuples emit `rt_tuple_get` with runtime bounds checks and return the homogeneous element type. Detect with `tuple_elems()` (returns `Some` for fixed) vs `tuple_var_elem()` (returns `Some` for variable). Merge rule: `a.join(&b)` via `TypeLattice` — same-length tuples merge element-wise (fixed shape); different-length tuples → `Union[...]`; TupleVar ⊔ Tuple → TupleVar(element join).
 - **TypeLattice API (S3.1)**:
   - `TypeLattice::join(&self, &Self) -> Self` — least upper bound (⊔). Numeric tower: `Bool ⊔ Int = Int`, `Int ⊔ Float = Float`. Replaces `unify_field_type`, `unify_numeric`, `unify_tuple_shapes`, `normalize_union`.
   - `TypeLattice::meet(&self, &Self) -> Self` — greatest lower bound (⊓). Replaces `narrow_to`.

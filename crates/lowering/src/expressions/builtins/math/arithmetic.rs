@@ -229,10 +229,12 @@ impl<'a> Lowering<'a> {
         let iterable_type = self.seed_expr_type(args[0], hir_module);
 
         // Infer element type from list or iterator type annotation
-        let element_type = match &iterable_type {
-            Type::List(elem_ty) => (**elem_ty).clone(),
-            Type::Iterator(elem_ty) => (**elem_ty).clone(),
-            _ => Type::Int, // fallback for other iterables
+        let element_type = if let Some(elem_ty) = iterable_type.list_elem() {
+            elem_ty.clone()
+        } else if let Type::Iterator(elem_ty) = &iterable_type {
+            (**elem_ty).clone()
+        } else {
+            Type::Int // fallback for other iterables
         };
 
         // Check if start value is provided and its type
@@ -539,7 +541,7 @@ impl<'a> Lowering<'a> {
         let result_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
             vec![mir::Operand::Constant(mir::Constant::Int(2))],
-            Type::Tuple(vec![result_elem_ty.clone(), result_elem_ty.clone()]),
+            Type::tuple_of(vec![result_elem_ty.clone(), result_elem_ty.clone()]),
             mir_func,
         );
 

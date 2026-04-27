@@ -42,9 +42,10 @@ pub fn type_to_cranelift(ty: &Type) -> cltypes::Type {
         Type::Float => cltypes::F64,
         Type::Bool => cltypes::I8,
         Type::None => cltypes::I8,
-        Type::Str | Type::List(_) | Type::Dict(_, _) | Type::Tuple(_) | Type::File(_) => {
+        Type::Str | Type::File(_) => {
             cltypes::I64 // Pointer to heap object
         }
+        _ if ty.is_list_like() || ty.is_dict_like() || ty.is_tuple_like() => cltypes::I64,
         // Union values are stored as boxed pointers (*mut Obj)
         Type::Union(_) => cltypes::I64,
         Type::Never => panic!("type_to_cranelift: Never type should not reach codegen"),

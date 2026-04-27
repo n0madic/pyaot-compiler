@@ -958,26 +958,30 @@ fn insert_target_types(
         hir::BindingTarget::Var(var_id) => {
             var_types.insert(*var_id, elem_ty.clone());
         }
-        hir::BindingTarget::Tuple { elts, .. } => match elem_ty {
-            Type::Tuple(types) if types.len() == elts.len() => {
-                for (elt, t) in elts.iter().zip(types) {
-                    insert_target_types(elt, t, var_types);
+        hir::BindingTarget::Tuple { elts, .. } => {
+            if let Some(types) = elem_ty.tuple_elems() {
+                if types.len() == elts.len() {
+                    for (elt, t) in elts.iter().zip(types) {
+                        insert_target_types(elt, t, var_types);
+                    }
+                } else {
+                    for elt in elts {
+                        insert_target_types(elt, &Type::Any, var_types);
+                    }
                 }
-            }
-            Type::TupleVar(inner) => {
+            } else if let Some(inner) = elem_ty.tuple_var_elem() {
                 for elt in elts {
                     insert_target_types(elt, inner, var_types);
                 }
-            }
-            _ => {
+            } else {
                 for elt in elts {
                     insert_target_types(elt, &Type::Any, var_types);
                 }
             }
-        },
+        }
         hir::BindingTarget::Starred { inner, .. } => {
             // Starred captures a list of the outer element type.
-            insert_target_types(inner, &Type::List(Box::new(elem_ty.clone())), var_types);
+            insert_target_types(inner, &Type::list_of(elem_ty.clone()), var_types);
         }
         hir::BindingTarget::Attr { .. }
         | hir::BindingTarget::Index { .. }

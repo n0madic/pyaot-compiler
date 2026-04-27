@@ -124,7 +124,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_COPY),
                     vec![obj_operand],
-                    Type::Dict(key_ty.clone(), value_ty.clone()),
+                    Type::dict_of(*key_ty.clone(), *value_ty.clone()),
                     mir_func,
                 );
 
@@ -135,7 +135,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
                     vec![obj_operand],
-                    Type::List(key_ty.clone()),
+                    Type::list_of(*key_ty.clone()),
                     mir_func,
                 );
 
@@ -146,7 +146,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_VALUES),
                     vec![obj_operand],
-                    Type::List(value_ty.clone()),
+                    Type::list_of(*value_ty.clone()),
                     mir_func,
                 );
 
@@ -154,12 +154,12 @@ impl<'a> Lowering<'a> {
             }
             "items" => {
                 // .items() - returns list of (key, value) tuples
-                let tuple_ty = Type::Tuple(vec![(*key_ty).clone(), (*value_ty).clone()]);
+                let tuple_ty = Type::tuple_of(vec![(*key_ty).clone(), (*value_ty).clone()]);
 
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_ITEMS),
                     vec![obj_operand],
-                    Type::List(Box::new(tuple_ty)),
+                    Type::list_of(tuple_ty),
                     mir_func,
                 );
 
@@ -207,7 +207,7 @@ impl<'a> Lowering<'a> {
             "popitem" => {
                 // .popitem() or .popitem(last=True/False)
                 // Use rt_dict_popitem_ordered which supports the `last` parameter
-                let tuple_ty = Type::Tuple(vec![(*key_ty).clone(), (*value_ty).clone()]);
+                let tuple_ty = Type::tuple_of(vec![(*key_ty).clone(), (*value_ty).clone()]);
 
                 let last_arg = if !arg_operands.is_empty() {
                     arg_operands[0].clone()
@@ -243,7 +243,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_FROM_KEYS),
                     vec![keys_arg, boxed_value],
-                    Type::Dict(key_ty.clone(), value_ty.clone()),
+                    Type::dict_of(*key_ty.clone(), *value_ty.clone()),
                     mir_func,
                 );
 

@@ -82,7 +82,7 @@ fn test_meet_and_minus_non_union() {
 #[test]
 fn test_meet_list_types() {
     // meet(Union[list[int], str], str) = str  — Str ≤ Union so meet = Str
-    let list_int = Type::List(Box::new(Type::Int));
+    let list_int = Type::list_of(Type::Int);
     let union = list_int.clone().join(&Type::Str);
     assert_eq!(union.meet(&Type::Str), Type::Str);
     // meet(Union[list[int], str], int) = Never  — Int not in the union
@@ -103,7 +103,7 @@ fn test_never_subtyping() {
     assert!(Type::Never.is_subtype_of(&Type::Str));
     assert!(Type::Never.is_subtype_of(&Type::Any));
     assert!(Type::Never.is_subtype_of(&Type::None));
-    assert!(Type::Never.is_subtype_of(&Type::List(Box::new(Type::Int))));
+    assert!(Type::Never.is_subtype_of(&Type::list_of(Type::Int)));
 
     // Nothing is subtype of Never (except Never itself)
     assert!(!Type::Int.is_subtype_of(&Type::Never));
@@ -192,9 +192,9 @@ fn test_join_idempotent_for_misc_types() {
         Type::Bool,
         Type::Str,
         Type::None,
-        Type::List(Box::new(Type::Int)),
-        Type::Tuple(vec![Type::Int, Type::Str]),
-        Type::TupleVar(Box::new(Type::Int)),
+        Type::list_of(Type::Int),
+        Type::tuple_of(vec![Type::Int, Type::Str]),
+        Type::tuple_var_of(Type::Int),
     ] {
         assert_eq!(t.join(&t), t, "idempotence broken for {t:?}");
     }
@@ -203,8 +203,8 @@ fn test_join_idempotent_for_misc_types() {
 #[test]
 fn test_join_different_tuple_lengths() {
     // Different-length tuples → canonical Union (lattice join; not TupleVar).
-    let a = Type::Tuple(vec![Type::Int]);
-    let b = Type::Tuple(vec![Type::Int, Type::Int]);
+    let a = Type::tuple_of(vec![Type::Int]);
+    let b = Type::tuple_of(vec![Type::Int, Type::Int]);
     let merged = a.join(&b);
     assert!(
         matches!(merged, Type::Union(_)),
@@ -218,6 +218,231 @@ fn test_join_numeric_promotion() {
     assert_eq!(Type::Int.join(&Type::Float), Type::Float);
     assert_eq!(Type::Bool.join(&Type::Int), Type::Int);
     assert_eq!(Type::Bool.join(&Type::Float), Type::Float);
+}
+
+// ---------------------------------------------------------------------------
+// S3.2 §S3.2a — Type::Generic accessor API + builtin ClassId constants
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_generic_builtin_class_ids_are_unique() {
+    use crate::{
+        BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID, BUILTIN_TUPLE_CLASS_ID,
+        BUILTIN_TUPLE_VAR_CLASS_ID, FIRST_USER_CLASS_ID,
+    };
+    let ids = [
+        BUILTIN_LIST_CLASS_ID.0,
+        BUILTIN_DICT_CLASS_ID.0,
+        BUILTIN_SET_CLASS_ID.0,
+        BUILTIN_TUPLE_CLASS_ID.0,
+        BUILTIN_TUPLE_VAR_CLASS_ID.0,
+    ];
+    // All five IDs must be distinct.
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        assert!(seen.insert(id), "duplicate builtin class id: {id}");
+    }
+    // All must be strictly below FIRST_USER_CLASS_ID.
+    for id in ids {
+        assert!(
+            id < FIRST_USER_CLASS_ID as u32,
+            "builtin class id {id} >= FIRST_USER_CLASS_ID ({})",
+            FIRST_USER_CLASS_ID
+        );
+    }
+}
+
+#[test]
+fn test_accessor_roundtrip_legacy_variants() {
+    // Accessors work on the legacy variants (coexist until S3.2c).
+    let list_int = Type::list_of(Type::Int);
+    assert_eq!(list_int.list_elem(), Some(&Type::Int));
+    assert!(list_int.is_list_like());
+
+    let dict_sv = Type::dict_of(Type::Str, Type::Int);
+    assert_eq!(dict_sv.dict_kv(), Some((&Type::Str, &Type::Int)));
+    assert!(dict_sv.is_dict_like());
+
+    let set_f = Type::set_of(Type::Float);
+    assert_eq!(set_f.set_elem(), Some(&Type::Float));
+
+    let tup = Type::tuple_of(vec![Type::Int, Type::Str]);
+    assert_eq!(tup.tuple_elems(), Some([Type::Int, Type::Str].as_slice()));
+    assert_eq!(tup.tuple_var_elem(), None);
+
+    let tupvar = Type::tuple_var_of(Type::Int);
+    assert_eq!(tupvar.tuple_var_elem(), Some(&Type::Int));
+    assert_eq!(tupvar.tuple_elems(), None);
+
+    let iter = Type::Iterator(Box::new(Type::Str));
+    assert_eq!(iter.iter_elem(), Some(&Type::Str));
+
+    // Non-list types return None from list_elem.
+    assert_eq!(Type::Int.list_elem(), None);
+    assert_eq!(Type::Str.set_elem(), None);
+}
+
+#[test]
+fn test_accessor_roundtrip_generic_variant() {
+    use crate::{
+        BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID, BUILTIN_TUPLE_CLASS_ID,
+        BUILTIN_TUPLE_VAR_CLASS_ID,
+    };
+
+    let g_list = Type::Generic {
+        base: BUILTIN_LIST_CLASS_ID,
+        args: vec![Type::Int],
+    };
+    assert_eq!(g_list.list_elem(), Some(&Type::Int));
+    assert!(g_list.is_list_like());
+
+    let g_dict = Type::Generic {
+        base: BUILTIN_DICT_CLASS_ID,
+        args: vec![Type::Str, Type::Float],
+    };
+    assert_eq!(g_dict.dict_kv(), Some((&Type::Str, &Type::Float)));
+    assert!(g_dict.is_dict_like());
+
+    let g_set = Type::Generic {
+        base: BUILTIN_SET_CLASS_ID,
+        args: vec![Type::Bool],
+    };
+    assert_eq!(g_set.set_elem(), Some(&Type::Bool));
+
+    let g_tup = Type::Generic {
+        base: BUILTIN_TUPLE_CLASS_ID,
+        args: vec![Type::Int, Type::Str],
+    };
+    assert_eq!(g_tup.tuple_elems(), Some([Type::Int, Type::Str].as_slice()));
+    assert_eq!(g_tup.tuple_var_elem(), None);
+
+    let g_tupvar = Type::Generic {
+        base: BUILTIN_TUPLE_VAR_CLASS_ID,
+        args: vec![Type::Float],
+    };
+    assert_eq!(g_tupvar.tuple_var_elem(), Some(&Type::Float));
+    assert_eq!(g_tupvar.tuple_elems(), None);
+}
+
+#[test]
+fn test_generic_subtyping_covariant() {
+    use crate::TypeLattice;
+    use crate::{BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID};
+
+    // List[Int] ≤ List[Any]
+    let g_list_int = Type::Generic {
+        base: BUILTIN_LIST_CLASS_ID,
+        args: vec![Type::Int],
+    };
+    let g_list_any = Type::Generic {
+        base: BUILTIN_LIST_CLASS_ID,
+        args: vec![Type::Any],
+    };
+    assert!(g_list_int.is_subtype_of(&g_list_any));
+    // List[Any] ≤ List[Int] (Any wildcard is bidirectional in is_subtype_of)
+    assert!(g_list_any.is_subtype_of(&g_list_int));
+
+    // Different base: not subtypes.
+    let g_dict = Type::Generic {
+        base: BUILTIN_DICT_CLASS_ID,
+        args: vec![Type::Str, Type::Int],
+    };
+    assert!(!g_list_int.is_subtype_of(&g_dict));
+    assert!(!g_dict.is_subtype_of(&g_list_int));
+}
+
+#[test]
+fn test_generic_join_same_base() {
+    use crate::TypeLattice;
+    use crate::BUILTIN_LIST_CLASS_ID;
+
+    let g_int = Type::Generic {
+        base: BUILTIN_LIST_CLASS_ID,
+        args: vec![Type::Int],
+    };
+    let g_float = Type::Generic {
+        base: BUILTIN_LIST_CLASS_ID,
+        args: vec![Type::Float],
+    };
+    // join(List[Int], List[Float]) = List[Float] via numeric tower covariant join.
+    let joined = g_int.join(&g_float);
+    assert_eq!(
+        joined,
+        Type::Generic {
+            base: BUILTIN_LIST_CLASS_ID,
+            args: vec![Type::Float],
+        }
+    );
+    // Idempotent.
+    assert_eq!(g_int.join(&g_int), g_int);
+}
+
+#[test]
+fn test_generic_display() {
+    use crate::{
+        BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID, BUILTIN_TUPLE_CLASS_ID,
+        BUILTIN_TUPLE_VAR_CLASS_ID,
+    };
+    assert_eq!(
+        format!(
+            "{}",
+            Type::Generic {
+                base: BUILTIN_LIST_CLASS_ID,
+                args: vec![Type::Int]
+            }
+        ),
+        "list[int]"
+    );
+    assert_eq!(
+        format!(
+            "{}",
+            Type::Generic {
+                base: BUILTIN_DICT_CLASS_ID,
+                args: vec![Type::Str, Type::Float]
+            }
+        ),
+        "dict[str, float]"
+    );
+    assert_eq!(
+        format!(
+            "{}",
+            Type::Generic {
+                base: BUILTIN_SET_CLASS_ID,
+                args: vec![Type::Bool]
+            }
+        ),
+        "set[bool]"
+    );
+    assert_eq!(
+        format!(
+            "{}",
+            Type::Generic {
+                base: BUILTIN_TUPLE_CLASS_ID,
+                args: vec![Type::Int, Type::Str]
+            }
+        ),
+        "tuple[int, str]"
+    );
+    assert_eq!(
+        format!(
+            "{}",
+            Type::Generic {
+                base: BUILTIN_TUPLE_VAR_CLASS_ID,
+                args: vec![Type::Float]
+            }
+        ),
+        "tuple[float, ...]"
+    );
+}
+
+#[test]
+fn test_generic_is_heap() {
+    use crate::BUILTIN_LIST_CLASS_ID;
+    assert!(Type::Generic {
+        base: BUILTIN_LIST_CLASS_ID,
+        args: vec![Type::Int]
+    }
+    .is_heap());
 }
 
 #[test]

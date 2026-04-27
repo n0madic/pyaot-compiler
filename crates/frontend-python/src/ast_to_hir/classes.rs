@@ -799,9 +799,9 @@ impl AstToHir {
     ///
     /// Covers:
     ///   (a) parameter reference with a type annotation → annotated type.
-    ///   (b) tuple literal → `Type::Tuple([shape])`, element types inferred
+    ///   (b) tuple literal → `Type::Generic{BUILTIN_TUPLE_CLASS_ID, [shape]}`, element types inferred
     ///       recursively (enables `join` to see real shapes and produce
-    ///       `TupleVar` for cross-method heterogeneity).
+    ///       a TupleVar Generic for cross-method heterogeneity).
     ///   (c) primitive literal → matching primitive type.
     ///
     /// All other shapes fall back to `Type::Any`.
@@ -821,7 +821,7 @@ impl AstToHir {
                     .iter()
                     .map(|e| self.infer_field_type_from_rhs(e, param_types))
                     .collect();
-                Type::Tuple(elem_tys)
+                Type::tuple_of(elem_tys)
             }
             py::Expr::Constant(c) => match &c.value {
                 py::Constant::Int(_) => Type::Int,

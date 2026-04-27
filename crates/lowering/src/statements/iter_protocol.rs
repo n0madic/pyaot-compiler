@@ -225,7 +225,7 @@ impl<'a> Lowering<'a> {
                         let keys_local = self.emit_runtime_call(
                             mir::RuntimeFunc::Call(&runtime_func_def::RT_DICT_KEYS),
                             vec![mir::Operand::Local(raw_container_local)],
-                            Type::List(Box::new(elem_type.clone())),
+                            Type::list_of(elem_type.clone()),
                             mir_func,
                         );
                         (
@@ -238,7 +238,7 @@ impl<'a> Lowering<'a> {
                         let list_local = self.emit_runtime_call(
                             mir::RuntimeFunc::Call(&runtime_func_def::RT_SET_TO_LIST),
                             vec![mir::Operand::Local(raw_container_local)],
-                            Type::List(Box::new(elem_type.clone())),
+                            Type::list_of(elem_type.clone()),
                             mir_func,
                         );
                         (
@@ -306,7 +306,7 @@ impl<'a> Lowering<'a> {
                 let lines_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&runtime_func_def::RT_FILE_READLINES),
                     vec![mir::Operand::Local(file_local)],
-                    Type::List(Box::new(elem_type.clone())),
+                    Type::list_of(elem_type.clone()),
                     mir_func,
                 );
                 let len_local = self.emit_runtime_call(

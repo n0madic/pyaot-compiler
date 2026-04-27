@@ -73,24 +73,22 @@ impl<'a> Lowering<'a> {
         //
         // So when `starred.is_some()`, position `before_star.len()` must hold the starred
         // variable's type so that after_star indices are computed correctly.
-        let target_types: Vec<Type> = match &elem_type {
-            Type::Tuple(types) => types.clone(),
-            Type::List(inner) => {
-                // For list elements, all extracted elements share the same inner type.
-                // The starred variable itself collects a sub-list, so its slot holds List(inner).
-                let mut types = vec![(**inner).clone(); before_star.len() + after_star.len()];
-                if starred.is_some() {
-                    types.insert(before_star.len(), Type::List(inner.clone()));
-                }
-                types
+        let target_types: Vec<Type> = if let Some(types) = elem_type.tuple_elems() {
+            types.to_vec()
+        } else if let Some(inner) = elem_type.list_elem() {
+            // For list elements, all extracted elements share the same inner type.
+            // The starred variable itself collects a sub-list, so its slot holds list_of(inner).
+            let mut types = vec![inner.clone(); before_star.len() + after_star.len()];
+            if starred.is_some() {
+                types.insert(before_star.len(), Type::list_of(inner.clone()));
             }
-            _ => {
-                let mut types = vec![Type::Any; before_star.len() + after_star.len()];
-                if starred.is_some() {
-                    types.insert(before_star.len(), Type::List(Box::new(Type::Any)));
-                }
-                types
+            types
+        } else {
+            let mut types = vec![Type::Any; before_star.len() + after_star.len()];
+            if starred.is_some() {
+                types.insert(before_star.len(), Type::list_of(Type::Any));
             }
+            types
         };
 
         let iter_local = self.alloc_and_add_local(iter_type.clone(), mir_func);
@@ -283,22 +281,20 @@ impl<'a> Lowering<'a> {
         // Layout mirrors lower_for_unpack_starred: [before_star... | starred (List<inner>) | after_star...]
         // The starred slot must be present when `starred.is_some()` so that after_star index
         // arithmetic in lower_starred_unpack_from_value resolves correctly.
-        let target_types: Vec<Type> = match &elem_type {
-            Type::Tuple(types) => types.clone(),
-            Type::List(inner) => {
-                let mut types = vec![(**inner).clone(); before_star.len() + after_star.len()];
-                if starred.is_some() {
-                    types.insert(before_star.len(), Type::List(inner.clone()));
-                }
-                types
+        let target_types: Vec<Type> = if let Some(types) = elem_type.tuple_elems() {
+            types.to_vec()
+        } else if let Some(inner) = elem_type.list_elem() {
+            let mut types = vec![inner.clone(); before_star.len() + after_star.len()];
+            if starred.is_some() {
+                types.insert(before_star.len(), Type::list_of(inner.clone()));
             }
-            _ => {
-                let mut types = vec![Type::Any; before_star.len() + after_star.len()];
-                if starred.is_some() {
-                    types.insert(before_star.len(), Type::List(Box::new(Type::Any)));
-                }
-                types
+            types
+        } else {
+            let mut types = vec![Type::Any; before_star.len() + after_star.len()];
+            if starred.is_some() {
+                types.insert(before_star.len(), Type::list_of(Type::Any));
             }
+            types
         };
 
         // Create blocks
@@ -394,7 +390,7 @@ impl<'a> Lowering<'a> {
         _hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
-        let is_tuple = matches!(value_type, Type::Tuple(_));
+        let is_tuple = value_type.is_tuple_like();
 
         // Extract before_star elements with positive indices
         for (i, &target) in before_star.iter().enumerate() {
@@ -436,27 +432,27 @@ impl<'a> Lowering<'a> {
             };
 
             // Compute the element type for the starred portion
-            let starred_elem_type = match value_type {
-                Type::Tuple(elem_types) => {
-                    // For tuple, compute union of middle element types
-                    let middle_start = before_star.len();
-                    let middle_end = if elem_types.len() >= after_star.len() {
-                        elem_types.len() - after_star.len()
-                    } else {
-                        middle_start
-                    };
-                    if middle_start < middle_end {
-                        elem_types[middle_start..middle_end].iter().cloned().reduce(|a, b| a.join(&b)).unwrap_or(Type::Never)
-                    } else {
-                        Type::Any
-                    }
+            let starred_elem_type = if let Some(elem_types) = value_type.tuple_elems() {
+                // For tuple, compute union of middle element types
+                let middle_start = before_star.len();
+                let middle_end = if elem_types.len() >= after_star.len() {
+                    elem_types.len() - after_star.len()
+                } else {
+                    middle_start
+                };
+                if middle_start < middle_end {
+                    elem_types[middle_start..middle_end].iter().cloned().reduce(|a, b| a.join(&b)).unwrap_or(Type::Never)
+                } else {
+                    Type::Any
                 }
-                Type::List(inner) => (**inner).clone(),
-                _ => Type::Any,
+            } else if let Some(inner) = value_type.list_elem() {
+                inner.clone()
+            } else {
+                Type::Any
             };
 
             // Starred portion is always a list
-            let starred_type = Type::List(Box::new(starred_elem_type));
+            let starred_type = Type::list_of(starred_elem_type);
 
             self.insert_var_type(starred_var, starred_type.clone());
             let starred_local = self.get_or_create_local(starred_var, starred_type, mir_func);

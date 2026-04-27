@@ -18,8 +18,8 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         if args.is_empty() {
             // zip() with no args returns an empty iterator
-            let result_local =
-                self.alloc_and_add_local(Type::Iterator(Box::new(Type::Tuple(vec![]))), mir_func);
+            let result_local = self
+                .alloc_and_add_local(Type::Iterator(Box::new(Type::tuple_of(vec![]))), mir_func);
             // Create empty tuple iterator
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,
@@ -52,7 +52,7 @@ impl<'a> Lowering<'a> {
             let result_local = self.emit_runtime_call_gc(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ZIP3_NEW),
                 iter_locals,
-                Type::Iterator(Box::new(Type::Tuple(elem_types))),
+                Type::Iterator(Box::new(Type::tuple_of(elem_types))),
                 mir_func,
             );
 
@@ -71,10 +71,8 @@ impl<'a> Lowering<'a> {
 
             // Create a list of iterators
             let count = args.len() as i64;
-            let iter_list_local = self.alloc_and_add_local(
-                Type::List(Box::new(Type::Iterator(Box::new(Type::Any)))),
-                mir_func,
-            );
+            let iter_list_local = self
+                .alloc_and_add_local(Type::list_of(Type::Iterator(Box::new(Type::Any))), mir_func);
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: iter_list_local,
@@ -101,7 +99,7 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Local(iter_list_local),
                     mir::Operand::Constant(mir::Constant::Int(count)),
                 ],
-                Type::Iterator(Box::new(Type::Tuple(elem_types))),
+                Type::Iterator(Box::new(Type::tuple_of(elem_types))),
                 mir_func,
             );
 
@@ -150,15 +148,21 @@ impl<'a> Lowering<'a> {
         } else {
             let first_operand =
                 self.lower_expr_expecting(first_expr, None, hir_module, mir_func)?;
-            let first_source = match &first_type {
-                Type::List(_) => mir::IterSourceKind::List,
-                Type::Tuple(_) | Type::TupleVar(_) => mir::IterSourceKind::Tuple,
-                Type::Dict(_, _) => mir::IterSourceKind::Dict,
-                Type::Set(_) => mir::IterSourceKind::Set,
-                Type::Str => mir::IterSourceKind::Str,
-                Type::Bytes => mir::IterSourceKind::Bytes,
-                Type::Iterator(_) => mir::IterSourceKind::Generator,
-                _ => mir::IterSourceKind::List,
+            let first_source = if first_type.is_list_like() {
+                mir::IterSourceKind::List
+            } else if first_type.is_tuple_like() {
+                mir::IterSourceKind::Tuple
+            } else if first_type.is_dict_like() {
+                mir::IterSourceKind::Dict
+            } else if first_type.is_set_like() {
+                mir::IterSourceKind::Set
+            } else {
+                match &first_type {
+                    Type::Str => mir::IterSourceKind::Str,
+                    Type::Bytes => mir::IterSourceKind::Bytes,
+                    Type::Iterator(_) => mir::IterSourceKind::Generator,
+                    _ => mir::IterSourceKind::List,
+                }
             };
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -217,15 +221,21 @@ impl<'a> Lowering<'a> {
         } else {
             let second_operand =
                 self.lower_expr_expecting(second_expr, None, hir_module, mir_func)?;
-            let second_source = match &second_type {
-                Type::List(_) => mir::IterSourceKind::List,
-                Type::Tuple(_) | Type::TupleVar(_) => mir::IterSourceKind::Tuple,
-                Type::Dict(_, _) => mir::IterSourceKind::Dict,
-                Type::Set(_) => mir::IterSourceKind::Set,
-                Type::Str => mir::IterSourceKind::Str,
-                Type::Bytes => mir::IterSourceKind::Bytes,
-                Type::Iterator(_) => mir::IterSourceKind::Generator,
-                _ => mir::IterSourceKind::List,
+            let second_source = if second_type.is_list_like() {
+                mir::IterSourceKind::List
+            } else if second_type.is_tuple_like() {
+                mir::IterSourceKind::Tuple
+            } else if second_type.is_dict_like() {
+                mir::IterSourceKind::Dict
+            } else if second_type.is_set_like() {
+                mir::IterSourceKind::Set
+            } else {
+                match &second_type {
+                    Type::Str => mir::IterSourceKind::Str,
+                    Type::Bytes => mir::IterSourceKind::Bytes,
+                    Type::Iterator(_) => mir::IterSourceKind::Generator,
+                    _ => mir::IterSourceKind::List,
+                }
             };
 
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -244,7 +254,7 @@ impl<'a> Lowering<'a> {
                 mir::Operand::Local(first_iter_local),
                 mir::Operand::Local(second_iter_local),
             ],
-            Type::Iterator(Box::new(Type::Tuple(vec![
+            Type::Iterator(Box::new(Type::tuple_of(vec![
                 first_elem_type,
                 second_elem_type,
             ]))),
@@ -435,7 +445,7 @@ impl<'a> Lowering<'a> {
         let tuple_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_TUPLE),
             vec![mir::Operand::Constant(mir::Constant::Int(count as i64))],
-            Type::Tuple(vec![Type::Any; count]),
+            Type::tuple_of(vec![Type::Any; count]),
             mir_func,
         );
 

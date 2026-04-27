@@ -236,7 +236,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_COPY),
                     vec![obj_operand],
-                    Type::List(elem_ty.clone()),
+                    Type::list_of(*elem_ty.clone()),
                     mir_func,
                 );
 

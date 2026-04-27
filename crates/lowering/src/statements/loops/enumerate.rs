@@ -340,7 +340,7 @@ impl<'a> Lowering<'a> {
             let keys_local = self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_KEYS),
                 vec![mir::Operand::Local(iter_local)],
-                Type::List(Box::new(elem_type.clone())),
+                Type::list_of(elem_type.clone()),
                 mir_func,
             );
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -353,7 +353,7 @@ impl<'a> Lowering<'a> {
             let list_local = self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_TO_LIST),
                 vec![mir::Operand::Local(iter_local)],
-                Type::List(Box::new(elem_type.clone())),
+                Type::list_of(elem_type.clone()),
                 mir_func,
             );
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -576,7 +576,7 @@ impl<'a> Lowering<'a> {
         let enum_iter_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_ENUMERATE),
             vec![mir::Operand::Local(iter_local), start_operand],
-            Type::Iterator(Box::new(Type::Tuple(vec![Type::Int, elem_type.clone()]))),
+            Type::Iterator(Box::new(Type::tuple_of(vec![Type::Int, elem_type.clone()]))),
             mir_func,
         );
 
@@ -613,7 +613,7 @@ impl<'a> Lowering<'a> {
         let next_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
             vec![mir::Operand::Local(enum_iter_local)],
-            Type::Tuple(vec![Type::Int, elem_type.clone()]),
+            Type::tuple_of(vec![Type::Int, elem_type.clone()]),
             mir_func,
         );
 

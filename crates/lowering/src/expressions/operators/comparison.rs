@@ -395,86 +395,79 @@ impl<'a> Lowering<'a> {
             // left is the element, right is the container
             let is_not_in = matches!(op, hir::CmpOp::NotIn);
 
-            match right_type {
-                Type::Dict(_, _) | Type::DefaultDict(_, _) => {
-                    // key in dict/defaultdict - use rt_dict_contains
-                    // Box key if needed (int/bool keys need boxing)
-                    let boxed_key = self.emit_value_slot(left_op, &left_type, mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_DICT_CONTAINS,
-                        ),
-                        args: vec![right_op, boxed_key], // (dict, key)
-                    });
-                }
-                Type::Set(_) => {
-                    // elem in set - use rt_set_contains
-                    // Box element if needed (int/bool elements need boxing)
-                    let boxed_elem = self.emit_value_slot(left_op, &left_type, mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_SET_CONTAINS,
-                        ),
-                        args: vec![right_op, boxed_elem], // (set, elem)
-                    });
-                }
-                Type::List(_) => {
-                    // elem in list - use rt_list_index and check if >= 0.
-                    // After §F.7c, list slots store tagged Values; box the search.
-                    let boxed_elem = self.emit_value_slot(left_op, &left_type, mir_func);
-                    let idx_local = self.emit_runtime_call(
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_INDEX),
-                        vec![right_op, boxed_elem], // (list, value)
-                        Type::Int,
-                        mir_func,
-                    );
-                    // result = idx >= 0
-                    self.emit_instruction(mir::InstructionKind::BinOp {
-                        dest: result_local,
-                        op: mir::BinOp::GtE,
-                        left: mir::Operand::Local(idx_local),
-                        right: mir::Operand::Constant(mir::Constant::Int(0)),
-                    });
-                }
-                Type::Tuple(_) | Type::TupleVar(_) => {
-                    // elem in tuple - use rt_obj_contains (needs boxed element)
-                    let boxed_elem = self.emit_value_slot(left_op, &left_type, mir_func);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_OBJ_CONTAINS,
-                        ),
-                        args: vec![right_op, boxed_elem], // (tuple, elem)
-                    });
-                }
-                Type::Class { class_id, .. } => {
-                    // Class with __contains__ dunder
-                    let contains_func = self
-                        .get_class_info(&class_id)
-                        .and_then(|info| info.get_dunder_func("__contains__"));
+            if right_type.is_dict_like() {
+                // key in dict/defaultdict - use rt_dict_contains
+                // Box key if needed (int/bool keys need boxing)
+                let boxed_key = self.emit_value_slot(left_op, &left_type, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_DICT_CONTAINS,
+                    ),
+                    args: vec![right_op, boxed_key], // (dict, key)
+                });
+            } else if right_type.is_set_like() {
+                // elem in set - use rt_set_contains
+                // Box element if needed (int/bool elements need boxing)
+                let boxed_elem = self.emit_value_slot(left_op, &left_type, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_SET_CONTAINS,
+                    ),
+                    args: vec![right_op, boxed_elem], // (set, elem)
+                });
+            } else if right_type.is_list_like() {
+                // elem in list - use rt_list_index and check if >= 0.
+                // After §F.7c, list slots store tagged Values; box the search.
+                let boxed_elem = self.emit_value_slot(left_op, &left_type, mir_func);
+                let idx_local = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_INDEX),
+                    vec![right_op, boxed_elem], // (list, value)
+                    Type::Int,
+                    mir_func,
+                );
+                // result = idx >= 0
+                self.emit_instruction(mir::InstructionKind::BinOp {
+                    dest: result_local,
+                    op: mir::BinOp::GtE,
+                    left: mir::Operand::Local(idx_local),
+                    right: mir::Operand::Constant(mir::Constant::Int(0)),
+                });
+            } else if right_type.is_tuple_like() {
+                // elem in tuple - use rt_obj_contains (needs boxed element)
+                let boxed_elem = self.emit_value_slot(left_op, &left_type, mir_func);
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_OBJ_CONTAINS,
+                    ),
+                    args: vec![right_op, boxed_elem], // (tuple, elem)
+                });
+            } else if let Type::Class { class_id, .. } = right_type {
+                // Class with __contains__ dunder
+                let contains_func = self
+                    .get_class_info(&class_id)
+                    .and_then(|info| info.get_dunder_func("__contains__"));
 
-                    if let Some(func_id) = contains_func {
-                        self.emit_instruction(mir::InstructionKind::CallDirect {
-                            dest: result_local,
-                            func: func_id,
-                            args: vec![right_op, left_op], // (self=container, item)
-                        });
-                    } else {
-                        self.emit_instruction(mir::InstructionKind::Copy {
-                            dest: result_local,
-                            src: mir::Operand::Constant(mir::Constant::Bool(false)),
-                        });
-                    }
-                }
-                _ => {
-                    // Unsupported container type
+                if let Some(func_id) = contains_func {
+                    self.emit_instruction(mir::InstructionKind::CallDirect {
+                        dest: result_local,
+                        func: func_id,
+                        args: vec![right_op, left_op], // (self=container, item)
+                    });
+                } else {
                     self.emit_instruction(mir::InstructionKind::Copy {
                         dest: result_local,
                         src: mir::Operand::Constant(mir::Constant::Bool(false)),
                     });
                 }
+            } else {
+                // Unsupported container type
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: result_local,
+                    src: mir::Operand::Constant(mir::Constant::Bool(false)),
+                });
             }
 
             // For "not in", negate the result
@@ -491,11 +484,9 @@ impl<'a> Lowering<'a> {
                     operand: mir::Operand::Local(temp_local),
                 });
             }
-        } else if let Type::List(_) = &left_type {
+        } else if left_type.is_list_like() {
             // List comparison - use runtime function based on element type
-            if matches!(op, hir::CmpOp::Eq | hir::CmpOp::NotEq)
-                && matches!(right_type, Type::List(_))
-            {
+            if matches!(op, hir::CmpOp::Eq | hir::CmpOp::NotEq) && right_type.is_list_like() {
                 let is_not_eq = matches!(op, hir::CmpOp::NotEq);
 
                 // Unified list equality — runtime dispatches by elem_tag from ListObj
@@ -551,13 +542,11 @@ impl<'a> Lowering<'a> {
                     args: vec![left_op, right_op, op_tag],
                 });
             }
-        } else if matches!(&left_type, Type::Tuple(_) | Type::TupleVar(_)) {
+        } else if left_type.is_tuple_like() {
             // Tuple comparison - use runtime function for element-wise comparison
             // (works uniformly on both fixed and variable-length tuples since
             // rt_tuple_eq dispatches per element tag at runtime).
-            if matches!(op, hir::CmpOp::Eq | hir::CmpOp::NotEq)
-                && matches!(right_type, Type::Tuple(_) | Type::TupleVar(_))
-            {
+            if matches!(op, hir::CmpOp::Eq | hir::CmpOp::NotEq) && right_type.is_tuple_like() {
                 let is_not_eq = matches!(op, hir::CmpOp::NotEq);
 
                 if is_not_eq {
