@@ -35,28 +35,8 @@ pub enum Type {
     Bytes,
     None,
 
-    /// Generic list
-    List(Box<Type>),
-
-    /// Generic dict
-    Dict(Box<Type>, Box<Type>),
-
     /// defaultdict (dict subtype with factory for missing keys)
     DefaultDict(Box<Type>, Box<Type>),
-
-    /// Generic set
-    Set(Box<Type>),
-
-    /// Tuple with specific element types (fixed-length heterogeneous).
-    /// `tuple[int, str, float]` — element count known at compile-time;
-    /// `t[k]` with literal `k` narrows to the exact element type.
-    Tuple(Vec<Type>),
-
-    /// Variable-length homogeneous tuple (PEP 484 / PEP 585 `tuple[T, ...]`).
-    /// Element count is runtime-only; `t[k]` always returns `T` and needs a
-    /// runtime bounds-check. Shares the same runtime layout as `Tuple` —
-    /// `rt_tuple_*` functions work uniformly on both.
-    TupleVar(Box<Type>),
 
     /// Union type (includes Optional via Union[T, None])
     /// Stored as a Vec with unique elements (normalized)
@@ -223,7 +203,6 @@ impl Type {
     /// Element type of a list, or `None` if this is not a list type.
     pub fn list_elem(&self) -> Option<&Type> {
         match self {
-            Type::List(elem) => Some(elem),
             Type::Generic { base, args }
                 if *base == builtin_classes::BUILTIN_LIST_CLASS_ID && !args.is_empty() =>
             {
@@ -234,10 +213,10 @@ impl Type {
     }
 
     /// Key/value types of a dict, or `None` if this is not a dict type.
-    /// Matches `Dict`, `DefaultDict`, and `Generic{DICT_ID, [K, V]}`.
+    /// Matches `DefaultDict` and `Generic{DICT_ID, [K, V]}`.
     pub fn dict_kv(&self) -> Option<(&Type, &Type)> {
         match self {
-            Type::Dict(k, v) | Type::DefaultDict(k, v) => Some((k, v)),
+            Type::DefaultDict(k, v) => Some((k, v)),
             Type::Generic { base, args }
                 if *base == builtin_classes::BUILTIN_DICT_CLASS_ID && args.len() == 2 =>
             {
@@ -250,7 +229,6 @@ impl Type {
     /// Element type of a set, or `None` if this is not a set type.
     pub fn set_elem(&self) -> Option<&Type> {
         match self {
-            Type::Set(elem) => Some(elem),
             Type::Generic { base, args }
                 if *base == builtin_classes::BUILTIN_SET_CLASS_ID && !args.is_empty() =>
             {
@@ -264,7 +242,6 @@ impl Type {
     /// Does NOT match `TupleVar` (variable-length homogeneous tuples).
     pub fn tuple_elems(&self) -> Option<&[Type]> {
         match self {
-            Type::Tuple(elems) => Some(elems),
             Type::Generic { base, args } if *base == builtin_classes::BUILTIN_TUPLE_CLASS_ID => {
                 Some(args)
             }
@@ -276,7 +253,6 @@ impl Type {
     /// or `None` if this is not a `TupleVar`-like type.
     pub fn tuple_var_elem(&self) -> Option<&Type> {
         match self {
-            Type::TupleVar(elem) => Some(elem),
             Type::Generic { base, args }
                 if *base == builtin_classes::BUILTIN_TUPLE_VAR_CLASS_ID && !args.is_empty() =>
             {
@@ -295,33 +271,47 @@ impl Type {
     }
 
     // -------------------------------------------------------------------------
-    // Container constructors — currently emit legacy variants; will be flipped
-    // to emit `Type::Generic{base, args}` in S3.2c.
+    // Container constructors — emit `Type::Generic{base, args}` (S3.2c).
     // -------------------------------------------------------------------------
 
     /// Construct a `list[elem]` type.
     pub fn list_of(elem: Type) -> Type {
-        Type::List(Box::new(elem))
+        Type::Generic {
+            base: builtin_classes::BUILTIN_LIST_CLASS_ID,
+            args: vec![elem],
+        }
     }
 
     /// Construct a `dict[k, v]` type.
     pub fn dict_of(k: Type, v: Type) -> Type {
-        Type::Dict(Box::new(k), Box::new(v))
+        Type::Generic {
+            base: builtin_classes::BUILTIN_DICT_CLASS_ID,
+            args: vec![k, v],
+        }
     }
 
     /// Construct a `set[elem]` type.
     pub fn set_of(elem: Type) -> Type {
-        Type::Set(Box::new(elem))
+        Type::Generic {
+            base: builtin_classes::BUILTIN_SET_CLASS_ID,
+            args: vec![elem],
+        }
     }
 
     /// Construct a fixed-arity `tuple[T1, T2, ...]` type.
     pub fn tuple_of(elems: Vec<Type>) -> Type {
-        Type::Tuple(elems)
+        Type::Generic {
+            base: builtin_classes::BUILTIN_TUPLE_CLASS_ID,
+            args: elems,
+        }
     }
 
     /// Construct a variable-length `tuple[T, ...]` type (PEP 484).
     pub fn tuple_var_of(elem: Type) -> Type {
-        Type::TupleVar(Box::new(elem))
+        Type::Generic {
+            base: builtin_classes::BUILTIN_TUPLE_VAR_CLASS_ID,
+            args: vec![elem],
+        }
     }
 
     /// Normalize a union type (flatten nested unions, remove duplicates)
@@ -427,12 +417,7 @@ fn type_discriminant(t: &Type) -> u32 {
         Type::Str => 4,
         Type::Bytes => 5,
         Type::None => 6,
-        Type::List(_) => 7,
-        Type::Dict(_, _) => 8,
         Type::DefaultDict(_, _) => 9,
-        Type::Set(_) => 10,
-        Type::Tuple(_) => 11,
-        Type::TupleVar(_) => 12,
         Type::Iterator(_) => 13,
         Type::Function { .. } => 14,
         Type::Var(_) => 15,
@@ -479,6 +464,65 @@ fn make_canonical_union(members: impl IntoIterator<Item = Type>) -> Type {
     for t in flat {
         if !deduped.contains(&t) {
             deduped.push(t);
+        }
+    }
+
+    // Merge Generic members with the same base class via covariant element-wise
+    // join. E.g. Union[list[int], list[float]] → list[float].
+    // Repeat until stable (a merge may expose another mergeable pair).
+    // Direct element-wise merge avoids re-entering make_canonical_union.
+    loop {
+        let mut merged = false;
+        let mut i = 0;
+        while i < deduped.len() {
+            if let Type::Generic { base: b1, args: a1 } = &deduped[i] {
+                let base = *b1;
+                let arity = a1.len();
+                let j = deduped.iter().enumerate().position(|(k, t)| {
+                    k != i
+                        && matches!(t, Type::Generic { base: b2, args: a2 }
+                                    if *b2 == base && a2.len() == arity)
+                });
+                if let Some(j) = j {
+                    let hi = j.max(i);
+                    let lo = j.min(i);
+                    let a = deduped.remove(hi);
+                    let b = deduped.remove(lo);
+                    let (args_a, args_b) = match (&a, &b) {
+                        (Type::Generic { args: aa, .. }, Type::Generic { args: ab, .. }) => {
+                            (aa.clone(), ab.clone())
+                        }
+                        _ => unreachable!(),
+                    };
+                    let merged_args: Vec<Type> = args_a
+                        .iter()
+                        .zip(args_b.iter())
+                        .map(|(t1, t2)| {
+                            if let Some(n) = Type::promote_numeric(t1, t2) {
+                                n
+                            } else if t1 == t2 {
+                                t1.clone()
+                            } else {
+                                // Defer to join for non-trivial cases; this
+                                // cannot re-enter make_canonical_union for same-
+                                // base Generics because these args are not
+                                // Generic with the same base as the outer pair.
+                                t1.join(t2)
+                            }
+                        })
+                        .collect();
+                    deduped.push(Type::Generic {
+                        base,
+                        args: merged_args,
+                    });
+                    merged = true;
+                    break;
+                }
+            }
+            i += 1;
+        }
+        if !merged {
+            break;
         }
     }
 
@@ -716,8 +760,7 @@ impl Type {
                 *a == Type::Any || *b == Type::Any || Self::is_subtype_of_inner(a, b)
             }
             // DefaultDict explicit arms (DefaultDict→DefaultDict, DefaultDict→Dict)
-            (Type::DefaultDict(k1, v1), Type::DefaultDict(k2, v2))
-            | (Type::DefaultDict(k1, v1), Type::Dict(k2, v2)) => {
+            (Type::DefaultDict(k1, v1), Type::DefaultDict(k2, v2)) => {
                 (**k1 == Type::Any || **k2 == Type::Any || Self::is_subtype_of_inner(k1, k2))
                     && (**v1 == Type::Any || **v2 == Type::Any || Self::is_subtype_of_inner(v1, v2))
             }
@@ -804,21 +847,7 @@ impl std::fmt::Display for Type {
             Type::Str => write!(f, "str"),
             Type::Bytes => write!(f, "bytes"),
             Type::None => write!(f, "None"),
-            Type::List(t) => write!(f, "list[{}]", t),
-            Type::Dict(k, v) => write!(f, "dict[{}, {}]", k, v),
             Type::DefaultDict(k, v) => write!(f, "defaultdict[{}, {}]", k, v),
-            Type::Set(t) => write!(f, "set[{}]", t),
-            Type::Tuple(ts) => {
-                write!(f, "tuple[")?;
-                for (i, t) in ts.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", t)?;
-                }
-                write!(f, "]")
-            }
-            Type::TupleVar(t) => write!(f, "tuple[{}, ...]", t),
             Type::Union(ts) => {
                 let types: Vec<_> = ts.iter().collect();
                 for (i, t) in types.iter().enumerate() {

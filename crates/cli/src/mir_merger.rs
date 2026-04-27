@@ -68,24 +68,10 @@ fn type_to_raw(ty: &Type, source_interner: &StringInterner, class_id_offset: u32
         Type::HeapAny => RawType::HeapAny,
         Type::File(binary) => RawType::File(*binary),
         Type::Never => RawType::Never,
-        Type::List(t) => RawType::List(Box::new(type_to_raw(t, source_interner, class_id_offset))),
-        Type::Dict(k, v) => RawType::Dict(
-            Box::new(type_to_raw(k, source_interner, class_id_offset)),
-            Box::new(type_to_raw(v, source_interner, class_id_offset)),
-        ),
         Type::DefaultDict(k, v) => RawType::DefaultDict(
             Box::new(type_to_raw(k, source_interner, class_id_offset)),
             Box::new(type_to_raw(v, source_interner, class_id_offset)),
         ),
-        Type::Set(t) => RawType::Set(Box::new(type_to_raw(t, source_interner, class_id_offset))),
-        Type::Tuple(ts) => RawType::Tuple(
-            ts.iter()
-                .map(|t| type_to_raw(t, source_interner, class_id_offset))
-                .collect(),
-        ),
-        Type::TupleVar(t) => {
-            RawType::TupleVar(Box::new(type_to_raw(t, source_interner, class_id_offset)))
-        }
         Type::Union(ts) => RawType::Union(
             ts.iter()
                 .map(|t| type_to_raw(t, source_interner, class_id_offset))
@@ -897,15 +883,20 @@ fn rewrite_class_type(
                 *name = interner.intern(class_name);
             }
         }
-        Type::List(inner) | Type::Set(inner) | Type::Iterator(inner) => {
+        Type::Iterator(inner) => {
             rewrite_class_type(inner, remap, interner);
         }
-        Type::Dict(k, v) | Type::DefaultDict(k, v) => {
+        Type::DefaultDict(k, v) => {
             rewrite_class_type(k, remap, interner);
             rewrite_class_type(v, remap, interner);
         }
-        Type::Tuple(elems) | Type::Union(elems) => {
+        Type::Union(elems) => {
             for t in elems.iter_mut() {
+                rewrite_class_type(t, remap, interner);
+            }
+        }
+        Type::Generic { args, .. } => {
+            for t in args.iter_mut() {
                 rewrite_class_type(t, remap, interner);
             }
         }

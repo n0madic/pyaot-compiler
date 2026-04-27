@@ -67,15 +67,17 @@ impl<'a> Lowering<'a> {
                     mir_func,
                 )
             }
-            Type::Dict(key_ty, value_ty) | Type::DefaultDict(key_ty, value_ty) => self
-                .lower_dict_method(
+            _ if obj_type.dict_kv().is_some() => {
+                let (key_ty, value_ty) = obj_type.dict_kv().expect("dict_kv invariant");
+                self.lower_dict_method(
                     obj_operand,
                     &method_name,
                     arg_operands,
-                    key_ty,
-                    value_ty,
+                    Box::new(key_ty.clone()),
+                    Box::new(value_ty.clone()),
                     mir_func,
-                ),
+                )
+            }
             _ if obj_type.is_set_like() => {
                 let elem_ty = obj_type.set_elem().expect("set_like").clone();
                 self.lower_set_method(
