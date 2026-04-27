@@ -172,8 +172,17 @@ impl<'a> Lowering<'a> {
             // Function reference: emit FuncAddr instruction to get function pointer
             // This is used when passing a function as an argument (e.g., to decorators)
             // Direct calls to FuncRef are handled in calls.rs
+            //
+            // §P.2.2: function pointers are raw text-segment addresses — never
+            // heap objects. The local stays `Type::Any` so abi_repair / consumer
+            // call sites keep their existing handling, but `is_gc_root` is
+            // forced to `false` (via `alloc_stack_local`) so the shadow stack
+            // doesn't scan a misaligned pointer-shaped non-object. Consumer
+            // sites that need to store this into a Value-tagged slot (e.g.
+            // closure captures) are responsible for wrapping via `ValueFromInt`
+            // — see `lower_closure` and the §F.5 path in `statements/assign/mod.rs`.
             hir::ExprKind::FuncRef(func_id) => {
-                let result_local = self.alloc_and_add_local(Type::Any, mir_func);
+                let result_local = self.alloc_stack_local(Type::Any, mir_func);
                 self.emit_instruction(mir::InstructionKind::FuncAddr {
                     dest: result_local,
                     func: *func_id,

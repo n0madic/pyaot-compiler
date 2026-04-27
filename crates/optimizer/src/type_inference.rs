@@ -1648,6 +1648,28 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
         || func.name.starts_with("__nested_")
         || func.name.starts_with("__genexp_");
 
+    // §P.2.2: collect locals defined by FuncAddr / BuiltinAddr — those hold
+    // raw text-segment addresses, never heap objects. Without this, when
+    // inferred type widens to `Type::Any` (heap), the loop below would set
+    // `is_gc_root = true` and the shadow-stack walker would dereference a
+    // misaligned function pointer, tripping the `gc::mark_object` alignment
+    // guard. Lowering already calls `alloc_stack_local` for these, but type
+    // inference re-derives `is_gc_root` purely from the type, which loses
+    // that signal.
+    let mut func_ptr_locals: std::collections::HashSet<pyaot_utils::LocalId> =
+        std::collections::HashSet::new();
+    for block in func.blocks.values() {
+        for inst in &block.instructions {
+            match &inst.kind {
+                pyaot_mir::InstructionKind::FuncAddr { dest, .. }
+                | pyaot_mir::InstructionKind::BuiltinAddr { dest, .. } => {
+                    func_ptr_locals.insert(*dest);
+                }
+                _ => {}
+            }
+        }
+    }
+
     for param in &mut func.params {
         if is_lambda_like && matches!(param.ty, Type::Any) {
             continue;
@@ -1678,6 +1700,9 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
         {
             local.ty = new_ty;
             local.is_gc_root = local.ty.is_heap();
+        }
+        if func_ptr_locals.contains(&local.id) {
+            local.is_gc_root = false;
         }
     }
 }

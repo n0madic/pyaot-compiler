@@ -111,7 +111,13 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         // 1. Get function address of original function
         // The wrapper expects this as its first argument (the captured 'func' parameter)
-        let func_ptr_local = self.alloc_and_add_local(Type::Any, mir_func);
+        //
+        // §P.2.2: function pointers are raw text-segment addresses, not heap
+        // objects. `alloc_stack_local` keeps the local off the shadow stack
+        // so the GC never sees this misaligned pointer-shaped non-object.
+        // (`alloc_and_add_local` would set `is_gc_root = true` for `Type::Any`,
+        // which would expose the function address to GC mark walks.)
+        let func_ptr_local = self.alloc_stack_local(Type::Any, mir_func);
         self.emit_instruction(mir::InstructionKind::FuncAddr {
             dest: func_ptr_local,
             func: original_func_id,
