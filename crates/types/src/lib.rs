@@ -2,14 +2,19 @@
 
 #![forbid(unsafe_code)]
 
+pub mod builtin_classes;
 pub mod dunders;
 pub mod exceptions;
 pub mod tag_kinds;
 
+pub use builtin_classes::{
+    BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID, BUILTIN_TUPLE_CLASS_ID,
+    BUILTIN_TUPLE_VAR_CLASS_ID,
+};
 pub use exceptions::{
     exception_name_to_tag, exception_tag_to_name, is_builtin_exception_name, BuiltinException,
     BuiltinExceptionKind, BUILTIN_EXCEPTIONS, BUILTIN_EXCEPTION_COUNT, FIRST_USER_CLASS_ID,
-    RESERVED_STDLIB_EXCEPTION_SLOTS,
+    RESERVED_BUILTIN_TYPE_SLOTS, RESERVED_STDLIB_EXCEPTION_SLOTS,
 };
 
 pub use tag_kinds::{is_type_tag_name, type_tag_to_name, TypeTagKind, TYPE_TAG_COUNT};
@@ -99,6 +104,23 @@ pub enum Type {
     /// Field/method definitions are in stdlib-defs/object_types.rs
     RuntimeObject(TypeTagKind),
 
+    /// Unified generic type (§S3.2). Represents both built-in containers
+    /// (`list[T]`, `dict[K,V]`, `set[T]`, `tuple[...]`) and user-defined
+    /// generic classes (`Stack[T]`) with a single, uniform representation.
+    ///
+    /// For built-in containers the `base` is one of the constants in
+    /// `builtin_classes`: `BUILTIN_LIST_CLASS_ID`, `BUILTIN_DICT_CLASS_ID`,
+    /// `BUILTIN_SET_CLASS_ID`, `BUILTIN_TUPLE_CLASS_ID`,
+    /// `BUILTIN_TUPLE_VAR_CLASS_ID`.
+    ///
+    /// The legacy `List`/`Dict`/`Set`/`Tuple`/`TupleVar` variants coexist
+    /// with `Generic` during S3.2b (accessor-migration phase) and are deleted
+    /// in S3.2c once every call site uses the accessor API.
+    Generic {
+        base: ClassId,
+        args: Vec<Type>,
+    },
+
     /// Bottom type (empty union, uninhabited type)
     /// Represents the type with no values - used for empty unions
     /// and unreachable code. Never is a subtype of all types.
@@ -170,6 +192,126 @@ impl Type {
     /// Check if this is a Union type
     pub fn is_union(&self) -> bool {
         matches!(self, Type::Union(_))
+    }
+
+    // -------------------------------------------------------------------------
+    // Container accessor API (S3.2) — works on both legacy variants and
+    // `Type::Generic{base, args}` so call sites migrate once and survive S3.2c.
+    // -------------------------------------------------------------------------
+
+    /// Returns `true` for `List(T)` and `Generic{LIST_ID, [T]}`.
+    pub fn is_list_like(&self) -> bool {
+        self.list_elem().is_some()
+    }
+
+    /// Returns `true` for `Dict(K,V)`, `DefaultDict(K,V)`, and
+    /// `Generic{DICT_ID, [K, V]}`.
+    pub fn is_dict_like(&self) -> bool {
+        self.dict_kv().is_some()
+    }
+
+    /// Element type of a list, or `None` if this is not a list type.
+    pub fn list_elem(&self) -> Option<&Type> {
+        match self {
+            Type::List(elem) => Some(elem),
+            Type::Generic { base, args }
+                if *base == builtin_classes::BUILTIN_LIST_CLASS_ID && !args.is_empty() =>
+            {
+                Some(&args[0])
+            }
+            _ => None,
+        }
+    }
+
+    /// Key/value types of a dict, or `None` if this is not a dict type.
+    /// Matches `Dict`, `DefaultDict`, and `Generic{DICT_ID, [K, V]}`.
+    pub fn dict_kv(&self) -> Option<(&Type, &Type)> {
+        match self {
+            Type::Dict(k, v) | Type::DefaultDict(k, v) => Some((k, v)),
+            Type::Generic { base, args }
+                if *base == builtin_classes::BUILTIN_DICT_CLASS_ID && args.len() == 2 =>
+            {
+                Some((&args[0], &args[1]))
+            }
+            _ => None,
+        }
+    }
+
+    /// Element type of a set, or `None` if this is not a set type.
+    pub fn set_elem(&self) -> Option<&Type> {
+        match self {
+            Type::Set(elem) => Some(elem),
+            Type::Generic { base, args }
+                if *base == builtin_classes::BUILTIN_SET_CLASS_ID && !args.is_empty() =>
+            {
+                Some(&args[0])
+            }
+            _ => None,
+        }
+    }
+
+    /// Element types of a fixed-arity tuple, or `None` if this is not one.
+    /// Does NOT match `TupleVar` (variable-length homogeneous tuples).
+    pub fn tuple_elems(&self) -> Option<&[Type]> {
+        match self {
+            Type::Tuple(elems) => Some(elems),
+            Type::Generic { base, args } if *base == builtin_classes::BUILTIN_TUPLE_CLASS_ID => {
+                Some(args)
+            }
+            _ => None,
+        }
+    }
+
+    /// Element type of a variable-length homogeneous tuple (`tuple[T, ...]`),
+    /// or `None` if this is not a `TupleVar`-like type.
+    pub fn tuple_var_elem(&self) -> Option<&Type> {
+        match self {
+            Type::TupleVar(elem) => Some(elem),
+            Type::Generic { base, args }
+                if *base == builtin_classes::BUILTIN_TUPLE_VAR_CLASS_ID && !args.is_empty() =>
+            {
+                Some(&args[0])
+            }
+            _ => None,
+        }
+    }
+
+    /// Element type of an `Iterator[T]`, or `None` if not an iterator.
+    pub fn iter_elem(&self) -> Option<&Type> {
+        match self {
+            Type::Iterator(elem) => Some(elem),
+            _ => None,
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Container constructors — currently emit legacy variants; will be flipped
+    // to emit `Type::Generic{base, args}` in S3.2c.
+    // -------------------------------------------------------------------------
+
+    /// Construct a `list[elem]` type.
+    pub fn list_of(elem: Type) -> Type {
+        Type::List(Box::new(elem))
+    }
+
+    /// Construct a `dict[k, v]` type.
+    pub fn dict_of(k: Type, v: Type) -> Type {
+        Type::Dict(Box::new(k), Box::new(v))
+    }
+
+    /// Construct a `set[elem]` type.
+    pub fn set_of(elem: Type) -> Type {
+        Type::Set(Box::new(elem))
+    }
+
+    /// Construct a fixed-arity `tuple[T1, T2, ...]` type.
+    pub fn tuple_of(elems: Vec<Type>) -> Type {
+        Type::Tuple(elems)
+    }
+
+    /// Construct a variable-length `tuple[T, ...]` type (PEP 484).
+    pub fn tuple_var_of(elem: Type) -> Type {
+        Type::TupleVar(Box::new(elem))
     }
 
     /// Normalize a union type (flatten nested unions, remove duplicates)
@@ -291,6 +433,7 @@ fn type_discriminant(t: &Type) -> u32 {
         Type::NotImplementedT => 20,
         Type::HeapAny => 21,
         Type::Any => 22,
+        Type::Generic { base, .. } => 23 + base.0,
         // Union should never appear as a member of another union after collection.
         Type::Union(_) => u32::MAX,
     }
@@ -402,6 +545,21 @@ impl TypeLattice for Type {
         // numeric tower: Bool ⊂ Int ⊂ Float
         if let Some(t) = Type::promote_numeric(self, other) {
             return t;
+        }
+        // Covariant element-wise join for Generic containers with the same base.
+        if let (Type::Generic { base: b1, args: a1 }, Type::Generic { base: b2, args: a2 }) =
+            (self, other)
+        {
+            if b1 == b2 && a1.len() == a2.len() {
+                return Type::Generic {
+                    base: *b1,
+                    args: a1
+                        .iter()
+                        .zip(a2.iter())
+                        .map(|(t1, t2)| t1.join(t2))
+                        .collect(),
+                };
+            }
         }
         // General case: collect, flatten, simplify, sort.
         make_canonical_union([self.clone(), other.clone()])
@@ -594,6 +752,15 @@ impl Type {
             (Type::Iterator(a), Type::Iterator(b)) => {
                 **a == Type::Any || Self::is_subtype_of_inner(a, b)
             }
+            // Covariant generic subtyping: same base class, pairwise arg subtyping.
+            // Any-wildcard: a slot typed `Any` on either side is vacuously compatible.
+            (Type::Generic { base: b1, args: a1 }, Type::Generic { base: b2, args: a2 }) => {
+                b1 == b2
+                    && a1.len() == a2.len()
+                    && a1.iter().zip(a2.iter()).all(|(t1, t2)| {
+                        *t1 == Type::Any || *t2 == Type::Any || Self::is_subtype_of_inner(t1, t2)
+                    })
+            }
             _ => false,
         }
     }
@@ -650,6 +817,36 @@ impl std::fmt::Display for Type {
             Type::BuiltinException(kind) => write!(f, "{}", kind),
             Type::File(binary) => write!(f, "File({})", if *binary { "binary" } else { "text" }),
             Type::RuntimeObject(kind) => write!(f, "{}", kind),
+            Type::Generic { base, args } => {
+                use crate::builtin_classes::*;
+                if *base == BUILTIN_LIST_CLASS_ID {
+                    let elem = args.first().map(|t| format!("{}", t)).unwrap_or_default();
+                    write!(f, "list[{}]", elem)
+                } else if *base == BUILTIN_DICT_CLASS_ID && args.len() == 2 {
+                    write!(f, "dict[{}, {}]", args[0], args[1])
+                } else if *base == BUILTIN_SET_CLASS_ID {
+                    let elem = args.first().map(|t| format!("{}", t)).unwrap_or_default();
+                    write!(f, "set[{}]", elem)
+                } else if *base == BUILTIN_TUPLE_CLASS_ID {
+                    write!(f, "tuple[")?;
+                    for (i, t) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", t)?;
+                    }
+                    write!(f, "]")
+                } else if *base == BUILTIN_TUPLE_VAR_CLASS_ID {
+                    let elem = args.first().map(|t| format!("{}", t)).unwrap_or_default();
+                    write!(f, "tuple[{}, ...]", elem)
+                } else {
+                    write!(f, "Generic<{}", base.0)?;
+                    for t in args {
+                        write!(f, ", {}", t)?;
+                    }
+                    write!(f, ">")
+                }
+            }
             Type::Never => write!(f, "Never"),
             Type::NotImplementedT => write!(f, "NotImplementedType"),
         }

@@ -17,5 +17,5 @@
 pub use pyaot_core_defs::{
     exception_name_to_tag, exception_tag_to_name, is_builtin_exception_name, BuiltinException,
     BuiltinExceptionKind, BUILTIN_EXCEPTIONS, BUILTIN_EXCEPTION_COUNT, FIRST_USER_CLASS_ID,
-    RESERVED_STDLIB_EXCEPTION_SLOTS,
+    RESERVED_BUILTIN_TYPE_SLOTS, RESERVED_STDLIB_EXCEPTION_SLOTS,
 };

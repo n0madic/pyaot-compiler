@@ -46,6 +46,10 @@ enum RawType {
     Iterator(Box<RawType>),
     BuiltinException(BuiltinExceptionKind),
     RuntimeObject(TypeTagKind),
+    Generic {
+        base: ClassId,
+        args: Vec<RawType>,
+    },
 }
 
 /// Serialize a `Type` from a source module's interner into an interner-free
@@ -120,6 +124,33 @@ fn type_to_raw(ty: &Type, source_interner: &StringInterner, class_id_offset: u32
         // appear in a cross-module signature. Serialize as `Any` so that a
         // stale appearance does not crash the merger.
         Type::NotImplementedT => RawType::Any,
+        // Builtin-class Generic IDs are stable (reserved range, never offset).
+        // User-class Generic IDs are remapped like Type::Class.
+        Type::Generic { base, args } => {
+            use pyaot_types::{
+                BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID,
+                BUILTIN_TUPLE_CLASS_ID, BUILTIN_TUPLE_VAR_CLASS_ID,
+            };
+            let remapped_base = if matches!(
+                *base,
+                _ if *base == BUILTIN_LIST_CLASS_ID
+                    || *base == BUILTIN_DICT_CLASS_ID
+                    || *base == BUILTIN_SET_CLASS_ID
+                    || *base == BUILTIN_TUPLE_CLASS_ID
+                    || *base == BUILTIN_TUPLE_VAR_CLASS_ID
+            ) {
+                *base
+            } else {
+                ClassId(base.0.saturating_add(class_id_offset))
+            };
+            RawType::Generic {
+                base: remapped_base,
+                args: args
+                    .iter()
+                    .map(|t| type_to_raw(t, source_interner, class_id_offset))
+                    .collect(),
+            }
+        }
     }
 }
 
@@ -169,6 +200,13 @@ fn raw_to_type(raw: &RawType, caller_interner: &mut StringInterner) -> Type {
         RawType::Iterator(t) => Type::Iterator(Box::new(raw_to_type(t, caller_interner))),
         RawType::BuiltinException(k) => Type::BuiltinException(*k),
         RawType::RuntimeObject(k) => Type::RuntimeObject(*k),
+        RawType::Generic { base, args } => Type::Generic {
+            base: *base,
+            args: args
+                .iter()
+                .map(|t| raw_to_type(t, caller_interner))
+                .collect(),
+        },
     }
 }
 

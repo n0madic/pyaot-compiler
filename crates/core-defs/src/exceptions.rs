@@ -136,13 +136,26 @@ macro_rules! define_exceptions {
 /// for stdlib-provided exception classes (e.g. `urllib.error.HTTPError`,
 /// `re.error`, `socket.error`). Each stdlib module declares a
 /// `StdlibExceptionClass` with a class_id in `BUILTIN_EXCEPTION_COUNT ..
-/// FIRST_USER_CLASS_ID`. User-defined classes start at FIRST_USER_CLASS_ID
-/// and never overlap stdlib or built-in tags.
+/// BUILTIN_EXCEPTION_COUNT + RESERVED_STDLIB_EXCEPTION_SLOTS`. User-defined
+/// classes start at FIRST_USER_CLASS_ID and never overlap stdlib or built-in tags.
 pub const RESERVED_STDLIB_EXCEPTION_SLOTS: u8 = 32;
 
-/// First `class_id` available for user-defined Python classes. Stdlib
-/// exception classes occupy `[BUILTIN_EXCEPTION_COUNT, FIRST_USER_CLASS_ID)`.
-pub const FIRST_USER_CLASS_ID: u8 = BUILTIN_EXCEPTION_COUNT + RESERVED_STDLIB_EXCEPTION_SLOTS;
+/// Number of contiguous class IDs reserved after the stdlib exception slots
+/// for built-in generic container types (`list`, `dict`, `set`, `tuple`,
+/// `tuple[T, ...]`). These IDs occupy
+/// `[BUILTIN_EXCEPTION_COUNT + RESERVED_STDLIB_EXCEPTION_SLOTS,
+///   BUILTIN_EXCEPTION_COUNT + RESERVED_STDLIB_EXCEPTION_SLOTS + RESERVED_BUILTIN_TYPE_SLOTS)`.
+/// The constants themselves live in `crates/types/src/builtin_classes.rs`
+/// where `ClassId` is available.
+pub const RESERVED_BUILTIN_TYPE_SLOTS: u8 = 5;
+
+/// First `class_id` available for user-defined Python classes. Ranges:
+/// - `[0, BUILTIN_EXCEPTION_COUNT)` — built-in exceptions
+/// - `[BUILTIN_EXCEPTION_COUNT, BUILTIN_EXCEPTION_COUNT + RESERVED_STDLIB_EXCEPTION_SLOTS)` — stdlib exceptions
+/// - `[BUILTIN_EXCEPTION_COUNT + RESERVED_STDLIB_EXCEPTION_SLOTS, FIRST_USER_CLASS_ID)` — builtin generic types
+/// - `[FIRST_USER_CLASS_ID, ...)` — user-defined classes
+pub const FIRST_USER_CLASS_ID: u8 =
+    BUILTIN_EXCEPTION_COUNT + RESERVED_STDLIB_EXCEPTION_SLOTS + RESERVED_BUILTIN_TYPE_SLOTS;
 
 // =============================================================================
 // SINGLE SOURCE OF TRUTH FOR BUILT-IN EXCEPTIONS
