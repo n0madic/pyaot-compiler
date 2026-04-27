@@ -6,7 +6,7 @@
 //! (return type inference) to ensure consistent behavior.
 
 use pyaot_hir as hir;
-use pyaot_types::{Type, TypeTagKind};
+use pyaot_types::{Type, TypeLattice, TypeTagKind};
 
 use super::infer::extract_iterable_element_type;
 
@@ -193,7 +193,7 @@ pub(crate) fn union_or_any(left: Type, right: Type) -> Type {
     } else if left == Type::Any || right == Type::Any {
         Type::Any
     } else {
-        Type::normalize_union(vec![left, right])
+        left.join(&right)
     }
 }
 
@@ -207,7 +207,10 @@ pub(crate) fn unify_element_types(types: Vec<Type>) -> Type {
     if types.iter().all(|t| t == first) {
         return first.clone();
     }
-    Type::normalize_union(types)
+    types
+        .into_iter()
+        .reduce(|a, b| a.join(&b))
+        .unwrap_or(Type::Never)
 }
 
 /// Strip `None` from a Union type (unwrap `Optional[T]`).
@@ -268,7 +271,11 @@ pub(crate) fn resolve_index_type(obj_ty: &Type, index_expr: &hir::Expr) -> Type 
             let t = if elems.iter().all(|t| t == &elems[0]) {
                 elems[0].clone()
             } else {
-                Type::normalize_union(elems.clone())
+                elems
+                    .iter()
+                    .cloned()
+                    .reduce(|a, b| a.join(&b))
+                    .unwrap_or(Type::Never)
             };
             if matches!(t, Type::Any) {
                 Type::HeapAny

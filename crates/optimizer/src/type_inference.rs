@@ -16,8 +16,7 @@
 //!   an upper bound (`Any` for unannotated params; the per-version
 //!   concrete type otherwise).
 //! * **Phi** — the join of the source operand types, using
-//!   `Type::unify_field_type` (Phase 3 will replace this with the proper
-//!   lattice `join`).
+//!   `TypeLattice::join` (migrated from `Type::unify_field_type` in Phase 3).
 //! * **Refine** — the explicit `ty` field. This lets downstream analyses
 //!   specialise code inside an `isinstance`-dominated block without
 //!   tracking dominance themselves.
@@ -50,7 +49,7 @@ use std::{
 
 use indexmap::IndexMap;
 use pyaot_mir::{Function, Instruction, InstructionKind, Module, Operand, RuntimeFunc};
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeLattice};
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId};
 
 /// Upper bound on TypeInferencePass iterations per function. A well-
@@ -406,7 +405,7 @@ fn infer_virtual_named_call_return_type(
 
 /// Result type of `left op right`. Comparison / logical-and/or / boolean
 /// operators return `Bool`. Arithmetic promotes through the numeric tower
-/// via `Type::unify_numeric`. Bitwise operators preserve the operand type
+/// via `TypeLattice::join` (numeric tower). Bitwise operators preserve the operand type
 /// (both sides must be integer-compatible; enforced at lowering).
 ///
 /// Pre-Phase-3 lattice limitations: when either operand is `Any` the
@@ -420,8 +419,7 @@ fn binop_result_type(op: pyaot_mir::BinOp, left: &Type, right: &Type) -> Type {
 
         // Short-circuit logical ops. Python's `and`/`or` return one of
         // the operands, not a Bool — the conservative upper bound is the
-        // union of operand types. `Type::unify_field_type` gives that
-        // via `normalize_union`.
+        // join of the operand types.
         BinOp::And | BinOp::Or => merge_operand_types(left, right),
 
         // Division in Python always produces Float (`/` is true division;
@@ -550,7 +548,13 @@ fn iterable_element_type(ty: &Type) -> Option<Type> {
         Type::List(elem) | Type::Set(elem) | Type::Iterator(elem) | Type::TupleVar(elem) => {
             Some((**elem).clone())
         }
-        Type::Tuple(elem_types) => Some(Type::normalize_union(elem_types.clone())),
+        Type::Tuple(elem_types) => Some(
+            elem_types
+                .iter()
+                .cloned()
+                .reduce(|a, b| a.join(&b))
+                .unwrap_or(Type::Never),
+        ),
         Type::Dict(key, _) => Some((**key).clone()),
         Type::Str => Some(Type::Str),
         Type::Bytes => Some(Type::Int),
@@ -583,19 +587,9 @@ fn infer_instance_get_field_return_type(
     meta.field_types.get(&field_name).cloned()
 }
 
-/// Join two operand types monotonically, handling the `Any` / `Never`
-/// bounds `Type::unify_field_type` doesn't simplify on its own.
+/// Join two operand types monotonically via the lattice join.
 fn merge_operand_types(a: &Type, b: &Type) -> Type {
-    if matches!(a, Type::Never) {
-        return b.clone();
-    }
-    if matches!(b, Type::Never) {
-        return a.clone();
-    }
-    if matches!(a, Type::Any) || matches!(b, Type::Any) {
-        return Type::Any;
-    }
-    Type::unify_field_type(a, b)
+    a.join(b)
 }
 
 fn arithmetic_operand_type(ty: &Type) -> Type {
@@ -669,9 +663,8 @@ pub fn wpa_param_inference(
     // (lattice bottom) before the fixed-point iteration. Dataflow joins
     // then widen monotonically from bottom — without this seed-clearing
     // step a recursive self-call picks up the pre-WPA seed (typically
-    // `Any`) on its first pass and contaminates the join forever, since
-    // `Type::unify_field_type` doesn't simplify `Union([Any, Int])` to
-    // just `Any`. Functions with **no** direct callers (entry points,
+    // `Any`) on its first pass and contaminates the join forever.
+    // Functions with **no** direct callers (entry points,
     // externally-invoked) keep their original seed, so their test-only
     // behaviour is unchanged.
     for (&func_id, func) in &module.functions {
@@ -751,24 +744,11 @@ pub fn wpa_param_inference_to_fixed_point(
 
 const MAX_FULL_PROGRAM_ITERATIONS: usize = 8;
 
-/// Monotone join for WPA's fixed-point ascent. Treats `Never` as bottom
-/// (absorbs into the other operand) and `Any` as top (absorbs the other
-/// operand); otherwise delegates to `Type::unify_field_type` for the
-/// numeric-tower + tuple-shape logic. The two special cases are needed
-/// because `Type::unify_field_type` / `normalize_union` don't themselves
-/// simplify `Any ⊔ Int` to `Any`, leaving the ascent stuck on
-/// `Union([Any, Int])` for recursive SCCs.
+/// Monotone join for WPA's fixed-point ascent. Delegates to the lattice
+/// `join`, which handles `Never` (bottom), `Any` (top), numeric-tower
+/// promotion, and tuple-shape unification.
 fn wpa_join_types(a: &Type, b: &Type) -> Type {
-    if matches!(a, Type::Never) {
-        return b.clone();
-    }
-    if matches!(b, Type::Never) {
-        return a.clone();
-    }
-    if matches!(a, Type::Any) || matches!(b, Type::Any) {
-        return Type::Any;
-    }
-    Type::unify_field_type(a, b)
+    a.join(b)
 }
 
 fn merge_observed_wpa_type(prev: Option<&Type>, new_ty: &Type) -> Type {
@@ -826,7 +806,7 @@ fn merge_dynamic_observed_wpa_type(prev: Option<&Type>, new_ty: &Type) -> Type {
             prev_ty.clone()
         }
         Some(prev_ty) if *prev_ty == *new_ty => prev_ty.clone(),
-        Some(prev_ty) => Type::normalize_union(vec![prev_ty.clone(), new_ty.clone()]),
+        Some(prev_ty) => prev_ty.join(new_ty),
     }
 }
 
@@ -1145,10 +1125,10 @@ fn update_type(types: &mut FunctionTypes, id: LocalId, new_ty: Type) -> bool {
     }
 }
 
-/// Fold operand types together via `Type::unify_field_type`. Returns
-/// `None` if the operand list is empty (a malformed phi). Constants
-/// contribute their literal type (`Int`/`Float`/`Bool`/`Str`/`Bytes`/
-/// `None`), locals contribute their current entry in `types`.
+/// Fold operand types together via `join`. Returns `None` if the operand
+/// list is empty (a malformed phi). Constants contribute their literal
+/// type (`Int`/`Float`/`Bool`/`Str`/`Bytes`/`None`), locals contribute
+/// their current entry in `types`.
 fn join_operand_types<'a, I>(ops: I, types: &FunctionTypes) -> Option<Type>
 where
     I: IntoIterator<Item = &'a Operand>,
@@ -1158,7 +1138,7 @@ where
         let ty = operand_type(op, types);
         acc = Some(match acc {
             None => ty,
-            Some(prev) => Type::unify_field_type(&prev, &ty),
+            Some(prev) => prev.join(&ty),
         });
     }
     acc
@@ -1319,9 +1299,9 @@ fn edge_narrowed_type_for_local(
     let class_id = ClassId::from(class_raw as u32);
     let checked_ty = class_variant_for_id(base_ty, class_id)?;
     let narrowed = if *then_block == site_block {
-        base_ty.narrow_to(&checked_ty)
+        base_ty.meet(&checked_ty)
     } else if *else_block == site_block {
-        base_ty.narrow_excluding(&checked_ty)
+        base_ty.minus(&checked_ty)
     } else {
         return None;
     };
@@ -1856,7 +1836,7 @@ mod tests {
 
     #[test]
     fn phi_joins_int_and_float_to_float_via_numeric_tower() {
-        // Cross-check that the engine uses `Type::unify_field_type` —
+        // Cross-check that the engine uses `join` —
         // joining Int and Float should promote to Float (numeric tower).
         let mut func = empty_func(Type::Float);
         let c = LocalId::from(0u32);
@@ -2422,8 +2402,8 @@ mod tests {
         assert_eq!(table.get(callee_id, LocalId::from(0u32)), Some(&Type::Int));
     }
 
-    /// Multiple call sites with differing arg types → joined (Union via
-    /// numeric tower or normalize_union) param type.
+    /// Multiple call sites with differing arg types → joined (via the
+    /// numeric tower or union) param type.
     #[test]
     fn wpa_joins_multiple_call_sites() {
         let callee_id = FuncId::from(2u32);

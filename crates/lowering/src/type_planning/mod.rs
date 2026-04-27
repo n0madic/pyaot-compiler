@@ -17,7 +17,7 @@ mod validate;
 
 use indexmap::IndexMap;
 use pyaot_hir as hir;
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeLattice};
 use pyaot_utils::VarId;
 
 use crate::context::Lowering;
@@ -400,12 +400,12 @@ impl<'a> Lowering<'a> {
                 // assignment a uniform F64 ABI end-to-end.
                 //
                 // Heterogeneous pairs (e.g. `{Int, Str}`) fall through
-                // `unify_field_type` → `unify_numeric` →
-                // `Type::normalize_union`, preserving the existing
-                // `Union[…]` shape for the only-actually-union cases.
+                // `join` (which uses the numeric tower then canonical union),
+                // preserving the existing `Union[…]` shape for the
+                // only-actually-union cases.
                 concrete
                     .into_iter()
-                    .reduce(|a, b| Type::unify_field_type(&a, &b))
+                    .reduce(|a, b| a.join(&b))
                     .expect("non-empty after `concrete.is_empty()` guard")
             }
         }

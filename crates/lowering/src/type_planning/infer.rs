@@ -71,7 +71,7 @@
 use indexmap::IndexMap;
 use pyaot_hir as hir;
 use pyaot_stdlib_defs::{lookup_object_field, lookup_object_type};
-use pyaot_types::{typespec_to_type, Type};
+use pyaot_types::{typespec_to_type, Type, TypeLattice};
 use pyaot_utils::interner::InternedString;
 use pyaot_utils::VarId;
 
@@ -224,7 +224,11 @@ impl<'a> Lowering<'a> {
                     if kept.is_empty() {
                         None
                     } else {
-                        Some(Type::normalize_union(kept))
+                        Some(
+                            kept.into_iter()
+                                .reduce(|a, b| a.join(&b))
+                                .unwrap_or(Type::Never),
+                        )
                     }
                 }
                 other => Some(other),
@@ -232,7 +236,7 @@ impl<'a> Lowering<'a> {
         }
         let forward_visible = forward_ret.and_then(strip_ni);
         match (forward_visible, reflected_ret) {
-            (Some(f), Some(r)) if f != r => Some(Type::normalize_union(vec![f, r])),
+            (Some(f), Some(r)) if f != r => Some(f.join(&r)),
             (Some(f), _) => Some(f),
             (None, Some(r)) => Some(r),
             (None, None) => None,
@@ -1130,8 +1134,8 @@ impl<'a> Lowering<'a> {
             .or_else(|| self.get_base_var_type(&var_id).cloned())
             .unwrap_or(Type::Any);
 
-        let narrowed = original_type.narrow_to(&checked_type);
-        let excluded = original_type.narrow_excluding(&checked_type);
+        let narrowed = original_type.meet(&checked_type);
+        let excluded = original_type.minus(&checked_type);
         if negated {
             Some((var_id, excluded, narrowed))
         } else {
@@ -1144,7 +1148,11 @@ impl<'a> Lowering<'a> {
 pub(crate) fn extract_iterable_element_type(ty: &Type) -> Type {
     match ty {
         Type::List(elem) => (**elem).clone(),
-        Type::Tuple(elems) if !elems.is_empty() => Type::normalize_union(elems.clone()),
+        Type::Tuple(elems) if !elems.is_empty() => elems
+            .iter()
+            .cloned()
+            .reduce(|a, b| a.join(&b))
+            .unwrap_or(Type::Never),
         Type::Tuple(_) => Type::Any,
         Type::TupleVar(elem) => (**elem).clone(),
         Type::Set(elem) => (**elem).clone(),

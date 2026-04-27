@@ -3862,7 +3862,7 @@ audit often uncovers surprise gaps.
 
 | ID | Scope | Deps | Complexity | Parallel? |
 |----|-------|------|------------|-----------|
-| S3.1 | Lattice trait + `Type` method migration (§3.1): `TypeLattice` impl for `Type`, migrate all callers to `join`/`meet`/`is_subtype_of`/`minus` | Phase 2 merged | Medium-High | — |
+| S3.1 | Lattice trait + `Type` method migration (§3.1): `TypeLattice` impl for `Type`, migrate all callers to `join`/`meet`/`is_subtype_of`/`minus` | Phase 2 merged | Medium-High | ✅ |
 | S3.2 | TypeVar + Generic unification (§3.2): add `Type::Var`, `Type::Generic`; migrate `Type::List`/`Dict`/`Set`/`Tuple`/`TupleVar` to `Generic` representation | S3.1 | **HIGH** (widespread) | — |
 | S3.3 | Monomorphization pass: specialization engine (§3.3 part 1): walk call sites, instantiate, dedup | S3.2 | **HIGH** | — |
 | S3.4 | Monomorphization: codegen integration + stdlib generics rewrite (§3.3 part 2): ensure no `TypeVar` reaches codegen | S3.3 | High | — |

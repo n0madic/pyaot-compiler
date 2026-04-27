@@ -204,231 +204,10 @@ impl Type {
         }
     }
 
-    /// Narrow a Union type when isinstance(x, T) is true.
-    /// Returns the narrowed type (the intersection of self with target).
-    /// For Union[int, str] narrowed to int -> int
-    /// For non-Union types, returns self if it matches target, otherwise Never.
-    ///
-    /// Returns Type::Never if no types match the target, indicating unreachable code.
-    pub fn narrow_to(&self, target: &Type) -> Type {
-        // Tuple-of-types `isinstance(x, (int, float))` is lowered to a
-        // `TypeRef(Union[int, float])`. Narrowing against a Union target
-        // means "narrow to ANY of these" — compute per-member and union.
-        if let Type::Union(target_members) = target {
-            let candidates: Vec<Type> = target_members
-                .iter()
-                .map(|m| self.narrow_to(m))
-                .filter(|t| !matches!(t, Type::Never))
-                .collect();
-            return Type::normalize_union(candidates);
-        }
-        match self {
-            Type::Union(types) => {
-                // Find all types in the union that match the target
-                let matching: Vec<Type> = types
-                    .iter()
-                    .filter(|t| Self::types_match_for_isinstance(t, target))
-                    .cloned()
-                    .collect();
-
-                if matching.is_empty() {
-                    // No matching types - return Never (unreachable code)
-                    Type::Never
-                } else if matching.len() == 1 {
-                    matching
-                        .into_iter()
-                        .next()
-                        .expect("type narrowing must produce at least one type when len==1")
-                } else {
-                    Type::Union(matching)
-                }
-            }
-            // `Any` / `HeapAny` could be anything at runtime — `isinstance`
-            // is the compiler's only tool to commit to a concrete shape, so
-            // the then-branch gets narrowed straight to the target type.
-            // Without this, `len(x)` after `isinstance(x, str)` (where `x`
-            // is typed `Any`) falls through to the `Type::Never` branch of
-            // `select_len_func` and silently returns 0.
-            Type::Any | Type::HeapAny => target.clone(),
-            // For non-Union types, return self if it matches target
-            _ => {
-                if Self::types_match_for_isinstance(self, target) {
-                    self.clone()
-                } else {
-                    // Doesn't match - return Never (unreachable code)
-                    Type::Never
-                }
-            }
-        }
-    }
-
-    /// Narrow a Union type when isinstance(x, T) is false.
-    /// Returns the type excluding the target.
-    /// For Union[int, str] excluding int -> str
-    pub fn narrow_excluding(&self, excluded: &Type) -> Type {
-        // Union-valued exclusion (`isinstance(x, (int, float))` in the
-        // else-branch): exclude each member sequentially.
-        if let Type::Union(excluded_members) = excluded {
-            return excluded_members
-                .iter()
-                .fold(self.clone(), |acc, m| acc.narrow_excluding(m));
-        }
-        match self {
-            Type::Union(types) => {
-                // Keep all types that don't match the excluded type
-                let remaining: Vec<Type> = types
-                    .iter()
-                    .filter(|t| !Self::types_match_for_isinstance(t, excluded))
-                    .cloned()
-                    .collect();
-
-                if remaining.is_empty() {
-                    // All types excluded - return Never (bottom type)
-                    Type::Never
-                } else if remaining.len() == 1 {
-                    remaining
-                        .into_iter()
-                        .next()
-                        .expect("type exclusion must produce at least one type when len==1")
-                } else {
-                    Type::Union(remaining)
-                }
-            }
-            // For non-Union types, excluding the matched type makes the
-            // branch unreachable; otherwise the type is unchanged.
-            _ => {
-                if Self::types_match_for_isinstance(self, excluded) {
-                    Type::Never
-                } else {
-                    self.clone()
-                }
-            }
-        }
-    }
-
-    /// Check if two types match for isinstance purposes.
-    /// This is used for type narrowing - we check if the runtime type
-    /// would be considered an instance of the target type.
-    fn types_match_for_isinstance(actual: &Type, target: &Type) -> bool {
-        match (actual, target) {
-            // Exact primitive matches
-            (Type::Int, Type::Int) => true,
-            (Type::Float, Type::Float) => true,
-            (Type::Bool, Type::Bool) => true,
-            (Type::Str, Type::Str) => true,
-            (Type::Bytes, Type::Bytes) => true,
-            (Type::None, Type::None) => true,
-
-            // Bool is a subtype of Int (Python: isinstance(True, int) == True)
-            (Type::Bool, Type::Int) => true,
-
-            // Container types - match by container kind (ignore element types)
-            (Type::List(_), Type::List(_)) => true,
-            (Type::Dict(_, _), Type::Dict(_, _)) => true,
-            (Type::DefaultDict(_, _), Type::DefaultDict(_, _)) => true,
-            // defaultdict is a subtype of dict
-            (Type::DefaultDict(_, _), Type::Dict(_, _)) => true,
-            (Type::Set(_), Type::Set(_)) => true,
-            // Both fixed and variable-length tuples match under isinstance(_, tuple).
-            (Type::Tuple(_) | Type::TupleVar(_), Type::Tuple(_) | Type::TupleVar(_)) => true,
-
-            // Class types - match by class_id
-            // Note: Inheritance is handled at runtime via rt_isinstance_class_inherited.
-            // This compile-time check only handles exact class matches.
-            // For full inheritance support, the class hierarchy context would be needed.
-            (
-                Type::Class {
-                    class_id: id1,
-                    name: _,
-                },
-                Type::Class {
-                    class_id: id2,
-                    name: _,
-                },
-            ) => id1 == id2,
-
-            // Iterator types
-            (Type::Iterator(_), Type::Iterator(_)) => true,
-
-            // File type — text and binary files are structurally the same
-            // for dispatch purposes (both accept `.read()` etc.), so any
-            // `File(_)` matches any other `File(_)`. The binary flag only
-            // affects return-type inference, not structural equality.
-            (Type::File(_), Type::File(_)) => true,
-
-            // Runtime object types match by TypeTagKind
-            (Type::RuntimeObject(k1), Type::RuntimeObject(k2)) => k1 == k2,
-
-            // Built-in exception types match by kind
-            (Type::BuiltinException(k1), Type::BuiltinException(k2)) => k1 == k2,
-
-            // Everything else doesn't match
-            _ => false,
-        }
-    }
-
-    /// Unify two tuple shapes into a common supertype.
-    ///
-    /// - Same length → element-wise union, keep fixed shape.
-    /// - Different lengths → `TupleVar(union of all elements)`.
-    /// - Empty tuple is absorbed by any other tuple shape.
-    /// - Fixed ∪ Variable → absorbs fixed into variable.
-    /// - Non-tuple pair → falls back to `normalize_union`.
-    ///
-    /// Used by class-field unification (Area D §D.3.6) when the same
-    /// `self.<field>` is assigned tuples of different shapes in different
-    /// methods; see `ast_to_hir/classes.rs` for the call site.
-    pub fn unify_tuple_shapes(a: &Type, b: &Type) -> Type {
-        match (a, b) {
-            // Empty tuple is absorbed by any other tuple shape.
-            (Type::Tuple(es), other) if es.is_empty() => Self::absorb_empty_tuple_into(other),
-            (other, Type::Tuple(es)) if es.is_empty() => Self::absorb_empty_tuple_into(other),
-
-            // Same length → element-wise union, keep fixed shape.
-            (Type::Tuple(ts1), Type::Tuple(ts2)) if ts1.len() == ts2.len() => Type::Tuple(
-                ts1.iter()
-                    .zip(ts2)
-                    .map(|(a, b)| Type::normalize_union(vec![a.clone(), b.clone()]))
-                    .collect(),
-            ),
-
-            // Different lengths → collapse to TupleVar(union-of-all-elements).
-            (Type::Tuple(ts1), Type::Tuple(ts2)) => {
-                let elems: Vec<Type> = ts1.iter().chain(ts2.iter()).cloned().collect();
-                Type::TupleVar(Box::new(Type::normalize_union(elems)))
-            }
-
-            // Variable ∪ variable.
-            (Type::TupleVar(e1), Type::TupleVar(e2)) => {
-                Type::TupleVar(Box::new(Type::normalize_union(vec![
-                    (**e1).clone(),
-                    (**e2).clone(),
-                ])))
-            }
-
-            // Fixed ∪ variable → absorb fixed into variable.
-            (Type::Tuple(ts), Type::TupleVar(e)) | (Type::TupleVar(e), Type::Tuple(ts)) => {
-                let mut elems = vec![(**e).clone()];
-                elems.extend(ts.iter().cloned());
-                Type::TupleVar(Box::new(Type::normalize_union(elems)))
-            }
-
-            _ => Type::normalize_union(vec![a.clone(), b.clone()]),
-        }
-    }
-
-    fn absorb_empty_tuple_into(other: &Type) -> Type {
-        match other {
-            Type::Tuple(_) | Type::TupleVar(_) => other.clone(),
-            _ => Type::normalize_union(vec![Type::Tuple(vec![]), other.clone()]),
-        }
-    }
-
     /// PEP 3141 numeric tower: `bool ⊂ int ⊂ float`. Returns the wider of two
     /// numeric types, or `None` if either argument is non-numeric.
     ///
-    /// Used by [`unify_numeric`] and [`unify_field_type`] for cross-site
-    /// type unification at class fields and local variables (Area E).
+    /// Used internally by `TypeLattice::join` and `make_canonical_union`.
     pub fn promote_numeric(a: &Type, b: &Type) -> Option<Type> {
         match (a, b) {
             (Type::Float, Type::Float)
@@ -444,39 +223,297 @@ impl Type {
         }
     }
 
-    /// Unify two types for a binding site using the numeric tower where
-    /// applicable, else fall back to [`normalize_union`].
+    /// Check if type is a subtype of another.
+    /// Delegates to `is_subtype_of_inner`; the inherent method is kept for
+    /// legacy callers and will be removed in §S3.1 step 7.
+    pub fn is_subtype_of(&self, other: &Type) -> bool {
+        Type::is_subtype_of_inner(self, other)
+    }
+}
+
+// ============================================================================
+// TypeLattice trait — Phase 3 §S3.1
+// ============================================================================
+
+/// A bounded lattice on types.
+///
+/// Laws (all enforced by the property tests in `tests::lattice_props`):
+/// - `join(top, t) == top`, `meet(top, t) == t`
+/// - `join(bot, t) == t`, `meet(bot, t) == bot`
+/// - `join` and `meet` are commutative, associative, idempotent
+/// - `is_subtype_of` is the partial order induced by the lattice:
+///   `a ≤ b ⟺ join(a,b) == b ⟺ meet(a,b) == a`
+/// - Antisymmetry: `a ≤ b ∧ b ≤ a ⟹ a == b`
+pub trait TypeLattice: Sized + Clone + Eq {
+    /// Universal supertype (`Any` in Python terms). `join(top, t) == top`.
+    fn top() -> Self;
+    /// Universal subtype (`Never` / `typing.Never`). `join(bot, t) == t`.
+    fn bottom() -> Self;
+    /// Least upper bound: the most specific type that is a supertype of both.
+    fn join(&self, other: &Self) -> Self;
+    /// Greatest lower bound: the most specific type that is a subtype of both.
+    fn meet(&self, other: &Self) -> Self;
+    /// Subtype relation: `self ≤ other`.
+    fn is_subtype_of(&self, other: &Self) -> bool;
+    /// Set difference `self \ other`: remove `other` from `self`.
+    /// Used for `isinstance` else-branch type narrowing.
+    fn minus(&self, other: &Self) -> Self;
+}
+
+// ============================================================================
+// Canonical ordering helpers for union normalisation
+// ============================================================================
+
+/// Stable sort key for `Type` variants so that `Union` members are always in
+/// a canonical order regardless of which operand was left/right in `join`.
+fn type_discriminant(t: &Type) -> u32 {
+    match t {
+        Type::Never => 0,
+        Type::Bool => 1,
+        Type::Int => 2,
+        Type::Float => 3,
+        Type::Str => 4,
+        Type::Bytes => 5,
+        Type::None => 6,
+        Type::List(_) => 7,
+        Type::Dict(_, _) => 8,
+        Type::DefaultDict(_, _) => 9,
+        Type::Set(_) => 10,
+        Type::Tuple(_) => 11,
+        Type::TupleVar(_) => 12,
+        Type::Iterator(_) => 13,
+        Type::Function { .. } => 14,
+        Type::Var(_) => 15,
+        Type::Class { .. } => 16,
+        Type::BuiltinException(_) => 17,
+        Type::File(_) => 18,
+        Type::RuntimeObject(_) => 19,
+        Type::NotImplementedT => 20,
+        Type::HeapAny => 21,
+        Type::Any => 22,
+        // Union should never appear as a member of another union after collection.
+        Type::Union(_) => u32::MAX,
+    }
+}
+
+/// Build a canonical `Type::Union` from a set of member types:
+/// 1. Flatten any nested unions.
+/// 2. Deduplicate.
+/// 3. Remove `Never` (bottom identity).
+/// 4. Absorb into `Any` if any member is `Any`/`HeapAny`.
+/// 5. Remove members subsumed by another member (`Bool` removed when `Int` present).
+/// 6. Sort by `(discriminant, display-string)` for commutativity.
+fn make_canonical_union(members: impl IntoIterator<Item = Type>) -> Type {
+    let mut flat: Vec<Type> = Vec::new();
+    for m in members {
+        match m {
+            Type::Union(ts) => flat.extend(ts),
+            other => flat.push(other),
+        }
+    }
+
+    // Remove Never.
+    flat.retain(|t| *t != Type::Never);
+
+    // Absorb Any/HeapAny.
+    if flat.iter().any(|t| matches!(t, Type::Any | Type::HeapAny)) {
+        return Type::Any;
+    }
+
+    // Deduplicate.
+    flat.dedup_by(|a, b| a == b); // only removes consecutive dups; full dedup below
+    let mut deduped: Vec<Type> = Vec::with_capacity(flat.len());
+    for t in flat {
+        if !deduped.contains(&t) {
+            deduped.push(t);
+        }
+    }
+
+    // Remove subsumed members: keep `m` only if no other member `o ≠ m`
+    // covers `m`. Covering means either `m ≤ o` (subtyping) or the numeric
+    // tower promotes `m` to `o` (e.g., Int is subsumed by Float).
+    let to_remove: Vec<usize> = deduped
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            let subsumed = deduped.iter().enumerate().any(|(j, o)| {
+                j != i && (m.is_subtype_of(o) || Type::promote_numeric(m, o).as_ref() == Some(o))
+            });
+            subsumed.then_some(i)
+        })
+        .collect();
+    for i in to_remove.into_iter().rev() {
+        deduped.remove(i);
+    }
+
+    // Canonical sort: primary key = discriminant, secondary key = Display string.
+    deduped.sort_by(|a, b| {
+        let da = type_discriminant(a);
+        let db = type_discriminant(b);
+        da.cmp(&db)
+            .then_with(|| format!("{a}").cmp(&format!("{b}")))
+    });
+
+    match deduped.len() {
+        0 => Type::Never,
+        1 => deduped.into_iter().next().expect("len==1"),
+        _ => Type::Union(deduped),
+    }
+}
+
+// ============================================================================
+// TypeLattice implementation for Type
+// ============================================================================
+
+impl TypeLattice for Type {
+    fn top() -> Self {
+        Type::Any
+    }
+
+    fn bottom() -> Self {
+        Type::Never
+    }
+
+    /// Least upper bound with the numeric tower, canonical union ordering, and
+    /// subsumed-member removal.
     ///
-    /// - `{Bool, Int}`        → `Int`
-    /// - `{Int, Float}`       → `Float`
-    /// - `{Bool, Int, Float}` → `Float`
-    /// - `{Int, Str}`         → `Union[Int, Str]` (non-numeric → union)
-    pub fn unify_numeric(a: &Type, b: &Type) -> Type {
-        if let Some(t) = Type::promote_numeric(a, b) {
+    /// Design decisions:
+    /// - `Any`/`HeapAny` is the top element: `join(Any, t) == Any`.
+    /// - `Never` is the bottom element: `join(Never, t) == t`.
+    /// - Numeric tower (`Bool ⊂ Int ⊂ Float`) collapses numeric pairs.
+    /// - Unions are flattened, deduplicated, simplified (subsumed members
+    ///   removed), and sorted canonically so that `join(a,b) == join(b,a)`.
+    fn join(&self, other: &Self) -> Self {
+        // top absorbs
+        if matches!(self, Type::Any | Type::HeapAny) || matches!(other, Type::Any | Type::HeapAny) {
+            return Type::Any;
+        }
+        // bottom is identity
+        if *self == Type::Never {
+            return other.clone();
+        }
+        if *other == Type::Never {
+            return self.clone();
+        }
+        // reflexivity fast path
+        if self == other {
+            return self.clone();
+        }
+        // numeric tower: Bool ⊂ Int ⊂ Float
+        if let Some(t) = Type::promote_numeric(self, other) {
             return t;
         }
-        Type::normalize_union(vec![a.clone(), b.clone()])
+        // General case: collect, flatten, simplify, sort.
+        make_canonical_union([self.clone(), other.clone()])
     }
 
-    /// Single entry-point for every cross-site unification call (class
-    /// fields and local variables). Layers the Area D tuple-shape rule
-    /// on top of the numeric tower so both generalisations apply in one
-    /// place.
+    /// Greatest lower bound using the subtype partial order.
     ///
-    /// When either argument is tuple-shaped, defers to
-    /// [`unify_tuple_shapes`]; otherwise applies [`unify_numeric`].
-    pub fn unify_field_type(a: &Type, b: &Type) -> Type {
-        if matches!(a, Type::Tuple(_) | Type::TupleVar(_))
-            || matches!(b, Type::Tuple(_) | Type::TupleVar(_))
-        {
-            return Type::unify_tuple_shapes(a, b);
+    /// - `meet(top, t) == t`   (`Any` is the identity for meet)
+    /// - `meet(bot, t) == bot` (`Never` absorbs)
+    /// - `meet(a, b) == a` when `a ≤ b`
+    /// - `meet(a, b) == b` when `b ≤ a`
+    /// - Union on either side: distribute meet over union members and join
+    ///   the non-Never results.
+    fn meet(&self, other: &Self) -> Self {
+        // top is identity for meet
+        if matches!(self, Type::Any | Type::HeapAny) {
+            return other.clone();
         }
-        Type::unify_numeric(a, b)
+        if matches!(other, Type::Any | Type::HeapAny) {
+            return self.clone();
+        }
+        // bottom absorbs
+        if *self == Type::Never || *other == Type::Never {
+            return Type::Never;
+        }
+        // reflexivity
+        if self == other {
+            return self.clone();
+        }
+        // subtype shortcuts (symmetric)
+        if self.is_subtype_of(other) {
+            return self.clone();
+        }
+        if other.is_subtype_of(self) {
+            return other.clone();
+        }
+        // distribute over unions
+        match (self, other) {
+            (Type::Union(ts), _) => ts
+                .iter()
+                .map(|t| t.meet(other))
+                .filter(|t| *t != Type::Never)
+                .fold(Type::Never, |acc, t| acc.join(&t)),
+            (_, Type::Union(ts)) => ts
+                .iter()
+                .map(|t| self.meet(t))
+                .filter(|t| *t != Type::Never)
+                .fold(Type::Never, |acc, t| acc.join(&t)),
+            _ => Type::Never,
+        }
     }
 
-    /// Check if type is a subtype of another
-    pub fn is_subtype_of(&self, other: &Type) -> bool {
-        match (self, other) {
+    /// Subtype relation.  Delegates to the inherent `is_subtype_of` method
+    /// (same body; the inherent version will be deleted in S3.1 step 7).
+    fn is_subtype_of(&self, other: &Self) -> bool {
+        // Delegate to the inherent method — same implementation, avoids
+        // duplication while both coexist during migration.
+        Type::is_subtype_of_inner(self, other)
+    }
+
+    /// Set difference `self \ other` for `isinstance` else-branch narrowing.
+    ///
+    /// - `minus(Any, t) == Any`   (can't represent "Any except T")
+    /// - `minus(Never, t) == Never`
+    /// - `minus(t, Never) == t`   (removing nothing)
+    /// - `minus(t, Any) == Never` (removing everything)
+    /// - `minus(t, t) == Never`
+    /// - `minus(a, b) == Never` when `a ≤ b` (a is fully removed)
+    /// - Unions: filter out subsumed members.
+    fn minus(&self, other: &Self) -> Self {
+        if matches!(self, Type::Any | Type::HeapAny) {
+            return self.clone();
+        }
+        if *self == Type::Never {
+            return Type::Never;
+        }
+        if *other == Type::Never {
+            return self.clone();
+        }
+        if matches!(other, Type::Any | Type::HeapAny) {
+            return Type::Never;
+        }
+        if self == other || self.is_subtype_of(other) {
+            return Type::Never;
+        }
+        // Union on right: subtract each member sequentially.
+        if let Type::Union(excluded) = other {
+            return excluded.iter().fold(self.clone(), |acc, m| acc.minus(m));
+        }
+        // Union on left: keep members not subsumed by `other`.
+        if let Type::Union(ts) = self {
+            let remaining: Vec<Type> = ts
+                .iter()
+                .map(|t| t.minus(other))
+                .filter(|t| *t != Type::Never)
+                .collect();
+            return remaining
+                .into_iter()
+                .fold(Type::Never, |acc, t| acc.join(&t));
+        }
+        // Concrete type not subsumed by other: keep self.
+        self.clone()
+    }
+}
+
+impl Type {
+    /// Inherent implementation of the subtype relation, shared by both the
+    /// inherent `is_subtype_of` (legacy callers) and the `TypeLattice` trait
+    /// impl.  Will be inlined into the trait method and removed as an
+    /// inherent function in §S3.1 step 7.
+    fn is_subtype_of_inner(this: &Type, other: &Type) -> bool {
+        match (this, other) {
             // Reflexivity
             (a, b) if a == b => true,
 
@@ -496,64 +533,37 @@ impl Type {
             (Type::None, Type::Union(set)) if set.contains(&Type::None) => true,
 
             // Union subtyping: all members of left must be subtypes of right
-            (Type::Union(left), right) => left.iter().all(|t| t.is_subtype_of(right)),
+            (Type::Union(left), right) => left.iter().all(|t| Self::is_subtype_of_inner(t, right)),
 
             // Right is union: left must be subtype of at least one member
-            (left, Type::Union(right)) => right.iter().any(|t| left.is_subtype_of(t)),
+            (left, Type::Union(right)) => right.iter().any(|t| Self::is_subtype_of_inner(left, t)),
 
-            // Container subtyping design decision:
-            //
-            // IMPORTANT: Mutable containers (List, Set, Dict) use COVARIANT subtyping here,
-            // which is technically unsound but practically useful. In a fully sound type system,
-            // mutable containers should be INVARIANT (list[int] is NOT a subtype of list[int|str]).
-            //
-            // Why covariance is unsound for mutable containers:
-            // ```python
-            // x: list[int] = [1, 2]
-            // y: list[int|str] = x    # Allowed by covariance
-            // y.append("hello")       # Valid for list[int|str]
-            // z = x[2] + 1            # Runtime error: x now contains a string!
-            // ```
-            //
-            // Why we use covariance anyway:
-            // 1. Type inference for literals: When you write `x: list[int|str] = [1, 2, 3]`,
-            //    the literal [1, 2, 3] has type list[int]. Without covariance, this assignment
-            //    would be rejected, requiring explicit type annotations on the literal.
-            // 2. Practical compatibility: Most Python code doesn't exploit this unsoundness,
-            //    and the convenience outweighs the theoretical risk.
-            //
-            // Any element type is compatible (for empty containers).
+            // Covariant container subtyping (see is_subtype_of for the rationale)
             (Type::List(a), Type::List(b)) => {
-                **a == Type::Any || **b == Type::Any || a.is_subtype_of(b)
+                **a == Type::Any || **b == Type::Any || Self::is_subtype_of_inner(a, b)
             }
             (Type::Set(a), Type::Set(b)) => {
-                **a == Type::Any || **b == Type::Any || a.is_subtype_of(b)
+                **a == Type::Any || **b == Type::Any || Self::is_subtype_of_inner(a, b)
             }
             (Type::Dict(k1, v1), Type::Dict(k2, v2))
             | (Type::DefaultDict(k1, v1), Type::DefaultDict(k2, v2))
             | (Type::DefaultDict(k1, v1), Type::Dict(k2, v2)) => {
-                (**k1 == Type::Any || **k2 == Type::Any || k1.is_subtype_of(k2))
-                    && (**v1 == Type::Any || **v2 == Type::Any || v1.is_subtype_of(v2))
+                (**k1 == Type::Any || **k2 == Type::Any || Self::is_subtype_of_inner(k1, k2))
+                    && (**v1 == Type::Any || **v2 == Type::Any || Self::is_subtype_of_inner(v1, v2))
             }
-            // Tuple is immutable, so covariance is sound
             (Type::Tuple(ts1), Type::Tuple(ts2)) => {
                 ts1.len() == ts2.len()
                     && ts1
                         .iter()
                         .zip(ts2.iter())
-                        .all(|(t1, t2)| *t1 == Type::Any || t1.is_subtype_of(t2))
+                        .all(|(t1, t2)| *t1 == Type::Any || Self::is_subtype_of_inner(t1, t2))
             }
-            // Fixed-length tuple is a subtype of any variable-length tuple whose
-            // element type covers every slot. Empty tuple is subtype of any
-            // TupleVar by vacuous quantification.
-            (Type::Tuple(ts), Type::TupleVar(elem)) => {
-                ts.iter().all(|t| *t == Type::Any || t.is_subtype_of(elem))
+            (Type::Tuple(ts), Type::TupleVar(elem)) => ts
+                .iter()
+                .all(|t| *t == Type::Any || Self::is_subtype_of_inner(t, elem)),
+            (Type::TupleVar(a), Type::TupleVar(b)) => {
+                **a == Type::Any || Self::is_subtype_of_inner(a, b)
             }
-            // Variable-length tuples are covariant in element type.
-            (Type::TupleVar(a), Type::TupleVar(b)) => **a == Type::Any || a.is_subtype_of(b),
-            // TupleVar is NOT a subtype of any fixed Tuple — length unknown.
-
-            // Function types (contravariant in params, covariant in return)
             (
                 Type::Function {
                     params: p1,
@@ -568,13 +578,9 @@ impl Type {
                     && p2
                         .iter()
                         .zip(p1.iter())
-                        .all(|(t2, t1)| t2.is_subtype_of(t1))
-                    && r1.is_subtype_of(r2)
+                        .all(|(t2, t1)| Self::is_subtype_of_inner(t2, t1))
+                    && Self::is_subtype_of_inner(r1, r2)
             }
-
-            // Class types - same class only for compile-time subtyping.
-            // Inheritance-based subtyping would require the class hierarchy context.
-            // Runtime isinstance checks handle inheritance via rt_isinstance_class_inherited.
             (
                 Type::Class {
                     class_id: id1,
@@ -585,10 +591,9 @@ impl Type {
                     name: _,
                 },
             ) => id1 == id2,
-
-            // Iterator types - covariant in element type
-            (Type::Iterator(a), Type::Iterator(b)) => **a == Type::Any || a.is_subtype_of(b),
-
+            (Type::Iterator(a), Type::Iterator(b)) => {
+                **a == Type::Any || Self::is_subtype_of_inner(a, b)
+            }
             _ => false,
         }
     }

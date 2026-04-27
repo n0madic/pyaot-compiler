@@ -6,7 +6,7 @@ use pyaot_hir::{
     *,
 };
 use pyaot_types::dunders::{dunder_kind, polymorphic_other_type};
-use pyaot_types::{exception_name_to_tag, Type};
+use pyaot_types::{exception_name_to_tag, Type, TypeLattice};
 use pyaot_utils::{FuncId, InternedString, Span};
 use rustpython_parser::ast as py;
 use std::collections::HashSet;
@@ -265,9 +265,9 @@ impl AstToHir {
 
                     // Scan EVERY method body for `self.field = value` assignments
                     // (Area D §D.3.6). Tuples of different shapes in different
-                    // methods unify via `Type::unify_tuple_shapes`, so a field
-                    // that receives `()`, `(a,)`, and `(a, b)` across methods
-                    // infers as `TupleVar(T)` — not `Any`.
+                    // methods unify via `join`, so a field that receives `()`,
+                    // `(a,)`, and `(a, b)` across methods infers as `TupleVar(T)`
+                    // — not `Any`.
                     //
                     // Fields are introduced in source order — the first method
                     // to write a field establishes its layout offset; subsequent
@@ -290,7 +290,7 @@ impl AstToHir {
                             // scan). Tuple-shape merge only kicks in when the new
                             // observation is itself a meaningful type.
                             if !matches!(inferred_ty, Type::Any) {
-                                existing.ty = Type::unify_field_type(&existing.ty, &inferred_ty);
+                                existing.ty = existing.ty.join(&inferred_ty);
                             }
                         } else {
                             // First method to reference this field introduces it.
@@ -664,7 +664,7 @@ impl AstToHir {
 
     /// Scan a method's body for `self.field = value` and `self.field: T = v`
     /// assignments, collecting inferred types per field name. Multiple writes
-    /// within the same method unify via `Type::unify_tuple_shapes`.
+    /// within the same method unify via `join`.
     ///
     /// Returns an IndexMap preserving first-seen order for stable codegen.
     fn scan_method_for_self_fields(
@@ -709,10 +709,9 @@ impl AstToHir {
     }
 
     /// Recursively scan statements for `self.field = value` patterns.
-    /// Types are merged across writes via `Type::unify_tuple_shapes`, which
-    /// preserves tuple-shape information — a field assigned tuples of
-    /// different lengths in different branches infers as `TupleVar` instead
-    /// of `Any`.
+    /// Types are merged across writes via `join`, which preserves tuple-shape
+    /// information — a field assigned tuples of different lengths in different
+    /// branches infers as `TupleVar` instead of `Any`.
     fn scan_stmts_for_self_fields(
         &mut self,
         stmts: &[py::Stmt],
@@ -730,9 +729,7 @@ impl AstToHir {
                                     let ty =
                                         self.infer_field_type_from_rhs(&assign.value, param_types);
                                     out.entry(field_name)
-                                        .and_modify(|prev| {
-                                            *prev = Type::unify_field_type(prev, &ty)
-                                        })
+                                        .and_modify(|prev| *prev = prev.join(&ty))
                                         .or_insert(ty);
                                 }
                             }
@@ -754,9 +751,7 @@ impl AstToHir {
                                     self.infer_field_type_from_rhs(&aug.value, param_types);
                                 if !matches!(rhs_ty, Type::Any) {
                                     out.entry(field_name)
-                                        .and_modify(|prev| {
-                                            *prev = Type::unify_field_type(prev, &rhs_ty)
-                                        })
+                                        .and_modify(|prev| *prev = prev.join(&rhs_ty))
                                         .or_insert(rhs_ty);
                                 }
                             }
@@ -805,8 +800,8 @@ impl AstToHir {
     /// Covers:
     ///   (a) parameter reference with a type annotation → annotated type.
     ///   (b) tuple literal → `Type::Tuple([shape])`, element types inferred
-    ///       recursively (enables `unify_tuple_shapes` to see real shapes
-    ///       and produce `TupleVar` for cross-method heterogeneity).
+    ///       recursively (enables `join` to see real shapes and produce
+    ///       `TupleVar` for cross-method heterogeneity).
     ///   (c) primitive literal → matching primitive type.
     ///
     /// All other shapes fall back to `Type::Any`.

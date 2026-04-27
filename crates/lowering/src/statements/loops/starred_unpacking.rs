@@ -3,7 +3,7 @@
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeLattice};
 use pyaot_utils::VarId;
 
 use crate::context::Lowering;
@@ -446,7 +446,7 @@ impl<'a> Lowering<'a> {
                         middle_start
                     };
                     if middle_start < middle_end {
-                        Type::normalize_union(elem_types[middle_start..middle_end].to_vec())
+                        elem_types[middle_start..middle_end].iter().cloned().reduce(|a, b| a.join(&b)).unwrap_or(Type::Never)
                     } else {
                         Type::Any
                     }
