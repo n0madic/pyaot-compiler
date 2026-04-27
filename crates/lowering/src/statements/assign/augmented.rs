@@ -25,8 +25,8 @@ impl<'a> Lowering<'a> {
         let index_operand = self.lower_expr(index_expr, hir_module, mir_func)?;
         let index_type = self.seed_expr_type(index, hir_module);
 
-        match obj_type {
-            Type::Dict(_, _) | Type::DefaultDict(_, _) => {
+        match &obj_type {
+            _ if obj_type.is_dict_like() => {
                 // del dict[key] → rt_dict_pop(dict, key) and discard result
                 let boxed_key = self.emit_value_slot(index_operand, &index_type, mir_func);
                 self.emit_runtime_call_void(
@@ -35,7 +35,7 @@ impl<'a> Lowering<'a> {
                     mir_func,
                 );
             }
-            Type::List(_) => {
+            _ if obj_type.is_list_like() => {
                 // del list[index] → rt_list_pop(list, index) and discard result
                 self.emit_runtime_call_void(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_POP),
@@ -46,7 +46,7 @@ impl<'a> Lowering<'a> {
             Type::Class { class_id, .. } => {
                 // Class with __delitem__ dunder
                 let delitem_func = self
-                    .get_class_info(&class_id)
+                    .get_class_info(class_id)
                     .and_then(|info| info.get_dunder_func("__delitem__"));
 
                 if let Some(func_id) = delitem_func {
