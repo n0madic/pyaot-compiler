@@ -441,6 +441,49 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// §P.2.2: for a factory-style decorator pattern, identify which of the
+    /// outer function's params is captured by the returned closure at the
+    /// fn-ptr capture index. Returns the captured param's VarId so it can
+    /// be marked `is_func_ptr_param` (which forces `is_gc_root=false` on
+    /// its MIR Local — the param slot holds a raw text-segment address that
+    /// the GC must not dereference).
+    ///
+    /// Only triggers when:
+    /// - `returned_func_id` is registered in `wrapper_func_ids`
+    ///   (i.e. it's the actual wrapper that does indirect calls), AND
+    /// - the wrapper's fn-ptr-capture index resolves to a HIR `Var` that
+    ///   matches one of the outer function's params.
+    pub(crate) fn find_fn_ptr_capture_param(
+        &self,
+        outer_func: &hir::Function,
+        returned_func_id: FuncId,
+        hir_module: &hir::Module,
+    ) -> Option<VarId> {
+        let fn_ptr_idx = self.wrapper_fn_ptr_capture_index(returned_func_id, hir_module)?;
+        // Walk outer_func's blocks to find the `Return(Closure { func: returned_func_id, captures })`
+        // and inspect captures[fn_ptr_idx].
+        for block in outer_func.blocks.values() {
+            let return_expr_id = match &block.terminator {
+                hir::HirTerminator::Return(Some(e)) => *e,
+                _ => continue,
+            };
+            let ret_expr = &hir_module.exprs[return_expr_id];
+            let captures = match &ret_expr.kind {
+                hir::ExprKind::Closure { func, captures } if *func == returned_func_id => captures,
+                _ => continue,
+            };
+            let capture_expr_id = *captures.get(fn_ptr_idx)?;
+            let capture_expr = &hir_module.exprs[capture_expr_id];
+            if let hir::ExprKind::Var(var_id) = &capture_expr.kind {
+                // Ensure the capture is one of outer_func's own params.
+                if outer_func.params.iter().any(|p| p.var == *var_id) {
+                    return Some(*var_id);
+                }
+            }
+        }
+        None
+    }
+
     /// §P.2.2: if `func_id` is a wrapper (closure returned by a decorator),
     /// return the index of its fn-ptr parameter — which is also the matching
     /// capture-tuple slot index, since closure captures become the leading

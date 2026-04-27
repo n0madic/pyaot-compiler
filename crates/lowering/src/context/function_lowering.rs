@@ -156,6 +156,22 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        // §P.2.2: factory-style decorator detection. A function `decorator(func)` that
+        // returns a wrapper closure capturing `func` as the wrapper's fn-ptr slot has
+        // a fn-ptr-shaped param too. Mark it so the MIR Local gets `is_gc_root=false`
+        // — without this, the GC mark walk dereferences the misaligned text-segment
+        // address held briefly between decorator's entry and the wrapper-tuple
+        // construction (where the value is finally `ValueFromInt`-wrapped).
+        if !func.params.is_empty() {
+            if let Some(returned_func_id) = self.find_returned_closure(func, hir_module) {
+                if let Some(captured_param_var) =
+                    self.find_fn_ptr_capture_param(func, returned_func_id, hir_module)
+                {
+                    self.insert_func_ptr_param(captured_param_var);
+                }
+            }
+        }
+
         let func_name = self.interner.resolve(func.name).to_string();
         let is_lambda = func_name.starts_with("__lambda_") || func_name.starts_with("__nested_");
         // Gen-expr functions receive their captures as implicit leading params
@@ -288,11 +304,19 @@ impl<'a> Lowering<'a> {
                 prologue_unboxes.push((hir_param.var, local_id, prologue_ty));
             }
 
+            // §P.2.2: fn-ptr params (set by name-matching heuristic on
+            // wrapper functions, or by the factory-decorator extension below)
+            // hold raw text-segment addresses, never heap objects. Force
+            // `is_gc_root=false` regardless of `param_ty.is_heap()` so the
+            // shadow-stack walker doesn't dereference a misaligned function
+            // pointer. Mirrors the FuncAddr-destination guard in
+            // `optimizer/type_inference.rs::materialize_function_types`.
+            let is_fn_ptr_param = self.is_func_ptr_param(&hir_param.var);
             let mir_param = mir::Local {
                 id: local_id,
                 name: Some(hir_param.name),
                 ty: param_ty.clone(),
-                is_gc_root: is_cell_param || param_ty.is_heap(), // Cells are heap objects
+                is_gc_root: is_cell_param || (param_ty.is_heap() && !is_fn_ptr_param), // Cells are heap objects
             };
             params.push(mir_param);
         }
