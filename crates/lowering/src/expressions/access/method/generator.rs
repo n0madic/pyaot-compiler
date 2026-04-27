@@ -26,6 +26,15 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Constant(mir::Constant::Int(0))
                 };
 
+                // §P.2.2: rt_generator_send stores the i64 wire value verbatim
+                // into GeneratorObj.sent_value (a tagged Value). Primitive
+                // arguments must be Value-tagged at the lowering boundary;
+                // otherwise raw bits land in the slot and GC mark walks them
+                // as pointer-shaped non-objects.
+                let value_ty = self.operand_type(&value_operand, mir_func);
+                let value_operand =
+                    self.box_primitive_if_needed(value_operand, &value_ty, mir_func);
+
                 // After §F.7c BigBang: rt_generator_send returns tagged Value bits
                 // (the resume function boxes its yield). Unwrap for typed Int/Bool.
                 let raw_local = self.emit_runtime_call(

@@ -140,15 +140,24 @@ impl<'a> Lowering<'a> {
             }
 
             hir::GeneratorIntrinsic::GetSentValue(gen_expr_id) => {
+                // §P.2.2: rt_generator_send wraps the inbound value via
+                // box_primitive_if_needed at the lowering boundary so the
+                // sent_value slot stores well-formed Value bits (so the GC
+                // doesn't see raw scalars as pointer-shaped non-objects).
+                // The read side here unwraps based on the expression's
+                // declared / inferred type — symmetric with `g.send()`'s
+                // result handling in `lower_generator_method`.
                 let gen_op =
                     self.lower_expr(&hir_module.exprs[*gen_expr_id], hir_module, mir_func)?;
-                let dest = self.emit_runtime_call(
+                let raw = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&RT_GENERATOR_GET_SENT_VALUE),
                     vec![gen_op],
-                    Type::Int,
+                    Type::HeapAny,
                     mir_func,
                 );
-                Ok(mir::Operand::Local(dest))
+                let elem_ty = expr.ty.clone().unwrap_or(Type::Int);
+                let result = self.unbox_if_needed(mir::Operand::Local(raw), &elem_ty, mir_func);
+                Ok(result)
             }
 
             hir::GeneratorIntrinsic::IterNextNoExc(iter_expr_id) => {
