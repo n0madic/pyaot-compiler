@@ -304,14 +304,14 @@ impl<'a> Lowering<'a> {
                     value: mir::Constant::Int(HASH_NONE),
                 });
             }
-            Type::Tuple(_) => {
+            _ if arg_type.is_tuple_like() => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::Call(&RT_HASH_TUPLE),
                     args: vec![arg_operand],
                 });
             }
-            Type::List(_) => {
+            _ if arg_type.is_list_like() => {
                 // Lists are not hashable - raise TypeError
                 let type_name = self.intern("unhashable type: 'list'");
                 self.current_block_mut().terminator = mir::Terminator::Raise {
@@ -324,7 +324,7 @@ impl<'a> Lowering<'a> {
                 let unreachable_bb = self.new_block();
                 self.push_block(unreachable_bb);
             }
-            Type::Dict(_, _) => {
+            _ if arg_type.is_dict_like() => {
                 // Dicts are not hashable - raise TypeError
                 let type_name = self.intern("unhashable type: 'dict'");
                 self.current_block_mut().terminator = mir::Terminator::Raise {
@@ -337,7 +337,7 @@ impl<'a> Lowering<'a> {
                 let unreachable_bb = self.new_block();
                 self.push_block(unreachable_bb);
             }
-            Type::Set(_) => {
+            _ if arg_type.is_set_like() => {
                 // Sets are not hashable - raise TypeError
                 let type_name = self.intern("unhashable type: 'set'");
                 self.current_block_mut().terminator = mir::Terminator::Raise {
@@ -440,7 +440,14 @@ impl<'a> Lowering<'a> {
                 });
             }
             // For heap types, return the pointer address
-            Type::Str | Type::List(_) | Type::Dict(_, _) | Type::Tuple(_) | Type::Class { .. } => {
+            Type::Str | Type::Class { .. } => {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ID_OBJ),
+                    args: vec![arg_operand],
+                });
+            }
+            _ if arg_type.is_list_like() || arg_type.is_dict_like() || arg_type.is_tuple_like() => {
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
                     func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ID_OBJ),
@@ -599,11 +606,11 @@ impl<'a> Lowering<'a> {
             Type::Bool => Some("<class 'bool'>"),
             Type::None => Some("<class 'NoneType'>"),
             Type::Str => Some("<class 'str'>"),
-            Type::List(_) => Some("<class 'list'>"),
-            Type::Tuple(_) => Some("<class 'tuple'>"),
-            Type::Dict(_, _) => Some("<class 'dict'>"),
-            Type::Set(_) => Some("<class 'set'>"),
             Type::Bytes => Some("<class 'bytes'>"),
+            _ if arg_type.is_list_like() => Some("<class 'list'>"),
+            _ if arg_type.is_tuple_like() => Some("<class 'tuple'>"),
+            _ if arg_type.is_dict_like() => Some("<class 'dict'>"),
+            _ if arg_type.is_set_like() => Some("<class 'set'>"),
             _ => None, // Need runtime dispatch
         };
 

@@ -79,7 +79,8 @@ impl<'a> Lowering<'a> {
             }
 
             // If it's a list, call runtime function to find min/max element
-            if let Type::List(elem_type) = &arg_type {
+            if let Some(elem_type) = arg_type.list_elem() {
+                let elem_type = elem_type.clone();
                 let list_operand =
                     self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
 
@@ -103,7 +104,7 @@ impl<'a> Lowering<'a> {
                     // After §F.7c: list slots are tagged Values; runtime no
                     // longer needs an elem_tag hint.
                     let _ = func_or_builtin;
-                    let result_type = elem_type.as_ref().clone();
+                    let result_type = elem_type;
                     let is_min_operand =
                         mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
                     let result_local = self.emit_runtime_call(
@@ -125,7 +126,7 @@ impl<'a> Lowering<'a> {
 
                 // Original logic for non-key case
                 // Determine if element type is float
-                let is_float_list = matches!(elem_type.as_ref(), Type::Float);
+                let is_float_list = matches!(elem_type, Type::Float);
                 let (result_type, elem_kind) = if is_float_list {
                     (Type::Float, ElementKind::Float)
                 } else {
@@ -150,7 +151,8 @@ impl<'a> Lowering<'a> {
             }
 
             // If it's a tuple, call runtime function to find min/max element
-            if let Type::Tuple(elem_types) = &arg_type {
+            if let Some(elem_types) = arg_type.tuple_elems() {
+                let elem_types = elem_types.to_vec();
                 let tuple_operand =
                     self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
                 let op = if is_min { MinMaxOp::Min } else { MinMaxOp::Max };
@@ -220,7 +222,8 @@ impl<'a> Lowering<'a> {
             }
 
             // If it's a set, call runtime function to find min/max element
-            if let Type::Set(elem_type) = &arg_type {
+            if let Some(elem_type) = arg_type.set_elem() {
+                let elem_type = elem_type.clone();
                 let set_operand =
                     self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
                 let op = if is_min { MinMaxOp::Min } else { MinMaxOp::Max };
@@ -241,7 +244,7 @@ impl<'a> Lowering<'a> {
                         .expect("key_source is Some");
 
                     let _ = func_or_builtin;
-                    let result_type = elem_type.as_ref().clone();
+                    let result_type = elem_type;
                     let is_min_operand =
                         mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
                     let result_local = self.emit_runtime_call(
@@ -263,7 +266,7 @@ impl<'a> Lowering<'a> {
 
                 // Original logic for non-key case
                 // Determine if element type is float
-                let is_float_set = matches!(elem_type.as_ref(), Type::Float);
+                let is_float_set = matches!(elem_type, Type::Float);
                 let (result_type, elem_kind) = if is_float_set {
                     (Type::Float, ElementKind::Float)
                 } else {
@@ -294,7 +297,7 @@ impl<'a> Lowering<'a> {
                 // uses raw `BinOp::Lt` / `BinOp::Gt` on the i64 return of
                 // `rt_iter_next_no_exc`, which for tuple elements is the
                 // pointer value — not lexicographic ordering.
-                if matches!(elem_ty.as_ref(), Type::Tuple(_) | Type::TupleVar(_)) {
+                if elem_ty.is_tuple_like() {
                     let iter_operand =
                         self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
                     let iter_local = self.alloc_and_add_local(arg_type.clone(), mir_func);

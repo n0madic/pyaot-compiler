@@ -380,7 +380,7 @@ impl<'a> Lowering<'a> {
                     mir_func,
                 );
             }
-            Type::List(_) => {
+            _ if arg_type.is_list_like() => {
                 self.emit_collection_bool_via_len(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                     arg_operand,
@@ -388,7 +388,7 @@ impl<'a> Lowering<'a> {
                     mir_func,
                 );
             }
-            Type::Tuple(_) => {
+            _ if arg_type.is_tuple_like() => {
                 self.emit_collection_bool_via_len(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN),
                     arg_operand,
@@ -396,7 +396,7 @@ impl<'a> Lowering<'a> {
                     mir_func,
                 );
             }
-            Type::Dict(_, _) => {
+            _ if arg_type.is_dict_like() => {
                 self.emit_collection_bool_via_len(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_LEN),
                     arg_operand,
@@ -495,7 +495,7 @@ impl<'a> Lowering<'a> {
                     args: vec![arg_operand],
                 });
             }
-            Type::List(_) => {
+            _ if arg_type.is_list_like() => {
                 // bytes([65, 66, 67]) -> create bytes from list of integers
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,

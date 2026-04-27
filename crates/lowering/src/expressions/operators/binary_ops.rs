@@ -171,12 +171,12 @@ impl<'a> Lowering<'a> {
         }
 
         // Check for list concatenation (+)
-        if let Type::List(elem_ty) = &left_ty {
+        if let Some(elem_ty) = left_ty.list_elem() {
             if matches!(op, hir::BinOp::Add) {
                 let list_result = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_CONCAT),
                     vec![left_op, right_op],
-                    Type::List(elem_ty.clone()),
+                    Type::list_of(elem_ty.clone()),
                     mir_func,
                 );
                 return Ok(mir::Operand::Local(list_result));
@@ -184,12 +184,12 @@ impl<'a> Lowering<'a> {
         }
 
         // Check for dict merge operation (|)
-        if let Type::Dict(key_ty, value_ty) = &left_ty {
+        if let Some((key_ty, value_ty)) = left_ty.dict_kv() {
             if matches!(op, hir::BinOp::BitOr) {
                 let dict_result = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_MERGE),
                     vec![left_op, right_op],
-                    Type::Dict(key_ty.clone(), value_ty.clone()),
+                    Type::dict_of(key_ty.clone(), value_ty.clone()),
                     mir_func,
                 );
                 return Ok(mir::Operand::Local(dict_result));
@@ -197,7 +197,7 @@ impl<'a> Lowering<'a> {
         }
 
         // Check for set operations (|, &, -, ^)
-        if let Type::Set(elem_ty) = &left_ty {
+        if let Some(elem_ty) = left_ty.set_elem() {
             let set_func = match op {
                 hir::BinOp::BitOr => Some(mir::RuntimeFunc::Call(
                     &pyaot_core_defs::runtime_func_def::RT_SET_UNION,
@@ -217,7 +217,7 @@ impl<'a> Lowering<'a> {
                 let set_result = self.emit_runtime_call(
                     runtime_func,
                     vec![left_op, right_op],
-                    Type::Set(elem_ty.clone()),
+                    Type::set_of(elem_ty.clone()),
                     mir_func,
                 );
                 return Ok(mir::Operand::Local(set_result));

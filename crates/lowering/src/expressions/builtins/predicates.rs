@@ -23,51 +23,46 @@ impl<'a> Lowering<'a> {
         Type,
         mir::Constant,
     ) {
-        match iterable_type {
-            Type::List(elem) => {
-                let elem = elem.as_ref();
-                match elem {
-                    Type::Bool => (
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
-                        mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_LIST_GET_TYPED,
-                        ),
-                        Some(mir::GetElementKind::Bool),
-                        Type::Bool,
-                        mir::Constant::Bool(false),
-                    ),
-                    Type::Int => (
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
-                        mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_LIST_GET_TYPED,
-                        ),
-                        Some(mir::GetElementKind::Int),
-                        Type::Int,
-                        mir::Constant::Int(0),
-                    ),
-                    _ => (
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
-                        None,
-                        Type::Int,
-                        mir::Constant::Int(0),
-                    ),
-                }
+        if let Some(elem) = iterable_type.list_elem() {
+            match elem {
+                Type::Bool => (
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_TYPED),
+                    Some(mir::GetElementKind::Bool),
+                    Type::Bool,
+                    mir::Constant::Bool(false),
+                ),
+                Type::Int => (
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET_TYPED),
+                    Some(mir::GetElementKind::Int),
+                    Type::Int,
+                    mir::Constant::Int(0),
+                ),
+                _ => (
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
+                    None,
+                    Type::Int,
+                    mir::Constant::Int(0),
+                ),
             }
-            Type::Tuple(_) => (
+        } else if iterable_type.is_tuple_like() {
+            (
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN),
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
                 None,
                 Type::Int,
                 mir::Constant::Int(0),
-            ),
-            _ => (
+            )
+        } else {
+            (
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_LEN),
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_GET),
                 None,
                 Type::Int,
                 mir::Constant::Int(0),
-            ),
+            )
         }
     }
 

@@ -895,13 +895,7 @@ fn merge_var(
                     Type::Int | Type::Bool | Type::Float
                 )
             );
-            let is_tuple_pair = matches!(
-                (&prev, &new_ty),
-                (
-                    Type::Tuple(_) | Type::TupleVar(_),
-                    Type::Tuple(_) | Type::TupleVar(_)
-                )
-            );
+            let is_tuple_pair = prev.is_tuple_like() && new_ty.is_tuple_like();
             let prev_is_any = matches!(prev, Type::Any | Type::HeapAny);
             if is_numeric_pair || is_tuple_pair {
                 let merged = prev.join(&new_ty);

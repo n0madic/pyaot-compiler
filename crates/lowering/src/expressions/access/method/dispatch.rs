@@ -54,16 +54,19 @@ impl<'a> Lowering<'a> {
             Type::Bytes => {
                 self.lower_bytes_method(obj_operand, &method_name, arg_operands, mir_func)
             }
-            Type::List(elem_ty) => self.lower_list_method(
-                obj_operand,
-                &method_name,
-                arg_operands,
-                arg_types,
-                kwargs,
-                elem_ty,
-                hir_module,
-                mir_func,
-            ),
+            _ if obj_type.is_list_like() => {
+                let elem_ty = Box::new(obj_type.list_elem().expect("list_like").clone());
+                self.lower_list_method(
+                    obj_operand,
+                    &method_name,
+                    arg_operands,
+                    arg_types,
+                    kwargs,
+                    elem_ty,
+                    hir_module,
+                    mir_func,
+                )
+            }
             Type::Dict(key_ty, value_ty) | Type::DefaultDict(key_ty, value_ty) => self
                 .lower_dict_method(
                     obj_operand,
@@ -73,15 +76,18 @@ impl<'a> Lowering<'a> {
                     value_ty,
                     mir_func,
                 ),
-            Type::Set(elem_ty) => self.lower_set_method(
-                obj_operand,
-                &method_name,
-                arg_operands,
-                arg_types,
-                &elem_ty,
-                mir_func,
-            ),
-            Type::Tuple(_) => self.lower_tuple_method(
+            _ if obj_type.is_set_like() => {
+                let elem_ty = obj_type.set_elem().expect("set_like").clone();
+                self.lower_set_method(
+                    obj_operand,
+                    &method_name,
+                    arg_operands,
+                    arg_types,
+                    &elem_ty,
+                    mir_func,
+                )
+            }
+            _ if obj_type.is_tuple_like() => self.lower_tuple_method(
                 obj_operand,
                 &method_name,
                 arg_operands,

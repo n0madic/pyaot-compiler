@@ -171,15 +171,15 @@ impl<'a> Lowering<'a> {
                 mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_REMOVESUFFIX),
             ),
             "splitlines" => (
-                Type::List(Box::new(Type::Str)),
+                Type::list_of(Type::Str),
                 mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_SPLITLINES),
             ),
             "partition" => (
-                Type::Tuple(vec![Type::Str, Type::Str, Type::Str]),
+                Type::tuple_of(vec![Type::Str, Type::Str, Type::Str]),
                 mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_PARTITION),
             ),
             "rpartition" => (
-                Type::Tuple(vec![Type::Str, Type::Str, Type::Str]),
+                Type::tuple_of(vec![Type::Str, Type::Str, Type::Str]),
                 mir::RuntimeFunc::Call(&runtime_func_def::RT_STR_RPARTITION),
             ),
             _ => {

@@ -37,11 +37,13 @@ fn first_arg_or_none(args: Vec<mir::Operand>) -> mir::Operand {
 /// later, more precise type sources (RHS inference, `refined_container_types`,
 /// etc.) rather than hard-coding a shape that will be tightened later.
 pub(crate) fn is_useless_container_ty(ty: &Type) -> bool {
-    match ty {
-        Type::List(e) | Type::Set(e) => **e == Type::Any,
-        Type::Dict(k, v) | Type::DefaultDict(k, v) => **k == Type::Any && **v == Type::Any,
-        _ => false,
+    if let Some(e) = ty.list_elem().or_else(|| ty.set_elem()) {
+        return *e == Type::Any;
     }
+    if let Some((k, v)) = ty.dict_kv() {
+        return *k == Type::Any && *v == Type::Any;
+    }
+    false
 }
 
 impl<'a> Lowering<'a> {
@@ -464,7 +466,7 @@ impl<'a> Lowering<'a> {
             vec![mir::Operand::Constant(mir::Constant::Int(
                 operands.len() as i64
             ))],
-            Type::Tuple(vec![elem_type.clone()]),
+            Type::tuple_of(vec![elem_type.clone()]),
             mir_func,
         );
 
@@ -481,7 +483,7 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Constant(mir::Constant::Int(i as i64)),
                     final_operand,
                 ],
-                Type::Tuple(vec![elem_type.clone()]),
+                Type::tuple_of(vec![elem_type.clone()]),
                 mir_func,
             );
         }
@@ -509,7 +511,7 @@ impl<'a> Lowering<'a> {
                 mir::Operand::Local(prefix_tuple),
                 mir::Operand::Local(list_tail_tuple),
             ],
-            Type::Tuple(vec![Type::Any]),
+            Type::tuple_of(vec![Type::Any]),
             mir_func,
         )
     }
@@ -524,7 +526,7 @@ impl<'a> Lowering<'a> {
         let dict_local = self.emit_runtime_call_gc(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_DICT),
             vec![mir::Operand::Constant(mir::Constant::Int(0))],
-            Type::Dict(Box::new(Type::Str), Box::new(Type::Any)),
+            Type::dict_of(Type::Str, Type::Any),
             mir_func,
         );
 
@@ -544,7 +546,7 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Local(key_local),
                     value_op.clone(),
                 ],
-                Type::Dict(Box::new(Type::Str), Box::new(Type::Any)),
+                Type::dict_of(Type::Str, Type::Any),
                 mir_func,
             );
         }

@@ -39,15 +39,20 @@ impl<'a> Lowering<'a> {
         let elem_type = crate::type_planning::infer::extract_iterable_first_element_type(&arg_type);
 
         // Select appropriate iterator source kind based on container type
-        let source = match &arg_type {
-            Type::List(_) => mir::IterSourceKind::List,
-            Type::Tuple(_) => mir::IterSourceKind::Tuple,
-            Type::Dict(_, _) => mir::IterSourceKind::Dict,
-            Type::Str => mir::IterSourceKind::Str,
-            Type::Bytes => mir::IterSourceKind::Bytes,
-            _ => {
-                // Unknown sequence type - fallback to list iterator
-                mir::IterSourceKind::List
+        let source = if arg_type.is_list_like() {
+            mir::IterSourceKind::List
+        } else if arg_type.is_tuple_like() {
+            mir::IterSourceKind::Tuple
+        } else if arg_type.is_dict_like() {
+            mir::IterSourceKind::Dict
+        } else {
+            match &arg_type {
+                Type::Str => mir::IterSourceKind::Str,
+                Type::Bytes => mir::IterSourceKind::Bytes,
+                _ => {
+                    // Unknown sequence type - fallback to list iterator
+                    mir::IterSourceKind::List
+                }
             }
         };
 
@@ -164,15 +169,21 @@ impl<'a> Lowering<'a> {
 
         // After §F.7c: containers store uniform tagged Values; runtime no
         // longer needs an elem_tag hint.
-        let result_local = self.alloc_and_add_local(Type::List(Box::new(elem_type)), mir_func);
+        let result_local = self.alloc_and_add_local(Type::list_of(elem_type), mir_func);
 
-        let source = match &arg_type {
-            Type::List(_) => mir::SortableKind::List,
-            Type::Tuple(_) => mir::SortableKind::Tuple,
-            Type::Dict(_, _) => mir::SortableKind::Dict,
-            Type::Str => mir::SortableKind::Str,
-            Type::Set(_) => mir::SortableKind::Set,
-            _ => mir::SortableKind::List,
+        let source = if arg_type.is_list_like() {
+            mir::SortableKind::List
+        } else if arg_type.is_tuple_like() {
+            mir::SortableKind::Tuple
+        } else if arg_type.is_dict_like() {
+            mir::SortableKind::Dict
+        } else if arg_type.is_set_like() {
+            mir::SortableKind::Set
+        } else {
+            match &arg_type {
+                Type::Str => mir::SortableKind::Str,
+                _ => mir::SortableKind::List,
+            }
         };
 
         let container_tag_operand =
@@ -253,7 +264,7 @@ impl<'a> Lowering<'a> {
         let result_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(mir::SortableKind::Range.sorted_def(false)),
             vec![start_operand, stop_operand, step_operand, reverse_operand],
-            Type::List(Box::new(Type::Int)),
+            Type::list_of(Type::Int),
             mir_func,
         );
 

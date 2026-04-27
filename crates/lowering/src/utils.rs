@@ -7,10 +7,7 @@ use pyaot_types::{Type, TypeLattice};
 /// In Python, mutable defaults (list, dict, set, class instances) are evaluated once
 /// at function definition time and shared across all calls.
 pub(crate) fn is_mutable_type(ty: &Type) -> bool {
-    matches!(
-        ty,
-        Type::List(_) | Type::Dict(_, _) | Type::Set(_) | Type::Class { .. }
-    )
+    ty.is_list_like() || ty.is_dict_like() || ty.is_set_like() || matches!(ty, Type::Class { .. })
 }
 
 /// Check if an expression represents a mutable default value.
@@ -64,30 +61,34 @@ pub(crate) enum IterableKind {
 /// Try to determine if an expression is an iterable and extract its kind and element type.
 /// Returns None if the type is not a supported iterable (e.g., range() should be handled separately).
 pub(crate) fn get_iterable_info(ty: &Type) -> Option<(IterableKind, Type)> {
+    if let Some(elem_ty) = ty.list_elem() {
+        return Some((IterableKind::List, elem_ty.clone()));
+    }
+    if let Some(elem_types) = ty.tuple_elems() {
+        // For tuples, compute the union of all element types for iteration
+        let elem_ty = if elem_types.is_empty() {
+            Type::Any
+        } else {
+            elem_types
+                .iter()
+                .cloned()
+                .reduce(|a, b| a.join(&b))
+                .unwrap_or(Type::Never)
+        };
+        return Some((IterableKind::Tuple, elem_ty));
+    }
+    if let Some(elem_ty) = ty.tuple_var_elem() {
+        return Some((IterableKind::Tuple, elem_ty.clone()));
+    }
+    if let Some((key_ty, _value_ty)) = ty.dict_kv() {
+        // Iterating over a dict yields keys
+        return Some((IterableKind::Dict, key_ty.clone()));
+    }
+    if let Some(elem_ty) = ty.set_elem() {
+        // Iterating over a set yields elements
+        return Some((IterableKind::Set, elem_ty.clone()));
+    }
     match ty {
-        Type::List(elem_ty) => Some((IterableKind::List, (**elem_ty).clone())),
-        Type::Tuple(elem_types) => {
-            // For tuples, compute the union of all element types for iteration
-            let elem_ty = if elem_types.is_empty() {
-                Type::Any
-            } else {
-                elem_types
-                    .iter()
-                    .cloned()
-                    .reduce(|a, b| a.join(&b))
-                    .unwrap_or(Type::Never)
-            };
-            Some((IterableKind::Tuple, elem_ty))
-        }
-        Type::TupleVar(elem_ty) => Some((IterableKind::Tuple, (**elem_ty).clone())),
-        Type::Dict(key_ty, _value_ty) => {
-            // Iterating over a dict yields keys
-            Some((IterableKind::Dict, (**key_ty).clone()))
-        }
-        Type::Set(elem_ty) => {
-            // Iterating over a set yields elements
-            Some((IterableKind::Set, (**elem_ty).clone()))
-        }
         Type::Str => {
             // Iterating over a string yields single-character strings
             Some((IterableKind::Str, Type::Str))

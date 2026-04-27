@@ -83,7 +83,7 @@ impl<'a> Lowering<'a> {
             _ => self.seed_expr_type(expr_id, hir_module),
         };
 
-        if let Type::Tuple(elem_types) = tuple_type {
+        if let Some(elem_types) = tuple_type.tuple_elems() {
             for (i, elem_type) in elem_types.iter().enumerate() {
                 let elem_local = self.emit_tuple_get(
                     tuple_operand.clone(),
@@ -123,7 +123,7 @@ impl<'a> Lowering<'a> {
             _ => self.seed_expr_type(expr_id, hir_module),
         };
 
-        let Type::List(elem_type) = list_type else {
+        let Some(elem_type) = list_type.list_elem().cloned() else {
             // Not a list - return as-is
             return Ok(vec![list_operand]);
         };
@@ -227,7 +227,7 @@ impl<'a> Lowering<'a> {
                 list_operand.clone(),
                 mir::Operand::Constant(mir::Constant::Int(remaining_params as i64)),
             ],
-            Type::Tuple(vec![elem_type.clone()]),
+            Type::tuple_of(vec![elem_type.clone()]),
             mir_func,
         );
 

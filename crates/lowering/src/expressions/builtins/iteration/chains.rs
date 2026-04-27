@@ -49,7 +49,7 @@ impl<'a> Lowering<'a> {
         let result_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_ENUMERATE),
             vec![inner_iter, start_operand],
-            Type::Iterator(Box::new(Type::Tuple(vec![Type::Int, elem_type]))),
+            Type::Iterator(Box::new(Type::tuple_of(vec![Type::Int, elem_type]))),
             mir_func,
         );
 
@@ -76,7 +76,7 @@ impl<'a> Lowering<'a> {
             })
             .unwrap_or(Type::Any);
 
-        let iters_list_local = self.alloc_and_add_local(Type::List(Box::new(Type::Any)), mir_func);
+        let iters_list_local = self.alloc_and_add_local(Type::list_of(Type::Any), mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
             dest: iters_list_local,
             func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_LIST),
@@ -98,7 +98,7 @@ impl<'a> Lowering<'a> {
             );
 
             let iter_local =
-                self.alloc_and_add_local(Type::Iterator(Box::new(Type::Any)), mir_func);
+                self.alloc_and_add_local(Type::Iterator(Box::new(Type::Any)), mir_func); // Any = erased elem type in chain
 
             if is_range {
                 if let hir::ExprKind::BuiltinCall {
@@ -118,15 +118,21 @@ impl<'a> Lowering<'a> {
             } else {
                 let arg_operand =
                     self.lower_expr_expecting(arg_expr, None, hir_module, mir_func)?;
-                let source = match &arg_type {
-                    Type::List(_) => mir::IterSourceKind::List,
-                    Type::Tuple(_) => mir::IterSourceKind::Tuple,
-                    Type::Dict(_, _) => mir::IterSourceKind::Dict,
-                    Type::Set(_) => mir::IterSourceKind::Set,
-                    Type::Str => mir::IterSourceKind::Str,
-                    Type::Bytes => mir::IterSourceKind::Bytes,
-                    Type::Iterator(_) => mir::IterSourceKind::Generator,
-                    _ => mir::IterSourceKind::List,
+                let source = if arg_type.is_list_like() {
+                    mir::IterSourceKind::List
+                } else if arg_type.is_tuple_like() {
+                    mir::IterSourceKind::Tuple
+                } else if arg_type.is_dict_like() {
+                    mir::IterSourceKind::Dict
+                } else if arg_type.is_set_like() {
+                    mir::IterSourceKind::Set
+                } else {
+                    match &arg_type {
+                        Type::Str => mir::IterSourceKind::Str,
+                        Type::Bytes => mir::IterSourceKind::Bytes,
+                        Type::Iterator(_) => mir::IterSourceKind::Generator,
+                        _ => mir::IterSourceKind::List,
+                    }
                 };
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: iter_local,
@@ -189,7 +195,7 @@ impl<'a> Lowering<'a> {
         );
 
         let inner_iter_local =
-            self.alloc_and_add_local(Type::Iterator(Box::new(Type::Any)), mir_func);
+            self.alloc_and_add_local(Type::Iterator(Box::new(Type::Any)), mir_func); // Any = erased elem type in islice
 
         if is_range {
             if let hir::ExprKind::BuiltinCall {
@@ -208,15 +214,21 @@ impl<'a> Lowering<'a> {
             }
         } else {
             let iter_operand = self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
-            let source = match &iter_type {
-                Type::List(_) => mir::IterSourceKind::List,
-                Type::Tuple(_) => mir::IterSourceKind::Tuple,
-                Type::Dict(_, _) => mir::IterSourceKind::Dict,
-                Type::Set(_) => mir::IterSourceKind::Set,
-                Type::Str => mir::IterSourceKind::Str,
-                Type::Bytes => mir::IterSourceKind::Bytes,
-                Type::Iterator(_) => mir::IterSourceKind::Generator,
-                _ => mir::IterSourceKind::List,
+            let source = if iter_type.is_list_like() {
+                mir::IterSourceKind::List
+            } else if iter_type.is_tuple_like() {
+                mir::IterSourceKind::Tuple
+            } else if iter_type.is_dict_like() {
+                mir::IterSourceKind::Dict
+            } else if iter_type.is_set_like() {
+                mir::IterSourceKind::Set
+            } else {
+                match &iter_type {
+                    Type::Str => mir::IterSourceKind::Str,
+                    Type::Bytes => mir::IterSourceKind::Bytes,
+                    Type::Iterator(_) => mir::IterSourceKind::Generator,
+                    _ => mir::IterSourceKind::List,
+                }
             };
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: inner_iter_local,

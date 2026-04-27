@@ -52,19 +52,15 @@ impl<'a> Lowering<'a> {
                                     .unwrap_or_else(|| self.seed_expr_type(*expr_id, hir_module)),
                                 _ => self.seed_expr_type(*expr_id, hir_module),
                             };
-                            match &arg_type {
-                                Type::Tuple(_) => {
-                                    // Mark for runtime tuple unpacking
-                                    expanded_args.push(ExpandedArg::RuntimeUnpackTuple(*expr_id));
-                                }
-                                Type::List(_) => {
-                                    // Mark for runtime list unpacking
-                                    expanded_args.push(ExpandedArg::RuntimeUnpackList(*expr_id));
-                                }
-                                _ => {
-                                    // Not a tuple or list - pass as is (will cause type error)
-                                    expanded_args.push(ExpandedArg::Regular(*expr_id));
-                                }
+                            if arg_type.is_tuple_like() {
+                                // Mark for runtime tuple unpacking
+                                expanded_args.push(ExpandedArg::RuntimeUnpackTuple(*expr_id));
+                            } else if arg_type.is_list_like() {
+                                // Mark for runtime list unpacking
+                                expanded_args.push(ExpandedArg::RuntimeUnpackList(*expr_id));
+                            } else {
+                                // Not a tuple or list - pass as is (will cause type error)
+                                expanded_args.push(ExpandedArg::Regular(*expr_id));
                             }
                         }
                     }
@@ -121,10 +117,10 @@ impl<'a> Lowering<'a> {
                     };
 
                     // Get the value type from dict type
-                    let value_type = match &dict_type {
-                        Type::Dict(_, v) => (**v).clone(),
-                        _ => Type::Any,
-                    };
+                    let value_type = dict_type
+                        .dict_kv()
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or(Type::Any);
 
                     // Store the dict operand in a local for later use
                     if let mir::Operand::Local(dict_local) = dict_operand {

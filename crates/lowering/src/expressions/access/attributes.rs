@@ -100,7 +100,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.emit_instance_get_field(
                     obj_operand,
                     0,
-                    Type::Tuple(vec![Type::Str]),
+                    Type::tuple_of(vec![Type::Str]),
                     mir_func,
                 );
                 return Ok(mir::Operand::Local(result_local));

@@ -16,8 +16,10 @@ impl<'a> Lowering<'a> {
     fn should_refine_field_seed_type(storage_ty: &Type) -> bool {
         matches!(storage_ty, Type::Any | Type::HeapAny)
             || crate::is_useless_container_ty(storage_ty)
-            || matches!(storage_ty, Type::Tuple(types) if types.is_empty())
-            || matches!(storage_ty, Type::TupleVar(inner) if **inner == Type::Any)
+            || storage_ty
+                .tuple_elems()
+                .is_some_and(|elems| elems.is_empty())
+            || storage_ty.tuple_var_elem().is_some_and(|e| *e == Type::Any)
     }
 
     // ==================== Class Hierarchy Processing ====================
@@ -1151,8 +1153,8 @@ impl<'a> Lowering<'a> {
             hir::BindingTarget::Var(var_id) => {
                 current_types.insert(*var_id, value_ty.clone());
             }
-            hir::BindingTarget::Tuple { elts, .. } => match value_ty {
-                Type::Tuple(types) => {
+            hir::BindingTarget::Tuple { elts, .. } => {
+                if let Some(types) = value_ty.tuple_elems() {
                     for (elt, ty) in elts.iter().zip(types.iter()) {
                         Self::assign_constructor_scan_target_types(elt, ty, current_types);
                     }
@@ -1165,20 +1167,18 @@ impl<'a> Lowering<'a> {
                             );
                         }
                     }
-                }
-                Type::TupleVar(elem_ty) => {
+                } else if let Some(elem_ty) = value_ty.tuple_var_elem() {
                     for elt in elts {
                         Self::assign_constructor_scan_target_types(elt, elem_ty, current_types);
                     }
-                }
-                _ => {
+                } else {
                     for elt in elts {
                         Self::assign_constructor_scan_target_types(elt, &Type::Any, current_types);
                     }
                 }
-            },
+            }
             hir::BindingTarget::Starred { inner, .. } => {
-                let starred_ty = Type::List(Box::new(value_ty.clone()));
+                let starred_ty = Type::list_of(value_ty.clone());
                 Self::assign_constructor_scan_target_types(inner, &starred_ty, current_types);
             }
             hir::BindingTarget::Attr { .. }
@@ -1188,15 +1188,31 @@ impl<'a> Lowering<'a> {
     }
 
     fn constructor_scan_iter_elem_type(ty: &Type) -> Type {
+        if let Some(e) = ty.list_elem() {
+            return e.clone();
+        }
+        if let Some(e) = ty.set_elem() {
+            return e.clone();
+        }
+        if let Some(e) = ty.tuple_var_elem() {
+            return e.clone();
+        }
+        if let Some(elems) = ty.tuple_elems() {
+            return if !elems.is_empty() {
+                elems
+                    .iter()
+                    .cloned()
+                    .reduce(|a, b| a.join(&b))
+                    .unwrap_or(Type::Never)
+            } else {
+                Type::Any
+            };
+        }
+        if let Some((k, _)) = ty.dict_kv() {
+            return k.clone();
+        }
         match ty {
-            Type::List(e) | Type::Set(e) | Type::Iterator(e) | Type::TupleVar(e) => (**e).clone(),
-            Type::Tuple(types) if !types.is_empty() => types
-                .iter()
-                .cloned()
-                .reduce(|a, b| a.join(&b))
-                .unwrap_or(Type::Never),
-            Type::Tuple(_) => Type::Any,
-            Type::Dict(k, _) | Type::DefaultDict(k, _) => (**k).clone(),
+            Type::Iterator(e) => (**e).clone(),
             Type::Str => Type::Str,
             Type::Bytes => Type::Int,
             _ => Type::Any,

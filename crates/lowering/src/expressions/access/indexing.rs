@@ -61,11 +61,12 @@ impl<'a> Lowering<'a> {
                     args: vec![obj_operand, index_operand],
                 });
             }
-            Type::List(elem_ty) => {
+            _ if obj_type.is_list_like() => {
+                let elem_ty = obj_type.list_elem().expect("list_like but no list_elem");
                 // List indexing returns element type
                 // Use ListGet which returns tagged Value bits (unwrapped to raw scalar by caller)
                 // For Bool/Float elements, add unboxing step since they're stored as boxed objects
-                match **elem_ty {
+                match elem_ty {
                     Type::Bool => {
                         // rt_list_get_typed(list, idx, KIND_BOOL=2) returns raw 0/1 as i64.
                         // Codegen truncates i64→i8 automatically via ireduce.
@@ -139,10 +140,10 @@ impl<'a> Lowering<'a> {
                     _ => {
                         // For heap types (Str, List, etc.), ListGet returns *mut Obj.
                         // Any element type → HeapAny (always a valid pointer from ListGet).
-                        let result_ty = if matches!(elem_ty.as_ref(), Type::Any) {
+                        let result_ty = if matches!(elem_ty, Type::Any) {
                             Type::HeapAny
                         } else {
-                            (**elem_ty).clone()
+                            elem_ty.clone()
                         };
                         mir_func.add_local(mir::Local {
                             id: result_local,
@@ -160,7 +161,8 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-            Type::Tuple(elem_types) => {
+            _ if obj_type.tuple_elems().is_some() => {
+                let elem_types = obj_type.tuple_elems().expect("checked above");
                 // Tuple indexing - try to extract precise element type from constant index
                 let elem_ty = if elem_types.is_empty() {
                     Type::Any
@@ -198,10 +200,10 @@ impl<'a> Lowering<'a> {
                     self.emit_tuple_get(obj_operand, index_operand, eff_elem_ty, mir_func);
                 return Ok(mir::Operand::Local(value_local));
             }
-            Type::TupleVar(elem_ty_box) => {
+            _ if obj_type.tuple_var_elem().is_some() => {
+                let elem_ty = obj_type.tuple_var_elem().expect("checked above").clone();
                 // Variable-length tuple — every index returns the element type.
                 // Runtime bounds-check is done by rt_tuple_get.
-                let elem_ty = (**elem_ty_box).clone();
                 let eff_elem_ty = if matches!(elem_ty, Type::Any) {
                     Type::HeapAny
                 } else {
@@ -211,13 +213,14 @@ impl<'a> Lowering<'a> {
                     self.emit_tuple_get(obj_operand, index_operand, eff_elem_ty, mir_func);
                 return Ok(mir::Operand::Local(value_local));
             }
-            Type::Dict(_key_ty, value_ty) => {
+            _ if obj_type.dict_kv().is_some() && !matches!(obj_type, Type::DefaultDict(..)) => {
+                let (_key_ty, value_ty) = obj_type.dict_kv().expect("checked above");
                 // Dict indexing: dict[key] returns value type
                 // Dict values are always stored as boxed pointers for GC, so we need to unbox primitives
                 mir_func.add_local(mir::Local {
                     id: result_local,
                     name: None,
-                    ty: (**value_ty).clone(),
+                    ty: value_ty.clone(),
                     is_gc_root: value_ty.is_heap(),
                 });
                 // Box key if needed (int/bool keys need boxing)
@@ -226,7 +229,7 @@ impl<'a> Lowering<'a> {
 
                 // Check if value type needs unboxing — `unbox_if_needed`
                 // emits ValueFromInt/Bool MIR or rt_unbox_float.
-                let needs_unbox = matches!(**value_ty, Type::Int | Type::Float | Type::Bool);
+                let needs_unbox = matches!(value_ty, Type::Int | Type::Float | Type::Bool);
 
                 if needs_unbox {
                     // Get returns a boxed pointer, need to unbox
@@ -236,11 +239,8 @@ impl<'a> Lowering<'a> {
                         Type::HeapAny,
                         mir_func,
                     );
-                    let unboxed = self.unbox_if_needed(
-                        mir::Operand::Local(boxed_local),
-                        value_ty.as_ref(),
-                        mir_func,
-                    );
+                    let unboxed =
+                        self.unbox_if_needed(mir::Operand::Local(boxed_local), value_ty, mir_func);
                     self.emit_instruction(mir::InstructionKind::Copy {
                         dest: result_local,
                         src: unboxed,
