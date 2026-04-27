@@ -707,30 +707,49 @@ impl Type {
             (left, Type::Union(right)) => right.iter().any(|t| Self::is_subtype_of_inner(left, t)),
 
             // Covariant container subtyping (see is_subtype_of for the rationale)
-            (Type::List(a), Type::List(b)) => {
-                **a == Type::Any || **b == Type::Any || Self::is_subtype_of_inner(a, b)
+            _ if this.list_elem().is_some() && other.list_elem().is_some() => {
+                let (a, b) = (this.list_elem().unwrap(), other.list_elem().unwrap());
+                *a == Type::Any || *b == Type::Any || Self::is_subtype_of_inner(a, b)
             }
-            (Type::Set(a), Type::Set(b)) => {
-                **a == Type::Any || **b == Type::Any || Self::is_subtype_of_inner(a, b)
+            _ if this.set_elem().is_some() && other.set_elem().is_some() => {
+                let (a, b) = (this.set_elem().unwrap(), other.set_elem().unwrap());
+                *a == Type::Any || *b == Type::Any || Self::is_subtype_of_inner(a, b)
             }
-            (Type::Dict(k1, v1), Type::Dict(k2, v2))
-            | (Type::DefaultDict(k1, v1), Type::DefaultDict(k2, v2))
+            // DefaultDict explicit arms (DefaultDict→DefaultDict, DefaultDict→Dict)
+            (Type::DefaultDict(k1, v1), Type::DefaultDict(k2, v2))
             | (Type::DefaultDict(k1, v1), Type::Dict(k2, v2)) => {
                 (**k1 == Type::Any || **k2 == Type::Any || Self::is_subtype_of_inner(k1, k2))
                     && (**v1 == Type::Any || **v2 == Type::Any || Self::is_subtype_of_inner(v1, v2))
             }
-            (Type::Tuple(ts1), Type::Tuple(ts2)) => {
+            // Dict→Dict and Generic-dict subtyping (excludes DefaultDict to preserve Dict→DefaultDict = false)
+            _ if this.dict_kv().is_some()
+                && other.dict_kv().is_some()
+                && !matches!(this, Type::DefaultDict(..))
+                && !matches!(other, Type::DefaultDict(..)) =>
+            {
+                let ((k1, v1), (k2, v2)) = (this.dict_kv().unwrap(), other.dict_kv().unwrap());
+                (*k1 == Type::Any || *k2 == Type::Any || Self::is_subtype_of_inner(k1, k2))
+                    && (*v1 == Type::Any || *v2 == Type::Any || Self::is_subtype_of_inner(v1, v2))
+            }
+            _ if this.tuple_elems().is_some() && other.tuple_elems().is_some() => {
+                let (ts1, ts2) = (this.tuple_elems().unwrap(), other.tuple_elems().unwrap());
                 ts1.len() == ts2.len()
                     && ts1
                         .iter()
                         .zip(ts2.iter())
                         .all(|(t1, t2)| *t1 == Type::Any || Self::is_subtype_of_inner(t1, t2))
             }
-            (Type::Tuple(ts), Type::TupleVar(elem)) => ts
-                .iter()
-                .all(|t| *t == Type::Any || Self::is_subtype_of_inner(t, elem)),
-            (Type::TupleVar(a), Type::TupleVar(b)) => {
-                **a == Type::Any || Self::is_subtype_of_inner(a, b)
+            _ if this.tuple_elems().is_some() && other.tuple_var_elem().is_some() => {
+                let (ts, elem) = (this.tuple_elems().unwrap(), other.tuple_var_elem().unwrap());
+                ts.iter()
+                    .all(|t| *t == Type::Any || Self::is_subtype_of_inner(t, elem))
+            }
+            _ if this.tuple_var_elem().is_some() && other.tuple_var_elem().is_some() => {
+                let (a, b) = (
+                    this.tuple_var_elem().unwrap(),
+                    other.tuple_var_elem().unwrap(),
+                );
+                *a == Type::Any || Self::is_subtype_of_inner(a, b)
             }
             (
                 Type::Function {
@@ -901,12 +920,10 @@ pub fn typespec_to_type(spec: &TypeSpec) -> Type {
         TypeSpec::Str => Type::Str,
         TypeSpec::None => Type::None,
         TypeSpec::Bytes => Type::Bytes,
-        TypeSpec::List(elem) => Type::List(Box::new(typespec_to_type(elem))),
-        TypeSpec::Dict(k, v) => {
-            Type::Dict(Box::new(typespec_to_type(k)), Box::new(typespec_to_type(v)))
-        }
-        TypeSpec::Tuple(elem) => Type::Tuple(vec![typespec_to_type(elem)]),
-        TypeSpec::Set(elem) => Type::Set(Box::new(typespec_to_type(elem))),
+        TypeSpec::List(elem) => Type::list_of(typespec_to_type(elem)),
+        TypeSpec::Dict(k, v) => Type::dict_of(typespec_to_type(k), typespec_to_type(v)),
+        TypeSpec::Tuple(elem) => Type::tuple_of(vec![typespec_to_type(elem)]),
+        TypeSpec::Set(elem) => Type::set_of(typespec_to_type(elem)),
         TypeSpec::Optional(inner) => Type::optional(typespec_to_type(inner)),
         TypeSpec::Any => Type::Any,
         TypeSpec::Iterator(elem) => Type::Iterator(Box::new(typespec_to_type(elem))),

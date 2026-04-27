@@ -82,7 +82,7 @@ fn test_meet_and_minus_non_union() {
 #[test]
 fn test_meet_list_types() {
     // meet(Union[list[int], str], str) = str  — Str ≤ Union so meet = Str
-    let list_int = Type::List(Box::new(Type::Int));
+    let list_int = Type::list_of(Type::Int);
     let union = list_int.clone().join(&Type::Str);
     assert_eq!(union.meet(&Type::Str), Type::Str);
     // meet(Union[list[int], str], int) = Never  — Int not in the union
@@ -103,7 +103,7 @@ fn test_never_subtyping() {
     assert!(Type::Never.is_subtype_of(&Type::Str));
     assert!(Type::Never.is_subtype_of(&Type::Any));
     assert!(Type::Never.is_subtype_of(&Type::None));
-    assert!(Type::Never.is_subtype_of(&Type::List(Box::new(Type::Int))));
+    assert!(Type::Never.is_subtype_of(&Type::list_of(Type::Int)));
 
     // Nothing is subtype of Never (except Never itself)
     assert!(!Type::Int.is_subtype_of(&Type::Never));
@@ -192,9 +192,9 @@ fn test_join_idempotent_for_misc_types() {
         Type::Bool,
         Type::Str,
         Type::None,
-        Type::List(Box::new(Type::Int)),
-        Type::Tuple(vec![Type::Int, Type::Str]),
-        Type::TupleVar(Box::new(Type::Int)),
+        Type::list_of(Type::Int),
+        Type::tuple_of(vec![Type::Int, Type::Str]),
+        Type::tuple_var_of(Type::Int),
     ] {
         assert_eq!(t.join(&t), t, "idempotence broken for {t:?}");
     }
@@ -203,8 +203,8 @@ fn test_join_idempotent_for_misc_types() {
 #[test]
 fn test_join_different_tuple_lengths() {
     // Different-length tuples → canonical Union (lattice join; not TupleVar).
-    let a = Type::Tuple(vec![Type::Int]);
-    let b = Type::Tuple(vec![Type::Int, Type::Int]);
+    let a = Type::tuple_of(vec![Type::Int]);
+    let b = Type::tuple_of(vec![Type::Int, Type::Int]);
     let merged = a.join(&b);
     assert!(
         matches!(merged, Type::Union(_)),
