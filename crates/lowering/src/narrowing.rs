@@ -19,7 +19,7 @@
 
 use pyaot_hir as hir;
 use pyaot_mir as mir;
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeLattice};
 use pyaot_utils::{Span, VarId};
 
 use crate::context::Lowering;
@@ -226,24 +226,24 @@ impl<'a> Lowering<'a> {
                         // not isinstance(x, T): then-branch gets excluding, else-branch gets narrowed
                         analysis.then_narrowings.push(TypeNarrowingInfo {
                             var_id: info.var_id,
-                            narrowed_type: info.original_type.narrow_excluding(&info.checked_type),
+                            narrowed_type: info.original_type.minus(&info.checked_type),
                             original_type: info.original_type.clone(),
                         });
                         analysis.else_narrowings.push(TypeNarrowingInfo {
                             var_id: info.var_id,
-                            narrowed_type: info.original_type.narrow_to(&info.checked_type),
+                            narrowed_type: info.original_type.meet(&info.checked_type),
                             original_type: info.original_type,
                         });
                     } else {
                         // isinstance(x, T): then-branch gets narrowed, else-branch gets excluding
                         analysis.then_narrowings.push(TypeNarrowingInfo {
                             var_id: info.var_id,
-                            narrowed_type: info.original_type.narrow_to(&info.checked_type),
+                            narrowed_type: info.original_type.meet(&info.checked_type),
                             original_type: info.original_type.clone(),
                         });
                         analysis.else_narrowings.push(TypeNarrowingInfo {
                             var_id: info.var_id,
-                            narrowed_type: info.original_type.narrow_excluding(&info.checked_type),
+                            narrowed_type: info.original_type.minus(&info.checked_type),
                             original_type: info.original_type,
                         });
                     }
@@ -289,7 +289,7 @@ impl<'a> Lowering<'a> {
                                 });
                                 analysis.else_narrowings.push(TypeNarrowingInfo {
                                     var_id,
-                                    narrowed_type: original_type.narrow_excluding(&Type::None),
+                                    narrowed_type: original_type.minus(&Type::None),
                                     original_type,
                                 });
                             } else {
@@ -298,7 +298,7 @@ impl<'a> Lowering<'a> {
                                 // else-branch: x is None
                                 analysis.then_narrowings.push(TypeNarrowingInfo {
                                     var_id,
-                                    narrowed_type: original_type.narrow_excluding(&Type::None),
+                                    narrowed_type: original_type.minus(&Type::None),
                                     original_type: original_type.clone(),
                                 });
                                 analysis.else_narrowings.push(TypeNarrowingInfo {
@@ -444,7 +444,7 @@ impl<'a> Lowering<'a> {
                             // narrow the else-branch (where x is truthy, so not None).
                             analysis.else_narrowings.push(TypeNarrowingInfo {
                                 var_id: *var_id,
-                                narrowed_type: original_type.narrow_excluding(&Type::None),
+                                narrowed_type: original_type.minus(&Type::None),
                                 original_type,
                             });
                         } else {
@@ -454,7 +454,7 @@ impl<'a> Lowering<'a> {
                             // We only narrow the then-branch because we know x is not None there
                             analysis.then_narrowings.push(TypeNarrowingInfo {
                                 var_id: *var_id,
-                                narrowed_type: original_type.narrow_excluding(&Type::None),
+                                narrowed_type: original_type.minus(&Type::None),
                                 original_type,
                             });
                             // Note: We don't narrow else-branch because x could be 0, "", [], etc.
@@ -510,12 +510,12 @@ impl<'a> Lowering<'a> {
         };
 
         // Perform narrowing to detect contradictions (dead code)
-        let then_type = original_type.narrow_to(&checked_type);
-        let else_type = original_type.narrow_excluding(&checked_type);
+        let then_type = original_type.meet(&checked_type);
+        let else_type = original_type.minus(&checked_type);
 
-        // Class inheritance blindness: `Type::narrow_to` uses a structural
-        // match and cannot see that a Union member may be a subclass of the
-        // checked class. Before flagging the then-branch as dead, ask the
+        // Class inheritance blindness: `meet` uses a structural match and
+        // cannot see that a Union member may be a subclass of the checked
+        // class. Before flagging the then-branch as dead, ask the
         // class registry. `isinstance(other, Base)` where `other: Derived|int`
         // must NOT be marked unreachable.
         let class_inheritance_might_match = if let Type::Class {
@@ -768,34 +768,34 @@ mod tests {
     }
 
     #[test]
-    fn test_type_narrow_excluding_none() {
-        // Test narrow_excluding for None types
-        // Union[int, None] excluding None -> int
+    fn test_type_minus_none() {
+        // Test minus (formerly narrow_excluding) for None types
+        // Union[int, None] minus None -> int
         let optional_int = Type::Union(vec![Type::Int, Type::None]);
-        let narrowed = optional_int.narrow_excluding(&Type::None);
+        let narrowed = optional_int.minus(&Type::None);
         assert_eq!(narrowed, Type::Int);
 
-        // Union[int, str, None] excluding None -> Union[int, str]
+        // Union[int, str, None] minus None -> Union[int, str]
         let triple_union = Type::Union(vec![Type::Int, Type::Str, Type::None]);
-        let narrowed = triple_union.narrow_excluding(&Type::None);
+        let narrowed = triple_union.minus(&Type::None);
         assert_eq!(narrowed, Type::Union(vec![Type::Int, Type::Str]));
 
-        // None excluding None -> Never (bottom type)
-        let narrowed = Type::None.narrow_excluding(&Type::None);
+        // None minus None -> Never (bottom type)
+        let narrowed = Type::None.minus(&Type::None);
         assert_eq!(narrowed, Type::Never);
     }
 
     #[test]
-    fn test_type_narrow_to_none() {
-        // Test narrow_to for None types
-        // Union[int, None] narrowed to None -> None
+    fn test_type_meet_none() {
+        // Test meet (formerly narrow_to) for None types
+        // Union[int, None] meet None -> None
         let optional_int = Type::Union(vec![Type::Int, Type::None]);
-        let narrowed = optional_int.narrow_to(&Type::None);
+        let narrowed = optional_int.meet(&Type::None);
         assert_eq!(narrowed, Type::None);
 
-        // int narrowed to None -> Never (no match, unreachable code)
+        // int meet None -> Never (no match, unreachable code)
         // This is correct because isinstance(int_value, type(None)) is always False
-        let narrowed = Type::Int.narrow_to(&Type::None);
+        let narrowed = Type::Int.meet(&Type::None);
         assert_eq!(narrowed, Type::Never);
     }
 
@@ -812,14 +812,14 @@ mod tests {
             .is_subtype_of(&Type::Union(vec![Type::Int, Type::None]));
         assert!(has_none);
 
-        // We can verify None is in a Union by checking narrow_to
-        let narrowed = optional_int.narrow_to(&Type::None);
+        // We can verify None is in a Union by checking meet
+        let narrowed = optional_int.meet(&Type::None);
         assert_eq!(narrowed, Type::None);
 
-        // Union without None - narrowing to None returns Never (unreachable)
+        // Union without None - meet with None returns Never (unreachable)
         // This is correct because isinstance(x, type(None)) is always False for int|str
         let int_or_str = Type::Union(vec![Type::Int, Type::Str]);
-        let narrowed = int_or_str.narrow_to(&Type::None);
+        let narrowed = int_or_str.meet(&Type::None);
         assert_eq!(narrowed, Type::Never); // No None to narrow to, so unreachable
     }
 
@@ -833,21 +833,21 @@ mod tests {
         // - bool | None: False is falsy
 
         // We can't directly test only_falsy_is_none without a Lowering context,
-        // but we can verify the type behavior through narrow_excluding
+        // but we can verify the type behavior through minus
 
         // Union[int, None] - int has 0 as falsy
         let optional_int = Type::Union(vec![Type::Int, Type::None]);
-        let narrowed = optional_int.narrow_excluding(&Type::None);
+        let narrowed = optional_int.minus(&Type::None);
         assert_eq!(narrowed, Type::Int);
 
         // Union[str, None] - str has "" as falsy
         let optional_str = Type::Union(vec![Type::Str, Type::None]);
-        let narrowed = optional_str.narrow_excluding(&Type::None);
+        let narrowed = optional_str.minus(&Type::None);
         assert_eq!(narrowed, Type::Str);
 
         // Union[list[int], None] - list has [] as falsy
         let optional_list = Type::Union(vec![Type::List(Box::new(Type::Int)), Type::None]);
-        let narrowed = optional_list.narrow_excluding(&Type::None);
+        let narrowed = optional_list.minus(&Type::None);
         assert_eq!(narrowed, Type::List(Box::new(Type::Int)));
     }
 
