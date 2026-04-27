@@ -318,18 +318,19 @@ Three closure creation paths must all set the mask:
 
 ## Tuple Type System — Fixed vs Variable-Length
 
-Area D of `MICROGPT_PLAN.md` split the tuple type into two variants to track PEP 484's distinction at compile time:
+Area D of `MICROGPT_PLAN.md` split the tuple type into two variants to track PEP 484's distinction at compile time. Since S3.2c both are `Type::Generic`:
 
 ```rust
-pub enum Type {
-    ...
-    Tuple(Vec<Type>),          // fixed-length heterogeneous — tuple[int, str, float]
-    TupleVar(Box<Type>),       // variable-length homogeneous — tuple[int, ...]
-    ...
-}
+// Fixed-length heterogeneous — tuple[int, str, float]
+Type::Generic { base: BUILTIN_TUPLE_CLASS_ID, args: vec![Int, Str, Float] }
+
+// Variable-length homogeneous — tuple[int, ...]
+Type::Generic { base: BUILTIN_TUPLE_VAR_CLASS_ID, args: vec![Int] }
 ```
 
-**Same runtime layout.** Both map onto `TupleObj` with `elem_tag` — the distinction lives purely in the compiler. `t[k]` on a fixed `Tuple` uses compile-time bounds-checked indexing with the static per-slot type; `t[k]` on `TupleVar` emits `rt_tuple_get` with a runtime bounds-check and returns the homogeneous element type. Iteration (`for x in t`), `len(t)`, `zip(t, ...)` dispatch identically via the existing runtime.
+Construct via `Type::tuple_of(elems)` and `Type::tuple_var_of(elem)`. Detect via `tuple_elems()` (returns `Some(&[Type])` for fixed) and `tuple_var_elem()` (returns `Some(&Type)` for variable).
+
+**Same runtime layout.** Both map onto `TupleObj` — the distinction lives purely in the compiler. `t[k]` on a fixed tuple uses compile-time bounds-checked indexing with the static per-slot type; `t[k]` on a variable tuple emits `rt_tuple_get` with a runtime bounds-check and returns the homogeneous element type. Iteration (`for x in t`), `len(t)`, `zip(t, ...)` dispatch identically via the existing runtime.
 
 ### Shape unification — `TypeLattice::join` for tuples
 
@@ -337,11 +338,11 @@ pub enum Type {
 
 | LHS | RHS | Result |
 |---|---|---|
-| `Tuple([])` (empty) | anything | absorbed into RHS (empty is compatible with every tuple shape) |
-| `Tuple([a1..an])` | `Tuple([b1..bn])` (same length) | element-wise join, **keep fixed shape** — `Tuple([a_i.join(&b_i)])` |
-| `Tuple([a1..an])` | `Tuple([b1..bm])` (diff lengths) | canonical `Union[Tuple(...), Tuple(...)]` |
-| `TupleVar(e1)` | `TupleVar(e2)` | `TupleVar(e1.join(&e2))` |
-| `TupleVar(e)` | `Tuple([t_j])` (either side) | `TupleVar(join_of([e] ∪ t_j))` — fixed absorbed into variable |
+| fixed `[]` (empty) | anything | absorbed into RHS (empty is compatible with every tuple shape) |
+| fixed `[a1..an]` | fixed `[b1..bn]` (same length) | element-wise join, **keep fixed shape** — `[a_i.join(&b_i)]` |
+| fixed `[a1..an]` | fixed `[b1..bm]` (diff lengths) | canonical `Union[fixed(...), fixed(...)]` |
+| variable `e1` | variable `e2` | `tuple_var_of(e1.join(&e2))` |
+| variable `e` | fixed `[t_j]` (either side) | `tuple_var_of(join_of([e] ∪ t_j))` — fixed absorbed into variable |
 | non-tuple | non-tuple | falls back to `make_canonical_union` |
 
 ### Class-field scan walks all methods
@@ -655,7 +656,7 @@ Annotations like `r: mymod.Response` are parsed BEFORE `mir_merger` runs, so the
 - `expr.ty` on every expression
 - `StmtKind::Assign { type_hint }`
 
-The rewrite descends into `Type::List`, `Dict`, `Tuple`, `Union`, `Function`, etc., so `list[mymod.Foo]` and `Optional[Foo]` also work.
+The rewrite descends into `Type::Generic{args}`, `Union`, `Iterator`, `DefaultDict`, `Function`, etc. (`rewrite_class_type` in `mir_merger.rs`), so `list[mymod.Foo]` and `Optional[Foo]` also work.
 
 ## Type Narrowing on `Any` / `HeapAny` Must Route to the Target
 
@@ -960,9 +961,9 @@ a.join(&b)
 ├── Never is identity (bottom)        → other side
 ├── same type                         → self
 ├── both numeric                      → promote_numeric(a, b)  # Bool ⊂ Int ⊂ Float
-├── both Tuple, same length           → element-wise join (fixed shape)
-├── TupleVar ⊔ Tuple / TupleVar       → TupleVar(element join)
-├── same generic container (List/Set/Dict/…) → container(element join)
+├── both Generic (same base), same arity → element-wise join (TUPLE_ID = fixed shape)
+├── TUPLE_VAR ⊔ TUPLE_VAR / TUPLE_ID  → TUPLE_VAR(element join)
+├── same Generic base (LIST/SET/DICT/…) → Generic(element join)
 └── otherwise                         → make_canonical_union([a, b])
 ```
 
@@ -1247,8 +1248,9 @@ accumulator never updates). `max` accidentally returned the correct lex
 answer because higher addresses happened to also be lex-greater.
 
 Area G §G.4 inserts a tuple-dispatch arm in the
-`Type::Iterator(elem_ty)` branch. When `elem_ty` is `Type::Tuple(_)` or
-`Type::TupleVar(_)`, the new `lower_minmax_tuple_iter_fold` helper
+`Type::Iterator(elem_ty)` branch. When `elem_ty` is a fixed or variable
+tuple Generic (`BUILTIN_TUPLE_CLASS_ID` / `BUILTIN_TUPLE_VAR_CLASS_ID`),
+detected via `tuple_elems()` / `tuple_var_elem()`, the new `lower_minmax_tuple_iter_fold` helper
 seeds `best` with the first element, loops via `rt_iter_next_no_exc` +
 `rt_generator_is_exhausted`, and compares each candidate against the
 running best with
@@ -1319,3 +1321,24 @@ constructs an explicit `Union[Self, Int, Float, Bool]` for isinstance
 narrowing. Using `join` instead would collapse the numeric tower to
 `Union[Self, Float]`, breaking `meet(Union[Foo, Float], Int) = Never`
 instead of `Int`.
+
+## Generic Container Representation (S3.2)
+
+`Type::List`, `Type::Dict`, `Type::Set`, `Type::Tuple`, `Type::TupleVar` were deleted in S3.2c. All five builtin container types are now `Type::Generic { base: ClassId, args: Vec<Type> }` using reserved builtin ClassIds from `crates/core-defs/src/builtin_classes.rs`:
+
+```rust
+BUILTIN_LIST_CLASS_ID     = ClassId(1000)
+BUILTIN_DICT_CLASS_ID     = ClassId(1001)
+BUILTIN_SET_CLASS_ID      = ClassId(1002)
+BUILTIN_TUPLE_CLASS_ID    = ClassId(1003)
+BUILTIN_TUPLE_VAR_CLASS_ID= ClassId(1004)
+FIRST_USER_CLASS_ID       = ClassId(1005)
+```
+
+**Accessor API** (on `Type`): `list_elem()`, `dict_kv()`, `set_elem()`, `tuple_elems()`, `tuple_var_elem()` — read-side; `list_of(T)`, `dict_of(K, V)`, `set_of(T)`, `tuple_of(elems)`, `tuple_var_of(T)` — write-side. All ~509 legacy pattern-match sites were migrated in S3.2b to use these accessors.
+
+**`DefaultDict` kept as own variant** — `dict_kv()` returns `Some` for both `Type::DefaultDict` and `Type::Generic{DICT_ID, [K, V]}`. The two are semantically distinct at the Python level (different constructors, factory-function semantics) and kept separate for now.
+
+**`make_canonical_union` merges same-base Generics** — a post-dedup loop coalesces pairs of `Generic{base, [a1..an]}` + `Generic{base, [b1..bn]}` with identical base and arity into `Generic{base, [a1.join(b1)..an.join(bn)]}` element-wise. Without this step, `join(Union([Int, List[Int]]), List[Float])` would produce `Union[Int, List[Int], List[Float]]` instead of `Union[Int, List[Float]]`, breaking associativity. The merge uses `promote_numeric` first, identity check second, then `t1.join(t2)` — avoiding a direct `Generic.join(Generic)` call which would re-enter `make_canonical_union` and cause a stack overflow for certain type triples.
+
+**`RawType` in `mir_merger.rs`** — the cross-module serialization layer retains a `RawType::Generic` variant (with already-remapped `base: ClassId`). The five legacy `RawType::List/Dict/Set/Tuple/TupleVar` variants were also deleted in S3.2c since `type_to_raw` now always emits `RawType::Generic` for container types. Builtin ClassIds are identity-mapped (never offset) during cross-module remapping.

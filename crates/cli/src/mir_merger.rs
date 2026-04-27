@@ -27,12 +27,7 @@ enum RawType {
     HeapAny,
     File(bool),
     Never,
-    List(Box<RawType>),
-    Dict(Box<RawType>, Box<RawType>),
     DefaultDict(Box<RawType>, Box<RawType>),
-    Set(Box<RawType>),
-    Tuple(Vec<RawType>),
-    TupleVar(Box<RawType>),
     Union(Vec<RawType>),
     Function {
         params: Vec<RawType>,
@@ -154,20 +149,10 @@ fn raw_to_type(raw: &RawType, caller_interner: &mut StringInterner) -> Type {
         RawType::HeapAny => Type::HeapAny,
         RawType::File(binary) => Type::File(*binary),
         RawType::Never => Type::Never,
-        RawType::List(t) => Type::list_of(raw_to_type(t, caller_interner)),
-        RawType::Dict(k, v) => Type::dict_of(
-            raw_to_type(k, caller_interner),
-            raw_to_type(v, caller_interner),
-        ),
         RawType::DefaultDict(k, v) => Type::DefaultDict(
             Box::new(raw_to_type(k, caller_interner)),
             Box::new(raw_to_type(v, caller_interner)),
         ),
-        RawType::Set(t) => Type::set_of(raw_to_type(t, caller_interner)),
-        RawType::Tuple(ts) => {
-            Type::tuple_of(ts.iter().map(|t| raw_to_type(t, caller_interner)).collect())
-        }
-        RawType::TupleVar(t) => Type::tuple_var_of(raw_to_type(t, caller_interner)),
         RawType::Union(ts) => {
             Type::Union(ts.iter().map(|t| raw_to_type(t, caller_interner)).collect())
         }
