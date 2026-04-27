@@ -313,6 +313,12 @@ impl<'a> Lowering<'a> {
                 if let Some(func_def) = hir_module.func_defs.get(&called_func_id) {
                     if self.find_returned_closure(func_def, hir_module).is_some() {
                         self.closures.dynamic_closure_vars.insert(target);
+                        // §P.2.2: record the outermost wrapper's return type
+                        // so the indirect call site can type its result
+                        // local precisely.
+                        if let Some(ret_ty) = self.outermost_wrapper_return_type(expr, hir_module) {
+                            self.insert_dynamic_closure_return_type(target, ret_ty);
+                        }
                     }
                 }
             }

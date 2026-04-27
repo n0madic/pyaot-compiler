@@ -358,6 +358,89 @@ impl<'a> Lowering<'a> {
         self.closures.wrapper_func_ids.contains(func_id)
     }
 
+    /// §P.2.2: classify a HIR expression as a "raw function pointer source"
+    /// for args-tuple storage. Used by `wrap_func_ptr_args_for_tuple` to
+    /// `ValueFromInt`-wrap fn-ptr args before they enter a Value-tagged
+    /// tuple slot — without this, the GC mark walk treats the misaligned
+    /// text-segment address as a heap pointer and trips `mark_object`.
+    ///
+    /// Sources recognised:
+    /// - `FuncRef` / `BuiltinRef` literal expressions.
+    /// - `Var` to a fn-ptr parameter (a wrapper's `func` capture).
+    /// - `Var` to a name bound to a function via `var_to_func`.
+    pub(crate) fn capture_is_func_ptr(&self, expr: &hir::Expr) -> bool {
+        match &expr.kind {
+            hir::ExprKind::FuncRef(_) | hir::ExprKind::BuiltinRef(_) => true,
+            hir::ExprKind::Var(var_id) => {
+                self.is_func_ptr_param(var_id) || self.symbols.var_to_func.contains_key(var_id)
+            }
+            _ => false,
+        }
+    }
+
+    /// §P.2.2: record the dynamic-closure-call result type for a global var
+    /// produced by a chained-decorator chain. The indirect call site
+    /// (`lower_indirect_call_with_varargs`) reads this to type the result
+    /// local precisely instead of defaulting to `Type::Any`.
+    pub(crate) fn insert_dynamic_closure_return_type(&mut self, var_id: VarId, ty: Type) {
+        self.closures
+            .dynamic_closure_return_types
+            .insert(var_id, ty);
+    }
+
+    /// Read the dynamic-closure-call result type for a var, if recorded.
+    pub(crate) fn get_dynamic_closure_return_type(&self, var_id: &VarId) -> Option<&Type> {
+        self.closures.dynamic_closure_return_types.get(var_id)
+    }
+
+    /// §P.2.2: walk the outermost decorator-call expression and return the
+    /// outermost wrapper's declared return type. For a chained decorator
+    /// `@triple @add_one def f`, this returns `triple_deco`'s wrapper's
+    /// declared return type (the type observed by the caller of `f()`).
+    pub(crate) fn outermost_wrapper_return_type(
+        &self,
+        expr: &hir::Expr,
+        hir_module: &hir::Module,
+    ) -> Option<Type> {
+        let hir::ExprKind::Call { func, .. } = &expr.kind else {
+            return None;
+        };
+        let func_expr = &hir_module.exprs[*func];
+        let decorator_func_id = match &func_expr.kind {
+            hir::ExprKind::FuncRef(id) => *id,
+            hir::ExprKind::Call { .. } => {
+                // Decorator factory: factory(args) returns the actual
+                // decorator. Trace through: factory's returned closure is
+                // the decorator; the decorator's returned closure is the
+                // wrapper.
+                let factory_id = self.find_innermost_funcref_in(func_expr, hir_module)?;
+                let factory_def = hir_module.func_defs.get(&factory_id)?;
+                self.find_returned_closure(factory_def, hir_module)?
+            }
+            _ => return None,
+        };
+        let decorator_def = hir_module.func_defs.get(&decorator_func_id)?;
+        let wrapper_func_id = self.find_returned_closure(decorator_def, hir_module)?;
+        let wrapper_def = hir_module.func_defs.get(&wrapper_func_id)?;
+        wrapper_def.return_type.clone()
+    }
+
+    /// Helper: find the innermost `FuncRef` in a (possibly nested) call
+    /// expression. Reachable from accessor context.
+    fn find_innermost_funcref_in(
+        &self,
+        expr: &hir::Expr,
+        hir_module: &hir::Module,
+    ) -> Option<FuncId> {
+        match &expr.kind {
+            hir::ExprKind::FuncRef(id) => Some(*id),
+            hir::ExprKind::Call { func, .. } => {
+                self.find_innermost_funcref_in(&hir_module.exprs[*func], hir_module)
+            }
+            _ => None,
+        }
+    }
+
     /// §P.2.2: if `func_id` is a wrapper (closure returned by a decorator),
     /// return the index of its fn-ptr parameter — which is also the matching
     /// capture-tuple slot index, since closure captures become the leading

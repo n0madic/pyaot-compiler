@@ -354,10 +354,26 @@ impl<'a> Lowering<'a> {
                 );
 
                 // Lower the user arguments
-                let user_arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
+                let mut user_arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
+                // §P.2.2: wrap fn-ptr args via `ValueFromInt` before storing
+                // in the args-tuple, so the GC walker sees a tagged-int slot
+                // (low bit 1) instead of a raw text-segment address.
+                self.wrap_func_ptr_args_for_tuple(
+                    &mut user_arg_operands,
+                    args,
+                    hir_module,
+                    mir_func,
+                );
 
-                // Use the expression's type hint if available, otherwise Any
-                let result_ty = expr.ty.clone().unwrap_or(Type::Any);
+                // §P.2.2: prefer the recorded outermost-wrapper return type
+                // (set during chained-decorator pre-scan) over `expr.ty`/Any.
+                // This types the result local precisely so chained-wrapper
+                // calls don't leave raw scalars in HeapAny shadow-stack slots.
+                let result_ty = self
+                    .get_dynamic_closure_return_type(var_id)
+                    .cloned()
+                    .or_else(|| expr.ty.clone())
+                    .unwrap_or(Type::Any);
                 let arg_types: Vec<Type> = user_arg_operands
                     .iter()
                     .map(|op| self.operand_type(op, mir_func))
@@ -380,8 +396,23 @@ impl<'a> Lowering<'a> {
             // These need emit_closure_call to extract func_ptr and captures from the tuple
             if self.closures.dynamic_closure_vars.contains(var_id) {
                 if let Some(local_id) = self.get_var_local(var_id) {
-                    let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
-                    let result_ty = expr.ty.clone().unwrap_or(Type::Any);
+                    let mut arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
+                    self.wrap_func_ptr_args_for_tuple(
+                        &mut arg_operands,
+                        args,
+                        hir_module,
+                        mir_func,
+                    );
+                    // §P.2.2: prefer the recorded outermost-wrapper return
+                    // type over `expr.ty`/Any. Without this, the result
+                    // local lands in a `HeapAny is_gc_root=true` slot
+                    // holding the wrapper's raw scalar return — tripping
+                    // the GC alignment guard for chained-decorator chains.
+                    let result_ty = self
+                        .get_dynamic_closure_return_type(var_id)
+                        .cloned()
+                        .or_else(|| expr.ty.clone())
+                        .unwrap_or(Type::Any);
                     let arg_types: Vec<Type> = arg_operands
                         .iter()
                         .map(|op| self.operand_type(op, mir_func))

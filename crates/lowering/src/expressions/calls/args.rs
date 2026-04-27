@@ -23,6 +23,43 @@ impl<'a> Lowering<'a> {
         self.lower_expanded_args_with_params(expanded_args, None, hir_module, mir_func)
     }
 
+    /// §P.2.2: wrap fn-ptr operands via `ValueFromInt` so they survive
+    /// storage in a `Value`-tagged args tuple. Identifies fn-ptrs by
+    /// inspecting the corresponding HIR arg expression
+    /// (`capture_is_func_ptr`). The runtime trampoline
+    /// (`extract_tuple_unwrapping_values`) then sees `is_int() == true`
+    /// and recovers the raw text-segment address via `unwrap_int()` before
+    /// dispatching to the callee. Symmetric with the closure-tuple slot-0
+    /// §F.5 handling.
+    pub(crate) fn wrap_func_ptr_args_for_tuple(
+        &mut self,
+        operands: &mut [mir::Operand],
+        expanded_args: &[ExpandedArg],
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) {
+        for (i, arg) in expanded_args.iter().enumerate() {
+            if i >= operands.len() {
+                break;
+            }
+            let expr_id = match arg {
+                ExpandedArg::Regular(e) => *e,
+                ExpandedArg::RuntimeUnpackTuple(_) | ExpandedArg::RuntimeUnpackList(_) => continue,
+            };
+            let arg_expr = &hir_module.exprs[expr_id];
+            if !self.capture_is_func_ptr(arg_expr) {
+                continue;
+            }
+            let raw = operands[i].clone();
+            let wrapped = self.alloc_stack_local(Type::HeapAny, mir_func);
+            self.emit_instruction(mir::InstructionKind::ValueFromInt {
+                dest: wrapped,
+                src: raw,
+            });
+            operands[i] = mir::Operand::Local(wrapped);
+        }
+    }
+
     /// Lower expanded call arguments with optional parameter type propagation.
     pub(super) fn lower_expanded_args_with_params(
         &mut self,

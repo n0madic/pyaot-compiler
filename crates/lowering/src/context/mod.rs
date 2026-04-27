@@ -154,6 +154,14 @@ pub struct ClosureState {
     pub var_to_wrapper: IndexMap<VarId, (FuncId, FuncId)>,
     /// Variables holding dynamically returned closures (need emit_closure_call dispatch)
     pub dynamic_closure_vars: IndexSet<VarId>,
+    /// §P.2.2: per-VarId return type for dynamic closures whose underlying
+    /// wrapper has a known return type. Used at the indirect call site
+    /// (`lower_indirect_call_with_varargs`) to type the result local
+    /// precisely (e.g. `Int`) instead of the default `Any`. Without this,
+    /// chained-decorator results land in `is_gc_root=true` `HeapAny`
+    /// shadow-stack slots that hold raw scalars from the wrapper's return
+    /// — tripping the GC alignment guard.
+    pub dynamic_closure_return_types: IndexMap<VarId, Type>,
     /// Captured variable types for closures (used during lambda lowering)
     pub closure_capture_types: IndexMap<FuncId, Vec<Type>>,
     /// Wrapper function IDs (closures returned by decorators)

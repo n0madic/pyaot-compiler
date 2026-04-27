@@ -824,6 +824,14 @@ impl<'a> Lowering<'a> {
                             self.symbols.globals.insert(target);
                             // Register any wrapper functions that might be involved
                             self.register_all_wrappers_in_chain(expr, hir_module);
+                            // §P.2.2: record the outermost wrapper's return
+                            // type so the indirect call site can type the
+                            // result local precisely (instead of `Any`).
+                            if let Some(ret_ty) =
+                                self.outermost_wrapper_return_type(expr, hir_module)
+                            {
+                                self.insert_dynamic_closure_return_type(target, ret_ty);
+                            }
                             continue;
                         }
 
@@ -865,6 +873,14 @@ impl<'a> Lowering<'a> {
                                 // Mark the target as a global so that when it's called,
                                 // we load from global storage and do an indirect call
                                 self.symbols.globals.insert(target);
+                                // §P.2.2: record the outermost wrapper's return
+                                // type so the indirect call site can type the
+                                // result local precisely (instead of `Any`).
+                                if let Some(ret_ty) =
+                                    self.outermost_wrapper_return_type(expr, hir_module)
+                                {
+                                    self.insert_dynamic_closure_return_type(target, ret_ty);
+                                }
                                 continue;
                             }
 
