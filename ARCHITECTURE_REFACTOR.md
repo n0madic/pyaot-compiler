@@ -2538,7 +2538,7 @@ Before merging Phase 1's long-lived branch to master:
 
 ---
 
-# Phase 2 — Unified Tagged Value Representation
+# Phase 2 — Unified Tagged Value Representation ✅
 
 **Duration**: 4–7 weeks.
 
@@ -2562,6 +2562,96 @@ pointer, list-elem-tag dispatch) collapse into one.
   once values are uniformly tagged.
 - `ValueKind` MIR enum — no longer needed, tag is self-describing.
 - `type_to_value_kind` in `runtime_selector` — gone.
+
+**Post-close note (2026-04-27)**: Phase 2 is formally closed. Three items
+are deferred to Phase 3 rather than blocking closure: the full `rt_*` extern
+ABI retype, arithmetic fast-path inlining (S2.8), and two perf gates
+(Polymorphic +20%, GC scan +15%). Each has an explicit home in
+`PHASE3_OPTIMIZATION_PLAN.md` (§P.2.1, §P.2.3, §P.1, §P.2). Every other
+Phase 2 exit criterion — container storage uniformity, GC Value-walking,
+bright-line grep, pass migration, workspace green — is met.
+
+**Status dashboard (2026-04-27)** — ✅ done · 🟡 partial (deferred) · ⏳ pending
+
+| Milestone | Status | Sessions |
+|---|---|---|
+| §2.1 Tag scheme | ✅ | S2.1 ✅ (`5cd0e7f`) |
+| §2.2 Core-defs API | ✅ | S2.2 ✅ (`cc69143`) |
+| §2.3 Runtime migration | 🟡 | S2.3 ✅ list storage; full `rt_*` ABI retype deferred → Phase 3 §P.2.1 |
+| §2.4 GC migration | 🟡 | S2.6-narrow ✅ (`8a7b1b4`); address-heuristic guards deferred → Phase 3 |
+| §2.5 Codegen migration | 🟡 | S2.7 ✅ (`a0912fc`); arithmetic fast-path deferred → Phase 3 §P.2.3 |
+| §2.6 Pass migration | ✅ | S2.9 ✅ (`439496b`): `emit_value_slot` + `coerce_for_storage` |
+| §2.7 Final purge | ✅ | bright-line grep ✅; perf gates §P.1/§P.2 deferred → Phase 3 |
+
+### Phase 2 Completion Status (2026-04-27)
+
+**Current state**
+
+- **§2.1 / §2.2** (tag scheme + `Value` API) are complete: `core-defs/src/tag.rs`
+  and `core-defs/src/value.rs` define the low-bit tag layout with compile-time
+  assertions; `runtime::value::type_of` handles the pointer branch.
+- **§2.3 Runtime migration** is partially complete: `ListObj.data` flipped to
+  `*mut Value` (S2.3). Full `rt_*` extern ABI retype (~597 symbols still typed
+  `i64`/`*mut Obj` at FFI boundary) is deferred to Phase 3 §P.2.1 per §2.3
+  Amendment 2 — codegen must change simultaneously to avoid ABI split.
+- **§2.4 GC migration** is partially complete: `mark_object(Value)` landed
+  (S2.6-narrow); `heap_field_mask`/`type_tags` deleted in S2.7; belt-and-braces
+  address-heuristic guards retained while fn-ptr residuals exist (see recent
+  fn-ptr commits `032d352`…`924d064`).
+- **§2.5 Codegen migration** is partially complete: S2.7 atomic campaign
+  (`a0912fc`) flipped container storage and GC uniformly; inline
+  `ValueFromInt`/`ValueFromBool`/`UnwrapValue*` tag ops landed. Arithmetic
+  fast-path inlining (`rt_add_int` → inline tag arithmetic) deferred to Phase 3
+  §P.2.3.
+- **§2.6 Pass migration** is complete: `emit_value_slot` (renamed from
+  `box_primitive_if_needed`) is the canonical Value-slot encoder; helper
+  `coerce_for_storage` unifies numeric-tower and dynamic-slot coercions;
+  `is_useless_container_ty` deferred to Phase 3 lattice (`is_subtype`/`meet`).
+- **§2.7 Final purge** bright-line grep is clean; two benchmark gates
+  (Polymorphic arithmetic, GC scan) formally deferred to Phase 3.
+
+**Acceptance checklist state**
+
+1. ✅ **Workspace tests green** — `cargo test --workspace --release` and
+   `RUSTFLAGS="--cfg gc_stress_test" cargo test -p pyaot --test runtime --release`
+   both pass (514+ tests + 39 GC-stress tests, 2026-04-27).
+2. ✅ **Bright-line grep gate** — `grep -rn 'ELEM_RAW_INT\|ELEM_HEAP_OBJ\|
+   heap_field_mask\|heap_mask\|type_tags\|ValueKind\|type_to_value_kind'
+   crates/ | wc -l` → `0`.
+3. ✅ **Container storage uniform** — `ListObj`, `TupleObj`, `DictObj`, `SetObj`,
+   `InstanceObj`, `GeneratorObj`, `DequeObj` all use `Value`-typed storage slots.
+4. ✅ **GC walker Value-typed** — `mark_object(Value)` in `gc.rs`; uniform
+   `Value::is_ptr()` gating. Belt-and-braces guards remain (documented, Phase 3).
+5. ✅ **Pass migration complete** — `emit_value_slot` + `coerce_for_storage`;
+   `box_primitive_if_needed`, `coerce_to_field_type`, `promote_to_float_if_needed`
+   deleted (`439496b`).
+6. 🟡 **Benchmarks partial** — Int/Bool ±3% ✅, Float ±10% ✅. Polymorphic
+   arithmetic: −54% regression (no boxing-dance win yet without fast-path
+   inlining; deferred to Phase 3 §P.1). GC scan: +3% (address-heuristic guards;
+   deferred to Phase 3 §P.2). Both tracked in `PHASE3_OPTIMIZATION_PLAN.md`.
+7. 🟡 **`rt_*` ABI retype** — ~597 `extern "C" fn rt_*` symbols still typed
+   `i64`/`*mut Obj`; `Value` bit-patterns flow as opaque `i64` where needed.
+   Deferred per §2.3 Amendment 2.
+
+**Formal-close evidence on HEAD (2026-04-27)**
+
+- `cargo build --workspace --release` ✅
+- `cargo fmt --check` ✅
+- `cargo clippy --workspace --release -- -D warnings` ✅
+- `cargo test --workspace --release` ✅
+- `RUSTFLAGS="--cfg gc_stress_test" cargo test -p pyaot --test runtime --release` ✅
+
+**Deferred to Phase 3**
+
+| Item | Phase 3 target |
+|---|---|
+| `rt_*` extern ABI retype (~597 symbols) | §P.2.1 |
+| Arithmetic fast-path inlining (`rt_add_int` → inline tag arithmetic) | §P.2.3 |
+| Polymorphic arithmetic perf gate (+20%) | §P.1 |
+| GC scan perf gate (+15%) | §P.2 |
+| `is_useless_container_ty` deletion | Lattice `is_subtype`/`meet` |
+| GC belt-and-braces address-heuristic guard removal | §P.2 |
+| `PHASE2_S2_7_PLAN.md` dangling reference cleanup | Doc-debt |
 
 ## 2.1 Tag scheme finalization
 
@@ -3734,16 +3824,16 @@ audit often uncovers surprise gaps.
 
 | ID | Scope | Deps | Complexity | Parallel? |
 |----|-------|------|------------|-----------|
-| S2.1 | Tag scheme design + `core-defs/Value` API (§2.1 + §2.2): low-bit tagging constants, `Value` type, constructors, extractors, property tests | Phase 1 merged | Medium | — |
+| S2.1 ✅ (2026-04-24, `5cd0e7f`) | Tag scheme design + `core-defs/Value` API (§2.1 + §2.2): low-bit tagging constants, `Value` type, constructors, extractors, property tests | Phase 1 merged | Medium | — |
 | S2.2 ✅ (2026-04-24, cc69143) | Runtime Value foundation (§2.3 part 1, amended): add `runtime::value::type_of(Value) -> TypeTagKind` + runtime-side `Value` re-export. `rt_box_*` / `rt_unbox_*` deletion moved to S2.7 (cannot land before codegen stops emitting those symbols — see §2.3 amendment). | S2.1 | Low-Medium | Parallel-safe with nothing (hot path) |
 | S2.3 ✅ (2026-04-24) | Runtime migration: List (§2.3 part 2): `ListObj.data: *mut *mut Obj` → `*mut Value`; 35+ list ops migrated to Value-backed storage with boundary conversion via `store_raw_as_value`/`load_value_as_raw`/`list_slot_raw`; GC list scan now uses `Value::is_ptr()` instead of `elem_tag` branching. `elem_tag` field and `ELEM_*` constants retained for the extern-ABI boundary (deletion follows the S2.7 rule). | S2.2 | Medium-High | — |
 | S2.4 ⏸ (2026-04-24, folded into S2.7) | Originally: Runtime migration of Dict/Set/Tuple storage to `Value` (§2.3 part 3). Attempted, rolled back — closure tuples mix a raw function pointer with heap captures, and without simultaneous codegen/GC changes the Value-backed slot trips `Value::is_ptr()` on the function pointer (segfault). See §2.3 Amendment 2. Migration folds into **S2.7** where codegen+storage can flip atomically. | S2.3 | Medium (deferred) | — |
 | S2.5 ⏸ (2026-04-24, folded into S2.7) | Originally: Runtime migration of Str/Bytes/Class instances/Generators to `Value`, delete `heap_field_mask` + generator `type_tags`. Same rollback rationale as S2.4 — `ClassInfo.heap_field_mask` exists for the same mixed-slot reason; deletion belongs with S2.7's codegen tagging. | S2.4 | Medium (deferred) | — |
 | S2.6 ✅ narrow (2026-04-24) | GC migration (§2.4, narrow): `mark_object` signature flipped to `Value`; ~40 call sites inside `gc.rs` wrap raw pointers via `Value::from_ptr`. `heap_field_mask` / `ClassInfo.heap_field_mask` / `GeneratorObj.type_tags` / the address-heuristic filter all stay until S2.7 (see §2.4 amendment). Workspace + GC-stress suites both green. | S2.3 (code); S2.5 folded | Low-Medium | — |
-| S2.7 📋 campaign | ** Multi-session atomic migration (7 stages A–G, 2–3 weeks). Absorbs rolled-back S2.4/S2.5 container storage flips, the deleting half of narrow-S2.6 GC work, the full codegen Value lowering, and the extern ABI retype. Non-Negotiable Principle 1 relaxed for this campaign — intermediate stages may leave workspace red; only the final commit restores green. Exit-criteria (perf gates, grep-verified deletions, docs refresh) live in the campaign plan. | S2.6 (narrow) | **Campaign** | — |
-| S2.8 | Codegen: arithmetic fast-path inlining (§2.5 part 2): inline tag tests for hot ops based on SSA types | S2.7 | **HIGH** (perf-critical) | — |
-| S2.9 | Pass migration: delete boxing helpers (§2.6): `box_primitive_if_needed`, `promote_to_float_if_needed`, `coerce_to_field_type`, `is_useless_container_ty` | S2.8 | Medium | — |
-| S2.10 | Phase 2 final purge + benchmark acceptance (§2.7): grep verify, run benchmarks, update BASELINE | S2.9 | Low-Medium | — |
+| S2.7 ✅ (2026-04-24, `a0912fc`) | Atomic Value migration campaign (7 stages A–G). Absorbed S2.4/S2.5 container storage flips, narrow-S2.6 GC finalization, codegen Value tagging, fn-ptr wrapping (`ValueFromInt`) + shadow-stack residuals (follow-up commits `b6ed960`…`924d064`). Non-Negotiable Principle 1 relaxed for campaign per 2026-04-24 amendment. | S2.6 (narrow) | **Campaign** | — |
+| S2.8 ⏸ (deferred → Phase 3 §P.2.3) | Codegen: arithmetic fast-path inlining (§2.5 part 2): inline tag tests for Int+Int and other hot ops based on SSA types. Currently `rt_add_int` etc. are called on every arithmetic op. | S2.7 | **HIGH** (perf-critical) | — |
+| S2.9 ✅ (2026-04-27, `439496b`) | Pass migration (§2.6): `box_primitive_if_needed` renamed to `emit_value_slot`; `coerce_to_field_type` + `promote_to_float_if_needed` folded into `coerce_for_storage`; `lower_captures_to_tuple` dead code deleted; pre-existing clippy -D warnings fixed. `is_useless_container_ty` deferred to Phase 3 per §2.6 amendment. | S2.7 | Medium | — |
+| S2.10 ✅ (2026-04-27) | Phase 2 formal close: status dashboard + completion section added to spec; ✅ marker on phase header; session table updated. Perf gates and `rt_*` ABI retype deferred to Phase 3 with explicit tracking. | S2.9 | Low-Medium | — |
 
 **Split triggers**:
 
