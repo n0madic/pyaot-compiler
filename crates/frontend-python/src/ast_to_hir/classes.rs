@@ -821,7 +821,7 @@ impl AstToHir {
                     .iter()
                     .map(|e| self.infer_field_type_from_rhs(e, param_types))
                     .collect();
-                Type::Tuple(elem_tys)
+                Type::tuple_of(elem_tys)
             }
             py::Expr::Constant(c) => match &c.value {
                 py::Constant::Int(_) => Type::Int,

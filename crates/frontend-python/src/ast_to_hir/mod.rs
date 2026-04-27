@@ -575,18 +575,18 @@ impl AstToHir {
                 if let Some(first_elem_id) = elems.first() {
                     let first_elem = &self.module.exprs[*first_elem_id];
                     let elem_ty = self.infer_literal_type(first_elem);
-                    Type::List(Box::new(elem_ty))
+                    Type::list_of(elem_ty)
                 } else {
-                    Type::List(Box::new(Type::Any))
+                    Type::list_of(Type::Any)
                 }
             }
             ExprKind::Dict(pairs) => {
                 if let Some((key_id, val_id)) = pairs.first() {
                     let key_ty = self.infer_literal_type(&self.module.exprs[*key_id]);
                     let val_ty = self.infer_literal_type(&self.module.exprs[*val_id]);
-                    Type::Dict(Box::new(key_ty), Box::new(val_ty))
+                    Type::dict_of(key_ty, val_ty)
                 } else {
-                    Type::Dict(Box::new(Type::Any), Box::new(Type::Any))
+                    Type::dict_of(Type::Any, Type::Any)
                 }
             }
             ExprKind::Tuple(elems) => {
@@ -594,15 +594,15 @@ impl AstToHir {
                     .iter()
                     .map(|e| self.infer_literal_type(&self.module.exprs[*e]))
                     .collect();
-                Type::Tuple(elem_types)
+                Type::tuple_of(elem_types)
             }
             ExprKind::Set(elems) => {
                 if let Some(first_elem_id) = elems.first() {
                     let first_elem = &self.module.exprs[*first_elem_id];
                     let elem_ty = self.infer_literal_type(first_elem);
-                    Type::Set(Box::new(elem_ty))
+                    Type::set_of(elem_ty)
                 } else {
-                    Type::Set(Box::new(Type::Any))
+                    Type::set_of(Type::Any)
                 }
             }
             // For other expressions, use the type annotation if available

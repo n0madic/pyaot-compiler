@@ -70,7 +70,7 @@ impl AstToHir {
         //    Try to infer element type from the comprehension to set the correct
         //    element type on the list, enabling typed fast paths in lowering.
         let elem_type = self.infer_comprehension_elem_type(&comp.elt, &comp.generators);
-        let list_type = elem_type.map(|et| Type::List(Box::new(et)));
+        let list_type = elem_type.map(Type::list_of);
         let empty_list = self.module.exprs.alloc(Expr {
             kind: ExprKind::List(vec![]),
             ty: list_type.clone(),
@@ -205,7 +205,7 @@ impl AstToHir {
                 args: vec![],
                 kwargs: Vec::new(),
             },
-            ty: Some(Type::Set(Box::new(Type::Any))),
+            ty: Some(Type::set_of(Type::Any)),
             span: comp_span,
         });
         let init_stmt = self.module.stmts.alloc(Stmt {
