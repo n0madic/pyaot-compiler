@@ -312,10 +312,15 @@ impl<'a> Lowering<'a> {
                     .get(&field_name)
                     .map(|prev| prev.join(&observed_ty))
                     .unwrap_or_else(|| {
-                        // `join(Any, T) = Any` and `join(T, Any) = Any`, so
-                        // `Any`/`HeapAny` storage absorbs observed types
-                        // correctly without a special-case guard.
-                        storage_ty.join(&observed_ty)
+                        // `Any`/`HeapAny` storage carries no information; the
+                        // observed concrete type is strictly more informative.
+                        // `join(Any, T) = Any` would discard `observed_ty`, so
+                        // we take it directly when storage is untyped.
+                        if matches!(storage_ty, Type::Any | Type::HeapAny) {
+                            observed_ty.clone()
+                        } else {
+                            storage_ty.join(&observed_ty)
+                        }
                     });
                 class_fields.insert(field_name, refined);
             }
