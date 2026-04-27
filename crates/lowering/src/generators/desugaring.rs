@@ -307,7 +307,7 @@ fn shape_infer_type(
             let else_ty = shape_infer_type(m, vmap, *else_val, depth + 1, interner);
             match (then_ty, else_ty) {
                 (Some(a), Some(b)) if a == b => Some(a),
-                (Some(a), Some(b)) => Some(Type::normalize_union(vec![a, b])),
+                (Some(a), Some(b)) => Some(a.join(&b)),
                 (Some(a), None) | (None, Some(a)) => Some(a),
                 (None, None) => None,
             }
