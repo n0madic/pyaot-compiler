@@ -2,7 +2,7 @@ use super::{AstToHir, ImportedNameKind};
 use pyaot_diagnostics::{CompilerError, Result};
 use pyaot_hir::*;
 use pyaot_stdlib_defs::registry::get_class_type;
-use pyaot_types::{typespec_to_type, Type};
+use pyaot_types::{typespec_to_type, Type, TypeLattice};
 use pyaot_utils::Span;
 use rustpython_parser::ast as py;
 
@@ -38,7 +38,12 @@ impl AstToHir {
                     if let Some(bound) = &tv_def.bound {
                         return Ok(bound.clone());
                     } else if !tv_def.constraints.is_empty() {
-                        return Ok(Type::normalize_union(tv_def.constraints.clone()));
+                        return Ok(tv_def
+                            .constraints
+                            .iter()
+                            .cloned()
+                            .reduce(|a, b| a.join(&b))
+                            .unwrap_or(Type::Never));
                     } else {
                         return Ok(Type::Var(interned));
                     }
@@ -192,7 +197,7 @@ impl AstToHir {
                         "Optional" if is_typing_import => {
                             // Optional[T] → Union[T, None]
                             let inner_type = self.convert_type_annotation(&sub.slice)?;
-                            Ok(Type::normalize_union(vec![inner_type, Type::None]))
+                            Ok(inner_type.join(&Type::None))
                         }
                         "Union" if is_typing_import => {
                             // Union[A, B, ...] → Union of all types
@@ -205,7 +210,10 @@ impl AstToHir {
                                 // Single type in Union (weird but possible)
                                 types.push(self.convert_type_annotation(&sub.slice)?);
                             }
-                            Ok(Type::normalize_union(types))
+                            Ok(types
+                                .into_iter()
+                                .reduce(|a, b| a.join(&b))
+                                .unwrap_or(Type::Never))
                         }
                         "Literal" if is_typing_import => {
                             // Literal[42] → int, Literal["hello"] → str (type erasure)
@@ -215,7 +223,10 @@ impl AstToHir {
                                 for elem in &tuple.elts {
                                     types.push(self.literal_value_to_type(elem, ann_span)?);
                                 }
-                                Ok(Type::normalize_union(types))
+                                Ok(types
+                                    .into_iter()
+                                    .reduce(|a, b| a.join(&b))
+                                    .unwrap_or(Type::Never))
                             } else {
                                 self.literal_value_to_type(&sub.slice, ann_span)
                             }
@@ -237,7 +248,7 @@ impl AstToHir {
                 if matches!(binop.op, py::Operator::BitOr) {
                     let left = self.convert_type_annotation(&binop.left)?;
                     let right = self.convert_type_annotation(&binop.right)?;
-                    Ok(Type::normalize_union(vec![left, right]))
+                    Ok(left.join(&right))
                 } else {
                     Err(CompilerError::parse_error(
                         "Only | operator supported for union types",
@@ -421,7 +432,10 @@ impl AstToHir {
                         }
                     }
                 }
-                let unioned = Type::normalize_union(members);
+                let unioned = members
+                    .into_iter()
+                    .reduce(|a, b| a.join(&b))
+                    .unwrap_or(Type::Never);
                 Ok(self.module.exprs.alloc(Expr {
                     kind: ExprKind::TypeRef(unioned),
                     ty: None,
