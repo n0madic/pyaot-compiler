@@ -149,10 +149,8 @@ impl<'a> Lowering<'a> {
             let elem_expr = &hir_module.exprs[*elem_id];
             let expected_elem_type = if let Some(elems) = tuple_type.tuple_elems() {
                 elems.get(i).cloned()
-            } else if let Some(elem) = tuple_type.tuple_var_elem() {
-                Some(elem.clone())
             } else {
-                None
+                tuple_type.tuple_var_elem().cloned()
             };
             let elem_operand =
                 self.lower_expr_expecting(elem_expr, expected_elem_type, hir_module, mir_func)?;

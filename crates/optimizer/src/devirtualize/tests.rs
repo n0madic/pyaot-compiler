@@ -66,6 +66,8 @@ fn make_module_with_vtable(
         entry_block: block_id,
         span: None,
         is_ssa: false,
+        is_generic_template: false,
+        typevar_params: Vec::new(),
         dom_tree_cache: std::cell::OnceCell::new(),
     };
 

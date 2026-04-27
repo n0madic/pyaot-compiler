@@ -17,6 +17,7 @@ pub mod dce;
 pub mod devirtualize;
 pub mod flatten_properties;
 pub mod inline;
+pub mod monomorphize;
 pub mod pass;
 pub mod peephole;
 pub mod type_inference;
@@ -130,6 +131,8 @@ mod tests {
             entry_block: block_id,
             span: None,
             is_ssa: true,
+            is_generic_template: false,
+            typevar_params: Vec::new(),
             dom_tree_cache: std::cell::OnceCell::new(),
         }
     }

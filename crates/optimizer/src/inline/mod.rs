@@ -4,7 +4,7 @@
 //! Particularly beneficial for leaf functions with few instructions.
 
 mod analysis;
-mod remap;
+pub(crate) mod remap;
 mod transform;
 
 #[cfg(test)]

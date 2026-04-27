@@ -547,6 +547,8 @@ mod tests {
             entry_block: bb0,
             span: None,
             is_ssa: true,
+            is_generic_template: false,
+            typevar_params: Vec::new(),
             dom_tree_cache: std::cell::OnceCell::new(),
         }
     }
@@ -630,6 +632,8 @@ mod tests {
             entry_block: bb0,
             span: None,
             is_ssa: true,
+            is_generic_template: false,
+            typevar_params: Vec::new(),
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 
@@ -679,6 +683,8 @@ mod tests {
             entry_block: bb0,
             span: None,
             is_ssa: true,
+            is_generic_template: false,
+            typevar_params: Vec::new(),
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 
@@ -751,6 +757,8 @@ mod tests {
             entry_block: bb0,
             span: None,
             is_ssa: true,
+            is_generic_template: false,
+            typevar_params: Vec::new(),
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 
@@ -823,6 +831,8 @@ mod tests {
             entry_block: bb0,
             span: None,
             is_ssa: true,
+            is_generic_template: false,
+            typevar_params: Vec::new(),
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 
@@ -916,6 +926,8 @@ mod tests {
             entry_block: bb0,
             span: None,
             is_ssa: true,
+            is_generic_template: false,
+            typevar_params: Vec::new(),
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 
@@ -972,6 +984,8 @@ mod tests {
             entry_block: bb0,
             span: None,
             is_ssa: true,
+            is_generic_template: false,
+            typevar_params: Vec::new(),
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 
@@ -1037,6 +1051,8 @@ mod tests {
             entry_block: bb0,
             span: None,
             is_ssa: true,
+            is_generic_template: false,
+            typevar_params: Vec::new(),
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 

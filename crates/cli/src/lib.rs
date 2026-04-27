@@ -260,6 +260,10 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
     // downstream consumer sees a single canonical view.
     pyaot_optimizer::type_inference::analyze_and_materialize_types(&mut mir_module);
     if options.verbose {
+        println!("Running monomorphization pass...");
+    }
+    pyaot_optimizer::monomorphize::run(&mut mir_module, &mut interner);
+    if options.verbose {
         println!("Repairing MIR ABI from materialized types (pre-opt)...");
     }
     pyaot_optimizer::abi_repair::repair_mir_abi_from_types(&mut mir_module).into_diagnostic()?;
