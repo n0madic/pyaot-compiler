@@ -82,6 +82,31 @@ impl<'a> Lowering<'a> {
                 }
                 self.insert_closure_capture_types(*func, capture_types.clone());
 
+                // §P.2.2: re-infer the lambda's return type now that capture
+                // types are populated. Type-planning Pass 2 ran before this
+                // statement was lowered and saw Any-typed captures, widening
+                // the inferred return to Any. Without this re-inference,
+                // `map(fn_closure, ...)` later resolves to `Iterator[Any]`
+                // and the for-loop's `IterAdvance` Protocol arm passes the
+                // lambda's raw scalar return through unchanged, leaving raw
+                // int bits in a HeapAny shadow-stack slot that trips the GC
+                // alignment guard.
+                if let Some(func_def) = hir_module.func_defs.get(func) {
+                    if func_def.return_type.is_none() && func_def.blocks.len() == 1 {
+                        let cached = self.get_func_return_type(func).cloned();
+                        let inferred = self.infer_lambda_return_type(func_def, hir_module);
+                        let needs_update = match cached.as_ref() {
+                            None => true,
+                            Some(prev) => {
+                                matches!(prev, Type::Any) && !matches!(inferred, Type::Any)
+                            }
+                        };
+                        if needs_update && !matches!(inferred, Type::Any) {
+                            self.insert_func_return_type(*func, inferred);
+                        }
+                    }
+                }
+
                 // For closures that may be returned from decorators (used in chained decorators),
                 // we need to emit code to store the function pointer in the local.
                 // This allows the closure to be returned and used as a first-class value.
@@ -148,11 +173,21 @@ impl<'a> Lowering<'a> {
                         mir_func,
                     );
 
-                    // Store each capture in the inner tuple at index 0, 1, ...
+                    // §P.2.2: wrap fn-ptr captures (per wrapper-driven mask)
+                    // so GC sees Value::from_int-tagged bits, not raw text.
+                    let fn_ptr_idx = self.wrapper_fn_ptr_capture_index(*func, hir_module);
                     for (i, capture_op) in capture_operands.iter().enumerate() {
-                        let op_type = self.operand_type(capture_op, mir_func);
-                        let stored_op =
-                            self.box_primitive_if_needed(capture_op.clone(), &op_type, mir_func);
+                        let stored_op = if Some(i) == fn_ptr_idx {
+                            let wrapped = self.alloc_stack_local(Type::HeapAny, mir_func);
+                            self.emit_instruction(mir::InstructionKind::ValueFromInt {
+                                dest: wrapped,
+                                src: capture_op.clone(),
+                            });
+                            mir::Operand::Local(wrapped)
+                        } else {
+                            let op_type = self.operand_type(capture_op, mir_func);
+                            self.box_primitive_if_needed(capture_op.clone(), &op_type, mir_func)
+                        };
                         self.emit_runtime_call_void(
                             mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_TUPLE_SET,

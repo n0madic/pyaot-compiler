@@ -497,8 +497,12 @@ impl<'a> Lowering<'a> {
                         }
                         self.insert_closure_capture_types(*func_id, capture_types);
                     }
-                    let captures_tuple =
-                        self.lower_captures_to_tuple(captures, hir_module, mir_func)?;
+                    let captures_tuple = self.lower_captures_to_tuple_for(
+                        Some(*func_id),
+                        captures,
+                        hir_module,
+                        mir_func,
+                    )?;
                     let count = captures.len() as i64;
                     (
                         captures_tuple,

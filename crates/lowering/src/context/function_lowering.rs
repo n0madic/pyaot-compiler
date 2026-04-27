@@ -196,6 +196,13 @@ impl<'a> Lowering<'a> {
         } else {
             0
         };
+        // §P.2.2: index of the fn-ptr capture (wrapper-driven). The producer
+        // (`lower_closure` / `lower_captures_to_tuple_for` / etc.)
+        // `ValueFromInt`-wraps this slot; the prologue below mirrors that
+        // by emitting `UnwrapValueInt`. Both sides read the same predicate
+        // (`wrapper_fn_ptr_capture_index`) so producer/consumer stay in
+        // lock-step regardless of which scope built the closure.
+        let fn_ptr_capture_idx = self.wrapper_fn_ptr_capture_index(func.id, hir_module);
 
         // Params deferred to after entry_block is set up. Each tuple is
         // (var_id, param_local, concrete_base_ty).
@@ -227,11 +234,16 @@ impl<'a> Lowering<'a> {
             // Stage E: primitive-typed CAPTURE params of lambda-like
             // functions take the tagged Value ABI. See block-level comment
             // above for the design rationale.
+            let is_fn_ptr_capture = Some(i) == fn_ptr_capture_idx
+                && is_lambda_like
+                && i < capture_count
+                && !is_cell_param
+                && hir_param.kind != hir::ParamKind::VarPositional;
             let needs_prologue_unbox = is_lambda_like
                 && i < capture_count
                 && !is_cell_param
                 && hir_param.kind != hir::ParamKind::VarPositional
-                && matches!(base_ty, Type::Int | Type::Bool | Type::Float);
+                && (matches!(base_ty, Type::Int | Type::Bool | Type::Float) || is_fn_ptr_capture);
 
             // For nonlocal parameters, the type is a cell pointer (heap object pointer)
             let param_ty = if is_cell_param {
@@ -265,7 +277,15 @@ impl<'a> Lowering<'a> {
             }
 
             if needs_prologue_unbox {
-                prologue_unboxes.push((hir_param.var, local_id, base_ty.clone()));
+                // §P.2.2: fn-ptr captures are wrapped via `ValueFromInt` at
+                // the producer; route them through the prologue's `Int` arm
+                // so `UnwrapValueInt` recovers the raw text-segment address.
+                let prologue_ty = if is_fn_ptr_capture {
+                    Type::Int
+                } else {
+                    base_ty.clone()
+                };
+                prologue_unboxes.push((hir_param.var, local_id, prologue_ty));
             }
 
             let mir_param = mir::Local {

@@ -463,9 +463,24 @@ impl<'a> Lowering<'a> {
                 ))],
             });
 
+            // §P.2.2: if the target callee is a wrapper, its fn-ptr capture
+            // slot must store a `Value::from_int`-wrapped pointer; the
+            // wrapper's prologue unwraps it. Without the wrap, the GC mark
+            // walk treats the misaligned text-segment address in the
+            // captures-tuple slot as a heap pointer.
+            let fn_ptr_idx = self.wrapper_fn_ptr_capture_index(func, hir_module);
             for (i, capture_op) in capture_operands.into_iter().enumerate() {
-                let op_type = self.operand_type(&capture_op, mir_func);
-                let stored_op = self.box_primitive_if_needed(capture_op, &op_type, mir_func);
+                let stored_op = if Some(i) == fn_ptr_idx {
+                    let wrapped = self.alloc_stack_local(Type::HeapAny, mir_func);
+                    self.emit_instruction(mir::InstructionKind::ValueFromInt {
+                        dest: wrapped,
+                        src: capture_op,
+                    });
+                    mir::Operand::Local(wrapped)
+                } else {
+                    let op_type = self.operand_type(&capture_op, mir_func);
+                    self.box_primitive_if_needed(capture_op, &op_type, mir_func)
+                };
                 self.emit_runtime_call_void(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
                     vec![

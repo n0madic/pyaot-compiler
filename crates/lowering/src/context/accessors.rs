@@ -357,6 +357,43 @@ impl<'a> Lowering<'a> {
     pub(crate) fn is_wrapper_func(&self, func_id: &FuncId) -> bool {
         self.closures.wrapper_func_ids.contains(func_id)
     }
+
+    /// §P.2.2: if `func_id` is a wrapper (closure returned by a decorator),
+    /// return the index of its fn-ptr parameter — which is also the matching
+    /// capture-tuple slot index, since closure captures become the leading
+    /// params of the callee. The producer-side closure-construction site
+    /// uses this to decide whether to `ValueFromInt`-wrap a capture; the
+    /// callee's prologue uses the same predicate to emit `UnwrapValueInt`.
+    /// Driving both sides off `wrapper_func_ids` + `wrapper_func_param_name`
+    /// keeps producer/consumer in lock-step regardless of which scope is
+    /// constructing the closure.
+    pub(crate) fn wrapper_fn_ptr_capture_index(
+        &self,
+        func_id: FuncId,
+        hir_module: &hir::Module,
+    ) -> Option<usize> {
+        if !self.is_wrapper_func(&func_id) {
+            return None;
+        }
+        let func = hir_module.func_defs.get(&func_id)?;
+        let known_param_name = self.closures.wrapper_func_param_name.get(&func_id).copied();
+        for (i, param) in func.params.iter().enumerate() {
+            let param_name = self.interner.resolve(param.name);
+            let matches = if let Some(known) = known_param_name {
+                let known_str = self.interner.resolve(known);
+                let capture_variant = format!("__capture_{}", known_str);
+                param_name == known_str || param_name == capture_variant.as_str()
+            } else {
+                // Same fallback as `function_lowering.rs::insert_func_ptr_param`
+                // for wrappers not covered by the pre-scan.
+                param_name == "func" || param_name == "__capture_func"
+            };
+            if matches {
+                return Some(i);
+            }
+        }
+        None
+    }
 }
 
 // =============================================================================

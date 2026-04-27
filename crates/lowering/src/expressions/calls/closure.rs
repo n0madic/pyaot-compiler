@@ -110,17 +110,20 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         // 1. Get function address of original function
-        // The wrapper expects this as its first argument (the captured 'func' parameter)
-        //
-        // §P.2.2: function pointers are raw text-segment addresses, not heap
-        // objects. `alloc_stack_local` keeps the local off the shadow stack
-        // so the GC never sees this misaligned pointer-shaped non-object.
-        // (`alloc_and_add_local` would set `is_gc_root = true` for `Type::Any`,
-        // which would expose the function address to GC mark walks.)
-        let func_ptr_local = self.alloc_stack_local(Type::Any, mir_func);
+        // The wrapper expects this as its first argument (the captured 'func' parameter).
+        // §P.2.2: wrap as `Value::from_int` so the wrapper's prologue
+        // `UnwrapValueInt` recovers the raw text-segment address — same ABI
+        // as the closure-tuple trampoline path. Stays off the shadow stack
+        // (alloc_stack_local) since the wrapped Value(low bit 1) is_ptr=false.
+        let func_ptr_raw = self.alloc_stack_local(Type::Int, mir_func);
         self.emit_instruction(mir::InstructionKind::FuncAddr {
-            dest: func_ptr_local,
+            dest: func_ptr_raw,
             func: original_func_id,
+        });
+        let func_ptr_local = self.alloc_stack_local(Type::HeapAny, mir_func);
+        self.emit_instruction(mir::InstructionKind::ValueFromInt {
+            dest: func_ptr_local,
+            src: mir::Operand::Local(func_ptr_raw),
         });
 
         // 2. Build arguments: func_ptr + user args

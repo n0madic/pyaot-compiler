@@ -327,8 +327,12 @@ impl<'a> Lowering<'a> {
                             mir::Operand::Constant(mir::Constant::Int(encoding)),
                         )
                     } else {
-                        let captures_tuple =
-                            self.lower_captures_to_tuple(&captures, hir_module, mir_func)?;
+                        let captures_tuple = self.lower_captures_to_tuple_for(
+                            Some(func_id),
+                            &captures,
+                            hir_module,
+                            mir_func,
+                        )?;
                         let count = captures.len() as i64;
                         (
                             captures_tuple,
@@ -420,6 +424,19 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
+        self.lower_captures_to_tuple_for(None, captures, hir_module, mir_func)
+    }
+
+    /// §P.2.2 variant: takes the destination FuncId so wrapper-style fn-ptr
+    /// captures can be `ValueFromInt`-wrapped at the producer (matching the
+    /// callee's prologue `UnwrapValueInt`).
+    pub(crate) fn lower_captures_to_tuple_for(
+        &mut self,
+        target_func: Option<pyaot_utils::FuncId>,
+        captures: &[hir::ExprId],
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
         let count = captures.len();
 
         // Lower all capture expressions first to know their operand types
@@ -437,11 +454,21 @@ impl<'a> Lowering<'a> {
             mir_func,
         );
 
-        // Box primitives before storing so retrieval delivers tagged Value
-        // bits to the lambda's prologue unbox.
+        // Box primitives / wrap fn-ptr captures before storing so retrieval
+        // delivers tagged Value bits to the lambda's prologue unbox.
+        let fn_ptr_idx = target_func.and_then(|f| self.wrapper_fn_ptr_capture_index(f, hir_module));
         for (i, capture_operand) in capture_operands.into_iter().enumerate() {
-            let op_type = self.operand_type(&capture_operand, mir_func);
-            let stored_op = self.box_primitive_if_needed(capture_operand, &op_type, mir_func);
+            let stored_op = if Some(i) == fn_ptr_idx {
+                let wrapped = self.alloc_stack_local(Type::HeapAny, mir_func);
+                self.emit_instruction(mir::InstructionKind::ValueFromInt {
+                    dest: wrapped,
+                    src: capture_operand,
+                });
+                mir::Operand::Local(wrapped)
+            } else {
+                let op_type = self.operand_type(&capture_operand, mir_func);
+                self.box_primitive_if_needed(capture_operand, &op_type, mir_func)
+            };
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: tuple_local,
                 func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
@@ -527,8 +554,12 @@ impl<'a> Lowering<'a> {
                         mir::Operand::Constant(mir::Constant::Int(elem_unbox_kind << 8)),
                     )
                 } else {
-                    let captures_tuple =
-                        self.lower_captures_to_tuple(&captures, hir_module, mir_func)?;
+                    let captures_tuple = self.lower_captures_to_tuple_for(
+                        Some(func_id),
+                        &captures,
+                        hir_module,
+                        mir_func,
+                    )?;
                     let count = captures.len() as i64;
                     (
                         captures_tuple,
@@ -663,8 +694,12 @@ impl<'a> Lowering<'a> {
                             mir::Operand::Constant(mir::Constant::Int(elem_unbox_kind << 8)),
                         )
                     } else {
-                        let captures_tuple =
-                            self.lower_captures_to_tuple(&captures, hir_module, mir_func)?;
+                        let captures_tuple = self.lower_captures_to_tuple_for(
+                            Some(func_id),
+                            &captures,
+                            hir_module,
+                            mir_func,
+                        )?;
                         let count = captures.len() as i64;
                         (
                             captures_tuple,

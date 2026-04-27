@@ -422,9 +422,20 @@ impl<'a> Lowering<'a> {
         if matches!(builtin, hir::Builtin::Map) {
             let elem_type = if args.len() >= 2 {
                 let func_expr = &module.exprs[args[0]];
+                // §P.2.2: also resolve `Var` callable args by looking up the
+                // closure / function reference recorded during lowering. Without
+                // this, `fn = lambda x: ...; map(fn, ...)` resolves to
+                // `Iterator[Any]` (no func_id from `Var`), so the for-loop's
+                // `IterAdvance` Protocol arm doesn't emit `UnwrapValueInt` for
+                // the lambda's tagged-int return — the raw bits leak into the
+                // HeapAny shadow-stack slot and trip the GC alignment guard.
                 let func_id = match &func_expr.kind {
                     hir::ExprKind::FuncRef(id) => Some(*id),
                     hir::ExprKind::Closure { func, .. } => Some(*func),
+                    hir::ExprKind::Var(var_id) => self
+                        .get_var_closure(var_id)
+                        .map(|(fid, _)| *fid)
+                        .or_else(|| self.get_var_func(var_id)),
                     _ => None,
                 };
                 if let Some(func_id) = func_id {
