@@ -2,7 +2,7 @@
 //!
 //! Walks a function body once (iterated to fixed-point, bounded at 3
 //! iterations) and collects a unified type for every local `VarId` by
-//! merging every observation through [`Type::unify_field_type`]:
+//! merging every observation through [`TypeLattice::join`]:
 //!
 //! - `Bind { target, value }` — each `Var` leaf in `target` absorbs the
 //!   inferred type of `value`.
@@ -25,7 +25,7 @@
 use indexmap::IndexMap;
 use indexmap::IndexSet;
 use pyaot_hir as hir;
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeLattice};
 use pyaot_utils::VarId;
 use std::collections::HashSet;
 
@@ -882,7 +882,7 @@ fn merge_var(
             );
             let prev_is_any = matches!(prev, Type::Any | Type::HeapAny);
             if is_numeric_pair || is_tuple_pair {
-                let merged = Type::unify_field_type(&prev, &new_ty);
+                let merged = prev.join(&new_ty);
                 scratch.insert(var_id, merged);
             } else if prev_is_any {
                 // Concrete rebind over an `Any` seed — adopt the new
@@ -916,7 +916,11 @@ fn merge_var(
 fn elem_type_of_iterable(ty: &Type) -> Type {
     match ty {
         Type::List(e) | Type::Set(e) | Type::Iterator(e) => (**e).clone(),
-        Type::Tuple(types) if !types.is_empty() => Type::normalize_union(types.clone()),
+        Type::Tuple(types) if !types.is_empty() => types
+            .iter()
+            .cloned()
+            .reduce(|a, b| a.join(&b))
+            .unwrap_or(Type::Never),
         Type::Tuple(_) => Type::Any,
         Type::TupleVar(e) => (**e).clone(),
         Type::Dict(k, _) | Type::DefaultDict(k, _) => (**k).clone(),

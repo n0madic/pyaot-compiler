@@ -7,7 +7,7 @@ use indexmap::IndexMap;
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeLattice};
 use pyaot_utils::{ClassId, FuncId, InternedString, VarId};
 
 use crate::{LoweredClassInfo, Lowering};
@@ -310,20 +310,12 @@ impl<'a> Lowering<'a> {
                 }
                 let refined = class_fields
                     .get(&field_name)
-                    .map(|prev| Type::unify_field_type(prev, &observed_ty))
+                    .map(|prev| prev.join(&observed_ty))
                     .unwrap_or_else(|| {
-                        // `Any` / `HeapAny` storage carries no information; the
-                        // observed concrete type is strictly more informative.
-                        // `unify_field_type(Any, T)` returns `Union[Any, T]`
-                        // (normalize_union doesn't collapse subtypes), which
-                        // downstream lowering treats as a union and emits the
-                        // runtime-dispatch compare path — crashing when the
-                        // underlying storage is an unboxed primitive.
-                        if matches!(storage_ty, Type::Any | Type::HeapAny) {
-                            observed_ty.clone()
-                        } else {
-                            Type::unify_field_type(&storage_ty, &observed_ty)
-                        }
+                        // `join(Any, T) = Any` and `join(T, Any) = Any`, so
+                        // `Any`/`HeapAny` storage absorbs observed types
+                        // correctly without a special-case guard.
+                        storage_ty.join(&observed_ty)
                     });
                 class_fields.insert(field_name, refined);
             }
@@ -1193,7 +1185,11 @@ impl<'a> Lowering<'a> {
     fn constructor_scan_iter_elem_type(ty: &Type) -> Type {
         match ty {
             Type::List(e) | Type::Set(e) | Type::Iterator(e) | Type::TupleVar(e) => (**e).clone(),
-            Type::Tuple(types) if !types.is_empty() => Type::normalize_union(types.clone()),
+            Type::Tuple(types) if !types.is_empty() => types
+                .iter()
+                .cloned()
+                .reduce(|a, b| a.join(&b))
+                .unwrap_or(Type::Never),
             Type::Tuple(_) => Type::Any,
             Type::Dict(k, _) | Type::DefaultDict(k, _) => (**k).clone(),
             Type::Str => Type::Str,
@@ -1213,7 +1209,7 @@ impl<'a> Lowering<'a> {
         }
         observed_arg_types
             .entry((class_id, param_idx))
-            .and_modify(|prev| *prev = Type::unify_field_type(prev, &arg_ty))
+            .and_modify(|prev| *prev = prev.join(&arg_ty))
             .or_insert(arg_ty);
     }
 
