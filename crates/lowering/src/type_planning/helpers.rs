@@ -13,6 +13,45 @@ use super::infer::extract_iterable_element_type;
 /// Resolve the return type of a method call based on the object type and method name.
 /// Returns `None` if the method is not recognized (caller should apply its own fallback).
 pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Option<Type> {
+    if let Some(elem_ty) = obj_ty.list_elem() {
+        return match method_name {
+            "pop" => Some(elem_ty.clone()),
+            "copy" => Some(Type::list_of(elem_ty.clone())),
+            "index" | "count" => Some(Type::Int),
+            "append" | "insert" | "remove" | "clear" | "reverse" | "extend" | "sort" => {
+                Some(Type::None)
+            }
+            _ => None,
+        };
+    }
+    if let Some((key_ty, val_ty)) = obj_ty.dict_kv() {
+        return match method_name {
+            // Note: get() can return None when key is missing, but returning
+            // Optional[V] here would change the runtime representation (boxing),
+            // which causes crashes in the AOT compiler. Keep as V for safety.
+            "get" | "pop" | "setdefault" => Some(val_ty.clone()),
+            "copy" => Some(Type::dict_of(key_ty.clone(), val_ty.clone())),
+            "keys" => Some(Type::list_of(key_ty.clone())),
+            "values" => Some(Type::list_of(val_ty.clone())),
+            "items" => {
+                let tuple_ty = Type::tuple_of(vec![key_ty.clone(), val_ty.clone()]);
+                Some(Type::list_of(tuple_ty))
+            }
+            "popitem" => Some(Type::tuple_of(vec![key_ty.clone(), val_ty.clone()])),
+            "clear" | "update" | "move_to_end" => Some(Type::None),
+            _ => None,
+        };
+    }
+    if let Some(elem_ty) = obj_ty.set_elem() {
+        return match method_name {
+            "copy" | "union" | "intersection" | "difference" | "symmetric_difference" => {
+                Some(Type::set_of(elem_ty.clone()))
+            }
+            "add" | "remove" | "discard" | "clear" => Some(Type::None),
+            "issubset" | "issuperset" | "isdisjoint" => Some(Type::Bool),
+            _ => None,
+        };
+    }
     match obj_ty {
         Type::Str => match method_name {
             // String transformation methods
@@ -20,9 +59,11 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
             | "capitalize" | "swapcase" | "center" | "ljust" | "rjust" | "zfill" | "join"
             | "format" | "removeprefix" | "removesuffix" | "expandtabs" => Some(Type::Str),
             // Methods returning list
-            "split" | "splitlines" | "rsplit" => Some(Type::List(Box::new(Type::Str))),
+            "split" | "splitlines" | "rsplit" => Some(Type::list_of(Type::Str)),
             // Methods returning tuple
-            "partition" | "rpartition" => Some(Type::Tuple(vec![Type::Str, Type::Str, Type::Str])),
+            "partition" | "rpartition" => {
+                Some(Type::tuple_of(vec![Type::Str, Type::Str, Type::Str]))
+            }
             // Integer methods
             "find" | "rfind" | "index" | "rindex" | "count" => Some(Type::Int),
             // Boolean predicates
@@ -33,39 +74,6 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
             "encode" => Some(Type::Bytes),
             _ => None,
         },
-        Type::List(elem_ty) => match method_name {
-            "pop" => Some((**elem_ty).clone()),
-            "copy" => Some(Type::List(elem_ty.clone())),
-            "index" | "count" => Some(Type::Int),
-            "append" | "insert" | "remove" | "clear" | "reverse" | "extend" | "sort" => {
-                Some(Type::None)
-            }
-            _ => None,
-        },
-        Type::Dict(key_ty, val_ty) | Type::DefaultDict(key_ty, val_ty) => match method_name {
-            // Note: get() can return None when key is missing, but returning
-            // Optional[V] here would change the runtime representation (boxing),
-            // which causes crashes in the AOT compiler. Keep as V for safety.
-            "get" | "pop" | "setdefault" => Some((**val_ty).clone()),
-            "copy" => Some(Type::Dict(key_ty.clone(), val_ty.clone())),
-            "keys" => Some(Type::List(key_ty.clone())),
-            "values" => Some(Type::List(val_ty.clone())),
-            "items" => {
-                let tuple_ty = Type::Tuple(vec![(**key_ty).clone(), (**val_ty).clone()]);
-                Some(Type::List(Box::new(tuple_ty)))
-            }
-            "popitem" => Some(Type::Tuple(vec![(**key_ty).clone(), (**val_ty).clone()])),
-            "clear" | "update" | "move_to_end" => Some(Type::None),
-            _ => None,
-        },
-        Type::Set(elem_ty) => match method_name {
-            "copy" | "union" | "intersection" | "difference" | "symmetric_difference" => {
-                Some(Type::Set(elem_ty.clone()))
-            }
-            "add" | "remove" | "discard" | "clear" => Some(Type::None),
-            "issubset" | "issuperset" | "isdisjoint" => Some(Type::Bool),
-            _ => None,
-        },
         Type::Bytes => match method_name {
             // Bytes transformation methods
             "upper" | "lower" | "strip" | "lstrip" | "rstrip" | "replace" | "join" | "fromhex" => {
@@ -74,7 +82,7 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
             // Decode returns str
             "decode" => Some(Type::Str),
             // Methods returning list
-            "split" | "rsplit" => Some(Type::List(Box::new(Type::Bytes))),
+            "split" | "rsplit" => Some(Type::list_of(Type::Bytes)),
             // Integer methods
             "find" | "rfind" | "index" | "rindex" | "count" => Some(Type::Int),
             // Boolean predicates
@@ -86,7 +94,7 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
             let str_or_bytes = if *binary { Type::Bytes } else { Type::Str };
             match method_name {
                 "read" | "readline" => Some(str_or_bytes),
-                "readlines" => Some(Type::List(Box::new(str_or_bytes))),
+                "readlines" => Some(Type::list_of(str_or_bytes)),
                 "write" => Some(Type::Int),
                 "close" | "flush" => Some(Type::None),
                 // Context-manager protocol — `with open(...) as f:` desugars
@@ -127,20 +135,20 @@ pub(crate) fn resolve_binop_type(op: &hir::BinOp, left_ty: &Type, right_ty: &Typ
         return Some(right_ty.clone());
     }
     // Set operations (|, &, -, ^) return Set type
-    if let Type::Set(elem_ty) = left_ty {
+    if let Some(elem_ty) = left_ty.set_elem() {
         if matches!(
             op,
             hir::BinOp::BitOr | hir::BinOp::BitAnd | hir::BinOp::Sub | hir::BinOp::BitXor
         ) {
-            return Some(Type::Set(elem_ty.clone()));
+            return Some(Type::set_of(elem_ty.clone()));
         }
     }
     // List concatenation (+) returns List type
-    if matches!(left_ty, Type::List(_)) && matches!(op, hir::BinOp::Add) {
+    if left_ty.is_list_like() && matches!(op, hir::BinOp::Add) {
         return Some(left_ty.clone());
     }
     // Dict merge (|) returns Dict type
-    if matches!(left_ty, Type::Dict(_, _)) && matches!(op, hir::BinOp::BitOr) {
+    if left_ty.is_dict_like() && matches!(op, hir::BinOp::BitOr) {
         return Some(left_ty.clone());
     }
     // Python 3: true division (/) always returns float
@@ -239,20 +247,26 @@ pub(crate) fn unwrap_optional(ty: &Type) -> Type {
 /// Resolve the type of an indexing operation on a known container type.
 /// Returns `Type::Any` for unrecognized types (caller handles Class `__getitem__` locally).
 pub(crate) fn resolve_index_type(obj_ty: &Type, index_expr: &hir::Expr) -> Type {
-    match obj_ty {
-        Type::Str => Type::Str,
-        Type::Bytes => Type::Int,
-        Type::List(elem) => {
-            // List elements with Any type are heap pointers from ListGet
-            let t = (**elem).clone();
-            if matches!(t, Type::Any) {
-                Type::HeapAny
-            } else {
-                t
-            }
-        }
-        Type::Dict(_, val) | Type::DefaultDict(_, val) => (**val).clone(),
-        Type::Tuple(elems) if !elems.is_empty() => {
+    if matches!(obj_ty, Type::Str) {
+        return Type::Str;
+    }
+    if matches!(obj_ty, Type::Bytes) {
+        return Type::Int;
+    }
+    if let Some(elem) = obj_ty.list_elem() {
+        // List elements with Any type are heap pointers from ListGet
+        let t = elem.clone();
+        return if matches!(t, Type::Any) {
+            Type::HeapAny
+        } else {
+            t
+        };
+    }
+    if let Some((_, val)) = obj_ty.dict_kv() {
+        return val.clone();
+    }
+    if let Some(elems) = obj_ty.tuple_elems() {
+        if !elems.is_empty() {
             // Try compile-time index resolution for Int literals
             if let hir::ExprKind::Int(idx) = &index_expr.kind {
                 let len = elems.len() as i64;
@@ -277,24 +291,24 @@ pub(crate) fn resolve_index_type(obj_ty: &Type, index_expr: &hir::Expr) -> Type 
                     .reduce(|a, b| a.join(&b))
                     .unwrap_or(Type::Never)
             };
-            if matches!(t, Type::Any) {
+            return if matches!(t, Type::Any) {
                 Type::HeapAny
             } else {
                 t
-            }
+            };
         }
-        // Variable-length tuple — indexing always returns the element type.
-        // Bounds-checked at runtime via rt_tuple_get.
-        Type::TupleVar(elem) => {
-            let t = (**elem).clone();
-            if matches!(t, Type::Any) {
-                Type::HeapAny
-            } else {
-                t
-            }
-        }
-        _ => Type::Any,
     }
+    // Variable-length tuple — indexing always returns the element type.
+    // Bounds-checked at runtime via rt_tuple_get.
+    if let Some(elem) = obj_ty.tuple_var_elem() {
+        let t = elem.clone();
+        return if matches!(t, Type::Any) {
+            Type::HeapAny
+        } else {
+            t
+        };
+    }
+    Type::Any
 }
 
 /// Resolve the return type of a builtin function call.
@@ -372,10 +386,12 @@ pub(crate) fn resolve_builtin_call_type(
             if arg_types.is_empty() {
                 return Some(Type::Int);
             }
-            let element_type = match &arg_types[0] {
-                Type::List(elem) | Type::Iterator(elem) | Type::Set(elem) => (**elem).clone(),
-                _ => Type::Int,
-            };
+            let element_type = arg_types[0]
+                .list_elem()
+                .or_else(|| arg_types[0].set_elem())
+                .or_else(|| arg_types[0].iter_elem())
+                .cloned()
+                .unwrap_or(Type::Int);
             // User class elements: sum returns an instance of the class
             // (matches CPython when `__add__`/`__radd__` are defined).
             if matches!(element_type, Type::Class { .. }) {
@@ -425,7 +441,7 @@ pub(crate) fn resolve_builtin_call_type(
             } else {
                 Type::Int
             };
-            Some(Type::Tuple(vec![result_ty.clone(), result_ty]))
+            Some(Type::tuple_of(vec![result_ty.clone(), result_ty]))
         }
 
         // === Enumerate ===
@@ -434,7 +450,7 @@ pub(crate) fn resolve_builtin_call_type(
                 return Some(Type::Iterator(Box::new(Type::Any)));
             }
             let elem_type = extract_iterable_element_type(&arg_types[0]);
-            Some(Type::Iterator(Box::new(Type::Tuple(vec![
+            Some(Type::Iterator(Box::new(Type::tuple_of(vec![
                 Type::Int,
                 elem_type,
             ]))))
@@ -443,7 +459,7 @@ pub(crate) fn resolve_builtin_call_type(
         // === Zip ===
         Builtin::Zip => {
             if args.is_empty() {
-                return Some(Type::Iterator(Box::new(Type::Tuple(vec![]))));
+                return Some(Type::Iterator(Box::new(Type::tuple_of(vec![]))));
             }
             let mut elem_types = Vec::new();
             for (i, arg_id) in args.iter().enumerate() {
@@ -463,7 +479,7 @@ pub(crate) fn resolve_builtin_call_type(
                     elem_types.push(Type::Any);
                 }
             }
-            Some(Type::Iterator(Box::new(Type::Tuple(elem_types))))
+            Some(Type::Iterator(Box::new(Type::tuple_of(elem_types))))
         }
 
         // === Iter ===
@@ -500,40 +516,40 @@ pub(crate) fn resolve_builtin_call_type(
         // === Sorted ===
         Builtin::Sorted => {
             if arg_types.is_empty() {
-                return Some(Type::List(Box::new(Type::Any)));
+                return Some(Type::list_of(Type::Any));
             }
             let elem_type = extract_iterable_element_type(&arg_types[0]);
-            Some(Type::List(Box::new(elem_type)))
+            Some(Type::list_of(elem_type))
         }
 
         // === List constructor ===
         Builtin::List => {
             if arg_types.is_empty() {
-                return Some(Type::List(Box::new(Type::Any)));
+                return Some(Type::list_of(Type::Any));
             }
             let elem_type = extract_iterable_element_type(&arg_types[0]);
-            Some(Type::List(Box::new(elem_type)))
+            Some(Type::list_of(elem_type))
         }
 
         // === Tuple constructor ===
         Builtin::Tuple => {
             if arg_types.is_empty() {
-                return Some(Type::Tuple(vec![]));
+                return Some(Type::tuple_of(vec![]));
             }
             let elem_type = extract_iterable_element_type(&arg_types[0]);
-            Some(Type::Tuple(vec![elem_type]))
+            Some(Type::tuple_of(vec![elem_type]))
         }
 
         // === Dict constructor ===
-        Builtin::Dict => Some(Type::Dict(Box::new(Type::Any), Box::new(Type::Any))),
+        Builtin::Dict => Some(Type::dict_of(Type::Any, Type::Any)),
 
         // === Set constructor ===
         Builtin::Set => {
             if arg_types.is_empty() {
-                return Some(Type::Set(Box::new(Type::Any)));
+                return Some(Type::set_of(Type::Any));
             }
             let elem_type = extract_iterable_element_type(&arg_types[0]);
-            Some(Type::Set(Box::new(elem_type)))
+            Some(Type::set_of(elem_type))
         }
 
         // === Filter ===
@@ -587,7 +603,7 @@ pub(crate) fn resolve_builtin_call_type(
             // args[0] is Int(factory_tag) set by the frontend
             if args.is_empty() {
                 // No factory — behaves like regular dict
-                Some(Type::Dict(Box::new(Type::Any), Box::new(Type::Any)))
+                Some(Type::dict_of(Type::Any, Type::Any))
             } else {
                 let factory_expr = &module.exprs[args[0]];
                 let value_type = match &factory_expr.kind {
@@ -596,9 +612,9 @@ pub(crate) fn resolve_builtin_call_type(
                         1 => Type::Float,
                         2 => Type::Str,
                         3 => Type::Bool,
-                        4 => Type::List(Box::new(Type::Any)),
-                        5 => Type::Dict(Box::new(Type::Any), Box::new(Type::Any)),
-                        6 => Type::Set(Box::new(Type::Any)),
+                        4 => Type::list_of(Type::Any),
+                        5 => Type::dict_of(Type::Any, Type::Any),
+                        6 => Type::set_of(Type::Any),
                         _ => Type::Any,
                     },
                     _ => Type::Any,
@@ -620,9 +636,9 @@ pub(crate) fn resolve_builtin_call_type(
 /// Empty lists use the expression's type annotation if available.
 pub(crate) fn infer_list_type(elem_types: Vec<Type>, expr_ty: Option<&Type>) -> Type {
     if elem_types.is_empty() {
-        expr_ty.cloned().unwrap_or(Type::List(Box::new(Type::Any)))
+        expr_ty.cloned().unwrap_or_else(|| Type::list_of(Type::Any))
     } else {
-        Type::List(Box::new(unify_element_types(elem_types)))
+        Type::list_of(unify_element_types(elem_types))
     }
 }
 
@@ -630,11 +646,11 @@ pub(crate) fn infer_list_type(elem_types: Vec<Type>, expr_ty: Option<&Type>) -> 
 /// Empty dicts default to Dict[Any, Any].
 pub(crate) fn infer_dict_type(key_types: Vec<Type>, val_types: Vec<Type>) -> Type {
     if key_types.is_empty() {
-        Type::Dict(Box::new(Type::Any), Box::new(Type::Any))
+        Type::dict_of(Type::Any, Type::Any)
     } else {
-        Type::Dict(
-            Box::new(unify_element_types(key_types)),
-            Box::new(unify_element_types(val_types)),
+        Type::dict_of(
+            unify_element_types(key_types),
+            unify_element_types(val_types),
         )
     }
 }
@@ -643,9 +659,9 @@ pub(crate) fn infer_dict_type(key_types: Vec<Type>, val_types: Vec<Type>) -> Typ
 /// Empty sets default to Set[Any].
 pub(crate) fn infer_set_type(elem_types: Vec<Type>) -> Type {
     if elem_types.is_empty() {
-        Type::Set(Box::new(Type::Any))
+        Type::set_of(Type::Any)
     } else {
-        Type::Set(Box::new(unify_element_types(elem_types)))
+        Type::set_of(unify_element_types(elem_types))
     }
 }
 
@@ -707,7 +723,7 @@ mod tests {
 
     #[test]
     fn test_binop_list_concat() {
-        let list_int = Type::List(Box::new(Type::Int));
+        let list_int = Type::list_of(Type::Int);
         let result = resolve_binop_type(&hir::BinOp::Add, &list_int, &list_int);
         assert_eq!(result, Some(list_int));
     }
@@ -770,13 +786,13 @@ mod tests {
     #[test]
     fn test_infer_list_type_empty() {
         let result = infer_list_type(vec![], None);
-        assert_eq!(result, Type::List(Box::new(Type::Any)));
+        assert_eq!(result, Type::list_of(Type::Any));
     }
 
     #[test]
     fn test_infer_list_type_homogeneous() {
         let result = infer_list_type(vec![Type::Int, Type::Int], None);
-        assert_eq!(result, Type::List(Box::new(Type::Int)));
+        assert_eq!(result, Type::list_of(Type::Int));
     }
 
     // === infer_dict_type ===
@@ -784,27 +800,27 @@ mod tests {
     #[test]
     fn test_infer_dict_type_empty() {
         let result = infer_dict_type(vec![], vec![]);
-        assert_eq!(result, Type::Dict(Box::new(Type::Any), Box::new(Type::Any)));
+        assert_eq!(result, Type::dict_of(Type::Any, Type::Any));
     }
 
     #[test]
     fn test_infer_dict_type_str_int() {
         let result = infer_dict_type(vec![Type::Str], vec![Type::Int]);
-        assert_eq!(result, Type::Dict(Box::new(Type::Str), Box::new(Type::Int)));
+        assert_eq!(result, Type::dict_of(Type::Str, Type::Int));
     }
 
     // === infer_set_type ===
 
     #[test]
     fn test_infer_set_type_empty() {
-        assert_eq!(infer_set_type(vec![]), Type::Set(Box::new(Type::Any)));
+        assert_eq!(infer_set_type(vec![]), Type::set_of(Type::Any));
     }
 
     #[test]
     fn test_infer_set_type_int() {
         assert_eq!(
             infer_set_type(vec![Type::Int, Type::Int]),
-            Type::Set(Box::new(Type::Int))
+            Type::set_of(Type::Int)
         );
     }
 
@@ -818,7 +834,7 @@ mod tests {
         );
         assert_eq!(
             resolve_method_return_type(&Type::Str, "split"),
-            Some(Type::List(Box::new(Type::Str)))
+            Some(Type::list_of(Type::Str))
         );
         assert_eq!(
             resolve_method_return_type(&Type::Str, "find"),
@@ -832,7 +848,7 @@ mod tests {
 
     #[test]
     fn test_list_method_types() {
-        let list_int = Type::List(Box::new(Type::Int));
+        let list_int = Type::list_of(Type::Int);
         assert_eq!(
             resolve_method_return_type(&list_int, "pop"),
             Some(Type::Int)
@@ -849,11 +865,11 @@ mod tests {
 
     #[test]
     fn test_dict_method_types() {
-        let dict = Type::Dict(Box::new(Type::Str), Box::new(Type::Int));
+        let dict = Type::dict_of(Type::Str, Type::Int);
         assert_eq!(resolve_method_return_type(&dict, "get"), Some(Type::Int));
         assert_eq!(
             resolve_method_return_type(&dict, "keys"),
-            Some(Type::List(Box::new(Type::Str)))
+            Some(Type::list_of(Type::Str))
         );
     }
 
@@ -876,7 +892,7 @@ mod tests {
 
     #[test]
     fn test_index_list() {
-        let list = Type::List(Box::new(Type::Int));
+        let list = Type::list_of(Type::Int);
         let expr = hir::Expr {
             kind: hir::ExprKind::Int(0),
             ty: Some(Type::Int),
@@ -887,7 +903,7 @@ mod tests {
 
     #[test]
     fn test_index_dict() {
-        let dict = Type::Dict(Box::new(Type::Str), Box::new(Type::Int));
+        let dict = Type::dict_of(Type::Str, Type::Int);
         let expr = hir::Expr {
             kind: hir::ExprKind::Int(0),
             ty: Some(Type::Int),
@@ -898,7 +914,7 @@ mod tests {
 
     #[test]
     fn test_index_tuple_const() {
-        let tuple = Type::Tuple(vec![Type::Int, Type::Str, Type::Bool]);
+        let tuple = Type::tuple_of(vec![Type::Int, Type::Str, Type::Bool]);
         let expr = hir::Expr {
             kind: hir::ExprKind::Int(1),
             ty: Some(Type::Int),
@@ -909,7 +925,7 @@ mod tests {
 
     #[test]
     fn test_index_tuple_negative() {
-        let tuple = Type::Tuple(vec![Type::Int, Type::Str, Type::Bool]);
+        let tuple = Type::tuple_of(vec![Type::Int, Type::Str, Type::Bool]);
         let expr = hir::Expr {
             kind: hir::ExprKind::Int(-1),
             ty: Some(Type::Int),

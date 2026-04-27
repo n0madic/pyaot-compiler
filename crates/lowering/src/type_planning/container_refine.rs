@@ -80,7 +80,7 @@ impl<'a> Lowering<'a> {
                         overlay,
                     );
                     if key_ty != Type::Any || val_ty != Type::Any {
-                        let refined = Type::Dict(Box::new(key_ty), Box::new(val_ty));
+                        let refined = Type::dict_of(key_ty, val_ty);
                         self.lowering_seed_info
                             .refined_container_types
                             .insert(target, refined);
@@ -96,9 +96,9 @@ impl<'a> Lowering<'a> {
 
                     if elem_ty != Type::Any {
                         let refined = if is_empty_list {
-                            Type::List(Box::new(elem_ty))
+                            Type::list_of(elem_ty)
                         } else {
-                            Type::Set(Box::new(elem_ty))
+                            Type::set_of(elem_ty)
                         };
                         // Store in refined_container_types which persists across function lowerings
                         self.lowering_seed_info
