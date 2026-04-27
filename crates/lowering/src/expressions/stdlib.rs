@@ -197,7 +197,7 @@ impl<'a> Lowering<'a> {
 
                 // Auto-box if enabled and parameter is Any
                 if hints.auto_box && matches!(param.ty, TypeSpec::Any) {
-                    self.box_primitive_if_needed(arg_operand, &arg_type, mir_func)
+                    self.emit_value_slot(arg_operand, &arg_type, mir_func)
                 } else {
                     arg_operand
                 }
@@ -255,7 +255,7 @@ impl<'a> Lowering<'a> {
 
             // Box the argument when it is a primitive that requires heap representation
             // (float → BoxFloat, bool → BoxBool, None → BoxNone)
-            let pushed_operand = self.box_primitive_if_needed(arg_operand, &arg_type, mir_func);
+            let pushed_operand = self.emit_value_slot(arg_operand, &arg_type, mir_func);
 
             self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_PUSH),
@@ -316,7 +316,7 @@ impl<'a> Lowering<'a> {
                 // receives valid *mut Obj pointers (not raw i64/f64 values)
                 if matches!(param.ty, pyaot_stdlib_defs::TypeSpec::Any) {
                     let arg_type = self.seed_expr_type(args[i], hir_module);
-                    self.box_primitive_if_needed(op, &arg_type, mir_func)
+                    self.emit_value_slot(op, &arg_type, mir_func)
                 } else {
                     op
                 }

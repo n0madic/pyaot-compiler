@@ -479,7 +479,7 @@ impl<'a> Lowering<'a> {
                     mir::Operand::Local(wrapped)
                 } else {
                     let op_type = self.operand_type(&capture_op, mir_func);
-                    self.box_primitive_if_needed(capture_op, &op_type, mir_func)
+                    self.emit_value_slot(capture_op, &op_type, mir_func)
                 };
                 self.emit_runtime_call_void(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
@@ -523,30 +523,6 @@ impl<'a> Lowering<'a> {
             );
 
             Ok(mir::Operand::Local(result_local))
-        }
-    }
-
-    // =====================================================================
-    // Shared Helper Functions
-    // =====================================================================
-
-    /// Promote an operand to float if needed.
-    /// Returns the operand unchanged if already float, otherwise emits IntToFloat conversion.
-    pub(crate) fn promote_to_float_if_needed(
-        &mut self,
-        mir_func: &mut mir::Function,
-        operand: mir::Operand,
-        current_type: &Type,
-    ) -> mir::Operand {
-        if *current_type != Type::Float {
-            let temp_local = self.alloc_and_add_local(Type::Float, mir_func);
-            self.emit_instruction(mir::InstructionKind::IntToFloat {
-                dest: temp_local,
-                src: operand,
-            });
-            mir::Operand::Local(temp_local)
-        } else {
-            operand
         }
     }
 }

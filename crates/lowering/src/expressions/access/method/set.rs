@@ -23,7 +23,7 @@ impl<'a> Lowering<'a> {
                 let elem_arg = crate::first_arg_or_none(arg_operands);
                 // Use actual argument type for boxing decision
                 let elem_type = arg_types.first().cloned().unwrap_or(Type::Any);
-                let boxed_elem = self.box_primitive_if_needed(elem_arg, &elem_type, mir_func);
+                let boxed_elem = self.emit_value_slot(elem_arg, &elem_type, mir_func);
 
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_ADD),
@@ -38,7 +38,7 @@ impl<'a> Lowering<'a> {
                 // .remove(elem) - removes element, raises KeyError if missing
                 let elem_arg = crate::first_arg_or_none(arg_operands);
                 let elem_type = arg_types.first().cloned().unwrap_or(Type::Any);
-                let boxed_elem = self.box_primitive_if_needed(elem_arg, &elem_type, mir_func);
+                let boxed_elem = self.emit_value_slot(elem_arg, &elem_type, mir_func);
 
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_REMOVE),
@@ -53,7 +53,7 @@ impl<'a> Lowering<'a> {
                 // .discard(elem) - removes element if present, no error if missing
                 let elem_arg = crate::first_arg_or_none(arg_operands);
                 let elem_type = arg_types.first().cloned().unwrap_or(Type::Any);
-                let boxed_elem = self.box_primitive_if_needed(elem_arg, &elem_type, mir_func);
+                let boxed_elem = self.emit_value_slot(elem_arg, &elem_type, mir_func);
 
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_SET_DISCARD),

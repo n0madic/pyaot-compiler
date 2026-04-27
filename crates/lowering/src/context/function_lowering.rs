@@ -200,7 +200,7 @@ impl<'a> Lowering<'a> {
         //
         // User-visible params keep raw declared types: HOF runtime
         // delivers iterable elements raw, and direct callers coerce via
-        // `box_primitive_if_needed` only when the param is Any-typed.
+        // `emit_value_slot` only when the param is Any-typed.
         // Trampoline closure-dispatch must keep its args-tuple in a form
         // that yields raw values when extracted alongside HEAP_OBJ
         // captures — see `lower_indirect_call_with_varargs`.

@@ -370,7 +370,7 @@ impl<'a> Lowering<'a> {
         };
         self.insert_var_type(var_id, local_ty.clone());
         let dest_local = self.get_or_create_local(var_id, local_ty.clone(), mir_func);
-        let coerced = self.coerce_to_field_type(value_operand, value_type, &local_ty, mir_func);
+        let coerced = self.coerce_for_storage(value_operand, value_type, &local_ty, mir_func);
         self.emit_instruction(mir::InstructionKind::Copy {
             dest: dest_local,
             src: coerced,
@@ -459,44 +459,44 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    /// Coerce `value_operand` to match the declared `field_ty` before it is
-    /// stored via `rt_instance_set_field`. The runtime stores every field
-    /// as a raw `i64`; read-side codegen then interprets those bits
-    /// according to the field's declared type. Without coercion, writing
-    /// an `Int` literal into a field that was widened to `Float` (Area E
-    /// §E.3) stores the `i64` bit-pattern, which the read would later
-    /// bitcast into a subnormal `f64`.
+    /// Coerces a typed operand for storage into a slot of a potentially different type.
+    /// Applies numeric-tower widening (Int|Bool → Float) then Value-slot encoding
+    /// (primitives → tagged-Value for dynamic/Union/Any/HeapAny slots).
     ///
     /// Rules:
-    /// - `(Int | Bool, Float)` → emit `IntToFloat` (reuses
-    ///   `promote_to_float_if_needed`).
+    /// - `(Int | Bool, Float)` → emit `IntToFloat` (numeric tower widening).
     /// - `(primitive, Union | Any | HeapAny)` → box via
-    ///   `box_primitive_if_needed` so the field can hold a heap pointer.
+    ///   `emit_value_slot` so the field can hold a heap pointer.
     /// - Everything else — identity. `Bool → Int` is a safe bit-extension
     ///   handled by the existing `GlobalSet(Ptr)` pattern (Cranelift zero-
     ///   extends `i8` to `i64`).
-    pub(crate) fn coerce_to_field_type(
+    pub(crate) fn coerce_for_storage(
         &mut self,
         value_operand: mir::Operand,
         value_ty: &Type,
-        field_ty: &Type,
+        slot_ty: &Type,
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
         // Identity — no coercion required.
-        if value_ty == field_ty {
+        if value_ty == slot_ty {
             return value_operand;
         }
-        match (value_ty, field_ty) {
+        match (value_ty, slot_ty) {
             // Numeric tower widening.
             (Type::Int | Type::Bool, Type::Float) => {
-                self.promote_to_float_if_needed(mir_func, value_operand, value_ty)
+                let temp_local = self.alloc_and_add_local(Type::Float, mir_func);
+                self.emit_instruction(mir::InstructionKind::IntToFloat {
+                    dest: temp_local,
+                    src: value_operand,
+                });
+                mir::Operand::Local(temp_local)
             }
             // Primitive into union / dynamic field — box so the raw bits
             // become a heap pointer.
             (Type::Int | Type::Bool | Type::Float | Type::None, Type::Union(_))
             | (Type::Int | Type::Bool | Type::Float | Type::None, Type::Any)
             | (Type::Int | Type::Bool | Type::Float | Type::None, Type::HeapAny) => {
-                self.box_primitive_if_needed(value_operand, value_ty, mir_func)
+                self.emit_value_slot(value_operand, value_ty, mir_func)
             }
             // Everything else — identity.
             _ => value_operand,
@@ -509,7 +509,7 @@ impl<'a> Lowering<'a> {
     /// (heap-boxed via `rt_box_float`), `Int` fields store
     /// `Value::from_int(n)` (via the `ValueFromInt` MIR), `Bool` fields store
     /// `Value::from_bool(b)` (via `ValueFromBool`); heap and dynamic shapes
-    /// fall through to `coerce_to_field_type`.
+    /// fall through to `coerce_for_storage`.
     pub(crate) fn coerce_for_instance_field_store(
         &mut self,
         value_operand: mir::Operand,
@@ -518,7 +518,8 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
         if matches!(field_ty, Type::Float) {
-            let f64_operand = self.promote_to_float_if_needed(mir_func, value_operand, value_ty);
+            let f64_operand =
+                self.coerce_for_storage(value_operand, value_ty, &Type::Float, mir_func);
             let boxed_local = self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
                 vec![f64_operand],
@@ -537,7 +538,7 @@ impl<'a> Lowering<'a> {
                 });
                 mir::Operand::Local(int_dest)
             } else {
-                self.coerce_to_field_type(value_operand, value_ty, field_ty, mir_func)
+                self.coerce_for_storage(value_operand, value_ty, field_ty, mir_func)
             };
             let dest = self.alloc_and_add_local(Type::HeapAny, mir_func);
             self.emit_instruction(mir::InstructionKind::ValueFromInt {
@@ -547,12 +548,12 @@ impl<'a> Lowering<'a> {
             return mir::Operand::Local(dest);
         }
         if matches!(field_ty, Type::Bool) {
-            let coerced = self.coerce_to_field_type(value_operand, value_ty, field_ty, mir_func);
+            let coerced = self.coerce_for_storage(value_operand, value_ty, field_ty, mir_func);
             let dest = self.alloc_and_add_local(Type::HeapAny, mir_func);
             self.emit_instruction(mir::InstructionKind::ValueFromBool { dest, src: coerced });
             return mir::Operand::Local(dest);
         }
-        self.coerce_to_field_type(value_operand, value_ty, field_ty, mir_func)
+        self.coerce_for_storage(value_operand, value_ty, field_ty, mir_func)
     }
 
     /// Bind an already-lowered RHS operand into `obj[index]`.
@@ -569,8 +570,8 @@ impl<'a> Lowering<'a> {
     ) -> Result<()> {
         match obj_type {
             Type::Dict(_, _) => {
-                let boxed_key = self.box_primitive_if_needed(index_operand, index_type, mir_func);
-                let boxed_value = self.box_primitive_if_needed(value_operand, value_type, mir_func);
+                let boxed_key = self.emit_value_slot(index_operand, index_type, mir_func);
+                let boxed_value = self.emit_value_slot(value_operand, value_type, mir_func);
                 self.emit_runtime_call_void(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
                     vec![obj_operand, boxed_key, boxed_value],
@@ -578,13 +579,13 @@ impl<'a> Lowering<'a> {
                 );
             }
             Type::DefaultDict(_, val_ty) => {
-                let boxed_key = self.box_primitive_if_needed(index_operand, index_type, mir_func);
+                let boxed_key = self.emit_value_slot(index_operand, index_type, mir_func);
                 let box_type = if *value_type == Type::Any {
                     val_ty.as_ref()
                 } else {
                     value_type
                 };
-                let boxed_value = self.box_primitive_if_needed(value_operand, box_type, mir_func);
+                let boxed_value = self.emit_value_slot(value_operand, box_type, mir_func);
                 self.emit_runtime_call_void(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_SET),
                     vec![obj_operand, boxed_key, boxed_value],
@@ -598,7 +599,7 @@ impl<'a> Lowering<'a> {
                 } else {
                     elem_ty.as_ref()
                 };
-                let store_operand = self.box_primitive_if_needed(value_operand, box_type, mir_func);
+                let store_operand = self.emit_value_slot(value_operand, box_type, mir_func);
                 self.emit_runtime_call_void(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_SET),
                     vec![obj_operand, index_operand, store_operand],

@@ -37,7 +37,7 @@ impl<'a> Lowering<'a> {
                 {
                     let value_ty = self.seed_expr_type(*expr_id, hir_module);
                     if matches!(value_ty, Type::Bool | Type::Int | Type::Float | Type::None) {
-                        operand = self.box_primitive_if_needed(operand, &value_ty, mir_func);
+                        operand = self.emit_value_slot(operand, &value_ty, mir_func);
                     }
                 }
             }

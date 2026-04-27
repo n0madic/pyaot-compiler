@@ -76,7 +76,7 @@ impl<'a> Lowering<'a> {
     ///
     /// Uses `Type::HeapAny` for the boxed result so callers see a uniform
     /// pointer-shaped local.
-    pub(crate) fn box_primitive_if_needed(
+    pub(crate) fn emit_value_slot(
         &mut self,
         operand: mir::Operand,
         ty: &Type,
@@ -355,8 +355,7 @@ impl<'a> Lowering<'a> {
                     let param = &param_class.regular[i];
                     if matches!(&param.ty, Some(Type::Any) | Some(Type::Union(_))) {
                         let arg_type = self.operand_type(operand, mir_func);
-                        *operand =
-                            self.box_primitive_if_needed(operand.clone(), &arg_type, mir_func);
+                        *operand = self.emit_value_slot(operand.clone(), &arg_type, mir_func);
                     } else if matches!(
                         &param.ty,
                         Some(Type::Int) | Some(Type::Float) | Some(Type::Bool)
@@ -379,8 +378,7 @@ impl<'a> Lowering<'a> {
                     let param = &param_class.kwonly[i];
                     if matches!(&param.ty, Some(Type::Any) | Some(Type::Union(_))) {
                         let arg_type = self.operand_type(operand, mir_func);
-                        *operand =
-                            self.box_primitive_if_needed(operand.clone(), &arg_type, mir_func);
+                        *operand = self.emit_value_slot(operand.clone(), &arg_type, mir_func);
                     } else if matches!(
                         &param.ty,
                         Some(Type::Int) | Some(Type::Float) | Some(Type::Bool)
@@ -474,7 +472,7 @@ impl<'a> Lowering<'a> {
             let op_type = operand_types
                 .and_then(|types| types.get(i))
                 .unwrap_or(elem_type);
-            let final_operand = self.box_primitive_if_needed(op.clone(), op_type, mir_func);
+            let final_operand = self.emit_value_slot(op.clone(), op_type, mir_func);
 
             self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),

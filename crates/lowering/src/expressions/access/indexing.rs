@@ -218,7 +218,7 @@ impl<'a> Lowering<'a> {
                 });
                 // Box key if needed (int/bool keys need boxing)
                 let index_type = self.seed_expr_type(index, hir_module);
-                let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
+                let boxed_key = self.emit_value_slot(index_operand, &index_type, mir_func);
 
                 // Check if value type needs unboxing — `unbox_if_needed`
                 // emits ValueFromInt/Bool MIR or rt_unbox_float.
@@ -262,7 +262,7 @@ impl<'a> Lowering<'a> {
                     is_gc_root: value_ty.is_heap(),
                 });
                 let index_type = self.seed_expr_type(index, hir_module);
-                let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
+                let boxed_key = self.emit_value_slot(index_operand, &index_type, mir_func);
 
                 let needs_unbox = matches!(**value_ty, Type::Int | Type::Float | Type::Bool);
 

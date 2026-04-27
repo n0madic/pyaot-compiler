@@ -32,8 +32,7 @@ impl<'a> Lowering<'a> {
                 // otherwise raw bits land in the slot and GC mark walks them
                 // as pointer-shaped non-objects.
                 let value_ty = self.operand_type(&value_operand, mir_func);
-                let value_operand =
-                    self.box_primitive_if_needed(value_operand, &value_ty, mir_func);
+                let value_operand = self.emit_value_slot(value_operand, &value_ty, mir_func);
 
                 // After §F.7c BigBang: rt_generator_send returns tagged Value bits
                 // (the resume function boxes its yield). Unwrap for typed Int/Bool.

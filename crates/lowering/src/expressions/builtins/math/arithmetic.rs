@@ -135,8 +135,26 @@ impl<'a> Lowering<'a> {
         let exp_type = self.seed_expr_type(args[1], hir_module);
 
         // Convert both operands to float if needed
-        let base_float = self.promote_to_float_if_needed(mir_func, base_operand, &base_type);
-        let exp_float = self.promote_to_float_if_needed(mir_func, exp_operand, &exp_type);
+        let base_float = if base_type != Type::Float {
+            let temp = self.alloc_and_add_local(Type::Float, mir_func);
+            self.emit_instruction(mir::InstructionKind::IntToFloat {
+                dest: temp,
+                src: base_operand,
+            });
+            mir::Operand::Local(temp)
+        } else {
+            base_operand
+        };
+        let exp_float = if exp_type != Type::Float {
+            let temp = self.alloc_and_add_local(Type::Float, mir_func);
+            self.emit_instruction(mir::InstructionKind::IntToFloat {
+                dest: temp,
+                src: exp_operand,
+            });
+            mir::Operand::Local(temp)
+        } else {
+            exp_operand
+        };
 
         // Create result local and emit runtime call
         let result_local = self.emit_runtime_call(
@@ -237,8 +255,13 @@ impl<'a> Lowering<'a> {
             let start_op = self.lower_expr(start_expr, hir_module, mir_func)?;
 
             // Promote start to float if needed
-            if result_type == Type::Float {
-                self.promote_to_float_if_needed(mir_func, start_op, &start_type)
+            if result_type == Type::Float && start_type != Type::Float {
+                let temp = self.alloc_and_add_local(Type::Float, mir_func);
+                self.emit_instruction(mir::InstructionKind::IntToFloat {
+                    dest: temp,
+                    src: start_op,
+                });
+                mir::Operand::Local(temp)
             } else {
                 start_op
             }
@@ -330,12 +353,13 @@ impl<'a> Lowering<'a> {
                 _ => raw_local,
             };
 
-            let item_operand = if result_type == Type::Float {
-                self.promote_to_float_if_needed(
-                    mir_func,
-                    mir::Operand::Local(next_local),
-                    &element_type,
-                )
+            let item_operand = if result_type == Type::Float && element_type != Type::Float {
+                let temp = self.alloc_and_add_local(Type::Float, mir_func);
+                self.emit_instruction(mir::InstructionKind::IntToFloat {
+                    dest: temp,
+                    src: mir::Operand::Local(next_local),
+                });
+                mir::Operand::Local(temp)
             } else {
                 mir::Operand::Local(next_local)
             };
@@ -417,8 +441,13 @@ impl<'a> Lowering<'a> {
         let unboxed_item = mir::Operand::Local(item_local);
 
         // Promote item to float if needed (when summing int list with float start)
-        let item_operand = if result_type == Type::Float {
-            self.promote_to_float_if_needed(mir_func, unboxed_item, &element_type)
+        let item_operand = if result_type == Type::Float && element_type != Type::Float {
+            let temp = self.alloc_and_add_local(Type::Float, mir_func);
+            self.emit_instruction(mir::InstructionKind::IntToFloat {
+                dest: temp,
+                src: unboxed_item,
+            });
+            mir::Operand::Local(temp)
         } else {
             unboxed_item
         };
@@ -514,13 +543,10 @@ impl<'a> Lowering<'a> {
             mir_func,
         );
 
-        let quot_operand = self.box_primitive_if_needed(
-            mir::Operand::Local(quot_local),
-            &result_elem_ty,
-            mir_func,
-        );
+        let quot_operand =
+            self.emit_value_slot(mir::Operand::Local(quot_local), &result_elem_ty, mir_func);
         let rem_operand =
-            self.box_primitive_if_needed(mir::Operand::Local(rem_local), &result_elem_ty, mir_func);
+            self.emit_value_slot(mir::Operand::Local(rem_local), &result_elem_ty, mir_func);
 
         // Set tuple elements
         self.emit_instruction(mir::InstructionKind::RuntimeCall {

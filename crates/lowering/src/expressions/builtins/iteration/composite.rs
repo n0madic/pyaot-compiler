@@ -412,21 +412,6 @@ impl<'a> Lowering<'a> {
     /// Lower captured expressions to a tuple
     /// Used by map/filter/reduce/sorted-key= to store HOF callback captures
     /// at runtime.
-    ///
-    /// Unified closure ABI: captures tuple stores primitive captures as tagged
-    /// Values (ValueFromInt/ValueFromBool). The HOF runtime dispatcher extracts
-    /// captures via `rt_tuple_get` which returns raw tagged bits, and the
-    /// lambda's prologue unwrap turns those back into concrete primitives.
-    /// Symmetric with the regular closure path in `statements/assign/mod.rs`.
-    pub(crate) fn lower_captures_to_tuple(
-        &mut self,
-        captures: &[hir::ExprId],
-        hir_module: &hir::Module,
-        mir_func: &mut mir::Function,
-    ) -> Result<mir::Operand> {
-        self.lower_captures_to_tuple_for(None, captures, hir_module, mir_func)
-    }
-
     /// §P.2.2 variant: takes the destination FuncId so wrapper-style fn-ptr
     /// captures can be `ValueFromInt`-wrapped at the producer (matching the
     /// callee's prologue `UnwrapValueInt`).
@@ -467,7 +452,7 @@ impl<'a> Lowering<'a> {
                 mir::Operand::Local(wrapped)
             } else {
                 let op_type = self.operand_type(&capture_operand, mir_func);
-                self.box_primitive_if_needed(capture_operand, &op_type, mir_func)
+                self.emit_value_slot(capture_operand, &op_type, mir_func)
             };
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: tuple_local,

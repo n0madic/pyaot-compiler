@@ -516,8 +516,13 @@ impl<'a> Lowering<'a> {
             let arg_operand = self.lower_expr(arg_expr, hir_module, mir_func)?;
             let arg_type = self.seed_expr_type(arg_id, hir_module);
 
-            let final_operand = if is_float {
-                self.promote_to_float_if_needed(mir_func, arg_operand, &arg_type)
+            let final_operand = if is_float && arg_type != Type::Float {
+                let temp = self.alloc_and_add_local(Type::Float, mir_func);
+                self.emit_instruction(mir::InstructionKind::IntToFloat {
+                    dest: temp,
+                    src: arg_operand,
+                });
+                mir::Operand::Local(temp)
             } else {
                 arg_operand
             };

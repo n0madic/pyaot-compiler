@@ -147,7 +147,7 @@ pub extern "C" fn rt_list_remove(list: *mut Obj, value: *mut Obj) -> i8 {
         }
 
         // After F.7c slots are tagged Values; pass bits directly to eq_hashable_obj.
-        // The search `value` is also a tagged Value (boxed by box_primitive_if_needed).
+        // The search `value` is also a tagged Value (boxed by emit_value_slot).
         for i in 0..len {
             let stored = *data.add(i);
             let elem = stored.0 as *mut Obj;
@@ -381,14 +381,12 @@ unsafe fn compare_objects(a: *mut Obj, b: *mut Obj) -> i32 {
             None => 1, // NaN sorts to the end
             _ => 0,
         }
+    } else if a < b {
+        -1
+    } else if a > b {
+        1
     } else {
-        if a < b {
-            -1
-        } else if a > b {
-            1
-        } else {
-            0
-        }
+        0
     }
 }
 
@@ -418,7 +416,7 @@ pub extern "C" fn rt_list_sort(list: *mut Obj, reverse: i8) {
         // After F.7c all slots are uniform tagged Values — dispatch on Value::tag() at compare time.
         let slice = std::slice::from_raw_parts_mut(data, len);
         timsort::timsort_with_cmp(slice, |a, b| {
-            let cmp = compare_objects((*a).0 as *mut Obj, (*b).0 as *mut Obj);
+            let cmp = compare_objects(a.0 as *mut Obj, b.0 as *mut Obj);
             if reverse != 0 {
                 match cmp {
                     c if c < 0 => std::cmp::Ordering::Greater,

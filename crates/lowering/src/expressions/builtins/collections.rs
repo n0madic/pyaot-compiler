@@ -625,7 +625,7 @@ impl<'a> Lowering<'a> {
             );
 
             // Box primitive values (all dict values must be heap pointers for GC)
-            let boxed_value = self.box_primitive_if_needed(value_operand, &value_type, mir_func);
+            let boxed_value = self.emit_value_slot(value_operand, &value_type, mir_func);
 
             // Set the key-value pair
             self.emit_instruction(mir::InstructionKind::RuntimeCall {

@@ -31,7 +31,7 @@ impl<'a> Lowering<'a> {
                 } else {
                     (*elem_ty).clone()
                 };
-                let push_operand = self.box_primitive_if_needed(value_operand, &box_type, mir_func);
+                let push_operand = self.emit_value_slot(value_operand, &box_type, mir_func);
 
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_APPEND),
@@ -173,7 +173,7 @@ impl<'a> Lowering<'a> {
                 } else {
                     (*elem_ty).clone()
                 };
-                let boxed_value = self.box_primitive_if_needed(value_operand, &box_type, mir_func);
+                let boxed_value = self.emit_value_slot(value_operand, &box_type, mir_func);
 
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_REMOVE),
@@ -204,7 +204,7 @@ impl<'a> Lowering<'a> {
                 } else {
                     (*elem_ty).clone()
                 };
-                let boxed_value = self.box_primitive_if_needed(value_operand, &box_type, mir_func);
+                let boxed_value = self.emit_value_slot(value_operand, &box_type, mir_func);
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_INDEX),
                     vec![obj_operand, boxed_value],
@@ -222,7 +222,7 @@ impl<'a> Lowering<'a> {
                 } else {
                     (*elem_ty).clone()
                 };
-                let boxed_value = self.box_primitive_if_needed(value_operand, &box_type, mir_func);
+                let boxed_value = self.emit_value_slot(value_operand, &box_type, mir_func);
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_COUNT),
                     vec![obj_operand, boxed_value],

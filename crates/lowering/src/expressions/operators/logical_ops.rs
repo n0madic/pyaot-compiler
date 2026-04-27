@@ -79,7 +79,7 @@ impl<'a> Lowering<'a> {
                 let right_op = self.lower_expr(right_expr, hir_module, mir_func)?;
                 // Box primitive if result is Union (mismatched types)
                 let right_val = if left_type != right_type {
-                    self.box_primitive_if_needed(right_op, &right_type, mir_func)
+                    self.emit_value_slot(right_op, &right_type, mir_func)
                 } else {
                     right_op
                 };
@@ -93,7 +93,7 @@ impl<'a> Lowering<'a> {
                 self.push_block(else_bb);
                 // Box primitive if result is Union (mismatched types)
                 let left_val = if left_type != right_type {
-                    self.box_primitive_if_needed(left_op, &left_type, mir_func)
+                    self.emit_value_slot(left_op, &left_type, mir_func)
                 } else {
                     left_op
                 };
@@ -132,7 +132,7 @@ impl<'a> Lowering<'a> {
                 self.push_block(then_bb);
                 // Box primitive if result is Union (mismatched types)
                 let left_val = if left_type != right_type {
-                    self.box_primitive_if_needed(left_op, &left_type, mir_func)
+                    self.emit_value_slot(left_op, &left_type, mir_func)
                 } else {
                     left_op
                 };
@@ -147,7 +147,7 @@ impl<'a> Lowering<'a> {
                 let right_op = self.lower_expr(right_expr, hir_module, mir_func)?;
                 // Box primitive if result is Union (mismatched types)
                 let right_val = if left_type != right_type {
-                    self.box_primitive_if_needed(right_op, &right_type, mir_func)
+                    self.emit_value_slot(right_op, &right_type, mir_func)
                 } else {
                     right_op
                 };
@@ -226,7 +226,7 @@ impl<'a> Lowering<'a> {
         self.leave_cfg_block_narrowings();
         // Box primitive if result is Union (mismatched types)
         let then_val = if types_differ {
-            self.box_primitive_if_needed(then_op, &then_ty, mir_func)
+            self.emit_value_slot(then_op, &then_ty, mir_func)
         } else {
             then_op
         };
@@ -245,7 +245,7 @@ impl<'a> Lowering<'a> {
         self.leave_cfg_block_narrowings();
         // Box primitive if result is Union (mismatched types)
         let else_val = if types_differ {
-            self.box_primitive_if_needed(else_op, &else_ty, mir_func)
+            self.emit_value_slot(else_op, &else_ty, mir_func)
         } else {
             else_op
         };

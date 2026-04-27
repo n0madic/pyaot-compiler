@@ -27,6 +27,7 @@ struct Run {
 }
 
 /// Sort a slice of integers in-place using Timsort
+#[allow(dead_code)]
 pub fn timsort_int(data: &mut [i64]) {
     let len = data.len();
     if len < 2 {
@@ -127,6 +128,7 @@ fn compute_min_run(n: usize) -> usize {
 
 /// Count the length of the next run, starting at `start`
 /// Returns the length of an ascending or descending run
+#[allow(dead_code)]
 fn count_run_int(data: &mut [i64], start: usize) -> usize {
     let len = data.len();
     if start + 1 >= len {
@@ -181,6 +183,7 @@ where
 }
 
 /// Reverse a portion of the array
+#[allow(dead_code)]
 fn reverse_int(data: &mut [i64], start: usize, end: usize) {
     let mut i = start;
     let mut j = end - 1;
@@ -192,6 +195,7 @@ fn reverse_int(data: &mut [i64], start: usize, end: usize) {
 }
 
 /// Insertion sort for a range [start, end)
+#[allow(dead_code)]
 fn insertion_sort_int(data: &mut [i64], start: usize, end: usize) {
     for i in (start + 1)..end {
         let key = data[i];
@@ -218,6 +222,7 @@ where
 }
 
 /// Maintain the merge invariants by merging runs
+#[allow(dead_code)]
 fn merge_collapse_int(data: &mut [i64], runs: &mut Vec<Run>) {
     while runs.len() > 1 {
         let n = runs.len();
@@ -260,6 +265,7 @@ where
 }
 
 /// Merge all remaining runs
+#[allow(dead_code)]
 fn merge_force_collapse_int(data: &mut [i64], runs: &mut Vec<Run>) {
     while runs.len() > 1 {
         let n = runs.len();
@@ -286,6 +292,7 @@ where
 }
 
 /// Merge the run at index `i` with the next run
+#[allow(dead_code)]
 fn merge_at_int(data: &mut [i64], runs: &mut Vec<Run>, i: usize) {
     let run1 = runs[i];
     let run2 = runs[i + 1];
@@ -327,6 +334,7 @@ where
 }
 
 /// Merge two sorted runs [start, mid) and [mid, end)
+#[allow(dead_code)]
 fn merge_int(data: &mut [i64], start: usize, mid: usize, end: usize) {
     let len1 = mid - start;
     let len2 = end - mid;

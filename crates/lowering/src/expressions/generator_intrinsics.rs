@@ -93,7 +93,7 @@ impl<'a> Lowering<'a> {
                 let val_op = self.lower_expr(&hir_module.exprs[*value], hir_module, mir_func)?;
                 // §F.7b: every value stored into a generator local must be a
                 // properly-tagged Value so the GC can walk locals uniformly
-                // via `Value::is_ptr()`. Use `box_primitive_if_needed` to
+                // via `Value::is_ptr()`. Use `emit_value_slot` to
                 // produce the tagged Value for all primitive types:
                 // - Int  → ValueFromInt  (inline tag arithmetic, no alloc)
                 // - Bool → ValueFromBool (inline tag arithmetic, no alloc)
@@ -101,7 +101,7 @@ impl<'a> Lowering<'a> {
                 // - None → rt_box_none (singleton NoneObj pointer)
                 // - Heap/Any → pass through (already a tagged Value/pointer)
                 let value_ty = self.seed_expr_type(*value, hir_module);
-                let stored_op = self.box_primitive_if_needed(val_op, &value_ty, mir_func);
+                let stored_op = self.emit_value_slot(val_op, &value_ty, mir_func);
                 let dest = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&RT_GENERATOR_SET_LOCAL),
                     vec![
@@ -141,7 +141,7 @@ impl<'a> Lowering<'a> {
 
             hir::GeneratorIntrinsic::GetSentValue(gen_expr_id) => {
                 // §P.2.2: rt_generator_send wraps the inbound value via
-                // box_primitive_if_needed at the lowering boundary so the
+                // emit_value_slot at the lowering boundary so the
                 // sent_value slot stores well-formed Value bits (so the GC
                 // doesn't see raw scalars as pointer-shaped non-objects).
                 // The read side here unwraps based on the expression's

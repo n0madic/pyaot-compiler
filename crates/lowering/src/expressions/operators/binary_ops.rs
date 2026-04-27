@@ -279,12 +279,12 @@ impl<'a> Lowering<'a> {
                 let boxed_left = if left_is_union {
                     left_op
                 } else {
-                    self.box_primitive_if_needed(left_op, &left_ty, mir_func)
+                    self.emit_value_slot(left_op, &left_ty, mir_func)
                 };
                 let boxed_right = if right_is_union {
                     right_op
                 } else {
-                    self.box_primitive_if_needed(right_op, &right_ty, mir_func)
+                    self.emit_value_slot(right_op, &right_ty, mir_func)
                 };
                 // Result is Union (boxed pointer)
                 let union_result = self.emit_runtime_call(
@@ -654,7 +654,7 @@ impl<'a> Lowering<'a> {
             .and_then(|p| p.ty.as_ref())
             .is_some_and(|t| matches!(t, Type::Any | Type::Union(_) | Type::HeapAny));
         if needs_box {
-            self.box_primitive_if_needed(operand, arg_ty, mir_func)
+            self.emit_value_slot(operand, arg_ty, mir_func)
         } else {
             operand
         }

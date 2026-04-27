@@ -28,7 +28,7 @@ impl<'a> Lowering<'a> {
         match obj_type {
             Type::Dict(_, _) | Type::DefaultDict(_, _) => {
                 // del dict[key] → rt_dict_pop(dict, key) and discard result
-                let boxed_key = self.box_primitive_if_needed(index_operand, &index_type, mir_func);
+                let boxed_key = self.emit_value_slot(index_operand, &index_type, mir_func);
                 self.emit_runtime_call_void(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
                     vec![obj_operand, boxed_key],

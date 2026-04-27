@@ -74,7 +74,7 @@ impl<'a> Lowering<'a> {
             )?;
             let actual_elem_type = self.seed_expr_type(*elem_id, hir_module);
             let elem_operand = if elem_type == Type::Float {
-                self.coerce_to_field_type(elem_operand, &actual_elem_type, &elem_type, mir_func)
+                self.coerce_for_storage(elem_operand, &actual_elem_type, &elem_type, mir_func)
             } else {
                 elem_operand
             };
@@ -84,7 +84,7 @@ impl<'a> Lowering<'a> {
             } else {
                 elem_type.clone()
             };
-            let push_operand = self.box_primitive_if_needed(elem_operand, &box_type, mir_func);
+            let push_operand = self.emit_value_slot(elem_operand, &box_type, mir_func);
 
             self.emit_runtime_call_void(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_PUSH),
@@ -145,8 +145,7 @@ impl<'a> Lowering<'a> {
             let elem_operand =
                 self.lower_expr_expecting(elem_expr, expected_elem_type, hir_module, mir_func)?;
             let actual_elem_type = self.seed_expr_type(*elem_id, hir_module);
-            let final_operand =
-                self.box_primitive_if_needed(elem_operand, &actual_elem_type, mir_func);
+            let final_operand = self.emit_value_slot(elem_operand, &actual_elem_type, mir_func);
 
             self.emit_runtime_call_void(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_SET),
@@ -240,16 +239,16 @@ impl<'a> Lowering<'a> {
                 mir_func,
             )?;
             let key_operand = if dict_key_type == Type::Float {
-                self.coerce_to_field_type(key_operand, &key_type, &dict_key_type, mir_func)
+                self.coerce_for_storage(key_operand, &key_type, &dict_key_type, mir_func)
             } else {
                 key_operand
             };
 
             // Box non-heap keys (int, bool) so dict can use them as object pointers
             let boxed_key = if dict_key_type == Type::Float {
-                self.box_primitive_if_needed(key_operand, &dict_key_type, mir_func)
+                self.emit_value_slot(key_operand, &dict_key_type, mir_func)
             } else {
-                self.box_primitive_if_needed(key_operand, &key_type, mir_func)
+                self.emit_value_slot(key_operand, &key_type, mir_func)
             };
 
             let value_expr = &hir_module.exprs[*value_id];
@@ -261,7 +260,7 @@ impl<'a> Lowering<'a> {
             )?;
             let actual_value_type = self.seed_expr_type(*value_id, hir_module);
             let value_operand = if dict_value_type == Type::Float {
-                self.coerce_to_field_type(
+                self.coerce_for_storage(
                     value_operand,
                     &actual_value_type,
                     &dict_value_type,
@@ -273,9 +272,9 @@ impl<'a> Lowering<'a> {
 
             // Box primitive values (all dict values must be heap pointers for GC)
             let boxed_value = if dict_value_type == Type::Float {
-                self.box_primitive_if_needed(value_operand, &dict_value_type, mir_func)
+                self.emit_value_slot(value_operand, &dict_value_type, mir_func)
             } else {
-                self.box_primitive_if_needed(value_operand, &actual_value_type, mir_func)
+                self.emit_value_slot(value_operand, &actual_value_type, mir_func)
             };
 
             self.emit_runtime_call_void(
@@ -349,16 +348,16 @@ impl<'a> Lowering<'a> {
                 self.lower_expr_expecting(elem_expr, expected_elem_type, hir_module, mir_func)?;
             let elem_operand = if matches!(set_type, Type::Set(ref inner) if **inner == Type::Float)
             {
-                self.coerce_to_field_type(elem_operand, &elem_type, &Type::Float, mir_func)
+                self.coerce_for_storage(elem_operand, &elem_type, &Type::Float, mir_func)
             } else {
                 elem_operand
             };
 
             // Box non-heap elements (int, bool) so set can use them as object pointers
             let boxed_elem = if matches!(set_type, Type::Set(ref inner) if **inner == Type::Float) {
-                self.box_primitive_if_needed(elem_operand, &Type::Float, mir_func)
+                self.emit_value_slot(elem_operand, &Type::Float, mir_func)
             } else {
-                self.box_primitive_if_needed(elem_operand, &elem_type, mir_func)
+                self.emit_value_slot(elem_operand, &elem_type, mir_func)
             };
 
             self.emit_runtime_call_void(

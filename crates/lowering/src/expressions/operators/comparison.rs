@@ -62,13 +62,13 @@ impl<'a> Lowering<'a> {
                 let boxed_left = if left_was_union {
                     left_op.clone()
                 } else {
-                    self.box_primitive_if_needed(left_op.clone(), &left_type, mir_func)
+                    self.emit_value_slot(left_op.clone(), &left_type, mir_func)
                 };
 
                 let boxed_right = if right_was_union {
                     right_op.clone()
                 } else {
-                    self.box_primitive_if_needed(right_op.clone(), &right_type, mir_func)
+                    self.emit_value_slot(right_op.clone(), &right_type, mir_func)
                 };
 
                 // When one side is a `None` literal we can't use a pointer
@@ -155,13 +155,13 @@ impl<'a> Lowering<'a> {
             let boxed_left = if left_type.is_union() {
                 left_op
             } else {
-                self.box_primitive_if_needed(left_op, &left_type, mir_func)
+                self.emit_value_slot(left_op, &left_type, mir_func)
             };
 
             let boxed_right = if right_type.is_union() {
                 right_op
             } else {
-                self.box_primitive_if_needed(right_op, &right_type, mir_func)
+                self.emit_value_slot(right_op, &right_type, mir_func)
             };
 
             match op {
@@ -399,7 +399,7 @@ impl<'a> Lowering<'a> {
                 Type::Dict(_, _) | Type::DefaultDict(_, _) => {
                     // key in dict/defaultdict - use rt_dict_contains
                     // Box key if needed (int/bool keys need boxing)
-                    let boxed_key = self.box_primitive_if_needed(left_op, &left_type, mir_func);
+                    let boxed_key = self.emit_value_slot(left_op, &left_type, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: mir::RuntimeFunc::Call(
@@ -411,7 +411,7 @@ impl<'a> Lowering<'a> {
                 Type::Set(_) => {
                     // elem in set - use rt_set_contains
                     // Box element if needed (int/bool elements need boxing)
-                    let boxed_elem = self.box_primitive_if_needed(left_op, &left_type, mir_func);
+                    let boxed_elem = self.emit_value_slot(left_op, &left_type, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: mir::RuntimeFunc::Call(
@@ -423,7 +423,7 @@ impl<'a> Lowering<'a> {
                 Type::List(_) => {
                     // elem in list - use rt_list_index and check if >= 0.
                     // After §F.7c, list slots store tagged Values; box the search.
-                    let boxed_elem = self.box_primitive_if_needed(left_op, &left_type, mir_func);
+                    let boxed_elem = self.emit_value_slot(left_op, &left_type, mir_func);
                     let idx_local = self.emit_runtime_call(
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_INDEX),
                         vec![right_op, boxed_elem], // (list, value)
@@ -440,7 +440,7 @@ impl<'a> Lowering<'a> {
                 }
                 Type::Tuple(_) | Type::TupleVar(_) => {
                     // elem in tuple - use rt_obj_contains (needs boxed element)
-                    let boxed_elem = self.box_primitive_if_needed(left_op, &left_type, mir_func);
+                    let boxed_elem = self.emit_value_slot(left_op, &left_type, mir_func);
                     self.emit_instruction(mir::InstructionKind::RuntimeCall {
                         dest: result_local,
                         func: mir::RuntimeFunc::Call(
@@ -715,8 +715,8 @@ impl<'a> Lowering<'a> {
         } else if matches!(left_type, Type::HeapAny) || matches!(right_type, Type::HeapAny) {
             // HeapAny comparison: runtime dispatch via rt_obj_eq/lt/etc.
             // Box the other operand if primitive.
-            let boxed_left = self.box_primitive_if_needed(left_op, &left_type, mir_func);
-            let boxed_right = self.box_primitive_if_needed(right_op, &right_type, mir_func);
+            let boxed_left = self.emit_value_slot(left_op, &left_type, mir_func);
+            let boxed_right = self.emit_value_slot(right_op, &right_type, mir_func);
             if matches!(op, hir::CmpOp::NotEq) {
                 let eq_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(

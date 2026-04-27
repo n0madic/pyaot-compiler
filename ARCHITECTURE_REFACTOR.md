@@ -28,8 +28,7 @@ by the amendment to Principle 4. "No partial migrations" refers to
 the end-state landed on master, not to every intra-branch commit.
 
 **Amended 2026-04-24 (S2.7 atomic-campaign carve-out)** — the
-intra-branch red-tolerance above is extended to the S2.7 campaign
-(see [`PHASE2_S2_7_PLAN.md`](PHASE2_S2_7_PLAN.md)). Stages B–F of
+intra-branch red-tolerance above is extended to the S2.7 campaign. Stages B–F of
 that campaign are explicitly authorized to leave the workspace in a
 non-compiling or failing-test state between commits on the
 `phase-2-s2.7-atomic` branch. The campaign's final commit (Stage G)
@@ -2845,8 +2844,7 @@ cargo test -p pyaot --test runtime --release`) stay green.
 ## 2.5 Codegen migration
 
 > **Campaign plan:** the execution of S2.5 is documented in a
-> dedicated multi-session campaign plan —
-> [`PHASE2_S2_7_PLAN.md`](PHASE2_S2_7_PLAN.md). That plan absorbs the
+> dedicated multi-session campaign plan. That plan absorbs the
 > rolled-back S2.4/S2.5 container-storage flips, the narrow-S2.6
 > GC finalization, and the codegen work in this §2.5 section into a
 > single 7-stage atomic migration (A–G, 2–3 weeks). Stages B–F are
@@ -2913,6 +2911,35 @@ boxing/coerce logic.
 **Non-negotiable**: no `if ty == Type::Int { box }` dispatches anywhere.
 If a pass needs to know "is this value boxed?" — the answer is "all
 values are uniformly encoded; use `Value::is_ptr`".
+
+**Amendment (2026-04-27, Phase-2 closure audit):** the §2.6 "delete" targets
+were audited post-S2.7. All four are still load-bearing after uniform Value
+adoption:
+
+- `box_primitive_if_needed` was **renamed** to `to_value_slot`
+  (`crates/lowering/src/lib.rs`). Body unchanged — it encodes a typed operand
+  into a tagged-Value slot (Int/Bool → `ValueFromInt`/`ValueFromBool` MIR ops;
+  Float → `RT_BOX_FLOAT`; None → `RT_BOX_NONE`; heap types pass through).
+  Kept as a single canonical helper: ~50 call sites across lowering, and
+  float escape analysis (Phase 3 §P.2) will localise future optimisation here.
+  "box_primitive" was a misnomer post-S2.7 since Int/Bool are immediates.
+
+- `coerce_to_field_type` and `promote_to_float_if_needed` were **folded** into
+  a single `coerce_for_storage(op, value_ty, slot_ty)` helper
+  (`crates/lowering/src/statements/assign/bind.rs`, next to the sibling
+  `coerce_for_instance_field_store`). The new helper applies numeric-tower
+  widening (Int|Bool → Float via `IntToFloat`) then delegates to `to_value_slot`
+  for dynamic-slot boxing. ~14 combined call sites redirected.
+
+- `is_useless_container_ty` (`crates/lowering/src/lib.rs:39`) is **deferred
+  to Phase 3**: it is a seed-type prioritisation predicate (`Dict(Any,Any)` vs
+  tighter inferred types), orthogonal to Value representation. Phase 3 lattice
+  `is_subtype` / `meet` will replace it naturally.
+
+The grep gate `grep -rn 'coerce_to_field_type|promote_to_float_if_needed'
+crates/` → 0 is now an exit criterion. `box_primitive_if_needed` is
+replaced in the grep by `to_value_slot` (verify it exists, not that it's 0).
+`is_useless_container_ty` deletion moves to Phase 3 acceptance.
 
 **Exit criterion**:
 
@@ -3713,7 +3740,7 @@ audit often uncovers surprise gaps.
 | S2.4 ⏸ (2026-04-24, folded into S2.7) | Originally: Runtime migration of Dict/Set/Tuple storage to `Value` (§2.3 part 3). Attempted, rolled back — closure tuples mix a raw function pointer with heap captures, and without simultaneous codegen/GC changes the Value-backed slot trips `Value::is_ptr()` on the function pointer (segfault). See §2.3 Amendment 2. Migration folds into **S2.7** where codegen+storage can flip atomically. | S2.3 | Medium (deferred) | — |
 | S2.5 ⏸ (2026-04-24, folded into S2.7) | Originally: Runtime migration of Str/Bytes/Class instances/Generators to `Value`, delete `heap_field_mask` + generator `type_tags`. Same rollback rationale as S2.4 — `ClassInfo.heap_field_mask` exists for the same mixed-slot reason; deletion belongs with S2.7's codegen tagging. | S2.4 | Medium (deferred) | — |
 | S2.6 ✅ narrow (2026-04-24) | GC migration (§2.4, narrow): `mark_object` signature flipped to `Value`; ~40 call sites inside `gc.rs` wrap raw pointers via `Value::from_ptr`. `heap_field_mask` / `ClassInfo.heap_field_mask` / `GeneratorObj.type_tags` / the address-heuristic filter all stay until S2.7 (see §2.4 amendment). Workspace + GC-stress suites both green. | S2.3 (code); S2.5 folded | Low-Medium | — |
-| S2.7 📋 campaign | **See [`PHASE2_S2_7_PLAN.md`](PHASE2_S2_7_PLAN.md).** Multi-session atomic migration (7 stages A–G, 2–3 weeks). Absorbs rolled-back S2.4/S2.5 container storage flips, the deleting half of narrow-S2.6 GC work, the full codegen Value lowering, and the extern ABI retype. Non-Negotiable Principle 1 relaxed for this campaign — intermediate stages may leave workspace red; only the final commit restores green. Exit-criteria (perf gates, grep-verified deletions, docs refresh) live in the campaign plan. | S2.6 (narrow) | **Campaign** | — |
+| S2.7 📋 campaign | ** Multi-session atomic migration (7 stages A–G, 2–3 weeks). Absorbs rolled-back S2.4/S2.5 container storage flips, the deleting half of narrow-S2.6 GC work, the full codegen Value lowering, and the extern ABI retype. Non-Negotiable Principle 1 relaxed for this campaign — intermediate stages may leave workspace red; only the final commit restores green. Exit-criteria (perf gates, grep-verified deletions, docs refresh) live in the campaign plan. | S2.6 (narrow) | **Campaign** | — |
 | S2.8 | Codegen: arithmetic fast-path inlining (§2.5 part 2): inline tag tests for hot ops based on SSA types | S2.7 | **HIGH** (perf-critical) | — |
 | S2.9 | Pass migration: delete boxing helpers (§2.6): `box_primitive_if_needed`, `promote_to_float_if_needed`, `coerce_to_field_type`, `is_useless_container_ty` | S2.8 | Medium | — |
 | S2.10 | Phase 2 final purge + benchmark acceptance (§2.7): grep verify, run benchmarks, update BASELINE | S2.9 | Low-Medium | — |

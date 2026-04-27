@@ -52,7 +52,7 @@ impl<'a> Lowering<'a> {
         // Only box the value if it's a heap type; raw types pass through directly.
         let value_type = arg_types.first().cloned().unwrap_or(Type::Any);
         let search_value = if value_type.is_heap() {
-            self.box_primitive_if_needed(value_arg, &value_type, mir_func)
+            self.emit_value_slot(value_arg, &value_type, mir_func)
         } else {
             value_arg
         };

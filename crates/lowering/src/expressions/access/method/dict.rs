@@ -55,9 +55,9 @@ impl<'a> Lowering<'a> {
 
                 if arg_operands.len() >= 2 {
                     let boxed_key =
-                        self.box_primitive_if_needed(arg_operands[0].clone(), &key_ty, mir_func);
+                        self.emit_value_slot(arg_operands[0].clone(), &key_ty, mir_func);
                     let boxed_default =
-                        self.box_primitive_if_needed(arg_operands[1].clone(), &value_ty, mir_func);
+                        self.emit_value_slot(arg_operands[1].clone(), &value_ty, mir_func);
                     self.emit_dict_call_and_unbox(
                         result_local,
                         value_ty.as_ref(),
@@ -72,7 +72,7 @@ impl<'a> Lowering<'a> {
                         .into_iter()
                         .next()
                         .unwrap_or(mir::Operand::Constant(mir::Constant::None));
-                    let boxed_key = self.box_primitive_if_needed(key_arg, &key_ty, mir_func);
+                    let boxed_key = self.emit_value_slot(key_arg, &key_ty, mir_func);
                     // Use Int(0) as null pointer for default (None is i8, but
                     // rt_dict_get_default expects i64 for the default parameter)
                     self.emit_dict_call_and_unbox(
@@ -97,7 +97,7 @@ impl<'a> Lowering<'a> {
                 let result_local = self.alloc_and_add_local((*value_ty).clone(), mir_func);
 
                 let key_arg = crate::first_arg_or_none(arg_operands);
-                let boxed_key = self.box_primitive_if_needed(key_arg, &key_ty, mir_func);
+                let boxed_key = self.emit_value_slot(key_arg, &key_ty, mir_func);
                 self.emit_dict_call_and_unbox(
                     result_local,
                     value_ty.as_ref(),
@@ -186,13 +186,13 @@ impl<'a> Lowering<'a> {
                     .first()
                     .cloned()
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
-                let boxed_key = self.box_primitive_if_needed(key_arg, &key_ty, mir_func);
+                let boxed_key = self.emit_value_slot(key_arg, &key_ty, mir_func);
 
                 let default_arg = arg_operands
                     .get(1)
                     .cloned()
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
-                let boxed_default = self.box_primitive_if_needed(default_arg, &value_ty, mir_func);
+                let boxed_default = self.emit_value_slot(default_arg, &value_ty, mir_func);
 
                 self.emit_dict_call_and_unbox(
                     result_local,
@@ -238,7 +238,7 @@ impl<'a> Lowering<'a> {
                     .unwrap_or(mir::Operand::Constant(mir::Constant::None));
 
                 // Box value if needed
-                let boxed_value = self.box_primitive_if_needed(value_arg, &value_ty, mir_func);
+                let boxed_value = self.emit_value_slot(value_arg, &value_ty, mir_func);
 
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_FROM_KEYS),
@@ -252,7 +252,7 @@ impl<'a> Lowering<'a> {
             "move_to_end" => {
                 // OrderedDict.move_to_end(key, last=True) — also works on regular dicts
                 let key_arg = crate::first_arg_or_none(arg_operands.clone());
-                let boxed_key = self.box_primitive_if_needed(key_arg, &key_ty, mir_func);
+                let boxed_key = self.emit_value_slot(key_arg, &key_ty, mir_func);
                 let last_arg = if arg_operands.len() >= 2 {
                     arg_operands[1].clone()
                 } else {

@@ -47,9 +47,9 @@ impl<'a> Lowering<'a> {
                 self.lower_expr(capture_expr, hir_module, mir_func)?
             };
             // Box int/bool/float primitives to tagged Value bits; cells and
-            // heap objects pass through `box_primitive_if_needed` unchanged.
+            // heap objects pass through `emit_value_slot` unchanged.
             let op_type = self.operand_type(&capture_op, mir_func);
-            let stored_op = self.box_primitive_if_needed(capture_op, &op_type, mir_func);
+            let stored_op = self.emit_value_slot(capture_op, &op_type, mir_func);
             all_args.push(stored_op);
         }
 

@@ -90,7 +90,7 @@ impl<'a> Lowering<'a> {
                     // Box primitives when passing to Union-typed parameters
                     let operand = if matches!(&expected, Some(Type::Union(_))) {
                         let arg_type = self.operand_type(&operand, mir_func);
-                        self.box_primitive_if_needed(operand, &arg_type, mir_func)
+                        self.emit_value_slot(operand, &arg_type, mir_func)
                     } else {
                         operand
                     };

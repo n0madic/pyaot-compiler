@@ -445,7 +445,7 @@ fn mk_set_local(
 }
 
 // §F.7b: mk_set_local_type_ptr removed — per-slot tag side-array deleted.
-// SetLocal now boxes primitives via box_primitive_if_needed so GC can walk
+// SetLocal now boxes primitives via emit_value_slot so GC can walk
 // locals uniformly via Value::is_ptr() without a separate type tag array.
 
 /// Allocate a `GeneratorIntrinsic::SetState` expression.
@@ -617,7 +617,7 @@ fn emit_save_vars_where(
         let set = mk_set_local(m, gen_obj_var, gv.gen_local_idx, vr, span);
         body.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set), span));
         // §F.7b: No SetLocalType needed — SetLocal now boxes primitives via
-        // box_primitive_if_needed so GC walks locals via Value::is_ptr().
+        // emit_value_slot so GC walks locals via Value::is_ptr().
     }
 }
 
@@ -1103,7 +1103,7 @@ fn build_creator_body(
             let set = mk_set_local(m, creator_gen_var, gv.gen_local_idx, pv, span);
             stmts.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set), span));
             // §F.7b: No SetLocalType needed — SetLocal now boxes primitives via
-            // box_primitive_if_needed so GC walks locals via Value::is_ptr().
+            // emit_value_slot so GC walks locals via Value::is_ptr().
         }
     }
 
@@ -1161,7 +1161,7 @@ fn build_creator_body(
         let set_iter = mk_set_local(m, creator_gen_var, 0, iter_call, span);
         stmts.push(mk_leaf_stmt(m, hir::StmtKind::Expr(set_iter), span));
         // §F.7b: No SetLocalType needed — SetLocal boxes the iterator pointer
-        // via box_primitive_if_needed; GC follows it via Value::is_ptr().
+        // via emit_value_slot; GC follows it via Value::is_ptr().
     }
 
     // return gen_obj

@@ -810,7 +810,7 @@ impl<'a> Lowering<'a> {
         }
 
         // Box the value so it becomes *mut Obj
-        let boxed_value = self.box_primitive_if_needed(value_operand, &value_type, mir_func);
+        let boxed_value = self.emit_value_slot(value_operand, &value_type, mir_func);
 
         // Get format spec (default to empty string if not provided)
         let spec_operand = if args.len() > 1 {

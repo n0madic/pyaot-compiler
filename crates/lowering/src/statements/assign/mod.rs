@@ -186,7 +186,7 @@ impl<'a> Lowering<'a> {
                             mir::Operand::Local(wrapped)
                         } else {
                             let op_type = self.operand_type(capture_op, mir_func);
-                            self.box_primitive_if_needed(capture_op.clone(), &op_type, mir_func)
+                            self.emit_value_slot(capture_op.clone(), &op_type, mir_func)
                         };
                         self.emit_runtime_call_void(
                             mir::RuntimeFunc::Call(
@@ -395,9 +395,9 @@ impl<'a> Lowering<'a> {
         // wider than the RHS (Area E §E.6: `x = 0; x += 0.5` widens
         // `x: Float`; the literal `0` must be `IntToFloat`'d).
         let final_operand = if var_type.is_union() {
-            self.box_primitive_if_needed(value_operand, &value_type, mir_func)
+            self.emit_value_slot(value_operand, &value_type, mir_func)
         } else {
-            self.coerce_to_field_type(value_operand, &value_type, &var_type, mir_func)
+            self.coerce_for_storage(value_operand, &value_type, &var_type, mir_func)
         };
 
         self.remove_block_narrowed_local(&target);

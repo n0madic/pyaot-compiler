@@ -256,7 +256,7 @@ Phase 2 columns above are the full-sample medians captured on the
 Binary size measured by compiling each `bench/py/*.py` source through
 `./target/release/pyaot` and reading the file size.
 
-### Hard-gate verification (PHASE2_S2_7_PLAN.md §G)
+### Hard-gate verification (§G)
 
 The plan defined five hard performance gates. Verdict against the
 accepted Phase 1 snapshot:
