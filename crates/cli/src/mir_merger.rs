@@ -168,20 +168,20 @@ fn raw_to_type(raw: &RawType, caller_interner: &mut StringInterner) -> Type {
         RawType::HeapAny => Type::HeapAny,
         RawType::File(binary) => Type::File(*binary),
         RawType::Never => Type::Never,
-        RawType::List(t) => Type::List(Box::new(raw_to_type(t, caller_interner))),
-        RawType::Dict(k, v) => Type::Dict(
-            Box::new(raw_to_type(k, caller_interner)),
-            Box::new(raw_to_type(v, caller_interner)),
+        RawType::List(t) => Type::list_of(raw_to_type(t, caller_interner)),
+        RawType::Dict(k, v) => Type::dict_of(
+            raw_to_type(k, caller_interner),
+            raw_to_type(v, caller_interner),
         ),
         RawType::DefaultDict(k, v) => Type::DefaultDict(
             Box::new(raw_to_type(k, caller_interner)),
             Box::new(raw_to_type(v, caller_interner)),
         ),
-        RawType::Set(t) => Type::Set(Box::new(raw_to_type(t, caller_interner))),
+        RawType::Set(t) => Type::set_of(raw_to_type(t, caller_interner)),
         RawType::Tuple(ts) => {
-            Type::Tuple(ts.iter().map(|t| raw_to_type(t, caller_interner)).collect())
+            Type::tuple_of(ts.iter().map(|t| raw_to_type(t, caller_interner)).collect())
         }
-        RawType::TupleVar(t) => Type::TupleVar(Box::new(raw_to_type(t, caller_interner))),
+        RawType::TupleVar(t) => Type::tuple_var_of(raw_to_type(t, caller_interner)),
         RawType::Union(ts) => {
             Type::Union(ts.iter().map(|t| raw_to_type(t, caller_interner)).collect())
         }
@@ -686,12 +686,10 @@ impl MirMerger {
                         hir::ExprKind::Bool(_) => Type::Bool,
                         hir::ExprKind::Str(_) => Type::Str,
                         hir::ExprKind::None => Type::None,
-                        hir::ExprKind::List(_) => Type::List(Box::new(Type::Any)),
-                        hir::ExprKind::Dict(_) => {
-                            Type::Dict(Box::new(Type::Any), Box::new(Type::Any))
-                        }
-                        hir::ExprKind::Tuple(_) => Type::Tuple(vec![]),
-                        hir::ExprKind::Set(_) => Type::Set(Box::new(Type::Any)),
+                        hir::ExprKind::List(_) => Type::list_of(Type::Any),
+                        hir::ExprKind::Dict(_) => Type::dict_of(Type::Any, Type::Any),
+                        hir::ExprKind::Tuple(_) => Type::tuple_of(vec![]),
+                        hir::ExprKind::Set(_) => Type::set_of(Type::Any),
                         _ => Type::Any,
                     };
                 }
