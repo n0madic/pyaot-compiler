@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_hir::cfg_builder::{CfgBuilder, CfgStmt};
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeLattice};
 use pyaot_utils::{FuncId, Span, StringInterner, VarId, RESUME_FUNC_ID_OFFSET};
 
 use super::for_loop::detect_for_loop_generator;
@@ -1007,7 +1007,7 @@ impl<'a> Lowering<'a> {
             }
             joined = Some(match joined {
                 None => yield_ty,
-                Some(prev) => Type::unify_field_type(&prev, &yield_ty),
+                Some(prev) => prev.join(&yield_ty),
             });
         }
         joined.unwrap_or(if saw_any { Type::Any } else { Type::None })

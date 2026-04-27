@@ -3,7 +3,7 @@
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeLattice};
 
 use crate::context::Lowering;
 
@@ -179,7 +179,11 @@ impl<'a> Lowering<'a> {
                     elem_types[0].clone()
                 } else {
                     // Heterogeneous tuple with dynamic index - return union of all types
-                    Type::normalize_union(elem_types.clone())
+                    elem_types
+                        .iter()
+                        .cloned()
+                        .reduce(|a, b| a.join(&b))
+                        .unwrap_or(Type::Never)
                 };
 
                 // After §F.4, rt_tuple_get always returns raw tagged Value bits;

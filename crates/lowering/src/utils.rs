@@ -1,7 +1,7 @@
 //! Utility functions for HIR to MIR lowering
 
 use pyaot_hir as hir;
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeLattice};
 
 /// Check if a type is mutable and thus needs special handling for function defaults.
 /// In Python, mutable defaults (list, dict, set, class instances) are evaluated once
@@ -71,7 +71,11 @@ pub(crate) fn get_iterable_info(ty: &Type) -> Option<(IterableKind, Type)> {
             let elem_ty = if elem_types.is_empty() {
                 Type::Any
             } else {
-                Type::normalize_union(elem_types.clone())
+                elem_types
+                    .iter()
+                    .cloned()
+                    .reduce(|a, b| a.join(&b))
+                    .unwrap_or(Type::Never)
             };
             Some((IterableKind::Tuple, elem_ty))
         }

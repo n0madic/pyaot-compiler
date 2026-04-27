@@ -3,7 +3,7 @@
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeLattice};
 
 use crate::context::Lowering;
 
@@ -43,7 +43,7 @@ impl<'a> Lowering<'a> {
             let inferred_elem = elements.iter().fold(None, |acc: Option<Type>, elem_id| {
                 let next = self.seed_expr_type(*elem_id, hir_module);
                 Some(match acc {
-                    Some(prev) => Type::unify_field_type(&prev, &next),
+                    Some(prev) => prev.join(&next),
                     None => next,
                 })
             });
@@ -198,14 +198,14 @@ impl<'a> Lowering<'a> {
             let inferred_key = pairs.iter().fold(None, |acc: Option<Type>, (key_id, _)| {
                 let next = self.seed_expr_type(*key_id, hir_module);
                 Some(match acc {
-                    Some(prev) => Type::unify_field_type(&prev, &next),
+                    Some(prev) => prev.join(&next),
                     None => next,
                 })
             });
             let inferred_val = pairs.iter().fold(None, |acc: Option<Type>, (_, value_id)| {
                 let next = self.seed_expr_type(*value_id, hir_module);
                 Some(match acc {
-                    Some(prev) => Type::unify_field_type(&prev, &next),
+                    Some(prev) => prev.join(&next),
                     None => next,
                 })
             });
@@ -320,7 +320,7 @@ impl<'a> Lowering<'a> {
             let inferred_elem = elements.iter().fold(None, |acc: Option<Type>, elem_id| {
                 let next = self.seed_expr_type(*elem_id, hir_module);
                 Some(match acc {
-                    Some(prev) => Type::unify_field_type(&prev, &next),
+                    Some(prev) => prev.join(&next),
                     None => next,
                 })
             });
