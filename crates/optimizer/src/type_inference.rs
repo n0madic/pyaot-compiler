@@ -405,7 +405,7 @@ fn infer_virtual_named_call_return_type(
 
 /// Result type of `left op right`. Comparison / logical-and/or / boolean
 /// operators return `Bool`. Arithmetic promotes through the numeric tower
-/// via `Type::unify_numeric`. Bitwise operators preserve the operand type
+/// via `TypeLattice::join` (numeric tower). Bitwise operators preserve the operand type
 /// (both sides must be integer-compatible; enforced at lowering).
 ///
 /// Pre-Phase-3 lattice limitations: when either operand is `Any` the

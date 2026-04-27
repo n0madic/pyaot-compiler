@@ -1,4 +1,5 @@
 use super::*;
+use crate::TypeLattice;
 
 mod lattice_props;
 
@@ -25,75 +26,67 @@ fn test_union_normalization() {
 }
 
 #[test]
-fn test_narrow_to_int() {
-    // Union[int, str] narrowed to int -> int
-    let union = Type::Union(vec![Type::Int, Type::Str]);
-    let narrowed = union.narrow_to(&Type::Int);
-    assert_eq!(narrowed, Type::Int);
+fn test_meet_int() {
+    // Union[int, str] meet int -> int (isinstance then-branch)
+    let union = Type::Int.join(&Type::Str);
+    assert_eq!(union.meet(&Type::Int), Type::Int);
 }
 
 #[test]
-fn test_narrow_to_str() {
-    // Union[int, str] narrowed to str -> str
-    let union = Type::Union(vec![Type::Int, Type::Str]);
-    let narrowed = union.narrow_to(&Type::Str);
-    assert_eq!(narrowed, Type::Str);
+fn test_meet_str() {
+    // Union[int, str] meet str -> str
+    let union = Type::Int.join(&Type::Str);
+    assert_eq!(union.meet(&Type::Str), Type::Str);
 }
 
 #[test]
-fn test_narrow_excluding_int() {
-    // Union[int, str] excluding int -> str
-    let union = Type::Union(vec![Type::Int, Type::Str]);
-    let narrowed = union.narrow_excluding(&Type::Int);
-    assert_eq!(narrowed, Type::Str);
+fn test_minus_int() {
+    // Union[int, str] minus int -> str (isinstance else-branch)
+    let union = Type::Int.join(&Type::Str);
+    assert_eq!(union.minus(&Type::Int), Type::Str);
 }
 
 #[test]
-fn test_narrow_excluding_str() {
-    // Union[int, str] excluding str -> int
-    let union = Type::Union(vec![Type::Int, Type::Str]);
-    let narrowed = union.narrow_excluding(&Type::Str);
-    assert_eq!(narrowed, Type::Int);
+fn test_minus_str() {
+    // Union[int, str] minus str -> int
+    let union = Type::Int.join(&Type::Str);
+    assert_eq!(union.minus(&Type::Str), Type::Int);
 }
 
 #[test]
-fn test_narrow_three_types() {
-    // Union[int, str, None] narrowed to int -> int
-    let union = Type::Union(vec![Type::Int, Type::Str, Type::None]);
-    let narrowed = union.narrow_to(&Type::Int);
-    assert_eq!(narrowed, Type::Int);
+fn test_meet_and_minus_three_types() {
+    // Union[int, str, None] meet int -> int
+    let union = Type::Int.join(&Type::Str).join(&Type::None);
+    assert_eq!(union.meet(&Type::Int), Type::Int);
 
-    // Union[int, str, None] excluding int -> Union[str, None]
-    let narrowed = union.narrow_excluding(&Type::Int);
-    match narrowed {
+    // Union[int, str, None] minus int -> Union[str, None]
+    let remaining = union.minus(&Type::Int);
+    match remaining {
         Type::Union(types) => {
             assert_eq!(types.len(), 2);
             assert!(types.contains(&Type::Str));
             assert!(types.contains(&Type::None));
         }
-        _ => panic!("Expected union"),
+        _ => panic!("Expected union, got {remaining:?}"),
     }
 }
 
 #[test]
-fn test_narrow_non_union() {
-    // Narrowing a non-union type to itself returns itself
-    let int_ty = Type::Int;
-    let narrowed = int_ty.narrow_to(&Type::Int);
-    assert_eq!(narrowed, Type::Int);
-
-    // Excluding from non-union returns itself
-    let narrowed = int_ty.narrow_excluding(&Type::Str);
-    assert_eq!(narrowed, Type::Int);
+fn test_meet_and_minus_non_union() {
+    // meet of a concrete type with itself returns itself
+    assert_eq!(Type::Int.meet(&Type::Int), Type::Int);
+    // minus of a concrete type from a different concrete type returns itself
+    assert_eq!(Type::Int.minus(&Type::Str), Type::Int);
 }
 
 #[test]
-fn test_narrow_list_types() {
-    // Union[list[int], str] narrowed to list -> list[int]
+fn test_meet_list_types() {
+    // meet(Union[list[int], str], str) = str  — Str ≤ Union so meet = Str
     let list_int = Type::List(Box::new(Type::Int));
-    let union = Type::Union(vec![list_int.clone(), Type::Str]);
-    let narrowed = union.narrow_to(&Type::List(Box::new(Type::Any)));
-    assert_eq!(narrowed, list_int);
+    let union = list_int.clone().join(&Type::Str);
+    assert_eq!(union.meet(&Type::Str), Type::Str);
+    // meet(Union[list[int], str], int) = Never  — Int not in the union
+    assert_eq!(union.meet(&Type::Int), Type::Never);
 }
 
 #[test]
@@ -123,15 +116,14 @@ fn test_never_subtyping() {
 }
 
 #[test]
-fn test_narrow_excluding_all_returns_never() {
-    // Excluding the only concrete type returns Never.
-    let narrowed = Type::Int.narrow_excluding(&Type::Int);
-    assert_eq!(narrowed, Type::Never);
+fn test_minus_all_returns_never() {
+    // Subtracting a type from itself returns Never.
+    assert_eq!(Type::Int.minus(&Type::Int), Type::Never);
 
-    // For union, excluding all types returns Never
-    let union = Type::Union(vec![Type::Int]);
-    let narrowed = union.narrow_excluding(&Type::Int);
-    assert_eq!(narrowed, Type::Never);
+    // Subtracting all members of a union returns Never.
+    let union = Type::Int.join(&Type::Str);
+    let remaining = union.minus(&Type::Int).minus(&Type::Str);
+    assert_eq!(remaining, Type::Never);
 }
 
 #[test]
@@ -175,12 +167,12 @@ fn test_promote_numeric_non_numeric_returns_none() {
 }
 
 #[test]
-fn test_unify_numeric_falls_back_to_union() {
-    // Numeric — promotes.
-    assert_eq!(Type::unify_numeric(&Type::Int, &Type::Float), Type::Float);
-    assert_eq!(Type::unify_numeric(&Type::Bool, &Type::Int), Type::Int);
-    // Non-numeric pair — falls back to Union.
-    let u = Type::unify_numeric(&Type::Int, &Type::Str);
+fn test_join_numeric_and_non_numeric() {
+    // Numeric pairs — promoted via tower.
+    assert_eq!(Type::Int.join(&Type::Float), Type::Float);
+    assert_eq!(Type::Bool.join(&Type::Int), Type::Int);
+    // Non-numeric pair — produces canonical Union.
+    let u = Type::Int.join(&Type::Str);
     match u {
         Type::Union(members) => {
             assert_eq!(members.len(), 2);
@@ -192,8 +184,8 @@ fn test_unify_numeric_falls_back_to_union() {
 }
 
 #[test]
-fn test_unify_field_type_identity() {
-    // unify_field_type(T, T) == T for every T.
+fn test_join_idempotent_for_misc_types() {
+    // join(T, T) == T for every T (idempotence law).
     for t in [
         Type::Int,
         Type::Float,
@@ -204,35 +196,28 @@ fn test_unify_field_type_identity() {
         Type::Tuple(vec![Type::Int, Type::Str]),
         Type::TupleVar(Box::new(Type::Int)),
     ] {
-        assert_eq!(
-            Type::unify_field_type(&t, &t),
-            t,
-            "identity law broken for {t:?}"
-        );
+        assert_eq!(t.join(&t), t, "idempotence broken for {t:?}");
     }
 }
 
 #[test]
-fn test_unify_field_type_defers_to_tuple_shapes() {
-    // Different-length tuples → TupleVar per Area D.
+fn test_join_different_tuple_lengths() {
+    // Different-length tuples → canonical Union (lattice join; not TupleVar).
     let a = Type::Tuple(vec![Type::Int]);
     let b = Type::Tuple(vec![Type::Int, Type::Int]);
-    let merged = Type::unify_field_type(&a, &b);
-    assert!(matches!(merged, Type::TupleVar(_)));
+    let merged = a.join(&b);
+    assert!(
+        matches!(merged, Type::Union(_)),
+        "expected Union, got {merged:?}"
+    );
 }
 
 #[test]
-fn test_unify_field_type_numeric_promotion() {
-    // Non-tuple numerics → numeric tower.
-    assert_eq!(
-        Type::unify_field_type(&Type::Int, &Type::Float),
-        Type::Float
-    );
-    assert_eq!(Type::unify_field_type(&Type::Bool, &Type::Int), Type::Int);
-    assert_eq!(
-        Type::unify_field_type(&Type::Bool, &Type::Float),
-        Type::Float
-    );
+fn test_join_numeric_promotion() {
+    // Numeric pairs → numeric tower widening via join.
+    assert_eq!(Type::Int.join(&Type::Float), Type::Float);
+    assert_eq!(Type::Bool.join(&Type::Int), Type::Int);
+    assert_eq!(Type::Bool.join(&Type::Float), Type::Float);
 }
 
 #[test]

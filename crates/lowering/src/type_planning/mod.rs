@@ -400,7 +400,7 @@ impl<'a> Lowering<'a> {
                 // assignment a uniform F64 ABI end-to-end.
                 //
                 // Heterogeneous pairs (e.g. `{Int, Str}`) fall through
-                // `join` (which defers to `unify_numeric` → `normalize_union`),
+                // `join` (which uses the numeric tower then canonical union),
                 // preserving the existing `Union[…]` shape for the
                 // only-actually-union cases.
                 concrete
