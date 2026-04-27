@@ -210,6 +210,16 @@ impl Type {
         self.dict_kv().is_some()
     }
 
+    /// Returns `true` for `Set(T)` and `Generic{SET_ID, [T]}`.
+    pub fn is_set_like(&self) -> bool {
+        self.set_elem().is_some()
+    }
+
+    /// Returns `true` for `Tuple(...)` or `TupleVar(...)` and their `Generic` equivalents.
+    pub fn is_tuple_like(&self) -> bool {
+        self.tuple_elems().is_some() || self.tuple_var_elem().is_some()
+    }
+
     /// Element type of a list, or `None` if this is not a list type.
     pub fn list_elem(&self) -> Option<&Type> {
         match self {

@@ -81,12 +81,14 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         // Bidirectional: use expected_type for empty set() calls
-        let set_elem_type = if let Some(Type::Set(ref expected_elem)) = self.codegen.expected_type {
-            (**expected_elem).clone()
-        } else {
-            Type::Any
-        };
-        let result_local = self.alloc_and_add_local(Type::Set(Box::new(set_elem_type)), mir_func);
+        let set_elem_type = self
+            .codegen
+            .expected_type
+            .as_ref()
+            .and_then(|t| t.set_elem())
+            .cloned()
+            .unwrap_or(Type::Any);
+        let result_local = self.alloc_and_add_local(Type::set_of(set_elem_type), mir_func);
 
         if args.is_empty() {
             // set() - create empty set
@@ -103,13 +105,18 @@ impl<'a> Lowering<'a> {
         let iter_type = self.seed_expr_type(args[0], hir_module);
 
         // Determine element type
-        let elem_type = match &iter_type {
-            Type::List(t) => (**t).clone(),
-            Type::Tuple(ts) if !ts.is_empty() => ts[0].clone(),
-            Type::Set(t) => (**t).clone(),
-            Type::Str => Type::Str,
-            Type::Dict(k, _) => (**k).clone(),
-            _ => Type::Any,
+        let elem_type = if let Some(e) = iter_type.list_elem() {
+            e.clone()
+        } else if let Some(elems) = iter_type.tuple_elems() {
+            elems.first().cloned().unwrap_or(Type::Any)
+        } else if let Some(e) = iter_type.set_elem() {
+            e.clone()
+        } else if iter_type == Type::Str {
+            Type::Str
+        } else if let Some((k, _)) = iter_type.dict_kv() {
+            k.clone()
+        } else {
+            Type::Any
         };
 
         // Create the set with estimated capacity
@@ -123,13 +130,18 @@ impl<'a> Lowering<'a> {
         let source_operand = self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
 
         // Get appropriate iterator source kind based on type
-        let source = match &iter_type {
-            Type::List(_) => mir::IterSourceKind::List,
-            Type::Tuple(_) => mir::IterSourceKind::Tuple,
-            Type::Str => mir::IterSourceKind::Str,
-            Type::Dict(_, _) => mir::IterSourceKind::Dict,
-            Type::Set(_) => mir::IterSourceKind::Set,
-            _ => mir::IterSourceKind::List, // fallback
+        let source = if iter_type.is_list_like() {
+            mir::IterSourceKind::List
+        } else if iter_type.tuple_elems().is_some() || iter_type.tuple_var_elem().is_some() {
+            mir::IterSourceKind::Tuple
+        } else if iter_type == Type::Str {
+            mir::IterSourceKind::Str
+        } else if iter_type.is_dict_like() {
+            mir::IterSourceKind::Dict
+        } else if iter_type.set_elem().is_some() {
+            mir::IterSourceKind::Set
+        } else {
+            mir::IterSourceKind::List // fallback
         };
         let iter_func = mir::RuntimeFunc::Call(source.iterator_def(mir::IterDirection::Forward));
 
@@ -225,13 +237,14 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         // Use expected_type from assignment context (e.g. `x: list[int] = list(...)`)
         // for precise element type. This enables ListGetTyped instead of generic ListGet.
-        let list_elem_type = if let Some(Type::List(ref expected_elem)) = self.codegen.expected_type
-        {
-            (**expected_elem).clone()
-        } else {
-            Type::Any
-        };
-        let result_local = self.alloc_and_add_local(Type::List(Box::new(list_elem_type)), mir_func);
+        let list_elem_type = self
+            .codegen
+            .expected_type
+            .as_ref()
+            .and_then(|t| t.list_elem())
+            .cloned()
+            .unwrap_or(Type::Any);
+        let result_local = self.alloc_and_add_local(Type::list_of(list_elem_type), mir_func);
 
         if args.is_empty() {
             // list() - create empty list
@@ -264,75 +277,51 @@ impl<'a> Lowering<'a> {
         // map/filter iterators store tagged Values; ListGetTyped(Int) can transparently unbox.
         let lowered_type = self.operand_type(&source_operand, mir_func);
         let iter_type = match &hir_type {
-            Type::Any if matches!(lowered_type, Type::Iterator(_)) => lowered_type,
+            Type::Any if lowered_type.iter_elem().is_some() => lowered_type,
             other => other.clone(),
         };
 
         // Dispatch based on source type
-        match &iter_type {
-            Type::Tuple(_) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_TUPLE,
-                    ),
-                    args: vec![source_operand],
-                });
-            }
-            Type::Str => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_STR,
-                    ),
-                    args: vec![source_operand],
-                });
-            }
-            Type::Set(_) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_SET,
-                    ),
-                    args: vec![source_operand],
-                });
-            }
-            Type::Dict(_, _) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_DICT,
-                    ),
-                    args: vec![source_operand],
-                });
-            }
-            Type::List(_) => {
-                // list(list) -> shallow copy
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_COPY),
-                    args: vec![source_operand],
-                });
-            }
-            Type::Iterator(_) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_ITER,
-                    ),
-                    args: vec![source_operand],
-                });
-            }
-            _ => {
-                // Fallback: try as iterator (assume heap objects)
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_ITER,
-                    ),
-                    args: vec![source_operand],
-                });
-            }
+        if iter_type.tuple_elems().is_some() || iter_type.tuple_var_elem().is_some() {
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_LIST_FROM_TUPLE,
+                ),
+                args: vec![source_operand],
+            });
+        } else if iter_type == Type::Str {
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_STR),
+                args: vec![source_operand],
+            });
+        } else if iter_type.set_elem().is_some() {
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_SET),
+                args: vec![source_operand],
+            });
+        } else if iter_type.is_dict_like() {
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_DICT),
+                args: vec![source_operand],
+            });
+        } else if iter_type.is_list_like() {
+            // list(list) -> shallow copy
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_COPY),
+                args: vec![source_operand],
+            });
+        } else {
+            // Iterator or fallback: try as iterator (assume heap objects)
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_ITER),
+                args: vec![source_operand],
+            });
         }
 
         Ok(mir::Operand::Local(result_local))
@@ -379,7 +368,7 @@ impl<'a> Lowering<'a> {
         let result_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_FROM_RANGE),
             vec![start, stop, step],
-            Type::List(Box::new(Type::Int)),
+            Type::list_of(Type::Int),
             mir_func,
         );
 
@@ -394,7 +383,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         // Create result local with Tuple type - use vec![Any] to match typecheck
-        let result_local = self.alloc_and_add_local(Type::Tuple(vec![Type::Any]), mir_func);
+        let result_local = self.alloc_and_add_local(Type::tuple_of(vec![Type::Any]), mir_func);
 
         if args.is_empty() {
             // tuple() - create empty tuple
@@ -423,69 +412,49 @@ impl<'a> Lowering<'a> {
         let source_operand = self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
 
         // Dispatch based on source type
-        match &iter_type {
-            Type::List(_) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_LIST,
-                    ),
-                    args: vec![source_operand],
-                });
-            }
-            Type::Str => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_STR,
-                    ),
-                    args: vec![source_operand],
-                });
-            }
-            Type::Set(_) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_SET,
-                    ),
-                    args: vec![source_operand],
-                });
-            }
-            Type::Dict(_, _) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_DICT,
-                    ),
-                    args: vec![source_operand],
-                });
-            }
-            Type::Tuple(_) => {
-                // tuple(tuple) -> same tuple (or copy)
-                self.emit_instruction(mir::InstructionKind::Copy {
-                    dest: result_local,
-                    src: source_operand,
-                });
-            }
-            Type::Iterator(_) => {
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_ITER,
-                    ),
-                    args: vec![source_operand],
-                });
-            }
-            _ => {
-                // Fallback: try as iterator
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_ITER,
-                    ),
-                    args: vec![source_operand],
-                });
-            }
+        if iter_type.is_list_like() {
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_LIST,
+                ),
+                args: vec![source_operand],
+            });
+        } else if iter_type == Type::Str {
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_STR),
+                args: vec![source_operand],
+            });
+        } else if iter_type.set_elem().is_some() {
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_SET),
+                args: vec![source_operand],
+            });
+        } else if iter_type.is_dict_like() {
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_DICT,
+                ),
+                args: vec![source_operand],
+            });
+        } else if iter_type.tuple_elems().is_some() || iter_type.tuple_var_elem().is_some() {
+            // tuple(tuple) -> same tuple (or copy)
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest: result_local,
+                src: source_operand,
+            });
+        } else {
+            // Iterator or fallback: try as iterator
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_ITER,
+                ),
+                args: vec![source_operand],
+            });
         }
 
         Ok(mir::Operand::Local(result_local))
@@ -532,7 +501,7 @@ impl<'a> Lowering<'a> {
         let result_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_FROM_RANGE),
             vec![start, stop, step],
-            Type::Tuple(vec![Type::Int]),
+            Type::tuple_of(vec![Type::Int]),
             mir_func,
         );
 
@@ -548,16 +517,15 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
         // Bidirectional: use expected_type for empty dict() calls
-        let (dict_key_type, dict_val_type) =
-            if let Some(Type::Dict(ref ek, ref ev)) = self.codegen.expected_type {
-                ((**ek).clone(), (**ev).clone())
-            } else {
-                (Type::Any, Type::Any)
-            };
-        let result_local = self.alloc_and_add_local(
-            Type::Dict(Box::new(dict_key_type), Box::new(dict_val_type)),
-            mir_func,
-        );
+        let (dict_key_type, dict_val_type) = self
+            .codegen
+            .expected_type
+            .as_ref()
+            .and_then(|t| t.dict_kv())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .unwrap_or((Type::Any, Type::Any));
+        let result_local =
+            self.alloc_and_add_local(Type::dict_of(dict_key_type, dict_val_type), mir_func);
 
         // Start by creating an empty dict
         self.emit_instruction(mir::InstructionKind::RuntimeCall {
@@ -577,36 +545,22 @@ impl<'a> Lowering<'a> {
                 self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
 
             // If it's a list of pairs, use DictFromPairs
-            match &iter_type {
-                Type::List(_) => {
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_DICT_FROM_PAIRS,
-                        ),
-                        args: vec![source_operand],
-                    });
-                }
-                Type::Dict(_, _) => {
-                    // dict(other_dict) -> copy
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_DICT_COPY,
-                        ),
-                        args: vec![source_operand],
-                    });
-                }
-                _ => {
-                    // Try treating as iterable of pairs
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_DICT_FROM_PAIRS,
-                        ),
-                        args: vec![source_operand],
-                    });
-                }
+            if iter_type.is_dict_like() {
+                // dict(other_dict) -> copy
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_COPY),
+                    args: vec![source_operand],
+                });
+            } else {
+                // list of pairs or other iterable
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_DICT_FROM_PAIRS,
+                    ),
+                    args: vec![source_operand],
+                });
             }
         }
 
@@ -667,9 +621,9 @@ impl<'a> Lowering<'a> {
                         1 => Type::Float,
                         2 => Type::Str,
                         3 => Type::Bool,
-                        4 => Type::List(Box::new(Type::Any)),
-                        5 => Type::Dict(Box::new(Type::Any), Box::new(Type::Any)),
-                        6 => Type::Set(Box::new(Type::Any)),
+                        4 => Type::list_of(Type::Any),
+                        5 => Type::dict_of(Type::Any, Type::Any),
+                        6 => Type::set_of(Type::Any),
                         _ => Type::Any,
                     };
                     (*tag, vt)
@@ -686,7 +640,7 @@ impl<'a> Lowering<'a> {
 
         // When no factory, use regular Dict type (standard boxing/unboxing)
         let result_type = if factory_tag < 0 {
-            Type::Dict(Box::new(Type::Any), Box::new(value_type))
+            Type::dict_of(Type::Any, value_type)
         } else {
             Type::DefaultDict(Box::new(Type::Any), Box::new(value_type))
         };
@@ -728,20 +682,26 @@ impl<'a> Lowering<'a> {
             let iter_type = self.seed_expr_type(args[0], hir_module);
 
             // Create iterator from the argument
-            let iter_operand = if matches!(iter_type, Type::Iterator(_)) {
+            let iter_operand = if iter_type.iter_elem().is_some() {
                 self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?
             } else {
                 // Need to convert to iterator first
                 let source = self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
                 let iter_local =
                     self.alloc_and_add_local(Type::Iterator(Box::new(Type::Any)), mir_func);
-                let source_kind = match &iter_type {
-                    Type::List(_) => mir::IterSourceKind::List,
-                    Type::Tuple(_) => mir::IterSourceKind::Tuple,
-                    Type::Dict(_, _) => mir::IterSourceKind::Dict,
-                    Type::Set(_) => mir::IterSourceKind::Set,
-                    Type::Str => mir::IterSourceKind::Str,
-                    _ => mir::IterSourceKind::List,
+                let source_kind = if iter_type.is_list_like() {
+                    mir::IterSourceKind::List
+                } else if iter_type.tuple_elems().is_some() || iter_type.tuple_var_elem().is_some()
+                {
+                    mir::IterSourceKind::Tuple
+                } else if iter_type.is_dict_like() {
+                    mir::IterSourceKind::Dict
+                } else if iter_type.set_elem().is_some() {
+                    mir::IterSourceKind::Set
+                } else if iter_type == Type::Str {
+                    mir::IterSourceKind::Str
+                } else {
+                    mir::IterSourceKind::List
                 };
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: iter_local,
@@ -803,19 +763,25 @@ impl<'a> Lowering<'a> {
             let iter_expr = &hir_module.exprs[args[0]];
             let iter_type = self.seed_expr_type(args[0], hir_module);
 
-            let iter_operand = if matches!(iter_type, Type::Iterator(_)) {
+            let iter_operand = if iter_type.iter_elem().is_some() {
                 self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?
             } else {
                 let source = self.lower_expr_expecting(iter_expr, None, hir_module, mir_func)?;
                 let iter_local =
                     self.alloc_and_add_local(Type::Iterator(Box::new(Type::Any)), mir_func);
-                let source_kind = match &iter_type {
-                    Type::List(_) => mir::IterSourceKind::List,
-                    Type::Tuple(_) => mir::IterSourceKind::Tuple,
-                    Type::Dict(_, _) => mir::IterSourceKind::Dict,
-                    Type::Set(_) => mir::IterSourceKind::Set,
-                    Type::Str => mir::IterSourceKind::Str,
-                    _ => mir::IterSourceKind::List,
+                let source_kind = if iter_type.is_list_like() {
+                    mir::IterSourceKind::List
+                } else if iter_type.tuple_elems().is_some() || iter_type.tuple_var_elem().is_some()
+                {
+                    mir::IterSourceKind::Tuple
+                } else if iter_type.is_dict_like() {
+                    mir::IterSourceKind::Dict
+                } else if iter_type.set_elem().is_some() {
+                    mir::IterSourceKind::Set
+                } else if iter_type == Type::Str {
+                    mir::IterSourceKind::Str
+                } else {
+                    mir::IterSourceKind::List
                 };
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: iter_local,
