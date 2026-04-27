@@ -61,14 +61,9 @@ pub enum StdlibItem {
     Const(&'static pyaot_stdlib_defs::StdlibConstDef),
 }
 
-/// TypeVar definition from `T = TypeVar('T', ...)`
-#[derive(Debug, Clone)]
-pub struct TypeVarDef {
-    /// Constraint types: TypeVar('T', int, str) → [int, str]
-    pub constraints: Vec<Type>,
-    /// Bound type: TypeVar('T', bound=SomeType) → Some(SomeType)
-    pub bound: Option<Type>,
-}
+// TypeVarDef is now defined in pyaot_types and re-exported via pyaot_hir.
+// Re-export for any module-internal callers that reference it by path.
+pub use pyaot_types::TypeVarDef;
 
 /// Allocates unique IDs for variables, functions, classes, lambdas,
 /// comprehensions, and context managers.
@@ -315,6 +310,9 @@ impl AstToHir {
         }
         // Create synthetic __pyaot_module_init__ function for top-level statements
         self.finalize_module();
+        // Thread TypeVar definitions into the HIR module so the monomorphizer
+        // can read bound/constraint information from the MIR module (S3.3).
+        self.module.typevar_defs = self.types.typevar_defs.clone();
         Ok((self.module, self.interner))
     }
 

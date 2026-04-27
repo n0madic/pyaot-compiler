@@ -90,6 +90,9 @@ impl<'a> Lowering<'a> {
             );
         }
 
+        // Thread TypeVar definitions from HIR → MIR for the monomorphizer (S3.3).
+        self.mir_module.typevar_defs = hir_module.typevar_defs.clone();
+
         // Return both MIR module and collected warnings
         Ok((self.mir_module, self.warnings))
     }
@@ -398,6 +401,21 @@ impl<'a> Lowering<'a> {
             return_type,
             Some(func.span),
         );
+
+        // Mark generic templates (functions whose param/return types contain
+        // Type::Var) so WPA can skip them and the monomorphizer can find them.
+        {
+            use std::collections::HashSet;
+            let mut var_names: HashSet<pyaot_utils::InternedString> = HashSet::new();
+            for param in &mir_func.params {
+                param.ty.collect_var_names(&mut var_names);
+            }
+            mir_func.return_type.collect_var_names(&mut var_names);
+            if !var_names.is_empty() {
+                mir_func.is_generic_template = true;
+                mir_func.typevar_params = var_names.into_iter().collect();
+            }
+        }
 
         // Add parameters to locals
         for param in params {

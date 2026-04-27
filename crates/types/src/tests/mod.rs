@@ -457,3 +457,99 @@ fn test_reflected_name_comparison_pairs() {
     // Non-dunder sanity check.
     assert_eq!(reflected_name("__str__"), None);
 }
+
+// ---------------------------------------------------------------------------
+// S3.3a — Type::Var infrastructure: contains_var, collect_var_names, substitute
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_contains_var_simple() {
+    use pyaot_utils::StringInterner;
+    let mut interner = StringInterner::new();
+    let t = interner.intern("T");
+    assert!(Type::Var(t).contains_var());
+    assert!(!Type::Int.contains_var());
+    assert!(!Type::Str.contains_var());
+    assert!(!Type::list_of(Type::Int).contains_var());
+}
+
+#[test]
+fn test_contains_var_nested() {
+    use pyaot_utils::StringInterner;
+    let mut interner = StringInterner::new();
+    let t = interner.intern("T");
+    // list[T] contains Var
+    let list_t = Type::list_of(Type::Var(t));
+    assert!(list_t.contains_var());
+    // list[int] does not
+    assert!(!Type::list_of(Type::Int).contains_var());
+    // Union[T, int] contains Var
+    let union_t = Type::Var(t).join(&Type::Int);
+    assert!(union_t.contains_var());
+}
+
+#[test]
+fn test_collect_var_names_deduplicates() {
+    use pyaot_utils::StringInterner;
+    use std::collections::HashSet;
+    let mut interner = StringInterner::new();
+    let t = interner.intern("T");
+    let u = interner.intern("U");
+    // Function(T, T) -> U: collects {T, U}
+    let ty = Type::Function {
+        params: vec![Type::Var(t), Type::Var(t)],
+        ret: Box::new(Type::Var(u)),
+    };
+    let mut out = HashSet::new();
+    ty.collect_var_names(&mut out);
+    assert_eq!(out.len(), 2);
+    assert!(out.contains(&t));
+    assert!(out.contains(&u));
+}
+
+#[test]
+fn test_substitute_simple() {
+    use pyaot_utils::StringInterner;
+    use std::collections::HashMap;
+    let mut interner = StringInterner::new();
+    let t = interner.intern("T");
+    let ty = Type::Var(t);
+    let mut subst = HashMap::new();
+    subst.insert(t, Type::Int);
+    assert_eq!(ty.substitute(&subst), Type::Int);
+}
+
+#[test]
+fn test_substitute_nested_generic() {
+    use pyaot_utils::StringInterner;
+    use std::collections::HashMap;
+    let mut interner = StringInterner::new();
+    let t = interner.intern("T");
+    // list[T] with {T → str} → list[str]
+    let list_t = Type::list_of(Type::Var(t));
+    let mut subst = HashMap::new();
+    subst.insert(t, Type::Str);
+    let result = list_t.substitute(&subst);
+    assert_eq!(result, Type::list_of(Type::Str));
+}
+
+#[test]
+fn test_substitute_unmapped_var_unchanged() {
+    use pyaot_utils::StringInterner;
+    use std::collections::HashMap;
+    let mut interner = StringInterner::new();
+    let t = interner.intern("T");
+    let u = interner.intern("U");
+    let ty = Type::Var(u);
+    let mut subst = HashMap::new();
+    subst.insert(t, Type::Int); // only maps T, not U
+    assert_eq!(ty.substitute(&subst), Type::Var(u));
+}
+
+#[test]
+fn test_substitute_non_var_identity() {
+    use std::collections::HashMap;
+    let ty = Type::Int;
+    let subst: HashMap<_, Type> = HashMap::new();
+    assert_eq!(ty.substitute(&subst), Type::Int);
+}

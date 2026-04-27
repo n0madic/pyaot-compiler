@@ -46,13 +46,7 @@ impl AstToHir {
             self.scope.initialized_vars.insert(param_name);
 
             let param_type = if let Some(annotation) = &arg.def.annotation {
-                let ty = self.convert_type_annotation(annotation)?;
-                // TypeVar placeholders (Type::Var) → leave untyped for inference
-                if matches!(ty, Type::Var(_)) {
-                    None
-                } else {
-                    Some(ty)
-                }
+                Some(self.convert_type_annotation(annotation)?)
             } else {
                 None
             };
@@ -82,13 +76,7 @@ impl AstToHir {
         // In Python, unannotated functions can return any type, so we represent this
         // as Option::None to distinguish from explicit "-> None" annotation.
         let return_type = if let Some(ret_ann) = &func_def.returns {
-            let ty = self.convert_type_annotation(ret_ann)?;
-            // TypeVar placeholders (Type::Var) → leave untyped for inference
-            if matches!(ty, Type::Var(_)) {
-                None
-            } else {
-                Some(ty)
-            }
+            Some(self.convert_type_annotation(ret_ann)?)
         } else {
             None // No annotation = unknown type (Any), not implicitly None
         };

@@ -679,6 +679,11 @@ pub fn wpa_param_inference(
     // externally-invoked) keep their original seed, so their test-only
     // behaviour is unchanged.
     for (&func_id, func) in &module.functions {
+        // Generic templates keep their Var-typed params — skip them so the
+        // monomorphizer can find Type::Var at the call-site substitution step.
+        if func.is_generic_template {
+            continue;
+        }
         let has_direct_caller = call_graph
             .callers
             .get(&func_id)
@@ -953,6 +958,11 @@ fn refine_function_params(
         Some(f) => f,
         None => return false,
     };
+    // Generic templates retain their Type::Var params unchanged — WPA must
+    // not widen them or the monomorphizer loses the substitution targets.
+    if func.is_generic_template {
+        return false;
+    }
     let n_params = func.params.len();
     if n_params == 0 {
         return false;

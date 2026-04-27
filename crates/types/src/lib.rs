@@ -20,9 +20,20 @@ pub use exceptions::{
 pub use tag_kinds::{is_type_tag_name, type_tag_to_name, TypeTagKind, TYPE_TAG_COUNT};
 
 use pyaot_utils::{ClassId, InternedString};
+use std::collections::{HashMap, HashSet};
 
 /// Type identifier
 pub type TypeId = u32;
+
+/// TypeVar definition (for generic functions).
+/// Populated by `T = TypeVar('T', ...)` declarations in Python source.
+#[derive(Debug, Clone)]
+pub struct TypeVarDef {
+    /// Constraint types: `TypeVar('T', int, str)` → `[int, str]`
+    pub constraints: Vec<Type>,
+    /// Upper bound: `TypeVar('T', bound=SomeType)` → `Some(SomeType)`
+    pub bound: Option<Type>,
+}
 
 /// The type representation
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,6 +183,68 @@ impl Type {
     /// Check if this is a Union type
     pub fn is_union(&self) -> bool {
         matches!(self, Type::Union(_))
+    }
+
+    // -------------------------------------------------------------------------
+    // TypeVar / generics API (S3.3)
+    // -------------------------------------------------------------------------
+
+    /// Returns `true` if this type or any nested type is `Type::Var(_)`.
+    pub fn contains_var(&self) -> bool {
+        match self {
+            Type::Var(_) => true,
+            Type::Union(ts) => ts.iter().any(|t| t.contains_var()),
+            Type::Generic { args, .. } => args.iter().any(|t| t.contains_var()),
+            Type::DefaultDict(k, v) => k.contains_var() || v.contains_var(),
+            Type::Iterator(t) => t.contains_var(),
+            Type::Function { params, ret } => {
+                params.iter().any(|t| t.contains_var()) || ret.contains_var()
+            }
+            _ => false,
+        }
+    }
+
+    /// Collects all distinct `Type::Var` names reachable from this type.
+    pub fn collect_var_names(&self, out: &mut HashSet<InternedString>) {
+        match self {
+            Type::Var(name) => {
+                out.insert(*name);
+            }
+            Type::Union(ts) => ts.iter().for_each(|t| t.collect_var_names(out)),
+            Type::Generic { args, .. } => args.iter().for_each(|t| t.collect_var_names(out)),
+            Type::DefaultDict(k, v) => {
+                k.collect_var_names(out);
+                v.collect_var_names(out);
+            }
+            Type::Iterator(t) => t.collect_var_names(out),
+            Type::Function { params, ret } => {
+                params.iter().for_each(|t| t.collect_var_names(out));
+                ret.collect_var_names(out);
+            }
+            _ => {}
+        }
+    }
+
+    /// Substitute all `Type::Var(name)` leaves using the given map.
+    /// Unmapped names are left as `Type::Var(name)`.
+    pub fn substitute(&self, subst: &HashMap<InternedString, Type>) -> Type {
+        match self {
+            Type::Var(name) => subst.get(name).cloned().unwrap_or_else(|| self.clone()),
+            Type::Union(ts) => Type::Union(ts.iter().map(|t| t.substitute(subst)).collect()),
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args.iter().map(|t| t.substitute(subst)).collect(),
+            },
+            Type::DefaultDict(k, v) => {
+                Type::DefaultDict(Box::new(k.substitute(subst)), Box::new(v.substitute(subst)))
+            }
+            Type::Iterator(t) => Type::Iterator(Box::new(t.substitute(subst))),
+            Type::Function { params, ret } => Type::Function {
+                params: params.iter().map(|t| t.substitute(subst)).collect(),
+                ret: Box::new(ret.substitute(subst)),
+            },
+            _ => self.clone(),
+        }
     }
 
     // -------------------------------------------------------------------------

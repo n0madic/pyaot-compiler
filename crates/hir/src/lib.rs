@@ -10,9 +10,10 @@ use indexmap::IndexMap;
 use indexmap::IndexSet;
 use la_arena::Arena;
 pub use pyaot_core_defs::BuiltinFunctionKind;
+pub use pyaot_types::TypeVarDef;
 use pyaot_types::{BuiltinExceptionKind, Type};
 use pyaot_utils::{ClassId, FuncId, HirBlockId, InternedString, Span, VarId};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Method kind for class methods (staticmethod, classmethod, instance method)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -125,6 +126,10 @@ pub struct Module {
     /// pair against `module_class_exports` and rewrites every `Type::Class`
     /// with the placeholder id to the remapped real id before lowering.
     pub external_class_refs: IndexMap<ClassId, (String, String)>,
+    /// TypeVar definitions declared in this module (`T = TypeVar('T', ...)`).
+    /// Keyed by the Python name. Preserved through lowering for the
+    /// monomorphizer (S3.3) to use when specialising generic functions.
+    pub typevar_defs: HashMap<InternedString, TypeVarDef>,
 }
 
 /// Class definition
@@ -992,6 +997,7 @@ impl Module {
             module_var_map: IndexMap::new(),
             used_packages: IndexSet::new(),
             external_class_refs: IndexMap::new(),
+            typevar_defs: HashMap::new(),
         }
     }
 }

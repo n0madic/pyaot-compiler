@@ -160,13 +160,7 @@ impl AstToHir {
                 ))
             }
         };
-        let raw_type_hint = self.convert_type_annotation(&ann_assign.annotation)?;
-        // TypeVar placeholders → no type hint (let inference determine the type)
-        let type_hint = if matches!(raw_type_hint, Type::Var(_)) {
-            None
-        } else {
-            Some(raw_type_hint)
-        };
+        let type_hint = Some(self.convert_type_annotation(&ann_assign.annotation)?);
         let value = if let Some(val) = ann_assign.value {
             let value_id = self.convert_expr(*val)?;
             // Propagate type hint to the value expression for empty collection literals

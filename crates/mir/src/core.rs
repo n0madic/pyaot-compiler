@@ -3,8 +3,9 @@
 use std::cell::OnceCell;
 
 use indexmap::IndexMap;
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeVarDef};
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, Span};
+use std::collections::HashMap;
 
 use crate::dom_tree::DomTree;
 use crate::{Instruction, Terminator};
@@ -61,6 +62,9 @@ pub struct Module {
     /// lowering at end of HIR→MIR; refined in place by
     /// `wpa_field_inference`.
     pub class_info: IndexMap<ClassId, ClassMetadata>,
+    /// TypeVar definitions from the source module, threaded through from
+    /// `hir::Module` for the monomorphizer (S3.3).
+    pub typevar_defs: HashMap<InternedString, TypeVarDef>,
 }
 
 /// MIR Function with CFG
@@ -80,6 +84,14 @@ pub struct Function {
     /// `false`; Phase 1 of the architecture refactor flips individual
     /// functions to `true` after rewriting them in proper SSA form.
     pub is_ssa: bool,
+    /// True when this function has at least one `Type::Var` in its parameter
+    /// or return type — it is a generic template awaiting monomorphisation
+    /// (S3.3). WPA skips templates; the MonomorphizePass clones them per
+    /// concrete call-site and clears this flag on every specialisation.
+    pub is_generic_template: bool,
+    /// Distinct TypeVar names used in the function signature.
+    /// Empty when `is_generic_template` is false.
+    pub typevar_params: Vec<InternedString>,
     /// Lazily-computed dominator tree (Cooper–Harvey–Kennedy). Populated on
     /// first call to `dom_tree()`. CFG-mutating passes must call
     /// `invalidate_dom_tree()` to drop a stale cache.
@@ -116,6 +128,7 @@ impl Module {
             vtables: Vec::new(),
             module_init_order: Vec::new(),
             class_info: IndexMap::new(),
+            typevar_defs: HashMap::new(),
         }
     }
 
@@ -159,6 +172,8 @@ impl Function {
             entry_block,
             span,
             is_ssa: false,
+            is_generic_template: false,
+            typevar_params: Vec::new(),
             dom_tree_cache: OnceCell::new(),
         }
     }
