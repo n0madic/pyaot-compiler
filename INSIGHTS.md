@@ -331,22 +331,22 @@ pub enum Type {
 
 **Same runtime layout.** Both map onto `TupleObj` with `elem_tag` — the distinction lives purely in the compiler. `t[k]` on a fixed `Tuple` uses compile-time bounds-checked indexing with the static per-slot type; `t[k]` on `TupleVar` emits `rt_tuple_get` with a runtime bounds-check and returns the homogeneous element type. Iteration (`for x in t`), `len(t)`, `zip(t, ...)` dispatch identically via the existing runtime.
 
-### Shape unification — `Type::unify_tuple_shapes`
+### Shape unification — `TypeLattice::join` for tuples
 
-`crates/types/src/lib.rs::unify_tuple_shapes` is the canonical decision tree for merging two tuple-typed values (used by class-field inference when the same `self.<field>` is assigned tuples of different shapes in different methods):
+`TypeLattice::join` in `crates/types/src/lib.rs` handles tuple shape merging (used by class-field inference when the same `self.<field>` is assigned tuples of different shapes in different methods):
 
 | LHS | RHS | Result |
 |---|---|---|
 | `Tuple([])` (empty) | anything | absorbed into RHS (empty is compatible with every tuple shape) |
-| `Tuple([a1..an])` | `Tuple([b1..bn])` (same length) | element-wise union, **keep fixed shape** — `Tuple([union(a_i, b_i)])` |
-| `Tuple([a1..an])` | `Tuple([b1..bm])` (diff lengths) | collapse to `TupleVar(normalize_union(all a_i ∪ all b_j))` |
-| `TupleVar(e1)` | `TupleVar(e2)` | `TupleVar(normalize_union([e1, e2]))` |
-| `TupleVar(e)` | `Tuple([t_j])` (either side) | `TupleVar(normalize_union([e] ∪ t_j))` — fixed absorbed into variable |
-| non-tuple | non-tuple | falls back to `normalize_union` |
+| `Tuple([a1..an])` | `Tuple([b1..bn])` (same length) | element-wise join, **keep fixed shape** — `Tuple([a_i.join(&b_i)])` |
+| `Tuple([a1..an])` | `Tuple([b1..bm])` (diff lengths) | canonical `Union[Tuple(...), Tuple(...)]` |
+| `TupleVar(e1)` | `TupleVar(e2)` | `TupleVar(e1.join(&e2))` |
+| `TupleVar(e)` | `Tuple([t_j])` (either side) | `TupleVar(join_of([e] ∪ t_j))` — fixed absorbed into variable |
+| non-tuple | non-tuple | falls back to `make_canonical_union` |
 
 ### Class-field scan walks all methods
 
-`frontend-python/src/ast_to_hir/classes.rs::scan_method_for_self_fields` now walks **every** method in the class body (not just `__init__`). Each site's inferred type merges via `unify_tuple_shapes` when the observed types are tuples. `infer_field_type_from_rhs` recognises tuple literals (`()`, `(a,)`, `(a, b)`) and tuple-typed constants, so literal shape info feeds the merge directly. Parameter defaults without annotations are also honoured — `class Node: def __init__(self, children=())` contributes `Tuple([])` for the `_children` field even though no explicit annotation exists.
+`frontend-python/src/ast_to_hir/classes.rs::scan_method_for_self_fields` now walks **every** method in the class body (not just `__init__`). Each site's inferred type merges via `TypeLattice::join` when the observed types are tuples. `infer_field_type_from_rhs` recognises tuple literals (`()`, `(a,)`, `(a, b)`) and tuple-typed constants, so literal shape info feeds the merge directly. Parameter defaults without annotations are also honoured — `class Node: def __init__(self, children=())` contributes `Tuple([])` for the `_children` field even though no explicit annotation exists.
 
 ### Cross-tag list equality — `rt_list_eq`
 
@@ -369,7 +369,7 @@ This handles `other: "V"`, `children: "tuple[Node, ...]"`, forward refs to later
 2. **`from __future__ import annotations`** parses through as a documentation marker — our AOT is eager-evaluate by design, so every annotation (stringified or not) is resolved at compile time. The import has no effect on type resolution but is not rejected as a syntax error.
 
 **Cross-references:**
-- `crates/types/src/lib.rs::unify_tuple_shapes` — shape merge
+- `crates/types/src/lib.rs::TypeLattice::join` — shape merge (tuple arm)
 - `crates/frontend-python/src/ast_to_hir/classes.rs::scan_method_for_self_fields` — all-methods field scan
 - `crates/frontend-python/src/ast_to_hir/types.rs::convert_type_annotation` — string forward-ref re-parse
 - `crates/runtime/src/list/compare.rs::list_elem_eq` — cross-tag list equality
@@ -663,7 +663,7 @@ The rewrite descends into `Type::List`, `Dict`, `Tuple`, `Union`, `Function`, et
 
 The symptom was subtle: `len(x)` where `x: Any` under `isinstance(x, str)` returned `0` silently (the `_ => Int(0)` fallback in `lower_len`). For `requests.post(data="string")`, the `data.encode()` path reached `encode()` with the narrowed type set to `Never`, so the compiler emitted a no-op body, and the server received an empty request.
 
-Fix: `Type::Any` and `Type::HeapAny` narrow to the isinstance target type. See `Type::narrow_to` in `crates/types/src/lib.rs`. The else-branch still returns `Any` via `narrow_excluding`'s non-Union arm (correct — after `if isinstance(x, str): ... else:`, `x` can still be anything except `str`).
+Fix: `Type::Any` and `Type::HeapAny` narrow to the isinstance target type. See `TypeLattice::meet` in `crates/types/src/lib.rs`. The else-branch still returns `Any` via `TypeLattice::minus`'s non-Union arm (correct — after `if isinstance(x, str): ... else:`, `x` can still be anything except `str`).
 
 ## Don't Cache `Var` Expression Types
 
@@ -950,22 +950,26 @@ Class fields and function-local variables both need a single static
 type even when they're written from many sites with different primitive
 types. Area E formalises this as a three-layer system.
 
-### 1. Unification primitive: `Type::unify_field_type`
+### 1. Unification primitive: `TypeLattice::join`
 
-Central entry-point in `crates/types/src/lib.rs`. Decision tree:
+Central entry-point in `crates/types/src/lib.rs`. Decision tree inside `join`:
 
 ```
-unify_field_type(a, b)
-├── either side is Tuple/TupleVar → Type::unify_tuple_shapes   # Area D
-└── otherwise                      → Type::unify_numeric
-                                     ├── promote_numeric(a, b) if both numeric
-                                     │   Bool ⊂ Int ⊂ Float (PEP 3141)
-                                     └── normalize_union([a, b])          # fallthrough
+a.join(&b)
+├── Any/HeapAny absorbs (top)        → Any
+├── Never is identity (bottom)        → other side
+├── same type                         → self
+├── both numeric                      → promote_numeric(a, b)  # Bool ⊂ Int ⊂ Float
+├── both Tuple, same length           → element-wise join (fixed shape)
+├── TupleVar ⊔ Tuple / TupleVar       → TupleVar(element join)
+├── same generic container (List/Set/Dict/…) → container(element join)
+└── otherwise                         → make_canonical_union([a, b])
 ```
 
-`promote_numeric` covers the full 9-cell numeric matrix and returns
-`None` for non-numeric pairs. `unify_numeric` falls through to
-`normalize_union` so `{Int, Str}` becomes `Union[Int, Str]`.
+`Type::promote_numeric` covers the full 9-cell numeric matrix and returns
+`None` for non-numeric pairs. `make_canonical_union` deduplicates, drops
+`Never`, absorbs `Any`, removes subsumed members (including numeric-tower
+subsumption), and sorts members canonically for commutativity.
 
 ### 2. Class fields: all-methods scan + write-site coercion (§E.3)
 
@@ -980,7 +984,7 @@ unify_field_type(a, b)
 - `AugAssign` — added in §E.3; `self.total += x` was previously
   invisible to the scanner.
 
-Each observation is merged via `Type::unify_field_type`. Annotation
+Each observation is merged via `TypeLattice::join`. Annotation
 still wins over inference when both exist.
 
 **Write-site coercion** — `lower_binding_target`'s `Attr` branch passes
@@ -1281,3 +1285,37 @@ empty sequence"` when fed an empty iterator, matching CPython:
 
 The list-based fast path (`min([1, 2, 3])`) was already correct via
 the `rt_list_minmax` runtime helper.
+
+## TypeLattice API — `join`/`meet`/`minus` Replace Legacy Helpers (S3.1)
+
+`crates/types/src/lib.rs` exposes a `TypeLattice` trait with six methods:
+`top()`, `bottom()`, `join()`, `meet()`, `is_subtype_of()`, `minus()`.
+The seven legacy free functions (`unify_field_type`, `unify_numeric`,
+`unify_tuple_shapes`, `normalize_union`, `narrow_to`, `narrow_excluding`,
+`types_match_for_isinstance`) were deleted in S3.1.
+
+**Canonical-union invariant** — `make_canonical_union` (private) always:
+1. Flattens nested `Union` arms
+2. Drops `Never` members
+3. Absorbs to `Any` if any member is `Any`/`HeapAny`
+4. Removes members subsumed by another (`is_subtype_of` OR numeric-tower promotion)
+5. Sorts by `(discriminant, Display)` for commutativity
+
+**Numeric-tower subsumption** — `join(Int, Float) = Float` and
+`join(Bool, Int) = Int`. This is implemented via `promote_numeric` inside
+`make_canonical_union`'s subsumption filter: `Int` is removed from
+`Union[Int, Float]` because `promote_numeric(Int, Float) = Some(Float)`.
+Without this extra check, associativity of `join` breaks for triples like
+`(Int, Float, Str)`.
+
+**`join(Any, T) = Any` — WPA guard** — Class-field WPA in
+`lowering/src/class_metadata.rs` uses an explicit guard: when the
+storage type is `Any`/`HeapAny` (unobserved field), take `observed_ty`
+directly instead of calling `storage_ty.join(&observed_ty)`, which would
+discard the concrete type (since `Any` is top and absorbs everything).
+
+**`dunders.rs` keeps `normalize_union`** — `polymorphic_other_type`
+constructs an explicit `Union[Self, Int, Float, Bool]` for isinstance
+narrowing. Using `join` instead would collapse the numeric tower to
+`Union[Self, Float]`, breaking `meet(Union[Foo, Float], Int) = Never`
+instead of `Int`.

@@ -9,11 +9,15 @@
 - **Classes**: `Type::Class { class_id, name }`
 - **Exceptions**: `Type::BuiltinException(BuiltinExceptionKind)`
 - **Any vs HeapAny**: `Any` = ambiguous (raw i64 or pointer), `HeapAny` = guaranteed `*mut Obj` (safe for runtime dispatch in print/compare)
-- **Tuple variants**: `Type::Tuple` and `Type::TupleVar` share the same runtime (`TupleObj` with uniform `[Value]` storage); the distinction is compile-time only. Fixed tuples support per-slot typed indexing and static bounds checks; variable tuples emit `rt_tuple_get` with runtime bounds checks and return the homogeneous element type. Merge rule: `Type::unify_tuple_shapes(a, b)` — same-length → element-wise union keeping fixed shape; different-lengths → collapse to `TupleVar`; empty absorbs into any other tuple.
-- **Numeric tower helpers (Area E §E.1)**:
-  - `Type::promote_numeric(a, b) -> Option<Type>` — PEP 3141 tower (`bool ⊂ int ⊂ float`); `None` for non-numeric pairs.
-  - `Type::unify_numeric(a, b) -> Type` — promote if both numeric, else `normalize_union`.
-  - `Type::unify_field_type(a, b) -> Type` — single entry-point for cross-site unification (class fields + locals). Defers to `unify_tuple_shapes` when either side is tuple-shaped, else `unify_numeric`. Used by `scan_stmts_for_self_fields` (classes.rs) and `local_prescan.rs`.
+- **Tuple variants**: `Type::Tuple` and `Type::TupleVar` share the same runtime (`TupleObj` with uniform `[Value]` storage); the distinction is compile-time only. Fixed tuples support per-slot typed indexing and static bounds checks; variable tuples emit `rt_tuple_get` with runtime bounds checks and return the homogeneous element type. Merge rule: `a.join(&b)` via `TypeLattice` — same-length tuples merge element-wise (fixed shape); different-length tuples → `Union[...]`; `TupleVar` ⊔ `Tuple` → `TupleVar(element join)`.
+- **TypeLattice API (S3.1)**:
+  - `TypeLattice::join(&self, &Self) -> Self` — least upper bound (⊔). Numeric tower: `Bool ⊔ Int = Int`, `Int ⊔ Float = Float`. Replaces `unify_field_type`, `unify_numeric`, `unify_tuple_shapes`, `normalize_union`.
+  - `TypeLattice::meet(&self, &Self) -> Self` — greatest lower bound (⊓). Replaces `narrow_to`.
+  - `TypeLattice::minus(&self, &Self) -> Self` — set difference. Replaces `narrow_excluding`.
+  - `TypeLattice::is_subtype_of(&self, &Self) -> bool` — lattice order.
+  - `TypeLattice::top() -> Self` — `Type::Any` (absorbs in `join`).
+  - `TypeLattice::bottom() -> Self` — `Type::Never` (identity in `join`).
+  - `Type::promote_numeric(a, b) -> Option<Type>` — PEP 3141 tower (`bool ⊂ int ⊂ float`); `None` for non-numeric pairs. Still public; used internally by `join` and by `dunders.rs`.
 - **Dunder reflections**: `pyaot_types::dunders::reflected_name(forward)` returns the reflected counterpart for binary numeric (`__add__` ↔ `__radd__` etc.), binary bitwise (`__and__` ↔ `__rand__`), **and** comparison ops (`__lt__` ↔ `__gt__`, `__le__` ↔ `__ge__`; `__eq__` / `__ne__` are self-reflected). `hir::CmpOp::reflected_dunder_name` / `is_ordering` mirror these at the HIR level for comparison lowering.
 
 ## Shared Definitions (`core-defs`)
