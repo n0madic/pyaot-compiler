@@ -903,6 +903,52 @@ def proto_get_size(obj: Sizable) -> int:
 proto_box = MyBox(5)
 assert proto_get_size(proto_box) == 5, "Protocol with different vtable layout"
 
+# isinstance structural checks
+assert isinstance(proto_box, Sizable) == True, "isinstance: box satisfies Sizable"
+assert isinstance(proto_c, Sizable) == False, "isinstance: Circle lacks size()"
+assert isinstance(42, Sizable) == False, "isinstance: int does not satisfy Sizable"
+assert isinstance("hi", Sizable) == False, "isinstance: str does not satisfy Sizable"
+
+# Empty Protocol: every object satisfies it
+class AnyProto(Protocol):
+    pass
+
+assert isinstance(proto_box, AnyProto) == True, "isinstance: empty Protocol satisfied by instance"
+assert isinstance(42, AnyProto) == True, "isinstance: empty Protocol satisfied by int"
+assert isinstance("hi", AnyProto) == True, "isinstance: empty Protocol satisfied by str"
+
+# Tuple-of-types containing a Protocol
+assert isinstance(proto_box, (int, Sizable)) == True, "isinstance: tuple-of-types with Protocol (True)"
+assert isinstance(proto_c, (int, Sizable)) == False, "isinstance: tuple-of-types with Protocol (False)"
+
+# Addable Protocol: class with __add__ satisfies it (annotation + isinstance)
+class Addable(Protocol):
+    def __add__(self, other: int) -> int: ...
+
+class Counter:
+    def __init__(self, n: int) -> None:
+        self.n = n
+    def __add__(self, other: int) -> int:
+        return self.n + other
+
+class NoAddable:
+    pass
+
+proto_counter = Counter(10)
+
+# Concrete usage (not through Protocol interface): __add__ dispatches directly
+assert proto_counter.__add__(5) == 15, "Counter.__add__ works directly"
+assert isinstance(proto_counter, Addable) == True, "isinstance: Counter satisfies Addable"
+assert isinstance(NoAddable(), Addable) == False, "isinstance: NoAddable lacks __add__"
+assert isinstance(42, Addable) == False, "isinstance: int does not satisfy Addable"
+
+# Negative case (compile-time diagnostic): uncomment to verify
+# class EmptyClass:
+#     pass
+# def accepts_sized(s: Sizable) -> int:  # diagnostic: type 'EmptyClass' does not satisfy protocol 'Sizable': missing method 'size'
+#     return s.size()
+# accepts_sized(EmptyClass())
+
 print("Protocol tests passed!")
 
 # ===== SECTION: Union function parameters and arithmetic =====

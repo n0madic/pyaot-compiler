@@ -386,14 +386,35 @@ pub extern "C" fn rt_vtable_lookup_by_name(obj_ptr: *mut u8, name_hash: i64) -> 
 }
 
 /// Check whether the object has a method with the given name hash.
-/// Returns 1 (true) if the method exists in the object's vtable, 0 (false) otherwise.
+/// Returns 1 (true) if the method is registered in METHOD_NAME_REGISTRY, 0 otherwise.
 /// Used for structural Protocol isinstance checks: `isinstance(obj, P)` emits one
-/// call per method required by P.
+/// call per method required by P. Checks existence only (no vtable dispatch), so
+/// dunder methods registered with a sentinel slot are correctly found.
 #[no_mangle]
 pub extern "C" fn rt_obj_has_method(obj_ptr: *mut u8, name_hash: i64) -> i8 {
-    if rt_vtable_lookup_by_name(obj_ptr, name_hash).is_null() {
+    if obj_ptr.is_null() {
+        return 0;
+    }
+    unsafe {
+        let type_tag_byte = *obj_ptr;
+        if pyaot_core_defs::TypeTagKind::from_tag(type_tag_byte)
+            != Some(pyaot_core_defs::TypeTagKind::Instance)
+        {
+            return 0;
+        }
+        let instance = obj_ptr as *const crate::object::InstanceObj;
+        let class_id = (*instance).class_id as usize;
+        if class_id >= MAX_CLASSES {
+            return 0;
+        }
+        let registry = &*METHOD_NAME_REGISTRY.0.get();
+        let table = &registry[class_id];
+        let target_hash = name_hash as u64;
+        for i in 0..table.count {
+            if table.entries[i].name_hash == target_hash {
+                return 1;
+            }
+        }
         0
-    } else {
-        1
     }
 }

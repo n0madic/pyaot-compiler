@@ -3188,27 +3188,32 @@ function signature or body. All generic code is monomorphized.
   defined generically, not hardcoded per-type.
 - Codegen-pre-check asserts no `TypeVar` in any signature.
 
-## 3.4 Protocol structural typing
+## 3.4 Protocol structural typing ✅
 
 **Milestone goal**: `isinstance(x, SomeProtocol)` checks for
 structural conformance, not class-hierarchy membership.
 
-**Work**:
+**Implemented** (2026-04-28, commits `f3cf0c6`, `711dc13`, `<commit3>`):
 
-- New HIR node `ClassDef { kind: ClassKind::Protocol, ... }`.
-- Frontend parses `class P(Protocol): ...` correctly.
-- `is_subtype_of(T, P)` where `P` is a Protocol:
-  - For each abstract method `m` in `P`:
-    - Does `T` have a method of the same name with compatible signature?
-  - All methods match → subtype.
-- Generate runtime type-check function that iterates vtable at
-  runtime (slower than nominal but correct).
+- `Lowering::class_implements_protocol(impl_id, proto_id, hir_module)`
+  checks structural conformance at compile time; `types_compatible_for_annotation`
+  now uses it instead of rubber-stamping every Protocol (commit 1).
+- Diagnostic: `"type 'X' does not satisfy protocol 'P': missing method 'foo'"`.
+- `lower_isinstance_protocol` emits chained `rt_obj_has_method` calls
+  (one per Protocol method) ANDed together; empty Protocol → `true` (commit 2).
+- `rt_obj_has_method` in `vtable.rs`: existence-only check against
+  `METHOD_NAME_REGISTRY` (no vtable lookup), so dunder Protocol methods work.
+- Dunder methods are also registered in `METHOD_NAME_REGISTRY` at class
+  init time (sentinel slot `i64::MAX`).
 
-**Non-negotiable**: Protocol membership is structural. No manual
-registration required.
+**Deferred**:
+- Strict signature compatibility (param/return types) — name-only matching.
+- Generic Protocols (`class P(Protocol[T])`) — needs S3.3b class generics.
+- Cross-module Protocol resolution — in-module only.
+- Protocol method dispatch via `CallVirtualNamed` for dunder-only Protocols.
 
-**Exit criterion**: `test_classes.py` gets a Protocol test section.
-`Addable`, `Sized`, `Iterable` Protocols work.
+**Exit criterion**: `examples/test_types_system.py` Protocol section passes.
+`Sizable`, `Addable`, empty Protocol `isinstance` all verified.
 
 ## 3.5 Frontend support
 

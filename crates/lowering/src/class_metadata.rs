@@ -1418,6 +1418,32 @@ impl<'a> Lowering<'a> {
                 );
             }
 
+            // Also register dunder methods for Protocol isinstance structural checks.
+            // Dunders have no vtable slot (use i64::MAX sentinel); rt_obj_has_method
+            // checks existence only and does not use the slot for vtable dispatch.
+            let dunder_hashes: Vec<i64> = self
+                .get_class_info(class_id)
+                .map(|ci| {
+                    ci.dunder_methods
+                        .keys()
+                        .map(|&name| pyaot_utils::fnv1a_hash(name) as i64)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for name_hash in dunder_hashes {
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_REGISTER_METHOD_NAME,
+                    ),
+                    vec![
+                        mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                        mir::Operand::Constant(mir::Constant::Int(name_hash)),
+                        mir::Operand::Constant(mir::Constant::Int(i64::MAX)),
+                    ],
+                    mir_func,
+                );
+            }
+
             // For exception classes, also register the class name for error messages
             if class_def.is_exception_class {
                 // class_def.name is already an InternedString, use it directly

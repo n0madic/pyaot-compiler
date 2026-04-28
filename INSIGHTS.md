@@ -1356,3 +1356,13 @@ FIRST_USER_CLASS_ID       = ClassId(1005)
 **`InlineRemapper` reuse** — `specialize_function` (in `optimizer/src/monomorphize/clone.rs`) delegates all ID remapping to `InlineRemapper` (made `pub(crate)` from `inline/remap.rs`). Type substitution is layered on top: `Refine` and `GcAlloc` instructions carry embedded `Type` fields that need `substitute(subst)` in addition to ID remapping; all other instructions delegate to the existing remapper.
 
 **Template purge**: zero-caller templates are removed from the module after the worklist drains. Templates with surviving callers (e.g., derivation failed, arg type still Var) are retained with a warning — their bodies remain Var-typed and will produce `Any` at codegen.
+
+## Protocol Structural Typing (§3.4)
+
+**Compile-time check** lives in `Lowering::class_implements_protocol` (`context/helpers.rs`): iterate `proto_def.methods`, resolve each mangled HIR name (`ClassName$method_name` → extract after `$`), look up in `impl_info.method_funcs` (regular methods, keyed by `InternedString`) or `impl_info.dunder_methods` (dunders, keyed by `&'static str`). Returns `Ok(())` on conformance, `Err(missing_method_name)` on first gap. Cross-module classes (not in `class_info_map`) are accepted unconditionally (`TODO(s3.4-cross-module)`).
+
+**Runtime structural isinstance** — `lower_isinstance_protocol` emits N chained `rt_obj_has_method` calls ANDed together (one per Protocol method). Empty Protocol → `Bool(true)` (matches `typing` semantics). Non-empty Protocol + primitive `obj_type` → `Bool(false)`.
+
+**Dunder methods and `METHOD_NAME_REGISTRY`** — `rt_register_method_name` is called for regular vtable methods only. For `isinstance(obj, P)` to work when P has dunder methods (e.g., `__add__`), we also register dunders at class init with a sentinel slot `i64::MAX`. `rt_obj_has_method` checks existence in `METHOD_NAME_REGISTRY` directly (no vtable lookup), so the sentinel slot is irrelevant. `rt_vtable_lookup_by_name` (used by `CallVirtualNamed`) would return null for dunders since `MAX >= num_slots` — Protocol method dispatch for dunder-only Protocols is a known limitation deferred to S3.6+.
+
+**Deferred**: signature compatibility (name-only match), Generic Protocols, cross-module, dunder dispatch via `CallVirtualNamed`.

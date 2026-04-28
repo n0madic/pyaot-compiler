@@ -29,6 +29,10 @@
   - `mir::Function::typevar_params: Vec<InternedString>` — distinct Var names from the function signature; empty when `is_generic_template` is false.
   - `monomorphize::derive_subst(template_params, call_arg_types) -> Option<HashMap<InternedString, Type>>` — builds Var→concrete substitution; returns `None` on conflict or structural mismatch.
   - `monomorphize::specialize_function(template, subst, fresh_id, name) -> Function` — deep-clones template, remaps IDs, substitutes types.
+- **Protocol structural typing (§3.4)**:
+  - `Lowering::class_implements_protocol(impl_id, proto_id, &hir_module) -> std::result::Result<(), InternedString>` — compile-time conformance check. Returns `Ok(())` if `impl_id` has all methods required by `proto_id`; `Err(first_missing_name)` otherwise. Cross-module classes (not in `class_info_map`) are accepted unconditionally.
+  - `RT_OBJ_HAS_METHOD` (`rt_obj_has_method(obj: *mut u8, name_hash: i64) -> i8`) — runtime probe: returns 1 if the object's class has a method with the given FNV-1a hash registered in `METHOD_NAME_REGISTRY`. Checks existence only (no vtable lookup); works for both regular methods and dunders.
+  - Dunder methods are registered in `METHOD_NAME_REGISTRY` at class init with sentinel slot `i64::MAX`; `rt_obj_has_method` never uses the slot.
 
 ## Shared Definitions (`core-defs`)
 
