@@ -479,11 +479,108 @@ impl AstToHir {
         std::mem::take(&mut self.scope.pending_stmts)
     }
 
+    /// Extract TypeVar name(s) from the slice of a `Generic[T]` / `Generic[T, U]` expression.
+    /// Returns interned names of the arguments; errors on non-Name elements.
+    pub(crate) fn extract_generic_type_params(
+        &mut self,
+        slice: &py::Expr,
+        span: Span,
+    ) -> Result<Vec<InternedString>> {
+        match slice {
+            py::Expr::Tuple(tuple) => {
+                let mut names = Vec::new();
+                for elt in &tuple.elts {
+                    if let py::Expr::Name(n) = elt {
+                        names.push(self.interner.intern(&n.id));
+                    } else {
+                        return Err(CompilerError::parse_error(
+                            "Generic type parameters must be TypeVar names",
+                            span,
+                        ));
+                    }
+                }
+                Ok(names)
+            }
+            py::Expr::Name(n) => Ok(vec![self.interner.intern(&n.id)]),
+            _ => Err(CompilerError::parse_error(
+                "Generic type parameters must be TypeVar names",
+                span,
+            )),
+        }
+    }
+
+    /// Register PEP 695 inline type parameters (`def fn[T]`, `class Foo[T]`, `type X[T] = ...`)
+    /// into `typevar_defs` for the duration of the enclosing scope.
+    ///
+    /// Returns a save-set that must be passed to `pop_pep695_type_params` after the body is
+    /// converted, so that outer-scope TypeVars with the same name are restored.
+    pub(crate) fn push_pep695_type_params(
+        &mut self,
+        type_params: &[py::TypeParam],
+        span: Span,
+    ) -> Result<Vec<(InternedString, Option<TypeVarDef>)>> {
+        let mut saved = Vec::new();
+        for param in type_params {
+            match param {
+                py::TypeParam::TypeVar(tv) => {
+                    let name = self.interner.intern(&tv.name);
+                    let bound = if let Some(bound_expr) = &tv.bound {
+                        Some(self.convert_type_annotation(bound_expr)?)
+                    } else {
+                        None
+                    };
+                    let prev = self.types.typevar_defs.insert(
+                        name,
+                        TypeVarDef {
+                            constraints: vec![],
+                            bound,
+                        },
+                    );
+                    saved.push((name, prev));
+                }
+                py::TypeParam::ParamSpec(ps) => {
+                    return Err(CompilerError::parse_error(
+                        format!("ParamSpec '{}' is not supported; use TypeVar", ps.name),
+                        span,
+                    ));
+                }
+                py::TypeParam::TypeVarTuple(tvt) => {
+                    return Err(CompilerError::parse_error(
+                        format!("TypeVarTuple '{}' is not supported; use TypeVar", tvt.name),
+                        span,
+                    ));
+                }
+            }
+        }
+        Ok(saved)
+    }
+
+    /// Undo the registrations made by `push_pep695_type_params`, restoring any shadowed entries.
+    pub(crate) fn pop_pep695_type_params(
+        &mut self,
+        saved: Vec<(InternedString, Option<TypeVarDef>)>,
+    ) {
+        for (name, prev) in saved {
+            match prev {
+                Some(prev_def) => {
+                    self.types.typevar_defs.insert(name, prev_def);
+                }
+                None => {
+                    self.types.typevar_defs.remove(&name);
+                }
+            }
+        }
+    }
+
     /// Handle PEP 695 `type MyType = ...` statement
     fn convert_type_alias_stmt(&mut self, ta: py::StmtTypeAlias, stmt_span: Span) -> Result<()> {
         if let py::Expr::Name(name) = &*ta.name {
             let alias_name = self.interner.intern(&name.id);
+            // PEP 695: `type Pair[T] = tuple[T, T]` — register scoped TypeVars before
+            // converting the alias body so `T` resolves in `convert_type_annotation`.
+            let pep695_saved = self.push_pep695_type_params(&ta.type_params, stmt_span)?;
             let aliased_type = self.convert_type_annotation(&ta.value)?;
+            self.pop_pep695_type_params(pep695_saved);
             self.types.type_aliases.insert(alias_name, aliased_type);
             Ok(())
         } else {

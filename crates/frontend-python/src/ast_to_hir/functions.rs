@@ -29,6 +29,10 @@ impl AstToHir {
         // Push outer scope onto stack for nonlocal lookup
         self.scope.scope_stack.push(outer_var_map.clone());
 
+        // PEP 695: `def fn[T](x: T) -> T:` — register scoped TypeVars before
+        // converting parameters so `T` resolves in parameter annotations.
+        let pep695_saved = self.push_pep695_type_params(&func_def.type_params, func_span)?;
+
         // Calculate default values mapping
         // defaults apply to the last N parameters
         let num_params = func_def.args.args.len();
@@ -164,6 +168,9 @@ impl AstToHir {
         self.scope.current_cell_vars = outer_cell_vars;
         self.scope.initialized_vars = outer_initialized_vars;
         self.scope.current_func_is_generator = outer_is_generator;
+
+        // Restore TypeVars that were scoped to this PEP 695 function
+        self.pop_pep695_type_params(pep695_saved);
 
         Ok(())
     }
