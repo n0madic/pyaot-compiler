@@ -1342,3 +1342,17 @@ FIRST_USER_CLASS_ID       = ClassId(1005)
 **`make_canonical_union` merges same-base Generics** — a post-dedup loop coalesces pairs of `Generic{base, [a1..an]}` + `Generic{base, [b1..bn]}` with identical base and arity into `Generic{base, [a1.join(b1)..an.join(bn)]}` element-wise. Without this step, `join(Union([Int, List[Int]]), List[Float])` would produce `Union[Int, List[Int], List[Float]]` instead of `Union[Int, List[Float]]`, breaking associativity. The merge uses `promote_numeric` first, identity check second, then `t1.join(t2)` — avoiding a direct `Generic.join(Generic)` call which would re-enter `make_canonical_union` and cause a stack overflow for certain type triples.
 
 **`RawType` in `mir_merger.rs`** — the cross-module serialization layer retains a `RawType::Generic` variant (with already-remapped `base: ClassId`). The five legacy `RawType::List/Dict/Set/Tuple/TupleVar` variants were also deleted in S3.2c since `type_to_raw` now always emits `RawType::Generic` for container types. Builtin ClassIds are identity-mapped (never offset) during cross-module remapping.
+
+## Monomorphization (S3.3a — Free Functions)
+
+`Type::Var(InternedString)` is preserved end-to-end through the HIR→MIR pipeline (Commit 1: `is_generic_template` flag + `typevar_params` on `mir::Function`; WPA early-returns on templates so Var is never widened to `Any` before Mono runs).
+
+**Pass placement**: `ssa_construct → wpa_first → MonomorphizePass → abi_repair → wpa_second → optimize`. Mono must run *after* first WPA (call-arg types are concrete) and *before* `abi_repair` (so repair sees concrete types for new specializations).
+
+**Spec cache uses `Vec` linear search** — `Type` doesn't implement `Hash` (F64 in the lattice), so `HashMap<SpecKey, FuncId>` is unusable. A `Vec<(SpecKey, FuncId)>` with `PartialEq` find works fine; N (distinct template+arg combos) is small in practice.
+
+**Type-mismatch diagnostics from HIR-level type checker** — calling `identity(42)` where `identity: T → T` emits a type mismatch at the HIR level (`T` ≠ `int`) because the HIR bidirectional checker is not Var-aware. These are non-fatal diagnostics on stderr; Mono resolves Var at MIR level so the compiled output is correct. Suppressing them requires S3.3b-era HIR-level TypeVar unification — deferred.
+
+**`InlineRemapper` reuse** — `specialize_function` (in `optimizer/src/monomorphize/clone.rs`) delegates all ID remapping to `InlineRemapper` (made `pub(crate)` from `inline/remap.rs`). Type substitution is layered on top: `Refine` and `GcAlloc` instructions carry embedded `Type` fields that need `substitute(subst)` in addition to ID remapping; all other instructions delegate to the existing remapper.
+
+**Template purge**: zero-caller templates are removed from the module after the worklist drains. Templates with surviving callers (e.g., derivation failed, arg type still Var) are retained with a warning — their bodies remain Var-typed and will produce `Any` at codegen.

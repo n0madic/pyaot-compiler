@@ -19,6 +19,16 @@
   - `TypeLattice::bottom() -> Self` — `Type::Never` (identity in `join`).
   - `Type::promote_numeric(a, b) -> Option<Type>` — PEP 3141 tower (`bool ⊂ int ⊂ float`); `None` for non-numeric pairs. Still public; used internally by `join` and by `dunders.rs`.
 - **Dunder reflections**: `pyaot_types::dunders::reflected_name(forward)` returns the reflected counterpart for binary numeric (`__add__` ↔ `__radd__` etc.), binary bitwise (`__and__` ↔ `__rand__`), **and** comparison ops (`__lt__` ↔ `__gt__`, `__le__` ↔ `__ge__`; `__eq__` / `__ne__` are self-reflected). `hir::CmpOp::reflected_dunder_name` / `is_ordering` mirror these at the HIR level for comparison lowering.
+- **TypeVar API (S3.3a)**:
+  - `Type::Var(InternedString)` — TypeVar placeholder, preserved end-to-end through HIR→MIR. Erased to concrete type by `MonomorphizePass` before codegen; codegen must never see a Var.
+  - `Type::contains_var() -> bool` — short-circuit walk: true iff any `Var` leaf appears anywhere in the type tree.
+  - `Type::collect_var_names(out: &mut HashSet<InternedString>)` — fills `out` with all distinct Var names in the type tree.
+  - `Type::substitute(subst: &HashMap<InternedString, Type>) -> Type` — recursively replaces every `Var(name)` with `subst[name]`; unmapped vars are left as-is; all other shapes are cloned.
+  - `TypeVarDef { constraints: Vec<Type>, bound: Option<Type> }` — in `pyaot_types`; threaded `hir::Module → mir::Module` for Mono.
+  - `mir::Function::is_generic_template: bool` — set by lowering when any param/return type `contains_var()`. WPA early-returns on template functions.
+  - `mir::Function::typevar_params: Vec<InternedString>` — distinct Var names from the function signature; empty when `is_generic_template` is false.
+  - `monomorphize::derive_subst(template_params, call_arg_types) -> Option<HashMap<InternedString, Type>>` — builds Var→concrete substitution; returns `None` on conflict or structural mismatch.
+  - `monomorphize::specialize_function(template, subst, fresh_id, name) -> Function` — deep-clones template, remaps IDs, substitutes types.
 
 ## Shared Definitions (`core-defs`)
 
@@ -175,14 +185,15 @@ pub trait OptimizationPass {
 
 **Pass types:**
 
-| Pass | Struct | Fixpoint | Max Iter |
-|------|--------|----------|----------|
-| Devirtualize | `DevirtualizePass` | No | 1 |
-| Flatten Properties | `FlattenPropertiesPass` | No | 1 |
-| Inline | `InlinePass::new(threshold)` | No (internal) | 1 |
-| Constant Folding | `ConstantFoldPass` | Yes | 10 |
-| Peephole | `PeepholePass` | Yes | 10 |
-| DCE | `DcePass` | Yes | 20 |
+| Pass | Struct | Fixpoint | Max Iter | Notes |
+|------|--------|----------|----------|-------|
+| **Monomorphize** | `MonomorphizePass` / `monomorphize::run()` | No | 1 | Runs before `abi_repair`, after first WPA |
+| Devirtualize | `DevirtualizePass` | No | 1 | |
+| Flatten Properties | `FlattenPropertiesPass` | No | 1 | |
+| Inline | `InlinePass::new(threshold)` | No (internal) | 1 | |
+| Constant Folding | `ConstantFoldPass` | Yes | 10 | |
+| Peephole | `PeepholePass` | Yes | 10 | |
+| DCE | `DcePass` | Yes | 20 | |
 
 **Pipeline construction:**
 ```rust

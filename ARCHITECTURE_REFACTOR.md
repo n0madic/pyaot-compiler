@@ -3154,7 +3154,7 @@ type-specific variants for known-generic classes. `list[int]` and
 render as `Generic { ... }`. Tests pass. Frontend parses `class
 Stack(Generic[T])` into this form.
 
-## 3.3 Monomorphization pass
+## 3.3 Monomorphization pass ✅ (S3.3a — free functions)
 
 **Milestone goal**: every generic function/method has a specialized
 copy per concrete type instantiation at call sites.
