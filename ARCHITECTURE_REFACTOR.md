@@ -2579,7 +2579,7 @@ bright-line grep, pass migration, workspace green — is met.
 | §2.2 Core-defs API | ✅ | S2.2 ✅ (`cc69143`) |
 | §2.3 Runtime migration | 🟡 | S2.3 ✅ list storage; full `rt_*` ABI retype deferred → Phase 3 §P.2.1 |
 | §2.4 GC migration | 🟡 | S2.6-narrow ✅ (`8a7b1b4`); address-heuristic guards deferred → Phase 3 |
-| §2.5 Codegen migration | 🟡 | S2.7 ✅ (`a0912fc`); arithmetic fast-path deferred → Phase 3 §P.2.3 |
+| §2.5 Codegen migration | ✅ | S2.7 ✅ (`a0912fc`); arithmetic fast-path §P.2.3 ✅ (s3.9) |
 | §2.6 Pass migration | ✅ | S2.9 ✅ (`439496b`): `emit_value_slot` + `coerce_for_storage` |
 | §2.7 Final purge | ✅ | bright-line grep ✅; perf gates §P.1/§P.2 deferred → Phase 3 |
 
@@ -2645,8 +2645,8 @@ bright-line grep, pass migration, workspace green — is met.
 
 | Item | Phase 3 target |
 |---|---|
-| `rt_*` extern ABI retype (~597 symbols) | §P.2.1 |
-| Arithmetic fast-path inlining (`rt_add_int` → inline tag arithmetic) | §P.2.3 |
+| `rt_*` extern ABI retype (~597 symbols) | §P.2.1 ✅ s3.8 |
+| Arithmetic fast-path inlining (`rt_add_int` → inline tag arithmetic) | §P.2.3 ✅ s3.9 |
 | Polymorphic arithmetic perf gate (+20%) | §P.1 |
 | GC scan perf gate (+15%) | §P.2 |
 | `is_useless_container_ty` deletion | Lattice `is_subtype`/`meet` |
@@ -3854,7 +3854,7 @@ audit often uncovers surprise gaps.
 | S2.5 ⏸ (2026-04-24, folded into S2.7) | Originally: Runtime migration of Str/Bytes/Class instances/Generators to `Value`, delete `heap_field_mask` + generator `type_tags`. Same rollback rationale as S2.4 — `ClassInfo.heap_field_mask` exists for the same mixed-slot reason; deletion belongs with S2.7's codegen tagging. | S2.4 | Medium (deferred) | — |
 | S2.6 ✅ narrow (2026-04-24) | GC migration (§2.4, narrow): `mark_object` signature flipped to `Value`; ~40 call sites inside `gc.rs` wrap raw pointers via `Value::from_ptr`. `heap_field_mask` / `ClassInfo.heap_field_mask` / `GeneratorObj.type_tags` / the address-heuristic filter all stay until S2.7 (see §2.4 amendment). Workspace + GC-stress suites both green. | S2.3 (code); S2.5 folded | Low-Medium | — |
 | S2.7 ✅ (2026-04-24, `a0912fc`) | Atomic Value migration campaign (7 stages A–G). Absorbed S2.4/S2.5 container storage flips, narrow-S2.6 GC finalization, codegen Value tagging, fn-ptr wrapping (`ValueFromInt`) + shadow-stack residuals (follow-up commits `b6ed960`…`924d064`). Non-Negotiable Principle 1 relaxed for campaign per 2026-04-24 amendment. | S2.6 (narrow) | **Campaign** | — |
-| S2.8 ⏸ (deferred → Phase 3 §P.2.3) | Codegen: arithmetic fast-path inlining (§2.5 part 2): inline tag tests for Int+Int and other hot ops based on SSA types. Currently `rt_add_int` etc. are called on every arithmetic op. | S2.7 | **HIGH** (perf-critical) | — |
+| S2.8 ✅ (Phase 3 §P.2.3 → s3.9) | Codegen: arithmetic fast-path inlining (§2.5 part 2): `sadd/ssub/smul_overflow` + inline `sdiv`/`srem` with Python floor/mod adjustment; cold error blocks for OverflowError/ZeroDivisionError. `rt_add_int` etc. calls eliminated. | S2.7 | **HIGH** (perf-critical) | — |
 | S2.9 ✅ (2026-04-27, `439496b`) | Pass migration (§2.6): `box_primitive_if_needed` renamed to `emit_value_slot`; `coerce_to_field_type` + `promote_to_float_if_needed` folded into `coerce_for_storage`; `lower_captures_to_tuple` dead code deleted; pre-existing clippy -D warnings fixed. `is_useless_container_ty` deferred to Phase 3 per §2.6 amendment. | S2.7 | Medium | — |
 | S2.10 ✅ (2026-04-27) | Phase 2 formal close: status dashboard + completion section added to spec; ✅ marker on phase header; session table updated. Perf gates and `rt_*` ABI retype deferred to Phase 3 with explicit tracking. | S2.9 | Low-Medium | — |
 

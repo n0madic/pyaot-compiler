@@ -4,6 +4,7 @@
 //! comparison operations, and boolean/bitwise operations.
 //! Also handles UnOp (Neg, Not, Invert).
 
+use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types as cltypes;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, Value};
 use cranelift_codegen::isa::CallConv;
@@ -14,8 +15,8 @@ use pyaot_mir::{self as mir, Operand};
 
 use crate::context::CodegenContext;
 use crate::utils::{
-    declare_runtime_function, get_call_result, is_float_operand, load_operand, load_operand_as,
-    promote_to_float,
+    create_traceback_string_data, declare_runtime_function, get_call_result, is_float_operand,
+    load_operand, load_operand_as, promote_to_float,
 };
 
 /// Compile a unary operation (Neg, Not, Invert)
@@ -226,59 +227,14 @@ pub(crate) fn compile_binop(
             }
         }
     } else {
-        // Integer operations - use runtime functions with overflow/division-by-zero checks
+        // Integer operations - inlined with overflow/division-by-zero checks
         match op {
-            mir::BinOp::Add => call_int_binop_rt(
-                builder,
-                ctx,
-                "rt_add_int",
-                cltypes::I64,
-                left_val,
-                right_val,
-            )?,
-            mir::BinOp::Sub => call_int_binop_rt(
-                builder,
-                ctx,
-                "rt_sub_int",
-                cltypes::I64,
-                left_val,
-                right_val,
-            )?,
-            mir::BinOp::Mul => call_int_binop_rt(
-                builder,
-                ctx,
-                "rt_mul_int",
-                cltypes::I64,
-                left_val,
-                right_val,
-            )?,
-            mir::BinOp::Div => {
-                // Python 3: true division always returns float
-                call_int_binop_rt(
-                    builder,
-                    ctx,
-                    "rt_true_div_int",
-                    cltypes::F64,
-                    left_val,
-                    right_val,
-                )?
-            }
-            mir::BinOp::FloorDiv => call_int_binop_rt(
-                builder,
-                ctx,
-                "rt_div_int",
-                cltypes::I64,
-                left_val,
-                right_val,
-            )?,
-            mir::BinOp::Mod => call_int_binop_rt(
-                builder,
-                ctx,
-                "rt_mod_int",
-                cltypes::I64,
-                left_val,
-                right_val,
-            )?,
+            mir::BinOp::Add => inline_int_add(builder, ctx, left_val, right_val)?,
+            mir::BinOp::Sub => inline_int_sub(builder, ctx, left_val, right_val)?,
+            mir::BinOp::Mul => inline_int_mul(builder, ctx, left_val, right_val)?,
+            mir::BinOp::Div => inline_int_truediv(builder, ctx, left_val, right_val)?,
+            mir::BinOp::FloorDiv => inline_int_floordiv(builder, ctx, left_val, right_val)?,
+            mir::BinOp::Mod => inline_int_mod(builder, ctx, left_val, right_val)?,
             mir::BinOp::Pow => call_int_binop_rt(
                 builder,
                 ctx,
@@ -381,8 +337,225 @@ pub(crate) fn extend_comparison_result(
     }
 }
 
+/// Emit `rt_exc_raise(exc_tag, msg)` + `trap` in the current (error) block.
+fn emit_raise_static(
+    builder: &mut FunctionBuilder,
+    ctx: &mut CodegenContext,
+    exc_tag: i64,
+    msg: &str,
+) -> Result<()> {
+    let data_id = create_traceback_string_data(ctx.module, msg);
+    let gv = ctx.module.declare_data_in_func(data_id, builder.func);
+    let msg_ptr = builder.ins().global_value(cltypes::I64, gv);
+    let msg_len = builder.ins().iconst(cltypes::I64, msg.len() as i64);
+    let exc_type_val = builder.ins().iconst(cltypes::I8, exc_tag);
+
+    let mut sig = ctx.module.make_signature();
+    sig.call_conv = CallConv::SystemV;
+    sig.params.push(AbiParam::new(cltypes::I8));
+    sig.params.push(AbiParam::new(cltypes::I64));
+    sig.params.push(AbiParam::new(cltypes::I64));
+
+    let func_id = declare_runtime_function(ctx.module, "rt_exc_raise", &sig)?;
+    let func_ref = ctx.module.declare_func_in_func(func_id, builder.func);
+    builder
+        .ins()
+        .call(func_ref, &[exc_type_val, msg_ptr, msg_len]);
+    builder
+        .ins()
+        .trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
+    Ok(())
+}
+
+fn inline_int_add(
+    builder: &mut FunctionBuilder,
+    ctx: &mut CodegenContext,
+    a: Value,
+    b: Value,
+) -> Result<Value> {
+    let (result, of) = builder.ins().sadd_overflow(a, b);
+    let overflow_block = builder.create_block();
+    let merge_block = builder.create_block();
+    builder
+        .ins()
+        .brif(of, overflow_block, &[], merge_block, &[]);
+
+    builder.switch_to_block(overflow_block);
+    builder.set_cold_block(overflow_block);
+    emit_raise_static(builder, ctx, 12, "integer overflow")?;
+
+    builder.switch_to_block(merge_block);
+    Ok(result)
+}
+
+fn inline_int_sub(
+    builder: &mut FunctionBuilder,
+    ctx: &mut CodegenContext,
+    a: Value,
+    b: Value,
+) -> Result<Value> {
+    let (result, of) = builder.ins().ssub_overflow(a, b);
+    let overflow_block = builder.create_block();
+    let merge_block = builder.create_block();
+    builder
+        .ins()
+        .brif(of, overflow_block, &[], merge_block, &[]);
+
+    builder.switch_to_block(overflow_block);
+    builder.set_cold_block(overflow_block);
+    emit_raise_static(builder, ctx, 12, "integer overflow")?;
+
+    builder.switch_to_block(merge_block);
+    Ok(result)
+}
+
+fn inline_int_mul(
+    builder: &mut FunctionBuilder,
+    ctx: &mut CodegenContext,
+    a: Value,
+    b: Value,
+) -> Result<Value> {
+    let (result, of) = builder.ins().smul_overflow(a, b);
+    let overflow_block = builder.create_block();
+    let merge_block = builder.create_block();
+    builder
+        .ins()
+        .brif(of, overflow_block, &[], merge_block, &[]);
+
+    builder.switch_to_block(overflow_block);
+    builder.set_cold_block(overflow_block);
+    emit_raise_static(builder, ctx, 12, "integer overflow")?;
+
+    builder.switch_to_block(merge_block);
+    Ok(result)
+}
+
+/// Inline Python true division (a / b → f64) with zero-division check.
+fn inline_int_truediv(
+    builder: &mut FunctionBuilder,
+    ctx: &mut CodegenContext,
+    a: Value,
+    b: Value,
+) -> Result<Value> {
+    let zero = builder.ins().iconst(cltypes::I64, 0);
+    let b_is_zero = builder.ins().icmp(IntCC::Equal, b, zero);
+    let zero_block = builder.create_block();
+    let merge_block = builder.create_block();
+    builder
+        .ins()
+        .brif(b_is_zero, zero_block, &[], merge_block, &[]);
+
+    builder.switch_to_block(zero_block);
+    builder.set_cold_block(zero_block);
+    emit_raise_static(builder, ctx, 11, "division by zero")?;
+
+    builder.switch_to_block(merge_block);
+    let a_f = builder.ins().fcvt_from_sint(cltypes::F64, a);
+    let b_f = builder.ins().fcvt_from_sint(cltypes::F64, b);
+    Ok(builder.ins().fdiv(a_f, b_f))
+}
+
+/// Inline Python floor division (a // b) with zero-division and overflow checks.
+/// Python semantics: rounds toward negative infinity.
+fn inline_int_floordiv(
+    builder: &mut FunctionBuilder,
+    ctx: &mut CodegenContext,
+    a: Value,
+    b: Value,
+) -> Result<Value> {
+    let zero = builder.ins().iconst(cltypes::I64, 0);
+    let min_int = builder.ins().iconst(cltypes::I64, i64::MIN);
+    let neg_one = builder.ins().iconst(cltypes::I64, -1);
+
+    let b_is_zero = builder.ins().icmp(IntCC::Equal, b, zero);
+    let zero_block = builder.create_block();
+    let after_zero = builder.create_block();
+    builder
+        .ins()
+        .brif(b_is_zero, zero_block, &[], after_zero, &[]);
+
+    builder.switch_to_block(zero_block);
+    builder.set_cold_block(zero_block);
+    emit_raise_static(builder, ctx, 11, "integer division or modulo by zero")?;
+
+    builder.switch_to_block(after_zero);
+
+    let a_is_min = builder.ins().icmp(IntCC::Equal, a, min_int);
+    let b_is_neg_one = builder.ins().icmp(IntCC::Equal, b, neg_one);
+    let overflow_cond = builder.ins().band(a_is_min, b_is_neg_one);
+    let overflow_block = builder.create_block();
+    let compute_block = builder.create_block();
+    builder
+        .ins()
+        .brif(overflow_cond, overflow_block, &[], compute_block, &[]);
+
+    builder.switch_to_block(overflow_block);
+    builder.set_cold_block(overflow_block);
+    emit_raise_static(builder, ctx, 12, "integer overflow")?;
+
+    builder.switch_to_block(compute_block);
+
+    let q = builder.ins().sdiv(a, b);
+    let r = builder.ins().srem(a, b);
+    let r_ne_zero = builder.ins().icmp(IntCC::NotEqual, r, zero);
+    let rxb = builder.ins().bxor(r, b);
+    let rxb_neg = builder.ins().icmp(IntCC::SignedLessThan, rxb, zero);
+    let adjust = builder.ins().band(r_ne_zero, rxb_neg);
+    let q_minus_1 = builder.ins().iadd_imm(q, -1);
+    Ok(builder.ins().select(adjust, q_minus_1, q))
+}
+
+/// Inline Python modulo (a % b) with zero-division and overflow checks.
+/// Python semantics: result has same sign as divisor.
+fn inline_int_mod(
+    builder: &mut FunctionBuilder,
+    ctx: &mut CodegenContext,
+    a: Value,
+    b: Value,
+) -> Result<Value> {
+    let zero = builder.ins().iconst(cltypes::I64, 0);
+    let min_int = builder.ins().iconst(cltypes::I64, i64::MIN);
+    let neg_one = builder.ins().iconst(cltypes::I64, -1);
+
+    let b_is_zero = builder.ins().icmp(IntCC::Equal, b, zero);
+    let zero_block = builder.create_block();
+    let after_zero = builder.create_block();
+    builder
+        .ins()
+        .brif(b_is_zero, zero_block, &[], after_zero, &[]);
+
+    builder.switch_to_block(zero_block);
+    builder.set_cold_block(zero_block);
+    emit_raise_static(builder, ctx, 11, "integer division or modulo by zero")?;
+
+    builder.switch_to_block(after_zero);
+
+    let a_is_min = builder.ins().icmp(IntCC::Equal, a, min_int);
+    let b_is_neg_one = builder.ins().icmp(IntCC::Equal, b, neg_one);
+    let overflow_cond = builder.ins().band(a_is_min, b_is_neg_one);
+    let overflow_block = builder.create_block();
+    let compute_block = builder.create_block();
+    builder
+        .ins()
+        .brif(overflow_cond, overflow_block, &[], compute_block, &[]);
+
+    builder.switch_to_block(overflow_block);
+    builder.set_cold_block(overflow_block);
+    emit_raise_static(builder, ctx, 12, "integer overflow")?;
+
+    builder.switch_to_block(compute_block);
+
+    let r = builder.ins().srem(a, b);
+    let r_ne_zero = builder.ins().icmp(IntCC::NotEqual, r, zero);
+    let rxb = builder.ins().bxor(r, b);
+    let rxb_neg = builder.ins().icmp(IntCC::SignedLessThan, rxb, zero);
+    let adjust = builder.ins().band(r_ne_zero, rxb_neg);
+    let r_plus_b = builder.ins().iadd(r, b);
+    Ok(builder.ins().select(adjust, r_plus_b, r))
+}
+
 /// Call a binary integer runtime function: rt_name(a: i64, b: i64) -> ret_type.
-/// Used for arithmetic operations that delegate to the runtime for overflow/error checking.
+/// Used for Pow which is too complex to inline.
 fn call_int_binop_rt(
     builder: &mut FunctionBuilder,
     ctx: &mut CodegenContext,
