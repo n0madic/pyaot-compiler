@@ -18,7 +18,8 @@ fn test_subtyping() {
 
 #[test]
 fn test_union_normalization() {
-    let union = Type::normalize_union(vec![Type::Int, Type::None, Type::Int]);
+    // join deduplicates: Int ⊔ None ⊔ Int == Union[Int, None] (2 distinct members)
+    let union = Type::Int.join(&Type::None).join(&Type::Int);
     match union {
         Type::Union(types) => assert_eq!(types.len(), 2),
         _ => panic!("Expected union"),
@@ -91,9 +92,8 @@ fn test_meet_list_types() {
 
 #[test]
 fn test_empty_union_returns_never() {
-    // Empty union should normalize to Never
-    let empty = Type::normalize_union(vec![]);
-    assert_eq!(empty, Type::Never);
+    // Never is the bottom (empty type); joining Never with itself stays Never.
+    assert_eq!(Type::Never.join(&Type::Never), Type::Never);
 }
 
 #[test]
@@ -132,11 +132,11 @@ fn test_never_display() {
 }
 
 // ---------------------------------------------------------------------------
-// Area E §E.1 — numeric tower helpers
+// Area E §E.1 — numeric tower (tested via TypeLattice::join)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_promote_numeric_tower() {
+fn test_numeric_tower_join() {
     // All 9 numeric combinations (Bool, Int, Float × Bool, Int, Float).
     let cases = [
         (Type::Bool, Type::Bool, Type::Bool),
@@ -151,19 +151,19 @@ fn test_promote_numeric_tower() {
     ];
     for (a, b, expected) in cases {
         assert_eq!(
-            Type::promote_numeric(&a, &b),
-            Some(expected.clone()),
-            "promote_numeric({a:?}, {b:?}) should be {expected:?}"
+            a.join(&b),
+            expected.clone(),
+            "join({a:?}, {b:?}) should be {expected:?}"
         );
     }
 }
 
 #[test]
-fn test_promote_numeric_non_numeric_returns_none() {
-    assert_eq!(Type::promote_numeric(&Type::Int, &Type::Str), None);
-    assert_eq!(Type::promote_numeric(&Type::Str, &Type::Int), None);
-    assert_eq!(Type::promote_numeric(&Type::Any, &Type::Int), None);
-    assert_eq!(Type::promote_numeric(&Type::None, &Type::Bool), None);
+fn test_non_numeric_join_produces_union() {
+    // Non-numeric pairs produce Union, not a single collapsed type.
+    assert!(matches!(Type::Int.join(&Type::Str), Type::Union(_)));
+    assert!(matches!(Type::Str.join(&Type::Int), Type::Union(_)));
+    assert!(matches!(Type::None.join(&Type::Bool), Type::Union(_)));
 }
 
 #[test]

@@ -387,57 +387,6 @@ impl Type {
         }
     }
 
-    /// Normalize a union type (flatten nested unions, remove duplicates)
-    pub fn normalize_union(types: Vec<Type>) -> Type {
-        let mut result = Vec::new();
-        for ty in types {
-            match ty {
-                Type::Union(inner) => {
-                    for t in inner {
-                        if !result.contains(&t) {
-                            result.push(t);
-                        }
-                    }
-                }
-                t => {
-                    if !result.contains(&t) {
-                        result.push(t);
-                    }
-                }
-            }
-        }
-
-        if result.is_empty() {
-            Type::Never
-        } else if result.len() == 1 {
-            result
-                .into_iter()
-                .next()
-                .expect("union simplification must produce at least one type when len==1")
-        } else {
-            Type::Union(result)
-        }
-    }
-
-    /// PEP 3141 numeric tower: `bool ⊂ int ⊂ float`. Returns the wider of two
-    /// numeric types, or `None` if either argument is non-numeric.
-    ///
-    /// Used internally by `TypeLattice::join` and `make_canonical_union`.
-    pub fn promote_numeric(a: &Type, b: &Type) -> Option<Type> {
-        match (a, b) {
-            (Type::Float, Type::Float)
-            | (Type::Float, Type::Int)
-            | (Type::Float, Type::Bool)
-            | (Type::Int, Type::Float)
-            | (Type::Bool, Type::Float) => Some(Type::Float),
-            (Type::Int, Type::Int) | (Type::Int, Type::Bool) | (Type::Bool, Type::Int) => {
-                Some(Type::Int)
-            }
-            (Type::Bool, Type::Bool) => Some(Type::Bool),
-            _ => None,
-        }
-    }
-
     /// Check if type is a subtype of another.
     /// Delegates to `is_subtype_of_inner`; the inherent method is kept for
     /// legacy callers and will be removed in §S3.1 step 7.
@@ -508,6 +457,18 @@ fn type_discriminant(t: &Type) -> u32 {
 }
 
 /// Build a canonical `Type::Union` from a set of member types:
+/// PEP 3141 numeric tower: `bool ⊂ int ⊂ float`.
+/// Returns the wider of two numeric types, or `None` if either is non-numeric.
+fn numeric_promote(a: &Type, b: &Type) -> Option<Type> {
+    match (a, b) {
+        (Type::Float, Type::Float | Type::Int | Type::Bool)
+        | (Type::Int | Type::Bool, Type::Float) => Some(Type::Float),
+        (Type::Int, Type::Int | Type::Bool) | (Type::Bool, Type::Int) => Some(Type::Int),
+        (Type::Bool, Type::Bool) => Some(Type::Bool),
+        _ => None,
+    }
+}
+
 /// 1. Flatten any nested unions.
 /// 2. Deduplicate.
 /// 3. Remove `Never` (bottom identity).
@@ -571,7 +532,7 @@ fn make_canonical_union(members: impl IntoIterator<Item = Type>) -> Type {
                         .iter()
                         .zip(args_b.iter())
                         .map(|(t1, t2)| {
-                            if let Some(n) = Type::promote_numeric(t1, t2) {
+                            if let Some(n) = numeric_promote(t1, t2) {
                                 n
                             } else if t1 == t2 {
                                 t1.clone()
@@ -607,7 +568,7 @@ fn make_canonical_union(members: impl IntoIterator<Item = Type>) -> Type {
         .enumerate()
         .filter_map(|(i, m)| {
             let subsumed = deduped.iter().enumerate().any(|(j, o)| {
-                j != i && (m.is_subtype_of(o) || Type::promote_numeric(m, o).as_ref() == Some(o))
+                j != i && (m.is_subtype_of(o) || numeric_promote(m, o).as_ref() == Some(o))
             });
             subsumed.then_some(i)
         })
@@ -670,7 +631,7 @@ impl TypeLattice for Type {
             return self.clone();
         }
         // numeric tower: Bool ⊂ Int ⊂ Float
-        if let Some(t) = Type::promote_numeric(self, other) {
+        if let Some(t) = numeric_promote(self, other) {
             return t;
         }
         // Covariant element-wise join for Generic containers with the same base.

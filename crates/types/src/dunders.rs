@@ -211,17 +211,20 @@ pub fn reflected_name(forward: &str) -> Option<&'static str> {
 ///   (`Container`, `Lifecycle` — out of scope for this helper).
 pub fn polymorphic_other_type(kind: DunderKind, self_ty: &Type) -> Option<Type> {
     match kind {
-        DunderKind::BinaryNumeric => Some(Type::normalize_union(vec![
-            self_ty.clone(),
-            Type::Int,
-            Type::Float,
-            Type::Bool,
-        ])),
-        DunderKind::BinaryBitwise => Some(Type::normalize_union(vec![
-            self_ty.clone(),
-            Type::Int,
-            Type::Bool,
-        ])),
+        DunderKind::BinaryNumeric => {
+            let mut members = vec![Type::Int, Type::Float, Type::Bool];
+            if !members.contains(self_ty) {
+                members.insert(0, self_ty.clone());
+            }
+            Some(Type::Union(members))
+        }
+        DunderKind::BinaryBitwise => {
+            let mut members = vec![Type::Int, Type::Bool];
+            if !members.contains(self_ty) {
+                members.insert(0, self_ty.clone());
+            }
+            Some(Type::Union(members))
+        }
         DunderKind::Comparison => Some(Type::Any),
         DunderKind::Unary | DunderKind::Conversion => None,
         DunderKind::Container | DunderKind::Lifecycle => None,

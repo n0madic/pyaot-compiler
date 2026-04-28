@@ -878,7 +878,13 @@ impl AstToHir {
             py::Expr::BinOp(bop) => {
                 let lhs = self.infer_field_type_from_rhs(&bop.left, param_types);
                 let rhs = self.infer_field_type_from_rhs(&bop.right, param_types);
-                Type::promote_numeric(&lhs, &rhs).unwrap_or(Type::Any)
+                match (&lhs, &rhs) {
+                    (
+                        Type::Float | Type::Int | Type::Bool,
+                        Type::Float | Type::Int | Type::Bool,
+                    ) => lhs.join(&rhs),
+                    _ => Type::Any,
+                }
             }
             _ => Type::Any,
         }
