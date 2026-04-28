@@ -10,14 +10,13 @@
 - **Exceptions**: `Type::BuiltinException(BuiltinExceptionKind)`
 - **Any vs HeapAny**: `Any` = ambiguous (raw i64 or pointer), `HeapAny` = guaranteed `*mut Obj` (safe for runtime dispatch in print/compare)
 - **Tuple variants** (both now `Type::Generic`): `Generic{TUPLE_ID, [T1..Tn]}` (fixed-length) and `Generic{TUPLE_VAR_ID, [T]}` (variable-length) share the same runtime (`TupleObj` with uniform `[Value]` storage); the distinction is compile-time only. Fixed tuples support per-slot typed indexing and static bounds checks; variable tuples emit `rt_tuple_get` with runtime bounds checks and return the homogeneous element type. Detect with `tuple_elems()` (returns `Some` for fixed) vs `tuple_var_elem()` (returns `Some` for variable). Merge rule: `a.join(&b)` via `TypeLattice` — same-length tuples merge element-wise (fixed shape); different-length tuples → `Union[...]`; TupleVar ⊔ Tuple → TupleVar(element join).
-- **TypeLattice API (S3.1)**:
-  - `TypeLattice::join(&self, &Self) -> Self` — least upper bound (⊔). Numeric tower: `Bool ⊔ Int = Int`, `Int ⊔ Float = Float`. Replaces `unify_field_type`, `unify_numeric`, `unify_tuple_shapes`, `normalize_union`.
-  - `TypeLattice::meet(&self, &Self) -> Self` — greatest lower bound (⊓). Replaces `narrow_to`.
-  - `TypeLattice::minus(&self, &Self) -> Self` — set difference. Replaces `narrow_excluding`.
+- **TypeLattice API (S3.1, final after §3.6 purge)**:
+  - `TypeLattice::join(&self, &Self) -> Self` — least upper bound (⊔). Numeric tower: `Bool ⊔ Int = Int`, `Int ⊔ Float = Float`. All `Type` operations go through this; legacy `unify_*`, `narrow_*`, `normalize_union`, `promote_numeric` functions removed in §3.6.
+  - `TypeLattice::meet(&self, &Self) -> Self` — greatest lower bound (⊓).
+  - `TypeLattice::minus(&self, &Self) -> Self` — set difference.
   - `TypeLattice::is_subtype_of(&self, &Self) -> bool` — lattice order.
   - `TypeLattice::top() -> Self` — `Type::Any` (absorbs in `join`).
   - `TypeLattice::bottom() -> Self` — `Type::Never` (identity in `join`).
-  - `Type::promote_numeric(a, b) -> Option<Type>` — PEP 3141 tower (`bool ⊂ int ⊂ float`); `None` for non-numeric pairs. Still public; used internally by `join` and by `dunders.rs`.
 - **Dunder reflections**: `pyaot_types::dunders::reflected_name(forward)` returns the reflected counterpart for binary numeric (`__add__` ↔ `__radd__` etc.), binary bitwise (`__and__` ↔ `__rand__`), **and** comparison ops (`__lt__` ↔ `__gt__`, `__le__` ↔ `__ge__`; `__eq__` / `__ne__` are self-reflected). `hir::CmpOp::reflected_dunder_name` / `is_ordering` mirror these at the HIR level for comparison lowering.
 - **TypeVar API (S3.3a)**:
   - `Type::Var(InternedString)` — TypeVar placeholder, preserved end-to-end through HIR→MIR. Erased to concrete type by `MonomorphizePass` before codegen; codegen must never see a Var.

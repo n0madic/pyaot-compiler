@@ -55,6 +55,11 @@ indirect/virtual sites are repaired before codegen. Unresolved external
 `CallNamed` plus conservative runtime-erased closure/function-value and
 protocol dispatch paths intentionally remain dynamic.
 
+**Phase 3 (S3.1–S3.6) complete**: TypeLattice fully replaces all legacy
+`unify_*` / `narrow_*` / `normalize_union` / `promote_numeric` functions.
+TypeVar / Generic / Protocol / PEP 695 parsing done. Monomorphization and
+structural Protocol isinstance checks in place.
+
 ## Feature Status
 
 ### Types

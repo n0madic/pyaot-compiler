@@ -3255,7 +3255,7 @@ support it.
 **Exit criterion**: existing `typing`-module-dependent tests
 continue to pass; new TypeVar/Generic/Protocol tests added.
 
-## 3.6 Final purge
+## 3.6 Final purge ✅
 
 **Exit criteria for Phase 3**:
 
