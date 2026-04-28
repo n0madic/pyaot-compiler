@@ -3215,7 +3215,7 @@ structural conformance, not class-hierarchy membership.
 **Exit criterion**: `examples/test_types_system.py` Protocol section passes.
 `Sizable`, `Addable`, empty Protocol `isinstance` all verified.
 
-## 3.5 Frontend support
+## 3.5 Frontend support ✅
 
 **Milestone goal**: Python `TypeVar`, `Generic`, `Protocol` imports
 and syntax are parsed correctly.
@@ -3233,6 +3233,24 @@ and syntax are parsed correctly.
 **Non-negotiable**: syntax is parsed, types are tracked, monomorph
 sees them. If a Python pattern is common (e.g., PEP 695 syntax),
 support it.
+
+**Implemented** (S3.5):
+
+- `from typing import TypeVar, Generic, Protocol` — already done; all names
+  land in `TypeContext.typing_imports`.
+- `T = TypeVar('T', bound=...)` — already done.
+- `class Stack(Generic[T]):` — pre-filter in `convert_class_def` strips
+  `Generic[T]` / `Protocol[T]` bases; validates each TypeVar arg against
+  `typevar_defs`; sets `is_protocol` for `Protocol[T]`; no new `ClassDef`
+  field needed.
+- `class P(Protocol):` — already done.
+- `def fn[T](x: T) -> T:` + `class Cls[T]:` + `type Alias[T] = ...`
+  (PEP 695) — `push_pep695_type_params` / `pop_pep695_type_params` in
+  `mod.rs`; wired into `convert_function_def`, `convert_class_def`, and
+  `convert_type_alias_stmt`.
+- `@runtime_checkable Protocol[T]` — `@runtime_checkable` decorator silently
+  ignored (class-level decorators not yet processed); structural isinstance
+  check works unchanged.
 
 **Exit criterion**: existing `typing`-module-dependent tests
 continue to pass; new TypeVar/Generic/Protocol tests added.
