@@ -4,7 +4,7 @@ use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
-use pyaot_utils::FuncId;
+use pyaot_utils::{ClassId, FuncId, InternedString};
 
 use super::Lowering;
 
@@ -244,6 +244,58 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Check whether `impl_class` structurally satisfies `proto_class`.
+    ///
+    /// Returns `Ok(())` when every method declared in the Protocol is present in
+    /// the implementing class (including inherited methods).  Returns
+    /// `Err(missing_name)` — the first missing method — when it does not.
+    ///
+    /// Checks both `method_funcs` (regular methods, keyed by `InternedString`) and
+    /// `dunder_methods` (special methods, keyed by `&'static str`) to handle
+    /// Protocols like `Sized` (`__len__`) whose methods live in the dunder map.
+    ///
+    /// Cross-module fallback: if the implementing class is not present in the
+    /// current module's class-info map (e.g. imported from another module),
+    /// returns `Ok(())` unconditionally.
+    /// TODO(s3.4-cross-module): tighten once cross-module Protocol threading lands.
+    pub(crate) fn class_implements_protocol(
+        &self,
+        impl_class_id: ClassId,
+        proto_class_id: ClassId,
+        hir_module: &hir::Module,
+    ) -> std::result::Result<(), InternedString> {
+        let Some(impl_info) = self.get_class_info(&impl_class_id) else {
+            return Ok(()); // Cross-module: accept unconditionally
+        };
+        let Some(proto_def) = hir_module.class_defs.get(&proto_class_id) else {
+            return Ok(());
+        };
+        for &method_func_id in &proto_def.methods {
+            let Some(func_def) = hir_module.func_defs.get(&method_func_id) else {
+                continue;
+            };
+            // HIR function names are mangled as "ClassName$method_name".
+            // method_funcs / dunder_methods are keyed by the unmangled short name.
+            let full_name_str = self.resolve(func_def.name);
+            let method_str = if let Some(idx) = full_name_str.find('$') {
+                &full_name_str[idx + 1..]
+            } else {
+                full_name_str
+            };
+            // Use lookup_interned to get the InternedString key used in method_funcs.
+            let Some(method_name) = self.lookup_interned(method_str) else {
+                // If the name was never interned, it was never referenced → missing.
+                return Err(func_def.name);
+            };
+            let present = impl_info.method_funcs.contains_key(&method_name)
+                || impl_info.dunder_methods.contains_key(method_str);
+            if !present {
+                return Err(method_name);
+            }
+        }
+        Ok(())
+    }
+
     /// Check whether an inferred type is compatible with an annotated type.
     ///
     /// This mirrors `Type::is_subtype_of()` but has access to lowering-time
@@ -255,13 +307,25 @@ impl<'a> Lowering<'a> {
         expected: &Type,
         hir_module: &hir::Module,
     ) -> bool {
-        if let Type::Class { class_id, .. } = expected {
+        if let Type::Class {
+            class_id: proto_id, ..
+        } = expected
+        {
             if hir_module
                 .class_defs
-                .get(class_id)
+                .get(proto_id)
                 .is_some_and(|class_def| class_def.is_protocol)
             {
-                return true;
+                if let Type::Class {
+                    class_id: impl_id, ..
+                } = actual
+                {
+                    return self
+                        .class_implements_protocol(*impl_id, *proto_id, hir_module)
+                        .is_ok();
+                }
+                // Any/HeapAny: the match arms below handle this
+                return matches!(actual, Type::Any | Type::HeapAny);
             }
         }
 

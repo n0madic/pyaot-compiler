@@ -56,13 +56,55 @@ impl<'a> Lowering<'a> {
         }
 
         if !self.types_compatible_for_annotation(&inferred, expected, hir_module) {
+            // Produce a more specific diagnostic when a Protocol conformance fails.
+            let message = if let (
+                Type::Class {
+                    class_id: impl_id,
+                    name: impl_name,
+                },
+                Type::Class {
+                    class_id: proto_id,
+                    name: proto_name,
+                },
+            ) = (&inferred, expected)
+            {
+                if hir_module
+                    .class_defs
+                    .get(proto_id)
+                    .is_some_and(|cd| cd.is_protocol)
+                {
+                    if let Err(missing) =
+                        self.class_implements_protocol(*impl_id, *proto_id, hir_module)
+                    {
+                        let impl_str = self.resolve(*impl_name);
+                        let proto_str = self.resolve(*proto_name);
+                        let method_str = self.resolve(missing);
+                        format!(
+                            "type '{impl_str}' does not satisfy protocol '{proto_str}': \
+                             missing method '{method_str}'"
+                        )
+                    } else {
+                        format!(
+                            "type '{}' is not compatible with expected type '{}'",
+                            inferred, expected
+                        )
+                    }
+                } else {
+                    format!(
+                        "type '{}' is not compatible with expected type '{}'",
+                        inferred, expected
+                    )
+                }
+            } else {
+                format!(
+                    "type '{}' is not compatible with expected type '{}'",
+                    inferred, expected
+                )
+            };
             self.warnings
                 .add(pyaot_diagnostics::CompilerWarning::TypeError {
                     span: expr.span,
-                    message: format!(
-                        "type '{}' is not compatible with expected type '{}'",
-                        inferred, expected
-                    ),
+                    message,
                 });
         }
     }
