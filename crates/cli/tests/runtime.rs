@@ -83,6 +83,7 @@ runtime_cases!(
     (runtime_types_system, "test_types_system.py"),
     (runtime_exceptions, "test_exceptions.py"),
     (runtime_generators, "test_generators.py"),
+    (runtime_generics, "test_generics.py"),
     (runtime_iteration, "test_iteration.py"),
     (runtime_match, "test_match.py"),
     (runtime_global_scoping, "test_global_scoping.py"),

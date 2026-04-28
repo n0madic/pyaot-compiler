@@ -209,10 +209,6 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
         module.functions.shift_remove(id);
     }
 
-    // --- Final invariant: no Type::Var survives ---
-    #[cfg(debug_assertions)]
-    assert_no_var_remaining(module);
-
     changed
 }
 
@@ -270,8 +266,10 @@ fn const_type(c: &Constant) -> Type {
     }
 }
 
+/// Panic if any non-template function in the module still contains `Type::Var`.
+/// Call this after the second WPA pass, not immediately after monomorphize::run().
 #[cfg(debug_assertions)]
-fn assert_no_var_remaining(module: &Module) {
+pub fn assert_no_var_remaining(module: &Module) {
     for func in module.functions.values() {
         if func.is_generic_template {
             // Templates that still have callers (dynamic dispatch) are kept;

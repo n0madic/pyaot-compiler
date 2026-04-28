@@ -272,6 +272,10 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
         println!("Running mandatory SSA type analysis (pre-opt, pass 2)...");
     }
     pyaot_optimizer::type_inference::analyze_and_materialize_types(&mut mir_module);
+    // Invariant: after the second WPA pass, caller locals produced by
+    // generic calls are fully resolved — no Type::Var should remain.
+    #[cfg(debug_assertions)]
+    pyaot_optimizer::monomorphize::assert_no_var_remaining(&mir_module);
 
     pyaot_optimizer::optimize_module(&mut mir_module, &opt_config, &mut interner);
     debug_assert_ssa(&mir_module, "post-optimize");
