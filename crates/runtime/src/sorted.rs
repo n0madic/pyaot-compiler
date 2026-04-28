@@ -162,7 +162,6 @@ pub extern "C" fn rt_sorted_abi(obj: Value, reverse: i64, container_tag: u8) -> 
     Value::from_ptr(rt_sorted(obj.unwrap_ptr(), reverse, container_tag))
 }
 
-
 /// Generic sorted with key function: dispatches by `container_tag`.
 /// `key_return_tag`: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1) — describes the key fn's return type.
 /// After §F.7c: containers store uniform tagged Values; no elem_tag needed.
@@ -230,9 +229,16 @@ pub extern "C" fn rt_sorted_with_key_abi(
     container_tag: u8,
     key_return_tag: u8,
 ) -> Value {
-    Value::from_ptr(rt_sorted_with_key(obj.unwrap_ptr(), reverse, key_fn, captures.unwrap_ptr(), capture_count, container_tag, key_return_tag))
+    Value::from_ptr(rt_sorted_with_key(
+        obj.unwrap_ptr(),
+        reverse,
+        key_fn,
+        captures.unwrap_ptr(),
+        capture_count,
+        container_tag,
+        key_return_tag,
+    ))
 }
-
 
 // ==================== No-key implementations ====================
 
@@ -478,7 +484,6 @@ pub fn rt_sorted_range(start: i64, stop: i64, step: i64, reverse: i64) -> *mut O
 pub extern "C" fn rt_sorted_range_abi(start: i64, stop: i64, step: i64, reverse: i64) -> Value {
     Value::from_ptr(rt_sorted_range(start, stop, step, reverse))
 }
-
 
 // ==================== Sorted with key functions ====================
 

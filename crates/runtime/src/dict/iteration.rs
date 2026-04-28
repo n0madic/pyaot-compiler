@@ -51,7 +51,6 @@ pub extern "C" fn rt_dict_keys_abi(dict: Value) -> Value {
     Value::from_ptr(rt_dict_keys(dict.unwrap_ptr()))
 }
 
-
 /// Get list of all values in dictionary (insertion order).
 /// After §F.7c: result list stores uniform tagged Values; no elem_tag arg.
 pub fn rt_dict_values(dict: *mut Obj) -> *mut Obj {
@@ -95,7 +94,6 @@ pub fn rt_dict_values(dict: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_dict_values_abi(dict: Value) -> Value {
     Value::from_ptr(rt_dict_values(dict.unwrap_ptr()))
 }
-
 
 /// Get list of (key, value) tuples for all entries (insertion order).
 pub fn rt_dict_items(dict: *mut Obj) -> *mut Obj {
@@ -144,4 +142,3 @@ pub fn rt_dict_items(dict: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_dict_items_abi(dict: Value) -> Value {
     Value::from_ptr(rt_dict_items(dict.unwrap_ptr()))
 }
-

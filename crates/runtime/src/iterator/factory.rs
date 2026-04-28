@@ -36,7 +36,6 @@ pub extern "C" fn rt_iter_list_abi(list: Value) -> Value {
     Value::from_ptr(rt_iter_list(list.unwrap_ptr()))
 }
 
-
 /// Create a tuple iterator
 /// Returns: pointer to new IteratorObj
 pub fn rt_iter_tuple(tuple: *mut Obj) -> *mut Obj {
@@ -63,7 +62,6 @@ pub fn rt_iter_tuple(tuple: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_iter_tuple_abi(tuple: Value) -> Value {
     Value::from_ptr(rt_iter_tuple(tuple.unwrap_ptr()))
 }
-
 
 /// Create a dict key iterator
 /// Returns: pointer to new IteratorObj
@@ -109,7 +107,6 @@ pub extern "C" fn rt_iter_dict_abi(dict: Value) -> Value {
     Value::from_ptr(rt_iter_dict(dict.unwrap_ptr()))
 }
 
-
 /// Create a string iterator
 /// Returns: pointer to new IteratorObj
 pub fn rt_iter_str(str_obj: *mut Obj) -> *mut Obj {
@@ -137,7 +134,6 @@ pub extern "C" fn rt_iter_str_abi(str_obj: Value) -> Value {
     Value::from_ptr(rt_iter_str(str_obj.unwrap_ptr()))
 }
 
-
 /// Create a range iterator
 /// Returns: pointer to new IteratorObj
 pub fn rt_iter_range(start: i64, stop: i64, step: i64) -> *mut Obj {
@@ -164,7 +160,6 @@ pub fn rt_iter_range(start: i64, stop: i64, step: i64) -> *mut Obj {
 pub extern "C" fn rt_iter_range_abi(start: i64, stop: i64, step: i64) -> Value {
     Value::from_ptr(rt_iter_range(start, stop, step))
 }
-
 
 /// Create a reversed list iterator
 /// Returns: pointer to new IteratorObj starting at end
@@ -197,7 +192,6 @@ pub extern "C" fn rt_iter_reversed_list_abi(list: Value) -> Value {
     Value::from_ptr(rt_iter_reversed_list(list.unwrap_ptr()))
 }
 
-
 /// Create a reversed tuple iterator
 /// Returns: pointer to new IteratorObj starting at end
 pub fn rt_iter_reversed_tuple(tuple: *mut Obj) -> *mut Obj {
@@ -228,7 +222,6 @@ pub fn rt_iter_reversed_tuple(tuple: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_iter_reversed_tuple_abi(tuple: Value) -> Value {
     Value::from_ptr(rt_iter_reversed_tuple(tuple.unwrap_ptr()))
 }
-
 
 /// Create a reversed string iterator
 /// Returns: pointer to new IteratorObj starting at end
@@ -273,7 +266,6 @@ pub fn rt_iter_reversed_str(str_obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_iter_reversed_str_abi(str_obj: Value) -> Value {
     Value::from_ptr(rt_iter_reversed_str(str_obj.unwrap_ptr()))
 }
-
 
 /// Create a reversed dict key iterator
 /// Returns: pointer to new IteratorObj starting at end of keys
@@ -321,7 +313,6 @@ pub fn rt_iter_reversed_dict(dict: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_iter_reversed_dict_abi(dict: Value) -> Value {
     Value::from_ptr(rt_iter_reversed_dict(dict.unwrap_ptr()))
 }
-
 
 /// Create a reversed range iterator
 /// reversed(range(start, stop, step)) is equivalent to range(stop-step, start-step, -step)
@@ -393,7 +384,6 @@ pub extern "C" fn rt_iter_reversed_range_abi(start: i64, stop: i64, step: i64) -
     Value::from_ptr(rt_iter_reversed_range(start, stop, step))
 }
 
-
 /// Create an iterator for a generator
 /// Generators are their own iterators, so this just returns the generator itself
 /// Returns: the same generator object
@@ -405,7 +395,6 @@ pub fn rt_iter_generator(gen: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_iter_generator_abi(gen: Value) -> Value {
     Value::from_ptr(rt_iter_generator(gen.unwrap_ptr()))
 }
-
 
 /// Create an enumerate iterator wrapping an inner iterator
 /// Returns: pointer to new IteratorObj with Enumerate kind
@@ -434,7 +423,6 @@ pub extern "C" fn rt_iter_enumerate_abi(inner_iter: Value, start: i64) -> Value 
     Value::from_ptr(rt_iter_enumerate(inner_iter.unwrap_ptr(), start))
 }
 
-
 /// Create a set iterator
 /// Returns: pointer to IteratorObj
 pub fn rt_iter_set(set: *mut Obj) -> *mut Obj {
@@ -462,7 +450,6 @@ pub extern "C" fn rt_iter_set_abi(set: Value) -> Value {
     Value::from_ptr(rt_iter_set(set.unwrap_ptr()))
 }
 
-
 /// Create a bytes iterator
 /// Returns: pointer to new IteratorObj
 pub fn rt_iter_bytes(bytes: *mut Obj) -> *mut Obj {
@@ -489,7 +476,6 @@ pub fn rt_iter_bytes(bytes: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_iter_bytes_abi(bytes: Value) -> Value {
     Value::from_ptr(rt_iter_bytes(bytes.unwrap_ptr()))
 }
-
 
 /// Create a reversed bytes iterator
 /// Returns: pointer to new IteratorObj starting at end
@@ -521,4 +507,3 @@ pub fn rt_iter_reversed_bytes(bytes: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_iter_reversed_bytes_abi(bytes: Value) -> Value {
     Value::from_ptr(rt_iter_reversed_bytes(bytes.unwrap_ptr()))
 }
-

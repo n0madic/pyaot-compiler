@@ -32,7 +32,6 @@ pub extern "C" fn rt_bytes_decode_abi(bytes: Value, _encoding: Value) -> Value {
     Value::from_ptr(rt_bytes_decode(bytes.unwrap_ptr(), _encoding.unwrap_ptr()))
 }
 
-
 /// Create bytes from hex string
 /// hex_str: pointer to StrObj containing hex digits
 /// Returns: pointer to new BytesObj
@@ -106,4 +105,3 @@ pub fn rt_bytes_fromhex(hex_str: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_bytes_fromhex_abi(hex_str: Value) -> Value {
     Value::from_ptr(rt_bytes_fromhex(hex_str.unwrap_ptr()))
 }
-

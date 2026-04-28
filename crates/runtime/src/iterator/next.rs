@@ -805,7 +805,6 @@ pub extern "C" fn rt_iter_next_abi(iter_obj: Value) -> Value {
     Value::from_ptr(rt_iter_next(iter_obj.unwrap_ptr()))
 }
 
-
 /// Get next element from iterator WITHOUT raising exceptions
 /// Sets the exhausted flag but returns a dummy value instead of raising
 /// This is used by for-loops which check the exhausted flag after next()
@@ -844,7 +843,6 @@ pub fn rt_iter_next_no_exc(iter_obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_iter_next_no_exc_abi(iter_obj: Value) -> Value {
     Value::from_ptr(rt_iter_next_no_exc(iter_obj.unwrap_ptr()))
 }
-
 
 /// Check if an iterator or generator is exhausted
 /// Works for both IteratorObj (lists, tuples, etc.) and GeneratorObj
@@ -886,4 +884,3 @@ pub fn rt_iter_is_exhausted(obj: *mut Obj) -> i8 {
 pub extern "C" fn rt_iter_is_exhausted_abi(obj: Value) -> i8 {
     rt_iter_is_exhausted(obj.unwrap_ptr())
 }
-

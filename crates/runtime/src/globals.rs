@@ -197,7 +197,6 @@ pub extern "C" fn rt_global_set_ptr_abi(var_id: u32, value: Value) {
     rt_global_set_ptr(var_id, value.unwrap_ptr())
 }
 
-
 pub fn rt_global_get_ptr(var_id: u32) -> *mut Obj {
     unsafe {
         if let Some(ref map) = *globals_map() {
@@ -214,7 +213,6 @@ pub fn rt_global_get_ptr(var_id: u32) -> *mut Obj {
 pub extern "C" fn rt_global_get_ptr_abi(var_id: u32) -> Value {
     Value::from_ptr(rt_global_get_ptr(var_id))
 }
-
 
 // ==================== GC Integration ====================
 

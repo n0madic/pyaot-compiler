@@ -200,18 +200,14 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> LocalId {
         if matches!(read_type, Type::Float) {
-            let boxed_local = self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD),
+            return self.emit_runtime_call(
+                mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD_F64,
+                ),
                 vec![
                     obj_operand,
                     mir::Operand::Constant(mir::Constant::Int(offset as i64)),
                 ],
-                Type::HeapAny,
-                mir_func,
-            );
-            return self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT),
-                vec![mir::Operand::Local(boxed_local)],
                 Type::Float,
                 mir_func,
             );

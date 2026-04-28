@@ -118,7 +118,6 @@ pub extern "C" fn rt_stringio_new_abi(initial: Value) -> Value {
     Value::from_ptr(unsafe { rt_stringio_new(initial.unwrap_ptr()) })
 }
 
-
 /// Write string to StringIO, return number of characters written
 pub unsafe fn rt_stringio_write(sio: *mut Obj, s: *mut Obj) -> i64 {
     let sio_obj = sio as *mut StringIOObj;
@@ -161,7 +160,6 @@ pub extern "C" fn rt_stringio_write_abi(sio: Value, s: Value) -> i64 {
     unsafe { rt_stringio_write(sio.unwrap_ptr(), s.unwrap_ptr()) }
 }
 
-
 /// Read from StringIO
 pub unsafe fn rt_stringio_read(sio: *mut Obj, size: i64) -> *mut Obj {
     let sio_obj = sio as *mut StringIOObj;
@@ -190,7 +188,6 @@ pub unsafe fn rt_stringio_read(sio: *mut Obj, size: i64) -> *mut Obj {
 pub extern "C" fn rt_stringio_read_abi(sio: Value, size: i64) -> Value {
     Value::from_ptr(unsafe { rt_stringio_read(sio.unwrap_ptr(), size) })
 }
-
 
 /// Read a line from StringIO (until newline or end)
 pub unsafe fn rt_stringio_readline(sio: *mut Obj) -> *mut Obj {
@@ -224,7 +221,6 @@ pub extern "C" fn rt_stringio_readline_abi(sio: Value) -> Value {
     Value::from_ptr(unsafe { rt_stringio_readline(sio.unwrap_ptr()) })
 }
 
-
 /// Get the entire value of StringIO as a string
 pub unsafe fn rt_stringio_getvalue(sio: *mut Obj) -> *mut Obj {
     let sio_obj = sio as *const StringIOObj;
@@ -241,7 +237,6 @@ pub unsafe fn rt_stringio_getvalue(sio: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_stringio_getvalue_abi(sio: Value) -> Value {
     Value::from_ptr(unsafe { rt_stringio_getvalue(sio.unwrap_ptr()) })
 }
-
 
 /// Seek to a position in StringIO
 pub unsafe fn rt_stringio_seek(sio: *mut Obj, pos: i64) -> i64 {
@@ -265,7 +260,6 @@ pub extern "C" fn rt_stringio_seek_abi(sio: Value, pos: i64) -> i64 {
     unsafe { rt_stringio_seek(sio.unwrap_ptr(), pos) }
 }
 
-
 /// Get current position in StringIO
 pub unsafe fn rt_stringio_tell(sio: *mut Obj) -> i64 {
     let sio_obj = sio as *const StringIOObj;
@@ -278,7 +272,6 @@ pub extern "C" fn rt_stringio_tell_abi(sio: Value) -> i64 {
     unsafe { rt_stringio_tell(sio.unwrap_ptr()) }
 }
 
-
 /// Close StringIO
 pub unsafe fn rt_stringio_close(sio: *mut Obj) {
     let sio_obj = sio as *mut StringIOObj;
@@ -289,7 +282,6 @@ pub unsafe fn rt_stringio_close(sio: *mut Obj) {
 pub extern "C" fn rt_stringio_close_abi(sio: Value) {
     unsafe { rt_stringio_close(sio.unwrap_ptr()) }
 }
-
 
 /// Truncate StringIO at given size (or current position if size=-1)
 pub unsafe fn rt_stringio_truncate(sio: *mut Obj, size: i64) -> i64 {
@@ -313,7 +305,6 @@ pub unsafe fn rt_stringio_truncate(sio: *mut Obj, size: i64) -> i64 {
 pub extern "C" fn rt_stringio_truncate_abi(sio: Value, size: i64) -> i64 {
     unsafe { rt_stringio_truncate(sio.unwrap_ptr(), size) }
 }
-
 
 /// Finalize StringIO (called by GC)
 pub unsafe fn stringio_finalize(obj: *mut Obj) {
@@ -365,7 +356,6 @@ pub extern "C" fn rt_bytesio_new_abi(initial: Value) -> Value {
     Value::from_ptr(unsafe { rt_bytesio_new(initial.unwrap_ptr()) })
 }
 
-
 /// Write bytes to BytesIO, return number of bytes written
 pub unsafe fn rt_bytesio_write(bio: *mut Obj, b: *mut Obj) -> i64 {
     let bio_obj = bio as *mut BytesIOObj;
@@ -411,7 +401,6 @@ pub extern "C" fn rt_bytesio_write_abi(bio: Value, b: Value) -> i64 {
     unsafe { rt_bytesio_write(bio.unwrap_ptr(), b.unwrap_ptr()) }
 }
 
-
 /// Read from BytesIO
 pub unsafe fn rt_bytesio_read(bio: *mut Obj, size: i64) -> *mut Obj {
     let bio_obj = bio as *mut BytesIOObj;
@@ -443,7 +432,6 @@ pub extern "C" fn rt_bytesio_read_abi(bio: Value, size: i64) -> Value {
     Value::from_ptr(unsafe { rt_bytesio_read(bio.unwrap_ptr(), size) })
 }
 
-
 /// Get the entire value of BytesIO as bytes
 pub unsafe fn rt_bytesio_getvalue(bio: *mut Obj) -> *mut Obj {
     let bio_obj = bio as *const BytesIOObj;
@@ -461,7 +449,6 @@ pub unsafe fn rt_bytesio_getvalue(bio: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_bytesio_getvalue_abi(bio: Value) -> Value {
     Value::from_ptr(unsafe { rt_bytesio_getvalue(bio.unwrap_ptr()) })
 }
-
 
 /// Seek to a position in BytesIO
 pub unsafe fn rt_bytesio_seek(bio: *mut Obj, pos: i64) -> i64 {
@@ -485,7 +472,6 @@ pub extern "C" fn rt_bytesio_seek_abi(bio: Value, pos: i64) -> i64 {
     unsafe { rt_bytesio_seek(bio.unwrap_ptr(), pos) }
 }
 
-
 /// Get current position in BytesIO
 pub unsafe fn rt_bytesio_tell(bio: *mut Obj) -> i64 {
     let bio_obj = bio as *const BytesIOObj;
@@ -498,7 +484,6 @@ pub extern "C" fn rt_bytesio_tell_abi(bio: Value) -> i64 {
     unsafe { rt_bytesio_tell(bio.unwrap_ptr()) }
 }
 
-
 /// Close BytesIO
 pub unsafe fn rt_bytesio_close(bio: *mut Obj) {
     let bio_obj = bio as *mut BytesIOObj;
@@ -509,7 +494,6 @@ pub unsafe fn rt_bytesio_close(bio: *mut Obj) {
 pub extern "C" fn rt_bytesio_close_abi(bio: Value) {
     unsafe { rt_bytesio_close(bio.unwrap_ptr()) }
 }
-
 
 /// Finalize BytesIO (called by GC)
 pub unsafe fn bytesio_finalize(obj: *mut Obj) {

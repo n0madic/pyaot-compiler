@@ -80,4 +80,3 @@ pub fn rt_set_to_list(set: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_set_to_list_abi(set: Value) -> Value {
     Value::from_ptr(rt_set_to_list(set.unwrap_ptr()))
 }
-

@@ -398,9 +398,12 @@ pub fn rt_urlopen(url_or_request: *mut Obj, data: *mut Obj, timeout: f64) -> *mu
 }
 #[export_name = "rt_urlopen"]
 pub extern "C" fn rt_urlopen_abi(url_or_request: Value, data: Value, timeout: f64) -> Value {
-    Value::from_ptr(rt_urlopen(url_or_request.unwrap_ptr(), data.unwrap_ptr(), timeout))
+    Value::from_ptr(rt_urlopen(
+        url_or_request.unwrap_ptr(),
+        data.unwrap_ptr(),
+        timeout,
+    ))
 }
-
 
 // =============================================================================
 // HTTPResponse field getters
@@ -427,7 +430,6 @@ pub extern "C" fn rt_http_response_get_status_abi(obj: Value) -> i64 {
     rt_http_response_get_status(obj.unwrap_ptr())
 }
 
-
 /// Get url field from HTTPResponse
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_http_response_get_url(obj: *mut Obj) -> *mut Obj {
@@ -444,7 +446,6 @@ pub fn rt_http_response_get_url(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_http_response_get_url_abi(obj: Value) -> Value {
     Value::from_ptr(rt_http_response_get_url(obj.unwrap_ptr()))
 }
-
 
 /// Get headers field from HTTPResponse
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -467,7 +468,6 @@ pub extern "C" fn rt_http_response_get_headers_abi(obj: Value) -> Value {
     Value::from_ptr(rt_http_response_get_headers(obj.unwrap_ptr()))
 }
 
-
 // =============================================================================
 // HTTPResponse methods
 // =============================================================================
@@ -489,7 +489,6 @@ pub extern "C" fn rt_http_response_read_abi(obj: Value) -> Value {
     Value::from_ptr(rt_http_response_read(obj.unwrap_ptr()))
 }
 
-
 /// HTTPResponse.ok — true iff status is 2xx (requests-library convention).
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_http_response_get_ok(obj: *mut Obj) -> i8 {
@@ -510,7 +509,6 @@ pub fn rt_http_response_get_ok(obj: *mut Obj) -> i8 {
 pub extern "C" fn rt_http_response_get_ok_abi(obj: Value) -> i8 {
     rt_http_response_get_ok(obj.unwrap_ptr())
 }
-
 
 /// HTTPResponse.text — decode the response body as UTF-8 string.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -538,7 +536,6 @@ pub extern "C" fn rt_http_response_get_text_abi(obj: Value) -> Value {
     Value::from_ptr(rt_http_response_get_text(obj.unwrap_ptr()))
 }
 
-
 /// HTTPResponse.json() — parse body as JSON (requests-library convention).
 /// Delegates to `rt_json_loads`.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -553,7 +550,6 @@ pub extern "C" fn rt_http_response_json_abi(obj: Value) -> Value {
     Value::from_ptr(rt_http_response_json(obj.unwrap_ptr()))
 }
 
-
 /// HTTPResponse.geturl() - Get the URL of the response
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_http_response_geturl(obj: *mut Obj) -> *mut Obj {
@@ -564,7 +560,6 @@ pub extern "C" fn rt_http_response_geturl_abi(obj: Value) -> Value {
     Value::from_ptr(rt_http_response_geturl(obj.unwrap_ptr()))
 }
 
-
 /// HTTPResponse.getcode() - Get the HTTP status code
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_http_response_getcode(obj: *mut Obj) -> i64 {
@@ -574,7 +569,6 @@ pub fn rt_http_response_getcode(obj: *mut Obj) -> i64 {
 pub extern "C" fn rt_http_response_getcode_abi(obj: Value) -> i64 {
     rt_http_response_getcode(obj.unwrap_ptr())
 }
-
 
 /// repr() for HTTPResponse
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -594,7 +588,6 @@ pub fn rt_http_response_repr(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_http_response_repr_abi(obj: Value) -> Value {
     Value::from_ptr(rt_http_response_repr(obj.unwrap_ptr()))
 }
-
 
 // =============================================================================
 // urllib.request.Request — standard CPython type bundling URL + body +
@@ -648,9 +641,13 @@ pub extern "C" fn rt_make_request_abi(
     headers: Value,
     method: Value,
 ) -> Value {
-    Value::from_ptr(rt_make_request(url.unwrap_ptr(), data.unwrap_ptr(), headers.unwrap_ptr(), method.unwrap_ptr()))
+    Value::from_ptr(rt_make_request(
+        url.unwrap_ptr(),
+        data.unwrap_ptr(),
+        headers.unwrap_ptr(),
+        method.unwrap_ptr(),
+    ))
 }
-
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_request_get_url(obj: *mut Obj) -> *mut Obj {
@@ -667,7 +664,6 @@ pub extern "C" fn rt_request_get_url_abi(obj: Value) -> Value {
     Value::from_ptr(rt_request_get_url(obj.unwrap_ptr()))
 }
 
-
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_request_get_data(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
@@ -683,7 +679,6 @@ pub extern "C" fn rt_request_get_data_abi(obj: Value) -> Value {
     Value::from_ptr(rt_request_get_data(obj.unwrap_ptr()))
 }
 
-
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_request_get_headers(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
@@ -698,7 +693,6 @@ pub fn rt_request_get_headers(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_request_get_headers_abi(obj: Value) -> Value {
     Value::from_ptr(rt_request_get_headers(obj.unwrap_ptr()))
 }
-
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_request_get_method(obj: *mut Obj) -> *mut Obj {
@@ -718,7 +712,6 @@ pub fn rt_request_get_method(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_request_get_method_abi(obj: Value) -> Value {
     Value::from_ptr(rt_request_get_method(obj.unwrap_ptr()))
 }
-
 
 // =============================================================================
 // urllib.request.urlretrieve — download URL to a local file and return
@@ -811,6 +804,10 @@ pub extern "C" fn rt_urlretrieve_abi(
     _reporthook: Value,
     data: Value,
 ) -> Value {
-    Value::from_ptr(rt_urlretrieve(url.unwrap_ptr(), filename.unwrap_ptr(), _reporthook.unwrap_ptr(), data.unwrap_ptr()))
+    Value::from_ptr(rt_urlretrieve(
+        url.unwrap_ptr(),
+        filename.unwrap_ptr(),
+        _reporthook.unwrap_ptr(),
+        data.unwrap_ptr(),
+    ))
 }
-

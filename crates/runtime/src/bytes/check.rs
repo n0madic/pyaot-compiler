@@ -41,7 +41,6 @@ pub extern "C" fn rt_bytes_startswith_abi(bytes: Value, prefix: Value) -> i64 {
     rt_bytes_startswith(bytes.unwrap_ptr(), prefix.unwrap_ptr())
 }
 
-
 /// Check if bytes ends with suffix
 /// Returns: 1 (true) or 0 (false)
 pub fn rt_bytes_endswith(bytes: *mut Obj, suffix: *mut Obj) -> i64 {
@@ -80,4 +79,3 @@ pub fn rt_bytes_endswith(bytes: *mut Obj, suffix: *mut Obj) -> i64 {
 pub extern "C" fn rt_bytes_endswith_abi(bytes: Value, suffix: Value) -> i64 {
     rt_bytes_endswith(bytes.unwrap_ptr(), suffix.unwrap_ptr())
 }
-

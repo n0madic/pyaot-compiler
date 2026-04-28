@@ -60,7 +60,6 @@ pub extern "C" fn rt_builtin_len_abi(obj: Value) -> Value {
     Value::from_ptr(rt_builtin_len(obj.unwrap_ptr()))
 }
 
-
 /// str(obj) -> *mut Obj (StrObj)
 /// Converts any object to its string representation.
 pub fn rt_builtin_str(obj: *mut Obj) -> *mut Obj {
@@ -71,7 +70,6 @@ pub fn rt_builtin_str(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_builtin_str_abi(obj: Value) -> Value {
     Value::from_ptr(rt_builtin_str(obj.unwrap_ptr()))
 }
-
 
 /// int(obj) -> *mut Obj (boxed Int)
 /// Converts string or float to integer.
@@ -105,7 +103,6 @@ pub fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_builtin_int_abi(obj: Value) -> Value {
     Value::from_ptr(rt_builtin_int(obj.unwrap_ptr()))
 }
-
 
 /// float(obj) -> *mut Obj (boxed Float)
 /// Converts string or int to float.
@@ -141,7 +138,6 @@ pub fn rt_builtin_float(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_builtin_float_abi(obj: Value) -> Value {
     Value::from_ptr(rt_builtin_float(obj.unwrap_ptr()))
 }
-
 
 /// bool(obj) -> *mut Obj (boxed Bool)
 /// Returns truthiness of any object.
@@ -185,7 +181,6 @@ pub extern "C" fn rt_builtin_bool_abi(obj: Value) -> Value {
     Value::from_ptr(rt_builtin_bool(obj.unwrap_ptr()))
 }
 
-
 /// abs(obj) -> *mut Obj (boxed Int or Float)
 /// Returns absolute value of number.
 pub fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
@@ -218,7 +213,6 @@ pub fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_builtin_abs_abi(obj: Value) -> Value {
     Value::from_ptr(rt_builtin_abs(obj.unwrap_ptr()))
 }
-
 
 /// hash(obj) -> *mut Obj (boxed Int)
 /// Returns hash value of hashable object.
@@ -263,7 +257,6 @@ pub extern "C" fn rt_builtin_hash_abi(obj: Value) -> Value {
     Value::from_ptr(rt_builtin_hash(obj.unwrap_ptr()))
 }
 
-
 /// ord(obj) -> *mut Obj (boxed Int)
 /// Returns Unicode code point of single-character string.
 pub fn rt_builtin_ord(obj: *mut Obj) -> *mut Obj {
@@ -275,7 +268,6 @@ pub fn rt_builtin_ord(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_builtin_ord_abi(obj: Value) -> Value {
     Value::from_ptr(rt_builtin_ord(obj.unwrap_ptr()))
 }
-
 
 /// chr(obj) -> *mut Obj (StrObj)
 /// Returns single-character string from Unicode code point.
@@ -298,7 +290,6 @@ pub extern "C" fn rt_builtin_chr_abi(obj: Value) -> Value {
     Value::from_ptr(rt_builtin_chr(obj.unwrap_ptr()))
 }
 
-
 /// repr(obj) -> *mut Obj (StrObj)
 /// Returns repr string of object.
 pub fn rt_builtin_repr(obj: *mut Obj) -> *mut Obj {
@@ -310,7 +301,6 @@ pub extern "C" fn rt_builtin_repr_abi(obj: Value) -> Value {
     Value::from_ptr(rt_builtin_repr(obj.unwrap_ptr()))
 }
 
-
 /// type(obj) -> *mut Obj (StrObj)
 /// Returns type name string of object.
 pub fn rt_builtin_type(obj: *mut Obj) -> *mut Obj {
@@ -321,7 +311,6 @@ pub fn rt_builtin_type(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_builtin_type_abi(obj: Value) -> Value {
     Value::from_ptr(rt_builtin_type(obj.unwrap_ptr()))
 }
-
 
 // =============================================================================
 // FUNCTION POINTER TABLE

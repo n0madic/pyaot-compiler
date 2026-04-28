@@ -22,7 +22,6 @@ pub extern "C" fn rt_int_to_bin_abi(n: i64) -> Value {
     Value::from_ptr(rt_int_to_bin(n))
 }
 
-
 /// Convert integer to hexadecimal string (e.g., '0xff')
 pub fn rt_int_to_hex(n: i64) -> *mut Obj {
     let s = if n < 0 {
@@ -39,7 +38,6 @@ pub extern "C" fn rt_int_to_hex_abi(n: i64) -> Value {
     Value::from_ptr(rt_int_to_hex(n))
 }
 
-
 /// Convert integer to octal string (e.g., '0o10')
 pub fn rt_int_to_oct(n: i64) -> *mut Obj {
     let s = if n < 0 {
@@ -55,7 +53,6 @@ pub fn rt_int_to_oct(n: i64) -> *mut Obj {
 pub extern "C" fn rt_int_to_oct_abi(n: i64) -> Value {
     Value::from_ptr(rt_int_to_oct(n))
 }
-
 
 // ==================== Format-specific number conversions ====================
 // These functions produce strings WITHOUT prefixes (for format spec {:x}, {:o}, {:b})
@@ -76,7 +73,6 @@ pub extern "C" fn rt_int_fmt_hex_abi(n: i64) -> Value {
     Value::from_ptr(rt_int_fmt_hex(n))
 }
 
-
 /// Format integer as uppercase hex string without prefix (e.g., "FF")
 pub fn rt_int_fmt_hex_upper(n: i64) -> *mut Obj {
     let s = if n >= 0 {
@@ -92,7 +88,6 @@ pub fn rt_int_fmt_hex_upper(n: i64) -> *mut Obj {
 pub extern "C" fn rt_int_fmt_hex_upper_abi(n: i64) -> Value {
     Value::from_ptr(rt_int_fmt_hex_upper(n))
 }
-
 
 /// Format integer as octal string without prefix (e.g., "377")
 pub fn rt_int_fmt_oct(n: i64) -> *mut Obj {
@@ -110,7 +105,6 @@ pub extern "C" fn rt_int_fmt_oct_abi(n: i64) -> Value {
     Value::from_ptr(rt_int_fmt_oct(n))
 }
 
-
 /// Format integer as binary string without prefix (e.g., "1010")
 pub fn rt_int_fmt_bin(n: i64) -> *mut Obj {
     let s = if n >= 0 {
@@ -126,7 +120,6 @@ pub fn rt_int_fmt_bin(n: i64) -> *mut Obj {
 pub extern "C" fn rt_int_fmt_bin_abi(n: i64) -> Value {
     Value::from_ptr(rt_int_fmt_bin(n))
 }
-
 
 // ==================== Grouping format functions ====================
 
@@ -169,7 +162,6 @@ pub extern "C" fn rt_int_fmt_grouped_abi(n: i64, sep: i64) -> Value {
     Value::from_ptr(rt_int_fmt_grouped(n, sep))
 }
 
-
 /// Format float with precision and grouping separator: f"{1234.5:,.2f}" → "1,234.50"
 pub fn rt_float_fmt_grouped(f: f64, precision: i64, sep: i64) -> *mut Obj {
     let sep_char = sep as u8 as char;
@@ -200,7 +192,6 @@ pub fn rt_float_fmt_grouped(f: f64, precision: i64, sep: i64) -> *mut Obj {
 pub extern "C" fn rt_float_fmt_grouped_abi(f: f64, precision: i64, sep: i64) -> Value {
     Value::from_ptr(rt_float_fmt_grouped(f, precision, sep))
 }
-
 
 // ==================== Type name functions ====================
 
@@ -237,7 +228,6 @@ pub extern "C" fn rt_type_name_abi(obj: Value) -> Value {
     Value::from_ptr(rt_type_name(obj.unwrap_ptr()))
 }
 
-
 /// Extract type name from type string for __name__ attribute access
 /// Extracts "int" from "<class 'int'>" for type(x).__name__
 /// Input: string object like "<class 'int'>"
@@ -267,7 +257,6 @@ pub extern "C" fn rt_type_name_extract_abi(type_str: Value) -> Value {
     Value::from_ptr(rt_type_name_extract(type_str.unwrap_ptr()))
 }
 
-
 /// Default repr for objects without __str__ or __repr__
 /// Returns: pointer to string like "<object at 0x...>"
 pub fn rt_obj_default_repr(obj: *mut Obj) -> *mut Obj {
@@ -282,7 +271,6 @@ pub fn rt_obj_default_repr(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_obj_default_repr_abi(obj: Value) -> Value {
     Value::from_ptr(rt_obj_default_repr(obj.unwrap_ptr()))
 }
-
 
 /// Convert string to integer with given base
 /// s: pointer to StrObj
@@ -359,7 +347,6 @@ pub fn rt_str_to_int_with_base(s: *mut Obj, base: i64) -> i64 {
 pub extern "C" fn rt_str_to_int_with_base_abi(s: Value, base: i64) -> i64 {
     rt_str_to_int_with_base(s.unwrap_ptr(), base)
 }
-
 
 // Suppress unused import warning
 #[allow(unused_imports)]

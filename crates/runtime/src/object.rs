@@ -98,6 +98,11 @@ pub struct FloatObj {
     pub value: f64,
 }
 
+const _: () = assert!(
+    std::mem::offset_of!(FloatObj, value) == layout::FLOAT_OBJ_VALUE_OFFSET as usize,
+    "FloatObj value offset does not match layout::FLOAT_OBJ_VALUE_OFFSET"
+);
+
 /// String object
 #[repr(C)]
 pub struct StrObj {
@@ -213,6 +218,12 @@ pub struct InstanceObj {
 const _: () = assert!(
     std::mem::offset_of!(InstanceObj, vtable) == layout::INSTANCE_VTABLE_OFFSET as usize,
     "InstanceObj vtable offset does not match layout::INSTANCE_VTABLE_OFFSET"
+);
+// Compile-time assertion: size_of::<InstanceObj> equals INSTANCE_FIELDS_OFFSET
+// because the zero-length `fields` array adds no bytes.
+const _: () = assert!(
+    std::mem::size_of::<InstanceObj>() == layout::INSTANCE_FIELDS_OFFSET as usize,
+    "InstanceObj size does not match layout::INSTANCE_FIELDS_OFFSET"
 );
 
 /// Iterator object for first-class iterator protocol
@@ -554,4 +565,3 @@ pub fn rt_not_implemented_singleton() -> *mut Obj {
 pub extern "C" fn rt_not_implemented_singleton_abi() -> Value {
     Value::from_ptr(rt_not_implemented_singleton())
 }
-

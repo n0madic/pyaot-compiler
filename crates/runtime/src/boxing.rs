@@ -30,7 +30,6 @@ pub extern "C" fn rt_box_float_abi(value: f64) -> Value {
     Value::from_ptr(rt_box_float(value))
 }
 
-
 /// Unbox a float value from a heap-allocated FloatObj
 /// Used for list elements when the element type is float
 ///
@@ -57,7 +56,6 @@ pub extern "C" fn rt_unbox_float_abi(obj: Value) -> f64 {
     rt_unbox_float(obj.unwrap_ptr())
 }
 
-
 /// Box None as a heap-allocated NoneObj
 /// Used for Union types when the value is None
 pub fn rt_box_none() -> *mut Obj {
@@ -68,4 +66,3 @@ pub fn rt_box_none() -> *mut Obj {
 pub extern "C" fn rt_box_none_abi() -> Value {
     Value::from_ptr(rt_box_none())
 }
-

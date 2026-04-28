@@ -363,4 +363,3 @@ pub fn rt_print_obj(obj: *mut Obj) {
 pub extern "C" fn rt_print_obj_abi(obj: Value) {
     rt_print_obj(obj.unwrap_ptr())
 }
-

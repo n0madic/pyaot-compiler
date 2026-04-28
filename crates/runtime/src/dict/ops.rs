@@ -121,7 +121,6 @@ pub extern "C" fn rt_dict_set_abi(dict: Value, key: Value, value: Value) {
     rt_dict_set(dict.unwrap_ptr(), key.unwrap_ptr(), value.unwrap_ptr())
 }
 
-
 /// Get a value from the dictionary by key
 /// Returns: pointer to value, or null if key not found
 pub fn rt_dict_get(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
@@ -149,7 +148,6 @@ pub extern "C" fn rt_dict_get_abi(dict: Value, key: Value) -> Value {
     Value::from_ptr(rt_dict_get(dict.unwrap_ptr(), key.unwrap_ptr()))
 }
 
-
 /// Check if key exists in dictionary
 /// Returns: 1 (true) or 0 (false)
 pub fn rt_dict_contains(dict: *mut Obj, key: *mut Obj) -> i8 {
@@ -175,14 +173,9 @@ pub extern "C" fn rt_dict_contains_abi(dict: Value, key: Value) -> i8 {
     rt_dict_contains(dict.unwrap_ptr(), key.unwrap_ptr())
 }
 
-
 /// Get value with default if key not found
 /// Returns: value if found, otherwise default
-pub fn rt_dict_get_default(
-    dict: *mut Obj,
-    key: *mut Obj,
-    default: *mut Obj,
-) -> *mut Obj {
+pub fn rt_dict_get_default(dict: *mut Obj, key: *mut Obj, default: *mut Obj) -> *mut Obj {
     let result = rt_dict_get(dict, key);
     if result.is_null() {
         default
@@ -192,14 +185,13 @@ pub fn rt_dict_get_default(
 }
 #[export_name = "rt_dict_get_default"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_dict_get_default_abi(
-    dict: Value,
-    key: Value,
-    default: Value,
-) -> Value {
-    Value::from_ptr(rt_dict_get_default(dict.unwrap_ptr(), key.unwrap_ptr(), default.unwrap_ptr()))
+pub extern "C" fn rt_dict_get_default_abi(dict: Value, key: Value, default: Value) -> Value {
+    Value::from_ptr(rt_dict_get_default(
+        dict.unwrap_ptr(),
+        key.unwrap_ptr(),
+        default.unwrap_ptr(),
+    ))
 }
-
 
 /// Pop (remove and return) value for key
 /// Returns: value if found and removed, otherwise null
@@ -258,7 +250,6 @@ pub extern "C" fn rt_dict_pop_abi(dict: Value, key: Value) -> Value {
     Value::from_ptr(rt_dict_pop(dict.unwrap_ptr(), key.unwrap_ptr()))
 }
 
-
 /// Clear all entries from dictionary
 pub fn rt_dict_clear(dict: *mut Obj) {
     if dict.is_null() {
@@ -291,7 +282,6 @@ pub fn rt_dict_clear(dict: *mut Obj) {
 pub extern "C" fn rt_dict_clear_abi(dict: Value) {
     rt_dict_clear(dict.unwrap_ptr())
 }
-
 
 /// Create a shallow copy of dictionary (preserves insertion order)
 /// Returns: pointer to new DictObj
@@ -340,7 +330,6 @@ pub extern "C" fn rt_dict_copy_abi(dict: Value) -> Value {
     Value::from_ptr(rt_dict_copy(dict.unwrap_ptr()))
 }
 
-
 /// Update dictionary with entries from another dictionary (preserves insertion order of other)
 pub fn rt_dict_update(dict: *mut Obj, other: *mut Obj) {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
@@ -383,7 +372,6 @@ pub extern "C" fn rt_dict_update_abi(dict: Value, other: Value) {
     rt_dict_update(dict.unwrap_ptr(), other.unwrap_ptr())
 }
 
-
 /// dict.setdefault(key, default) - Get value for key, set to default if not present
 /// If key exists in dict, returns the existing value.
 /// If key not in dict, sets dict[key] = default and returns default.
@@ -409,9 +397,12 @@ pub fn rt_dict_setdefault(dict: *mut Obj, key: *mut Obj, default: *mut Obj) -> *
 #[export_name = "rt_dict_setdefault"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_dict_setdefault_abi(dict: Value, key: Value, default: Value) -> Value {
-    Value::from_ptr(rt_dict_setdefault(dict.unwrap_ptr(), key.unwrap_ptr(), default.unwrap_ptr()))
+    Value::from_ptr(rt_dict_setdefault(
+        dict.unwrap_ptr(),
+        key.unwrap_ptr(),
+        default.unwrap_ptr(),
+    ))
 }
-
 
 /// dict.popitem() - Remove and return (key, value) tuple of last inserted item
 /// Raises KeyError if dict is empty.
@@ -512,7 +503,6 @@ pub extern "C" fn rt_dict_popitem_abi(dict: Value) -> Value {
     Value::from_ptr(rt_dict_popitem(dict.unwrap_ptr()))
 }
 
-
 /// Create dict from keys with optional value
 /// keys_list: list of keys
 /// value: value for all keys (None if null)
@@ -564,7 +554,6 @@ pub fn rt_dict_fromkeys(keys_list: *mut Obj, value: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_dict_fromkeys_abi(keys_list: Value, value: Value) -> Value {
     Value::from_ptr(rt_dict_fromkeys(keys_list.unwrap_ptr(), value.unwrap_ptr()))
 }
-
 
 /// Merge two dicts into a new dict (preserves insertion order)
 /// Returns: pointer to new DictObj
@@ -624,7 +613,6 @@ pub extern "C" fn rt_dict_merge_abi(dict1: Value, dict2: Value) -> Value {
     Value::from_ptr(rt_dict_merge(dict1.unwrap_ptr(), dict2.unwrap_ptr()))
 }
 
-
 /// Create a dict from a list of (key, value) pairs
 /// Each element of the list should be a 2-tuple
 /// Returns: pointer to new DictObj
@@ -678,4 +666,3 @@ pub fn rt_dict_from_pairs(pairs: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_dict_from_pairs_abi(pairs: Value) -> Value {
     Value::from_ptr(rt_dict_from_pairs(pairs.unwrap_ptr()))
 }
-

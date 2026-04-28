@@ -146,9 +146,12 @@ pub fn rt_str_split(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj
 #[export_name = "rt_str_split"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_str_split_abi(str_obj: Value, sep: Value, maxsplit: i64) -> Value {
-    Value::from_ptr(rt_str_split(str_obj.unwrap_ptr(), sep.unwrap_ptr(), maxsplit))
+    Value::from_ptr(rt_str_split(
+        str_obj.unwrap_ptr(),
+        sep.unwrap_ptr(),
+        maxsplit,
+    ))
 }
-
 
 /// Join list of strings with separator
 /// Returns: concatenated string
@@ -241,7 +244,6 @@ pub fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_str_join_abi(sep: Value, list_obj: Value) -> Value {
     Value::from_ptr(rt_str_join(sep.unwrap_ptr(), list_obj.unwrap_ptr()))
 }
-
 
 /// str.splitlines() - Split string at line boundaries
 /// Returns list of lines in the string, breaking at line boundaries.
@@ -341,7 +343,6 @@ pub fn rt_str_splitlines(s: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_str_splitlines_abi(s: Value) -> Value {
     Value::from_ptr(rt_str_splitlines(s.unwrap_ptr()))
 }
-
 
 /// str.partition(sep) - Split at first occurrence of separator
 /// Returns (before, sep, after) tuple. If sep not found, returns (str, '', '').
@@ -454,7 +455,6 @@ pub extern "C" fn rt_str_partition_abi(s: Value, sep: Value) -> Value {
     Value::from_ptr(rt_str_partition(s.unwrap_ptr(), sep.unwrap_ptr()))
 }
 
-
 /// str.rpartition(sep) - Split at last occurrence of separator
 /// Returns (before, sep, after) tuple. If sep not found, returns ('', '', str).
 /// Returns: pointer to new 3-tuple
@@ -560,7 +560,6 @@ pub fn rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_str_rpartition_abi(s: Value, sep: Value) -> Value {
     Value::from_ptr(rt_str_rpartition(s.unwrap_ptr(), sep.unwrap_ptr()))
 }
-
 
 /// Split string by separator from the right using Boyer-Moore-Horspool
 /// Returns: list of strings
@@ -698,6 +697,9 @@ pub fn rt_str_rsplit(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Ob
 #[export_name = "rt_str_rsplit"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_str_rsplit_abi(str_obj: Value, sep: Value, maxsplit: i64) -> Value {
-    Value::from_ptr(rt_str_rsplit(str_obj.unwrap_ptr(), sep.unwrap_ptr(), maxsplit))
+    Value::from_ptr(rt_str_rsplit(
+        str_obj.unwrap_ptr(),
+        sep.unwrap_ptr(),
+        maxsplit,
+    ))
 }
-

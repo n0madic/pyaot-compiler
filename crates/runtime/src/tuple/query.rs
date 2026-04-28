@@ -45,7 +45,6 @@ pub extern "C" fn rt_tuple_index_abi(tuple: Value, value: Value) -> i64 {
     rt_tuple_index(tuple.unwrap_ptr(), value.unwrap_ptr())
 }
 
-
 /// Count occurrences of value in tuple
 /// Returns: count
 pub fn rt_tuple_count(tuple: *mut Obj, value: *mut Obj) -> i64 {
@@ -76,7 +75,6 @@ pub fn rt_tuple_count(tuple: *mut Obj, value: *mut Obj) -> i64 {
 pub extern "C" fn rt_tuple_count_abi(tuple: Value, value: Value) -> i64 {
     rt_tuple_count(tuple.unwrap_ptr(), value.unwrap_ptr())
 }
-
 
 /// Generic tuple min/max for int and float elements.
 /// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float.
@@ -119,7 +117,6 @@ pub extern "C" fn rt_tuple_minmax_abi(tuple: Value, is_min: u8, elem_kind: u8) -
     rt_tuple_minmax(tuple.unwrap_ptr(), is_min, elem_kind)
 }
 
-
 /// Generic tuple min/max with key function.
 /// `key_return_tag`: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1).
 pub fn rt_tuple_minmax_with_key(
@@ -151,9 +148,15 @@ pub extern "C" fn rt_tuple_minmax_with_key_abi(
     is_min: u8,
     key_return_tag: u8,
 ) -> Value {
-    Value::from_ptr(rt_tuple_minmax_with_key(tuple.unwrap_ptr(), key_fn, captures.unwrap_ptr(), capture_count, is_min, key_return_tag))
+    Value::from_ptr(rt_tuple_minmax_with_key(
+        tuple.unwrap_ptr(),
+        key_fn,
+        captures.unwrap_ptr(),
+        capture_count,
+        is_min,
+        key_return_tag,
+    ))
 }
-
 
 /// Find extremum (min or max) element in a tuple using a key function.
 unsafe fn find_tuple_extremum_with_key(

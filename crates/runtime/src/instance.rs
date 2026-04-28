@@ -61,7 +61,6 @@ pub extern "C" fn rt_make_instance_abi(class_id: u8, field_count: i64) -> Value 
     Value::from_ptr(rt_make_instance(class_id, field_count))
 }
 
-
 /// Get a field from an instance by offset
 /// inst: pointer to the instance
 /// offset: field offset (0-based)
@@ -95,7 +94,6 @@ pub fn rt_instance_get_field(inst: *mut Obj, offset: i64) -> i64 {
 pub extern "C" fn rt_instance_get_field_abi(inst: Value, offset: i64) -> i64 {
     rt_instance_get_field(inst.unwrap_ptr(), offset)
 }
-
 
 /// Set a field in an instance by offset
 /// inst: pointer to the instance
@@ -131,6 +129,37 @@ pub extern "C" fn rt_instance_set_field_abi(inst: Value, offset: i64, value: i64
     rt_instance_set_field(inst.unwrap_ptr(), offset, value)
 }
 
+/// Read a raw f64 from field slot `offset` of instance `inst`.
+/// The slot stores the f64 bit pattern directly (no FloatObj boxing).
+/// Used for statically-typed Float instance fields.
+pub fn rt_instance_get_field_f64(inst: *mut Obj, offset: i64) -> f64 {
+    unsafe {
+        let instance = inst as *mut crate::object::InstanceObj;
+        let raw = (*(*instance).fields.as_ptr().add(offset as usize)).0;
+        f64::from_bits(raw)
+    }
+}
+#[export_name = "rt_instance_get_field_f64"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_instance_get_field_f64_abi(inst: Value, offset: i64) -> f64 {
+    rt_instance_get_field_f64(inst.unwrap_ptr(), offset)
+}
+
+/// Write a raw f64 to field slot `offset` of instance `inst`.
+/// The slot stores the f64 bit pattern directly (no FloatObj boxing).
+/// Used for statically-typed Float instance fields.
+pub fn rt_instance_set_field_f64(inst: *mut Obj, offset: i64, value: f64) {
+    unsafe {
+        let instance = inst as *mut crate::object::InstanceObj;
+        *(*instance).fields.as_mut_ptr().add(offset as usize) =
+            pyaot_core_defs::Value(value.to_bits());
+    }
+}
+#[export_name = "rt_instance_set_field_f64"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_instance_set_field_f64_abi(inst: Value, offset: i64, value: f64) {
+    rt_instance_set_field_f64(inst.unwrap_ptr(), offset, value)
+}
 
 /// Get the class ID of an instance
 /// Returns: class ID, or 0 if null
@@ -150,7 +179,6 @@ pub fn rt_instance_get_class_id(inst: *mut Obj) -> u8 {
 pub extern "C" fn rt_instance_get_class_id_abi(inst: Value) -> u8 {
     rt_instance_get_class_id(inst.unwrap_ptr())
 }
-
 
 /// Get the type tag of an object
 /// Returns: type tag as i64
@@ -179,7 +207,6 @@ pub fn rt_get_type_tag(obj: *mut Obj) -> i64 {
 pub extern "C" fn rt_get_type_tag_abi(obj: Value) -> i64 {
     rt_get_type_tag(obj.unwrap_ptr())
 }
-
 
 /// Check if an object is an instance of a specific class
 /// obj: pointer to object
@@ -214,7 +241,6 @@ pub extern "C" fn rt_isinstance_class_abi(obj: Value, class_id: i64) -> i8 {
     rt_isinstance_class(obj.unwrap_ptr(), class_id)
 }
 
-
 /// Check if an object is an instance of a specific class or any of its parent classes
 /// This supports inheritance: isinstance(Dog(), Animal) returns True if Dog inherits from Animal
 /// obj: pointer to object
@@ -247,7 +273,6 @@ pub fn rt_isinstance_class_inherited(obj: *mut Obj, target_class_id: i64) -> i8 
 pub extern "C" fn rt_isinstance_class_inherited_abi(obj: Value, target_class_id: i64) -> i8 {
     rt_isinstance_class_inherited(obj.unwrap_ptr(), target_class_id)
 }
-
 
 /// Check if child_vtable is a subclass of parent_vtable
 /// Returns: 1 (true) or 0 (false)

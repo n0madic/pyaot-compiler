@@ -47,7 +47,6 @@ pub extern "C" fn rt_make_cell_int_abi(value: i64) -> Value {
     Value::from_ptr(rt_make_cell_int(value))
 }
 
-
 /// Create a new Cell holding a float value
 pub fn rt_make_cell_float(value: f64) -> *mut Obj {
     let size = std::mem::size_of::<CellObj>();
@@ -63,7 +62,6 @@ pub fn rt_make_cell_float(value: f64) -> *mut Obj {
 pub extern "C" fn rt_make_cell_float_abi(value: f64) -> Value {
     Value::from_ptr(rt_make_cell_float(value))
 }
-
 
 /// Create a new Cell holding a boolean value
 pub fn rt_make_cell_bool(value: i8) -> *mut Obj {
@@ -81,7 +79,6 @@ pub extern "C" fn rt_make_cell_bool_abi(value: i8) -> Value {
     Value::from_ptr(rt_make_cell_bool(value))
 }
 
-
 /// Create a new Cell holding a pointer (heap object)
 pub fn rt_make_cell_ptr(value: *mut Obj) -> *mut Obj {
     let size = std::mem::size_of::<CellObj>();
@@ -97,7 +94,6 @@ pub fn rt_make_cell_ptr(value: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_make_cell_ptr_abi(value: Value) -> Value {
     Value::from_ptr(rt_make_cell_ptr(value.unwrap_ptr()))
 }
-
 
 // ==================== Cell Get Functions ====================
 
@@ -119,7 +115,6 @@ pub extern "C" fn rt_cell_get_int_abi(cell: Value) -> i64 {
     rt_cell_get_int(cell.unwrap_ptr())
 }
 
-
 /// Get float value from cell
 ///
 /// Returns `0.0` if `cell` is null, matching zero-initialisation semantics.
@@ -137,7 +132,6 @@ pub fn rt_cell_get_float(cell: *mut Obj) -> f64 {
 pub extern "C" fn rt_cell_get_float_abi(cell: Value) -> f64 {
     rt_cell_get_float(cell.unwrap_ptr())
 }
-
 
 /// Get boolean value from cell
 ///
@@ -157,7 +151,6 @@ pub extern "C" fn rt_cell_get_bool_abi(cell: Value) -> i8 {
     rt_cell_get_bool(cell.unwrap_ptr())
 }
 
-
 /// Get pointer value from cell
 ///
 /// Returns `null` if `cell` is null, matching zero-initialisation semantics.
@@ -175,7 +168,6 @@ pub fn rt_cell_get_ptr(cell: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_cell_get_ptr_abi(cell: Value) -> Value {
     Value::from_ptr(rt_cell_get_ptr(cell.unwrap_ptr()))
 }
-
 
 // ==================== Cell Set Functions ====================
 
@@ -196,7 +188,6 @@ pub extern "C" fn rt_cell_set_int_abi(cell: Value, value: i64) {
     rt_cell_set_int(cell.unwrap_ptr(), value)
 }
 
-
 /// Set float value in cell
 pub fn rt_cell_set_float(cell: *mut Obj, value: f64) {
     if cell.is_null() {
@@ -213,7 +204,6 @@ pub fn rt_cell_set_float(cell: *mut Obj, value: f64) {
 pub extern "C" fn rt_cell_set_float_abi(cell: Value, value: f64) {
     rt_cell_set_float(cell.unwrap_ptr(), value)
 }
-
 
 /// Set boolean value in cell
 pub fn rt_cell_set_bool(cell: *mut Obj, value: i8) {
@@ -232,7 +222,6 @@ pub extern "C" fn rt_cell_set_bool_abi(cell: Value, value: i8) {
     rt_cell_set_bool(cell.unwrap_ptr(), value)
 }
 
-
 /// Set pointer value in cell
 pub fn rt_cell_set_ptr(cell: *mut Obj, value: *mut Obj) {
     if cell.is_null() {
@@ -249,7 +238,6 @@ pub fn rt_cell_set_ptr(cell: *mut Obj, value: *mut Obj) {
 pub extern "C" fn rt_cell_set_ptr_abi(cell: Value, value: Value) {
     rt_cell_set_ptr(cell.unwrap_ptr(), value.unwrap_ptr())
 }
-
 
 // ==================== GC Support ====================
 

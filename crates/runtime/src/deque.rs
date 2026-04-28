@@ -35,7 +35,6 @@ pub extern "C" fn rt_make_deque_abi(maxlen: i64) -> Value {
     Value::from_ptr(rt_make_deque(maxlen))
 }
 
-
 /// Create a deque from an iterator with optional maxlen
 pub fn rt_deque_from_iter(iter: *mut Obj, maxlen: i64) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
@@ -75,7 +74,6 @@ pub extern "C" fn rt_deque_from_iter_abi(iter: Value, maxlen: i64) -> Value {
     Value::from_ptr(rt_deque_from_iter(iter.unwrap_ptr(), maxlen))
 }
 
-
 /// deque.append(elem) — add to the right end
 pub fn rt_deque_append(deque: *mut Obj, elem: *mut Obj) {
     unsafe {
@@ -104,7 +102,6 @@ pub fn rt_deque_append(deque: *mut Obj, elem: *mut Obj) {
 pub extern "C" fn rt_deque_append_abi(deque: Value, elem: Value) {
     rt_deque_append(deque.unwrap_ptr(), elem.unwrap_ptr())
 }
-
 
 /// deque.appendleft(elem) — add to the left end
 pub fn rt_deque_appendleft(deque: *mut Obj, elem: *mut Obj) {
@@ -137,7 +134,6 @@ pub extern "C" fn rt_deque_appendleft_abi(deque: Value, elem: Value) {
     rt_deque_appendleft(deque.unwrap_ptr(), elem.unwrap_ptr())
 }
 
-
 /// deque.pop() — remove and return from right end
 pub fn rt_deque_pop(deque: *mut Obj) -> *mut Obj {
     unsafe {
@@ -155,7 +151,6 @@ pub fn rt_deque_pop(deque: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_deque_pop_abi(deque: Value) -> Value {
     Value::from_ptr(rt_deque_pop(deque.unwrap_ptr()))
 }
-
 
 /// deque.popleft() — remove and return from left end
 pub fn rt_deque_popleft(deque: *mut Obj) -> *mut Obj {
@@ -175,7 +170,6 @@ pub fn rt_deque_popleft(deque: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_deque_popleft_abi(deque: Value) -> Value {
     Value::from_ptr(rt_deque_popleft(deque.unwrap_ptr()))
 }
-
 
 /// deque.extend(iterable) — extend right side with elements from iterable
 pub fn rt_deque_extend(deque: *mut Obj, iterable: *mut Obj) {
@@ -197,7 +191,6 @@ pub extern "C" fn rt_deque_extend_abi(deque: Value, iterable: Value) {
     rt_deque_extend(deque.unwrap_ptr(), iterable.unwrap_ptr())
 }
 
-
 /// deque.extendleft(iterable) — extend left side
 pub fn rt_deque_extendleft(deque: *mut Obj, iterable: *mut Obj) {
     if iterable.is_null() {
@@ -217,7 +210,6 @@ pub fn rt_deque_extendleft(deque: *mut Obj, iterable: *mut Obj) {
 pub extern "C" fn rt_deque_extendleft_abi(deque: Value, iterable: Value) {
     rt_deque_extendleft(deque.unwrap_ptr(), iterable.unwrap_ptr())
 }
-
 
 /// Convert an iterable to an iterator. If already an iterator, return as-is.
 fn iterable_to_iterator(obj: *mut Obj) -> *mut Obj {
@@ -261,7 +253,6 @@ pub extern "C" fn rt_deque_rotate_abi(deque: Value, n: i64) {
     rt_deque_rotate(deque.unwrap_ptr(), n)
 }
 
-
 /// len(deque)
 pub fn rt_deque_len(deque: *mut Obj) -> i64 {
     unsafe {
@@ -274,7 +265,6 @@ pub fn rt_deque_len(deque: *mut Obj) -> i64 {
 pub extern "C" fn rt_deque_len_abi(deque: Value) -> i64 {
     rt_deque_len(deque.unwrap_ptr())
 }
-
 
 /// deque[index] — get element by index
 pub fn rt_deque_get(deque: *mut Obj, index: i64) -> *mut Obj {
@@ -295,7 +285,6 @@ pub extern "C" fn rt_deque_get_abi(deque: Value, index: i64) -> Value {
     Value::from_ptr(rt_deque_get(deque.unwrap_ptr(), index))
 }
 
-
 /// deque[index] = value
 pub fn rt_deque_set(deque: *mut Obj, index: i64, value: *mut Obj) {
     unsafe {
@@ -315,7 +304,6 @@ pub extern "C" fn rt_deque_set_abi(deque: Value, index: i64, value: Value) {
     rt_deque_set(deque.unwrap_ptr(), index, value.unwrap_ptr())
 }
 
-
 /// deque.clear()
 pub fn rt_deque_clear(deque: *mut Obj) {
     unsafe {
@@ -329,7 +317,6 @@ pub fn rt_deque_clear(deque: *mut Obj) {
 pub extern "C" fn rt_deque_clear_abi(deque: Value) {
     rt_deque_clear(deque.unwrap_ptr())
 }
-
 
 /// deque.reverse()
 pub fn rt_deque_reverse(deque: *mut Obj) {
@@ -354,7 +341,6 @@ pub extern "C" fn rt_deque_reverse_abi(deque: Value) {
     rt_deque_reverse(deque.unwrap_ptr())
 }
 
-
 /// deque.copy() -> new deque
 pub fn rt_deque_copy(deque: *mut Obj) -> *mut Obj {
     unsafe {
@@ -374,7 +360,6 @@ pub fn rt_deque_copy(deque: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_deque_copy_abi(deque: Value) -> Value {
     Value::from_ptr(rt_deque_copy(deque.unwrap_ptr()))
 }
-
 
 /// deque.count(value) — count occurrences
 pub fn rt_deque_count(deque: *mut Obj, value: *mut Obj) -> i64 {
@@ -396,7 +381,6 @@ pub fn rt_deque_count(deque: *mut Obj, value: *mut Obj) -> i64 {
 pub extern "C" fn rt_deque_count_abi(deque: Value, value: Value) -> i64 {
     rt_deque_count(deque.unwrap_ptr(), value.unwrap_ptr())
 }
-
 
 /// Finalize a deque (free the ring buffer)
 pub unsafe fn deque_finalize(obj: *mut Obj) {

@@ -35,7 +35,6 @@ pub extern "C" fn rt_generator_next_abi(gen: Value) -> Value {
     Value::from_ptr(unsafe { rt_generator_next(gen.unwrap_ptr()) })
 }
 
-
 // §F.7b: TypeTagKindsGuard removed — per-slot tag side-array deleted.
 
 /// Create a new generator object
@@ -85,7 +84,6 @@ pub extern "C" fn rt_make_generator_abi(func_id: u32, num_locals: u32) -> Value 
     Value::from_ptr(unsafe { rt_make_generator(func_id, num_locals) })
 }
 
-
 /// Get the current state of a generator
 ///
 /// # Safety
@@ -100,7 +98,6 @@ pub extern "C" fn rt_generator_get_state_abi(gen: Value) -> u32 {
     unsafe { rt_generator_get_state(gen.unwrap_ptr()) }
 }
 
-
 /// Set the current state of a generator
 ///
 /// # Safety
@@ -114,7 +111,6 @@ pub unsafe fn rt_generator_set_state(gen: *mut Obj, state: u32) {
 pub extern "C" fn rt_generator_set_state_abi(gen: Value, state: u32) {
     unsafe { rt_generator_set_state(gen.unwrap_ptr(), state) }
 }
-
 
 /// Get a local variable from the generator (as i64 for int/float bits/bool/ptr)
 ///
@@ -140,7 +136,6 @@ pub extern "C" fn rt_generator_get_local_abi(gen: Value, index: u32) -> i64 {
     unsafe { rt_generator_get_local(gen.unwrap_ptr(), index) }
 }
 
-
 /// Set a local variable in the generator (as i64)
 ///
 /// # Safety
@@ -164,7 +159,6 @@ pub unsafe fn rt_generator_set_local(gen: *mut Obj, index: u32, value: i64) {
 pub extern "C" fn rt_generator_set_local_abi(gen: Value, index: u32, value: i64) {
     unsafe { rt_generator_set_local(gen.unwrap_ptr(), index, value) }
 }
-
 
 /// Get a local variable from the generator as a pointer
 ///
@@ -190,7 +184,6 @@ pub extern "C" fn rt_generator_get_local_ptr_abi(gen: Value, index: u32) -> Valu
     Value::from_ptr(unsafe { rt_generator_get_local_ptr(gen.unwrap_ptr(), index) })
 }
 
-
 /// Set a local variable in the generator as a pointer
 ///
 /// # Safety
@@ -215,7 +208,6 @@ pub extern "C" fn rt_generator_set_local_ptr_abi(gen: Value, index: u32, value: 
     unsafe { rt_generator_set_local_ptr(gen.unwrap_ptr(), index, value.unwrap_ptr()) }
 }
 
-
 // §F.7b: rt_generator_set_local_type removed — per-slot tag side-array deleted.
 
 /// Mark the generator as exhausted
@@ -232,7 +224,6 @@ pub unsafe fn rt_generator_set_exhausted(gen: *mut Obj) {
 pub extern "C" fn rt_generator_set_exhausted_abi(gen: Value) {
     unsafe { rt_generator_set_exhausted(gen.unwrap_ptr()) }
 }
-
 
 /// Check if the generator is exhausted
 ///
@@ -275,7 +266,6 @@ pub unsafe fn rt_generator_is_exhausted(gen: *mut Obj) -> i8 {
 pub extern "C" fn rt_generator_is_exhausted_abi(gen: Value) -> i8 {
     unsafe { rt_generator_is_exhausted(gen.unwrap_ptr()) }
 }
-
 
 /// Raise StopIteration exception (called when generator is exhausted)
 ///
@@ -329,7 +319,6 @@ pub extern "C" fn rt_generator_send_abi(gen: Value, value: i64) -> Value {
     Value::from_ptr(unsafe { rt_generator_send(gen.unwrap_ptr(), value) })
 }
 
-
 /// Get the sent value from a generator (called from resume function)
 ///
 /// # Safety
@@ -343,7 +332,6 @@ pub unsafe fn rt_generator_get_sent_value(gen: *mut Obj) -> i64 {
 pub extern "C" fn rt_generator_get_sent_value_abi(gen: Value) -> i64 {
     unsafe { rt_generator_get_sent_value(gen.unwrap_ptr()) }
 }
-
 
 /// Close a generator
 ///
@@ -394,7 +382,6 @@ pub extern "C" fn rt_generator_close_abi(gen: Value) {
     unsafe { rt_generator_close(gen.unwrap_ptr()) }
 }
 
-
 /// Check if the generator is in closing state
 ///
 /// # Safety
@@ -412,7 +399,6 @@ pub unsafe fn rt_generator_is_closing(gen: *mut Obj) -> i8 {
 pub extern "C" fn rt_generator_is_closing_abi(gen: Value) -> i8 {
     unsafe { rt_generator_is_closing(gen.unwrap_ptr()) }
 }
-
 
 // §F.7b: finalize_generator removed — per-slot tag side-array deleted; no
 // separate heap allocation to free on sweep.

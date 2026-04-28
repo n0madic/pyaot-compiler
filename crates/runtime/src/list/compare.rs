@@ -71,7 +71,6 @@ pub extern "C" fn rt_list_eq_abi(a: Value, b: Value) -> i8 {
     rt_list_eq(a.unwrap_ptr(), b.unwrap_ptr())
 }
 
-
 /// Lexicographic ordering comparison for two lists.
 /// After F.7c all slots are uniform tagged Values.
 unsafe fn list_cmp_ordering(a: *mut Obj, b: *mut Obj) -> Ordering {
@@ -123,4 +122,3 @@ pub fn rt_list_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
 pub extern "C" fn rt_list_cmp_abi(a: Value, b: Value, op_tag: u8) -> i8 {
     rt_list_cmp(a.unwrap_ptr(), b.unwrap_ptr(), op_tag)
 }
-

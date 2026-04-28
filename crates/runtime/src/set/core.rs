@@ -158,7 +158,6 @@ pub extern "C" fn rt_make_set_abi(capacity: i64) -> Value {
     Value::from_ptr(rt_make_set(capacity))
 }
 
-
 /// Get length of set (number of elements)
 pub fn rt_set_len(set: *mut Obj) -> i64 {
     if set.is_null() {
@@ -176,7 +175,6 @@ pub fn rt_set_len(set: *mut Obj) -> i64 {
 pub extern "C" fn rt_set_len_abi(set: Value) -> i64 {
     rt_set_len(set.unwrap_ptr())
 }
-
 
 /// Finalize a set by freeing its entries array
 /// Called by GC during sweep phase before freeing the SetObj itself
@@ -284,7 +282,6 @@ pub extern "C" fn rt_set_minmax_abi(set: Value, is_min: u8, elem_kind: u8) -> i6
     rt_set_minmax(set.unwrap_ptr(), is_min, elem_kind)
 }
 
-
 /// Generic set min/max with key function.
 /// `key_return_tag`: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1).
 /// is_min: 0=min, 1=max
@@ -317,9 +314,15 @@ pub extern "C" fn rt_set_minmax_with_key_abi(
     is_min: u8,
     key_return_tag: u8,
 ) -> Value {
-    Value::from_ptr(rt_set_minmax_with_key(set.unwrap_ptr(), key_fn, captures.unwrap_ptr(), capture_count, is_min, key_return_tag))
+    Value::from_ptr(rt_set_minmax_with_key(
+        set.unwrap_ptr(),
+        key_fn,
+        captures.unwrap_ptr(),
+        capture_count,
+        is_min,
+        key_return_tag,
+    ))
 }
-
 
 /// Find extremum (min or max) element in a set using a key function.
 /// Set entries store tagged Values; `key_return_tag` tells how to wrap the key fn result.

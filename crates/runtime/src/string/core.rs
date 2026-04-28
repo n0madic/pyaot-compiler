@@ -78,7 +78,6 @@ pub extern "C" fn rt_make_str_abi(data: *const u8, len: usize) -> Value {
     Value::from_ptr(unsafe { rt_make_str(data, len) })
 }
 
-
 /// Get the data pointer from a StrObj
 /// Returns pointer to the string's byte data
 pub fn rt_str_data(str_obj: *mut Obj) -> *const u8 {
@@ -97,7 +96,6 @@ pub extern "C" fn rt_str_data_abi(str_obj: Value) -> *const u8 {
     rt_str_data(str_obj.unwrap_ptr())
 }
 
-
 /// Get the length of a StrObj
 pub fn rt_str_len(str_obj: *mut Obj) -> usize {
     if str_obj.is_null() {
@@ -115,7 +113,6 @@ pub extern "C" fn rt_str_len_abi(str_obj: Value) -> usize {
     rt_str_len(str_obj.unwrap_ptr())
 }
 
-
 /// Get the length of a string (as i64 for Python's len())
 pub fn rt_str_len_int(str_obj: *mut Obj) -> i64 {
     if str_obj.is_null() {
@@ -132,7 +129,6 @@ pub fn rt_str_len_int(str_obj: *mut Obj) -> i64 {
 pub extern "C" fn rt_str_len_int_abi(str_obj: Value) -> i64 {
     rt_str_len_int(str_obj.unwrap_ptr())
 }
-
 
 /// Concatenate two strings
 /// Returns: pointer to new allocated StrObj
@@ -211,7 +207,6 @@ pub extern "C" fn rt_str_concat_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_str_concat(a.unwrap_ptr(), b.unwrap_ptr()))
 }
 
-
 /// Encode string to bytes
 /// encoding: pointer to encoding string (utf-8 default if null)
 /// Returns: pointer to allocated BytesObj
@@ -252,4 +247,3 @@ pub fn rt_str_encode(s: *mut Obj, _encoding: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_str_encode_abi(s: Value, _encoding: Value) -> Value {
     Value::from_ptr(rt_str_encode(s.unwrap_ptr(), _encoding.unwrap_ptr()))
 }
-

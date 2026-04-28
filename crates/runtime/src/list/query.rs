@@ -39,7 +39,6 @@ pub extern "C" fn rt_list_index_abi(list: Value, value: Value) -> i64 {
     rt_list_index(list.unwrap_ptr(), value.unwrap_ptr())
 }
 
-
 /// Count occurrences of value in list (post-§F.7c uniform Value semantics).
 pub fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
     if list.is_null() {
@@ -71,7 +70,6 @@ pub fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
 pub extern "C" fn rt_list_count_abi(list: Value, value: Value) -> i64 {
     rt_list_count(list.unwrap_ptr(), value.unwrap_ptr())
 }
-
 
 /// Create a shallow copy of list
 /// Returns: pointer to new allocated ListObj
@@ -119,7 +117,6 @@ pub fn rt_list_copy(list: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_list_copy_abi(list: Value) -> Value {
     Value::from_ptr(rt_list_copy(list.unwrap_ptr()))
 }
-
 
 /// Concatenate two lists into a new list: list1 + list2
 pub fn rt_list_concat(list1: *mut Obj, list2: *mut Obj) -> *mut Obj {
@@ -183,4 +180,3 @@ pub fn rt_list_concat(list1: *mut Obj, list2: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_list_concat_abi(list1: Value, list2: Value) -> Value {
     Value::from_ptr(rt_list_concat(list1.unwrap_ptr(), list2.unwrap_ptr()))
 }
-

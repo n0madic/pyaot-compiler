@@ -175,4 +175,3 @@ pub fn rt_ascii_collection(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_ascii_collection_abi(obj: Value) -> Value {
     Value::from_ptr(rt_ascii_collection(obj.unwrap_ptr()))
 }
-

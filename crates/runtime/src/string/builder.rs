@@ -68,7 +68,6 @@ pub extern "C" fn rt_make_string_builder_abi(capacity_hint: i64) -> Value {
     Value::from_ptr(rt_make_string_builder(capacity_hint))
 }
 
-
 /// Append a string to the StringBuilder
 /// builder: pointer to StringBuilderObj
 /// str_obj: pointer to StrObj to append
@@ -129,7 +128,6 @@ pub fn rt_string_builder_append(builder: *mut Obj, str_obj: *mut Obj) {
 pub extern "C" fn rt_string_builder_append_abi(builder: Value, str_obj: Value) {
     rt_string_builder_append(builder.unwrap_ptr(), str_obj.unwrap_ptr())
 }
-
 
 /// Finalize StringBuilder and return the resulting StrObj
 /// builder: pointer to StringBuilderObj
@@ -194,7 +192,6 @@ pub fn rt_string_builder_to_str(builder: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_string_builder_to_str_abi(builder: Value) -> Value {
     Value::from_ptr(rt_string_builder_to_str(builder.unwrap_ptr()))
 }
-
 
 /// Finalize StringBuilder (called by GC during collection)
 /// Frees the internal buffer if not already freed

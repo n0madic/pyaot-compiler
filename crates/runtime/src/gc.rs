@@ -259,8 +259,17 @@ fn mark_object(v: Value) {
             }
             TypeTagKind::Instance => {
                 let p = obj as *mut InstanceObj;
-                for k in 0..(*p).field_count {
-                    mark_object(*(*p).fields.as_ptr().add(k));
+                let raw_mask = crate::vtable::get_raw_field_mask((*p).class_id);
+                if raw_mask == 0 {
+                    for k in 0..(*p).field_count {
+                        mark_object(*(*p).fields.as_ptr().add(k));
+                    }
+                } else {
+                    for k in 0..(*p).field_count {
+                        if raw_mask & (1u64 << k) == 0 {
+                            mark_object(*(*p).fields.as_ptr().add(k));
+                        }
+                    }
                 }
             }
             TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {

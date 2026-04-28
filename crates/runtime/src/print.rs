@@ -56,7 +56,6 @@ pub extern "C" fn rt_print_str_obj_abi(str_obj: Value) {
     rt_print_str_obj(str_obj.unwrap_ptr())
 }
 
-
 /// Format a bytes slice as a Python bytes literal (e.g. `b'hello\n'`).
 fn format_bytes_repr(data: *const u8, len: usize) -> String {
     let mut s = String::with_capacity(len + 3); // b'' + escapes
@@ -108,7 +107,6 @@ pub fn rt_print_bytes_obj(bytes: *mut Obj) {
 pub extern "C" fn rt_print_bytes_obj_abi(bytes: Value) {
     rt_print_bytes_obj(bytes.unwrap_ptr())
 }
-
 
 /// Read a line from stdin after printing the prompt
 /// Returns: pointer to allocated StrObj
@@ -192,4 +190,3 @@ pub fn rt_input(prompt: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_input_abi(prompt: Value) -> Value {
     Value::from_ptr(rt_input(prompt.unwrap_ptr()))
 }
-

@@ -180,7 +180,6 @@ pub extern "C" fn rt_copy_copy_abi(obj: Value) -> Value {
     Value::from_ptr(unsafe { rt_copy_copy(obj.unwrap_ptr()) })
 }
 
-
 /// Deep copy of an object with cycle detection
 ///
 /// Immutable types (Int, Float, Bool, Str, None, Bytes) are returned as-is.
@@ -194,7 +193,6 @@ pub unsafe fn rt_copy_deepcopy(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_copy_deepcopy_abi(obj: Value) -> Value {
     Value::from_ptr(unsafe { rt_copy_deepcopy(obj.unwrap_ptr()) })
 }
-
 
 /// Internal recursive helper for deep copy with cycle detection
 unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>) -> *mut Obj {

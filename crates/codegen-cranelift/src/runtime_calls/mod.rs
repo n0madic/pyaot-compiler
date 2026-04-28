@@ -60,6 +60,38 @@ pub fn compile_runtime_call(
 
         // Descriptor-based call (generic handler)
         mir::RuntimeFunc::Call(def) => {
+            use pyaot_core_defs::layout::{INSTANCE_FIELDS_OFFSET, PTR_SIZE};
+            use pyaot_core_defs::runtime_func_def::{
+                RT_INSTANCE_GET_FIELD_F64, RT_INSTANCE_SET_FIELD_F64,
+            };
+            // Inline fast-path: raw f64 instance field load (no call overhead).
+            // args: [inst: i64, offset: i64 constant]
+            if std::ptr::eq(*def, &RT_INSTANCE_GET_FIELD_F64) {
+                let inst_val = load_operand(builder, &args[0], ctx.symbols.var_map);
+                if let Operand::Constant(mir::Constant::Int(off)) = &args[1] {
+                    let byte_off = INSTANCE_FIELDS_OFFSET as i32 + (*off as i32) * PTR_SIZE as i32;
+                    let result =
+                        builder
+                            .ins()
+                            .load(cltypes::F64, MemFlags::trusted(), inst_val, byte_off);
+                    ctx.store_result(builder, &dest, result);
+                    return Ok(());
+                }
+            }
+            // Inline fast-path: raw f64 instance field store (no call overhead).
+            // args: [inst: i64, offset: i64 constant, value: f64]
+            if std::ptr::eq(*def, &RT_INSTANCE_SET_FIELD_F64) {
+                let inst_val = load_operand(builder, &args[0], ctx.symbols.var_map);
+                if let Operand::Constant(mir::Constant::Int(off)) = &args[1] {
+                    let byte_off = INSTANCE_FIELDS_OFFSET as i32 + (*off as i32) * PTR_SIZE as i32;
+                    let value_val =
+                        load_operand_as(builder, &args[2], ctx.symbols.var_map, cltypes::F64);
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), value_val, inst_val, byte_off);
+                    return Ok(());
+                }
+            }
             compile_runtime_func_def(builder, dest, def, args, ctx)?;
             Ok(())
         }

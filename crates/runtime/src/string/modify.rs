@@ -169,9 +169,12 @@ pub fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
 #[export_name = "rt_str_replace"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_str_replace_abi(str_obj: Value, old: Value, new: Value) -> Value {
-    Value::from_ptr(rt_str_replace(str_obj.unwrap_ptr(), old.unwrap_ptr(), new.unwrap_ptr()))
+    Value::from_ptr(rt_str_replace(
+        str_obj.unwrap_ptr(),
+        old.unwrap_ptr(),
+        new.unwrap_ptr(),
+    ))
 }
-
 
 /// String multiplication: "abc" * 3 = "abcabcabc"
 /// Returns: pointer to new allocated StrObj
@@ -236,7 +239,6 @@ pub fn rt_str_mul(str_obj: *mut Obj, count: i64) -> *mut Obj {
 pub extern "C" fn rt_str_mul_abi(str_obj: Value, count: i64) -> Value {
     Value::from_ptr(rt_str_mul(str_obj.unwrap_ptr(), count))
 }
-
 
 /// str.removeprefix(prefix) - Return string with prefix removed if present
 /// If string starts with prefix, returns string[len(prefix):], otherwise returns original.
@@ -319,7 +321,6 @@ pub extern "C" fn rt_str_removeprefix_abi(s: Value, prefix: Value) -> Value {
     Value::from_ptr(rt_str_removeprefix(s.unwrap_ptr(), prefix.unwrap_ptr()))
 }
 
-
 /// str.removesuffix(suffix) - Return string with suffix removed if present
 /// If string ends with suffix, returns string[:-len(suffix)], otherwise returns original.
 /// Returns: pointer to new StrObj
@@ -397,7 +398,6 @@ pub fn rt_str_removesuffix(s: *mut Obj, suffix: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_str_removesuffix_abi(s: Value, suffix: Value) -> Value {
     Value::from_ptr(rt_str_removesuffix(s.unwrap_ptr(), suffix.unwrap_ptr()))
 }
-
 
 /// str.expandtabs(tabsize) - Replace tabs with spaces
 /// Each tab is replaced with spaces to reach the next tab stop (multiples of tabsize).
@@ -504,4 +504,3 @@ pub fn rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj {
 pub extern "C" fn rt_str_expandtabs_abi(s: Value, tabsize: i64) -> Value {
     Value::from_ptr(rt_str_expandtabs(s.unwrap_ptr(), tabsize))
 }
-

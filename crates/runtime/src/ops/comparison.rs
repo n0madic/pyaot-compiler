@@ -123,7 +123,6 @@ pub extern "C" fn rt_obj_eq_abi(a: Value, b: Value) -> i8 {
     rt_obj_eq(a.unwrap_ptr(), b.unwrap_ptr())
 }
 
-
 /// Helper function to compare two orderable heap objects
 /// Returns Ordering or panics with TypeError for incompatible types
 pub(super) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
@@ -315,7 +314,6 @@ pub extern "C" fn rt_obj_cmp_abi(a: Value, b: Value, op_tag: u8) -> i8 {
     rt_obj_cmp(a.unwrap_ptr(), b.unwrap_ptr(), op_tag)
 }
 
-
 /// Runtime-dispatched subscript: obj[index] where obj has unknown type at compile time.
 /// Dispatches to the appropriate getter based on the object's type tag.
 /// Returns boxed value (*mut Obj) for all types.
@@ -374,7 +372,6 @@ pub extern "C" fn rt_any_getitem_abi(obj: Value, index: i64) -> Value {
     Value::from_ptr(rt_any_getitem(obj.unwrap_ptr(), index))
 }
 
-
 /// Check if element is in container with runtime type dispatch
 /// Returns 1 if element is in container, 0 otherwise
 /// Used for Union container types where the actual type is determined at runtime
@@ -421,7 +418,6 @@ pub fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
 pub extern "C" fn rt_obj_contains_abi(container: Value, elem: Value) -> i8 {
     rt_obj_contains(container.unwrap_ptr(), elem.unwrap_ptr())
 }
-
 
 /// Check if list contains value using value equality (not pointer equality)
 unsafe fn rt_list_contains_value(list: *mut Obj, value: *mut Obj) -> i8 {
@@ -543,7 +539,6 @@ pub extern "C" fn rt_is_none_abi(obj: Value) -> i8 {
     rt_is_none(obj.unwrap_ptr())
 }
 
-
 /// Check truthiness of any value with runtime type dispatch
 /// Returns 1 if truthy, 0 if falsy
 /// Falsy values: None, False, 0, 0.0, empty str/list/tuple/dict/set/bytes
@@ -635,4 +630,3 @@ pub fn rt_is_truthy(obj: *mut Obj) -> i8 {
 pub extern "C" fn rt_is_truthy_abi(obj: Value) -> i8 {
     rt_is_truthy(obj.unwrap_ptr())
 }
-

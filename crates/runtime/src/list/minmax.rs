@@ -68,7 +68,6 @@ pub extern "C" fn rt_list_minmax_abi(list: Value, is_min: u8, elem_kind: u8) -> 
     rt_list_minmax(list.unwrap_ptr(), is_min, elem_kind)
 }
 
-
 /// Generic list min/max with key function.
 /// `key_return_tag`: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1).
 pub fn rt_list_minmax_with_key(
@@ -100,9 +99,15 @@ pub extern "C" fn rt_list_minmax_with_key_abi(
     is_min: u8,
     key_return_tag: u8,
 ) -> Value {
-    Value::from_ptr(rt_list_minmax_with_key(list.unwrap_ptr(), key_fn, captures.unwrap_ptr(), capture_count, is_min, key_return_tag))
+    Value::from_ptr(rt_list_minmax_with_key(
+        list.unwrap_ptr(),
+        key_fn,
+        captures.unwrap_ptr(),
+        capture_count,
+        is_min,
+        key_return_tag,
+    ))
 }
-
 
 /// Call key function with captures support
 unsafe fn call_key_fn(

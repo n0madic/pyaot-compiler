@@ -55,7 +55,6 @@ pub extern "C" fn rt_make_tuple_abi(size: i64) -> Value {
     Value::from_ptr(rt_make_tuple(size))
 }
 
-
 /// Set element in tuple at given index (used during tuple construction)
 pub fn rt_tuple_set(tuple: *mut Obj, index: i64, value: *mut Obj) {
     if tuple.is_null() {
@@ -82,7 +81,6 @@ pub fn rt_tuple_set(tuple: *mut Obj, index: i64, value: *mut Obj) {
 pub extern "C" fn rt_tuple_set_abi(tuple: Value, index: i64, value: Value) {
     rt_tuple_set(tuple.unwrap_ptr(), index, value.unwrap_ptr())
 }
-
 
 /// Get element from tuple at given index.
 /// Supports negative indexing.
@@ -120,7 +118,6 @@ pub extern "C" fn rt_tuple_get_abi(tuple: Value, index: i64) -> Value {
     Value::from_ptr(rt_tuple_get(tuple.unwrap_ptr(), index))
 }
 
-
 /// Get length of tuple
 pub fn rt_tuple_len(tuple: *mut Obj) -> i64 {
     if tuple.is_null() {
@@ -138,7 +135,6 @@ pub fn rt_tuple_len(tuple: *mut Obj) -> i64 {
 pub extern "C" fn rt_tuple_len_abi(tuple: Value) -> i64 {
     rt_tuple_len(tuple.unwrap_ptr())
 }
-
 
 /// Slice a tuple: tuple[start:end]
 /// Negative indices are supported (counted from end)
@@ -194,7 +190,6 @@ pub fn rt_tuple_slice(tuple: *mut Obj, start: i64, end: i64) -> *mut Obj {
 pub extern "C" fn rt_tuple_slice_abi(tuple: Value, start: i64, end: i64) -> Value {
     Value::from_ptr(rt_tuple_slice(tuple.unwrap_ptr(), start, end))
 }
-
 
 /// Slice a tuple and return as a list: used for starred unpacking
 /// In Python, `a, *rest = (1, 2, 3)` makes rest a list, not a tuple
@@ -255,7 +250,6 @@ pub extern "C" fn rt_tuple_slice_to_list_abi(tuple: Value, start: i64, end: i64)
     Value::from_ptr(rt_tuple_slice_to_list(tuple.unwrap_ptr(), start, end))
 }
 
-
 /// Slice a tuple with step: tuple[start:end:step]
 /// Uses i64::MIN as sentinel for "default start" and i64::MAX for "default end"
 /// Defaults depend on step direction:
@@ -263,12 +257,7 @@ pub extern "C" fn rt_tuple_slice_to_list_abi(tuple: Value, start: i64, end: i64)
 ///   - Negative step: start=len-1, end=-1 (before index 0)
 ///
 /// Returns: pointer to new allocated TupleObj (shallow copy)
-pub fn rt_tuple_slice_step(
-    tuple: *mut Obj,
-    start: i64,
-    end: i64,
-    step: i64,
-) -> *mut Obj {
+pub fn rt_tuple_slice_step(tuple: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj {
     if tuple.is_null() || step == 0 {
         return rt_make_tuple(0);
     }
@@ -300,15 +289,9 @@ pub fn rt_tuple_slice_step(
 }
 #[export_name = "rt_tuple_slice_step"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_tuple_slice_step_abi(
-    tuple: Value,
-    start: i64,
-    end: i64,
-    step: i64,
-) -> Value {
+pub extern "C" fn rt_tuple_slice_step_abi(tuple: Value, start: i64, end: i64, step: i64) -> Value {
     Value::from_ptr(rt_tuple_slice_step(tuple.unwrap_ptr(), start, end, step))
 }
-
 
 /// Create a tuple from a list
 /// Returns: pointer to new TupleObj
@@ -344,7 +327,6 @@ pub fn rt_tuple_from_list(list: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_tuple_from_list_abi(list: Value) -> Value {
     Value::from_ptr(rt_tuple_from_list(list.unwrap_ptr()))
 }
-
 
 /// Create a tuple from a string (each character becomes an element)
 /// Returns: pointer to new TupleObj
@@ -395,7 +377,6 @@ pub extern "C" fn rt_tuple_from_str_abi(str_obj: Value) -> Value {
     Value::from_ptr(rt_tuple_from_str(str_obj.unwrap_ptr()))
 }
 
-
 /// Create a tuple from a range
 /// Returns: pointer to new TupleObj
 pub fn rt_tuple_from_range(start: i64, stop: i64, step: i64) -> *mut Obj {
@@ -436,7 +417,6 @@ pub extern "C" fn rt_tuple_from_range_abi(start: i64, stop: i64, step: i64) -> V
     Value::from_ptr(rt_tuple_from_range(start, stop, step))
 }
 
-
 /// Create a tuple by consuming an iterator
 /// Returns: pointer to new TupleObj
 pub fn rt_tuple_from_iter(iter: *mut Obj) -> *mut Obj {
@@ -467,7 +447,6 @@ pub extern "C" fn rt_tuple_from_iter_abi(iter: Value) -> Value {
     Value::from_ptr(rt_tuple_from_iter(iter.unwrap_ptr()))
 }
 
-
 /// Create a tuple from a set
 /// Returns: pointer to new TupleObj
 pub fn rt_tuple_from_set(set: *mut Obj) -> *mut Obj {
@@ -483,7 +462,6 @@ pub extern "C" fn rt_tuple_from_set_abi(set: Value) -> Value {
     Value::from_ptr(rt_tuple_from_set(set.unwrap_ptr()))
 }
 
-
 /// Create a tuple from a dict (keys only)
 /// Returns: pointer to new TupleObj
 pub fn rt_tuple_from_dict(dict: *mut Obj) -> *mut Obj {
@@ -498,7 +476,6 @@ pub fn rt_tuple_from_dict(dict: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_tuple_from_dict_abi(dict: Value) -> Value {
     Value::from_ptr(rt_tuple_from_dict(dict.unwrap_ptr()))
 }
-
 
 /// Concatenate two tuples into a new tuple
 /// Used for combining extra positional args with list-unpacked varargs
@@ -554,7 +531,6 @@ pub fn rt_tuple_concat(tuple1: *mut Obj, tuple2: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_tuple_concat_abi(tuple1: Value, tuple2: Value) -> Value {
     Value::from_ptr(rt_tuple_concat(tuple1.unwrap_ptr(), tuple2.unwrap_ptr()))
 }
-
 
 /// Maximum number of arguments supported for tuple-args indirect calls.
 ///
@@ -917,7 +893,6 @@ pub extern "C" fn rt_call_with_tuple_args_abi(func_ptr: i64, args_tuple: Value) 
     rt_call_with_tuple_args(func_ptr, args_tuple.unwrap_ptr())
 }
 
-
 /// Stage E (unified closure ABI): closure-trampoline call entry point that
 /// extracts captures and user-args from SEPARATE tuples respecting each
 /// tuple's own elem_tag. Replaces the prior `rt_tuple_concat` +
@@ -950,9 +925,12 @@ pub extern "C" fn rt_call_with_captures_and_args_abi(
     captures_tuple: Value,
     args_tuple: Value,
 ) -> i64 {
-    rt_call_with_captures_and_args(func_ptr, captures_tuple.unwrap_ptr(), args_tuple.unwrap_ptr())
+    rt_call_with_captures_and_args(
+        func_ptr,
+        captures_tuple.unwrap_ptr(),
+        args_tuple.unwrap_ptr(),
+    )
 }
-
 
 #[cfg(test)]
 mod tests {

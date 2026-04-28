@@ -6,9 +6,9 @@
 use crate::exceptions::ExceptionType;
 use crate::gc;
 use crate::object::{BytesObj, Obj, ObjHeader, StrObj, TypeTagKind};
-use pyaot_core_defs::Value;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE};
 use base64::Engine;
+use pyaot_core_defs::Value;
 
 /// Helper function to create a bytes object from a Vec<u8>
 unsafe fn make_bytes_from_vec(data: Vec<u8>) -> *mut Obj {
@@ -96,7 +96,6 @@ pub extern "C" fn rt_base64_b64encode_abi(data: Value) -> Value {
     Value::from_ptr(unsafe { rt_base64_b64encode(data.unwrap_ptr()) })
 }
 
-
 /// Decode standard base64 (str or bytes) to bytes
 /// data: pointer to StrObj or BytesObj containing base64 data
 /// Returns: pointer to BytesObj containing decoded data
@@ -119,7 +118,6 @@ pub unsafe fn rt_base64_b64decode(data: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_base64_b64decode_abi(data: Value) -> Value {
     Value::from_ptr(unsafe { rt_base64_b64decode(data.unwrap_ptr()) })
 }
-
 
 /// Encode bytes to URL-safe base64 bytes
 /// data: pointer to BytesObj to encode
@@ -154,7 +152,6 @@ pub extern "C" fn rt_base64_urlsafe_b64encode_abi(data: Value) -> Value {
     Value::from_ptr(unsafe { rt_base64_urlsafe_b64encode(data.unwrap_ptr()) })
 }
 
-
 /// Decode URL-safe base64 (str or bytes) to bytes
 /// data: pointer to StrObj or BytesObj containing URL-safe base64 data
 /// Returns: pointer to BytesObj containing decoded data
@@ -177,4 +174,3 @@ pub unsafe fn rt_base64_urlsafe_b64decode(data: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_base64_urlsafe_b64decode_abi(data: Value) -> Value {
     Value::from_ptr(unsafe { rt_base64_urlsafe_b64decode(data.unwrap_ptr()) })
 }
-

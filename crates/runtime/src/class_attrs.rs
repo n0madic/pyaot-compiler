@@ -162,7 +162,6 @@ pub extern "C" fn rt_class_attr_set_ptr_abi(class_id: u8, attr_idx: u32, value: 
     rt_class_attr_set_ptr(class_id, attr_idx, value.unwrap_ptr())
 }
 
-
 pub fn rt_class_attr_get_ptr(class_id: u8, attr_idx: u32) -> *mut Obj {
     unsafe {
         if let Some(ref map) = *attrs_map() {
@@ -179,7 +178,6 @@ pub fn rt_class_attr_get_ptr(class_id: u8, attr_idx: u32) -> *mut Obj {
 pub extern "C" fn rt_class_attr_get_ptr_abi(class_id: u8, attr_idx: u32) -> Value {
     Value::from_ptr(rt_class_attr_get_ptr(class_id, attr_idx))
 }
-
 
 // ==================== GC Integration ====================
 

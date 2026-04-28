@@ -21,7 +21,6 @@ pub extern "C" fn rt_list_append_abi(list: Value, value: Value) {
     rt_list_append(list.unwrap_ptr(), value.unwrap_ptr())
 }
 
-
 /// Pop element from list at given index
 /// Negative indices are supported
 /// Returns: the removed element, or null if out of bounds
@@ -70,7 +69,6 @@ pub fn rt_list_pop(list: *mut Obj, index: i64) -> *mut Obj {
 pub extern "C" fn rt_list_pop_abi(list: Value, index: i64) -> Value {
     Value::from_ptr(rt_list_pop(list.unwrap_ptr(), index))
 }
-
 
 /// Insert element at given index (mutates list)
 /// Negative indices are supported
@@ -141,7 +139,6 @@ pub extern "C" fn rt_list_insert_abi(list: Value, index: i64, value: Value) {
     rt_list_insert(list.unwrap_ptr(), index, value.unwrap_ptr())
 }
 
-
 /// Remove first occurrence of value from list (mutates list)
 /// Uses value equality for heap objects, raw equality for primitives.
 /// Returns: 1 if found and removed, 0 otherwise
@@ -186,7 +183,6 @@ pub extern "C" fn rt_list_remove_abi(list: Value, value: Value) -> i8 {
     rt_list_remove(list.unwrap_ptr(), value.unwrap_ptr())
 }
 
-
 /// Clear all elements from list (mutates list)
 pub fn rt_list_clear(list: *mut Obj) {
     if list.is_null() {
@@ -212,7 +208,6 @@ pub fn rt_list_clear(list: *mut Obj) {
 pub extern "C" fn rt_list_clear_abi(list: Value) {
     rt_list_clear(list.unwrap_ptr())
 }
-
 
 /// Reverse list in place (mutates list)
 pub fn rt_list_reverse(list: *mut Obj) {
@@ -246,7 +241,6 @@ pub fn rt_list_reverse(list: *mut Obj) {
 pub extern "C" fn rt_list_reverse_abi(list: Value) {
     rt_list_reverse(list.unwrap_ptr())
 }
-
 
 /// Extend list with elements from another list (mutates first list)
 pub fn rt_list_extend(list: *mut Obj, other: *mut Obj) {
@@ -335,7 +329,6 @@ pub fn rt_list_extend(list: *mut Obj, other: *mut Obj) {
 pub extern "C" fn rt_list_extend_abi(list: Value, other: Value) {
     rt_list_extend(list.unwrap_ptr(), other.unwrap_ptr())
 }
-
 
 /// Compare two objects for sorting. Values are uniform tagged Values after F.7c.
 /// Returns -1 if a < b, 0 if a == b, 1 if a > b
@@ -473,7 +466,6 @@ pub extern "C" fn rt_list_sort_abi(list: Value, reverse: i8) {
     rt_list_sort(list.unwrap_ptr(), reverse)
 }
 
-
 /// Compare two key objects for sorting
 /// Returns -1 if a < b, 0 if a == b, 1 if a > b
 /// Key values can be any type (heap objects or raw integers), so we detect
@@ -585,9 +577,15 @@ pub extern "C" fn rt_list_sort_with_key_abi(
     capture_count: i64,
     key_return_tag: u8,
 ) {
-    rt_list_sort_with_key(list.unwrap_ptr(), reverse, key_fn, captures.unwrap_ptr(), capture_count, key_return_tag)
+    rt_list_sort_with_key(
+        list.unwrap_ptr(),
+        reverse,
+        key_fn,
+        captures.unwrap_ptr(),
+        capture_count,
+        key_return_tag,
+    )
 }
-
 
 /// Replace list[start:stop] with values from another list
 pub fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, values: *mut Obj) {
@@ -696,4 +694,3 @@ pub fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, values: *mut 
 pub extern "C" fn rt_list_slice_assign_abi(list: Value, start: i64, stop: i64, values: Value) {
     rt_list_slice_assign(list.unwrap_ptr(), start, stop, values.unwrap_ptr())
 }
-

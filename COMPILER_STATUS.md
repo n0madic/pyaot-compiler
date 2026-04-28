@@ -60,6 +60,11 @@ protocol dispatch paths intentionally remain dynamic.
 TypeVar / Generic / Protocol / PEP 695 parsing done. Monomorphization and
 structural Protocol isinstance checks in place.
 
+**§P.1 done (2026-04-28)**: Polymorphic arithmetic perf gate — raw f64
+storage for statically-typed Float instance fields. `run::polymorphic`
+12.05 ms (Phase 3 baseline 20.98 ms, Phase 1 baseline 13.26 ms). Loose
+±10% gate met.
+
 ## Feature Status
 
 ### Types

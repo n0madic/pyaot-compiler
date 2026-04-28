@@ -717,4 +717,3 @@ pub unsafe fn rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_format_value_abi(value: Value, spec: Value) -> Value {
     Value::from_ptr(unsafe { rt_format_value(value.unwrap_ptr(), spec.unwrap_ptr()) })
 }
-

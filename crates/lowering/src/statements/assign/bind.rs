@@ -418,6 +418,27 @@ impl<'a> Lowering<'a> {
                         .get(&field)
                         .cloned()
                         .unwrap_or(Type::Any);
+                    if matches!(field_ty, Type::Float) {
+                        let f64_op = self.coerce_for_storage(
+                            value_operand,
+                            value_type,
+                            &Type::Float,
+                            mir_func,
+                        );
+                        self.emit_runtime_call(
+                            mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD_F64,
+                            ),
+                            vec![
+                                obj_operand,
+                                mir::Operand::Constant(mir::Constant::Int(offset as i64)),
+                                f64_op,
+                            ],
+                            Type::None,
+                            mir_func,
+                        );
+                        return Ok(());
+                    }
                     let coerced = self.coerce_for_instance_field_store(
                         value_operand,
                         value_type,

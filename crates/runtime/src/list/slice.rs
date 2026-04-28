@@ -61,7 +61,6 @@ pub extern "C" fn rt_list_slice_abi(list: Value, start: i64, end: i64) -> Value 
     Value::from_ptr(rt_list_slice(list.unwrap_ptr(), start, end))
 }
 
-
 /// Slice a list with step: list[start:end:step]
 /// Uses i64::MIN as sentinel for "default start" and i64::MAX for "default end"
 /// Defaults depend on step direction:
@@ -121,4 +120,3 @@ pub fn rt_list_slice_step(list: *mut Obj, start: i64, end: i64, step: i64) -> *m
 pub extern "C" fn rt_list_slice_step_abi(list: Value, start: i64, end: i64, step: i64) -> Value {
     Value::from_ptr(rt_list_slice_step(list.unwrap_ptr(), start, end, step))
 }
-

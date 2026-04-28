@@ -113,7 +113,6 @@ pub extern "C" fn rt_repr_int_abi(n: i64) -> Value {
     Value::from_ptr(rt_repr_int(n))
 }
 
-
 /// repr(float) -> string
 pub fn rt_repr_float(f: f64) -> *mut Obj {
     let s = crate::utils::format_float_python(f);
@@ -125,7 +124,6 @@ pub fn rt_repr_float(f: f64) -> *mut Obj {
 pub extern "C" fn rt_repr_float_abi(f: f64) -> Value {
     Value::from_ptr(rt_repr_float(f))
 }
-
 
 /// repr(bool) -> string
 pub fn rt_repr_bool(b: i8) -> *mut Obj {
@@ -139,7 +137,6 @@ pub extern "C" fn rt_repr_bool_abi(b: i8) -> Value {
     Value::from_ptr(rt_repr_bool(b))
 }
 
-
 /// repr(None) -> string
 pub fn rt_repr_none() -> *mut Obj {
     let s = "None";
@@ -152,7 +149,6 @@ pub extern "C" fn rt_repr_none_abi() -> Value {
     Value::from_ptr(rt_repr_none())
 }
 
-
 /// repr() for collections (list, tuple, dict, set), str, bytes, and generic objects — runtime type-dispatched
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_repr_collection(obj: *mut Obj) -> *mut Obj {
@@ -164,4 +160,3 @@ pub fn rt_repr_collection(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_repr_collection_abi(obj: Value) -> Value {
     Value::from_ptr(rt_repr_collection(obj.unwrap_ptr()))
 }
-

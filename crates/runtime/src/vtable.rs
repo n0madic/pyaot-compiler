@@ -94,6 +94,27 @@ pub extern "C" fn rt_object_new(class_id: u8) -> *mut crate::object::Obj {
     crate::instance::rt_make_instance(class_id, field_count)
 }
 
+/// Registry for per-class raw-field bitmask.
+/// Bit k = 1 → field k stores raw f64 bits; the GC must skip it.
+/// Classes with no float fields have mask = 0 (default).
+static RAW_FIELD_MASK_REGISTRY: RegistryStorage<u64, MAX_CLASSES> =
+    RegistryStorage(UnsafeCell::new([0u64; MAX_CLASSES]));
+
+/// Register a bitmask of raw (non-heap) fields for a class.
+/// Bit k set → field k holds raw f64 bits; GC skips that slot.
+#[no_mangle]
+pub extern "C" fn rt_register_class_raw_field_mask(class_id: u8, mask: i64) {
+    unsafe {
+        (*RAW_FIELD_MASK_REGISTRY.0.get())[class_id as usize] = mask as u64;
+    }
+}
+
+/// Return the raw-field bitmask for `class_id` (0 if none registered).
+#[inline]
+pub fn get_raw_field_mask(class_id: u8) -> u64 {
+    unsafe { (*RAW_FIELD_MASK_REGISTRY.0.get())[class_id as usize] }
+}
+
 /// Register __del__ function pointer for a class
 #[no_mangle]
 pub extern "C" fn rt_register_del_func(class_id: u8, func_ptr: *const u8) {

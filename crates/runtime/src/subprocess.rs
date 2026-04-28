@@ -225,7 +225,6 @@ pub extern "C" fn rt_subprocess_run_abi(args: Value, capture_output: i8, check: 
     Value::from_ptr(rt_subprocess_run(args.unwrap_ptr(), capture_output, check))
 }
 
-
 // ============= CompletedProcess getter methods =============
 
 /// Get args field from CompletedProcess object
@@ -246,7 +245,6 @@ pub extern "C" fn rt_completed_process_get_args_abi(obj: Value) -> Value {
     Value::from_ptr(rt_completed_process_get_args(obj.unwrap_ptr()))
 }
 
-
 /// Get returncode field from CompletedProcess object
 pub fn rt_completed_process_get_returncode(obj: *mut Obj) -> i64 {
     unsafe {
@@ -264,7 +262,6 @@ pub fn rt_completed_process_get_returncode(obj: *mut Obj) -> i64 {
 pub extern "C" fn rt_completed_process_get_returncode_abi(obj: Value) -> i64 {
     rt_completed_process_get_returncode(obj.unwrap_ptr())
 }
-
 
 /// Get stdout field from CompletedProcess object
 pub fn rt_completed_process_get_stdout(obj: *mut Obj) -> *mut Obj {
@@ -284,7 +281,6 @@ pub extern "C" fn rt_completed_process_get_stdout_abi(obj: Value) -> Value {
     Value::from_ptr(rt_completed_process_get_stdout(obj.unwrap_ptr()))
 }
 
-
 /// Get stderr field from CompletedProcess object
 pub fn rt_completed_process_get_stderr(obj: *mut Obj) -> *mut Obj {
     unsafe {
@@ -302,4 +298,3 @@ pub fn rt_completed_process_get_stderr(obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_completed_process_get_stderr_abi(obj: Value) -> Value {
     Value::from_ptr(rt_completed_process_get_stderr(obj.unwrap_ptr()))
 }
-

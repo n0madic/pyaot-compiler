@@ -46,7 +46,6 @@ pub extern "C" fn rt_set_issubset_abi(a: Value, b: Value) -> i8 {
     rt_set_issubset(a.unwrap_ptr(), b.unwrap_ptr())
 }
 
-
 /// Check if all elements of b are in a (superset test)
 /// Returns: 1 if a is superset of b, 0 otherwise
 pub fn rt_set_issuperset(a: *mut Obj, b: *mut Obj) -> i8 {
@@ -58,7 +57,6 @@ pub fn rt_set_issuperset(a: *mut Obj, b: *mut Obj) -> i8 {
 pub extern "C" fn rt_set_issuperset_abi(a: Value, b: Value) -> i8 {
     rt_set_issuperset(a.unwrap_ptr(), b.unwrap_ptr())
 }
-
 
 /// Check if sets have no elements in common (disjoint test)
 /// Returns: 1 if sets are disjoint, 0 otherwise
@@ -97,4 +95,3 @@ pub fn rt_set_isdisjoint(a: *mut Obj, b: *mut Obj) -> i8 {
 pub extern "C" fn rt_set_isdisjoint_abi(a: Value, b: Value) -> i8 {
     rt_set_isdisjoint(a.unwrap_ptr(), b.unwrap_ptr())
 }
-

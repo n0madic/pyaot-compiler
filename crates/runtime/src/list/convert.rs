@@ -52,7 +52,6 @@ pub extern "C" fn rt_list_from_tuple_abi(tuple: Value) -> Value {
     Value::from_ptr(rt_list_from_tuple(tuple.unwrap_ptr()))
 }
 
-
 /// Create a list from a string (each character becomes an element)
 /// Returns: pointer to new ListObj
 pub fn rt_list_from_str(str_obj: *mut Obj) -> *mut Obj {
@@ -105,7 +104,6 @@ pub fn rt_list_from_str(str_obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_list_from_str_abi(str_obj: Value) -> Value {
     Value::from_ptr(rt_list_from_str(str_obj.unwrap_ptr()))
 }
-
 
 /// Create a list from a range
 /// Returns: pointer to new ListObj
@@ -160,7 +158,6 @@ pub extern "C" fn rt_list_from_range_abi(start: i64, stop: i64, step: i64) -> Va
     Value::from_ptr(rt_list_from_range(start, stop, step))
 }
 
-
 /// Create a list by consuming an iterator
 /// Returns: pointer to new ListObj
 pub fn rt_list_from_iter(iter: *mut Obj) -> *mut Obj {
@@ -202,7 +199,6 @@ pub extern "C" fn rt_list_from_iter_abi(iter: Value) -> Value {
     Value::from_ptr(rt_list_from_iter(iter.unwrap_ptr()))
 }
 
-
 /// Create a list from a set
 /// Returns: pointer to new ListObj
 pub fn rt_list_from_set(set: *mut Obj) -> *mut Obj {
@@ -217,7 +213,6 @@ pub extern "C" fn rt_list_from_set_abi(set: Value) -> Value {
     Value::from_ptr(rt_list_from_set(set.unwrap_ptr()))
 }
 
-
 /// Create a list from a dict (keys only)
 /// Returns: pointer to new ListObj
 pub fn rt_list_from_dict(dict: *mut Obj) -> *mut Obj {
@@ -230,7 +225,6 @@ pub fn rt_list_from_dict(dict: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_list_from_dict_abi(dict: Value) -> Value {
     Value::from_ptr(rt_list_from_dict(dict.unwrap_ptr()))
 }
-
 
 /// Extract list tail as tuple (list[start:] → tuple)
 /// Used for varargs collection: def f(a, *rest): f(*my_list)
@@ -286,7 +280,6 @@ pub extern "C" fn rt_list_tail_to_tuple_abi(list: Value, start: i64) -> Value {
     Value::from_ptr(rt_list_tail_to_tuple(list.unwrap_ptr(), start))
 }
 
-
 /// Extract list tail as tuple, keeping float elements as heap-boxed FloatObj pointers.
 /// The varargs iterator returns each slot as *mut FloatObj; codegen calls rt_unbox_float.
 pub fn rt_list_tail_to_tuple_float(list: *mut Obj, start: i64) -> *mut Obj {
@@ -297,7 +290,6 @@ pub fn rt_list_tail_to_tuple_float(list: *mut Obj, start: i64) -> *mut Obj {
 pub extern "C" fn rt_list_tail_to_tuple_float_abi(list: Value, start: i64) -> Value {
     Value::from_ptr(rt_list_tail_to_tuple_float(list.unwrap_ptr(), start))
 }
-
 
 /// Extract list tail as tuple, unboxing bool elements
 /// Bool lists store boxed BoolObj pointers, but varargs tuples need raw i8 values
@@ -312,4 +304,3 @@ pub fn rt_list_tail_to_tuple_bool(list: *mut Obj, start: i64) -> *mut Obj {
 pub extern "C" fn rt_list_tail_to_tuple_bool_abi(list: Value, start: i64) -> Value {
     Value::from_ptr(rt_list_tail_to_tuple_bool(list.unwrap_ptr(), start))
 }
-

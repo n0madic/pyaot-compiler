@@ -61,7 +61,6 @@ pub extern "C" fn rt_str_slice_abi(str_obj: Value, start: i64, end: i64) -> Valu
     Value::from_ptr(rt_str_slice(str_obj.unwrap_ptr(), start, end))
 }
 
-
 /// Slice a string with step: s[start:end:step]
 /// Uses i64::MIN as sentinel for "default start" and i64::MAX for "default end"
 /// Defaults depend on step direction:
@@ -69,12 +68,7 @@ pub extern "C" fn rt_str_slice_abi(str_obj: Value, start: i64, end: i64) -> Valu
 ///   - Negative step: start=len-1, end=-1 (before index 0)
 ///
 /// Returns: pointer to new allocated StrObj
-pub fn rt_str_slice_step(
-    str_obj: *mut Obj,
-    start: i64,
-    end: i64,
-    step: i64,
-) -> *mut Obj {
+pub fn rt_str_slice_step(str_obj: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj {
     if str_obj.is_null() || step == 0 {
         return std::ptr::null_mut();
     }
@@ -136,15 +130,9 @@ pub fn rt_str_slice_step(
 }
 #[export_name = "rt_str_slice_step"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_str_slice_step_abi(
-    str_obj: Value,
-    start: i64,
-    end: i64,
-    step: i64,
-) -> Value {
+pub extern "C" fn rt_str_slice_step_abi(str_obj: Value, start: i64, end: i64, step: i64) -> Value {
     Value::from_ptr(rt_str_slice_step(str_obj.unwrap_ptr(), start, end, step))
 }
-
 
 /// Get the UTF-8 byte width of a codepoint starting at `first_byte`.
 /// Returns 1, 2, 3, or 4.
@@ -266,7 +254,6 @@ pub extern "C" fn rt_str_getchar_abi(str_obj: Value, byte_index: i64) -> Value {
     Value::from_ptr(rt_str_getchar(str_obj.unwrap_ptr(), byte_index))
 }
 
-
 /// Python-level string subscript `s[char_index]`.
 /// `char_index` is a Unicode codepoint index (may be negative).
 /// Raises IndexError if out of range.
@@ -297,4 +284,3 @@ pub fn rt_str_subscript(str_obj: *mut Obj, char_index: i64) -> *mut Obj {
 pub extern "C" fn rt_str_subscript_abi(str_obj: Value, char_index: i64) -> Value {
     Value::from_ptr(rt_str_subscript(str_obj.unwrap_ptr(), char_index))
 }
-

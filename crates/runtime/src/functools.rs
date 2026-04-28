@@ -224,6 +224,14 @@ pub extern "C" fn rt_reduce_abi(
     captures: Value,
     capture_count: i64,
 ) -> Value {
-    Value::from_ptr(unsafe { rt_reduce(func_ptr, iter.unwrap_ptr(), initial.unwrap_ptr(), has_initial, captures.unwrap_ptr(), capture_count) })
+    Value::from_ptr(unsafe {
+        rt_reduce(
+            func_ptr,
+            iter.unwrap_ptr(),
+            initial.unwrap_ptr(),
+            has_initial,
+            captures.unwrap_ptr(),
+            capture_count,
+        )
+    })
 }
-

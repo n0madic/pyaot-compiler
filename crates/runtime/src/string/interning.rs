@@ -162,7 +162,6 @@ pub extern "C" fn rt_make_str_interned_abi(data: *const u8, len: usize) -> Value
     Value::from_ptr(unsafe { rt_make_str_interned(data, len) })
 }
 
-
 /// Prune dead strings from the pool during GC sweep
 ///
 /// Called BEFORE clearing mark bits in sweep phase.

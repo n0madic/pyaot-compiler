@@ -925,24 +925,15 @@ impl<'a> Lowering<'a> {
                             value: mir::Constant::Int(offset as i64),
                         });
 
-                        // §F.7c: fields are uniform tagged Values.
-                        // Float → unbox via rt_unbox_float; Int/Bool → UnwrapValue*;
+                        // Float → raw f64 slot (no boxing); Int/Bool → UnwrapValue*;
                         // heap/dynamic → label the read with attr_type directly.
                         if matches!(attr_type, Type::Float) {
-                            let boxed_local = self.alloc_gc_local(Type::HeapAny, mir_func);
-                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                                dest: boxed_local,
-                                func: mir::RuntimeFunc::Call(
-                                    &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
-                                ),
-                                args: vec![ctx.subject.clone(), mir::Operand::Local(offset_local)],
-                            });
                             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                                 dest: attr_local,
                                 func: mir::RuntimeFunc::Call(
-                                    &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
+                                    &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD_F64,
                                 ),
-                                args: vec![mir::Operand::Local(boxed_local)],
+                                args: vec![ctx.subject.clone(), mir::Operand::Local(offset_local)],
                             });
                         } else if matches!(attr_type, Type::Int | Type::Bool) {
                             let boxed_local = self.alloc_gc_local(Type::HeapAny, mir_func);

@@ -150,7 +150,6 @@ pub extern "C" fn rt_sys_get_argv_abi() -> Value {
     Value::from_ptr(rt_sys_get_argv())
 }
 
-
 /// Get sys.path list — module search paths.
 ///
 /// On first call, builds the list from:
@@ -203,7 +202,6 @@ pub fn rt_sys_get_path() -> *mut Obj {
 pub extern "C" fn rt_sys_get_path_abi() -> Value {
     Value::from_ptr(rt_sys_get_path())
 }
-
 
 /// Build a `ListObj` of `StrObj` from a slice of Rust strings.
 ///
@@ -306,4 +304,3 @@ pub unsafe fn rt_sys_intern(str_obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_sys_intern_abi(str_obj: Value) -> Value {
     Value::from_ptr(unsafe { rt_sys_intern(str_obj.unwrap_ptr()) })
 }
-

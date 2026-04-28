@@ -72,7 +72,6 @@ pub extern "C" fn rt_str_strip_abi(str_obj: Value) -> Value {
     Value::from_ptr(rt_str_strip(str_obj.unwrap_ptr()))
 }
 
-
 /// Strip whitespace from left side
 /// Returns: new string
 pub fn rt_str_lstrip(str_obj: *mut Obj, chars: *mut Obj) -> *mut Obj {
@@ -148,7 +147,6 @@ pub extern "C" fn rt_str_lstrip_abi(str_obj: Value, chars: Value) -> Value {
     Value::from_ptr(rt_str_lstrip(str_obj.unwrap_ptr(), chars.unwrap_ptr()))
 }
 
-
 /// Strip whitespace from right side
 /// Returns: new string
 pub fn rt_str_rstrip(str_obj: *mut Obj, chars: *mut Obj) -> *mut Obj {
@@ -219,4 +217,3 @@ pub fn rt_str_rstrip(str_obj: *mut Obj, chars: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_str_rstrip_abi(str_obj: Value, chars: Value) -> Value {
     Value::from_ptr(rt_str_rstrip(str_obj.unwrap_ptr(), chars.unwrap_ptr()))
 }
-

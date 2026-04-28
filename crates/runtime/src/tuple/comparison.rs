@@ -55,7 +55,6 @@ pub extern "C" fn rt_tuple_eq_abi(a: Value, b: Value) -> i8 {
     rt_tuple_eq(a.unwrap_ptr(), b.unwrap_ptr())
 }
 
-
 /// Lexicographic ordering comparison for two tuples.
 /// After F.7c all slots are uniform tagged Values.
 unsafe fn tuple_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ordering {
@@ -110,4 +109,3 @@ pub fn rt_tuple_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
 pub extern "C" fn rt_tuple_cmp_abi(a: Value, b: Value, op_tag: u8) -> i8 {
     rt_tuple_cmp(a.unwrap_ptr(), b.unwrap_ptr(), op_tag)
 }
-

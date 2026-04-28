@@ -66,7 +66,6 @@ pub extern "C" fn rt_make_defaultdict_abi(capacity: i64, factory_tag: i64) -> Va
     Value::from_ptr(rt_make_defaultdict(capacity, factory_tag))
 }
 
-
 /// Get a value from defaultdict. If key is missing, creates a default value
 /// using the factory, inserts it, and returns it.
 pub fn rt_defaultdict_get(dd: *mut Obj, key: *mut Obj) -> *mut Obj {
@@ -102,7 +101,6 @@ pub fn rt_defaultdict_get(dd: *mut Obj, key: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_defaultdict_get_abi(dd: Value, key: Value) -> Value {
     Value::from_ptr(rt_defaultdict_get(dd.unwrap_ptr(), key.unwrap_ptr()))
 }
-
 
 /// Try to get a value from dict, returning null if not found (no KeyError).
 unsafe fn rt_dict_get_or_null(dict: *mut DictObj, key: *mut Obj) -> *mut Obj {

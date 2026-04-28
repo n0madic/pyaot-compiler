@@ -41,7 +41,6 @@ pub extern "C" fn rt_str_upper_abi(str_obj: Value) -> Value {
     Value::from_ptr(rt_str_upper(str_obj.unwrap_ptr()))
 }
 
-
 /// Convert string to lowercase
 /// Returns: pointer to new allocated StrObj
 pub fn rt_str_lower(str_obj: *mut Obj) -> *mut Obj {
@@ -76,7 +75,6 @@ pub fn rt_str_lower(str_obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_str_lower_abi(str_obj: Value) -> Value {
     Value::from_ptr(rt_str_lower(str_obj.unwrap_ptr()))
 }
-
 
 /// Title case: first letter of each word capitalized
 /// Returns: new string
@@ -121,7 +119,6 @@ pub extern "C" fn rt_str_title_abi(str_obj: Value) -> Value {
     Value::from_ptr(rt_str_title(str_obj.unwrap_ptr()))
 }
 
-
 /// Capitalize: first character uppercase, rest lowercase
 /// Returns: new string
 pub fn rt_str_capitalize(str_obj: *mut Obj) -> *mut Obj {
@@ -159,7 +156,6 @@ pub fn rt_str_capitalize(str_obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_str_capitalize_abi(str_obj: Value) -> Value {
     Value::from_ptr(rt_str_capitalize(str_obj.unwrap_ptr()))
 }
-
 
 /// Swapcase: swap upper and lower case
 /// Returns: new string
@@ -200,4 +196,3 @@ pub fn rt_str_swapcase(str_obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_str_swapcase_abi(str_obj: Value) -> Value {
     Value::from_ptr(rt_str_swapcase(str_obj.unwrap_ptr()))
 }
-

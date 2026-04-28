@@ -1113,6 +1113,23 @@ pub static RT_INSTANCE_GET_FIELD: RuntimeFuncDef =
 /// rt_instance_set_field(inst: *mut Obj, offset: i64, value: i64) -> void
 pub static RT_INSTANCE_SET_FIELD: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_instance_set_field", &[PI64, PI64, PI64]);
+/// rt_instance_get_field_f64(inst: *mut Obj, offset: i64) -> f64
+/// Reads a raw f64 from a float instance field (no FloatObj heap-boxing).
+pub static RT_INSTANCE_GET_FIELD_F64: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_instance_get_field_f64",
+    &[PI64, PI64],
+    Some(RF64),
+    false,
+);
+/// rt_instance_set_field_f64(inst: *mut Obj, offset: i64, value: f64) -> void
+/// Writes a raw f64 to a float instance field (no FloatObj heap-boxing).
+pub static RT_INSTANCE_SET_FIELD_F64: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_instance_set_field_f64", &[PI64, PI64, PF64]);
+/// rt_register_class_raw_field_mask(class_id: u8, mask: i64) -> void
+/// Registers a per-class bitmask of raw (non-heap) fields so the GC can skip them.
+/// Bit k = 1 → field k stores raw f64 bits; the GC must not dereference it.
+pub static RT_REGISTER_CLASS_RAW_FIELD_MASK: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_register_class_raw_field_mask", &[PI8, PI64]);
 /// rt_get_type_tag(obj: *mut Obj) -> i64
 pub static RT_GET_TYPE_TAG: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_get_type_tag");
 /// rt_isinstance_class(obj: *mut Obj, class_id: i64) -> i8

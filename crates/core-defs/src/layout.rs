@@ -24,11 +24,36 @@ pub const PTR_SIZE: usize = 8;
 pub const OBJ_HEADER_SIZE: usize = 16;
 
 // =============================================================================
+// FloatObj layout
+// =============================================================================
+
+/// Byte offset of the `value: f64` field inside `FloatObj`.
+///
+/// ```text
+/// FloatObj { header: ObjHeader(16 bytes), value: f64(8 bytes at offset 16) }
+/// ```
+pub const FLOAT_OBJ_VALUE_OFFSET: i32 = OBJ_HEADER_SIZE as i32;
+
+// =============================================================================
 // InstanceObj layout (vtable-based dispatch)
 // =============================================================================
 
 /// Offset of the vtable pointer inside `InstanceObj` (right after `ObjHeader`).
 pub const INSTANCE_VTABLE_OFFSET: i32 = OBJ_HEADER_SIZE as i32;
+
+/// Byte offset of the flexible `fields: [Value; 0]` array inside `InstanceObj`.
+///
+/// ```text
+/// InstanceObj {
+///     header:      ObjHeader   (16 bytes, offset 0)
+///     vtable:      *const u8   ( 8 bytes, offset 16)
+///     class_id:    u8          ( 1 byte,  offset 24)
+///     /* padding               ( 7 bytes, offset 25) */
+///     field_count: usize       ( 8 bytes, offset 32)
+///     fields:      [Value; 0]  ( 0 bytes, offset 40)  ← this constant
+/// }
+/// ```
+pub const INSTANCE_FIELDS_OFFSET: i32 = OBJ_HEADER_SIZE as i32 + 3 * PTR_SIZE as i32; // 16 + 24 = 40
 
 /// Offset of the first method pointer inside a vtable data section.
 ///

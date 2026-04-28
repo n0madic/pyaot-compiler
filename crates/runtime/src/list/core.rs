@@ -46,7 +46,6 @@ pub extern "C" fn rt_make_list_abi(capacity: i64) -> Value {
     Value::from_ptr(rt_make_list(capacity))
 }
 
-
 /// Set element in list at given index
 /// Supports negative indexing
 pub fn rt_list_set(list: *mut Obj, index: i64, value: *mut Obj) {
@@ -78,7 +77,6 @@ pub fn rt_list_set(list: *mut Obj, index: i64, value: *mut Obj) {
 pub extern "C" fn rt_list_set_abi(list: Value, index: i64, value: Value) {
     rt_list_set(list.unwrap_ptr(), index, value.unwrap_ptr())
 }
-
 
 /// Get element from list at given index
 /// Supports negative indexing
@@ -116,7 +114,6 @@ pub extern "C" fn rt_list_get_abi(list: Value, index: i64) -> Value {
     Value::from_ptr(rt_list_get(list.unwrap_ptr(), index))
 }
 
-
 /// Get length of list
 pub fn rt_list_len(list: *mut Obj) -> i64 {
     if list.is_null() {
@@ -134,7 +131,6 @@ pub fn rt_list_len(list: *mut Obj) -> i64 {
 pub extern "C" fn rt_list_len_abi(list: Value) -> i64 {
     rt_list_len(list.unwrap_ptr())
 }
-
 
 /// Bounds-check helper returning the raw `Value` stored at `index`, or `None`.
 unsafe fn list_get_value(list: *mut Obj, index: i64) -> Option<Value> {
@@ -182,7 +178,6 @@ pub fn rt_list_get_typed(list: *mut Obj, index: i64, elem_kind: u8) -> i64 {
 pub extern "C" fn rt_list_get_typed_abi(list: Value, index: i64, elem_kind: u8) -> i64 {
     rt_list_get_typed(list.unwrap_ptr(), index, elem_kind)
 }
-
 
 /// Push element to end of list (used during list construction)
 pub fn rt_list_push(list: *mut Obj, value: *mut Obj) {
@@ -242,7 +237,6 @@ pub fn rt_list_push(list: *mut Obj, value: *mut Obj) {
 pub extern "C" fn rt_list_push_abi(list: Value, value: Value) {
     rt_list_push(list.unwrap_ptr(), value.unwrap_ptr())
 }
-
 
 /// Finalize a list by freeing its data array
 /// Called by GC during sweep phase before freeing the ListObj itself

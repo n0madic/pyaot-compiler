@@ -185,7 +185,6 @@ pub extern "C" fn rt_str_startswith_abi(str_obj: Value, prefix: Value) -> i8 {
     rt_str_startswith(str_obj.unwrap_ptr(), prefix.unwrap_ptr())
 }
 
-
 /// Check if string ends with suffix
 /// Returns: 1 (true) or 0 (false)
 pub fn rt_str_endswith(str_obj: *mut Obj, suffix: *mut Obj) -> i8 {
@@ -222,7 +221,6 @@ pub fn rt_str_endswith(str_obj: *mut Obj, suffix: *mut Obj) -> i8 {
 pub extern "C" fn rt_str_endswith_abi(str_obj: Value, suffix: Value) -> i8 {
     rt_str_endswith(str_obj.unwrap_ptr(), suffix.unwrap_ptr())
 }
-
 
 /// Find substring in string using Boyer-Moore-Horspool algorithm
 /// Returns: index of first occurrence or -1 if not found
@@ -263,7 +261,6 @@ pub fn rt_str_find(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
 pub extern "C" fn rt_str_find_abi(str_obj: Value, sub: Value) -> i64 {
     rt_str_find(str_obj.unwrap_ptr(), sub.unwrap_ptr())
 }
-
 
 /// Compare two strings for equality
 /// Returns: 1 if equal, 0 if not equal
@@ -308,7 +305,6 @@ pub extern "C" fn rt_str_eq_abi(a: Value, b: Value) -> i8 {
     rt_str_eq(a.unwrap_ptr(), b.unwrap_ptr())
 }
 
-
 /// Check if needle is a substring of haystack using Boyer-Moore-Horspool
 /// Returns 1 if needle is found in haystack, 0 otherwise
 pub fn rt_str_contains(needle: *mut Obj, haystack: *mut Obj) -> i8 {
@@ -348,7 +344,6 @@ pub fn rt_str_contains(needle: *mut Obj, haystack: *mut Obj) -> i8 {
 pub extern "C" fn rt_str_contains_abi(needle: Value, haystack: Value) -> i8 {
     rt_str_contains(needle.unwrap_ptr(), haystack.unwrap_ptr())
 }
-
 
 /// Count occurrences of substring using Boyer-Moore-Horspool
 /// Returns: count of non-overlapping occurrences
@@ -422,7 +417,6 @@ pub extern "C" fn rt_str_count_abi(str_obj: Value, sub: Value) -> i64 {
     rt_str_count(str_obj.unwrap_ptr(), sub.unwrap_ptr())
 }
 
-
 /// Find substring in string searching from the right using Boyer-Moore-Horspool algorithm
 /// Returns: index of last occurrence or -1 if not found
 pub fn rt_str_rfind(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
@@ -483,7 +477,6 @@ pub extern "C" fn rt_str_rfind_abi(str_obj: Value, sub: Value) -> i64 {
     rt_str_rfind(str_obj.unwrap_ptr(), sub.unwrap_ptr())
 }
 
-
 /// Generic string search with operation tag.
 /// op_tag: 0=find, 1=rfind, 2=index, 3=rindex
 pub fn rt_str_search(str_obj: *mut Obj, sub: *mut Obj, op_tag: u8) -> i64 {
@@ -515,4 +508,3 @@ pub fn rt_str_search(str_obj: *mut Obj, sub: *mut Obj, op_tag: u8) -> i64 {
 pub extern "C" fn rt_str_search_abi(str_obj: Value, sub: Value, op_tag: u8) -> i64 {
     rt_str_search(str_obj.unwrap_ptr(), sub.unwrap_ptr(), op_tag)
 }
-

@@ -104,9 +104,12 @@ pub fn rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut O
 #[export_name = "rt_bytes_replace"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_bytes_replace_abi(bytes: Value, old: Value, new: Value) -> Value {
-    Value::from_ptr(rt_bytes_replace(bytes.unwrap_ptr(), old.unwrap_ptr(), new.unwrap_ptr()))
+    Value::from_ptr(rt_bytes_replace(
+        bytes.unwrap_ptr(),
+        old.unwrap_ptr(),
+        new.unwrap_ptr(),
+    ))
 }
-
 
 /// Strip whitespace from both ends of bytes
 /// Returns: pointer to new BytesObj
@@ -149,7 +152,6 @@ pub extern "C" fn rt_bytes_strip_abi(bytes: Value) -> Value {
     Value::from_ptr(rt_bytes_strip(bytes.unwrap_ptr()))
 }
 
-
 /// Strip whitespace from left end of bytes
 /// Returns: pointer to new BytesObj
 pub fn rt_bytes_lstrip(bytes: *mut Obj) -> *mut Obj {
@@ -182,7 +184,6 @@ pub extern "C" fn rt_bytes_lstrip_abi(bytes: Value) -> Value {
     Value::from_ptr(rt_bytes_lstrip(bytes.unwrap_ptr()))
 }
 
-
 /// Strip whitespace from right end of bytes
 /// Returns: pointer to new BytesObj
 pub fn rt_bytes_rstrip(bytes: *mut Obj) -> *mut Obj {
@@ -214,7 +215,6 @@ pub fn rt_bytes_rstrip(bytes: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_bytes_rstrip_abi(bytes: Value) -> Value {
     Value::from_ptr(rt_bytes_rstrip(bytes.unwrap_ptr()))
 }
-
 
 /// Convert bytes to uppercase
 /// Returns: pointer to new BytesObj
@@ -250,7 +250,6 @@ pub extern "C" fn rt_bytes_upper_abi(bytes: Value) -> Value {
     Value::from_ptr(rt_bytes_upper(bytes.unwrap_ptr()))
 }
 
-
 /// Convert bytes to lowercase
 /// Returns: pointer to new BytesObj
 pub fn rt_bytes_lower(bytes: *mut Obj) -> *mut Obj {
@@ -284,4 +283,3 @@ pub fn rt_bytes_lower(bytes: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_bytes_lower_abi(bytes: Value) -> Value {
     Value::from_ptr(rt_bytes_lower(bytes.unwrap_ptr()))
 }
-

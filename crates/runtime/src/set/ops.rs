@@ -65,7 +65,6 @@ pub extern "C" fn rt_set_add_abi(set: Value, elem: Value) {
     rt_set_add(set.unwrap_ptr(), elem.unwrap_ptr())
 }
 
-
 /// Check if element exists in set
 /// Returns: 1 (true) or 0 (false)
 pub fn rt_set_contains(set: *mut Obj, elem: *mut Obj) -> i8 {
@@ -90,7 +89,6 @@ pub fn rt_set_contains(set: *mut Obj, elem: *mut Obj) -> i8 {
 pub extern "C" fn rt_set_contains_abi(set: Value, elem: Value) -> i8 {
     rt_set_contains(set.unwrap_ptr(), elem.unwrap_ptr())
 }
-
 
 /// Remove element from set (raises KeyError if missing)
 pub fn rt_set_remove(set: *mut Obj, elem: *mut Obj) {
@@ -128,7 +126,6 @@ pub extern "C" fn rt_set_remove_abi(set: Value, elem: Value) {
     rt_set_remove(set.unwrap_ptr(), elem.unwrap_ptr())
 }
 
-
 /// Remove element from set if present (no error if missing)
 pub fn rt_set_discard(set: *mut Obj, elem: *mut Obj) {
     if set.is_null() || elem.is_null() {
@@ -156,7 +153,6 @@ pub extern "C" fn rt_set_discard_abi(set: Value, elem: Value) {
     rt_set_discard(set.unwrap_ptr(), elem.unwrap_ptr())
 }
 
-
 /// Clear all elements from set
 pub fn rt_set_clear(set: *mut Obj) {
     if set.is_null() {
@@ -182,7 +178,6 @@ pub fn rt_set_clear(set: *mut Obj) {
 pub extern "C" fn rt_set_clear_abi(set: Value) {
     rt_set_clear(set.unwrap_ptr())
 }
-
 
 /// Create a shallow copy of set
 /// Returns: pointer to new SetObj
@@ -232,7 +227,6 @@ pub extern "C" fn rt_set_copy_abi(set: Value) -> Value {
     Value::from_ptr(rt_set_copy(set.unwrap_ptr()))
 }
 
-
 /// Remove and return an arbitrary element from the set
 /// Raises KeyError if the set is empty
 /// Returns: removed element
@@ -276,7 +270,6 @@ pub extern "C" fn rt_set_pop_abi(set: Value) -> Value {
     Value::from_ptr(rt_set_pop(set.unwrap_ptr()))
 }
 
-
 /// Add all elements from another set
 pub fn rt_set_update(set: *mut Obj, other: *mut Obj) {
     if set.is_null() || other.is_null() {
@@ -305,7 +298,6 @@ pub fn rt_set_update(set: *mut Obj, other: *mut Obj) {
 pub extern "C" fn rt_set_update_abi(set: Value, other: Value) {
     rt_set_update(set.unwrap_ptr(), other.unwrap_ptr())
 }
-
 
 /// Update set to intersection with another set
 pub fn rt_set_intersection_update(set: *mut Obj, other: *mut Obj) {
@@ -338,7 +330,6 @@ pub extern "C" fn rt_set_intersection_update_abi(set: Value, other: Value) {
     rt_set_intersection_update(set.unwrap_ptr(), other.unwrap_ptr())
 }
 
-
 /// Update set to difference (remove elements in another set)
 pub fn rt_set_difference_update(set: *mut Obj, other: *mut Obj) {
     if set.is_null() || other.is_null() {
@@ -369,7 +360,6 @@ pub fn rt_set_difference_update(set: *mut Obj, other: *mut Obj) {
 pub extern "C" fn rt_set_difference_update_abi(set: Value, other: Value) {
     rt_set_difference_update(set.unwrap_ptr(), other.unwrap_ptr())
 }
-
 
 /// Update set to symmetric difference
 pub fn rt_set_symmetric_difference_update(set: *mut Obj, other: *mut Obj) {
@@ -421,4 +411,3 @@ pub fn rt_set_symmetric_difference_update(set: *mut Obj, other: *mut Obj) {
 pub extern "C" fn rt_set_symmetric_difference_update_abi(set: Value, other: Value) {
     rt_set_symmetric_difference_update(set.unwrap_ptr(), other.unwrap_ptr())
 }
-

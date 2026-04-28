@@ -305,7 +305,6 @@ pub extern "C" fn rt_zip_new_abi(iter1: Value, iter2: Value) -> Value {
     Value::from_ptr(rt_zip_new(iter1.unwrap_ptr(), iter2.unwrap_ptr()))
 }
 
-
 /// Get next tuple from zip iterator
 /// Returns: tuple or null (StopIteration) if either iterator is exhausted
 pub fn rt_zip_next(zip_obj: *mut Obj) -> *mut Obj {
@@ -351,7 +350,6 @@ pub extern "C" fn rt_zip_next_abi(zip_obj: Value) -> Value {
     Value::from_ptr(rt_zip_next(zip_obj.unwrap_ptr()))
 }
 
-
 // ==================== Zip3 Iterator ====================
 
 /// Create a zip iterator from three iterators
@@ -377,9 +375,12 @@ pub fn rt_zip3_new(iter1: *mut Obj, iter2: *mut Obj, iter3: *mut Obj) -> *mut Ob
 #[export_name = "rt_zip3_new"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_zip3_new_abi(iter1: Value, iter2: Value, iter3: Value) -> Value {
-    Value::from_ptr(rt_zip3_new(iter1.unwrap_ptr(), iter2.unwrap_ptr(), iter3.unwrap_ptr()))
+    Value::from_ptr(rt_zip3_new(
+        iter1.unwrap_ptr(),
+        iter2.unwrap_ptr(),
+        iter3.unwrap_ptr(),
+    ))
 }
-
 
 // ==================== ZipN Iterator ====================
 
@@ -409,7 +410,6 @@ pub fn rt_zipn_new(iters: *mut Obj, count: i64) -> *mut Obj {
 pub extern "C" fn rt_zipn_new_abi(iters: Value, count: i64) -> Value {
     Value::from_ptr(rt_zipn_new(iters.unwrap_ptr(), count))
 }
-
 
 // ==================== Map Iterator ====================
 
@@ -455,9 +455,13 @@ pub extern "C" fn rt_map_new_abi(
     captures: Value,
     capture_count: i64,
 ) -> Value {
-    Value::from_ptr(rt_map_new(func_ptr, iter.unwrap_ptr(), captures.unwrap_ptr(), capture_count))
+    Value::from_ptr(rt_map_new(
+        func_ptr,
+        iter.unwrap_ptr(),
+        captures.unwrap_ptr(),
+        capture_count,
+    ))
 }
-
 
 // ==================== Filter Iterator ====================
 
@@ -499,9 +503,13 @@ pub extern "C" fn rt_filter_new_abi(
     captures: Value,
     capture_count: i64,
 ) -> Value {
-    Value::from_ptr(rt_filter_new(func_ptr, iter.unwrap_ptr(), captures.unwrap_ptr(), capture_count))
+    Value::from_ptr(rt_filter_new(
+        func_ptr,
+        iter.unwrap_ptr(),
+        captures.unwrap_ptr(),
+        capture_count,
+    ))
 }
-
 
 // ==================== Chain Iterator ====================
 
@@ -532,7 +540,6 @@ pub fn rt_chain_new(iters: *mut Obj, num_iters: i64) -> *mut Obj {
 pub extern "C" fn rt_chain_new_abi(iters: Value, num_iters: i64) -> Value {
     Value::from_ptr(rt_chain_new(iters.unwrap_ptr(), num_iters))
 }
-
 
 // ==================== ISlice Iterator ====================
 
@@ -567,4 +574,3 @@ pub fn rt_islice_new(iter: *mut Obj, start: i64, stop: i64, step: i64) -> *mut O
 pub extern "C" fn rt_islice_new_abi(iter: Value, start: i64, stop: i64, step: i64) -> Value {
     Value::from_ptr(rt_islice_new(iter.unwrap_ptr(), start, stop, step))
 }
-

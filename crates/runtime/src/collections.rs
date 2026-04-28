@@ -66,7 +66,6 @@ pub extern "C" fn rt_dict_move_to_end_abi(dict: Value, key: Value, last: i64) {
     rt_dict_move_to_end(dict.unwrap_ptr(), key.unwrap_ptr(), last)
 }
 
-
 /// OrderedDict.popitem(last=True)
 /// Remove and return (key, value) pair.
 /// last=1 (default): LIFO (from end); last=0: FIFO (from beginning).
@@ -97,7 +96,6 @@ pub fn rt_dict_popitem_ordered(dict: *mut Obj, last: i64) -> *mut Obj {
 pub extern "C" fn rt_dict_popitem_ordered_abi(dict: Value, last: i64) -> Value {
     Value::from_ptr(rt_dict_popitem_ordered(dict.unwrap_ptr(), last))
 }
-
 
 // =============================================================================
 // Internal helpers

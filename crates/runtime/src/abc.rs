@@ -17,4 +17,3 @@ pub fn rt_abc_abstractmethod(funcobj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_abc_abstractmethod_abi(funcobj: Value) -> Value {
     Value::from_ptr(rt_abc_abstractmethod(funcobj.unwrap_ptr()))
 }
-

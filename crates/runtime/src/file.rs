@@ -112,11 +112,7 @@ fn encode_str(s: &str, encoding: FileEncoding) -> std::result::Result<Vec<u8>, S
 /// `filename` must be a valid pointer to a StrObj.
 /// `mode` must be a valid pointer to a StrObj containing a supported mode string.
 /// `encoding` must be a valid pointer to a StrObj or null (defaults to utf-8).
-pub unsafe fn rt_file_open(
-    filename: *mut Obj,
-    mode: *mut Obj,
-    encoding: *mut Obj,
-) -> *mut Obj {
+pub unsafe fn rt_file_open(filename: *mut Obj, mode: *mut Obj, encoding: *mut Obj) -> *mut Obj {
     if filename.is_null() {
         crate::utils::raise_io_error("filename cannot be None");
     }
@@ -227,14 +223,15 @@ pub unsafe fn rt_file_open(
 }
 #[export_name = "rt_file_open"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_file_open_abi(
-    filename: Value,
-    mode: Value,
-    encoding: Value,
-) -> Value {
-    Value::from_ptr(unsafe { rt_file_open(filename.unwrap_ptr(), mode.unwrap_ptr(), encoding.unwrap_ptr()) })
+pub extern "C" fn rt_file_open_abi(filename: Value, mode: Value, encoding: Value) -> Value {
+    Value::from_ptr(unsafe {
+        rt_file_open(
+            filename.unwrap_ptr(),
+            mode.unwrap_ptr(),
+            encoding.unwrap_ptr(),
+        )
+    })
 }
-
 
 /// Read the entire file contents as a string (text mode) or bytes (binary mode)
 ///
@@ -299,7 +296,6 @@ pub extern "C" fn rt_file_read_abi(file: Value) -> Value {
     Value::from_ptr(unsafe { rt_file_read(file.unwrap_ptr()) })
 }
 
-
 /// Read up to n bytes/characters from the file
 ///
 /// # Safety
@@ -363,7 +359,6 @@ pub unsafe fn rt_file_read_n(file: *mut Obj, n: i64) -> *mut Obj {
 pub extern "C" fn rt_file_read_n_abi(file: Value, n: i64) -> Value {
     Value::from_ptr(unsafe { rt_file_read_n(file.unwrap_ptr(), n) })
 }
-
 
 /// Read a single line from the file (including the newline character if present)
 ///
@@ -440,7 +435,6 @@ pub unsafe fn rt_file_readline(file: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_file_readline_abi(file: Value) -> Value {
     Value::from_ptr(unsafe { rt_file_readline(file.unwrap_ptr()) })
 }
-
 
 /// Read all lines from the file as a list of strings (text mode) or list of bytes (binary mode)
 ///
@@ -556,7 +550,6 @@ pub extern "C" fn rt_file_readlines_abi(file: Value) -> Value {
     Value::from_ptr(unsafe { rt_file_readlines(file.unwrap_ptr()) })
 }
 
-
 /// Write data to the file
 /// Returns the number of bytes/characters written
 ///
@@ -633,7 +626,6 @@ pub extern "C" fn rt_file_write_abi(file: Value, data: Value) -> i64 {
     unsafe { rt_file_write(file.unwrap_ptr(), data.unwrap_ptr()) }
 }
 
-
 /// Close the file
 ///
 /// # Safety
@@ -663,7 +655,6 @@ pub extern "C" fn rt_file_close_abi(file: Value) {
     unsafe { rt_file_close(file.unwrap_ptr()) }
 }
 
-
 /// Flush the file buffer
 ///
 /// # Safety
@@ -688,7 +679,6 @@ pub extern "C" fn rt_file_flush_abi(file: Value) {
     unsafe { rt_file_flush(file.unwrap_ptr()) }
 }
 
-
 /// Context manager __enter__ - returns self
 ///
 /// # Safety
@@ -703,7 +693,6 @@ pub extern "C" fn rt_file_enter_abi(file: Value) -> Value {
     Value::from_ptr(unsafe { rt_file_enter(file.unwrap_ptr()) })
 }
 
-
 /// Context manager __exit__ - closes the file and returns False
 ///
 /// # Safety
@@ -717,7 +706,6 @@ pub unsafe fn rt_file_exit(file: *mut Obj) -> i8 {
 pub extern "C" fn rt_file_exit_abi(file: Value) -> i8 {
     unsafe { rt_file_exit(file.unwrap_ptr()) }
 }
-
 
 /// Check if the file is closed
 ///
@@ -740,7 +728,6 @@ pub extern "C" fn rt_file_is_closed_abi(file: Value) -> i8 {
     unsafe { rt_file_is_closed(file.unwrap_ptr()) }
 }
 
-
 /// Get the filename of the file
 ///
 /// # Safety
@@ -757,7 +744,6 @@ pub unsafe fn rt_file_name(file: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_file_name_abi(file: Value) -> Value {
     Value::from_ptr(unsafe { rt_file_name(file.unwrap_ptr()) })
 }
-
 
 // ==================== Helper functions ====================
 

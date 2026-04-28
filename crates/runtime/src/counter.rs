@@ -27,7 +27,6 @@ pub extern "C" fn rt_make_counter_empty_abi() -> Value {
     Value::from_ptr(rt_make_counter_empty())
 }
 
-
 /// Create a Counter from an iterator — counts occurrences of each element.
 /// The iterator elements are used as dict keys.
 pub fn rt_make_counter_from_iter(iter: *mut Obj) -> *mut Obj {
@@ -83,7 +82,6 @@ pub fn rt_make_counter_from_iter(iter: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_make_counter_from_iter_abi(iter: Value) -> Value {
     Value::from_ptr(rt_make_counter_from_iter(iter.unwrap_ptr()))
 }
-
 
 /// Counter.most_common(n) — return list of (element, count) tuples, sorted by count descending.
 /// If n <= 0, return all elements sorted by count.
@@ -161,7 +159,6 @@ pub extern "C" fn rt_counter_most_common_abi(counter: Value, n: i64) -> Value {
     Value::from_ptr(rt_counter_most_common(counter.unwrap_ptr(), n))
 }
 
-
 /// Counter.total() — sum of all counts
 pub fn rt_counter_total(counter: *mut Obj) -> i64 {
     if counter.is_null() {
@@ -186,7 +183,6 @@ pub fn rt_counter_total(counter: *mut Obj) -> i64 {
 pub extern "C" fn rt_counter_total_abi(counter: Value) -> i64 {
     rt_counter_total(counter.unwrap_ptr())
 }
-
 
 /// Counter.update(iterable) — add counts from iterable
 pub fn rt_counter_update(counter: *mut Obj, other: *mut Obj) {
@@ -230,7 +226,6 @@ pub extern "C" fn rt_counter_update_abi(counter: Value, other: Value) {
     rt_counter_update(counter.unwrap_ptr(), other.unwrap_ptr())
 }
 
-
 /// Counter.subtract(iterable) — subtract counts from iterable
 pub fn rt_counter_subtract(counter: *mut Obj, other: *mut Obj) {
     if counter.is_null() || other.is_null() {
@@ -270,7 +265,6 @@ pub fn rt_counter_subtract(counter: *mut Obj, other: *mut Obj) {
 pub extern "C" fn rt_counter_subtract_abi(counter: Value, other: Value) {
     rt_counter_subtract(counter.unwrap_ptr(), other.unwrap_ptr())
 }
-
 
 // =============================================================================
 // Internal helpers

@@ -242,7 +242,6 @@ pub extern "C" fn rt_make_dict_abi(capacity: i64) -> Value {
     Value::from_ptr(rt_make_dict(capacity))
 }
 
-
 /// Finalize a dictionary by freeing its indices and entries arrays.
 /// Called by GC during sweep phase before freeing the DictObj itself.
 ///
@@ -295,4 +294,3 @@ pub fn rt_dict_len(dict: *mut Obj) -> i64 {
 pub extern "C" fn rt_dict_len_abi(dict: Value) -> i64 {
     rt_dict_len(dict.unwrap_ptr())
 }
-

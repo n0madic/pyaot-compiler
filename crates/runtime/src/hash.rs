@@ -53,7 +53,6 @@ pub extern "C" fn rt_hash_str_abi(str_obj: Value) -> i64 {
     rt_hash_str(str_obj.unwrap_ptr())
 }
 
-
 /// Hash a boolean value
 /// Returns the same value as hashing the equivalent integer (True == 1, False == 0),
 /// satisfying the CPython invariant hash(True) == hash(1) and hash(False) == hash(0).
@@ -72,7 +71,6 @@ pub fn rt_id_obj(obj: *mut Obj) -> i64 {
 pub extern "C" fn rt_id_obj_abi(obj: Value) -> i64 {
     rt_id_obj(obj.unwrap_ptr())
 }
-
 
 /// Hash a tuple object
 /// Combines hashes of all elements using Python's tuple hash algorithm
@@ -122,7 +120,6 @@ pub fn rt_hash_tuple(tuple_obj: *mut Obj) -> i64 {
 pub extern "C" fn rt_hash_tuple_abi(tuple_obj: Value) -> i64 {
     rt_hash_tuple(tuple_obj.unwrap_ptr())
 }
-
 
 /// Hash any object based on its type tag
 /// Internal helper for tuple hashing

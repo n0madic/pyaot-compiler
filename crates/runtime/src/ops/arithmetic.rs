@@ -206,7 +206,6 @@ pub extern "C" fn rt_obj_add_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_add(a.unwrap_ptr(), b.unwrap_ptr()))
 }
 
-
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
@@ -227,7 +226,6 @@ pub fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_obj_sub_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_sub(a.unwrap_ptr(), b.unwrap_ptr()))
 }
-
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
@@ -279,7 +277,6 @@ pub extern "C" fn rt_obj_mul_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_mul(a.unwrap_ptr(), b.unwrap_ptr()))
 }
 
-
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_div(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
@@ -294,7 +291,6 @@ pub fn rt_obj_div(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_obj_div_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_div(a.unwrap_ptr(), b.unwrap_ptr()))
 }
-
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_floordiv(a: *mut Obj, b: *mut Obj) -> *mut Obj {
@@ -330,7 +326,6 @@ pub extern "C" fn rt_obj_floordiv_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_floordiv(a.unwrap_ptr(), b.unwrap_ptr()))
 }
 
-
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
@@ -363,7 +358,6 @@ pub fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_obj_mod_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_mod(a.unwrap_ptr(), b.unwrap_ptr()))
 }
-
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
@@ -409,4 +403,3 @@ pub fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_obj_pow_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_pow(a.unwrap_ptr(), b.unwrap_ptr()))
 }
-

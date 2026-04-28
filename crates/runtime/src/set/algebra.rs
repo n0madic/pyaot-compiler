@@ -61,7 +61,6 @@ pub extern "C" fn rt_set_union_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_set_union(a.unwrap_ptr(), b.unwrap_ptr()))
 }
 
-
 /// Create a new set with elements in both sets (intersection)
 /// Returns: pointer to new SetObj containing elements in both a and b
 pub fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
@@ -120,7 +119,6 @@ pub extern "C" fn rt_set_intersection_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_set_intersection(a.unwrap_ptr(), b.unwrap_ptr()))
 }
 
-
 /// Create a new set with elements in a but not in b (difference)
 /// Returns: pointer to new SetObj containing elements in a but not in b
 pub fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
@@ -178,7 +176,6 @@ pub fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_set_difference_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_set_difference(a.unwrap_ptr(), b.unwrap_ptr()))
 }
-
 
 /// Create a new set with elements in exactly one of the sets (symmetric difference)
 /// Returns: pointer to new SetObj containing elements in a or b but not both
@@ -252,4 +249,3 @@ pub fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_set_symmetric_difference_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_set_symmetric_difference(a.unwrap_ptr(), b.unwrap_ptr()))
 }
-

@@ -86,7 +86,6 @@ pub extern "C" fn rt_time_ctime_abi(seconds: f64) -> Value {
     Value::from_ptr(rt_time_ctime(seconds))
 }
 
-
 /// Format timestamp as ctime string using libc
 fn format_ctime(timestamp: i64) -> String {
     unsafe {
@@ -178,7 +177,6 @@ pub extern "C" fn rt_time_localtime_abi(seconds: f64) -> Value {
     Value::from_ptr(rt_time_localtime(seconds))
 }
 
-
 /// time.gmtime([seconds]) - Convert seconds to UTC struct_time
 /// If seconds is negative, uses current time
 pub fn rt_time_gmtime(seconds: f64) -> *mut Obj {
@@ -212,7 +210,6 @@ pub fn rt_time_gmtime(seconds: f64) -> *mut Obj {
 pub extern "C" fn rt_time_gmtime_abi(seconds: f64) -> Value {
     Value::from_ptr(rt_time_gmtime(seconds))
 }
-
 
 /// time.mktime(t) - Convert struct_time to seconds since epoch
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -255,7 +252,6 @@ pub fn rt_time_mktime(t: *mut Obj) -> f64 {
 pub extern "C" fn rt_time_mktime_abi(t: Value) -> f64 {
     rt_time_mktime(t.unwrap_ptr())
 }
-
 
 /// time.strftime(format, t) - Format struct_time to string
 /// Common format codes: %Y (year), %m (month), %d (day), %H (hour), %M (minute), %S (second)
@@ -360,7 +356,6 @@ pub extern "C" fn rt_time_strftime_abi(format: Value, t: Value) -> Value {
     Value::from_ptr(rt_time_strftime(format.unwrap_ptr(), t.unwrap_ptr()))
 }
 
-
 /// time.strptime(string, format) - Parse string to struct_time
 /// Common format codes: %Y (year), %m (month), %d (day), %H (hour), %M (minute), %S (second)
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -408,7 +403,6 @@ pub extern "C" fn rt_time_strptime_abi(string: Value, format: Value) -> Value {
     Value::from_ptr(rt_time_strptime(string.unwrap_ptr(), format.unwrap_ptr()))
 }
 
-
 // ============= struct_time field getters =============
 
 /// Generic struct_time field accessor.
@@ -441,4 +435,3 @@ pub fn rt_struct_time_get_field(t: *mut Obj, field_index: u8) -> i64 {
 pub extern "C" fn rt_struct_time_get_field_abi(t: Value, field_index: u8) -> i64 {
     rt_struct_time_get_field(t.unwrap_ptr(), field_index)
 }
-

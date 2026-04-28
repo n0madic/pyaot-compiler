@@ -93,7 +93,6 @@ pub extern "C" fn rt_os_get_environ_abi() -> Value {
     Value::from_ptr(rt_os_get_environ())
 }
 
-
 /// Join path components: os.path.join(path1, path2, ...)
 /// Takes a list of string path components and joins them
 pub fn rt_os_path_join(parts: *mut Obj) -> *mut Obj {
@@ -130,7 +129,6 @@ pub fn rt_os_path_join(parts: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_os_path_join_abi(parts: Value) -> Value {
     Value::from_ptr(rt_os_path_join(parts.unwrap_ptr()))
 }
-
 
 /// Remove a file: os.remove(path)
 /// Raises FileNotFoundError, PermissionError, or IOError on failure
@@ -188,7 +186,6 @@ pub extern "C" fn rt_os_remove_abi(path: Value) {
     rt_os_remove(path.unwrap_ptr())
 }
 
-
 /// Check if a path exists: os.path.exists(path)
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_os_path_exists(path: *mut Obj) -> i8 {
@@ -211,7 +208,6 @@ pub fn rt_os_path_exists(path: *mut Obj) -> i8 {
 pub extern "C" fn rt_os_path_exists_abi(path: Value) -> i8 {
     rt_os_path_exists(path.unwrap_ptr())
 }
-
 
 // ============= Working with current directory =============
 
@@ -238,7 +234,6 @@ pub fn rt_os_getcwd() -> *mut Obj {
 pub extern "C" fn rt_os_getcwd_abi() -> Value {
     Value::from_ptr(rt_os_getcwd())
 }
-
 
 /// Change current working directory: os.chdir(path)
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -287,7 +282,6 @@ pub fn rt_os_chdir(path: *mut Obj) {
 pub extern "C" fn rt_os_chdir_abi(path: Value) {
     rt_os_chdir(path.unwrap_ptr())
 }
-
 
 // ============= Listing files =============
 
@@ -367,7 +361,6 @@ pub extern "C" fn rt_os_listdir_abi(path: Value) -> Value {
     Value::from_ptr(rt_os_listdir(path.unwrap_ptr()))
 }
 
-
 // ============= Path operations =============
 
 /// Get absolute path: os.path.abspath(path)
@@ -422,7 +415,6 @@ pub extern "C" fn rt_os_path_abspath_abi(path: Value) -> Value {
     Value::from_ptr(rt_os_path_abspath(path.unwrap_ptr()))
 }
 
-
 /// Check if path is a directory: os.path.isdir(path)
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_os_path_isdir(path: *mut Obj) -> i8 {
@@ -442,7 +434,6 @@ pub extern "C" fn rt_os_path_isdir_abi(path: Value) -> i8 {
     rt_os_path_isdir(path.unwrap_ptr())
 }
 
-
 /// Check if path is a file: os.path.isfile(path)
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_os_path_isfile(path: *mut Obj) -> i8 {
@@ -461,7 +452,6 @@ pub fn rt_os_path_isfile(path: *mut Obj) -> i8 {
 pub extern "C" fn rt_os_path_isfile_abi(path: Value) -> i8 {
     rt_os_path_isfile(path.unwrap_ptr())
 }
-
 
 /// Get basename of path: os.path.basename(path)
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -490,7 +480,6 @@ pub extern "C" fn rt_os_path_basename_abi(path: Value) -> Value {
     Value::from_ptr(rt_os_path_basename(path.unwrap_ptr()))
 }
 
-
 /// Get dirname of path: os.path.dirname(path)
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_os_path_dirname(path: *mut Obj) -> *mut Obj {
@@ -517,7 +506,6 @@ pub fn rt_os_path_dirname(path: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_os_path_dirname_abi(path: Value) -> Value {
     Value::from_ptr(rt_os_path_dirname(path.unwrap_ptr()))
 }
-
 
 /// Split path into (dirname, basename): os.path.split(path)
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -567,7 +555,6 @@ pub fn rt_os_path_split(path: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_os_path_split_abi(path: Value) -> Value {
     Value::from_ptr(rt_os_path_split(path.unwrap_ptr()))
 }
-
 
 // ============= Creating and deleting directories =============
 
@@ -626,7 +613,6 @@ pub extern "C" fn rt_os_mkdir_abi(path: Value) {
     rt_os_mkdir(path.unwrap_ptr())
 }
 
-
 /// Create directories recursively: os.makedirs(path, exist_ok=False)
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_os_makedirs(path: *mut Obj, exist_ok: i8) {
@@ -684,7 +670,6 @@ pub fn rt_os_makedirs(path: *mut Obj, exist_ok: i8) {
 pub extern "C" fn rt_os_makedirs_abi(path: Value, exist_ok: i8) {
     rt_os_makedirs(path.unwrap_ptr(), exist_ok)
 }
-
 
 /// Remove a directory: os.rmdir(path)
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -746,7 +731,6 @@ pub extern "C" fn rt_os_rmdir_abi(path: Value) {
     rt_os_rmdir(path.unwrap_ptr())
 }
 
-
 // ============= Renaming and moving =============
 
 /// Rename or move a file/directory: os.rename(src, dst)
@@ -803,7 +787,6 @@ pub extern "C" fn rt_os_rename_abi(src: Value, dst: Value) {
     rt_os_rename(src.unwrap_ptr(), dst.unwrap_ptr())
 }
 
-
 /// Replace file/directory: os.replace(src, dst) - same as rename but overwrites dst
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_os_replace(src: *mut Obj, dst: *mut Obj) {
@@ -815,7 +798,6 @@ pub fn rt_os_replace(src: *mut Obj, dst: *mut Obj) {
 pub extern "C" fn rt_os_replace_abi(src: Value, dst: Value) {
     rt_os_replace(src.unwrap_ptr(), dst.unwrap_ptr())
 }
-
 
 // ============= Environment variables =============
 
@@ -860,7 +842,6 @@ pub extern "C" fn rt_os_getenv_abi(key: Value, default: Value) -> Value {
     Value::from_ptr(rt_os_getenv(key.unwrap_ptr(), default.unwrap_ptr()))
 }
 
-
 // ============= OS information =============
 
 /// Get OS name: os.name
@@ -884,4 +865,3 @@ pub fn rt_os_get_name() -> *mut Obj {
 pub extern "C" fn rt_os_get_name_abi() -> Value {
     Value::from_ptr(rt_os_get_name())
 }
-

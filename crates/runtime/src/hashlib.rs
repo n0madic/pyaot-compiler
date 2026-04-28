@@ -80,7 +80,6 @@ pub extern "C" fn rt_hashlib_md5_abi(data: Value) -> Value {
     Value::from_ptr(unsafe { rt_hashlib_md5(data.unwrap_ptr()) })
 }
 
-
 /// hashlib.sha256(data) -> Hash object
 pub unsafe fn rt_hashlib_sha256(data: *mut Obj) -> *mut Obj {
     let data_slice = extract_data_slice(data);
@@ -95,7 +94,6 @@ pub extern "C" fn rt_hashlib_sha256_abi(data: Value) -> Value {
     Value::from_ptr(unsafe { rt_hashlib_sha256(data.unwrap_ptr()) })
 }
 
-
 /// hashlib.sha1(data) -> Hash object
 pub unsafe fn rt_hashlib_sha1(data: *mut Obj) -> *mut Obj {
     let data_slice = extract_data_slice(data);
@@ -109,7 +107,6 @@ pub unsafe fn rt_hashlib_sha1(data: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_hashlib_sha1_abi(data: Value) -> Value {
     Value::from_ptr(unsafe { rt_hashlib_sha1(data.unwrap_ptr()) })
 }
-
 
 /// Hash.hexdigest() -> str
 pub unsafe fn rt_hash_hexdigest(hash_obj: *mut Obj) -> *mut Obj {
@@ -127,7 +124,6 @@ pub extern "C" fn rt_hash_hexdigest_abi(hash_obj: Value) -> Value {
     Value::from_ptr(unsafe { rt_hash_hexdigest(hash_obj.unwrap_ptr()) })
 }
 
-
 /// Hash.digest() -> bytes
 pub unsafe fn rt_hash_digest(hash_obj: *mut Obj) -> *mut Obj {
     crate::debug_assert_type_tag!(hash_obj, TypeTagKind::Hash, "rt_hash_digest");
@@ -139,4 +135,3 @@ pub unsafe fn rt_hash_digest(hash_obj: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_hash_digest_abi(hash_obj: Value) -> Value {
     Value::from_ptr(unsafe { rt_hash_digest(hash_obj.unwrap_ptr()) })
 }
-

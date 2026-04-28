@@ -1339,6 +1339,42 @@ impl<'a> Lowering<'a> {
                 mir_func,
             );
 
+            // Register raw f64 field mask: bit k = 1 means field k holds a
+            // raw f64 bit pattern rather than a tagged Value pointer. The GC
+            // must skip those slots to avoid dereferencing float bits as ptrs.
+            let raw_field_mask: u64 = self
+                .get_class_info(class_id)
+                .map(|ci| {
+                    ci.field_offsets
+                        .iter()
+                        .filter(|(name, _)| {
+                            matches!(ci.field_types.get(*name), Some(pyaot_types::Type::Float))
+                        })
+                        .fold(
+                            0u64,
+                            |m, (_, &off)| {
+                                if off < 64 {
+                                    m | (1u64 << off)
+                                } else {
+                                    m
+                                }
+                            },
+                        )
+                })
+                .unwrap_or(0);
+            if raw_field_mask != 0 {
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_REGISTER_CLASS_RAW_FIELD_MASK,
+                    ),
+                    vec![
+                        mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                        mir::Operand::Constant(mir::Constant::Int(raw_field_mask as i64)),
+                    ],
+                    mir_func,
+                );
+            }
+
             // Register dunder function pointers (__del__, __copy__, __deepcopy__)
             // These are called from the runtime via function pointer registries.
             let dunder_registrations: Vec<(FuncId, mir::RuntimeFunc)> = self
