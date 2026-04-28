@@ -1,6 +1,7 @@
 //! Hash operations for Python runtime
 
 use crate::object::Obj;
+use pyaot_core_defs::Value;
 
 // FNV-1a hash constants
 const FNV_OFFSET_BASIS: u64 = 14695981039346656037;
@@ -22,8 +23,7 @@ pub extern "C" fn rt_hash_int(value: i64) -> i64 {
 /// Hash a string object
 /// Uses FNV-1a hash algorithm
 /// Returns: hash value as i64
-#[no_mangle]
-pub extern "C" fn rt_hash_str(str_obj: *mut Obj) -> i64 {
+pub fn rt_hash_str(str_obj: *mut Obj) -> i64 {
     if str_obj.is_null() {
         return 0;
     }
@@ -47,6 +47,12 @@ pub extern "C" fn rt_hash_str(str_obj: *mut Obj) -> i64 {
         result
     }
 }
+#[export_name = "rt_hash_str"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_hash_str_abi(str_obj: Value) -> i64 {
+    rt_hash_str(str_obj.unwrap_ptr())
+}
+
 
 /// Hash a boolean value
 /// Returns the same value as hashing the equivalent integer (True == 1, False == 0),
@@ -58,16 +64,20 @@ pub extern "C" fn rt_hash_bool(value: i8) -> i64 {
 
 /// Get the id (memory address) of a heap object
 /// Returns: pointer value as i64
-#[no_mangle]
-pub extern "C" fn rt_id_obj(obj: *mut Obj) -> i64 {
+pub fn rt_id_obj(obj: *mut Obj) -> i64 {
     obj as i64
 }
+#[export_name = "rt_id_obj"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_id_obj_abi(obj: Value) -> i64 {
+    rt_id_obj(obj.unwrap_ptr())
+}
+
 
 /// Hash a tuple object
 /// Combines hashes of all elements using Python's tuple hash algorithm
 /// Returns: hash value as i64
-#[no_mangle]
-pub extern "C" fn rt_hash_tuple(tuple_obj: *mut Obj) -> i64 {
+pub fn rt_hash_tuple(tuple_obj: *mut Obj) -> i64 {
     if tuple_obj.is_null() {
         return 0;
     }
@@ -107,6 +117,12 @@ pub extern "C" fn rt_hash_tuple(tuple_obj: *mut Obj) -> i64 {
         result
     }
 }
+#[export_name = "rt_hash_tuple"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_hash_tuple_abi(tuple_obj: Value) -> i64 {
+    rt_hash_tuple(tuple_obj.unwrap_ptr())
+}
+
 
 /// Hash any object based on its type tag
 /// Internal helper for tuple hashing

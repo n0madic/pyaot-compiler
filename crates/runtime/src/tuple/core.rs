@@ -5,11 +5,11 @@ use crate::debug_assert_type_tag;
 use crate::gc;
 use crate::object::{Obj, TypeTagKind};
 use crate::slice_utils::{collect_step_indices, normalize_slice_indices, slice_length};
+use pyaot_core_defs::Value;
 
 /// Create a new tuple with given size.
 /// Returns: pointer to allocated TupleObj
-#[no_mangle]
-pub extern "C" fn rt_make_tuple(size: i64) -> *mut Obj {
+pub fn rt_make_tuple(size: i64) -> *mut Obj {
     use crate::object::{TupleObj, TypeTagKind};
 
     let size = size.max(0) as usize;
@@ -49,10 +49,15 @@ pub extern "C" fn rt_make_tuple(size: i64) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_make_tuple"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_tuple_abi(size: i64) -> Value {
+    Value::from_ptr(rt_make_tuple(size))
+}
+
 
 /// Set element in tuple at given index (used during tuple construction)
-#[no_mangle]
-pub extern "C" fn rt_tuple_set(tuple: *mut Obj, index: i64, value: *mut Obj) {
+pub fn rt_tuple_set(tuple: *mut Obj, index: i64, value: *mut Obj) {
     if tuple.is_null() {
         return;
     }
@@ -72,6 +77,12 @@ pub extern "C" fn rt_tuple_set(tuple: *mut Obj, index: i64, value: *mut Obj) {
         *data_ptr.add(index as usize) = pyaot_core_defs::Value(value as u64);
     }
 }
+#[export_name = "rt_tuple_set"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_set_abi(tuple: Value, index: i64, value: Value) {
+    rt_tuple_set(tuple.unwrap_ptr(), index, value.unwrap_ptr())
+}
+
 
 /// Get element from tuple at given index.
 /// Supports negative indexing.
@@ -79,8 +90,7 @@ pub extern "C" fn rt_tuple_set(tuple: *mut Obj, index: i64, value: *mut Obj) {
 /// caller is responsible for unboxing (UnwrapValueInt / UnwrapValueBool /
 /// rt_unbox_float) based on the statically-known element type.
 /// Returns null if out of bounds.
-#[no_mangle]
-pub extern "C" fn rt_tuple_get(tuple: *mut Obj, index: i64) -> *mut Obj {
+pub fn rt_tuple_get(tuple: *mut Obj, index: i64) -> *mut Obj {
     if tuple.is_null() {
         return std::ptr::null_mut();
     }
@@ -104,10 +114,15 @@ pub extern "C" fn rt_tuple_get(tuple: *mut Obj, index: i64) -> *mut Obj {
         val.0 as *mut Obj
     }
 }
+#[export_name = "rt_tuple_get"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_get_abi(tuple: Value, index: i64) -> Value {
+    Value::from_ptr(rt_tuple_get(tuple.unwrap_ptr(), index))
+}
+
 
 /// Get length of tuple
-#[no_mangle]
-pub extern "C" fn rt_tuple_len(tuple: *mut Obj) -> i64 {
+pub fn rt_tuple_len(tuple: *mut Obj) -> i64 {
     if tuple.is_null() {
         return 0;
     }
@@ -118,13 +133,18 @@ pub extern "C" fn rt_tuple_len(tuple: *mut Obj) -> i64 {
         (*tuple_obj).len as i64
     }
 }
+#[export_name = "rt_tuple_len"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_len_abi(tuple: Value) -> i64 {
+    rt_tuple_len(tuple.unwrap_ptr())
+}
+
 
 /// Slice a tuple: tuple[start:end]
 /// Negative indices are supported (counted from end)
 /// Uses i64::MIN as sentinel for "default start" (0) and i64::MAX for "default end" (len)
 /// Returns: pointer to new allocated TupleObj (shallow copy)
-#[no_mangle]
-pub extern "C" fn rt_tuple_slice(tuple: *mut Obj, start: i64, end: i64) -> *mut Obj {
+pub fn rt_tuple_slice(tuple: *mut Obj, start: i64, end: i64) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if tuple.is_null() {
@@ -169,14 +189,19 @@ pub extern "C" fn rt_tuple_slice(tuple: *mut Obj, start: i64, end: i64) -> *mut 
         new_tuple
     }
 }
+#[export_name = "rt_tuple_slice"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_slice_abi(tuple: Value, start: i64, end: i64) -> Value {
+    Value::from_ptr(rt_tuple_slice(tuple.unwrap_ptr(), start, end))
+}
+
 
 /// Slice a tuple and return as a list: used for starred unpacking
 /// In Python, `a, *rest = (1, 2, 3)` makes rest a list, not a tuple
 /// Negative indices are supported
 /// Uses i64::MIN as sentinel for "default start" (0) and i64::MAX for "default end" (len)
 /// Returns: pointer to new allocated ListObj (shallow copy of elements)
-#[no_mangle]
-pub extern "C" fn rt_tuple_slice_to_list(tuple: *mut Obj, start: i64, end: i64) -> *mut Obj {
+pub fn rt_tuple_slice_to_list(tuple: *mut Obj, start: i64, end: i64) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::list::rt_make_list;
 
@@ -224,6 +249,12 @@ pub extern "C" fn rt_tuple_slice_to_list(tuple: *mut Obj, start: i64, end: i64) 
         new_list
     }
 }
+#[export_name = "rt_tuple_slice_to_list"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_slice_to_list_abi(tuple: Value, start: i64, end: i64) -> Value {
+    Value::from_ptr(rt_tuple_slice_to_list(tuple.unwrap_ptr(), start, end))
+}
+
 
 /// Slice a tuple with step: tuple[start:end:step]
 /// Uses i64::MIN as sentinel for "default start" and i64::MAX for "default end"
@@ -232,8 +263,7 @@ pub extern "C" fn rt_tuple_slice_to_list(tuple: *mut Obj, start: i64, end: i64) 
 ///   - Negative step: start=len-1, end=-1 (before index 0)
 ///
 /// Returns: pointer to new allocated TupleObj (shallow copy)
-#[no_mangle]
-pub extern "C" fn rt_tuple_slice_step(
+pub fn rt_tuple_slice_step(
     tuple: *mut Obj,
     start: i64,
     end: i64,
@@ -268,11 +298,21 @@ pub extern "C" fn rt_tuple_slice_step(
         new_tuple
     }
 }
+#[export_name = "rt_tuple_slice_step"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_slice_step_abi(
+    tuple: Value,
+    start: i64,
+    end: i64,
+    step: i64,
+) -> Value {
+    Value::from_ptr(rt_tuple_slice_step(tuple.unwrap_ptr(), start, end, step))
+}
+
 
 /// Create a tuple from a list
 /// Returns: pointer to new TupleObj
-#[no_mangle]
-pub extern "C" fn rt_tuple_from_list(list: *mut Obj) -> *mut Obj {
+pub fn rt_tuple_from_list(list: *mut Obj) -> *mut Obj {
     use crate::object::ListObj;
 
     if list.is_null() {
@@ -299,11 +339,16 @@ pub extern "C" fn rt_tuple_from_list(list: *mut Obj) -> *mut Obj {
         tuple
     }
 }
+#[export_name = "rt_tuple_from_list"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_from_list_abi(list: Value) -> Value {
+    Value::from_ptr(rt_tuple_from_list(list.unwrap_ptr()))
+}
+
 
 /// Create a tuple from a string (each character becomes an element)
 /// Returns: pointer to new TupleObj
-#[no_mangle]
-pub extern "C" fn rt_tuple_from_str(str_obj: *mut Obj) -> *mut Obj {
+pub fn rt_tuple_from_str(str_obj: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::StrObj;
     use crate::string::rt_make_str;
@@ -344,11 +389,16 @@ pub extern "C" fn rt_tuple_from_str(str_obj: *mut Obj) -> *mut Obj {
         roots[0]
     }
 }
+#[export_name = "rt_tuple_from_str"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_from_str_abi(str_obj: Value) -> Value {
+    Value::from_ptr(rt_tuple_from_str(str_obj.unwrap_ptr()))
+}
+
 
 /// Create a tuple from a range
 /// Returns: pointer to new TupleObj
-#[no_mangle]
-pub extern "C" fn rt_tuple_from_range(start: i64, stop: i64, step: i64) -> *mut Obj {
+pub fn rt_tuple_from_range(start: i64, stop: i64, step: i64) -> *mut Obj {
     if step == 0 {
         return rt_make_tuple(0);
     }
@@ -380,11 +430,16 @@ pub extern "C" fn rt_tuple_from_range(start: i64, stop: i64, step: i64) -> *mut 
 
     tuple
 }
+#[export_name = "rt_tuple_from_range"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_from_range_abi(start: i64, stop: i64, step: i64) -> Value {
+    Value::from_ptr(rt_tuple_from_range(start, stop, step))
+}
+
 
 /// Create a tuple by consuming an iterator
 /// Returns: pointer to new TupleObj
-#[no_mangle]
-pub extern "C" fn rt_tuple_from_iter(iter: *mut Obj) -> *mut Obj {
+pub fn rt_tuple_from_iter(iter: *mut Obj) -> *mut Obj {
     use crate::iterator::rt_iter_next_no_exc;
     use crate::list::{rt_list_push, rt_make_list};
 
@@ -406,34 +461,49 @@ pub extern "C" fn rt_tuple_from_iter(iter: *mut Obj) -> *mut Obj {
     // Convert list to tuple
     rt_tuple_from_list(list)
 }
+#[export_name = "rt_tuple_from_iter"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_from_iter_abi(iter: Value) -> Value {
+    Value::from_ptr(rt_tuple_from_iter(iter.unwrap_ptr()))
+}
+
 
 /// Create a tuple from a set
 /// Returns: pointer to new TupleObj
-#[no_mangle]
-pub extern "C" fn rt_tuple_from_set(set: *mut Obj) -> *mut Obj {
+pub fn rt_tuple_from_set(set: *mut Obj) -> *mut Obj {
     use crate::set::rt_set_to_list;
 
     // First convert set to list, then list to tuple
     let list = rt_set_to_list(set);
     rt_tuple_from_list(list)
 }
+#[export_name = "rt_tuple_from_set"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_from_set_abi(set: Value) -> Value {
+    Value::from_ptr(rt_tuple_from_set(set.unwrap_ptr()))
+}
+
 
 /// Create a tuple from a dict (keys only)
 /// Returns: pointer to new TupleObj
-#[no_mangle]
-pub extern "C" fn rt_tuple_from_dict(dict: *mut Obj) -> *mut Obj {
+pub fn rt_tuple_from_dict(dict: *mut Obj) -> *mut Obj {
     use crate::dict::rt_dict_keys;
 
     // First get keys as list, then convert to tuple
     let list = rt_dict_keys(dict);
     rt_tuple_from_list(list)
 }
+#[export_name = "rt_tuple_from_dict"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_from_dict_abi(dict: Value) -> Value {
+    Value::from_ptr(rt_tuple_from_dict(dict.unwrap_ptr()))
+}
+
 
 /// Concatenate two tuples into a new tuple
 /// Used for combining extra positional args with list-unpacked varargs
 /// Returns: pointer to new TupleObj containing elements from tuple1 followed by tuple2
-#[no_mangle]
-pub extern "C" fn rt_tuple_concat(tuple1: *mut Obj, tuple2: *mut Obj) -> *mut Obj {
+pub fn rt_tuple_concat(tuple1: *mut Obj, tuple2: *mut Obj) -> *mut Obj {
     use crate::object::TupleObj;
 
     // Handle null cases
@@ -479,6 +549,12 @@ pub extern "C" fn rt_tuple_concat(tuple1: *mut Obj, tuple2: *mut Obj) -> *mut Ob
         result
     }
 }
+#[export_name = "rt_tuple_concat"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_concat_abi(tuple1: Value, tuple2: Value) -> Value {
+    Value::from_ptr(rt_tuple_concat(tuple1.unwrap_ptr(), tuple2.unwrap_ptr()))
+}
+
 
 /// Maximum number of arguments supported for tuple-args indirect calls.
 ///
@@ -825,8 +901,7 @@ unsafe fn dispatch_call_with_args(
 /// All arguments are passed as i64 (raw ints stay as i64, heap objects as
 /// pointers cast to i64). The function pointer must use the SystemV
 /// calling convention.
-#[no_mangle]
-pub extern "C" fn rt_call_with_tuple_args(func_ptr: i64, args_tuple: *mut Obj) -> i64 {
+pub fn rt_call_with_tuple_args(func_ptr: i64, args_tuple: *mut Obj) -> i64 {
     if func_ptr == 0 {
         return 0;
     }
@@ -836,6 +911,12 @@ pub extern "C" fn rt_call_with_tuple_args(func_ptr: i64, args_tuple: *mut Obj) -
         dispatch_call_with_args(func_ptr, &call_args, n)
     }
 }
+#[export_name = "rt_call_with_tuple_args"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_call_with_tuple_args_abi(func_ptr: i64, args_tuple: Value) -> i64 {
+    rt_call_with_tuple_args(func_ptr, args_tuple.unwrap_ptr())
+}
+
 
 /// Stage E (unified closure ABI): closure-trampoline call entry point that
 /// extracts captures and user-args from SEPARATE tuples respecting each
@@ -847,8 +928,7 @@ pub extern "C" fn rt_call_with_tuple_args(func_ptr: i64, args_tuple: *mut Obj) -
 /// Capture slots arrive as tagged Values (ValueFromInt/ValueFromBool); the
 /// callee's prologue unwraps them. Args slots arrive as raw scalars; the
 /// helper unwraps them so user-visible Int/Bool params receive raw values.
-#[no_mangle]
-pub extern "C" fn rt_call_with_captures_and_args(
+pub fn rt_call_with_captures_and_args(
     func_ptr: i64,
     captures_tuple: *mut Obj,
     args_tuple: *mut Obj,
@@ -863,6 +943,16 @@ pub extern "C" fn rt_call_with_captures_and_args(
         dispatch_call_with_args(func_ptr, &call_args, n_caps + n_args)
     }
 }
+#[export_name = "rt_call_with_captures_and_args"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_call_with_captures_and_args_abi(
+    func_ptr: i64,
+    captures_tuple: Value,
+    args_tuple: Value,
+) -> i64 {
+    rt_call_with_captures_and_args(func_ptr, captures_tuple.unwrap_ptr(), args_tuple.unwrap_ptr())
+}
+
 
 #[cfg(test)]
 mod tests {

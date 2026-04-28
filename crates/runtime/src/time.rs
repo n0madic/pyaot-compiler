@@ -16,6 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::gc;
 use crate::object::{Obj, ObjHeader, StructTimeObj, TypeTagKind};
 use crate::utils::{make_str_from_rust, str_obj_to_rust_string};
+use pyaot_core_defs::Value;
 
 /// Monotonic clock start time (initialized on first call)
 static MONOTONIC_START: OnceLock<Instant> = OnceLock::new();
@@ -62,8 +63,7 @@ pub extern "C" fn rt_time_perf_counter() -> f64 {
 /// time.ctime([seconds]) - Convert seconds to readable local time string
 /// Format: "Mon Feb  2 14:00:00 2026" (24 characters + newline removed)
 /// If seconds is negative, uses current time
-#[no_mangle]
-pub extern "C" fn rt_time_ctime(seconds: f64) -> *mut Obj {
+pub fn rt_time_ctime(seconds: f64) -> *mut Obj {
     // Get timestamp: use current time if sentinel (-1.0) or negative
     let timestamp = if seconds < 0.0 {
         SystemTime::now()
@@ -80,6 +80,12 @@ pub extern "C" fn rt_time_ctime(seconds: f64) -> *mut Obj {
     // Create StrObj
     unsafe { make_str_from_rust(&formatted) }
 }
+#[export_name = "rt_time_ctime"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_time_ctime_abi(seconds: f64) -> Value {
+    Value::from_ptr(rt_time_ctime(seconds))
+}
+
 
 /// Format timestamp as ctime string using libc
 fn format_ctime(timestamp: i64) -> String {
@@ -140,8 +146,7 @@ unsafe fn create_struct_time_obj(tm: &libc::tm) -> *mut Obj {
 
 /// time.localtime([seconds]) - Convert seconds to local struct_time
 /// If seconds is negative, uses current time
-#[no_mangle]
-pub extern "C" fn rt_time_localtime(seconds: f64) -> *mut Obj {
+pub fn rt_time_localtime(seconds: f64) -> *mut Obj {
     let timestamp = if seconds < 0.0 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -167,11 +172,16 @@ pub extern "C" fn rt_time_localtime(seconds: f64) -> *mut Obj {
         create_struct_time_obj(&tm)
     }
 }
+#[export_name = "rt_time_localtime"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_time_localtime_abi(seconds: f64) -> Value {
+    Value::from_ptr(rt_time_localtime(seconds))
+}
+
 
 /// time.gmtime([seconds]) - Convert seconds to UTC struct_time
 /// If seconds is negative, uses current time
-#[no_mangle]
-pub extern "C" fn rt_time_gmtime(seconds: f64) -> *mut Obj {
+pub fn rt_time_gmtime(seconds: f64) -> *mut Obj {
     let timestamp = if seconds < 0.0 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -197,11 +207,16 @@ pub extern "C" fn rt_time_gmtime(seconds: f64) -> *mut Obj {
         create_struct_time_obj(&tm)
     }
 }
+#[export_name = "rt_time_gmtime"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_time_gmtime_abi(seconds: f64) -> Value {
+    Value::from_ptr(rt_time_gmtime(seconds))
+}
+
 
 /// time.mktime(t) - Convert struct_time to seconds since epoch
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_time_mktime(t: *mut Obj) -> f64 {
+pub fn rt_time_mktime(t: *mut Obj) -> f64 {
     if t.is_null() {
         return 0.0;
     }
@@ -236,12 +251,16 @@ pub extern "C" fn rt_time_mktime(t: *mut Obj) -> f64 {
         result as f64
     }
 }
+#[export_name = "rt_time_mktime"]
+pub extern "C" fn rt_time_mktime_abi(t: Value) -> f64 {
+    rt_time_mktime(t.unwrap_ptr())
+}
+
 
 /// time.strftime(format, t) - Format struct_time to string
 /// Common format codes: %Y (year), %m (month), %d (day), %H (hour), %M (minute), %S (second)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
+pub fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
     if format.is_null() {
         return unsafe { make_str_from_rust("") };
     }
@@ -336,12 +355,16 @@ pub extern "C" fn rt_time_strftime(format: *mut Obj, t: *mut Obj) -> *mut Obj {
         make_str_from_rust(&result)
     }
 }
+#[export_name = "rt_time_strftime"]
+pub extern "C" fn rt_time_strftime_abi(format: Value, t: Value) -> Value {
+    Value::from_ptr(rt_time_strftime(format.unwrap_ptr(), t.unwrap_ptr()))
+}
+
 
 /// time.strptime(string, format) - Parse string to struct_time
 /// Common format codes: %Y (year), %m (month), %d (day), %H (hour), %M (minute), %S (second)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_time_strptime(string: *mut Obj, format: *mut Obj) -> *mut Obj {
+pub fn rt_time_strptime(string: *mut Obj, format: *mut Obj) -> *mut Obj {
     if string.is_null() || format.is_null() {
         unsafe {
             raise_exc!(
@@ -380,14 +403,18 @@ pub extern "C" fn rt_time_strptime(string: *mut Obj, format: *mut Obj) -> *mut O
         create_struct_time_obj(&tm)
     }
 }
+#[export_name = "rt_time_strptime"]
+pub extern "C" fn rt_time_strptime_abi(string: Value, format: Value) -> Value {
+    Value::from_ptr(rt_time_strptime(string.unwrap_ptr(), format.unwrap_ptr()))
+}
+
 
 // ============= struct_time field getters =============
 
 /// Generic struct_time field accessor.
 /// field_index: 0=year, 1=mon, 2=mday, 3=hour, 4=min, 5=sec, 6=wday, 7=yday, 8=isdst
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_struct_time_get_field(t: *mut Obj, field_index: u8) -> i64 {
+pub fn rt_struct_time_get_field(t: *mut Obj, field_index: u8) -> i64 {
     if t.is_null() {
         return 0;
     }
@@ -410,3 +437,8 @@ pub extern "C" fn rt_struct_time_get_field(t: *mut Obj, field_index: u8) -> i64 
         }
     }
 }
+#[export_name = "rt_struct_time_get_field"]
+pub extern "C" fn rt_struct_time_get_field_abi(t: Value, field_index: u8) -> i64 {
+    rt_struct_time_get_field(t.unwrap_ptr(), field_index)
+}
+

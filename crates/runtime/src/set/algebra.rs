@@ -4,14 +4,14 @@
 use crate::debug_assert_type_tag;
 use crate::hash_table_utils::hash_hashable_obj;
 use crate::object::{Obj, SetObj, TypeTagKind, TOMBSTONE};
+use pyaot_core_defs::Value;
 
 use super::core::{find_set_slot, rt_make_set};
 use super::ops::{rt_set_add, rt_set_copy};
 
 /// Create a new set with all elements from both sets (union)
 /// Returns: pointer to new SetObj containing elements from a and b
-#[no_mangle]
-pub extern "C" fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+pub fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if a.is_null() || b.is_null() {
@@ -55,11 +55,16 @@ pub extern "C" fn rt_set_union(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         roots[0]
     }
 }
+#[export_name = "rt_set_union"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_union_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_set_union(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
 
 /// Create a new set with elements in both sets (intersection)
 /// Returns: pointer to new SetObj containing elements in both a and b
-#[no_mangle]
-pub extern "C" fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+pub fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if a.is_null() || b.is_null() {
@@ -109,11 +114,16 @@ pub extern "C" fn rt_set_intersection(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         roots[0]
     }
 }
+#[export_name = "rt_set_intersection"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_intersection_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_set_intersection(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
 
 /// Create a new set with elements in a but not in b (difference)
 /// Returns: pointer to new SetObj containing elements in a but not in b
-#[no_mangle]
-pub extern "C" fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+pub fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if a.is_null() || b.is_null() {
@@ -163,11 +173,16 @@ pub extern "C" fn rt_set_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         roots[0]
     }
 }
+#[export_name = "rt_set_difference"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_difference_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_set_difference(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
 
 /// Create a new set with elements in exactly one of the sets (symmetric difference)
 /// Returns: pointer to new SetObj containing elements in a or b but not both
-#[no_mangle]
-pub extern "C" fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+pub fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if a.is_null() || b.is_null() {
@@ -232,3 +247,9 @@ pub extern "C" fn rt_set_symmetric_difference(a: *mut Obj, b: *mut Obj) -> *mut 
         roots[0]
     }
 }
+#[export_name = "rt_set_symmetric_difference"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_symmetric_difference_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_set_symmetric_difference(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+

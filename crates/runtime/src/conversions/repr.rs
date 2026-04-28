@@ -2,6 +2,7 @@
 
 use crate::object::Obj;
 use crate::string::rt_make_str;
+use pyaot_core_defs::Value;
 
 /// Escape a string for repr() output, matching CPython behavior.
 ///
@@ -101,42 +102,66 @@ fn is_printable_unicode(c: char) -> bool {
 }
 
 /// repr(int) -> string
-#[no_mangle]
-pub extern "C" fn rt_repr_int(n: i64) -> *mut Obj {
+pub fn rt_repr_int(n: i64) -> *mut Obj {
     let s = format!("{}", n);
     let bytes = s.as_bytes();
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
 }
+#[export_name = "rt_repr_int"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_repr_int_abi(n: i64) -> Value {
+    Value::from_ptr(rt_repr_int(n))
+}
+
 
 /// repr(float) -> string
-#[no_mangle]
-pub extern "C" fn rt_repr_float(f: f64) -> *mut Obj {
+pub fn rt_repr_float(f: f64) -> *mut Obj {
     let s = crate::utils::format_float_python(f);
     let bytes = s.as_bytes();
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
 }
+#[export_name = "rt_repr_float"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_repr_float_abi(f: f64) -> Value {
+    Value::from_ptr(rt_repr_float(f))
+}
+
 
 /// repr(bool) -> string
-#[no_mangle]
-pub extern "C" fn rt_repr_bool(b: i8) -> *mut Obj {
+pub fn rt_repr_bool(b: i8) -> *mut Obj {
     let s = if b != 0 { "True" } else { "False" };
     let bytes = s.as_bytes();
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
 }
+#[export_name = "rt_repr_bool"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_repr_bool_abi(b: i8) -> Value {
+    Value::from_ptr(rt_repr_bool(b))
+}
+
 
 /// repr(None) -> string
-#[no_mangle]
-pub extern "C" fn rt_repr_none() -> *mut Obj {
+pub fn rt_repr_none() -> *mut Obj {
     let s = "None";
     let bytes = s.as_bytes();
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
 }
+#[export_name = "rt_repr_none"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_repr_none_abi() -> Value {
+    Value::from_ptr(rt_repr_none())
+}
+
 
 /// repr() for collections (list, tuple, dict, set), str, bytes, and generic objects — runtime type-dispatched
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_repr_collection(obj: *mut Obj) -> *mut Obj {
+pub fn rt_repr_collection(obj: *mut Obj) -> *mut Obj {
     let s = unsafe { super::to_str::obj_to_repr_string(obj) };
     let bytes = s.as_bytes();
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
 }
+#[export_name = "rt_repr_collection"]
+pub extern "C" fn rt_repr_collection_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_repr_collection(obj.unwrap_ptr()))
+}
+

@@ -1,11 +1,11 @@
 //! Character predicate operations: isdigit, isalpha, isalnum, isspace, isupper, islower
 
 use crate::object::{Obj, StrObj};
+use pyaot_core_defs::Value;
 
 /// Check if all characters are digits
 /// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_str_isdigit(str_obj: *mut Obj) -> i8 {
+pub fn rt_str_isdigit(str_obj: *mut Obj) -> i8 {
     if str_obj.is_null() {
         return 0;
     }
@@ -27,11 +27,16 @@ pub extern "C" fn rt_str_isdigit(str_obj: *mut Obj) -> i8 {
         1
     }
 }
+#[export_name = "rt_str_isdigit"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_isdigit_abi(str_obj: Value) -> i8 {
+    rt_str_isdigit(str_obj.unwrap_ptr())
+}
+
 
 /// Check if all characters are alphabetic
 /// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_str_isalpha(str_obj: *mut Obj) -> i8 {
+pub fn rt_str_isalpha(str_obj: *mut Obj) -> i8 {
     if str_obj.is_null() {
         return 0;
     }
@@ -53,11 +58,16 @@ pub extern "C" fn rt_str_isalpha(str_obj: *mut Obj) -> i8 {
         1
     }
 }
+#[export_name = "rt_str_isalpha"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_isalpha_abi(str_obj: Value) -> i8 {
+    rt_str_isalpha(str_obj.unwrap_ptr())
+}
+
 
 /// Check if all characters are alphanumeric
 /// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_str_isalnum(str_obj: *mut Obj) -> i8 {
+pub fn rt_str_isalnum(str_obj: *mut Obj) -> i8 {
     if str_obj.is_null() {
         return 0;
     }
@@ -79,11 +89,16 @@ pub extern "C" fn rt_str_isalnum(str_obj: *mut Obj) -> i8 {
         1
     }
 }
+#[export_name = "rt_str_isalnum"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_isalnum_abi(str_obj: Value) -> i8 {
+    rt_str_isalnum(str_obj.unwrap_ptr())
+}
+
 
 /// Check if all characters are whitespace
 /// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_str_isspace(str_obj: *mut Obj) -> i8 {
+pub fn rt_str_isspace(str_obj: *mut Obj) -> i8 {
     if str_obj.is_null() {
         return 0;
     }
@@ -106,11 +121,16 @@ pub extern "C" fn rt_str_isspace(str_obj: *mut Obj) -> i8 {
         1
     }
 }
+#[export_name = "rt_str_isspace"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_isspace_abi(str_obj: Value) -> i8 {
+    rt_str_isspace(str_obj.unwrap_ptr())
+}
+
 
 /// Check if all cased characters are uppercase
 /// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_str_isupper(str_obj: *mut Obj) -> i8 {
+pub fn rt_str_isupper(str_obj: *mut Obj) -> i8 {
     if str_obj.is_null() {
         return 0;
     }
@@ -141,11 +161,16 @@ pub extern "C" fn rt_str_isupper(str_obj: *mut Obj) -> i8 {
         }
     }
 }
+#[export_name = "rt_str_isupper"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_isupper_abi(str_obj: Value) -> i8 {
+    rt_str_isupper(str_obj.unwrap_ptr())
+}
+
 
 /// Check if all cased characters are lowercase
 /// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_str_islower(str_obj: *mut Obj) -> i8 {
+pub fn rt_str_islower(str_obj: *mut Obj) -> i8 {
     if str_obj.is_null() {
         return 0;
     }
@@ -176,12 +201,17 @@ pub extern "C" fn rt_str_islower(str_obj: *mut Obj) -> i8 {
         }
     }
 }
+#[export_name = "rt_str_islower"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_islower_abi(str_obj: Value) -> i8 {
+    rt_str_islower(str_obj.unwrap_ptr())
+}
+
 
 /// Check if all characters are ASCII (code points < 128)
 /// Returns: 1 (true) or 0 (false)
 /// Empty string returns 1 (Python behavior)
-#[no_mangle]
-pub extern "C" fn rt_str_isascii(str_obj: *mut Obj) -> i8 {
+pub fn rt_str_isascii(str_obj: *mut Obj) -> i8 {
     if str_obj.is_null() {
         return 0;
     }
@@ -204,3 +234,9 @@ pub extern "C" fn rt_str_isascii(str_obj: *mut Obj) -> i8 {
         1
     }
 }
+#[export_name = "rt_str_isascii"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_isascii_abi(str_obj: Value) -> i8 {
+    rt_str_isascii(str_obj.unwrap_ptr())
+}
+

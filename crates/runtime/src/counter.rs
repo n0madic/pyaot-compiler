@@ -11,8 +11,7 @@ use crate::object::{DictEntry, DictObj, Obj, TypeTagKind};
 use pyaot_core_defs::Value;
 
 /// Create an empty Counter
-#[no_mangle]
-pub extern "C" fn rt_make_counter_empty() -> *mut Obj {
+pub fn rt_make_counter_empty() -> *mut Obj {
     let dict_size = std::mem::size_of::<DictObj>();
     let obj = gc::gc_alloc(dict_size, TypeTagKind::Counter as u8);
 
@@ -22,11 +21,16 @@ pub extern "C" fn rt_make_counter_empty() -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_make_counter_empty"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_counter_empty_abi() -> Value {
+    Value::from_ptr(rt_make_counter_empty())
+}
+
 
 /// Create a Counter from an iterator — counts occurrences of each element.
 /// The iterator elements are used as dict keys.
-#[no_mangle]
-pub extern "C" fn rt_make_counter_from_iter(iter: *mut Obj) -> *mut Obj {
+pub fn rt_make_counter_from_iter(iter: *mut Obj) -> *mut Obj {
     let obj = rt_make_counter_empty();
 
     if iter.is_null() {
@@ -74,11 +78,16 @@ pub extern "C" fn rt_make_counter_from_iter(iter: *mut Obj) -> *mut Obj {
     // Return the rooted counter pointer (same address; non-moving GC).
     obj
 }
+#[export_name = "rt_make_counter_from_iter"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_counter_from_iter_abi(iter: Value) -> Value {
+    Value::from_ptr(rt_make_counter_from_iter(iter.unwrap_ptr()))
+}
+
 
 /// Counter.most_common(n) — return list of (element, count) tuples, sorted by count descending.
 /// If n <= 0, return all elements sorted by count.
-#[no_mangle]
-pub extern "C" fn rt_counter_most_common(counter: *mut Obj, n: i64) -> *mut Obj {
+pub fn rt_counter_most_common(counter: *mut Obj, n: i64) -> *mut Obj {
     use crate::list::{rt_list_push, rt_make_list};
     use crate::tuple::{rt_make_tuple, rt_tuple_set};
 
@@ -146,10 +155,15 @@ pub extern "C" fn rt_counter_most_common(counter: *mut Obj, n: i64) -> *mut Obj 
         roots[1] // result
     }
 }
+#[export_name = "rt_counter_most_common"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_counter_most_common_abi(counter: Value, n: i64) -> Value {
+    Value::from_ptr(rt_counter_most_common(counter.unwrap_ptr(), n))
+}
+
 
 /// Counter.total() — sum of all counts
-#[no_mangle]
-pub extern "C" fn rt_counter_total(counter: *mut Obj) -> i64 {
+pub fn rt_counter_total(counter: *mut Obj) -> i64 {
     if counter.is_null() {
         return 0;
     }
@@ -167,10 +181,15 @@ pub extern "C" fn rt_counter_total(counter: *mut Obj) -> i64 {
         total
     }
 }
+#[export_name = "rt_counter_total"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_counter_total_abi(counter: Value) -> i64 {
+    rt_counter_total(counter.unwrap_ptr())
+}
+
 
 /// Counter.update(iterable) — add counts from iterable
-#[no_mangle]
-pub extern "C" fn rt_counter_update(counter: *mut Obj, other: *mut Obj) {
+pub fn rt_counter_update(counter: *mut Obj, other: *mut Obj) {
     if counter.is_null() || other.is_null() {
         return;
     }
@@ -205,10 +224,15 @@ pub extern "C" fn rt_counter_update(counter: *mut Obj, other: *mut Obj) {
         gc_pop();
     }
 }
+#[export_name = "rt_counter_update"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_counter_update_abi(counter: Value, other: Value) {
+    rt_counter_update(counter.unwrap_ptr(), other.unwrap_ptr())
+}
+
 
 /// Counter.subtract(iterable) — subtract counts from iterable
-#[no_mangle]
-pub extern "C" fn rt_counter_subtract(counter: *mut Obj, other: *mut Obj) {
+pub fn rt_counter_subtract(counter: *mut Obj, other: *mut Obj) {
     if counter.is_null() || other.is_null() {
         return;
     }
@@ -241,6 +265,12 @@ pub extern "C" fn rt_counter_subtract(counter: *mut Obj, other: *mut Obj) {
         gc_pop();
     }
 }
+#[export_name = "rt_counter_subtract"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_counter_subtract_abi(counter: Value, other: Value) {
+    rt_counter_subtract(counter.unwrap_ptr(), other.unwrap_ptr())
+}
+
 
 // =============================================================================
 // Internal helpers

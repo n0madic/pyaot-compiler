@@ -2,13 +2,13 @@
 
 use crate::gc;
 use crate::object::Obj;
+use pyaot_core_defs::Value;
 
 use super::core::{rt_make_bytes, rt_make_bytes_zero};
 
 /// Replace occurrences of old with new in bytes
 /// Returns: pointer to new BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut Obj {
+pub fn rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut Obj {
     use crate::object::{BytesObj, ObjHeader, TypeTagKind};
 
     if bytes.is_null() {
@@ -101,11 +101,16 @@ pub extern "C" fn rt_bytes_replace(bytes: *mut Obj, old: *mut Obj, new: *mut Obj
         obj
     }
 }
+#[export_name = "rt_bytes_replace"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_replace_abi(bytes: Value, old: Value, new: Value) -> Value {
+    Value::from_ptr(rt_bytes_replace(bytes.unwrap_ptr(), old.unwrap_ptr(), new.unwrap_ptr()))
+}
+
 
 /// Strip whitespace from both ends of bytes
 /// Returns: pointer to new BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_strip(bytes: *mut Obj) -> *mut Obj {
+pub fn rt_bytes_strip(bytes: *mut Obj) -> *mut Obj {
     use crate::object::BytesObj;
 
     if bytes.is_null() {
@@ -138,11 +143,16 @@ pub extern "C" fn rt_bytes_strip(bytes: *mut Obj) -> *mut Obj {
         rt_make_bytes(data.add(start), end - start)
     }
 }
+#[export_name = "rt_bytes_strip"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_strip_abi(bytes: Value) -> Value {
+    Value::from_ptr(rt_bytes_strip(bytes.unwrap_ptr()))
+}
+
 
 /// Strip whitespace from left end of bytes
 /// Returns: pointer to new BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_lstrip(bytes: *mut Obj) -> *mut Obj {
+pub fn rt_bytes_lstrip(bytes: *mut Obj) -> *mut Obj {
     use crate::object::BytesObj;
 
     if bytes.is_null() {
@@ -166,11 +176,16 @@ pub extern "C" fn rt_bytes_lstrip(bytes: *mut Obj) -> *mut Obj {
         rt_make_bytes(data.add(start), len - start)
     }
 }
+#[export_name = "rt_bytes_lstrip"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_lstrip_abi(bytes: Value) -> Value {
+    Value::from_ptr(rt_bytes_lstrip(bytes.unwrap_ptr()))
+}
+
 
 /// Strip whitespace from right end of bytes
 /// Returns: pointer to new BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_rstrip(bytes: *mut Obj) -> *mut Obj {
+pub fn rt_bytes_rstrip(bytes: *mut Obj) -> *mut Obj {
     use crate::object::BytesObj;
 
     if bytes.is_null() {
@@ -194,11 +209,16 @@ pub extern "C" fn rt_bytes_rstrip(bytes: *mut Obj) -> *mut Obj {
         rt_make_bytes(data, end)
     }
 }
+#[export_name = "rt_bytes_rstrip"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_rstrip_abi(bytes: Value) -> Value {
+    Value::from_ptr(rt_bytes_rstrip(bytes.unwrap_ptr()))
+}
+
 
 /// Convert bytes to uppercase
 /// Returns: pointer to new BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_upper(bytes: *mut Obj) -> *mut Obj {
+pub fn rt_bytes_upper(bytes: *mut Obj) -> *mut Obj {
     use crate::object::{BytesObj, ObjHeader, TypeTagKind};
 
     if bytes.is_null() {
@@ -224,11 +244,16 @@ pub extern "C" fn rt_bytes_upper(bytes: *mut Obj) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_bytes_upper"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_upper_abi(bytes: Value) -> Value {
+    Value::from_ptr(rt_bytes_upper(bytes.unwrap_ptr()))
+}
+
 
 /// Convert bytes to lowercase
 /// Returns: pointer to new BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_lower(bytes: *mut Obj) -> *mut Obj {
+pub fn rt_bytes_lower(bytes: *mut Obj) -> *mut Obj {
     use crate::object::{BytesObj, ObjHeader, TypeTagKind};
 
     if bytes.is_null() {
@@ -254,3 +279,9 @@ pub extern "C" fn rt_bytes_lower(bytes: *mut Obj) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_bytes_lower"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_lower_abi(bytes: Value) -> Value {
+    Value::from_ptr(rt_bytes_lower(bytes.unwrap_ptr()))
+}
+

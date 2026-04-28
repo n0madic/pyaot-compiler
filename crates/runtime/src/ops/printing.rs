@@ -271,9 +271,8 @@ unsafe fn print_set_repr(obj: *mut Obj) {
 
 /// Print any heap object with runtime type dispatch
 /// Used for Union types where the actual type is determined at runtime
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_print_obj(obj: *mut Obj) {
+pub fn rt_print_obj(obj: *mut Obj) {
     if obj.is_null() {
         print!("None");
         return;
@@ -360,3 +359,8 @@ pub extern "C" fn rt_print_obj(obj: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_print_obj"]
+pub extern "C" fn rt_print_obj_abi(obj: Value) {
+    rt_print_obj(obj.unwrap_ptr())
+}
+

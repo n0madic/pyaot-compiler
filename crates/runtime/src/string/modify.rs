@@ -5,11 +5,11 @@
 use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
 use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
 use crate::string::search::{bmh_find_from, build_bad_char_table, BMH_THRESHOLD};
+use pyaot_core_defs::Value;
 
 /// Replace all occurrences of old with new in string using Boyer-Moore-Horspool
 /// Returns: pointer to new allocated StrObj
-#[no_mangle]
-pub extern "C" fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut Obj {
+pub fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj) -> *mut Obj {
     if str_obj.is_null() || old.is_null() || new.is_null() {
         return str_obj; // Return original if any arg is null
     }
@@ -166,11 +166,16 @@ pub extern "C" fn rt_str_replace(str_obj: *mut Obj, old: *mut Obj, new: *mut Obj
         obj
     }
 }
+#[export_name = "rt_str_replace"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_replace_abi(str_obj: Value, old: Value, new: Value) -> Value {
+    Value::from_ptr(rt_str_replace(str_obj.unwrap_ptr(), old.unwrap_ptr(), new.unwrap_ptr()))
+}
+
 
 /// String multiplication: "abc" * 3 = "abcabcabc"
 /// Returns: pointer to new allocated StrObj
-#[no_mangle]
-pub extern "C" fn rt_str_mul(str_obj: *mut Obj, count: i64) -> *mut Obj {
+pub fn rt_str_mul(str_obj: *mut Obj, count: i64) -> *mut Obj {
     if str_obj.is_null() || count <= 0 {
         // Return empty string
         let size = std::mem::size_of::<ObjHeader>() + std::mem::size_of::<usize>();
@@ -226,12 +231,17 @@ pub extern "C" fn rt_str_mul(str_obj: *mut Obj, count: i64) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_str_mul"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_mul_abi(str_obj: Value, count: i64) -> Value {
+    Value::from_ptr(rt_str_mul(str_obj.unwrap_ptr(), count))
+}
+
 
 /// str.removeprefix(prefix) - Return string with prefix removed if present
 /// If string starts with prefix, returns string[len(prefix):], otherwise returns original.
 /// Returns: pointer to new StrObj
-#[no_mangle]
-pub extern "C" fn rt_str_removeprefix(s: *mut Obj, prefix: *mut Obj) -> *mut Obj {
+pub fn rt_str_removeprefix(s: *mut Obj, prefix: *mut Obj) -> *mut Obj {
     if s.is_null() {
         return s;
     }
@@ -303,12 +313,17 @@ pub extern "C" fn rt_str_removeprefix(s: *mut Obj, prefix: *mut Obj) -> *mut Obj
         }
     }
 }
+#[export_name = "rt_str_removeprefix"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_removeprefix_abi(s: Value, prefix: Value) -> Value {
+    Value::from_ptr(rt_str_removeprefix(s.unwrap_ptr(), prefix.unwrap_ptr()))
+}
+
 
 /// str.removesuffix(suffix) - Return string with suffix removed if present
 /// If string ends with suffix, returns string[:-len(suffix)], otherwise returns original.
 /// Returns: pointer to new StrObj
-#[no_mangle]
-pub extern "C" fn rt_str_removesuffix(s: *mut Obj, suffix: *mut Obj) -> *mut Obj {
+pub fn rt_str_removesuffix(s: *mut Obj, suffix: *mut Obj) -> *mut Obj {
     if s.is_null() {
         return s;
     }
@@ -377,13 +392,18 @@ pub extern "C" fn rt_str_removesuffix(s: *mut Obj, suffix: *mut Obj) -> *mut Obj
         }
     }
 }
+#[export_name = "rt_str_removesuffix"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_removesuffix_abi(s: Value, suffix: Value) -> Value {
+    Value::from_ptr(rt_str_removesuffix(s.unwrap_ptr(), suffix.unwrap_ptr()))
+}
+
 
 /// str.expandtabs(tabsize) - Replace tabs with spaces
 /// Each tab is replaced with spaces to reach the next tab stop (multiples of tabsize).
 /// Default tabsize is 8. Negative tabsize is treated as 0.
 /// Returns: pointer to new StrObj
-#[no_mangle]
-pub extern "C" fn rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj {
+pub fn rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj {
     if s.is_null() {
         return s;
     }
@@ -479,3 +499,9 @@ pub extern "C" fn rt_str_expandtabs(s: *mut Obj, tabsize: i64) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_str_expandtabs"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_expandtabs_abi(s: Value, tabsize: i64) -> Value {
+    Value::from_ptr(rt_str_expandtabs(s.unwrap_ptr(), tabsize))
+}
+

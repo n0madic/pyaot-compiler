@@ -11,6 +11,7 @@
 use crate::gc::{self, ShadowFrame};
 use crate::object::{CompletedProcessObj, ListObj, Obj, ObjHeader, TypeTagKind};
 use crate::utils::make_str_from_rust;
+use pyaot_core_defs::Value;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -55,8 +56,7 @@ unsafe fn extract_string_list(obj: *mut Obj) -> Vec<String> {
 /// - stderr: Optional[str] - Captured stderr if capture_output=True
 ///
 /// Raises TimeoutError if the subprocess does not exit within DEFAULT_TIMEOUT (300 s).
-#[no_mangle]
-pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i8) -> *mut Obj {
+pub fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i8) -> *mut Obj {
     unsafe {
         // Extract command and arguments
         let cmd_args = extract_string_list(args);
@@ -219,12 +219,17 @@ pub extern "C" fn rt_subprocess_run(args: *mut Obj, capture_output: i8, check: i
         ptr as *mut Obj
     }
 }
+#[export_name = "rt_subprocess_run"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_subprocess_run_abi(args: Value, capture_output: i8, check: i8) -> Value {
+    Value::from_ptr(rt_subprocess_run(args.unwrap_ptr(), capture_output, check))
+}
+
 
 // ============= CompletedProcess getter methods =============
 
 /// Get args field from CompletedProcess object
-#[no_mangle]
-pub extern "C" fn rt_completed_process_get_args(obj: *mut Obj) -> *mut Obj {
+pub fn rt_completed_process_get_args(obj: *mut Obj) -> *mut Obj {
     unsafe {
         debug_assert_type_tag!(
             obj,
@@ -235,10 +240,15 @@ pub extern "C" fn rt_completed_process_get_args(obj: *mut Obj) -> *mut Obj {
         (*cp_obj).args
     }
 }
+#[export_name = "rt_completed_process_get_args"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_completed_process_get_args_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_completed_process_get_args(obj.unwrap_ptr()))
+}
+
 
 /// Get returncode field from CompletedProcess object
-#[no_mangle]
-pub extern "C" fn rt_completed_process_get_returncode(obj: *mut Obj) -> i64 {
+pub fn rt_completed_process_get_returncode(obj: *mut Obj) -> i64 {
     unsafe {
         debug_assert_type_tag!(
             obj,
@@ -249,10 +259,15 @@ pub extern "C" fn rt_completed_process_get_returncode(obj: *mut Obj) -> i64 {
         (*cp_obj).returncode
     }
 }
+#[export_name = "rt_completed_process_get_returncode"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_completed_process_get_returncode_abi(obj: Value) -> i64 {
+    rt_completed_process_get_returncode(obj.unwrap_ptr())
+}
+
 
 /// Get stdout field from CompletedProcess object
-#[no_mangle]
-pub extern "C" fn rt_completed_process_get_stdout(obj: *mut Obj) -> *mut Obj {
+pub fn rt_completed_process_get_stdout(obj: *mut Obj) -> *mut Obj {
     unsafe {
         debug_assert_type_tag!(
             obj,
@@ -263,10 +278,15 @@ pub extern "C" fn rt_completed_process_get_stdout(obj: *mut Obj) -> *mut Obj {
         (*cp_obj).stdout
     }
 }
+#[export_name = "rt_completed_process_get_stdout"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_completed_process_get_stdout_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_completed_process_get_stdout(obj.unwrap_ptr()))
+}
+
 
 /// Get stderr field from CompletedProcess object
-#[no_mangle]
-pub extern "C" fn rt_completed_process_get_stderr(obj: *mut Obj) -> *mut Obj {
+pub fn rt_completed_process_get_stderr(obj: *mut Obj) -> *mut Obj {
     unsafe {
         debug_assert_type_tag!(
             obj,
@@ -277,3 +297,9 @@ pub extern "C" fn rt_completed_process_get_stderr(obj: *mut Obj) -> *mut Obj {
         (*cp_obj).stderr
     }
 }
+#[export_name = "rt_completed_process_get_stderr"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_completed_process_get_stderr_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_completed_process_get_stderr(obj.unwrap_ptr()))
+}
+

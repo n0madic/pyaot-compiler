@@ -2,6 +2,7 @@
 
 use crate::gc;
 use crate::object::{BytesObj, Obj, ObjHeader, StrObj, TypeTagKind};
+use pyaot_core_defs::Value;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 static PRINT_TARGET: AtomicU8 = AtomicU8::new(0); // 0=stdout, 1=stderr
@@ -31,8 +32,7 @@ pub extern "C" fn rt_print_flush() {
 }
 
 /// Print a StrObj (heap-allocated string)
-#[no_mangle]
-pub extern "C" fn rt_print_str_obj(str_obj: *mut Obj) {
+pub fn rt_print_str_obj(str_obj: *mut Obj) {
     if str_obj.is_null() {
         return;
     }
@@ -50,6 +50,12 @@ pub extern "C" fn rt_print_str_obj(str_obj: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_print_str_obj"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_print_str_obj_abi(str_obj: Value) {
+    rt_print_str_obj(str_obj.unwrap_ptr())
+}
+
 
 /// Format a bytes slice as a Python bytes literal (e.g. `b'hello\n'`).
 fn format_bytes_repr(data: *const u8, len: usize) -> String {
@@ -75,8 +81,7 @@ fn format_bytes_repr(data: *const u8, len: usize) -> String {
 }
 
 /// Print a BytesObj (heap-allocated bytes)
-#[no_mangle]
-pub extern "C" fn rt_print_bytes_obj(bytes: *mut Obj) {
+pub fn rt_print_bytes_obj(bytes: *mut Obj) {
     if bytes.is_null() {
         if is_stderr_target() {
             eprint!("b''");
@@ -98,11 +103,16 @@ pub extern "C" fn rt_print_bytes_obj(bytes: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_print_bytes_obj"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_print_bytes_obj_abi(bytes: Value) {
+    rt_print_bytes_obj(bytes.unwrap_ptr())
+}
+
 
 /// Read a line from stdin after printing the prompt
 /// Returns: pointer to allocated StrObj
-#[no_mangle]
-pub extern "C" fn rt_input(prompt: *mut Obj) -> *mut Obj {
+pub fn rt_input(prompt: *mut Obj) -> *mut Obj {
     use std::io::{self, BufRead, Write};
 
     // Print prompt if provided
@@ -177,3 +187,9 @@ pub extern "C" fn rt_input(prompt: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_input"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_input_abi(prompt: Value) -> Value {
+    Value::from_ptr(rt_input(prompt.unwrap_ptr()))
+}
+

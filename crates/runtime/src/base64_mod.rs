@@ -6,6 +6,7 @@
 use crate::exceptions::ExceptionType;
 use crate::gc;
 use crate::object::{BytesObj, Obj, ObjHeader, StrObj, TypeTagKind};
+use pyaot_core_defs::Value;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE};
 use base64::Engine;
 
@@ -68,8 +69,7 @@ unsafe fn get_bytes_slice(obj: *mut Obj) -> (&'static [u8], TypeTagKind) {
 ///
 /// # Safety
 /// data must be a valid BytesObj pointer
-#[no_mangle]
-pub unsafe extern "C" fn rt_base64_b64encode(data: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_base64_b64encode(data: *mut Obj) -> *mut Obj {
     if data.is_null() {
         raise_exc!(ExceptionType::TypeError, "expected bytes");
     }
@@ -90,6 +90,12 @@ pub unsafe extern "C" fn rt_base64_b64encode(data: *mut Obj) -> *mut Obj {
     // Convert string to bytes
     make_bytes_from_vec(encoded.into_bytes())
 }
+#[export_name = "rt_base64_b64encode"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_base64_b64encode_abi(data: Value) -> Value {
+    Value::from_ptr(unsafe { rt_base64_b64encode(data.unwrap_ptr()) })
+}
+
 
 /// Decode standard base64 (str or bytes) to bytes
 /// data: pointer to StrObj or BytesObj containing base64 data
@@ -97,8 +103,7 @@ pub unsafe extern "C" fn rt_base64_b64encode(data: *mut Obj) -> *mut Obj {
 ///
 /// # Safety
 /// data must be a valid StrObj or BytesObj pointer with valid base64 content
-#[no_mangle]
-pub unsafe extern "C" fn rt_base64_b64decode(data: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_base64_b64decode(data: *mut Obj) -> *mut Obj {
     let (input_slice, _type_tag) = get_bytes_slice(data);
 
     // Decode from base64
@@ -109,6 +114,12 @@ pub unsafe extern "C" fn rt_base64_b64decode(data: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_base64_b64decode"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_base64_b64decode_abi(data: Value) -> Value {
+    Value::from_ptr(unsafe { rt_base64_b64decode(data.unwrap_ptr()) })
+}
+
 
 /// Encode bytes to URL-safe base64 bytes
 /// data: pointer to BytesObj to encode
@@ -116,8 +127,7 @@ pub unsafe extern "C" fn rt_base64_b64decode(data: *mut Obj) -> *mut Obj {
 ///
 /// # Safety
 /// data must be a valid BytesObj pointer
-#[no_mangle]
-pub unsafe extern "C" fn rt_base64_urlsafe_b64encode(data: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_base64_urlsafe_b64encode(data: *mut Obj) -> *mut Obj {
     if data.is_null() {
         raise_exc!(ExceptionType::TypeError, "expected bytes");
     }
@@ -138,6 +148,12 @@ pub unsafe extern "C" fn rt_base64_urlsafe_b64encode(data: *mut Obj) -> *mut Obj
     // Convert string to bytes
     make_bytes_from_vec(encoded.into_bytes())
 }
+#[export_name = "rt_base64_urlsafe_b64encode"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_base64_urlsafe_b64encode_abi(data: Value) -> Value {
+    Value::from_ptr(unsafe { rt_base64_urlsafe_b64encode(data.unwrap_ptr()) })
+}
+
 
 /// Decode URL-safe base64 (str or bytes) to bytes
 /// data: pointer to StrObj or BytesObj containing URL-safe base64 data
@@ -145,8 +161,7 @@ pub unsafe extern "C" fn rt_base64_urlsafe_b64encode(data: *mut Obj) -> *mut Obj
 ///
 /// # Safety
 /// data must be a valid StrObj or BytesObj pointer with valid URL-safe base64 content
-#[no_mangle]
-pub unsafe extern "C" fn rt_base64_urlsafe_b64decode(data: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_base64_urlsafe_b64decode(data: *mut Obj) -> *mut Obj {
     let (input_slice, _type_tag) = get_bytes_slice(data);
 
     // Decode from URL-safe base64
@@ -157,3 +172,9 @@ pub unsafe extern "C" fn rt_base64_urlsafe_b64decode(data: *mut Obj) -> *mut Obj
         }
     }
 }
+#[export_name = "rt_base64_urlsafe_b64decode"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_base64_urlsafe_b64decode_abi(data: Value) -> Value {
+    Value::from_ptr(unsafe { rt_base64_urlsafe_b64decode(data.unwrap_ptr()) })
+}
+

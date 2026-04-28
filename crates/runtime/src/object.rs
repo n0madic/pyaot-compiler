@@ -537,8 +537,7 @@ struct NotImplementedHolder(UnsafeCell<Obj>);
 unsafe impl Sync for NotImplementedHolder {}
 static NOT_IMPLEMENTED_SINGLETON: OnceLock<NotImplementedHolder> = OnceLock::new();
 
-#[no_mangle]
-pub extern "C" fn rt_not_implemented_singleton() -> *mut Obj {
+pub fn rt_not_implemented_singleton() -> *mut Obj {
     let holder = NOT_IMPLEMENTED_SINGLETON.get_or_init(|| {
         NotImplementedHolder(UnsafeCell::new(Obj {
             header: ObjHeader {
@@ -550,3 +549,9 @@ pub extern "C" fn rt_not_implemented_singleton() -> *mut Obj {
     });
     holder.0.get()
 }
+#[export_name = "rt_not_implemented_singleton"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_not_implemented_singleton_abi() -> Value {
+    Value::from_ptr(rt_not_implemented_singleton())
+}
+

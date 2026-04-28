@@ -2,13 +2,13 @@
 
 use crate::gc;
 use crate::object::Obj;
+use pyaot_core_defs::Value;
 
 use super::core::{rt_make_bytes, rt_make_bytes_zero};
 
 /// Find sub-bytes in bytes
 /// Returns: index of first occurrence or -1 if not found
-#[no_mangle]
-pub extern "C" fn rt_bytes_find(bytes: *mut Obj, sub: *mut Obj) -> i64 {
+pub fn rt_bytes_find(bytes: *mut Obj, sub: *mut Obj) -> i64 {
     use crate::object::BytesObj;
 
     if bytes.is_null() || sub.is_null() {
@@ -49,11 +49,16 @@ pub extern "C" fn rt_bytes_find(bytes: *mut Obj, sub: *mut Obj) -> i64 {
         -1
     }
 }
+#[export_name = "rt_bytes_find"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_find_abi(bytes: Value, sub: Value) -> i64 {
+    rt_bytes_find(bytes.unwrap_ptr(), sub.unwrap_ptr())
+}
+
 
 /// Find sub-bytes searching from the right
 /// Returns: index of last occurrence or -1 if not found
-#[no_mangle]
-pub extern "C" fn rt_bytes_rfind(bytes: *mut Obj, sub: *mut Obj) -> i64 {
+pub fn rt_bytes_rfind(bytes: *mut Obj, sub: *mut Obj) -> i64 {
     use crate::object::BytesObj;
 
     if bytes.is_null() || sub.is_null() {
@@ -99,11 +104,16 @@ pub extern "C" fn rt_bytes_rfind(bytes: *mut Obj, sub: *mut Obj) -> i64 {
         -1
     }
 }
+#[export_name = "rt_bytes_rfind"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_rfind_abi(bytes: Value, sub: Value) -> i64 {
+    rt_bytes_rfind(bytes.unwrap_ptr(), sub.unwrap_ptr())
+}
+
 
 /// Generic bytes search with operation tag.
 /// op_tag: 0=find, 1=rfind, 2=index, 3=rindex
-#[no_mangle]
-pub extern "C" fn rt_bytes_search(bytes: *mut Obj, sub: *mut Obj, op_tag: u8) -> i64 {
+pub fn rt_bytes_search(bytes: *mut Obj, sub: *mut Obj, op_tag: u8) -> i64 {
     let result = match op_tag {
         0 => rt_bytes_find(bytes, sub),
         1 => rt_bytes_rfind(bytes, sub),
@@ -127,11 +137,16 @@ pub extern "C" fn rt_bytes_search(bytes: *mut Obj, sub: *mut Obj, op_tag: u8) ->
     };
     result
 }
+#[export_name = "rt_bytes_search"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_search_abi(bytes: Value, sub: Value, op_tag: u8) -> i64 {
+    rt_bytes_search(bytes.unwrap_ptr(), sub.unwrap_ptr(), op_tag)
+}
+
 
 /// Count occurrences of sub-bytes
 /// Returns: count of non-overlapping occurrences
-#[no_mangle]
-pub extern "C" fn rt_bytes_count(bytes: *mut Obj, sub: *mut Obj) -> i64 {
+pub fn rt_bytes_count(bytes: *mut Obj, sub: *mut Obj) -> i64 {
     use crate::object::BytesObj;
 
     if bytes.is_null() || sub.is_null() {
@@ -176,22 +191,32 @@ pub extern "C" fn rt_bytes_count(bytes: *mut Obj, sub: *mut Obj) -> i64 {
         count
     }
 }
+#[export_name = "rt_bytes_count"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_count_abi(bytes: Value, sub: Value) -> i64 {
+    rt_bytes_count(bytes.unwrap_ptr(), sub.unwrap_ptr())
+}
+
 
 /// Check if sub-bytes is contained in bytes
 /// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_bytes_contains(bytes: *mut Obj, sub: *mut Obj) -> i64 {
+pub fn rt_bytes_contains(bytes: *mut Obj, sub: *mut Obj) -> i64 {
     if rt_bytes_find(bytes, sub) >= 0 {
         1
     } else {
         0
     }
 }
+#[export_name = "rt_bytes_contains"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_contains_abi(bytes: Value, sub: Value) -> i64 {
+    rt_bytes_contains(bytes.unwrap_ptr(), sub.unwrap_ptr())
+}
+
 
 /// Split bytes by separator
 /// Returns: list of BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_split(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj {
+pub fn rt_bytes_split(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::list::{rt_list_push, rt_make_list};
     use crate::object::BytesObj;
@@ -289,11 +314,16 @@ pub extern "C" fn rt_bytes_split(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64) 
         list
     }
 }
+#[export_name = "rt_bytes_split"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_split_abi(bytes: Value, sep: Value, maxsplit: i64) -> Value {
+    Value::from_ptr(rt_bytes_split(bytes.unwrap_ptr(), sep.unwrap_ptr(), maxsplit))
+}
+
 
 /// Split bytes from the right
 /// Returns: list of BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_rsplit(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj {
+pub fn rt_bytes_rsplit(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::list::{rt_list_push, rt_make_list};
     use crate::object::{BytesObj, ListObj};
@@ -415,13 +445,18 @@ pub extern "C" fn rt_bytes_rsplit(bytes: *mut Obj, sep: *mut Obj, maxsplit: i64)
         list
     }
 }
+#[export_name = "rt_bytes_rsplit"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_rsplit_abi(bytes: Value, sep: Value, maxsplit: i64) -> Value {
+    Value::from_ptr(rt_bytes_rsplit(bytes.unwrap_ptr(), sep.unwrap_ptr(), maxsplit))
+}
+
 
 /// Join bytes with separator
 /// sep: separator bytes
 /// iterable: list of bytes objects
 /// Returns: pointer to new BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_join(sep: *mut Obj, iterable: *mut Obj) -> *mut Obj {
+pub fn rt_bytes_join(sep: *mut Obj, iterable: *mut Obj) -> *mut Obj {
     use crate::list::rt_list_len;
     use crate::object::{BytesObj, ListObj, ObjHeader, TypeTagKind};
 
@@ -493,3 +528,9 @@ pub extern "C" fn rt_bytes_join(sep: *mut Obj, iterable: *mut Obj) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_bytes_join"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_join_abi(sep: Value, iterable: Value) -> Value {
+    Value::from_ptr(rt_bytes_join(sep.unwrap_ptr(), iterable.unwrap_ptr()))
+}
+

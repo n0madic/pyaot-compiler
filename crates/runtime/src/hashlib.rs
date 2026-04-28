@@ -4,6 +4,7 @@ use crate::gc::gc_alloc;
 use crate::object::{BytesObj, Obj, ObjHeader, StrObj};
 use md5::Md5;
 use pyaot_core_defs::TypeTagKind;
+use pyaot_core_defs::Value;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
@@ -66,38 +67,52 @@ unsafe fn read_digest<'a>(hash_obj: *mut Obj) -> &'a [u8] {
 }
 
 /// hashlib.md5(data) -> Hash object
-#[no_mangle]
-pub unsafe extern "C" fn rt_hashlib_md5(data: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_hashlib_md5(data: *mut Obj) -> *mut Obj {
     let data_slice = extract_data_slice(data);
     let mut hasher = Md5::new();
     hasher.update(data_slice);
     let digest = hasher.finalize();
     create_hash_obj(&digest[..16])
 }
+#[export_name = "rt_hashlib_md5"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_hashlib_md5_abi(data: Value) -> Value {
+    Value::from_ptr(unsafe { rt_hashlib_md5(data.unwrap_ptr()) })
+}
+
 
 /// hashlib.sha256(data) -> Hash object
-#[no_mangle]
-pub unsafe extern "C" fn rt_hashlib_sha256(data: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_hashlib_sha256(data: *mut Obj) -> *mut Obj {
     let data_slice = extract_data_slice(data);
     let mut hasher = Sha256::new();
     hasher.update(data_slice);
     let digest = hasher.finalize();
     create_hash_obj(&digest[..32])
 }
+#[export_name = "rt_hashlib_sha256"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_hashlib_sha256_abi(data: Value) -> Value {
+    Value::from_ptr(unsafe { rt_hashlib_sha256(data.unwrap_ptr()) })
+}
+
 
 /// hashlib.sha1(data) -> Hash object
-#[no_mangle]
-pub unsafe extern "C" fn rt_hashlib_sha1(data: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_hashlib_sha1(data: *mut Obj) -> *mut Obj {
     let data_slice = extract_data_slice(data);
     let mut hasher = Sha1::new();
     hasher.update(data_slice);
     let digest = hasher.finalize();
     create_hash_obj(&digest[..20])
 }
+#[export_name = "rt_hashlib_sha1"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_hashlib_sha1_abi(data: Value) -> Value {
+    Value::from_ptr(unsafe { rt_hashlib_sha1(data.unwrap_ptr()) })
+}
+
 
 /// Hash.hexdigest() -> str
-#[no_mangle]
-pub unsafe extern "C" fn rt_hash_hexdigest(hash_obj: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_hash_hexdigest(hash_obj: *mut Obj) -> *mut Obj {
     crate::debug_assert_type_tag!(hash_obj, TypeTagKind::Hash, "rt_hash_hexdigest");
     let digest_slice = read_digest(hash_obj);
     let hex_string = digest_slice
@@ -106,11 +121,22 @@ pub unsafe extern "C" fn rt_hash_hexdigest(hash_obj: *mut Obj) -> *mut Obj {
         .collect::<String>();
     crate::string::rt_make_str(hex_string.as_ptr(), hex_string.len())
 }
+#[export_name = "rt_hash_hexdigest"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_hash_hexdigest_abi(hash_obj: Value) -> Value {
+    Value::from_ptr(unsafe { rt_hash_hexdigest(hash_obj.unwrap_ptr()) })
+}
+
 
 /// Hash.digest() -> bytes
-#[no_mangle]
-pub unsafe extern "C" fn rt_hash_digest(hash_obj: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_hash_digest(hash_obj: *mut Obj) -> *mut Obj {
     crate::debug_assert_type_tag!(hash_obj, TypeTagKind::Hash, "rt_hash_digest");
     let digest_slice = read_digest(hash_obj);
     crate::bytes::rt_make_bytes(digest_slice.as_ptr(), digest_slice.len())
 }
+#[export_name = "rt_hash_digest"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_hash_digest_abi(hash_obj: Value) -> Value {
+    Value::from_ptr(unsafe { rt_hash_digest(hash_obj.unwrap_ptr()) })
+}
+

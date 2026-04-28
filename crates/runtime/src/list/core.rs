@@ -10,8 +10,7 @@ use std::alloc::{alloc_zeroed, realloc, Layout};
 
 /// Create a new list with given capacity.
 /// Returns: pointer to allocated ListObj
-#[no_mangle]
-pub extern "C" fn rt_make_list(capacity: i64) -> *mut Obj {
+pub fn rt_make_list(capacity: i64) -> *mut Obj {
     let capacity = capacity.max(0) as usize;
 
     // Calculate size for ListObj (header + len + capacity + data pointer + elem_tag)
@@ -41,11 +40,16 @@ pub extern "C" fn rt_make_list(capacity: i64) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_make_list"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_list_abi(capacity: i64) -> Value {
+    Value::from_ptr(rt_make_list(capacity))
+}
+
 
 /// Set element in list at given index
 /// Supports negative indexing
-#[no_mangle]
-pub extern "C" fn rt_list_set(list: *mut Obj, index: i64, value: *mut Obj) {
+pub fn rt_list_set(list: *mut Obj, index: i64, value: *mut Obj) {
     if list.is_null() {
         return;
     }
@@ -69,12 +73,17 @@ pub extern "C" fn rt_list_set(list: *mut Obj, index: i64, value: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_list_set"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_set_abi(list: Value, index: i64, value: Value) {
+    rt_list_set(list.unwrap_ptr(), index, value.unwrap_ptr())
+}
+
 
 /// Get element from list at given index
 /// Supports negative indexing
 /// Returns: pointer to element or null if out of bounds
-#[no_mangle]
-pub extern "C" fn rt_list_get(list: *mut Obj, index: i64) -> *mut Obj {
+pub fn rt_list_get(list: *mut Obj, index: i64) -> *mut Obj {
     if list.is_null() {
         return std::ptr::null_mut();
     }
@@ -101,10 +110,15 @@ pub extern "C" fn rt_list_get(list: *mut Obj, index: i64) -> *mut Obj {
         v.0 as *mut Obj
     }
 }
+#[export_name = "rt_list_get"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_get_abi(list: Value, index: i64) -> Value {
+    Value::from_ptr(rt_list_get(list.unwrap_ptr(), index))
+}
+
 
 /// Get length of list
-#[no_mangle]
-pub extern "C" fn rt_list_len(list: *mut Obj) -> i64 {
+pub fn rt_list_len(list: *mut Obj) -> i64 {
     if list.is_null() {
         return 0;
     }
@@ -115,6 +129,12 @@ pub extern "C" fn rt_list_len(list: *mut Obj) -> i64 {
         (*list_obj).len as i64
     }
 }
+#[export_name = "rt_list_len"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_len_abi(list: Value) -> i64 {
+    rt_list_len(list.unwrap_ptr())
+}
+
 
 /// Bounds-check helper returning the raw `Value` stored at `index`, or `None`.
 unsafe fn list_get_value(list: *mut Obj, index: i64) -> Option<Value> {
@@ -141,8 +161,7 @@ unsafe fn list_get_value(list: *mut Obj, index: i64) -> Option<Value> {
 /// - 0 = Int:   raw i64 (`Value::unwrap_int`)
 /// - 1 = Float: f64 bit-pattern from the heap-boxed `FloatObj`
 /// - 2 = Bool:  0/1 i64 (`Value::unwrap_bool`)
-#[no_mangle]
-pub extern "C" fn rt_list_get_typed(list: *mut Obj, index: i64, elem_kind: u8) -> i64 {
+pub fn rt_list_get_typed(list: *mut Obj, index: i64, elem_kind: u8) -> i64 {
     use crate::object::FloatObj;
 
     let v = match unsafe { list_get_value(list, index) } {
@@ -158,10 +177,15 @@ pub extern "C" fn rt_list_get_typed(list: *mut Obj, index: i64, elem_kind: u8) -
         }
     }
 }
+#[export_name = "rt_list_get_typed"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_get_typed_abi(list: Value, index: i64, elem_kind: u8) -> i64 {
+    rt_list_get_typed(list.unwrap_ptr(), index, elem_kind)
+}
+
 
 /// Push element to end of list (used during list construction)
-#[no_mangle]
-pub extern "C" fn rt_list_push(list: *mut Obj, value: *mut Obj) {
+pub fn rt_list_push(list: *mut Obj, value: *mut Obj) {
     if list.is_null() {
         return;
     }
@@ -213,6 +237,12 @@ pub extern "C" fn rt_list_push(list: *mut Obj, value: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_list_push"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_push_abi(list: Value, value: Value) {
+    rt_list_push(list.unwrap_ptr(), value.unwrap_ptr())
+}
+
 
 /// Finalize a list by freeing its data array
 /// Called by GC during sweep phase before freeing the ListObj itself

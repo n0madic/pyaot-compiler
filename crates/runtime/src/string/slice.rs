@@ -4,13 +4,13 @@ use crate::exceptions;
 use crate::gc;
 use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
 use crate::slice_utils::{normalize_slice_indices, slice_length};
+use pyaot_core_defs::Value;
 
 /// Slice a string: s[start:end]
 /// Negative indices are supported (counted from end)
 /// Uses i64::MIN as sentinel for "default start" (0) and i64::MAX for "default end" (len)
 /// Returns: pointer to new allocated StrObj
-#[no_mangle]
-pub extern "C" fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut Obj {
+pub fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut Obj {
     use std::ptr;
 
     if str_obj.is_null() {
@@ -55,6 +55,12 @@ pub extern "C" fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut 
         obj
     }
 }
+#[export_name = "rt_str_slice"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_slice_abi(str_obj: Value, start: i64, end: i64) -> Value {
+    Value::from_ptr(rt_str_slice(str_obj.unwrap_ptr(), start, end))
+}
+
 
 /// Slice a string with step: s[start:end:step]
 /// Uses i64::MIN as sentinel for "default start" and i64::MAX for "default end"
@@ -63,8 +69,7 @@ pub extern "C" fn rt_str_slice(str_obj: *mut Obj, start: i64, end: i64) -> *mut 
 ///   - Negative step: start=len-1, end=-1 (before index 0)
 ///
 /// Returns: pointer to new allocated StrObj
-#[no_mangle]
-pub extern "C" fn rt_str_slice_step(
+pub fn rt_str_slice_step(
     str_obj: *mut Obj,
     start: i64,
     end: i64,
@@ -129,6 +134,17 @@ pub extern "C" fn rt_str_slice_step(
         obj
     }
 }
+#[export_name = "rt_str_slice_step"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_slice_step_abi(
+    str_obj: Value,
+    start: i64,
+    end: i64,
+    step: i64,
+) -> Value {
+    Value::from_ptr(rt_str_slice_step(str_obj.unwrap_ptr(), start, end, step))
+}
+
 
 /// Get the UTF-8 byte width of a codepoint starting at `first_byte`.
 /// Returns 1, 2, 3, or 4.
@@ -192,8 +208,7 @@ pub(crate) unsafe fn char_index_to_byte_offset(
 /// Get single character at a byte index (for string iteration).
 /// The `byte_index` must point to the start of a UTF-8 codepoint.
 /// Returns: pointer to new allocated StrObj containing one full codepoint.
-#[no_mangle]
-pub extern "C" fn rt_str_getchar(str_obj: *mut Obj, byte_index: i64) -> *mut Obj {
+pub fn rt_str_getchar(str_obj: *mut Obj, byte_index: i64) -> *mut Obj {
     if str_obj.is_null() {
         return std::ptr::null_mut();
     }
@@ -245,13 +260,18 @@ pub extern "C" fn rt_str_getchar(str_obj: *mut Obj, byte_index: i64) -> *mut Obj
         obj
     }
 }
+#[export_name = "rt_str_getchar"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_getchar_abi(str_obj: Value, byte_index: i64) -> Value {
+    Value::from_ptr(rt_str_getchar(str_obj.unwrap_ptr(), byte_index))
+}
+
 
 /// Python-level string subscript `s[char_index]`.
 /// `char_index` is a Unicode codepoint index (may be negative).
 /// Raises IndexError if out of range.
 /// Returns: pointer to new allocated StrObj containing one full codepoint.
-#[no_mangle]
-pub extern "C" fn rt_str_subscript(str_obj: *mut Obj, char_index: i64) -> *mut Obj {
+pub fn rt_str_subscript(str_obj: *mut Obj, char_index: i64) -> *mut Obj {
     if str_obj.is_null() {
         return std::ptr::null_mut();
     }
@@ -272,3 +292,9 @@ pub extern "C" fn rt_str_subscript(str_obj: *mut Obj, char_index: i64) -> *mut O
         }
     }
 }
+#[export_name = "rt_str_subscript"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_subscript_abi(str_obj: Value, char_index: i64) -> Value {
+    Value::from_ptr(rt_str_subscript(str_obj.unwrap_ptr(), char_index))
+}
+

@@ -32,8 +32,7 @@ unsafe fn raise_type_error(msg: &'static str) -> ! {
 
 /// len(obj) -> *mut Obj (boxed Int)
 /// Returns the length of sequences (list, tuple, dict, set, str, bytes).
-#[no_mangle]
-pub extern "C" fn rt_builtin_len(obj: *mut Obj) -> *mut Obj {
+pub fn rt_builtin_len(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         // SAFETY: static byte string literal is valid for the duration of the call.
         unsafe { raise_type_error("len() argument is None") };
@@ -55,18 +54,28 @@ pub extern "C" fn rt_builtin_len(obj: *mut Obj) -> *mut Obj {
     // Box the result
     pyaot_core_defs::Value::from_int(len).0 as *mut crate::object::Obj
 }
+#[export_name = "rt_builtin_len"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_len_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_builtin_len(obj.unwrap_ptr()))
+}
+
 
 /// str(obj) -> *mut Obj (StrObj)
 /// Converts any object to its string representation.
-#[no_mangle]
-pub extern "C" fn rt_builtin_str(obj: *mut Obj) -> *mut Obj {
+pub fn rt_builtin_str(obj: *mut Obj) -> *mut Obj {
     crate::conversions::rt_obj_to_str(obj)
 }
+#[export_name = "rt_builtin_str"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_str_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_builtin_str(obj.unwrap_ptr()))
+}
+
 
 /// int(obj) -> *mut Obj (boxed Int)
 /// Converts string or float to integer.
-#[no_mangle]
-pub extern "C" fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
+pub fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         // SAFETY: static byte string literal.
         unsafe { raise_type_error("int() argument is None") };
@@ -91,11 +100,16 @@ pub extern "C" fn rt_builtin_int(obj: *mut Obj) -> *mut Obj {
     // Box the result
     pyaot_core_defs::Value::from_int(value).0 as *mut crate::object::Obj
 }
+#[export_name = "rt_builtin_int"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_int_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_builtin_int(obj.unwrap_ptr()))
+}
+
 
 /// float(obj) -> *mut Obj (boxed Float)
 /// Converts string or int to float.
-#[no_mangle]
-pub extern "C" fn rt_builtin_float(obj: *mut Obj) -> *mut Obj {
+pub fn rt_builtin_float(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         // SAFETY: static byte string literal.
         unsafe { raise_type_error("float() argument is None") };
@@ -122,11 +136,16 @@ pub extern "C" fn rt_builtin_float(obj: *mut Obj) -> *mut Obj {
     // Box the result
     boxing::rt_box_float(result)
 }
+#[export_name = "rt_builtin_float"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_float_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_builtin_float(obj.unwrap_ptr()))
+}
+
 
 /// bool(obj) -> *mut Obj (boxed Bool)
 /// Returns truthiness of any object.
-#[no_mangle]
-pub extern "C" fn rt_builtin_bool(obj: *mut Obj) -> *mut Obj {
+pub fn rt_builtin_bool(obj: *mut Obj) -> *mut Obj {
     // Check tagged primitives first (null = None = falsy).
     let v = Value(obj as u64);
     let value = if obj.is_null() || v.is_none() {
@@ -160,11 +179,16 @@ pub extern "C" fn rt_builtin_bool(obj: *mut Obj) -> *mut Obj {
     // Box the result
     pyaot_core_defs::Value::from_bool(value).0 as *mut crate::object::Obj
 }
+#[export_name = "rt_builtin_bool"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_bool_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_builtin_bool(obj.unwrap_ptr()))
+}
+
 
 /// abs(obj) -> *mut Obj (boxed Int or Float)
 /// Returns absolute value of number.
-#[no_mangle]
-pub extern "C" fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
+pub fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         // SAFETY: static byte string literal.
         unsafe { raise_type_error("abs() argument is None") };
@@ -189,11 +213,16 @@ pub extern "C" fn rt_builtin_abs(obj: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_builtin_abs"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_abs_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_builtin_abs(obj.unwrap_ptr()))
+}
+
 
 /// hash(obj) -> *mut Obj (boxed Int)
 /// Returns hash value of hashable object.
-#[no_mangle]
-pub extern "C" fn rt_builtin_hash(obj: *mut Obj) -> *mut Obj {
+pub fn rt_builtin_hash(obj: *mut Obj) -> *mut Obj {
     // Check tagged primitives before heap dereference.
     let v = Value(obj as u64);
     let value = if obj.is_null() || v.is_none() {
@@ -228,20 +257,30 @@ pub extern "C" fn rt_builtin_hash(obj: *mut Obj) -> *mut Obj {
     // Box the result
     pyaot_core_defs::Value::from_int(value).0 as *mut crate::object::Obj
 }
+#[export_name = "rt_builtin_hash"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_hash_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_builtin_hash(obj.unwrap_ptr()))
+}
+
 
 /// ord(obj) -> *mut Obj (boxed Int)
 /// Returns Unicode code point of single-character string.
-#[no_mangle]
-pub extern "C" fn rt_builtin_ord(obj: *mut Obj) -> *mut Obj {
+pub fn rt_builtin_ord(obj: *mut Obj) -> *mut Obj {
     let value = crate::conversions::rt_chr_to_int(obj);
     pyaot_core_defs::Value::from_int(value).0 as *mut crate::object::Obj
 }
+#[export_name = "rt_builtin_ord"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_ord_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_builtin_ord(obj.unwrap_ptr()))
+}
+
 
 /// chr(obj) -> *mut Obj (StrObj)
 /// Returns single-character string from Unicode code point.
 /// Note: obj must be a boxed IntObj containing the code point.
-#[no_mangle]
-pub extern "C" fn rt_builtin_chr(obj: *mut Obj) -> *mut Obj {
+pub fn rt_builtin_chr(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         // SAFETY: static byte string literal.
         unsafe { raise_type_error("chr() argument is None") };
@@ -253,20 +292,36 @@ pub extern "C" fn rt_builtin_chr(obj: *mut Obj) -> *mut Obj {
     // SAFETY: static byte string literal is valid for the duration of the call.
     unsafe { raise_type_error("an integer is required for chr()") }
 }
+#[export_name = "rt_builtin_chr"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_chr_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_builtin_chr(obj.unwrap_ptr()))
+}
+
 
 /// repr(obj) -> *mut Obj (StrObj)
 /// Returns repr string of object.
-#[no_mangle]
-pub extern "C" fn rt_builtin_repr(obj: *mut Obj) -> *mut Obj {
+pub fn rt_builtin_repr(obj: *mut Obj) -> *mut Obj {
     crate::conversions::rt_repr_collection(obj)
 }
+#[export_name = "rt_builtin_repr"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_repr_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_builtin_repr(obj.unwrap_ptr()))
+}
+
 
 /// type(obj) -> *mut Obj (StrObj)
 /// Returns type name string of object.
-#[no_mangle]
-pub extern "C" fn rt_builtin_type(obj: *mut Obj) -> *mut Obj {
+pub fn rt_builtin_type(obj: *mut Obj) -> *mut Obj {
     crate::conversions::rt_type_name(obj)
 }
+#[export_name = "rt_builtin_type"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_builtin_type_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_builtin_type(obj.unwrap_ptr()))
+}
+
 
 // =============================================================================
 // FUNCTION POINTER TABLE

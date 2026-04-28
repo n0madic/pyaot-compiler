@@ -7,11 +7,11 @@ use crate::debug_assert_type_tag;
 use crate::dict::rt_dict_keys;
 use crate::gc;
 use crate::object::{Obj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 /// Create a list iterator
 /// Returns: pointer to new IteratorObj
-#[no_mangle]
-pub extern "C" fn rt_iter_list(list: *mut Obj) -> *mut Obj {
+pub fn rt_iter_list(list: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj};
 
     let size = std::mem::size_of::<IteratorObj>();
@@ -30,11 +30,16 @@ pub extern "C" fn rt_iter_list(list: *mut Obj) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_iter_list"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_list_abi(list: Value) -> Value {
+    Value::from_ptr(rt_iter_list(list.unwrap_ptr()))
+}
+
 
 /// Create a tuple iterator
 /// Returns: pointer to new IteratorObj
-#[no_mangle]
-pub extern "C" fn rt_iter_tuple(tuple: *mut Obj) -> *mut Obj {
+pub fn rt_iter_tuple(tuple: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj};
 
     let size = std::mem::size_of::<IteratorObj>();
@@ -53,11 +58,16 @@ pub extern "C" fn rt_iter_tuple(tuple: *mut Obj) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_iter_tuple"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_tuple_abi(tuple: Value) -> Value {
+    Value::from_ptr(rt_iter_tuple(tuple.unwrap_ptr()))
+}
+
 
 /// Create a dict key iterator
 /// Returns: pointer to new IteratorObj
-#[no_mangle]
-pub extern "C" fn rt_iter_dict(dict: *mut Obj) -> *mut Obj {
+pub fn rt_iter_dict(dict: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::{IteratorKind, IteratorObj};
 
@@ -93,11 +103,16 @@ pub extern "C" fn rt_iter_dict(dict: *mut Obj) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_iter_dict"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_dict_abi(dict: Value) -> Value {
+    Value::from_ptr(rt_iter_dict(dict.unwrap_ptr()))
+}
+
 
 /// Create a string iterator
 /// Returns: pointer to new IteratorObj
-#[no_mangle]
-pub extern "C" fn rt_iter_str(str_obj: *mut Obj) -> *mut Obj {
+pub fn rt_iter_str(str_obj: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj};
 
     let size = std::mem::size_of::<IteratorObj>();
@@ -116,11 +131,16 @@ pub extern "C" fn rt_iter_str(str_obj: *mut Obj) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_iter_str"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_str_abi(str_obj: Value) -> Value {
+    Value::from_ptr(rt_iter_str(str_obj.unwrap_ptr()))
+}
+
 
 /// Create a range iterator
 /// Returns: pointer to new IteratorObj
-#[no_mangle]
-pub extern "C" fn rt_iter_range(start: i64, stop: i64, step: i64) -> *mut Obj {
+pub fn rt_iter_range(start: i64, stop: i64, step: i64) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj};
 
     let size = std::mem::size_of::<IteratorObj>();
@@ -139,11 +159,16 @@ pub extern "C" fn rt_iter_range(start: i64, stop: i64, step: i64) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_iter_range"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_range_abi(start: i64, stop: i64, step: i64) -> Value {
+    Value::from_ptr(rt_iter_range(start, stop, step))
+}
+
 
 /// Create a reversed list iterator
 /// Returns: pointer to new IteratorObj starting at end
-#[no_mangle]
-pub extern "C" fn rt_iter_reversed_list(list: *mut Obj) -> *mut Obj {
+pub fn rt_iter_reversed_list(list: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj, ListObj};
 
     let size = std::mem::size_of::<IteratorObj>();
@@ -166,11 +191,16 @@ pub extern "C" fn rt_iter_reversed_list(list: *mut Obj) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_iter_reversed_list"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_reversed_list_abi(list: Value) -> Value {
+    Value::from_ptr(rt_iter_reversed_list(list.unwrap_ptr()))
+}
+
 
 /// Create a reversed tuple iterator
 /// Returns: pointer to new IteratorObj starting at end
-#[no_mangle]
-pub extern "C" fn rt_iter_reversed_tuple(tuple: *mut Obj) -> *mut Obj {
+pub fn rt_iter_reversed_tuple(tuple: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj, TupleObj};
 
     let size = std::mem::size_of::<IteratorObj>();
@@ -193,11 +223,16 @@ pub extern "C" fn rt_iter_reversed_tuple(tuple: *mut Obj) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_iter_reversed_tuple"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_reversed_tuple_abi(tuple: Value) -> Value {
+    Value::from_ptr(rt_iter_reversed_tuple(tuple.unwrap_ptr()))
+}
+
 
 /// Create a reversed string iterator
 /// Returns: pointer to new IteratorObj starting at end
-#[no_mangle]
-pub extern "C" fn rt_iter_reversed_str(str_obj: *mut Obj) -> *mut Obj {
+pub fn rt_iter_reversed_str(str_obj: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj, StrObj};
 
     let size = std::mem::size_of::<IteratorObj>();
@@ -233,11 +268,16 @@ pub extern "C" fn rt_iter_reversed_str(str_obj: *mut Obj) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_iter_reversed_str"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_reversed_str_abi(str_obj: Value) -> Value {
+    Value::from_ptr(rt_iter_reversed_str(str_obj.unwrap_ptr()))
+}
+
 
 /// Create a reversed dict key iterator
 /// Returns: pointer to new IteratorObj starting at end of keys
-#[no_mangle]
-pub extern "C" fn rt_iter_reversed_dict(dict: *mut Obj) -> *mut Obj {
+pub fn rt_iter_reversed_dict(dict: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::{IteratorKind, IteratorObj, ListObj};
 
@@ -276,13 +316,18 @@ pub extern "C" fn rt_iter_reversed_dict(dict: *mut Obj) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_iter_reversed_dict"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_reversed_dict_abi(dict: Value) -> Value {
+    Value::from_ptr(rt_iter_reversed_dict(dict.unwrap_ptr()))
+}
+
 
 /// Create a reversed range iterator
 /// reversed(range(start, stop, step)) is equivalent to range(stop-step, start-step, -step)
 /// but we need to be careful about the math
 /// Returns: pointer to new IteratorObj
-#[no_mangle]
-pub extern "C" fn rt_iter_reversed_range(start: i64, stop: i64, step: i64) -> *mut Obj {
+pub fn rt_iter_reversed_range(start: i64, stop: i64, step: i64) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj};
 
     let size = std::mem::size_of::<IteratorObj>();
@@ -342,19 +387,29 @@ pub extern "C" fn rt_iter_reversed_range(start: i64, stop: i64, step: i64) -> *m
 
     obj
 }
+#[export_name = "rt_iter_reversed_range"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_reversed_range_abi(start: i64, stop: i64, step: i64) -> Value {
+    Value::from_ptr(rt_iter_reversed_range(start, stop, step))
+}
+
 
 /// Create an iterator for a generator
 /// Generators are their own iterators, so this just returns the generator itself
 /// Returns: the same generator object
-#[no_mangle]
-pub extern "C" fn rt_iter_generator(gen: *mut Obj) -> *mut Obj {
+pub fn rt_iter_generator(gen: *mut Obj) -> *mut Obj {
     gen
 }
+#[export_name = "rt_iter_generator"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_generator_abi(gen: Value) -> Value {
+    Value::from_ptr(rt_iter_generator(gen.unwrap_ptr()))
+}
+
 
 /// Create an enumerate iterator wrapping an inner iterator
 /// Returns: pointer to new IteratorObj with Enumerate kind
-#[no_mangle]
-pub extern "C" fn rt_iter_enumerate(inner_iter: *mut Obj, start: i64) -> *mut Obj {
+pub fn rt_iter_enumerate(inner_iter: *mut Obj, start: i64) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj};
 
     let size = std::mem::size_of::<IteratorObj>();
@@ -373,11 +428,16 @@ pub extern "C" fn rt_iter_enumerate(inner_iter: *mut Obj, start: i64) -> *mut Ob
 
     obj
 }
+#[export_name = "rt_iter_enumerate"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_enumerate_abi(inner_iter: Value, start: i64) -> Value {
+    Value::from_ptr(rt_iter_enumerate(inner_iter.unwrap_ptr(), start))
+}
+
 
 /// Create a set iterator
 /// Returns: pointer to IteratorObj
-#[no_mangle]
-pub extern "C" fn rt_iter_set(set: *mut Obj) -> *mut Obj {
+pub fn rt_iter_set(set: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj};
 
     let size = std::mem::size_of::<IteratorObj>();
@@ -396,11 +456,16 @@ pub extern "C" fn rt_iter_set(set: *mut Obj) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_iter_set"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_set_abi(set: Value) -> Value {
+    Value::from_ptr(rt_iter_set(set.unwrap_ptr()))
+}
+
 
 /// Create a bytes iterator
 /// Returns: pointer to new IteratorObj
-#[no_mangle]
-pub extern "C" fn rt_iter_bytes(bytes: *mut Obj) -> *mut Obj {
+pub fn rt_iter_bytes(bytes: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, IteratorObj};
 
     let size = std::mem::size_of::<IteratorObj>();
@@ -419,11 +484,16 @@ pub extern "C" fn rt_iter_bytes(bytes: *mut Obj) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_iter_bytes"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_bytes_abi(bytes: Value) -> Value {
+    Value::from_ptr(rt_iter_bytes(bytes.unwrap_ptr()))
+}
+
 
 /// Create a reversed bytes iterator
 /// Returns: pointer to new IteratorObj starting at end
-#[no_mangle]
-pub extern "C" fn rt_iter_reversed_bytes(bytes: *mut Obj) -> *mut Obj {
+pub fn rt_iter_reversed_bytes(bytes: *mut Obj) -> *mut Obj {
     use crate::object::{BytesObj, IteratorKind, IteratorObj};
 
     let size = std::mem::size_of::<IteratorObj>();
@@ -446,3 +516,9 @@ pub extern "C" fn rt_iter_reversed_bytes(bytes: *mut Obj) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_iter_reversed_bytes"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_reversed_bytes_abi(bytes: Value) -> Value {
+    Value::from_ptr(rt_iter_reversed_bytes(bytes.unwrap_ptr()))
+}
+

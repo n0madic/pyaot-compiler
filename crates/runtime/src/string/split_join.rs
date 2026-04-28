@@ -6,13 +6,13 @@ use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
 use crate::list::{rt_list_len, rt_list_push, rt_make_list};
 use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind};
 use crate::string::search::{bmh_find_from, build_bad_char_table, BMH_THRESHOLD};
+use pyaot_core_defs::Value;
 
 use super::core::rt_make_str;
 
 /// Split string by separator using Boyer-Moore-Horspool
 /// Returns: list of strings
-#[no_mangle]
-pub extern "C" fn rt_str_split(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj {
+pub fn rt_str_split(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj {
     if str_obj.is_null() {
         return rt_make_list(0);
     }
@@ -143,11 +143,16 @@ pub extern "C" fn rt_str_split(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) 
         list
     }
 }
+#[export_name = "rt_str_split"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_split_abi(str_obj: Value, sep: Value, maxsplit: i64) -> Value {
+    Value::from_ptr(rt_str_split(str_obj.unwrap_ptr(), sep.unwrap_ptr(), maxsplit))
+}
+
 
 /// Join list of strings with separator
 /// Returns: concatenated string
-#[no_mangle]
-pub extern "C" fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
+pub fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
     if list_obj.is_null() {
         return unsafe { rt_make_str(std::ptr::null(), 0) };
     }
@@ -231,14 +236,19 @@ pub extern "C" fn rt_str_join(sep: *mut Obj, list_obj: *mut Obj) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_str_join"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_join_abi(sep: Value, list_obj: Value) -> Value {
+    Value::from_ptr(rt_str_join(sep.unwrap_ptr(), list_obj.unwrap_ptr()))
+}
+
 
 /// str.splitlines() - Split string at line boundaries
 /// Returns list of lines in the string, breaking at line boundaries.
 /// Line breaks are not included in the resulting list.
 /// Recognizes: \n, \r, \r\n
 /// Returns: pointer to new ListObj containing StrObj elements
-#[no_mangle]
-pub extern "C" fn rt_str_splitlines(s: *mut Obj) -> *mut Obj {
+pub fn rt_str_splitlines(s: *mut Obj) -> *mut Obj {
     if s.is_null() {
         return rt_make_list(0);
     }
@@ -326,12 +336,17 @@ pub extern "C" fn rt_str_splitlines(s: *mut Obj) -> *mut Obj {
         list
     }
 }
+#[export_name = "rt_str_splitlines"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_splitlines_abi(s: Value) -> Value {
+    Value::from_ptr(rt_str_splitlines(s.unwrap_ptr()))
+}
+
 
 /// str.partition(sep) - Split at first occurrence of separator
 /// Returns (before, sep, after) tuple. If sep not found, returns (str, '', '').
 /// Returns: pointer to new 3-tuple
-#[no_mangle]
-pub extern "C" fn rt_str_partition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
+pub fn rt_str_partition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
     use crate::tuple::{rt_make_tuple, rt_tuple_set};
 
     if s.is_null() || sep.is_null() {
@@ -433,12 +448,17 @@ pub extern "C" fn rt_str_partition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
         tuple
     }
 }
+#[export_name = "rt_str_partition"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_partition_abi(s: Value, sep: Value) -> Value {
+    Value::from_ptr(rt_str_partition(s.unwrap_ptr(), sep.unwrap_ptr()))
+}
+
 
 /// str.rpartition(sep) - Split at last occurrence of separator
 /// Returns (before, sep, after) tuple. If sep not found, returns ('', '', str).
 /// Returns: pointer to new 3-tuple
-#[no_mangle]
-pub extern "C" fn rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
+pub fn rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
     use crate::tuple::{rt_make_tuple, rt_tuple_set};
 
     if s.is_null() || sep.is_null() {
@@ -535,11 +555,16 @@ pub extern "C" fn rt_str_rpartition(s: *mut Obj, sep: *mut Obj) -> *mut Obj {
         tuple
     }
 }
+#[export_name = "rt_str_rpartition"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_rpartition_abi(s: Value, sep: Value) -> Value {
+    Value::from_ptr(rt_str_rpartition(s.unwrap_ptr(), sep.unwrap_ptr()))
+}
+
 
 /// Split string by separator from the right using Boyer-Moore-Horspool
 /// Returns: list of strings
-#[no_mangle]
-pub extern "C" fn rt_str_rsplit(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj {
+pub fn rt_str_rsplit(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64) -> *mut Obj {
     if str_obj.is_null() {
         return rt_make_list(0);
     }
@@ -670,3 +695,9 @@ pub extern "C" fn rt_str_rsplit(str_obj: *mut Obj, sep: *mut Obj, maxsplit: i64)
         list
     }
 }
+#[export_name = "rt_str_rsplit"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_rsplit_abi(str_obj: Value, sep: Value, maxsplit: i64) -> Value {
+    Value::from_ptr(rt_str_rsplit(str_obj.unwrap_ptr(), sep.unwrap_ptr(), maxsplit))
+}
+

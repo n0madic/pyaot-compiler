@@ -5,6 +5,7 @@
 
 use crate::gc::gc_alloc;
 use crate::object::{FileEncoding, FileMode, FileObj, Obj, StrObj, TypeTagKind};
+use pyaot_core_defs::Value;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, Write};
 use std::ptr;
@@ -111,8 +112,7 @@ fn encode_str(s: &str, encoding: FileEncoding) -> std::result::Result<Vec<u8>, S
 /// `filename` must be a valid pointer to a StrObj.
 /// `mode` must be a valid pointer to a StrObj containing a supported mode string.
 /// `encoding` must be a valid pointer to a StrObj or null (defaults to utf-8).
-#[no_mangle]
-pub unsafe extern "C" fn rt_file_open(
+pub unsafe fn rt_file_open(
     filename: *mut Obj,
     mode: *mut Obj,
     encoding: *mut Obj,
@@ -225,13 +225,22 @@ pub unsafe extern "C" fn rt_file_open(
         }
     }
 }
+#[export_name = "rt_file_open"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_file_open_abi(
+    filename: Value,
+    mode: Value,
+    encoding: Value,
+) -> Value {
+    Value::from_ptr(unsafe { rt_file_open(filename.unwrap_ptr(), mode.unwrap_ptr(), encoding.unwrap_ptr()) })
+}
+
 
 /// Read the entire file contents as a string (text mode) or bytes (binary mode)
 ///
 /// # Safety
 /// `file` must be a valid pointer to a FileObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_file_read(file: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_file_read(file: *mut Obj) -> *mut Obj {
     check_file_valid(file);
     let file_obj = file as *mut FileObj;
 
@@ -284,13 +293,18 @@ pub unsafe extern "C" fn rt_file_read(file: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_file_read"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_file_read_abi(file: Value) -> Value {
+    Value::from_ptr(unsafe { rt_file_read(file.unwrap_ptr()) })
+}
+
 
 /// Read up to n bytes/characters from the file
 ///
 /// # Safety
 /// `file` must be a valid pointer to a FileObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_file_read_n(file: *mut Obj, n: i64) -> *mut Obj {
+pub unsafe fn rt_file_read_n(file: *mut Obj, n: i64) -> *mut Obj {
     check_file_valid(file);
     let file_obj = file as *mut FileObj;
 
@@ -344,13 +358,18 @@ pub unsafe extern "C" fn rt_file_read_n(file: *mut Obj, n: i64) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_file_read_n"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_file_read_n_abi(file: Value, n: i64) -> Value {
+    Value::from_ptr(unsafe { rt_file_read_n(file.unwrap_ptr(), n) })
+}
+
 
 /// Read a single line from the file (including the newline character if present)
 ///
 /// # Safety
 /// `file` must be a valid pointer to a FileObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_file_readline(file: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_file_readline(file: *mut Obj) -> *mut Obj {
     check_file_valid(file);
     let file_obj = file as *mut FileObj;
 
@@ -416,13 +435,18 @@ pub unsafe extern "C" fn rt_file_readline(file: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_file_readline"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_file_readline_abi(file: Value) -> Value {
+    Value::from_ptr(unsafe { rt_file_readline(file.unwrap_ptr()) })
+}
+
 
 /// Read all lines from the file as a list of strings (text mode) or list of bytes (binary mode)
 ///
 /// # Safety
 /// `file` must be a valid pointer to a FileObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
     check_file_valid(file);
     let file_obj = file as *mut FileObj;
 
@@ -526,6 +550,12 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
     crate::gc::gc_pop();
     roots[0] // live list pointer
 }
+#[export_name = "rt_file_readlines"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_file_readlines_abi(file: Value) -> Value {
+    Value::from_ptr(unsafe { rt_file_readlines(file.unwrap_ptr()) })
+}
+
 
 /// Write data to the file
 /// Returns the number of bytes/characters written
@@ -533,8 +563,7 @@ pub unsafe extern "C" fn rt_file_readlines(file: *mut Obj) -> *mut Obj {
 /// # Safety
 /// `file` must be a valid pointer to a FileObj.
 /// `data` must be a valid pointer to a StrObj or BytesObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_file_write(file: *mut Obj, data: *mut Obj) -> i64 {
+pub unsafe fn rt_file_write(file: *mut Obj, data: *mut Obj) -> i64 {
     check_file_valid(file);
     let file_obj = file as *mut FileObj;
 
@@ -598,13 +627,18 @@ pub unsafe extern "C" fn rt_file_write(file: *mut Obj, data: *mut Obj) -> i64 {
         }
     }
 }
+#[export_name = "rt_file_write"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_file_write_abi(file: Value, data: Value) -> i64 {
+    unsafe { rt_file_write(file.unwrap_ptr(), data.unwrap_ptr()) }
+}
+
 
 /// Close the file
 ///
 /// # Safety
 /// `file` must be a valid pointer to a FileObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_file_close(file: *mut Obj) {
+pub unsafe fn rt_file_close(file: *mut Obj) {
     if file.is_null() {
         return;
     }
@@ -623,13 +657,18 @@ pub unsafe extern "C" fn rt_file_close(file: *mut Obj) {
 
     (*file_obj).closed = true;
 }
+#[export_name = "rt_file_close"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_file_close_abi(file: Value) {
+    unsafe { rt_file_close(file.unwrap_ptr()) }
+}
+
 
 /// Flush the file buffer
 ///
 /// # Safety
 /// `file` must be a valid pointer to a FileObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_file_flush(file: *mut Obj) {
+pub unsafe fn rt_file_flush(file: *mut Obj) {
     check_file_valid(file);
     let file_obj = file as *mut FileObj;
 
@@ -643,33 +682,48 @@ pub unsafe extern "C" fn rt_file_flush(file: *mut Obj) {
         );
     }
 }
+#[export_name = "rt_file_flush"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_file_flush_abi(file: Value) {
+    unsafe { rt_file_flush(file.unwrap_ptr()) }
+}
+
 
 /// Context manager __enter__ - returns self
 ///
 /// # Safety
 /// `file` must be a valid pointer to a FileObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_file_enter(file: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_file_enter(file: *mut Obj) -> *mut Obj {
     check_file_valid(file);
     file
 }
+#[export_name = "rt_file_enter"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_file_enter_abi(file: Value) -> Value {
+    Value::from_ptr(unsafe { rt_file_enter(file.unwrap_ptr()) })
+}
+
 
 /// Context manager __exit__ - closes the file and returns False
 ///
 /// # Safety
 /// `file` must be a valid pointer to a FileObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_file_exit(file: *mut Obj) -> i8 {
+pub unsafe fn rt_file_exit(file: *mut Obj) -> i8 {
     rt_file_close(file);
     0 // Return False (don't suppress exceptions)
 }
+#[export_name = "rt_file_exit"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_file_exit_abi(file: Value) -> i8 {
+    unsafe { rt_file_exit(file.unwrap_ptr()) }
+}
+
 
 /// Check if the file is closed
 ///
 /// # Safety
 /// `file` must be a valid pointer to a FileObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_file_is_closed(file: *mut Obj) -> i8 {
+pub unsafe fn rt_file_is_closed(file: *mut Obj) -> i8 {
     if file.is_null() {
         return 1;
     }
@@ -680,19 +734,30 @@ pub unsafe extern "C" fn rt_file_is_closed(file: *mut Obj) -> i8 {
         0
     }
 }
+#[export_name = "rt_file_is_closed"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_file_is_closed_abi(file: Value) -> i8 {
+    unsafe { rt_file_is_closed(file.unwrap_ptr()) }
+}
+
 
 /// Get the filename of the file
 ///
 /// # Safety
 /// `file` must be a valid pointer to a FileObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_file_name(file: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_file_name(file: *mut Obj) -> *mut Obj {
     if file.is_null() {
         return crate::string::rt_make_str(ptr::null(), 0);
     }
     let file_obj = file as *mut FileObj;
     (*file_obj).name
 }
+#[export_name = "rt_file_name"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_file_name_abi(file: Value) -> Value {
+    Value::from_ptr(unsafe { rt_file_name(file.unwrap_ptr()) })
+}
+
 
 // ==================== Helper functions ====================
 

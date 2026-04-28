@@ -5,6 +5,7 @@
 use super::EXHAUSTED_SENTINEL;
 use crate::exceptions;
 use crate::object::{GeneratorObj, Obj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 use super::composite::{call_filter_with_captures, call_map_with_captures};
 
@@ -794,20 +795,23 @@ unsafe fn iter_next_islice(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut
 /// Get next element from iterator
 /// Raises StopIteration when iterator is exhausted
 /// Returns: pointer to next element
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_iter_next(iter_obj: *mut Obj) -> *mut Obj {
+pub fn rt_iter_next(iter_obj: *mut Obj) -> *mut Obj {
     // Delegate to internal implementation with raise_on_exhausted = true
     rt_iter_next_internal(iter_obj, true)
 }
+#[export_name = "rt_iter_next"]
+pub extern "C" fn rt_iter_next_abi(iter_obj: Value) -> Value {
+    Value::from_ptr(rt_iter_next(iter_obj.unwrap_ptr()))
+}
+
 
 /// Get next element from iterator WITHOUT raising exceptions
 /// Sets the exhausted flag but returns a dummy value instead of raising
 /// This is used by for-loops which check the exhausted flag after next()
 /// Returns: pointer to next element, or 0 if exhausted
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_iter_next_no_exc(iter_obj: *mut Obj) -> *mut Obj {
+pub fn rt_iter_next_no_exc(iter_obj: *mut Obj) -> *mut Obj {
     use crate::object::{GeneratorObj, IteratorObj};
 
     let result = rt_iter_next_internal(iter_obj, false);
@@ -836,13 +840,17 @@ pub extern "C" fn rt_iter_next_no_exc(iter_obj: *mut Obj) -> *mut Obj {
         result
     }
 }
+#[export_name = "rt_iter_next_no_exc"]
+pub extern "C" fn rt_iter_next_no_exc_abi(iter_obj: Value) -> Value {
+    Value::from_ptr(rt_iter_next_no_exc(iter_obj.unwrap_ptr()))
+}
+
 
 /// Check if an iterator or generator is exhausted
 /// Works for both IteratorObj (lists, tuples, etc.) and GeneratorObj
 /// Returns: 1 if exhausted, 0 if not
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_iter_is_exhausted(obj: *mut Obj) -> i8 {
+pub fn rt_iter_is_exhausted(obj: *mut Obj) -> i8 {
     use crate::object::{GeneratorObj, IteratorObj};
 
     if obj.is_null() {
@@ -874,3 +882,8 @@ pub extern "C" fn rt_iter_is_exhausted(obj: *mut Obj) -> i8 {
         }
     }
 }
+#[export_name = "rt_iter_is_exhausted"]
+pub extern "C" fn rt_iter_is_exhausted_abi(obj: Value) -> i8 {
+    rt_iter_is_exhausted(obj.unwrap_ptr())
+}
+

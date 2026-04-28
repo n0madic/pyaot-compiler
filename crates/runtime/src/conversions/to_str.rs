@@ -5,45 +5,64 @@ use pyaot_core_defs::Value;
 
 /// Convert an integer to a string
 /// Returns: pointer to new allocated StrObj
-#[no_mangle]
-pub extern "C" fn rt_int_to_str(value: i64) -> *mut Obj {
+pub fn rt_int_to_str(value: i64) -> *mut Obj {
     let s = value.to_string();
     let bytes = s.as_bytes();
     unsafe { crate::string::rt_make_str_impl(bytes.as_ptr(), bytes.len()) }
 }
+#[export_name = "rt_int_to_str"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_int_to_str_abi(value: i64) -> Value {
+    Value::from_ptr(rt_int_to_str(value))
+}
+
 
 /// Convert a float to a string
 /// Returns: pointer to new allocated StrObj
-#[no_mangle]
-pub extern "C" fn rt_float_to_str(value: f64) -> *mut Obj {
+pub fn rt_float_to_str(value: f64) -> *mut Obj {
     let s = crate::utils::format_float_python(value);
     let bytes = s.as_bytes();
     unsafe { crate::string::rt_make_str_impl(bytes.as_ptr(), bytes.len()) }
 }
+#[export_name = "rt_float_to_str"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_float_to_str_abi(value: f64) -> Value {
+    Value::from_ptr(rt_float_to_str(value))
+}
+
 
 /// Convert a boolean to a string ("True" or "False")
 /// Returns: pointer to new allocated StrObj
-#[no_mangle]
-pub extern "C" fn rt_bool_to_str(value: i8) -> *mut Obj {
+pub fn rt_bool_to_str(value: i8) -> *mut Obj {
     let s = if value != 0 { "True" } else { "False" };
     let bytes = s.as_bytes();
     unsafe { crate::string::rt_make_str_impl(bytes.as_ptr(), bytes.len()) }
 }
+#[export_name = "rt_bool_to_str"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bool_to_str_abi(value: i8) -> Value {
+    Value::from_ptr(rt_bool_to_str(value))
+}
+
 
 /// Convert None to a string ("None")
 /// Returns: pointer to new allocated StrObj
-#[no_mangle]
-pub extern "C" fn rt_none_to_str() -> *mut Obj {
+pub fn rt_none_to_str() -> *mut Obj {
     let s = "None";
     let bytes = s.as_bytes();
     unsafe { crate::string::rt_make_str_impl(bytes.as_ptr(), bytes.len()) }
 }
+#[export_name = "rt_none_to_str"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_none_to_str_abi() -> Value {
+    Value::from_ptr(rt_none_to_str())
+}
+
 
 /// Convert a string to an integer
 /// Returns: i64 value
 /// Raises: ValueError if string is not a valid integer
-#[no_mangle]
-pub extern "C" fn rt_str_to_int(str_obj: *mut Obj) -> i64 {
+pub fn rt_str_to_int(str_obj: *mut Obj) -> i64 {
     use crate::object::StrObj;
 
     if str_obj.is_null() {
@@ -81,12 +100,17 @@ pub extern "C" fn rt_str_to_int(str_obj: *mut Obj) -> i64 {
         }
     }
 }
+#[export_name = "rt_str_to_int"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_to_int_abi(str_obj: Value) -> i64 {
+    rt_str_to_int(str_obj.unwrap_ptr())
+}
+
 
 /// Convert a string to a float
 /// Returns: f64 value
 /// Raises: ValueError if string is not a valid float
-#[no_mangle]
-pub extern "C" fn rt_str_to_float(str_obj: *mut Obj) -> f64 {
+pub fn rt_str_to_float(str_obj: *mut Obj) -> f64 {
     use crate::object::StrObj;
 
     if str_obj.is_null() {
@@ -124,12 +148,17 @@ pub extern "C" fn rt_str_to_float(str_obj: *mut Obj) -> f64 {
         }
     }
 }
+#[export_name = "rt_str_to_float"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_to_float_abi(str_obj: Value) -> f64 {
+    rt_str_to_float(str_obj.unwrap_ptr())
+}
+
 
 /// Convert integer code point to character: chr(i) -> str
 /// Returns: pointer to single-character string
 /// Raises: ValueError if codepoint is out of range
-#[no_mangle]
-pub extern "C" fn rt_int_to_chr(codepoint: i64) -> *mut Obj {
+pub fn rt_int_to_chr(codepoint: i64) -> *mut Obj {
     if !(0..=0x10FFFF).contains(&codepoint) {
         unsafe {
             raise_exc!(
@@ -153,12 +182,17 @@ pub extern "C" fn rt_int_to_chr(codepoint: i64) -> *mut Obj {
     let bytes = s.as_bytes();
     unsafe { crate::string::rt_make_str_impl(bytes.as_ptr(), bytes.len()) }
 }
+#[export_name = "rt_int_to_chr"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_int_to_chr_abi(codepoint: i64) -> Value {
+    Value::from_ptr(rt_int_to_chr(codepoint))
+}
+
 
 /// Convert character to integer code point: ord(s) -> i64
 /// Returns: Unicode code point as integer
 /// Raises: ValueError if string is not exactly one character
-#[no_mangle]
-pub extern "C" fn rt_chr_to_int(str_obj: *mut Obj) -> i64 {
+pub fn rt_chr_to_int(str_obj: *mut Obj) -> i64 {
     use crate::object::StrObj;
 
     if str_obj.is_null() {
@@ -205,13 +239,18 @@ pub extern "C" fn rt_chr_to_int(str_obj: *mut Obj) -> i64 {
         }
     }
 }
+#[export_name = "rt_chr_to_int"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_chr_to_int_abi(str_obj: Value) -> i64 {
+    rt_chr_to_int(str_obj.unwrap_ptr())
+}
+
 
 /// Convert any heap object to string with runtime type dispatch
 /// Used for Union types where the actual type is determined at runtime
 /// Returns: pointer to new allocated StrObj
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_to_str(obj: *mut Obj) -> *mut Obj {
+pub fn rt_obj_to_str(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         return rt_none_to_str();
     }
@@ -245,6 +284,11 @@ pub extern "C" fn rt_obj_to_str(obj: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_obj_to_str"]
+pub extern "C" fn rt_obj_to_str_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_obj_to_str(obj.unwrap_ptr()))
+}
+
 
 /// Build a repr string for any object (used by str() for containers)
 pub(super) unsafe fn obj_to_repr_string(obj: *mut Obj) -> String {

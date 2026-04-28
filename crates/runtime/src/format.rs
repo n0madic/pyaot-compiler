@@ -625,8 +625,7 @@ unsafe fn raise_value_error(msg: &str) -> ! {
 /// # Safety
 /// - `value` must be a valid object pointer
 /// - `spec` must be null or a valid StrObj pointer
-#[no_mangle]
-pub unsafe extern "C" fn rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mut Obj {
     // Get the format specification string
     let spec_str = if spec.is_null() {
         ""
@@ -713,3 +712,9 @@ pub unsafe extern "C" fn rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mu
     // Create and return the formatted string
     crate::string::rt_make_str(formatted.as_ptr(), formatted.len())
 }
+#[export_name = "rt_format_value"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_format_value_abi(value: Value, spec: Value) -> Value {
+    Value::from_ptr(unsafe { rt_format_value(value.unwrap_ptr(), spec.unwrap_ptr()) })
+}
+

@@ -5,6 +5,7 @@
 use crate::exceptions::ExceptionType;
 use crate::gc::gc_alloc;
 use crate::object::{GeneratorObj, Obj, TypeTagKind};
+use pyaot_core_defs::Value;
 use std::mem::size_of;
 
 // External function provided by compiled code - dispatches to the appropriate resume function
@@ -16,8 +17,7 @@ extern "C" {
 ///
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_next(gen: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_generator_next(gen: *mut Obj) -> *mut Obj {
     // Check if it's actually a generator
     if gen.is_null() || (*gen).header.type_tag != TypeTagKind::Generator {
         raise_exc!(
@@ -29,6 +29,12 @@ pub unsafe extern "C" fn rt_generator_next(gen: *mut Obj) -> *mut Obj {
     // Call the dispatcher function (provided by compiled code)
     __pyaot_generator_resume(gen)
 }
+#[export_name = "rt_generator_next"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_next_abi(gen: Value) -> Value {
+    Value::from_ptr(unsafe { rt_generator_next(gen.unwrap_ptr()) })
+}
+
 
 // §F.7b: TypeTagKindsGuard removed — per-slot tag side-array deleted.
 
@@ -36,8 +42,7 @@ pub unsafe extern "C" fn rt_generator_next(gen: *mut Obj) -> *mut Obj {
 ///
 /// # Safety
 /// The returned pointer must be treated as a GC-managed object.
-#[no_mangle]
-pub unsafe extern "C" fn rt_make_generator(func_id: u32, num_locals: u32) -> *mut Obj {
+pub unsafe fn rt_make_generator(func_id: u32, num_locals: u32) -> *mut Obj {
     // Calculate size: header + fixed fields + locals array
     // Use checked arithmetic to prevent overflow
     let locals_size = (num_locals as usize)
@@ -74,34 +79,49 @@ pub unsafe extern "C" fn rt_make_generator(func_id: u32, num_locals: u32) -> *mu
 
     obj
 }
+#[export_name = "rt_make_generator"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_generator_abi(func_id: u32, num_locals: u32) -> Value {
+    Value::from_ptr(unsafe { rt_make_generator(func_id, num_locals) })
+}
+
 
 /// Get the current state of a generator
 ///
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_get_state(gen: *mut Obj) -> u32 {
+pub unsafe fn rt_generator_get_state(gen: *mut Obj) -> u32 {
     let gen = gen as *mut GeneratorObj;
     (*gen).state
 }
+#[export_name = "rt_generator_get_state"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_get_state_abi(gen: Value) -> u32 {
+    unsafe { rt_generator_get_state(gen.unwrap_ptr()) }
+}
+
 
 /// Set the current state of a generator
 ///
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_set_state(gen: *mut Obj, state: u32) {
+pub unsafe fn rt_generator_set_state(gen: *mut Obj, state: u32) {
     let gen = gen as *mut GeneratorObj;
     (*gen).state = state;
 }
+#[export_name = "rt_generator_set_state"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_set_state_abi(gen: Value, state: u32) {
+    unsafe { rt_generator_set_state(gen.unwrap_ptr(), state) }
+}
+
 
 /// Get a local variable from the generator (as i64 for int/float bits/bool/ptr)
 ///
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj.
 /// `index` must be less than the generator's num_locals.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_get_local(gen: *mut Obj, index: u32) -> i64 {
+pub unsafe fn rt_generator_get_local(gen: *mut Obj, index: u32) -> i64 {
     let gen = gen as *mut GeneratorObj;
     if index >= (*gen).num_locals {
         eprintln!(
@@ -114,14 +134,19 @@ pub unsafe extern "C" fn rt_generator_get_local(gen: *mut Obj, index: u32) -> i6
     let locals_ptr = (*gen).locals.as_ptr();
     (*locals_ptr.add(index as usize)).0 as i64
 }
+#[export_name = "rt_generator_get_local"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_get_local_abi(gen: Value, index: u32) -> i64 {
+    unsafe { rt_generator_get_local(gen.unwrap_ptr(), index) }
+}
+
 
 /// Set a local variable in the generator (as i64)
 ///
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj.
 /// `index` must be less than the generator's num_locals.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_set_local(gen: *mut Obj, index: u32, value: i64) {
+pub unsafe fn rt_generator_set_local(gen: *mut Obj, index: u32, value: i64) {
     let gen = gen as *mut GeneratorObj;
     if index >= (*gen).num_locals {
         eprintln!(
@@ -134,14 +159,19 @@ pub unsafe extern "C" fn rt_generator_set_local(gen: *mut Obj, index: u32, value
     let locals_ptr = (*gen).locals.as_mut_ptr();
     *locals_ptr.add(index as usize) = pyaot_core_defs::Value(value as u64);
 }
+#[export_name = "rt_generator_set_local"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_set_local_abi(gen: Value, index: u32, value: i64) {
+    unsafe { rt_generator_set_local(gen.unwrap_ptr(), index, value) }
+}
+
 
 /// Get a local variable from the generator as a pointer
 ///
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj.
 /// `index` must be less than the generator's num_locals.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_get_local_ptr(gen: *mut Obj, index: u32) -> *mut Obj {
+pub unsafe fn rt_generator_get_local_ptr(gen: *mut Obj, index: u32) -> *mut Obj {
     let gen = gen as *mut GeneratorObj;
     if index >= (*gen).num_locals {
         eprintln!(
@@ -154,14 +184,19 @@ pub unsafe extern "C" fn rt_generator_get_local_ptr(gen: *mut Obj, index: u32) -
     let locals_ptr = (*gen).locals.as_ptr();
     (*locals_ptr.add(index as usize)).0 as *mut Obj
 }
+#[export_name = "rt_generator_get_local_ptr"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_get_local_ptr_abi(gen: Value, index: u32) -> Value {
+    Value::from_ptr(unsafe { rt_generator_get_local_ptr(gen.unwrap_ptr(), index) })
+}
+
 
 /// Set a local variable in the generator as a pointer
 ///
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj.
 /// `index` must be less than the generator's num_locals.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_set_local_ptr(gen: *mut Obj, index: u32, value: *mut Obj) {
+pub unsafe fn rt_generator_set_local_ptr(gen: *mut Obj, index: u32, value: *mut Obj) {
     let gen = gen as *mut GeneratorObj;
     if index >= (*gen).num_locals {
         eprintln!(
@@ -174,6 +209,12 @@ pub unsafe extern "C" fn rt_generator_set_local_ptr(gen: *mut Obj, index: u32, v
     let locals_ptr = (*gen).locals.as_mut_ptr();
     *locals_ptr.add(index as usize) = pyaot_core_defs::Value(value as u64);
 }
+#[export_name = "rt_generator_set_local_ptr"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_set_local_ptr_abi(gen: Value, index: u32, value: Value) {
+    unsafe { rt_generator_set_local_ptr(gen.unwrap_ptr(), index, value.unwrap_ptr()) }
+}
+
 
 // §F.7b: rt_generator_set_local_type removed — per-slot tag side-array deleted.
 
@@ -181,19 +222,23 @@ pub unsafe extern "C" fn rt_generator_set_local_ptr(gen: *mut Obj, index: u32, v
 ///
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_set_exhausted(gen: *mut Obj) {
+pub unsafe fn rt_generator_set_exhausted(gen: *mut Obj) {
     let gen_obj = gen as *mut GeneratorObj;
     (*gen_obj).exhausted = true;
     (*gen_obj).state = u32::MAX;
 }
+#[export_name = "rt_generator_set_exhausted"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_set_exhausted_abi(gen: Value) {
+    unsafe { rt_generator_set_exhausted(gen.unwrap_ptr()) }
+}
+
 
 /// Check if the generator is exhausted
 ///
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj or IteratorObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_is_exhausted(gen: *mut Obj) -> i8 {
+pub unsafe fn rt_generator_is_exhausted(gen: *mut Obj) -> i8 {
     use crate::object::{IteratorObj, TypeTagKind};
 
     if gen.is_null() {
@@ -225,6 +270,12 @@ pub unsafe extern "C" fn rt_generator_is_exhausted(gen: *mut Obj) -> i8 {
         0
     }
 }
+#[export_name = "rt_generator_is_exhausted"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_is_exhausted_abi(gen: Value) -> i8 {
+    unsafe { rt_generator_is_exhausted(gen.unwrap_ptr()) }
+}
+
 
 /// Raise StopIteration exception (called when generator is exhausted)
 ///
@@ -243,8 +294,7 @@ pub unsafe extern "C" fn rt_generator_stop_iteration() -> ! {
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj.
 /// `value` is the value to send (stored as i64).
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_send(gen: *mut Obj, value: i64) -> *mut Obj {
+pub unsafe fn rt_generator_send(gen: *mut Obj, value: i64) -> *mut Obj {
     // Check if it's actually a generator
     if gen.is_null() || (*gen).header.type_tag != TypeTagKind::Generator {
         raise_exc!(ExceptionType::TypeError, "send() called on non-generator");
@@ -273,16 +323,27 @@ pub unsafe extern "C" fn rt_generator_send(gen: *mut Obj, value: i64) -> *mut Ob
     // Call the resume function
     __pyaot_generator_resume(gen)
 }
+#[export_name = "rt_generator_send"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_send_abi(gen: Value, value: i64) -> Value {
+    Value::from_ptr(unsafe { rt_generator_send(gen.unwrap_ptr(), value) })
+}
+
 
 /// Get the sent value from a generator (called from resume function)
 ///
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_get_sent_value(gen: *mut Obj) -> i64 {
+pub unsafe fn rt_generator_get_sent_value(gen: *mut Obj) -> i64 {
     let gen_obj = gen as *mut GeneratorObj;
     (*gen_obj).sent_value.0 as i64
 }
+#[export_name = "rt_generator_get_sent_value"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_get_sent_value_abi(gen: Value) -> i64 {
+    unsafe { rt_generator_get_sent_value(gen.unwrap_ptr()) }
+}
+
 
 /// Close a generator
 ///
@@ -292,8 +353,7 @@ pub unsafe extern "C" fn rt_generator_get_sent_value(gen: *mut Obj) -> i64 {
 ///
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_close(gen: *mut Obj) {
+pub unsafe fn rt_generator_close(gen: *mut Obj) {
     // Check if it's actually a generator
     if gen.is_null() || (*gen).header.type_tag != TypeTagKind::Generator {
         return; // Silently ignore
@@ -328,13 +388,18 @@ pub unsafe extern "C" fn rt_generator_close(gen: *mut Obj) {
     (*gen_obj).exhausted = true;
     (*gen_obj).closing = false;
 }
+#[export_name = "rt_generator_close"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_close_abi(gen: Value) {
+    unsafe { rt_generator_close(gen.unwrap_ptr()) }
+}
+
 
 /// Check if the generator is in closing state
 ///
 /// # Safety
 /// `gen` must be a valid pointer to a GeneratorObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_generator_is_closing(gen: *mut Obj) -> i8 {
+pub unsafe fn rt_generator_is_closing(gen: *mut Obj) -> i8 {
     let gen_obj = gen as *mut GeneratorObj;
     if (*gen_obj).closing {
         1
@@ -342,6 +407,12 @@ pub unsafe extern "C" fn rt_generator_is_closing(gen: *mut Obj) -> i8 {
         0
     }
 }
+#[export_name = "rt_generator_is_closing"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_generator_is_closing_abi(gen: Value) -> i8 {
+    unsafe { rt_generator_is_closing(gen.unwrap_ptr()) }
+}
+
 
 // §F.7b: finalize_generator removed — per-slot tag side-array deleted; no
 // separate heap allocation to free on sweep.

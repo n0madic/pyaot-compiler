@@ -2,11 +2,11 @@
 
 use crate::gc;
 use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 /// Center string with fill character
 /// Returns: new string
-#[no_mangle]
-pub extern "C" fn rt_str_center(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj {
+pub fn rt_str_center(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj {
     if str_obj.is_null() || width <= 0 {
         return str_obj;
     }
@@ -61,11 +61,16 @@ pub extern "C" fn rt_str_center(str_obj: *mut Obj, width: i64, fillchar: *mut Ob
         obj
     }
 }
+#[export_name = "rt_str_center"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_center_abi(str_obj: Value, width: i64, fillchar: Value) -> Value {
+    Value::from_ptr(rt_str_center(str_obj.unwrap_ptr(), width, fillchar.unwrap_ptr()))
+}
+
 
 /// Left justify string with fill character
 /// Returns: new string
-#[no_mangle]
-pub extern "C" fn rt_str_ljust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj {
+pub fn rt_str_ljust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj {
     if str_obj.is_null() || width <= 0 {
         return str_obj;
     }
@@ -111,11 +116,16 @@ pub extern "C" fn rt_str_ljust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj
         obj
     }
 }
+#[export_name = "rt_str_ljust"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_ljust_abi(str_obj: Value, width: i64, fillchar: Value) -> Value {
+    Value::from_ptr(rt_str_ljust(str_obj.unwrap_ptr(), width, fillchar.unwrap_ptr()))
+}
+
 
 /// Right justify string with fill character
 /// Returns: new string
-#[no_mangle]
-pub extern "C" fn rt_str_rjust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj {
+pub fn rt_str_rjust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj) -> *mut Obj {
     if str_obj.is_null() || width <= 0 {
         return str_obj;
     }
@@ -163,11 +173,16 @@ pub extern "C" fn rt_str_rjust(str_obj: *mut Obj, width: i64, fillchar: *mut Obj
         obj
     }
 }
+#[export_name = "rt_str_rjust"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_rjust_abi(str_obj: Value, width: i64, fillchar: Value) -> Value {
+    Value::from_ptr(rt_str_rjust(str_obj.unwrap_ptr(), width, fillchar.unwrap_ptr()))
+}
+
 
 /// Zero-fill string (left pad with zeros, preserving sign)
 /// Returns: new string
-#[no_mangle]
-pub extern "C" fn rt_str_zfill(str_obj: *mut Obj, width: i64) -> *mut Obj {
+pub fn rt_str_zfill(str_obj: *mut Obj, width: i64) -> *mut Obj {
     if str_obj.is_null() || width <= 0 {
         return str_obj;
     }
@@ -224,3 +239,9 @@ pub extern "C" fn rt_str_zfill(str_obj: *mut Obj, width: i64) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_str_zfill"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_zfill_abi(str_obj: Value, width: i64) -> Value {
+    Value::from_ptr(rt_str_zfill(str_obj.unwrap_ptr(), width))
+}
+

@@ -1,11 +1,11 @@
 //! Bytes check operations: startswith, endswith
 
 use crate::object::Obj;
+use pyaot_core_defs::Value;
 
 /// Check if bytes starts with prefix
 /// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_bytes_startswith(bytes: *mut Obj, prefix: *mut Obj) -> i64 {
+pub fn rt_bytes_startswith(bytes: *mut Obj, prefix: *mut Obj) -> i64 {
     use crate::object::BytesObj;
 
     if bytes.is_null() || prefix.is_null() {
@@ -35,11 +35,16 @@ pub extern "C" fn rt_bytes_startswith(bytes: *mut Obj, prefix: *mut Obj) -> i64 
         1
     }
 }
+#[export_name = "rt_bytes_startswith"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_startswith_abi(bytes: Value, prefix: Value) -> i64 {
+    rt_bytes_startswith(bytes.unwrap_ptr(), prefix.unwrap_ptr())
+}
+
 
 /// Check if bytes ends with suffix
 /// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_bytes_endswith(bytes: *mut Obj, suffix: *mut Obj) -> i64 {
+pub fn rt_bytes_endswith(bytes: *mut Obj, suffix: *mut Obj) -> i64 {
     use crate::object::BytesObj;
 
     if bytes.is_null() || suffix.is_null() {
@@ -70,3 +75,9 @@ pub extern "C" fn rt_bytes_endswith(bytes: *mut Obj, suffix: *mut Obj) -> i64 {
         1
     }
 }
+#[export_name = "rt_bytes_endswith"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_endswith_abi(bytes: Value, suffix: Value) -> i64 {
+    rt_bytes_endswith(bytes.unwrap_ptr(), suffix.unwrap_ptr())
+}
+

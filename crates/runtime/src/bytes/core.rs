@@ -5,6 +5,7 @@ use crate::exceptions::ExceptionType;
 use crate::gc;
 use crate::object::Obj;
 use crate::slice_utils::{normalize_slice_indices, slice_length};
+use pyaot_core_defs::Value;
 
 /// Create a new bytes object on the heap
 /// data: pointer to bytes data
@@ -13,8 +14,7 @@ use crate::slice_utils::{normalize_slice_indices, slice_length};
 ///
 /// # Safety
 /// If `len > 0`, `data` must be a valid pointer to at least `len` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn rt_make_bytes(data: *const u8, len: usize) -> *mut Obj {
+pub unsafe fn rt_make_bytes(data: *const u8, len: usize) -> *mut Obj {
     use crate::object::{BytesObj, ObjHeader, TypeTagKind};
     use std::ptr;
 
@@ -40,12 +40,17 @@ pub unsafe extern "C" fn rt_make_bytes(data: *const u8, len: usize) -> *mut Obj 
 
     obj
 }
+#[export_name = "rt_make_bytes"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_bytes_abi(data: *const u8, len: usize) -> Value {
+    Value::from_ptr(unsafe { rt_make_bytes(data, len) })
+}
+
 
 /// Create bytes filled with zeros
 /// len: number of zero bytes
 /// Returns: pointer to allocated BytesObj
-#[no_mangle]
-pub extern "C" fn rt_make_bytes_zero(len: i64) -> *mut Obj {
+pub fn rt_make_bytes_zero(len: i64) -> *mut Obj {
     use crate::object::{BytesObj, ObjHeader, TypeTagKind};
 
     let len = len.max(0) as usize;
@@ -70,12 +75,17 @@ pub extern "C" fn rt_make_bytes_zero(len: i64) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_make_bytes_zero"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_bytes_zero_abi(len: i64) -> Value {
+    Value::from_ptr(rt_make_bytes_zero(len))
+}
+
 
 /// Create bytes from a list of integers
 /// list: pointer to ListObj containing integers (0-255)
 /// Returns: pointer to allocated BytesObj
-#[no_mangle]
-pub extern "C" fn rt_make_bytes_from_list(list: *mut Obj) -> *mut Obj {
+pub fn rt_make_bytes_from_list(list: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::{BytesObj, ListObj, ObjHeader, TypeTagKind};
 
@@ -127,12 +137,17 @@ pub extern "C" fn rt_make_bytes_from_list(list: *mut Obj) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_make_bytes_from_list"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_bytes_from_list_abi(list: Value) -> Value {
+    Value::from_ptr(rt_make_bytes_from_list(list.unwrap_ptr()))
+}
+
 
 /// Create bytes from a string (UTF-8 encoding)
 /// str_obj: pointer to StrObj
 /// Returns: pointer to allocated BytesObj
-#[no_mangle]
-pub extern "C" fn rt_make_bytes_from_str(str_obj: *mut Obj) -> *mut Obj {
+pub fn rt_make_bytes_from_str(str_obj: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::{BytesObj, ObjHeader, StrObj, TypeTagKind};
     use std::ptr;
@@ -181,11 +196,16 @@ pub extern "C" fn rt_make_bytes_from_str(str_obj: *mut Obj) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_make_bytes_from_str"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_bytes_from_str_abi(str_obj: Value) -> Value {
+    Value::from_ptr(rt_make_bytes_from_str(str_obj.unwrap_ptr()))
+}
+
 
 /// Get byte at index
 /// Returns: byte value (0-255) as i64
-#[no_mangle]
-pub extern "C" fn rt_bytes_get(bytes: *mut Obj, index: i64) -> i64 {
+pub fn rt_bytes_get(bytes: *mut Obj, index: i64) -> i64 {
     use crate::object::BytesObj;
 
     if bytes.is_null() {
@@ -214,10 +234,15 @@ pub extern "C" fn rt_bytes_get(bytes: *mut Obj, index: i64) -> i64 {
         *(*bytes_obj).data.as_ptr().add(idx as usize) as i64
     }
 }
+#[export_name = "rt_bytes_get"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_get_abi(bytes: Value, index: i64) -> i64 {
+    rt_bytes_get(bytes.unwrap_ptr(), index)
+}
+
 
 /// Get length of bytes
-#[no_mangle]
-pub extern "C" fn rt_bytes_len(bytes: *mut Obj) -> i64 {
+pub fn rt_bytes_len(bytes: *mut Obj) -> i64 {
     if bytes.is_null() {
         return 0;
     }
@@ -227,11 +252,16 @@ pub extern "C" fn rt_bytes_len(bytes: *mut Obj) -> i64 {
         (*bytes_obj).len as i64
     }
 }
+#[export_name = "rt_bytes_len"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_len_abi(bytes: Value) -> i64 {
+    rt_bytes_len(bytes.unwrap_ptr())
+}
+
 
 /// Compare two bytes objects for equality
 /// Returns: 1 if equal, 0 if not equal
-#[no_mangle]
-pub extern "C" fn rt_bytes_eq(a: *mut Obj, b: *mut Obj) -> i8 {
+pub fn rt_bytes_eq(a: *mut Obj, b: *mut Obj) -> i8 {
     use crate::object::BytesObj;
 
     if a.is_null() || b.is_null() {
@@ -261,13 +291,18 @@ pub extern "C" fn rt_bytes_eq(a: *mut Obj, b: *mut Obj) -> i8 {
         1
     }
 }
+#[export_name = "rt_bytes_eq"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_eq_abi(a: Value, b: Value) -> i8 {
+    rt_bytes_eq(a.unwrap_ptr(), b.unwrap_ptr())
+}
+
 
 /// Slice bytes: bytes[start:end]
 /// Negative indices are supported (counted from end)
 /// Uses i64::MIN as sentinel for "default start" (0) and i64::MAX for "default end" (len)
 /// Returns: pointer to new allocated BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_slice(bytes: *mut Obj, start: i64, end: i64) -> *mut Obj {
+pub fn rt_bytes_slice(bytes: *mut Obj, start: i64, end: i64) -> *mut Obj {
     use crate::object::{BytesObj, ObjHeader, TypeTagKind};
     use std::ptr;
 
@@ -305,12 +340,17 @@ pub extern "C" fn rt_bytes_slice(bytes: *mut Obj, start: i64, end: i64) -> *mut 
         obj
     }
 }
+#[export_name = "rt_bytes_slice"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_slice_abi(bytes: Value, start: i64, end: i64) -> Value {
+    Value::from_ptr(rt_bytes_slice(bytes.unwrap_ptr(), start, end))
+}
+
 
 /// Slice bytes with step: bytes[start:end:step]
 /// Uses i64::MIN as sentinel for "default start" and i64::MAX for "default end"
 /// Returns: pointer to new allocated BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_slice_step(
+pub fn rt_bytes_slice_step(
     bytes: *mut Obj,
     start: i64,
     end: i64,
@@ -363,11 +403,21 @@ pub extern "C" fn rt_bytes_slice_step(
         obj
     }
 }
+#[export_name = "rt_bytes_slice_step"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_slice_step_abi(
+    bytes: Value,
+    start: i64,
+    end: i64,
+    step: i64,
+) -> Value {
+    Value::from_ptr(rt_bytes_slice_step(bytes.unwrap_ptr(), start, end, step))
+}
+
 
 /// Concatenate two bytes objects
 /// Returns: pointer to new BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+pub fn rt_bytes_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     use crate::object::{BytesObj, ObjHeader, TypeTagKind};
 
     if a.is_null() || b.is_null() {
@@ -398,11 +448,16 @@ pub extern "C" fn rt_bytes_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_bytes_concat"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_concat_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_bytes_concat(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
 
 /// Repeat bytes count times
 /// Returns: pointer to new BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_repeat(bytes: *mut Obj, count: i64) -> *mut Obj {
+pub fn rt_bytes_repeat(bytes: *mut Obj, count: i64) -> *mut Obj {
     use crate::object::{BytesObj, ObjHeader, TypeTagKind};
 
     if bytes.is_null() || count <= 0 {
@@ -428,3 +483,9 @@ pub extern "C" fn rt_bytes_repeat(bytes: *mut Obj, count: i64) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_bytes_repeat"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_repeat_abi(bytes: Value, count: i64) -> Value {
+    Value::from_ptr(rt_bytes_repeat(bytes.unwrap_ptr(), count))
+}
+

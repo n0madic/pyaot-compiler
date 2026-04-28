@@ -4,6 +4,7 @@
 //! Seeding with the same value produces identical sequences to CPython.
 
 use crate::object::{ListObj, Obj, TypeTagKind};
+use pyaot_core_defs::Value;
 use std::cell::RefCell;
 
 // ==================== Mersenne Twister (MT19937) ====================
@@ -329,8 +330,7 @@ pub unsafe extern "C" fn rt_random_gauss(mu: f64, sigma: f64) -> f64 {
 
 /// random.choices(population, weights, k) - weighted random sampling with replacement
 /// population and weights are *mut Obj (ListObj), k is count
-#[no_mangle]
-pub unsafe extern "C" fn rt_random_choices(
+pub unsafe fn rt_random_choices(
     population: *mut Obj,
     weights: *mut Obj,
     k: i64,
@@ -407,11 +407,20 @@ pub unsafe extern "C" fn rt_random_choices(
     (*result_list).len = k;
     result
 }
+#[export_name = "rt_random_choices"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_random_choices_abi(
+    population: Value,
+    weights: Value,
+    k: i64,
+) -> Value {
+    Value::from_ptr(unsafe { rt_random_choices(population.unwrap_ptr(), weights.unwrap_ptr(), k) })
+}
+
 
 /// random.choice(seq) - return random element from a list
 /// seq must be a *mut Obj (ListObj)
-#[no_mangle]
-pub unsafe extern "C" fn rt_random_choice(seq: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_random_choice(seq: *mut Obj) -> *mut Obj {
     crate::debug_assert_type_tag!(seq, TypeTagKind::List, "rt_random_choice");
     let list = seq as *mut ListObj;
     let len = (*list).len;
@@ -425,11 +434,16 @@ pub unsafe extern "C" fn rt_random_choice(seq: *mut Obj) -> *mut Obj {
     let idx = RNG.with(|rng| rng.borrow_mut().randbelow(len));
     (*(*list).data.add(idx)).0 as *mut crate::object::Obj
 }
+#[export_name = "rt_random_choice"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_random_choice_abi(seq: Value) -> Value {
+    Value::from_ptr(unsafe { rt_random_choice(seq.unwrap_ptr()) })
+}
+
 
 /// random.shuffle(seq) - shuffle list in-place using Fisher-Yates
 /// seq must be a *mut Obj (ListObj)
-#[no_mangle]
-pub unsafe extern "C" fn rt_random_shuffle(seq: *mut Obj) {
+pub unsafe fn rt_random_shuffle(seq: *mut Obj) {
     crate::debug_assert_type_tag!(seq, TypeTagKind::List, "rt_random_shuffle");
     let list = seq as *mut ListObj;
     let len = (*list).len;
@@ -450,11 +464,16 @@ pub unsafe extern "C" fn rt_random_shuffle(seq: *mut Obj) {
         }
     });
 }
+#[export_name = "rt_random_shuffle"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_random_shuffle_abi(seq: Value) {
+    unsafe { rt_random_shuffle(seq.unwrap_ptr()) }
+}
+
 
 /// random.sample(population, k) - return k unique random elements from population
 /// population must be a *mut Obj (ListObj)
-#[no_mangle]
-pub unsafe extern "C" fn rt_random_sample(population: *mut Obj, k: i64) -> *mut Obj {
+pub unsafe fn rt_random_sample(population: *mut Obj, k: i64) -> *mut Obj {
     crate::debug_assert_type_tag!(population, TypeTagKind::List, "rt_random_sample");
     let list = population as *mut ListObj;
     let len = (*list).len;
@@ -488,3 +507,9 @@ pub unsafe extern "C" fn rt_random_sample(population: *mut Obj, k: i64) -> *mut 
     (*result_list).len = k;
     result
 }
+#[export_name = "rt_random_sample"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_random_sample_abi(population: Value, k: i64) -> Value {
+    Value::from_ptr(unsafe { rt_random_sample(population.unwrap_ptr(), k) })
+}
+

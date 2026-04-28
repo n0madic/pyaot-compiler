@@ -7,6 +7,7 @@ use crate::exceptions::ExceptionType;
 use crate::hash_table_utils::{eq_hashable_obj, hash_hashable_obj};
 use crate::object::{DictEntry, DictObj, Obj};
 use crate::tuple::{rt_make_tuple, rt_tuple_set};
+use pyaot_core_defs::Value;
 
 // =============================================================================
 // OrderedDict support
@@ -21,8 +22,7 @@ const DUMMY_INDEX: i64 = -2;
 /// Moves an existing key to either end of the ordered dict.
 /// last=1 (default): move to end; last=0: move to beginning.
 /// Raises KeyError if the key does not exist.
-#[no_mangle]
-pub extern "C" fn rt_dict_move_to_end(dict: *mut Obj, key: *mut Obj, last: i64) {
+pub fn rt_dict_move_to_end(dict: *mut Obj, key: *mut Obj, last: i64) {
     if dict.is_null() || key.is_null() {
         return;
     }
@@ -60,13 +60,18 @@ pub extern "C" fn rt_dict_move_to_end(dict: *mut Obj, key: *mut Obj, last: i64) 
         }
     }
 }
+#[export_name = "rt_dict_move_to_end"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_move_to_end_abi(dict: Value, key: Value, last: i64) {
+    rt_dict_move_to_end(dict.unwrap_ptr(), key.unwrap_ptr(), last)
+}
+
 
 /// OrderedDict.popitem(last=True)
 /// Remove and return (key, value) pair.
 /// last=1 (default): LIFO (from end); last=0: FIFO (from beginning).
 /// Raises KeyError if empty.
-#[no_mangle]
-pub extern "C" fn rt_dict_popitem_ordered(dict: *mut Obj, last: i64) -> *mut Obj {
+pub fn rt_dict_popitem_ordered(dict: *mut Obj, last: i64) -> *mut Obj {
     if dict.is_null() {
         unsafe {
             raise_exc!(ExceptionType::KeyError, "popitem(): dictionary is empty");
@@ -87,6 +92,12 @@ pub extern "C" fn rt_dict_popitem_ordered(dict: *mut Obj, last: i64) -> *mut Obj
         }
     }
 }
+#[export_name = "rt_dict_popitem_ordered"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_popitem_ordered_abi(dict: Value, last: i64) -> Value {
+    Value::from_ptr(rt_dict_popitem_ordered(dict.unwrap_ptr(), last))
+}
+
 
 // =============================================================================
 // Internal helpers

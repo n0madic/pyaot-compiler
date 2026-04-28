@@ -2,6 +2,7 @@ use crate::gc::gc_alloc;
 use crate::object::{BytesObj, Obj, ObjHeader, StrObj};
 use crate::string::rt_make_str;
 use pyaot_core_defs::TypeTagKind;
+use pyaot_core_defs::Value;
 use std::alloc::{alloc, dealloc, realloc, Layout};
 
 /// StringIO object - in-memory text stream
@@ -82,8 +83,7 @@ unsafe fn ensure_capacity(buffer: &mut *mut u8, capacity: &mut usize, needed: us
 // =============================================================================
 
 /// Create a new StringIO object
-#[no_mangle]
-pub unsafe extern "C" fn rt_stringio_new(initial: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_stringio_new(initial: *mut Obj) -> *mut Obj {
     let size = std::mem::size_of::<StringIOObj>();
     let obj = gc_alloc(size, TypeTagKind::StringIO.tag()) as *mut StringIOObj;
 
@@ -112,10 +112,15 @@ pub unsafe extern "C" fn rt_stringio_new(initial: *mut Obj) -> *mut Obj {
 
     obj as *mut Obj
 }
+#[export_name = "rt_stringio_new"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_stringio_new_abi(initial: Value) -> Value {
+    Value::from_ptr(unsafe { rt_stringio_new(initial.unwrap_ptr()) })
+}
+
 
 /// Write string to StringIO, return number of characters written
-#[no_mangle]
-pub unsafe extern "C" fn rt_stringio_write(sio: *mut Obj, s: *mut Obj) -> i64 {
+pub unsafe fn rt_stringio_write(sio: *mut Obj, s: *mut Obj) -> i64 {
     let sio_obj = sio as *mut StringIOObj;
     check_closed((*sio_obj).closed);
 
@@ -150,10 +155,15 @@ pub unsafe extern "C" fn rt_stringio_write(sio: *mut Obj, s: *mut Obj) -> i64 {
 
     str_len as i64
 }
+#[export_name = "rt_stringio_write"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_stringio_write_abi(sio: Value, s: Value) -> i64 {
+    unsafe { rt_stringio_write(sio.unwrap_ptr(), s.unwrap_ptr()) }
+}
+
 
 /// Read from StringIO
-#[no_mangle]
-pub unsafe extern "C" fn rt_stringio_read(sio: *mut Obj, size: i64) -> *mut Obj {
+pub unsafe fn rt_stringio_read(sio: *mut Obj, size: i64) -> *mut Obj {
     let sio_obj = sio as *mut StringIOObj;
     check_closed((*sio_obj).closed);
 
@@ -175,10 +185,15 @@ pub unsafe extern "C" fn rt_stringio_read(sio: *mut Obj, size: i64) -> *mut Obj 
 
     result
 }
+#[export_name = "rt_stringio_read"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_stringio_read_abi(sio: Value, size: i64) -> Value {
+    Value::from_ptr(unsafe { rt_stringio_read(sio.unwrap_ptr(), size) })
+}
+
 
 /// Read a line from StringIO (until newline or end)
-#[no_mangle]
-pub unsafe extern "C" fn rt_stringio_readline(sio: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_stringio_readline(sio: *mut Obj) -> *mut Obj {
     let sio_obj = sio as *mut StringIOObj;
     check_closed((*sio_obj).closed);
 
@@ -203,10 +218,15 @@ pub unsafe extern "C" fn rt_stringio_readline(sio: *mut Obj) -> *mut Obj {
 
     result
 }
+#[export_name = "rt_stringio_readline"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_stringio_readline_abi(sio: Value) -> Value {
+    Value::from_ptr(unsafe { rt_stringio_readline(sio.unwrap_ptr()) })
+}
+
 
 /// Get the entire value of StringIO as a string
-#[no_mangle]
-pub unsafe extern "C" fn rt_stringio_getvalue(sio: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_stringio_getvalue(sio: *mut Obj) -> *mut Obj {
     let sio_obj = sio as *const StringIOObj;
     check_closed((*sio_obj).closed);
 
@@ -216,10 +236,15 @@ pub unsafe extern "C" fn rt_stringio_getvalue(sio: *mut Obj) -> *mut Obj {
 
     rt_make_str((*sio_obj).buffer, (*sio_obj).len)
 }
+#[export_name = "rt_stringio_getvalue"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_stringio_getvalue_abi(sio: Value) -> Value {
+    Value::from_ptr(unsafe { rt_stringio_getvalue(sio.unwrap_ptr()) })
+}
+
 
 /// Seek to a position in StringIO
-#[no_mangle]
-pub unsafe extern "C" fn rt_stringio_seek(sio: *mut Obj, pos: i64) -> i64 {
+pub unsafe fn rt_stringio_seek(sio: *mut Obj, pos: i64) -> i64 {
     let sio_obj = sio as *mut StringIOObj;
     check_closed((*sio_obj).closed);
 
@@ -234,25 +259,40 @@ pub unsafe extern "C" fn rt_stringio_seek(sio: *mut Obj, pos: i64) -> i64 {
     (*sio_obj).position = new_pos;
     new_pos as i64
 }
+#[export_name = "rt_stringio_seek"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_stringio_seek_abi(sio: Value, pos: i64) -> i64 {
+    unsafe { rt_stringio_seek(sio.unwrap_ptr(), pos) }
+}
+
 
 /// Get current position in StringIO
-#[no_mangle]
-pub unsafe extern "C" fn rt_stringio_tell(sio: *mut Obj) -> i64 {
+pub unsafe fn rt_stringio_tell(sio: *mut Obj) -> i64 {
     let sio_obj = sio as *const StringIOObj;
     check_closed((*sio_obj).closed);
     (*sio_obj).position as i64
 }
+#[export_name = "rt_stringio_tell"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_stringio_tell_abi(sio: Value) -> i64 {
+    unsafe { rt_stringio_tell(sio.unwrap_ptr()) }
+}
+
 
 /// Close StringIO
-#[no_mangle]
-pub unsafe extern "C" fn rt_stringio_close(sio: *mut Obj) {
+pub unsafe fn rt_stringio_close(sio: *mut Obj) {
     let sio_obj = sio as *mut StringIOObj;
     (*sio_obj).closed = true;
 }
+#[export_name = "rt_stringio_close"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_stringio_close_abi(sio: Value) {
+    unsafe { rt_stringio_close(sio.unwrap_ptr()) }
+}
+
 
 /// Truncate StringIO at given size (or current position if size=-1)
-#[no_mangle]
-pub unsafe extern "C" fn rt_stringio_truncate(sio: *mut Obj, size: i64) -> i64 {
+pub unsafe fn rt_stringio_truncate(sio: *mut Obj, size: i64) -> i64 {
     let sio_obj = sio as *mut StringIOObj;
     check_closed((*sio_obj).closed);
 
@@ -268,6 +308,12 @@ pub unsafe extern "C" fn rt_stringio_truncate(sio: *mut Obj, size: i64) -> i64 {
 
     new_len as i64
 }
+#[export_name = "rt_stringio_truncate"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_stringio_truncate_abi(sio: Value, size: i64) -> i64 {
+    unsafe { rt_stringio_truncate(sio.unwrap_ptr(), size) }
+}
+
 
 /// Finalize StringIO (called by GC)
 pub unsafe fn stringio_finalize(obj: *mut Obj) {
@@ -284,8 +330,7 @@ pub unsafe fn stringio_finalize(obj: *mut Obj) {
 // =============================================================================
 
 /// Create a new BytesIO object
-#[no_mangle]
-pub unsafe extern "C" fn rt_bytesio_new(initial: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_bytesio_new(initial: *mut Obj) -> *mut Obj {
     let size = std::mem::size_of::<BytesIOObj>();
     let obj = gc_alloc(size, TypeTagKind::BytesIO.tag()) as *mut BytesIOObj;
 
@@ -314,10 +359,15 @@ pub unsafe extern "C" fn rt_bytesio_new(initial: *mut Obj) -> *mut Obj {
 
     obj as *mut Obj
 }
+#[export_name = "rt_bytesio_new"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytesio_new_abi(initial: Value) -> Value {
+    Value::from_ptr(unsafe { rt_bytesio_new(initial.unwrap_ptr()) })
+}
+
 
 /// Write bytes to BytesIO, return number of bytes written
-#[no_mangle]
-pub unsafe extern "C" fn rt_bytesio_write(bio: *mut Obj, b: *mut Obj) -> i64 {
+pub unsafe fn rt_bytesio_write(bio: *mut Obj, b: *mut Obj) -> i64 {
     let bio_obj = bio as *mut BytesIOObj;
     check_closed((*bio_obj).closed);
 
@@ -355,10 +405,15 @@ pub unsafe extern "C" fn rt_bytesio_write(bio: *mut Obj, b: *mut Obj) -> i64 {
 
     bytes_len as i64
 }
+#[export_name = "rt_bytesio_write"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytesio_write_abi(bio: Value, b: Value) -> i64 {
+    unsafe { rt_bytesio_write(bio.unwrap_ptr(), b.unwrap_ptr()) }
+}
+
 
 /// Read from BytesIO
-#[no_mangle]
-pub unsafe extern "C" fn rt_bytesio_read(bio: *mut Obj, size: i64) -> *mut Obj {
+pub unsafe fn rt_bytesio_read(bio: *mut Obj, size: i64) -> *mut Obj {
     let bio_obj = bio as *mut BytesIOObj;
     check_closed((*bio_obj).closed);
 
@@ -382,10 +437,15 @@ pub unsafe extern "C" fn rt_bytesio_read(bio: *mut Obj, size: i64) -> *mut Obj {
 
     result
 }
+#[export_name = "rt_bytesio_read"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytesio_read_abi(bio: Value, size: i64) -> Value {
+    Value::from_ptr(unsafe { rt_bytesio_read(bio.unwrap_ptr(), size) })
+}
+
 
 /// Get the entire value of BytesIO as bytes
-#[no_mangle]
-pub unsafe extern "C" fn rt_bytesio_getvalue(bio: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_bytesio_getvalue(bio: *mut Obj) -> *mut Obj {
     let bio_obj = bio as *const BytesIOObj;
     check_closed((*bio_obj).closed);
 
@@ -396,10 +456,15 @@ pub unsafe extern "C" fn rt_bytesio_getvalue(bio: *mut Obj) -> *mut Obj {
     let data_slice = std::slice::from_raw_parts((*bio_obj).buffer, (*bio_obj).len);
     make_bytes_from_slice(data_slice)
 }
+#[export_name = "rt_bytesio_getvalue"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytesio_getvalue_abi(bio: Value) -> Value {
+    Value::from_ptr(unsafe { rt_bytesio_getvalue(bio.unwrap_ptr()) })
+}
+
 
 /// Seek to a position in BytesIO
-#[no_mangle]
-pub unsafe extern "C" fn rt_bytesio_seek(bio: *mut Obj, pos: i64) -> i64 {
+pub unsafe fn rt_bytesio_seek(bio: *mut Obj, pos: i64) -> i64 {
     let bio_obj = bio as *mut BytesIOObj;
     check_closed((*bio_obj).closed);
 
@@ -414,21 +479,37 @@ pub unsafe extern "C" fn rt_bytesio_seek(bio: *mut Obj, pos: i64) -> i64 {
     (*bio_obj).position = new_pos;
     new_pos as i64
 }
+#[export_name = "rt_bytesio_seek"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytesio_seek_abi(bio: Value, pos: i64) -> i64 {
+    unsafe { rt_bytesio_seek(bio.unwrap_ptr(), pos) }
+}
+
 
 /// Get current position in BytesIO
-#[no_mangle]
-pub unsafe extern "C" fn rt_bytesio_tell(bio: *mut Obj) -> i64 {
+pub unsafe fn rt_bytesio_tell(bio: *mut Obj) -> i64 {
     let bio_obj = bio as *const BytesIOObj;
     check_closed((*bio_obj).closed);
     (*bio_obj).position as i64
 }
+#[export_name = "rt_bytesio_tell"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytesio_tell_abi(bio: Value) -> i64 {
+    unsafe { rt_bytesio_tell(bio.unwrap_ptr()) }
+}
+
 
 /// Close BytesIO
-#[no_mangle]
-pub unsafe extern "C" fn rt_bytesio_close(bio: *mut Obj) {
+pub unsafe fn rt_bytesio_close(bio: *mut Obj) {
     let bio_obj = bio as *mut BytesIOObj;
     (*bio_obj).closed = true;
 }
+#[export_name = "rt_bytesio_close"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytesio_close_abi(bio: Value) {
+    unsafe { rt_bytesio_close(bio.unwrap_ptr()) }
+}
+
 
 /// Finalize BytesIO (called by GC)
 pub unsafe fn bytesio_finalize(obj: *mut Obj) {

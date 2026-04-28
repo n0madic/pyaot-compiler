@@ -1,14 +1,14 @@
 //! Bytes conversion operations: decode, fromhex
 
 use crate::object::Obj;
+use pyaot_core_defs::Value;
 
 use super::core::{rt_make_bytes, rt_make_bytes_zero};
 
 /// Decode bytes to string using specified encoding (utf-8 default)
 /// encoding: pointer to StrObj for encoding name (null for utf-8)
 /// Returns: pointer to allocated StrObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_decode(bytes: *mut Obj, _encoding: *mut Obj) -> *mut Obj {
+pub fn rt_bytes_decode(bytes: *mut Obj, _encoding: *mut Obj) -> *mut Obj {
     use crate::object::BytesObj;
     use crate::string::rt_make_str;
 
@@ -26,12 +26,17 @@ pub extern "C" fn rt_bytes_decode(bytes: *mut Obj, _encoding: *mut Obj) -> *mut 
         rt_make_str(data, len)
     }
 }
+#[export_name = "rt_bytes_decode"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_decode_abi(bytes: Value, _encoding: Value) -> Value {
+    Value::from_ptr(rt_bytes_decode(bytes.unwrap_ptr(), _encoding.unwrap_ptr()))
+}
+
 
 /// Create bytes from hex string
 /// hex_str: pointer to StrObj containing hex digits
 /// Returns: pointer to new BytesObj
-#[no_mangle]
-pub extern "C" fn rt_bytes_fromhex(hex_str: *mut Obj) -> *mut Obj {
+pub fn rt_bytes_fromhex(hex_str: *mut Obj) -> *mut Obj {
     use crate::object::StrObj;
 
     if hex_str.is_null() {
@@ -96,3 +101,9 @@ pub extern "C" fn rt_bytes_fromhex(hex_str: *mut Obj) -> *mut Obj {
         rt_make_bytes(bytes_vec.as_ptr(), byte_count)
     }
 }
+#[export_name = "rt_bytes_fromhex"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_bytes_fromhex_abi(hex_str: Value) -> Value {
+    Value::from_ptr(rt_bytes_fromhex(hex_str.unwrap_ptr()))
+}
+

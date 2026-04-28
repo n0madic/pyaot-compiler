@@ -5,6 +5,7 @@
 use super::next::rt_iter_next_no_exc;
 use crate::gc;
 use crate::object::{Obj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 // ==================== Function Type Aliases ====================
 
@@ -280,8 +281,7 @@ pub(crate) unsafe fn call_filter_with_captures(
 
 /// Create a zip iterator from two iterators
 /// Returns: new iterator that yields tuples
-#[no_mangle]
-pub extern "C" fn rt_zip_new(iter1: *mut Obj, iter2: *mut Obj) -> *mut Obj {
+pub fn rt_zip_new(iter1: *mut Obj, iter2: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, ZipIterObj};
 
     // Allocate zip iterator object
@@ -299,11 +299,16 @@ pub extern "C" fn rt_zip_new(iter1: *mut Obj, iter2: *mut Obj) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_zip_new"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_zip_new_abi(iter1: Value, iter2: Value) -> Value {
+    Value::from_ptr(rt_zip_new(iter1.unwrap_ptr(), iter2.unwrap_ptr()))
+}
+
 
 /// Get next tuple from zip iterator
 /// Returns: tuple or null (StopIteration) if either iterator is exhausted
-#[no_mangle]
-pub extern "C" fn rt_zip_next(zip_obj: *mut Obj) -> *mut Obj {
+pub fn rt_zip_next(zip_obj: *mut Obj) -> *mut Obj {
     use crate::object::ZipIterObj;
     use crate::tuple::{rt_make_tuple, rt_tuple_set};
 
@@ -340,13 +345,18 @@ pub extern "C" fn rt_zip_next(zip_obj: *mut Obj) -> *mut Obj {
         tuple
     }
 }
+#[export_name = "rt_zip_next"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_zip_next_abi(zip_obj: Value) -> Value {
+    Value::from_ptr(rt_zip_next(zip_obj.unwrap_ptr()))
+}
+
 
 // ==================== Zip3 Iterator ====================
 
 /// Create a zip iterator from three iterators
 /// Returns: new iterator that yields 3-tuples
-#[no_mangle]
-pub extern "C" fn rt_zip3_new(iter1: *mut Obj, iter2: *mut Obj, iter3: *mut Obj) -> *mut Obj {
+pub fn rt_zip3_new(iter1: *mut Obj, iter2: *mut Obj, iter3: *mut Obj) -> *mut Obj {
     use crate::object::{IteratorKind, Zip3IterObj};
 
     let size = std::mem::size_of::<Zip3IterObj>();
@@ -364,6 +374,12 @@ pub extern "C" fn rt_zip3_new(iter1: *mut Obj, iter2: *mut Obj, iter3: *mut Obj)
 
     obj
 }
+#[export_name = "rt_zip3_new"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_zip3_new_abi(iter1: Value, iter2: Value, iter3: Value) -> Value {
+    Value::from_ptr(rt_zip3_new(iter1.unwrap_ptr(), iter2.unwrap_ptr(), iter3.unwrap_ptr()))
+}
+
 
 // ==================== ZipN Iterator ====================
 
@@ -371,8 +387,7 @@ pub extern "C" fn rt_zip3_new(iter1: *mut Obj, iter2: *mut Obj, iter3: *mut Obj)
 /// iters: list of iterators
 /// count: number of iterators
 /// Returns: new iterator that yields N-tuples
-#[no_mangle]
-pub extern "C" fn rt_zipn_new(iters: *mut Obj, count: i64) -> *mut Obj {
+pub fn rt_zipn_new(iters: *mut Obj, count: i64) -> *mut Obj {
     use crate::object::{IteratorKind, ZipNIterObj};
 
     let size = std::mem::size_of::<ZipNIterObj>();
@@ -389,6 +404,12 @@ pub extern "C" fn rt_zipn_new(iters: *mut Obj, count: i64) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_zipn_new"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_zipn_new_abi(iters: Value, count: i64) -> Value {
+    Value::from_ptr(rt_zipn_new(iters.unwrap_ptr(), count))
+}
+
 
 // ==================== Map Iterator ====================
 
@@ -396,8 +417,7 @@ pub extern "C" fn rt_zipn_new(iters: *mut Obj, count: i64) -> *mut Obj {
 /// captures: tuple of captured values (null for no captures)
 /// capture_count: number of captures (0-4)
 /// Returns: new iterator that applies func to each element
-#[no_mangle]
-pub extern "C" fn rt_map_new(
+pub fn rt_map_new(
     func_ptr: i64,
     iter: *mut Obj,
     captures: *mut Obj,
@@ -427,6 +447,17 @@ pub extern "C" fn rt_map_new(
 
     obj
 }
+#[export_name = "rt_map_new"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_map_new_abi(
+    func_ptr: i64,
+    iter: Value,
+    captures: Value,
+    capture_count: i64,
+) -> Value {
+    Value::from_ptr(rt_map_new(func_ptr, iter.unwrap_ptr(), captures.unwrap_ptr(), capture_count))
+}
+
 
 // ==================== Filter Iterator ====================
 
@@ -435,8 +466,7 @@ pub extern "C" fn rt_map_new(
 /// captures: tuple of captured values (null for no captures)
 /// capture_count: number of captures (0-4)
 /// Returns: new iterator that yields elements where predicate returns true
-#[no_mangle]
-pub extern "C" fn rt_filter_new(
+pub fn rt_filter_new(
     func_ptr: i64,
     iter: *mut Obj,
     captures: *mut Obj,
@@ -461,6 +491,17 @@ pub extern "C" fn rt_filter_new(
 
     obj
 }
+#[export_name = "rt_filter_new"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_filter_new_abi(
+    func_ptr: i64,
+    iter: Value,
+    captures: Value,
+    capture_count: i64,
+) -> Value {
+    Value::from_ptr(rt_filter_new(func_ptr, iter.unwrap_ptr(), captures.unwrap_ptr(), capture_count))
+}
+
 
 // ==================== Chain Iterator ====================
 
@@ -468,8 +509,7 @@ pub extern "C" fn rt_filter_new(
 /// iters: ListObj containing iterators
 /// num_iters: number of iterators
 /// Returns: new iterator that chains all iterators sequentially
-#[no_mangle]
-pub extern "C" fn rt_chain_new(iters: *mut Obj, num_iters: i64) -> *mut Obj {
+pub fn rt_chain_new(iters: *mut Obj, num_iters: i64) -> *mut Obj {
     use crate::object::{ChainIterObj, IteratorKind};
 
     let size = std::mem::size_of::<ChainIterObj>();
@@ -487,6 +527,12 @@ pub extern "C" fn rt_chain_new(iters: *mut Obj, num_iters: i64) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_chain_new"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_chain_new_abi(iters: Value, num_iters: i64) -> Value {
+    Value::from_ptr(rt_chain_new(iters.unwrap_ptr(), num_iters))
+}
+
 
 // ==================== ISlice Iterator ====================
 
@@ -496,8 +542,7 @@ pub extern "C" fn rt_chain_new(iters: *mut Obj, num_iters: i64) -> *mut Obj {
 /// stop: stop index (-1 for no stop)
 /// step: step value (1 or more)
 /// Returns: new iterator that yields selected elements
-#[no_mangle]
-pub extern "C" fn rt_islice_new(iter: *mut Obj, start: i64, stop: i64, step: i64) -> *mut Obj {
+pub fn rt_islice_new(iter: *mut Obj, start: i64, stop: i64, step: i64) -> *mut Obj {
     use crate::object::{ISliceIterObj, IteratorKind};
 
     let size = std::mem::size_of::<ISliceIterObj>();
@@ -517,3 +562,9 @@ pub extern "C" fn rt_islice_new(iter: *mut Obj, start: i64, stop: i64, step: i64
 
     obj
 }
+#[export_name = "rt_islice_new"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_islice_new_abi(iter: Value, start: i64, stop: i64, step: i64) -> Value {
+    Value::from_ptr(rt_islice_new(iter.unwrap_ptr(), start, stop, step))
+}
+

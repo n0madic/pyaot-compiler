@@ -4,13 +4,13 @@
 use crate::debug_assert_type_tag;
 use crate::hash_table_utils::hash_hashable_obj;
 use crate::object::{Obj, SetObj, TypeTagKind, TOMBSTONE};
+use pyaot_core_defs::Value;
 
 use super::core::{find_set_slot, rt_make_set, set_resize};
 
 /// Add an element to the set
 /// If element exists, no change. If not, inserts new element.
-#[no_mangle]
-pub extern "C" fn rt_set_add(set: *mut Obj, elem: *mut Obj) {
+pub fn rt_set_add(set: *mut Obj, elem: *mut Obj) {
     if set.is_null() || elem.is_null() {
         return;
     }
@@ -59,11 +59,16 @@ pub extern "C" fn rt_set_add(set: *mut Obj, elem: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_set_add"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_add_abi(set: Value, elem: Value) {
+    rt_set_add(set.unwrap_ptr(), elem.unwrap_ptr())
+}
+
 
 /// Check if element exists in set
 /// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_set_contains(set: *mut Obj, elem: *mut Obj) -> i8 {
+pub fn rt_set_contains(set: *mut Obj, elem: *mut Obj) -> i8 {
     if set.is_null() || elem.is_null() {
         return 0;
     }
@@ -80,10 +85,15 @@ pub extern "C" fn rt_set_contains(set: *mut Obj, elem: *mut Obj) -> i8 {
         }
     }
 }
+#[export_name = "rt_set_contains"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_contains_abi(set: Value, elem: Value) -> i8 {
+    rt_set_contains(set.unwrap_ptr(), elem.unwrap_ptr())
+}
+
 
 /// Remove element from set (raises KeyError if missing)
-#[no_mangle]
-pub extern "C" fn rt_set_remove(set: *mut Obj, elem: *mut Obj) {
+pub fn rt_set_remove(set: *mut Obj, elem: *mut Obj) {
     if set.is_null() || elem.is_null() {
         unsafe {
             raise_exc!(
@@ -112,10 +122,15 @@ pub extern "C" fn rt_set_remove(set: *mut Obj, elem: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_set_remove"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_remove_abi(set: Value, elem: Value) {
+    rt_set_remove(set.unwrap_ptr(), elem.unwrap_ptr())
+}
+
 
 /// Remove element from set if present (no error if missing)
-#[no_mangle]
-pub extern "C" fn rt_set_discard(set: *mut Obj, elem: *mut Obj) {
+pub fn rt_set_discard(set: *mut Obj, elem: *mut Obj) {
     if set.is_null() || elem.is_null() {
         return;
     }
@@ -135,10 +150,15 @@ pub extern "C" fn rt_set_discard(set: *mut Obj, elem: *mut Obj) {
         // If not found, just do nothing (unlike remove)
     }
 }
+#[export_name = "rt_set_discard"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_discard_abi(set: Value, elem: Value) {
+    rt_set_discard(set.unwrap_ptr(), elem.unwrap_ptr())
+}
+
 
 /// Clear all elements from set
-#[no_mangle]
-pub extern "C" fn rt_set_clear(set: *mut Obj) {
+pub fn rt_set_clear(set: *mut Obj) {
     if set.is_null() {
         return;
     }
@@ -157,11 +177,16 @@ pub extern "C" fn rt_set_clear(set: *mut Obj) {
         (*set_obj).len = 0;
     }
 }
+#[export_name = "rt_set_clear"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_clear_abi(set: Value) {
+    rt_set_clear(set.unwrap_ptr())
+}
+
 
 /// Create a shallow copy of set
 /// Returns: pointer to new SetObj
-#[no_mangle]
-pub extern "C" fn rt_set_copy(set: *mut Obj) -> *mut Obj {
+pub fn rt_set_copy(set: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if set.is_null() {
@@ -201,12 +226,17 @@ pub extern "C" fn rt_set_copy(set: *mut Obj) -> *mut Obj {
         roots[0]
     }
 }
+#[export_name = "rt_set_copy"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_copy_abi(set: Value) -> Value {
+    Value::from_ptr(rt_set_copy(set.unwrap_ptr()))
+}
+
 
 /// Remove and return an arbitrary element from the set
 /// Raises KeyError if the set is empty
 /// Returns: removed element
-#[no_mangle]
-pub extern "C" fn rt_set_pop(set: *mut Obj) -> *mut Obj {
+pub fn rt_set_pop(set: *mut Obj) -> *mut Obj {
     if set.is_null() {
         unsafe {
             raise_exc!(
@@ -240,10 +270,15 @@ pub extern "C" fn rt_set_pop(set: *mut Obj) -> *mut Obj {
         );
     }
 }
+#[export_name = "rt_set_pop"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_pop_abi(set: Value) -> Value {
+    Value::from_ptr(rt_set_pop(set.unwrap_ptr()))
+}
+
 
 /// Add all elements from another set
-#[no_mangle]
-pub extern "C" fn rt_set_update(set: *mut Obj, other: *mut Obj) {
+pub fn rt_set_update(set: *mut Obj, other: *mut Obj) {
     if set.is_null() || other.is_null() {
         return;
     }
@@ -265,10 +300,15 @@ pub extern "C" fn rt_set_update(set: *mut Obj, other: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_set_update"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_update_abi(set: Value, other: Value) {
+    rt_set_update(set.unwrap_ptr(), other.unwrap_ptr())
+}
+
 
 /// Update set to intersection with another set
-#[no_mangle]
-pub extern "C" fn rt_set_intersection_update(set: *mut Obj, other: *mut Obj) {
+pub fn rt_set_intersection_update(set: *mut Obj, other: *mut Obj) {
     if set.is_null() || other.is_null() {
         return;
     }
@@ -292,10 +332,15 @@ pub extern "C" fn rt_set_intersection_update(set: *mut Obj, other: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_set_intersection_update"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_intersection_update_abi(set: Value, other: Value) {
+    rt_set_intersection_update(set.unwrap_ptr(), other.unwrap_ptr())
+}
+
 
 /// Update set to difference (remove elements in another set)
-#[no_mangle]
-pub extern "C" fn rt_set_difference_update(set: *mut Obj, other: *mut Obj) {
+pub fn rt_set_difference_update(set: *mut Obj, other: *mut Obj) {
     if set.is_null() || other.is_null() {
         return;
     }
@@ -319,10 +364,15 @@ pub extern "C" fn rt_set_difference_update(set: *mut Obj, other: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_set_difference_update"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_difference_update_abi(set: Value, other: Value) {
+    rt_set_difference_update(set.unwrap_ptr(), other.unwrap_ptr())
+}
+
 
 /// Update set to symmetric difference
-#[no_mangle]
-pub extern "C" fn rt_set_symmetric_difference_update(set: *mut Obj, other: *mut Obj) {
+pub fn rt_set_symmetric_difference_update(set: *mut Obj, other: *mut Obj) {
     if set.is_null() || other.is_null() {
         return;
     }
@@ -366,3 +416,9 @@ pub extern "C" fn rt_set_symmetric_difference_update(set: *mut Obj, other: *mut 
         }
     }
 }
+#[export_name = "rt_set_symmetric_difference_update"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_symmetric_difference_update_abi(set: Value, other: Value) {
+    rt_set_symmetric_difference_update(set.unwrap_ptr(), other.unwrap_ptr())
+}
+

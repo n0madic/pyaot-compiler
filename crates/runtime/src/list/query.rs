@@ -4,12 +4,12 @@ use super::core::rt_make_list;
 use crate::exceptions::ExceptionType;
 use crate::hash_table_utils::eq_hashable_obj;
 use crate::object::{ListObj, Obj};
+use pyaot_core_defs::Value;
 
 /// Find first occurrence of value in list. After §F.7c: slots are tagged
 /// Values; pass raw Value bits to `eq_hashable_obj` which dispatches on
 /// `Value::tag()`. Lowering boxes the search value to match.
-#[no_mangle]
-pub extern "C" fn rt_list_index(list: *mut Obj, value: *mut Obj) -> i64 {
+pub fn rt_list_index(list: *mut Obj, value: *mut Obj) -> i64 {
     if list.is_null() {
         return -1;
     }
@@ -33,10 +33,15 @@ pub extern "C" fn rt_list_index(list: *mut Obj, value: *mut Obj) -> i64 {
         -1
     }
 }
+#[export_name = "rt_list_index"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_index_abi(list: Value, value: Value) -> i64 {
+    rt_list_index(list.unwrap_ptr(), value.unwrap_ptr())
+}
+
 
 /// Count occurrences of value in list (post-§F.7c uniform Value semantics).
-#[no_mangle]
-pub extern "C" fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
+pub fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
     if list.is_null() {
         return 0;
     }
@@ -61,11 +66,16 @@ pub extern "C" fn rt_list_count(list: *mut Obj, value: *mut Obj) -> i64 {
         count
     }
 }
+#[export_name = "rt_list_count"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_count_abi(list: Value, value: Value) -> i64 {
+    rt_list_count(list.unwrap_ptr(), value.unwrap_ptr())
+}
+
 
 /// Create a shallow copy of list
 /// Returns: pointer to new allocated ListObj
-#[no_mangle]
-pub extern "C" fn rt_list_copy(list: *mut Obj) -> *mut Obj {
+pub fn rt_list_copy(list: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if list.is_null() {
@@ -104,10 +114,15 @@ pub extern "C" fn rt_list_copy(list: *mut Obj) -> *mut Obj {
         new_list
     }
 }
+#[export_name = "rt_list_copy"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_copy_abi(list: Value) -> Value {
+    Value::from_ptr(rt_list_copy(list.unwrap_ptr()))
+}
+
 
 /// Concatenate two lists into a new list: list1 + list2
-#[no_mangle]
-pub extern "C" fn rt_list_concat(list1: *mut Obj, list2: *mut Obj) -> *mut Obj {
+pub fn rt_list_concat(list1: *mut Obj, list2: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if list1.is_null() && list2.is_null() {
@@ -163,3 +178,9 @@ pub extern "C" fn rt_list_concat(list1: *mut Obj, list2: *mut Obj) -> *mut Obj {
         new_list
     }
 }
+#[export_name = "rt_list_concat"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_concat_abi(list1: Value, list2: Value) -> Value {
+    Value::from_ptr(rt_list_concat(list1.unwrap_ptr(), list2.unwrap_ptr()))
+}
+

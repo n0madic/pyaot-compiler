@@ -15,6 +15,7 @@
 use crate::gc::{self, ShadowFrame};
 use crate::object::{MatchObj, Obj, ObjHeader, TupleObj, TypeTagKind};
 use crate::utils::make_str_from_rust;
+use pyaot_core_defs::Value;
 use regex_lite::Regex;
 
 /// Create a MatchObj from regex match result
@@ -88,9 +89,8 @@ unsafe fn create_match_obj(
 
 /// Search for pattern anywhere in string
 /// Returns Match object if found, None otherwise
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_re_search(pattern: *mut Obj, string: *mut Obj) -> *mut Obj {
+pub fn rt_re_search(pattern: *mut Obj, string: *mut Obj) -> *mut Obj {
     unsafe {
         let pattern_str = match crate::utils::extract_str_checked(pattern) {
             Some(s) => s,
@@ -133,12 +133,16 @@ pub extern "C" fn rt_re_search(pattern: *mut Obj, string: *mut Obj) -> *mut Obj 
         }
     }
 }
+#[export_name = "rt_re_search"]
+pub extern "C" fn rt_re_search_abi(pattern: Value, string: Value) -> Value {
+    Value::from_ptr(rt_re_search(pattern.unwrap_ptr(), string.unwrap_ptr()))
+}
+
 
 /// Match pattern at start of string
 /// Returns Match object if found at start, None otherwise
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_re_match(pattern: *mut Obj, string: *mut Obj) -> *mut Obj {
+pub fn rt_re_match(pattern: *mut Obj, string: *mut Obj) -> *mut Obj {
     unsafe {
         let pattern_str = match crate::utils::extract_str_checked(pattern) {
             Some(s) => s,
@@ -182,12 +186,16 @@ pub extern "C" fn rt_re_match(pattern: *mut Obj, string: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_re_match"]
+pub extern "C" fn rt_re_match_abi(pattern: Value, string: Value) -> Value {
+    Value::from_ptr(rt_re_match(pattern.unwrap_ptr(), string.unwrap_ptr()))
+}
+
 
 /// Substitute all occurrences of pattern with replacement
 /// Returns new string with substitutions
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_re_sub(pattern: *mut Obj, repl: *mut Obj, string: *mut Obj) -> *mut Obj {
+pub fn rt_re_sub(pattern: *mut Obj, repl: *mut Obj, string: *mut Obj) -> *mut Obj {
     unsafe {
         let pattern_str = match crate::utils::extract_str_checked(pattern) {
             Some(s) => s,
@@ -234,12 +242,16 @@ pub extern "C" fn rt_re_sub(pattern: *mut Obj, repl: *mut Obj, string: *mut Obj)
         make_str_from_rust(&result)
     }
 }
+#[export_name = "rt_re_sub"]
+pub extern "C" fn rt_re_sub_abi(pattern: Value, repl: Value, string: Value) -> Value {
+    Value::from_ptr(rt_re_sub(pattern.unwrap_ptr(), repl.unwrap_ptr(), string.unwrap_ptr()))
+}
+
 
 /// Get a match group by index
 /// Returns string for that group, or None if group didn't participate
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_match_group(m: *mut Obj, n: i64) -> *mut Obj {
+pub fn rt_match_group(m: *mut Obj, n: i64) -> *mut Obj {
     unsafe {
         if m.is_null() || (*m).header.type_tag != TypeTagKind::Match {
             return crate::object::none_obj();
@@ -267,11 +279,15 @@ pub extern "C" fn rt_match_group(m: *mut Obj, n: i64) -> *mut Obj {
         val.0 as *mut Obj
     }
 }
+#[export_name = "rt_match_group"]
+pub extern "C" fn rt_match_group_abi(m: Value, n: i64) -> Value {
+    Value::from_ptr(rt_match_group(m.unwrap_ptr(), n))
+}
+
 
 /// Get start position of match
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_match_start(m: *mut Obj) -> i64 {
+pub fn rt_match_start(m: *mut Obj) -> i64 {
     unsafe {
         if m.is_null() || (*m).header.type_tag != TypeTagKind::Match {
             return -1;
@@ -281,11 +297,15 @@ pub extern "C" fn rt_match_start(m: *mut Obj) -> i64 {
         (*match_obj).start
     }
 }
+#[export_name = "rt_match_start"]
+pub extern "C" fn rt_match_start_abi(m: Value) -> i64 {
+    rt_match_start(m.unwrap_ptr())
+}
+
 
 /// Get end position of match
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_match_end(m: *mut Obj) -> i64 {
+pub fn rt_match_end(m: *mut Obj) -> i64 {
     unsafe {
         if m.is_null() || (*m).header.type_tag != TypeTagKind::Match {
             return -1;
@@ -295,11 +315,15 @@ pub extern "C" fn rt_match_end(m: *mut Obj) -> i64 {
         (*match_obj).end
     }
 }
+#[export_name = "rt_match_end"]
+pub extern "C" fn rt_match_end_abi(m: Value) -> i64 {
+    rt_match_end(m.unwrap_ptr())
+}
+
 
 /// Get all groups as a tuple (excluding group 0)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_match_groups(m: *mut Obj) -> *mut Obj {
+pub fn rt_match_groups(m: *mut Obj) -> *mut Obj {
     unsafe {
         if m.is_null() || (*m).header.type_tag != TypeTagKind::Match {
             // Return empty tuple
@@ -388,12 +412,16 @@ pub extern "C" fn rt_match_groups(m: *mut Obj) -> *mut Obj {
         tuple_ptr as *mut Obj
     }
 }
+#[export_name = "rt_match_groups"]
+pub extern "C" fn rt_match_groups_abi(m: Value) -> Value {
+    Value::from_ptr(rt_match_groups(m.unwrap_ptr()))
+}
+
 
 /// Get span (start, end) of match as a tuple of two integers
 /// Returns a tuple (start, end) using raw int storage
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_match_span(m: *mut Obj) -> *mut Obj {
+pub fn rt_match_span(m: *mut Obj) -> *mut Obj {
     unsafe {
         let (start, end) = if m.is_null() || (*m).header.type_tag != TypeTagKind::Match {
             (-1i64, -1i64)
@@ -420,3 +448,8 @@ pub extern "C" fn rt_match_span(m: *mut Obj) -> *mut Obj {
         tuple_ptr as *mut Obj
     }
 }
+#[export_name = "rt_match_span"]
+pub extern "C" fn rt_match_span_abi(m: Value) -> Value {
+    Value::from_ptr(rt_match_span(m.unwrap_ptr()))
+}
+

@@ -13,6 +13,7 @@ use crate::gc::{self, ShadowFrame};
 use crate::list::rt_make_list;
 use crate::object::{DictObj, ListObj, Obj, ObjHeader, ParseResultObj, TypeTagKind};
 use crate::utils::{make_str_from_rust, str_obj_to_rust_string};
+use pyaot_core_defs::Value;
 
 /// Characters that are safe by default in URL encoding (RFC 3986 unreserved characters)
 const UNRESERVED: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
@@ -165,9 +166,8 @@ fn assemble_url(components: &UrlComponents) -> String {
 
 /// urllib.parse.urlparse(url) - Parse a URL into components
 /// Returns a ParseResult with scheme, netloc, path, params, query, fragment
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_urlparse(url: *mut Obj) -> *mut Obj {
+pub fn rt_urlparse(url: *mut Obj) -> *mut Obj {
     if url.is_null() {
         let empty = UrlComponents {
             scheme: String::new(),
@@ -186,6 +186,11 @@ pub extern "C" fn rt_urlparse(url: *mut Obj) -> *mut Obj {
         create_parse_result(&components)
     }
 }
+#[export_name = "rt_urlparse"]
+pub extern "C" fn rt_urlparse_abi(url: Value) -> Value {
+    Value::from_ptr(rt_urlparse(url.unwrap_ptr()))
+}
+
 
 /// Percent-encode a single byte
 fn percent_encode_byte(byte: u8) -> String {
@@ -257,9 +262,8 @@ fn percent_decode(s: &str, plus_as_space: bool) -> String {
 }
 
 /// urllib.parse.quote(string, safe='') - Percent-encode a string
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_quote(string: *mut Obj, safe: *mut Obj) -> *mut Obj {
+pub fn rt_quote(string: *mut Obj, safe: *mut Obj) -> *mut Obj {
     if string.is_null() {
         return unsafe { make_str_from_rust("") };
     }
@@ -276,11 +280,15 @@ pub extern "C" fn rt_quote(string: *mut Obj, safe: *mut Obj) -> *mut Obj {
         make_str_from_rust(&encoded)
     }
 }
+#[export_name = "rt_quote"]
+pub extern "C" fn rt_quote_abi(string: Value, safe: Value) -> Value {
+    Value::from_ptr(rt_quote(string.unwrap_ptr(), safe.unwrap_ptr()))
+}
+
 
 /// urllib.parse.unquote(string) - Decode percent-encoded string
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_unquote(string: *mut Obj) -> *mut Obj {
+pub fn rt_unquote(string: *mut Obj) -> *mut Obj {
     if string.is_null() {
         return unsafe { make_str_from_rust("") };
     }
@@ -292,12 +300,16 @@ pub extern "C" fn rt_unquote(string: *mut Obj) -> *mut Obj {
         make_str_from_rust(&decoded)
     }
 }
+#[export_name = "rt_unquote"]
+pub extern "C" fn rt_unquote_abi(string: Value) -> Value {
+    Value::from_ptr(rt_unquote(string.unwrap_ptr()))
+}
+
 
 /// urllib.parse.urlencode(params) - Encode a dict as a query string
 /// Example: {"key": "value", "a": "b"} -> "key=value&a=b"
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_urlencode(params: *mut Obj) -> *mut Obj {
+pub fn rt_urlencode(params: *mut Obj) -> *mut Obj {
     if params.is_null() {
         return unsafe { make_str_from_rust("") };
     }
@@ -343,11 +355,15 @@ pub extern "C" fn rt_urlencode(params: *mut Obj) -> *mut Obj {
         make_str_from_rust(&result)
     }
 }
+#[export_name = "rt_urlencode"]
+pub extern "C" fn rt_urlencode_abi(params: Value) -> Value {
+    Value::from_ptr(rt_urlencode(params.unwrap_ptr()))
+}
+
 
 /// urllib.parse.urljoin(base, url) - Join a base URL with a relative URL
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_urljoin(base: *mut Obj, url: *mut Obj) -> *mut Obj {
+pub fn rt_urljoin(base: *mut Obj, url: *mut Obj) -> *mut Obj {
     if base.is_null() && url.is_null() {
         return unsafe { make_str_from_rust("") };
     }
@@ -417,6 +433,11 @@ pub extern "C" fn rt_urljoin(base: *mut Obj, url: *mut Obj) -> *mut Obj {
         make_str_from_rust(&assembled)
     }
 }
+#[export_name = "rt_urljoin"]
+pub extern "C" fn rt_urljoin_abi(base: Value, url: Value) -> Value {
+    Value::from_ptr(rt_urljoin(base.unwrap_ptr(), url.unwrap_ptr()))
+}
+
 
 /// Merge a base path with a relative path
 fn merge_paths(base: &str, relative: &str) -> String {
@@ -464,9 +485,8 @@ fn normalize_path(path: &str) -> String {
 
 /// urllib.parse.parse_qs(query) - Parse a query string into a dict
 /// Returns dict[str, list[str]] since keys can have multiple values
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_parse_qs(query: *mut Obj) -> *mut Obj {
+pub fn rt_parse_qs(query: *mut Obj) -> *mut Obj {
     if query.is_null() {
         return rt_make_dict(8);
     }
@@ -541,6 +561,11 @@ pub extern "C" fn rt_parse_qs(query: *mut Obj) -> *mut Obj {
         roots[0]
     }
 }
+#[export_name = "rt_parse_qs"]
+pub extern "C" fn rt_parse_qs_abi(query: Value) -> Value {
+    Value::from_ptr(rt_parse_qs(query.unwrap_ptr()))
+}
+
 
 /// Helper to get value from dict
 unsafe fn get_dict_value(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
@@ -552,9 +577,8 @@ unsafe fn get_dict_value(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
 // =============================================================================
 
 /// Get scheme field from ParseResult
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_parse_result_get_scheme(obj: *mut Obj) -> *mut Obj {
+pub fn rt_parse_result_get_scheme(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         return unsafe { make_str_from_rust("") };
     }
@@ -566,11 +590,15 @@ pub extern "C" fn rt_parse_result_get_scheme(obj: *mut Obj) -> *mut Obj {
         (*pr).scheme
     }
 }
+#[export_name = "rt_parse_result_get_scheme"]
+pub extern "C" fn rt_parse_result_get_scheme_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_parse_result_get_scheme(obj.unwrap_ptr()))
+}
+
 
 /// Get netloc field from ParseResult
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_parse_result_get_netloc(obj: *mut Obj) -> *mut Obj {
+pub fn rt_parse_result_get_netloc(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         return unsafe { make_str_from_rust("") };
     }
@@ -582,11 +610,15 @@ pub extern "C" fn rt_parse_result_get_netloc(obj: *mut Obj) -> *mut Obj {
         (*pr).netloc
     }
 }
+#[export_name = "rt_parse_result_get_netloc"]
+pub extern "C" fn rt_parse_result_get_netloc_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_parse_result_get_netloc(obj.unwrap_ptr()))
+}
+
 
 /// Get path field from ParseResult
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_parse_result_get_path(obj: *mut Obj) -> *mut Obj {
+pub fn rt_parse_result_get_path(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         return unsafe { make_str_from_rust("") };
     }
@@ -598,11 +630,15 @@ pub extern "C" fn rt_parse_result_get_path(obj: *mut Obj) -> *mut Obj {
         (*pr).path
     }
 }
+#[export_name = "rt_parse_result_get_path"]
+pub extern "C" fn rt_parse_result_get_path_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_parse_result_get_path(obj.unwrap_ptr()))
+}
+
 
 /// Get params field from ParseResult
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_parse_result_get_params(obj: *mut Obj) -> *mut Obj {
+pub fn rt_parse_result_get_params(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         return unsafe { make_str_from_rust("") };
     }
@@ -614,11 +650,15 @@ pub extern "C" fn rt_parse_result_get_params(obj: *mut Obj) -> *mut Obj {
         (*pr).params
     }
 }
+#[export_name = "rt_parse_result_get_params"]
+pub extern "C" fn rt_parse_result_get_params_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_parse_result_get_params(obj.unwrap_ptr()))
+}
+
 
 /// Get query field from ParseResult
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_parse_result_get_query(obj: *mut Obj) -> *mut Obj {
+pub fn rt_parse_result_get_query(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         return unsafe { make_str_from_rust("") };
     }
@@ -630,11 +670,15 @@ pub extern "C" fn rt_parse_result_get_query(obj: *mut Obj) -> *mut Obj {
         (*pr).query
     }
 }
+#[export_name = "rt_parse_result_get_query"]
+pub extern "C" fn rt_parse_result_get_query_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_parse_result_get_query(obj.unwrap_ptr()))
+}
+
 
 /// Get fragment field from ParseResult
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_parse_result_get_fragment(obj: *mut Obj) -> *mut Obj {
+pub fn rt_parse_result_get_fragment(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         return unsafe { make_str_from_rust("") };
     }
@@ -646,15 +690,19 @@ pub extern "C" fn rt_parse_result_get_fragment(obj: *mut Obj) -> *mut Obj {
         (*pr).fragment
     }
 }
+#[export_name = "rt_parse_result_get_fragment"]
+pub extern "C" fn rt_parse_result_get_fragment_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_parse_result_get_fragment(obj.unwrap_ptr()))
+}
+
 
 // =============================================================================
 // ParseResult methods
 // =============================================================================
 
 /// ParseResult.geturl() - Reassemble the URL from components
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_parse_result_geturl(obj: *mut Obj) -> *mut Obj {
+pub fn rt_parse_result_geturl(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         return unsafe { make_str_from_rust("") };
     }
@@ -679,11 +727,15 @@ pub extern "C" fn rt_parse_result_geturl(obj: *mut Obj) -> *mut Obj {
         make_str_from_rust(&url)
     }
 }
+#[export_name = "rt_parse_result_geturl"]
+pub extern "C" fn rt_parse_result_geturl_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_parse_result_geturl(obj.unwrap_ptr()))
+}
+
 
 /// repr() for ParseResult
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_parse_result_repr(obj: *mut Obj) -> *mut Obj {
+pub fn rt_parse_result_repr(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         return unsafe {
             make_str_from_rust(
@@ -713,3 +765,8 @@ pub extern "C" fn rt_parse_result_repr(obj: *mut Obj) -> *mut Obj {
         make_str_from_rust(&repr)
     }
 }
+#[export_name = "rt_parse_result_repr"]
+pub extern "C" fn rt_parse_result_repr_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_parse_result_repr(obj.unwrap_ptr()))
+}
+

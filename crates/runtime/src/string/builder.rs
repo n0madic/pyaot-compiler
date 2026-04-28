@@ -17,6 +17,7 @@
 
 use crate::gc;
 use crate::object::{Obj, StrObj, StringBuilderObj, TypeTagKind};
+use pyaot_core_defs::Value;
 use std::alloc::{alloc, dealloc, realloc, Layout};
 
 /// Growth factor for StringBuilder buffer (2x growth strategy)
@@ -28,8 +29,7 @@ const MIN_CAPACITY: usize = 64;
 /// Create a new StringBuilder with estimated capacity
 /// capacity_hint: estimated total length of all strings to be appended
 /// Returns: pointer to allocated StringBuilderObj
-#[no_mangle]
-pub extern "C" fn rt_make_string_builder(capacity_hint: i64) -> *mut Obj {
+pub fn rt_make_string_builder(capacity_hint: i64) -> *mut Obj {
     let capacity = if capacity_hint > 0 {
         capacity_hint as usize
     } else {
@@ -62,12 +62,17 @@ pub extern "C" fn rt_make_string_builder(capacity_hint: i64) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_make_string_builder"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_string_builder_abi(capacity_hint: i64) -> Value {
+    Value::from_ptr(rt_make_string_builder(capacity_hint))
+}
+
 
 /// Append a string to the StringBuilder
 /// builder: pointer to StringBuilderObj
 /// str_obj: pointer to StrObj to append
-#[no_mangle]
-pub extern "C" fn rt_string_builder_append(builder: *mut Obj, str_obj: *mut Obj) {
+pub fn rt_string_builder_append(builder: *mut Obj, str_obj: *mut Obj) {
     if builder.is_null() || str_obj.is_null() {
         return;
     }
@@ -119,14 +124,19 @@ pub extern "C" fn rt_string_builder_append(builder: *mut Obj, str_obj: *mut Obj)
         (*sb).len = new_len;
     }
 }
+#[export_name = "rt_string_builder_append"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_string_builder_append_abi(builder: Value, str_obj: Value) {
+    rt_string_builder_append(builder.unwrap_ptr(), str_obj.unwrap_ptr())
+}
+
 
 /// Finalize StringBuilder and return the resulting StrObj
 /// builder: pointer to StringBuilderObj
 /// Returns: pointer to new StrObj with the concatenated string
 ///
 /// After this call, the StringBuilder's buffer is freed and should not be used again.
-#[no_mangle]
-pub extern "C" fn rt_string_builder_to_str(builder: *mut Obj) -> *mut Obj {
+pub fn rt_string_builder_to_str(builder: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if builder.is_null() {
@@ -179,6 +189,12 @@ pub extern "C" fn rt_string_builder_to_str(builder: *mut Obj) -> *mut Obj {
         result
     }
 }
+#[export_name = "rt_string_builder_to_str"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_string_builder_to_str_abi(builder: Value) -> Value {
+    Value::from_ptr(rt_string_builder_to_str(builder.unwrap_ptr()))
+}
+
 
 /// Finalize StringBuilder (called by GC during collection)
 /// Frees the internal buffer if not already freed

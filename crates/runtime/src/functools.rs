@@ -1,6 +1,7 @@
 use crate::iterator::rt_iter_next_internal;
 use crate::object::{IteratorObj, Obj};
 use crate::tuple::rt_tuple_get;
+use pyaot_core_defs::Value;
 
 /// Function type for reduce: takes (accumulator, element), returns new accumulator
 type ReduceFn = extern "C" fn(*mut Obj, *mut Obj) -> *mut Obj;
@@ -164,8 +165,7 @@ unsafe fn call_reduce_with_captures(
 ///
 /// # Panics
 /// Raises TypeError if the iterable is empty and no initial value is provided
-#[no_mangle]
-pub unsafe extern "C" fn rt_reduce(
+pub unsafe fn rt_reduce(
     func_ptr: i64,
     iter: *mut Obj,
     initial: *mut Obj,
@@ -214,3 +214,16 @@ pub unsafe extern "C" fn rt_reduce(
         acc = call_reduce_with_captures(func_ptr, captures, cc_byte, acc, unbox(elem));
     }
 }
+#[export_name = "rt_reduce"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_reduce_abi(
+    func_ptr: i64,
+    iter: Value,
+    initial: Value,
+    has_initial: i64,
+    captures: Value,
+    capture_count: i64,
+) -> Value {
+    Value::from_ptr(unsafe { rt_reduce(func_ptr, iter.unwrap_ptr(), initial.unwrap_ptr(), has_initial, captures.unwrap_ptr(), capture_count) })
+}
+

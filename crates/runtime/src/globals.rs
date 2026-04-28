@@ -5,6 +5,7 @@
 //! or heap object pointer.
 
 use crate::object::Obj;
+use pyaot_core_defs::Value;
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 
@@ -177,8 +178,7 @@ pub extern "C" fn rt_global_get_bool(var_id: u32) -> i8 {
 
 // ==================== Type-specific Pointer API (for heap objects) ====================
 
-#[no_mangle]
-pub extern "C" fn rt_global_set_ptr(var_id: u32, value: *mut Obj) {
+pub fn rt_global_set_ptr(var_id: u32, value: *mut Obj) {
     unsafe {
         if let Some(ref mut map) = *globals_map() {
             map.insert(
@@ -191,9 +191,14 @@ pub extern "C" fn rt_global_set_ptr(var_id: u32, value: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_global_set_ptr"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_global_set_ptr_abi(var_id: u32, value: Value) {
+    rt_global_set_ptr(var_id, value.unwrap_ptr())
+}
 
-#[no_mangle]
-pub extern "C" fn rt_global_get_ptr(var_id: u32) -> *mut Obj {
+
+pub fn rt_global_get_ptr(var_id: u32) -> *mut Obj {
     unsafe {
         if let Some(ref map) = *globals_map() {
             map.get(&var_id)
@@ -204,6 +209,12 @@ pub extern "C" fn rt_global_get_ptr(var_id: u32) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_global_get_ptr"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_global_get_ptr_abi(var_id: u32) -> Value {
+    Value::from_ptr(rt_global_get_ptr(var_id))
+}
+
 
 // ==================== GC Integration ====================
 

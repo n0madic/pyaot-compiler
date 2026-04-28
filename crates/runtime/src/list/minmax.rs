@@ -8,8 +8,7 @@ use pyaot_core_defs::Value;
 /// Generic list min/max for int and float elements.
 /// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float.
 /// Returns i64 (for float, result is f64::to_bits()).
-#[no_mangle]
-pub extern "C" fn rt_list_minmax(list: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
+pub fn rt_list_minmax(list: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
     if list.is_null() {
         return 0;
     }
@@ -63,11 +62,16 @@ pub extern "C" fn rt_list_minmax(list: *mut Obj, is_min: u8, elem_kind: u8) -> i
         }
     }
 }
+#[export_name = "rt_list_minmax"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_minmax_abi(list: Value, is_min: u8, elem_kind: u8) -> i64 {
+    rt_list_minmax(list.unwrap_ptr(), is_min, elem_kind)
+}
+
 
 /// Generic list min/max with key function.
 /// `key_return_tag`: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1).
-#[no_mangle]
-pub extern "C" fn rt_list_minmax_with_key(
+pub fn rt_list_minmax_with_key(
     list: *mut Obj,
     key_fn: i64,
     captures: *mut Obj,
@@ -86,6 +90,19 @@ pub extern "C" fn rt_list_minmax_with_key(
         )
     }
 }
+#[export_name = "rt_list_minmax_with_key"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_minmax_with_key_abi(
+    list: Value,
+    key_fn: i64,
+    captures: Value,
+    capture_count: i64,
+    is_min: u8,
+    key_return_tag: u8,
+) -> Value {
+    Value::from_ptr(rt_list_minmax_with_key(list.unwrap_ptr(), key_fn, captures.unwrap_ptr(), capture_count, is_min, key_return_tag))
+}
+
 
 /// Call key function with captures support
 unsafe fn call_key_fn(

@@ -1,14 +1,14 @@
 use crate::gc::{gc_alloc, gc_pop, gc_push, ShadowFrame};
 use crate::object::{DictObj, InstanceObj, ListObj, Obj, SetObj, TupleObj};
 use pyaot_core_defs::TypeTagKind;
+use pyaot_core_defs::Value;
 use std::collections::HashMap;
 
 /// Shallow copy of an object
 ///
 /// Immutable types (Int, Float, Bool, Str, None, Bytes, Tuple) are returned as-is.
 /// Mutable containers (List, Dict, Set, Instance) get a new container with copied references.
-#[no_mangle]
-pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
     if obj.is_null() {
         return obj;
     }
@@ -174,16 +174,27 @@ pub unsafe extern "C" fn rt_copy_copy(obj: *mut Obj) -> *mut Obj {
         _ => obj,
     }
 }
+#[export_name = "rt_copy_copy"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_copy_copy_abi(obj: Value) -> Value {
+    Value::from_ptr(unsafe { rt_copy_copy(obj.unwrap_ptr()) })
+}
+
 
 /// Deep copy of an object with cycle detection
 ///
 /// Immutable types (Int, Float, Bool, Str, None, Bytes) are returned as-is.
 /// Mutable containers and tuples are recursively deep copied.
-#[no_mangle]
-pub unsafe extern "C" fn rt_copy_deepcopy(obj: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_copy_deepcopy(obj: *mut Obj) -> *mut Obj {
     let mut memo: HashMap<usize, *mut Obj> = HashMap::new();
     deep_copy_recursive(obj, &mut memo)
 }
+#[export_name = "rt_copy_deepcopy"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_copy_deepcopy_abi(obj: Value) -> Value {
+    Value::from_ptr(unsafe { rt_copy_deepcopy(obj.unwrap_ptr()) })
+}
+
 
 /// Internal recursive helper for deep copy with cycle detection
 unsafe fn deep_copy_recursive(obj: *mut Obj, memo: &mut HashMap<usize, *mut Obj>) -> *mut Obj {

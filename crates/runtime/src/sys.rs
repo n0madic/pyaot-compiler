@@ -7,6 +7,7 @@
 
 use crate::gc::{self, gc_pop, gc_push, ShadowFrame};
 use crate::object::{ListObj, Obj, ObjHeader, StrObj, TypeTagKind};
+use pyaot_core_defs::Value;
 use std::cell::UnsafeCell;
 use std::ffi::CStr;
 
@@ -135,8 +136,7 @@ pub fn get_sys_module_roots() -> [*mut Obj; 2] {
 
 /// Get sys.argv list
 /// Returns a pointer to the list of command-line arguments
-#[no_mangle]
-pub extern "C" fn rt_sys_get_argv() -> *mut Obj {
+pub fn rt_sys_get_argv() -> *mut Obj {
     let argv_ptr = unsafe { *SYS_ARGV.0.get() };
     if !argv_ptr.is_null() {
         return argv_ptr;
@@ -144,6 +144,12 @@ pub extern "C" fn rt_sys_get_argv() -> *mut Obj {
     // Return empty list if not initialized (shouldn't happen in normal usage)
     unsafe { build_str_list::<&str>(&[]) }
 }
+#[export_name = "rt_sys_get_argv"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_sys_get_argv_abi() -> Value {
+    Value::from_ptr(rt_sys_get_argv())
+}
+
 
 /// Get sys.path list — module search paths.
 ///
@@ -156,8 +162,7 @@ pub extern "C" fn rt_sys_get_argv() -> *mut Obj {
 /// `sys.path.append("...")` and have the change persist within the
 /// process. Imports are resolved at compile time and ignore mutations
 /// to the runtime list.
-#[no_mangle]
-pub extern "C" fn rt_sys_get_path() -> *mut Obj {
+pub fn rt_sys_get_path() -> *mut Obj {
     let cached = unsafe { *SYS_PATH.0.get() };
     if !cached.is_null() {
         return cached;
@@ -193,6 +198,12 @@ pub extern "C" fn rt_sys_get_path() -> *mut Obj {
     }
     list_ptr
 }
+#[export_name = "rt_sys_get_path"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_sys_get_path_abi() -> Value {
+    Value::from_ptr(rt_sys_get_path())
+}
+
 
 /// Build a `ListObj` of `StrObj` from a slice of Rust strings.
 ///
@@ -275,8 +286,7 @@ pub extern "C" fn rt_sys_exit(code: i64) -> ! {
 ///
 /// # Safety
 /// `str_obj` must be a valid pointer to a StrObj.
-#[no_mangle]
-pub unsafe extern "C" fn rt_sys_intern(str_obj: *mut Obj) -> *mut Obj {
+pub unsafe fn rt_sys_intern(str_obj: *mut Obj) -> *mut Obj {
     use crate::object::StrObj;
     use crate::string::rt_make_str_interned;
 
@@ -291,3 +301,9 @@ pub unsafe extern "C" fn rt_sys_intern(str_obj: *mut Obj) -> *mut Obj {
     // Use the string interning function to get or create interned version
     rt_make_str_interned(data, len)
 }
+#[export_name = "rt_sys_intern"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_sys_intern_abi(str_obj: Value) -> Value {
+    Value::from_ptr(unsafe { rt_sys_intern(str_obj.unwrap_ptr()) })
+}
+

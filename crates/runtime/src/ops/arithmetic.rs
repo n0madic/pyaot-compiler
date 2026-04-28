@@ -159,9 +159,8 @@ pub(super) unsafe fn extract_numeric_pair(a: *mut Obj, b: *mut Obj) -> (f64, f64
     (va_f, vb_f, both_int, va_int, vb_int)
 }
 
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+pub fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
         let (va_f, vb_f, both_int, vai, vbi) = extract_numeric_pair(a, b);
         // Reconstruct type tags using Value so tagged primitives are handled correctly.
@@ -202,10 +201,14 @@ pub extern "C" fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_obj_add"]
+pub extern "C" fn rt_obj_add_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_add(a.unwrap_ptr(), b.unwrap_ptr()))
+}
 
-#[no_mangle]
+
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+pub fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
@@ -220,10 +223,14 @@ pub extern "C" fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_obj_sub"]
+pub extern "C" fn rt_obj_sub_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_sub(a.unwrap_ptr(), b.unwrap_ptr()))
+}
 
-#[no_mangle]
+
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+pub fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
         let va_tagged = Value(a as u64);
         let vb_tagged = Value(b as u64);
@@ -267,10 +274,14 @@ pub extern "C" fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_obj_mul"]
+pub extern "C" fn rt_obj_mul_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_mul(a.unwrap_ptr(), b.unwrap_ptr()))
+}
 
-#[no_mangle]
+
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_div(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+pub fn rt_obj_div(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
         let (va, vb, _, _, _) = extract_numeric_pair(a, b);
         if vb == 0.0 {
@@ -279,10 +290,14 @@ pub extern "C" fn rt_obj_div(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         crate::boxing::rt_box_float(va / vb) // Python 3: true division always float
     }
 }
+#[export_name = "rt_obj_div"]
+pub extern "C" fn rt_obj_div_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_div(a.unwrap_ptr(), b.unwrap_ptr()))
+}
 
-#[no_mangle]
+
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_floordiv(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+pub fn rt_obj_floordiv(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
@@ -310,10 +325,14 @@ pub extern "C" fn rt_obj_floordiv(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_obj_floordiv"]
+pub extern "C" fn rt_obj_floordiv_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_floordiv(a.unwrap_ptr(), b.unwrap_ptr()))
+}
 
-#[no_mangle]
+
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+pub fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
@@ -340,10 +359,14 @@ pub extern "C" fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_obj_mod"]
+pub extern "C" fn rt_obj_mod_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_mod(a.unwrap_ptr(), b.unwrap_ptr()))
+}
 
-#[no_mangle]
+
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+pub fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int && vbi >= 0 {
@@ -382,3 +405,8 @@ pub extern "C" fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_obj_pow"]
+pub extern "C" fn rt_obj_pow_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_obj_pow(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+

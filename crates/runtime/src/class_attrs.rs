@@ -5,6 +5,7 @@
 //! any primitive type or heap object pointer.
 
 use crate::object::Obj;
+use pyaot_core_defs::Value;
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 
@@ -142,8 +143,7 @@ pub extern "C" fn rt_class_attr_get_bool(class_id: u8, attr_idx: u32) -> i8 {
 
 // ==================== Type-specific Pointer API (for heap objects) ====================
 
-#[no_mangle]
-pub extern "C" fn rt_class_attr_set_ptr(class_id: u8, attr_idx: u32, value: *mut Obj) {
+pub fn rt_class_attr_set_ptr(class_id: u8, attr_idx: u32, value: *mut Obj) {
     unsafe {
         if let Some(ref mut map) = *attrs_map() {
             map.insert(
@@ -156,9 +156,14 @@ pub extern "C" fn rt_class_attr_set_ptr(class_id: u8, attr_idx: u32, value: *mut
         }
     }
 }
+#[export_name = "rt_class_attr_set_ptr"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_class_attr_set_ptr_abi(class_id: u8, attr_idx: u32, value: Value) {
+    rt_class_attr_set_ptr(class_id, attr_idx, value.unwrap_ptr())
+}
 
-#[no_mangle]
-pub extern "C" fn rt_class_attr_get_ptr(class_id: u8, attr_idx: u32) -> *mut Obj {
+
+pub fn rt_class_attr_get_ptr(class_id: u8, attr_idx: u32) -> *mut Obj {
     unsafe {
         if let Some(ref map) = *attrs_map() {
             map.get(&(class_id, attr_idx))
@@ -169,6 +174,12 @@ pub extern "C" fn rt_class_attr_get_ptr(class_id: u8, attr_idx: u32) -> *mut Obj
         }
     }
 }
+#[export_name = "rt_class_attr_get_ptr"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_class_attr_get_ptr_abi(class_id: u8, attr_idx: u32) -> Value {
+    Value::from_ptr(rt_class_attr_get_ptr(class_id, attr_idx))
+}
+
 
 // ==================== GC Integration ====================
 

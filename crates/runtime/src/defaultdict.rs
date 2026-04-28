@@ -38,8 +38,7 @@ fn get_factory_tag(dict: *mut DictObj) -> u8 {
 /// Create a new defaultdict with the given capacity and factory tag.
 /// Uses DictObj layout — identical to rt_make_dict but with DefaultDict type tag
 /// and the factory_tag packed into the high byte of entries_capacity.
-#[no_mangle]
-pub extern "C" fn rt_make_defaultdict(capacity: i64, factory_tag: i64) -> *mut Obj {
+pub fn rt_make_defaultdict(capacity: i64, factory_tag: i64) -> *mut Obj {
     let obj = crate::dict::rt_make_dict(capacity);
 
     unsafe {
@@ -61,11 +60,16 @@ pub extern "C" fn rt_make_defaultdict(capacity: i64, factory_tag: i64) -> *mut O
 
     obj
 }
+#[export_name = "rt_make_defaultdict"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_defaultdict_abi(capacity: i64, factory_tag: i64) -> Value {
+    Value::from_ptr(rt_make_defaultdict(capacity, factory_tag))
+}
+
 
 /// Get a value from defaultdict. If key is missing, creates a default value
 /// using the factory, inserts it, and returns it.
-#[no_mangle]
-pub extern "C" fn rt_defaultdict_get(dd: *mut Obj, key: *mut Obj) -> *mut Obj {
+pub fn rt_defaultdict_get(dd: *mut Obj, key: *mut Obj) -> *mut Obj {
     if dd.is_null() || key.is_null() {
         return std::ptr::null_mut();
     }
@@ -93,6 +97,12 @@ pub extern "C" fn rt_defaultdict_get(dd: *mut Obj, key: *mut Obj) -> *mut Obj {
         default_value
     }
 }
+#[export_name = "rt_defaultdict_get"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_defaultdict_get_abi(dd: Value, key: Value) -> Value {
+    Value::from_ptr(rt_defaultdict_get(dd.unwrap_ptr(), key.unwrap_ptr()))
+}
+
 
 /// Try to get a value from dict, returning null if not found (no KeyError).
 unsafe fn rt_dict_get_or_null(dict: *mut DictObj, key: *mut Obj) -> *mut Obj {

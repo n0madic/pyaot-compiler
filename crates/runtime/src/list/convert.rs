@@ -7,8 +7,7 @@ use pyaot_core_defs::Value;
 
 /// Create a list from a tuple
 /// Returns: pointer to new ListObj
-#[no_mangle]
-pub extern "C" fn rt_list_from_tuple(tuple: *mut Obj) -> *mut Obj {
+pub fn rt_list_from_tuple(tuple: *mut Obj) -> *mut Obj {
     if tuple.is_null() {
         return rt_make_list(0);
     }
@@ -47,11 +46,16 @@ pub extern "C" fn rt_list_from_tuple(tuple: *mut Obj) -> *mut Obj {
         list
     }
 }
+#[export_name = "rt_list_from_tuple"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_from_tuple_abi(tuple: Value) -> Value {
+    Value::from_ptr(rt_list_from_tuple(tuple.unwrap_ptr()))
+}
+
 
 /// Create a list from a string (each character becomes an element)
 /// Returns: pointer to new ListObj
-#[no_mangle]
-pub extern "C" fn rt_list_from_str(str_obj: *mut Obj) -> *mut Obj {
+pub fn rt_list_from_str(str_obj: *mut Obj) -> *mut Obj {
     use crate::string::rt_make_str;
 
     if str_obj.is_null() {
@@ -96,11 +100,16 @@ pub extern "C" fn rt_list_from_str(str_obj: *mut Obj) -> *mut Obj {
         list
     }
 }
+#[export_name = "rt_list_from_str"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_from_str_abi(str_obj: Value) -> Value {
+    Value::from_ptr(rt_list_from_str(str_obj.unwrap_ptr()))
+}
+
 
 /// Create a list from a range
 /// Returns: pointer to new ListObj
-#[no_mangle]
-pub extern "C" fn rt_list_from_range(start: i64, stop: i64, step: i64) -> *mut Obj {
+pub fn rt_list_from_range(start: i64, stop: i64, step: i64) -> *mut Obj {
     if step == 0 {
         return rt_make_list(0);
     }
@@ -145,11 +154,16 @@ pub extern "C" fn rt_list_from_range(start: i64, stop: i64, step: i64) -> *mut O
 
     list
 }
+#[export_name = "rt_list_from_range"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_from_range_abi(start: i64, stop: i64, step: i64) -> Value {
+    Value::from_ptr(rt_list_from_range(start, stop, step))
+}
+
 
 /// Create a list by consuming an iterator
 /// Returns: pointer to new ListObj
-#[no_mangle]
-pub extern "C" fn rt_list_from_iter(iter: *mut Obj) -> *mut Obj {
+pub fn rt_list_from_iter(iter: *mut Obj) -> *mut Obj {
     use crate::iterator::rt_iter_next_no_exc;
 
     if iter.is_null() {
@@ -182,32 +196,47 @@ pub extern "C" fn rt_list_from_iter(iter: *mut Obj) -> *mut Obj {
     gc_pop();
     roots[0]
 }
+#[export_name = "rt_list_from_iter"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_from_iter_abi(iter: Value) -> Value {
+    Value::from_ptr(rt_list_from_iter(iter.unwrap_ptr()))
+}
+
 
 /// Create a list from a set
 /// Returns: pointer to new ListObj
-#[no_mangle]
-pub extern "C" fn rt_list_from_set(set: *mut Obj) -> *mut Obj {
+pub fn rt_list_from_set(set: *mut Obj) -> *mut Obj {
     use crate::set::rt_set_to_list;
 
     // rt_set_to_list already does what we need
     rt_set_to_list(set)
 }
+#[export_name = "rt_list_from_set"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_from_set_abi(set: Value) -> Value {
+    Value::from_ptr(rt_list_from_set(set.unwrap_ptr()))
+}
+
 
 /// Create a list from a dict (keys only)
 /// Returns: pointer to new ListObj
-#[no_mangle]
-pub extern "C" fn rt_list_from_dict(dict: *mut Obj) -> *mut Obj {
+pub fn rt_list_from_dict(dict: *mut Obj) -> *mut Obj {
     use crate::dict::rt_dict_keys;
 
     rt_dict_keys(dict)
 }
+#[export_name = "rt_list_from_dict"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_from_dict_abi(dict: Value) -> Value {
+    Value::from_ptr(rt_list_from_dict(dict.unwrap_ptr()))
+}
+
 
 /// Extract list tail as tuple (list[start:] → tuple)
 /// Used for varargs collection: def f(a, *rest): f(*my_list)
 /// Returns: pointer to new TupleObj containing elements from start to end
 /// NOTE: This copies elements verbatim. Slots are uniformly tagged Values, so the copy is direct.
-#[no_mangle]
-pub extern "C" fn rt_list_tail_to_tuple(list: *mut Obj, start: i64) -> *mut Obj {
+pub fn rt_list_tail_to_tuple(list: *mut Obj, start: i64) -> *mut Obj {
     use crate::object::ListObj;
     use crate::tuple::rt_make_tuple;
 
@@ -251,20 +280,36 @@ pub extern "C" fn rt_list_tail_to_tuple(list: *mut Obj, start: i64) -> *mut Obj 
         tuple
     }
 }
+#[export_name = "rt_list_tail_to_tuple"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_tail_to_tuple_abi(list: Value, start: i64) -> Value {
+    Value::from_ptr(rt_list_tail_to_tuple(list.unwrap_ptr(), start))
+}
+
 
 /// Extract list tail as tuple, keeping float elements as heap-boxed FloatObj pointers.
 /// The varargs iterator returns each slot as *mut FloatObj; codegen calls rt_unbox_float.
-#[no_mangle]
-pub extern "C" fn rt_list_tail_to_tuple_float(list: *mut Obj, start: i64) -> *mut Obj {
+pub fn rt_list_tail_to_tuple_float(list: *mut Obj, start: i64) -> *mut Obj {
     rt_list_tail_to_tuple(list, start)
 }
+#[export_name = "rt_list_tail_to_tuple_float"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_tail_to_tuple_float_abi(list: Value, start: i64) -> Value {
+    Value::from_ptr(rt_list_tail_to_tuple_float(list.unwrap_ptr(), start))
+}
+
 
 /// Extract list tail as tuple, unboxing bool elements
 /// Bool lists store boxed BoolObj pointers, but varargs tuples need raw i8 values
 /// Returns: pointer to new TupleObj with unboxed bool values
-#[no_mangle]
-pub extern "C" fn rt_list_tail_to_tuple_bool(list: *mut Obj, start: i64) -> *mut Obj {
+pub fn rt_list_tail_to_tuple_bool(list: *mut Obj, start: i64) -> *mut Obj {
     // After F.7c, bool slots are already tagged Value::from_bool. Delegate to
     // the generic tail_to_tuple which uses load_value_as_raw (dispatches on Value::tag).
     rt_list_tail_to_tuple(list, start)
 }
+#[export_name = "rt_list_tail_to_tuple_bool"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_tail_to_tuple_bool_abi(list: Value, start: i64) -> Value {
+    Value::from_ptr(rt_list_tail_to_tuple_bool(list.unwrap_ptr(), start))
+}
+

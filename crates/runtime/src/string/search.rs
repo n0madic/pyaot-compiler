@@ -4,6 +4,7 @@
 //! when pattern length >= BMH_THRESHOLD.
 
 use crate::object::{Obj, StrObj};
+use pyaot_core_defs::Value;
 
 /// Convert a byte offset to a character (codepoint) offset in a UTF-8 string
 fn byte_offset_to_char_offset(bytes: &[u8], byte_offset: usize) -> usize {
@@ -150,8 +151,7 @@ pub(crate) unsafe fn bmh_find_from(
 
 /// Check if string starts with prefix
 /// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_str_startswith(str_obj: *mut Obj, prefix: *mut Obj) -> i8 {
+pub fn rt_str_startswith(str_obj: *mut Obj, prefix: *mut Obj) -> i8 {
     if str_obj.is_null() || prefix.is_null() {
         return 0;
     }
@@ -179,11 +179,16 @@ pub extern "C" fn rt_str_startswith(str_obj: *mut Obj, prefix: *mut Obj) -> i8 {
         1
     }
 }
+#[export_name = "rt_str_startswith"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_startswith_abi(str_obj: Value, prefix: Value) -> i8 {
+    rt_str_startswith(str_obj.unwrap_ptr(), prefix.unwrap_ptr())
+}
+
 
 /// Check if string ends with suffix
 /// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_str_endswith(str_obj: *mut Obj, suffix: *mut Obj) -> i8 {
+pub fn rt_str_endswith(str_obj: *mut Obj, suffix: *mut Obj) -> i8 {
     if str_obj.is_null() || suffix.is_null() {
         return 0;
     }
@@ -212,11 +217,16 @@ pub extern "C" fn rt_str_endswith(str_obj: *mut Obj, suffix: *mut Obj) -> i8 {
         1
     }
 }
+#[export_name = "rt_str_endswith"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_endswith_abi(str_obj: Value, suffix: Value) -> i8 {
+    rt_str_endswith(str_obj.unwrap_ptr(), suffix.unwrap_ptr())
+}
+
 
 /// Find substring in string using Boyer-Moore-Horspool algorithm
 /// Returns: index of first occurrence or -1 if not found
-#[no_mangle]
-pub extern "C" fn rt_str_find(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
+pub fn rt_str_find(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
     if str_obj.is_null() || sub.is_null() {
         return -1;
     }
@@ -248,11 +258,16 @@ pub extern "C" fn rt_str_find(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
         char_offset as i64
     }
 }
+#[export_name = "rt_str_find"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_find_abi(str_obj: Value, sub: Value) -> i64 {
+    rt_str_find(str_obj.unwrap_ptr(), sub.unwrap_ptr())
+}
+
 
 /// Compare two strings for equality
 /// Returns: 1 if equal, 0 if not equal
-#[no_mangle]
-pub extern "C" fn rt_str_eq(a: *mut Obj, b: *mut Obj) -> i8 {
+pub fn rt_str_eq(a: *mut Obj, b: *mut Obj) -> i8 {
     if a.is_null() && b.is_null() {
         return 1;
     }
@@ -287,11 +302,16 @@ pub extern "C" fn rt_str_eq(a: *mut Obj, b: *mut Obj) -> i8 {
         1
     }
 }
+#[export_name = "rt_str_eq"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_eq_abi(a: Value, b: Value) -> i8 {
+    rt_str_eq(a.unwrap_ptr(), b.unwrap_ptr())
+}
+
 
 /// Check if needle is a substring of haystack using Boyer-Moore-Horspool
 /// Returns 1 if needle is found in haystack, 0 otherwise
-#[no_mangle]
-pub extern "C" fn rt_str_contains(needle: *mut Obj, haystack: *mut Obj) -> i8 {
+pub fn rt_str_contains(needle: *mut Obj, haystack: *mut Obj) -> i8 {
     if needle.is_null() || haystack.is_null() {
         return 0;
     }
@@ -323,11 +343,16 @@ pub extern "C" fn rt_str_contains(needle: *mut Obj, haystack: *mut Obj) -> i8 {
         }
     }
 }
+#[export_name = "rt_str_contains"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_contains_abi(needle: Value, haystack: Value) -> i8 {
+    rt_str_contains(needle.unwrap_ptr(), haystack.unwrap_ptr())
+}
+
 
 /// Count occurrences of substring using Boyer-Moore-Horspool
 /// Returns: count of non-overlapping occurrences
-#[no_mangle]
-pub extern "C" fn rt_str_count(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
+pub fn rt_str_count(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
     if str_obj.is_null() || sub.is_null() {
         return 0;
     }
@@ -391,11 +416,16 @@ pub extern "C" fn rt_str_count(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
         count
     }
 }
+#[export_name = "rt_str_count"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_count_abi(str_obj: Value, sub: Value) -> i64 {
+    rt_str_count(str_obj.unwrap_ptr(), sub.unwrap_ptr())
+}
+
 
 /// Find substring in string searching from the right using Boyer-Moore-Horspool algorithm
 /// Returns: index of last occurrence or -1 if not found
-#[no_mangle]
-pub extern "C" fn rt_str_rfind(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
+pub fn rt_str_rfind(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
     if str_obj.is_null() || sub.is_null() {
         return -1;
     }
@@ -447,11 +477,16 @@ pub extern "C" fn rt_str_rfind(str_obj: *mut Obj, sub: *mut Obj) -> i64 {
         -1
     }
 }
+#[export_name = "rt_str_rfind"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_rfind_abi(str_obj: Value, sub: Value) -> i64 {
+    rt_str_rfind(str_obj.unwrap_ptr(), sub.unwrap_ptr())
+}
+
 
 /// Generic string search with operation tag.
 /// op_tag: 0=find, 1=rfind, 2=index, 3=rindex
-#[no_mangle]
-pub extern "C" fn rt_str_search(str_obj: *mut Obj, sub: *mut Obj, op_tag: u8) -> i64 {
+pub fn rt_str_search(str_obj: *mut Obj, sub: *mut Obj, op_tag: u8) -> i64 {
     let result = match op_tag {
         0 => rt_str_find(str_obj, sub),
         1 => rt_str_rfind(str_obj, sub),
@@ -475,3 +510,9 @@ pub extern "C" fn rt_str_search(str_obj: *mut Obj, sub: *mut Obj, op_tag: u8) ->
     };
     result
 }
+#[export_name = "rt_str_search"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_search_abi(str_obj: Value, sub: Value, op_tag: u8) -> i64 {
+    rt_str_search(str_obj.unwrap_ptr(), sub.unwrap_ptr(), op_tag)
+}
+

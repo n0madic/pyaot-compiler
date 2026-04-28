@@ -47,8 +47,7 @@ unsafe fn list_eq_precheck(
 
 /// Compare two lists for equality. After F.7c all slots are uniform tagged Values.
 /// Returns 1 if equal, 0 if not equal.
-#[no_mangle]
-pub extern "C" fn rt_list_eq(a: *mut Obj, b: *mut Obj) -> i8 {
+pub fn rt_list_eq(a: *mut Obj, b: *mut Obj) -> i8 {
     unsafe {
         let (data_a, data_b, len) = match list_eq_precheck(a, b) {
             Ok(result) => return result,
@@ -66,6 +65,12 @@ pub extern "C" fn rt_list_eq(a: *mut Obj, b: *mut Obj) -> i8 {
         1
     }
 }
+#[export_name = "rt_list_eq"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_eq_abi(a: Value, b: Value) -> i8 {
+    rt_list_eq(a.unwrap_ptr(), b.unwrap_ptr())
+}
+
 
 /// Lexicographic ordering comparison for two lists.
 /// After F.7c all slots are uniform tagged Values.
@@ -103,8 +108,7 @@ unsafe fn list_cmp_ordering(a: *mut Obj, b: *mut Obj) -> Ordering {
 
 /// Generic list ordering comparison with operation tag.
 /// op_tag: 0=Lt, 1=Lte, 2=Gt, 3=Gte
-#[no_mangle]
-pub extern "C" fn rt_list_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
+pub fn rt_list_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
     let ord = unsafe { list_cmp_ordering(a, b) };
     match op_tag {
         0 => (ord == Ordering::Less) as i8,
@@ -114,3 +118,9 @@ pub extern "C" fn rt_list_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
         _ => unreachable!("invalid comparison op_tag: {op_tag}"),
     }
 }
+#[export_name = "rt_list_cmp"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_cmp_abi(a: Value, b: Value, op_tag: u8) -> i8 {
+    rt_list_cmp(a.unwrap_ptr(), b.unwrap_ptr(), op_tag)
+}
+

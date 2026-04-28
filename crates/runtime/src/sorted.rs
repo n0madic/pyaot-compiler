@@ -5,6 +5,7 @@ use crate::gc::{gc_pop, gc_push, ShadowFrame};
 use crate::list::rt_make_list;
 use crate::object::Obj;
 use crate::string::rt_str_getchar;
+use pyaot_core_defs::Value;
 
 // Helper functions for sorting
 
@@ -145,8 +146,7 @@ const CONTAINER_STR: u8 = 4;
 
 /// Generic sorted: dispatches by `container_tag` to the appropriate implementation.
 /// After §F.7c: containers store uniform tagged Values; no elem_tag needed.
-#[no_mangle]
-pub extern "C" fn rt_sorted(obj: *mut Obj, reverse: i64, container_tag: u8) -> *mut Obj {
+pub fn rt_sorted(obj: *mut Obj, reverse: i64, container_tag: u8) -> *mut Obj {
     match container_tag {
         CONTAINER_LIST => sorted_list_impl(obj, reverse),
         CONTAINER_TUPLE => sorted_tuple_impl(obj, reverse),
@@ -156,12 +156,17 @@ pub extern "C" fn rt_sorted(obj: *mut Obj, reverse: i64, container_tag: u8) -> *
         _ => rt_make_list(0),
     }
 }
+#[export_name = "rt_sorted"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_sorted_abi(obj: Value, reverse: i64, container_tag: u8) -> Value {
+    Value::from_ptr(rt_sorted(obj.unwrap_ptr(), reverse, container_tag))
+}
+
 
 /// Generic sorted with key function: dispatches by `container_tag`.
 /// `key_return_tag`: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1) — describes the key fn's return type.
 /// After §F.7c: containers store uniform tagged Values; no elem_tag needed.
-#[no_mangle]
-pub extern "C" fn rt_sorted_with_key(
+pub fn rt_sorted_with_key(
     obj: *mut Obj,
     reverse: i64,
     key_fn: i64,
@@ -214,6 +219,20 @@ pub extern "C" fn rt_sorted_with_key(
         _ => rt_make_list(0),
     }
 }
+#[export_name = "rt_sorted_with_key"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_sorted_with_key_abi(
+    obj: Value,
+    reverse: i64,
+    key_fn: i64,
+    captures: Value,
+    capture_count: i64,
+    container_tag: u8,
+    key_return_tag: u8,
+) -> Value {
+    Value::from_ptr(rt_sorted_with_key(obj.unwrap_ptr(), reverse, key_fn, captures.unwrap_ptr(), capture_count, container_tag, key_return_tag))
+}
+
 
 // ==================== No-key implementations ====================
 
@@ -399,8 +418,7 @@ fn sorted_str_impl(str_obj: *mut Obj, reverse: i64) -> *mut Obj {
 /// Create a sorted list from a range
 /// reverse: 0 for ascending, 1 for descending
 /// Returns: pointer to new ListObj containing sorted integers (as raw i64 values)
-#[no_mangle]
-pub extern "C" fn rt_sorted_range(start: i64, stop: i64, step: i64, reverse: i64) -> *mut Obj {
+pub fn rt_sorted_range(start: i64, stop: i64, step: i64, reverse: i64) -> *mut Obj {
     use crate::object::ListObj;
 
     if step == 0 {
@@ -455,6 +473,12 @@ pub extern "C" fn rt_sorted_range(start: i64, stop: i64, step: i64, reverse: i64
 
     new_list
 }
+#[export_name = "rt_sorted_range"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_sorted_range_abi(start: i64, stop: i64, step: i64, reverse: i64) -> Value {
+    Value::from_ptr(rt_sorted_range(start, stop, step, reverse))
+}
+
 
 // ==================== Sorted with key functions ====================
 

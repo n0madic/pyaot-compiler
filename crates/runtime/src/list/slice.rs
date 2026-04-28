@@ -4,13 +4,13 @@ use super::core::rt_make_list;
 use crate::gc::{gc_pop, gc_push, ShadowFrame};
 use crate::object::{ListObj, Obj};
 use crate::slice_utils::{collect_step_indices, normalize_slice_indices, slice_length};
+use pyaot_core_defs::Value;
 
 /// Slice a list: list[start:end]
 /// Negative indices are supported (counted from end)
 /// Uses i64::MIN as sentinel for "default start" (0) and i64::MAX for "default end" (len)
 /// Returns: pointer to new allocated ListObj (shallow copy)
-#[no_mangle]
-pub extern "C" fn rt_list_slice(list: *mut Obj, start: i64, end: i64) -> *mut Obj {
+pub fn rt_list_slice(list: *mut Obj, start: i64, end: i64) -> *mut Obj {
     if list.is_null() {
         return rt_make_list(0);
     }
@@ -55,6 +55,12 @@ pub extern "C" fn rt_list_slice(list: *mut Obj, start: i64, end: i64) -> *mut Ob
         new_list
     }
 }
+#[export_name = "rt_list_slice"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_slice_abi(list: Value, start: i64, end: i64) -> Value {
+    Value::from_ptr(rt_list_slice(list.unwrap_ptr(), start, end))
+}
+
 
 /// Slice a list with step: list[start:end:step]
 /// Uses i64::MIN as sentinel for "default start" and i64::MAX for "default end"
@@ -63,8 +69,7 @@ pub extern "C" fn rt_list_slice(list: *mut Obj, start: i64, end: i64) -> *mut Ob
 ///   - Negative step: start=len-1, end=-1 (before index 0)
 ///
 /// Returns: pointer to new allocated ListObj (shallow copy)
-#[no_mangle]
-pub extern "C" fn rt_list_slice_step(list: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj {
+pub fn rt_list_slice_step(list: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj {
     if list.is_null() || step == 0 {
         return rt_make_list(0);
     }
@@ -111,3 +116,9 @@ pub extern "C" fn rt_list_slice_step(list: *mut Obj, start: i64, end: i64, step:
         new_list
     }
 }
+#[export_name = "rt_list_slice_step"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_slice_step_abi(list: Value, start: i64, end: i64, step: i64) -> Value {
+    Value::from_ptr(rt_list_slice_step(list.unwrap_ptr(), start, end, step))
+}
+

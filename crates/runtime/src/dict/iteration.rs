@@ -5,11 +5,11 @@ use crate::debug_assert_type_tag;
 use crate::list::{rt_list_push, rt_make_list};
 use crate::object::{DictObj, ListObj, Obj, TypeTagKind};
 use crate::tuple::{rt_make_tuple, rt_tuple_set};
+use pyaot_core_defs::Value;
 
 /// Get list of all keys in dictionary (insertion order).
 /// After §F.7c: result list stores uniform tagged Values; no elem_tag arg.
-#[no_mangle]
-pub extern "C" fn rt_dict_keys(dict: *mut Obj) -> *mut Obj {
+pub fn rt_dict_keys(dict: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if dict.is_null() {
@@ -45,11 +45,16 @@ pub extern "C" fn rt_dict_keys(dict: *mut Obj) -> *mut Obj {
         keys_list
     }
 }
+#[export_name = "rt_dict_keys"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_keys_abi(dict: Value) -> Value {
+    Value::from_ptr(rt_dict_keys(dict.unwrap_ptr()))
+}
+
 
 /// Get list of all values in dictionary (insertion order).
 /// After §F.7c: result list stores uniform tagged Values; no elem_tag arg.
-#[no_mangle]
-pub extern "C" fn rt_dict_values(dict: *mut Obj) -> *mut Obj {
+pub fn rt_dict_values(dict: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if dict.is_null() {
@@ -85,10 +90,15 @@ pub extern "C" fn rt_dict_values(dict: *mut Obj) -> *mut Obj {
         values_list
     }
 }
+#[export_name = "rt_dict_values"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_values_abi(dict: Value) -> Value {
+    Value::from_ptr(rt_dict_values(dict.unwrap_ptr()))
+}
+
 
 /// Get list of (key, value) tuples for all entries (insertion order).
-#[no_mangle]
-pub extern "C" fn rt_dict_items(dict: *mut Obj) -> *mut Obj {
+pub fn rt_dict_items(dict: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if dict.is_null() {
@@ -129,3 +139,9 @@ pub extern "C" fn rt_dict_items(dict: *mut Obj) -> *mut Obj {
         items_list
     }
 }
+#[export_name = "rt_dict_items"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_items_abi(dict: Value) -> Value {
+    Value::from_ptr(rt_dict_items(dict.unwrap_ptr()))
+}
+

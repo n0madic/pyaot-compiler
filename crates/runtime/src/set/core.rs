@@ -5,6 +5,7 @@ use crate::debug_assert_type_tag;
 use crate::gc;
 use crate::hash_table_utils::find_slot_generic;
 use crate::object::{Obj, SetObj, TypeTagKind, TOMBSTONE};
+use pyaot_core_defs::Value;
 
 /// Round up to the next power of 2 (required for mask-based probing).
 /// Returns the smallest power of 2 that is >= n.
@@ -114,8 +115,7 @@ pub(super) fn set_resize(set: *mut SetObj, new_capacity: usize) {
 
 /// Allocate a new empty set with given initial capacity
 /// Returns: pointer to SetObj
-#[no_mangle]
-pub extern "C" fn rt_make_set(capacity: i64) -> *mut Obj {
+pub fn rt_make_set(capacity: i64) -> *mut Obj {
     use crate::object::{SetEntry, SetObj, TypeTagKind};
     use std::alloc::{alloc_zeroed, Layout};
 
@@ -152,10 +152,15 @@ pub extern "C" fn rt_make_set(capacity: i64) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_make_set"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_set_abi(capacity: i64) -> Value {
+    Value::from_ptr(rt_make_set(capacity))
+}
+
 
 /// Get length of set (number of elements)
-#[no_mangle]
-pub extern "C" fn rt_set_len(set: *mut Obj) -> i64 {
+pub fn rt_set_len(set: *mut Obj) -> i64 {
     if set.is_null() {
         return 0;
     }
@@ -166,6 +171,12 @@ pub extern "C" fn rt_set_len(set: *mut Obj) -> i64 {
         (*set_obj).len as i64
     }
 }
+#[export_name = "rt_set_len"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_len_abi(set: Value) -> i64 {
+    rt_set_len(set.unwrap_ptr())
+}
+
 
 /// Finalize a set by freeing its entries array
 /// Called by GC during sweep phase before freeing the SetObj itself
@@ -196,8 +207,7 @@ pub unsafe fn set_finalize(set: *mut Obj) {
 /// Generic set min/max for int and float elements.
 /// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float.
 /// Returns i64 (for float, result is f64::to_bits()).
-#[no_mangle]
-pub extern "C" fn rt_set_minmax(set: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
+pub fn rt_set_minmax(set: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
     use crate::object::FloatObj;
 
     if set.is_null() {
@@ -268,12 +278,17 @@ pub extern "C" fn rt_set_minmax(set: *mut Obj, is_min: u8, elem_kind: u8) -> i64
         }
     }
 }
+#[export_name = "rt_set_minmax"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_minmax_abi(set: Value, is_min: u8, elem_kind: u8) -> i64 {
+    rt_set_minmax(set.unwrap_ptr(), is_min, elem_kind)
+}
+
 
 /// Generic set min/max with key function.
 /// `key_return_tag`: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1).
 /// is_min: 0=min, 1=max
-#[no_mangle]
-pub extern "C" fn rt_set_minmax_with_key(
+pub fn rt_set_minmax_with_key(
     set: *mut Obj,
     key_fn: i64,
     captures: *mut Obj,
@@ -292,6 +307,19 @@ pub extern "C" fn rt_set_minmax_with_key(
         )
     }
 }
+#[export_name = "rt_set_minmax_with_key"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_minmax_with_key_abi(
+    set: Value,
+    key_fn: i64,
+    captures: Value,
+    capture_count: i64,
+    is_min: u8,
+    key_return_tag: u8,
+) -> Value {
+    Value::from_ptr(rt_set_minmax_with_key(set.unwrap_ptr(), key_fn, captures.unwrap_ptr(), capture_count, is_min, key_return_tag))
+}
+
 
 /// Find extremum (min or max) element in a set using a key function.
 /// Set entries store tagged Values; `key_return_tag` tells how to wrap the key fn result.

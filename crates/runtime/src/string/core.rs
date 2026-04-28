@@ -5,6 +5,7 @@ use crate::debug_assert_type_tag;
 use crate::exceptions::ExceptionType;
 use crate::gc;
 use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 /// Create a new string object on the heap (internal implementation)
 /// This is the low-level implementation that always allocates.
@@ -62,8 +63,7 @@ pub unsafe fn rt_make_str_impl(data: *const u8, len: usize) -> *mut Obj {
 ///
 /// # Safety
 /// If `len > 0`, `data` must be a valid pointer to at least `len` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn rt_make_str(data: *const u8, len: usize) -> *mut Obj {
+pub unsafe fn rt_make_str(data: *const u8, len: usize) -> *mut Obj {
     // For single-byte strings, use the interned pool (pre-populated in init_string_pool)
     if len == 1 {
         use crate::string::rt_make_str_interned;
@@ -72,11 +72,16 @@ pub unsafe extern "C" fn rt_make_str(data: *const u8, len: usize) -> *mut Obj {
 
     rt_make_str_impl(data, len)
 }
+#[export_name = "rt_make_str"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_str_abi(data: *const u8, len: usize) -> Value {
+    Value::from_ptr(unsafe { rt_make_str(data, len) })
+}
+
 
 /// Get the data pointer from a StrObj
 /// Returns pointer to the string's byte data
-#[no_mangle]
-pub extern "C" fn rt_str_data(str_obj: *mut Obj) -> *const u8 {
+pub fn rt_str_data(str_obj: *mut Obj) -> *const u8 {
     if str_obj.is_null() {
         return std::ptr::null();
     }
@@ -86,10 +91,15 @@ pub extern "C" fn rt_str_data(str_obj: *mut Obj) -> *const u8 {
         (*str_obj).data.as_ptr()
     }
 }
+#[export_name = "rt_str_data"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_data_abi(str_obj: Value) -> *const u8 {
+    rt_str_data(str_obj.unwrap_ptr())
+}
+
 
 /// Get the length of a StrObj
-#[no_mangle]
-pub extern "C" fn rt_str_len(str_obj: *mut Obj) -> usize {
+pub fn rt_str_len(str_obj: *mut Obj) -> usize {
     if str_obj.is_null() {
         return 0;
     }
@@ -99,10 +109,15 @@ pub extern "C" fn rt_str_len(str_obj: *mut Obj) -> usize {
         (*str_obj).len
     }
 }
+#[export_name = "rt_str_len"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_len_abi(str_obj: Value) -> usize {
+    rt_str_len(str_obj.unwrap_ptr())
+}
+
 
 /// Get the length of a string (as i64 for Python's len())
-#[no_mangle]
-pub extern "C" fn rt_str_len_int(str_obj: *mut Obj) -> i64 {
+pub fn rt_str_len_int(str_obj: *mut Obj) -> i64 {
     if str_obj.is_null() {
         return 0;
     }
@@ -112,11 +127,16 @@ pub extern "C" fn rt_str_len_int(str_obj: *mut Obj) -> i64 {
         (*str_obj).len as i64
     }
 }
+#[export_name = "rt_str_len_int"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_len_int_abi(str_obj: Value) -> i64 {
+    rt_str_len_int(str_obj.unwrap_ptr())
+}
+
 
 /// Concatenate two strings
 /// Returns: pointer to new allocated StrObj
-#[no_mangle]
-pub extern "C" fn rt_str_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
+pub fn rt_str_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use std::ptr;
 
@@ -185,12 +205,17 @@ pub extern "C" fn rt_str_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_str_concat"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_concat_abi(a: Value, b: Value) -> Value {
+    Value::from_ptr(rt_str_concat(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
 
 /// Encode string to bytes
 /// encoding: pointer to encoding string (utf-8 default if null)
 /// Returns: pointer to allocated BytesObj
-#[no_mangle]
-pub extern "C" fn rt_str_encode(s: *mut Obj, _encoding: *mut Obj) -> *mut Obj {
+pub fn rt_str_encode(s: *mut Obj, _encoding: *mut Obj) -> *mut Obj {
     use crate::bytes::rt_make_bytes;
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
@@ -222,3 +247,9 @@ pub extern "C" fn rt_str_encode(s: *mut Obj, _encoding: *mut Obj) -> *mut Obj {
         result
     }
 }
+#[export_name = "rt_str_encode"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_encode_abi(s: Value, _encoding: Value) -> Value {
+    Value::from_ptr(rt_str_encode(s.unwrap_ptr(), _encoding.unwrap_ptr()))
+}
+

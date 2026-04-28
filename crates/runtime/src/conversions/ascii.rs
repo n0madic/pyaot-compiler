@@ -4,6 +4,7 @@ use crate::object::{
     BytesObj, DictObj, ListObj, Obj, ObjHeader, SetObj, StrObj, TupleObj, TypeTagKind,
 };
 use crate::string::rt_make_str;
+use pyaot_core_defs::Value;
 
 /// Helper to convert an object to its ASCII representation string
 pub(super) unsafe fn obj_to_ascii_string(obj: *mut Obj) -> String {
@@ -164,10 +165,14 @@ pub(super) unsafe fn obj_to_ascii_string(obj: *mut Obj) -> String {
 }
 
 /// ascii() for collections (list, tuple, dict, set), str, bytes, and generic objects — runtime type-dispatched
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_ascii_collection(obj: *mut Obj) -> *mut Obj {
+pub fn rt_ascii_collection(obj: *mut Obj) -> *mut Obj {
     let s = unsafe { obj_to_ascii_string(obj) };
     let bytes = s.as_bytes();
     unsafe { rt_make_str(bytes.as_ptr(), bytes.len()) }
 }
+#[export_name = "rt_ascii_collection"]
+pub extern "C" fn rt_ascii_collection_abi(obj: Value) -> Value {
+    Value::from_ptr(rt_ascii_collection(obj.unwrap_ptr()))
+}
+

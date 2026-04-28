@@ -6,6 +6,7 @@
 
 use crate::gc::gc_alloc;
 use crate::object::{Obj, ObjHeader};
+use pyaot_core_defs::Value;
 
 /// Cell type tag for runtime objects
 pub const CELL_TYPE_TAG: u8 = 12;
@@ -31,8 +32,7 @@ pub struct CellObj {
 // ==================== Cell Creation Functions ====================
 
 /// Create a new Cell holding an integer value
-#[no_mangle]
-pub extern "C" fn rt_make_cell_int(value: i64) -> *mut Obj {
+pub fn rt_make_cell_int(value: i64) -> *mut Obj {
     let size = std::mem::size_of::<CellObj>();
     let cell = gc_alloc(size, CELL_TYPE_TAG) as *mut CellObj;
     unsafe {
@@ -41,10 +41,15 @@ pub extern "C" fn rt_make_cell_int(value: i64) -> *mut Obj {
     }
     cell as *mut Obj
 }
+#[export_name = "rt_make_cell_int"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_cell_int_abi(value: i64) -> Value {
+    Value::from_ptr(rt_make_cell_int(value))
+}
+
 
 /// Create a new Cell holding a float value
-#[no_mangle]
-pub extern "C" fn rt_make_cell_float(value: f64) -> *mut Obj {
+pub fn rt_make_cell_float(value: f64) -> *mut Obj {
     let size = std::mem::size_of::<CellObj>();
     let cell = gc_alloc(size, CELL_TYPE_TAG) as *mut CellObj;
     unsafe {
@@ -53,10 +58,15 @@ pub extern "C" fn rt_make_cell_float(value: f64) -> *mut Obj {
     }
     cell as *mut Obj
 }
+#[export_name = "rt_make_cell_float"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_cell_float_abi(value: f64) -> Value {
+    Value::from_ptr(rt_make_cell_float(value))
+}
+
 
 /// Create a new Cell holding a boolean value
-#[no_mangle]
-pub extern "C" fn rt_make_cell_bool(value: i8) -> *mut Obj {
+pub fn rt_make_cell_bool(value: i8) -> *mut Obj {
     let size = std::mem::size_of::<CellObj>();
     let cell = gc_alloc(size, CELL_TYPE_TAG) as *mut CellObj;
     unsafe {
@@ -65,10 +75,15 @@ pub extern "C" fn rt_make_cell_bool(value: i8) -> *mut Obj {
     }
     cell as *mut Obj
 }
+#[export_name = "rt_make_cell_bool"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_cell_bool_abi(value: i8) -> Value {
+    Value::from_ptr(rt_make_cell_bool(value))
+}
+
 
 /// Create a new Cell holding a pointer (heap object)
-#[no_mangle]
-pub extern "C" fn rt_make_cell_ptr(value: *mut Obj) -> *mut Obj {
+pub fn rt_make_cell_ptr(value: *mut Obj) -> *mut Obj {
     let size = std::mem::size_of::<CellObj>();
     let cell = gc_alloc(size, CELL_TYPE_TAG) as *mut CellObj;
     unsafe {
@@ -77,14 +92,19 @@ pub extern "C" fn rt_make_cell_ptr(value: *mut Obj) -> *mut Obj {
     }
     cell as *mut Obj
 }
+#[export_name = "rt_make_cell_ptr"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_cell_ptr_abi(value: Value) -> Value {
+    Value::from_ptr(rt_make_cell_ptr(value.unwrap_ptr()))
+}
+
 
 // ==================== Cell Get Functions ====================
 
 /// Get integer value from cell
 ///
 /// Returns `0` if `cell` is null, matching zero-initialisation semantics.
-#[no_mangle]
-pub extern "C" fn rt_cell_get_int(cell: *mut Obj) -> i64 {
+pub fn rt_cell_get_int(cell: *mut Obj) -> i64 {
     if cell.is_null() {
         return 0;
     }
@@ -93,12 +113,17 @@ pub extern "C" fn rt_cell_get_int(cell: *mut Obj) -> i64 {
         (*cell).value
     }
 }
+#[export_name = "rt_cell_get_int"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_cell_get_int_abi(cell: Value) -> i64 {
+    rt_cell_get_int(cell.unwrap_ptr())
+}
+
 
 /// Get float value from cell
 ///
 /// Returns `0.0` if `cell` is null, matching zero-initialisation semantics.
-#[no_mangle]
-pub extern "C" fn rt_cell_get_float(cell: *mut Obj) -> f64 {
+pub fn rt_cell_get_float(cell: *mut Obj) -> f64 {
     if cell.is_null() {
         return 0.0;
     }
@@ -107,12 +132,17 @@ pub extern "C" fn rt_cell_get_float(cell: *mut Obj) -> f64 {
         f64::from_bits((*cell).value as u64)
     }
 }
+#[export_name = "rt_cell_get_float"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_cell_get_float_abi(cell: Value) -> f64 {
+    rt_cell_get_float(cell.unwrap_ptr())
+}
+
 
 /// Get boolean value from cell
 ///
 /// Returns `0` if `cell` is null, matching zero-initialisation semantics.
-#[no_mangle]
-pub extern "C" fn rt_cell_get_bool(cell: *mut Obj) -> i8 {
+pub fn rt_cell_get_bool(cell: *mut Obj) -> i8 {
     if cell.is_null() {
         return 0;
     }
@@ -121,12 +151,17 @@ pub extern "C" fn rt_cell_get_bool(cell: *mut Obj) -> i8 {
         (*cell).value as i8
     }
 }
+#[export_name = "rt_cell_get_bool"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_cell_get_bool_abi(cell: Value) -> i8 {
+    rt_cell_get_bool(cell.unwrap_ptr())
+}
+
 
 /// Get pointer value from cell
 ///
 /// Returns `null` if `cell` is null, matching zero-initialisation semantics.
-#[no_mangle]
-pub extern "C" fn rt_cell_get_ptr(cell: *mut Obj) -> *mut Obj {
+pub fn rt_cell_get_ptr(cell: *mut Obj) -> *mut Obj {
     if cell.is_null() {
         return std::ptr::null_mut();
     }
@@ -135,12 +170,17 @@ pub extern "C" fn rt_cell_get_ptr(cell: *mut Obj) -> *mut Obj {
         (*cell).value as *mut Obj
     }
 }
+#[export_name = "rt_cell_get_ptr"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_cell_get_ptr_abi(cell: Value) -> Value {
+    Value::from_ptr(rt_cell_get_ptr(cell.unwrap_ptr()))
+}
+
 
 // ==================== Cell Set Functions ====================
 
 /// Set integer value in cell
-#[no_mangle]
-pub extern "C" fn rt_cell_set_int(cell: *mut Obj, value: i64) {
+pub fn rt_cell_set_int(cell: *mut Obj, value: i64) {
     if cell.is_null() {
         return;
     }
@@ -150,10 +190,15 @@ pub extern "C" fn rt_cell_set_int(cell: *mut Obj, value: i64) {
         (*cell).value = value;
     }
 }
+#[export_name = "rt_cell_set_int"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_cell_set_int_abi(cell: Value, value: i64) {
+    rt_cell_set_int(cell.unwrap_ptr(), value)
+}
+
 
 /// Set float value in cell
-#[no_mangle]
-pub extern "C" fn rt_cell_set_float(cell: *mut Obj, value: f64) {
+pub fn rt_cell_set_float(cell: *mut Obj, value: f64) {
     if cell.is_null() {
         return;
     }
@@ -163,10 +208,15 @@ pub extern "C" fn rt_cell_set_float(cell: *mut Obj, value: f64) {
         (*cell).value = value.to_bits() as i64;
     }
 }
+#[export_name = "rt_cell_set_float"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_cell_set_float_abi(cell: Value, value: f64) {
+    rt_cell_set_float(cell.unwrap_ptr(), value)
+}
+
 
 /// Set boolean value in cell
-#[no_mangle]
-pub extern "C" fn rt_cell_set_bool(cell: *mut Obj, value: i8) {
+pub fn rt_cell_set_bool(cell: *mut Obj, value: i8) {
     if cell.is_null() {
         return;
     }
@@ -176,10 +226,15 @@ pub extern "C" fn rt_cell_set_bool(cell: *mut Obj, value: i8) {
         (*cell).value = value as i64;
     }
 }
+#[export_name = "rt_cell_set_bool"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_cell_set_bool_abi(cell: Value, value: i8) {
+    rt_cell_set_bool(cell.unwrap_ptr(), value)
+}
+
 
 /// Set pointer value in cell
-#[no_mangle]
-pub extern "C" fn rt_cell_set_ptr(cell: *mut Obj, value: *mut Obj) {
+pub fn rt_cell_set_ptr(cell: *mut Obj, value: *mut Obj) {
     if cell.is_null() {
         return;
     }
@@ -189,6 +244,12 @@ pub extern "C" fn rt_cell_set_ptr(cell: *mut Obj, value: *mut Obj) {
         (*cell).value = value as i64;
     }
 }
+#[export_name = "rt_cell_set_ptr"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_cell_set_ptr_abi(cell: Value, value: Value) {
+    rt_cell_set_ptr(cell.unwrap_ptr(), value.unwrap_ptr())
+}
+
 
 // ==================== GC Support ====================
 

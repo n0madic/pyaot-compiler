@@ -3,12 +3,12 @@
 #[allow(unused_imports)]
 use crate::debug_assert_type_tag;
 use crate::object::{Obj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 /// Find index of value in tuple
 /// Raises ValueError if not found
 /// Returns: index (0-based)
-#[no_mangle]
-pub extern "C" fn rt_tuple_index(tuple: *mut Obj, value: *mut Obj) -> i64 {
+pub fn rt_tuple_index(tuple: *mut Obj, value: *mut Obj) -> i64 {
     if tuple.is_null() {
         unsafe {
             raise_exc!(
@@ -39,11 +39,16 @@ pub extern "C" fn rt_tuple_index(tuple: *mut Obj, value: *mut Obj) -> i64 {
         );
     }
 }
+#[export_name = "rt_tuple_index"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_index_abi(tuple: Value, value: Value) -> i64 {
+    rt_tuple_index(tuple.unwrap_ptr(), value.unwrap_ptr())
+}
+
 
 /// Count occurrences of value in tuple
 /// Returns: count
-#[no_mangle]
-pub extern "C" fn rt_tuple_count(tuple: *mut Obj, value: *mut Obj) -> i64 {
+pub fn rt_tuple_count(tuple: *mut Obj, value: *mut Obj) -> i64 {
     if tuple.is_null() {
         return 0;
     }
@@ -66,12 +71,17 @@ pub extern "C" fn rt_tuple_count(tuple: *mut Obj, value: *mut Obj) -> i64 {
         count
     }
 }
+#[export_name = "rt_tuple_count"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_count_abi(tuple: Value, value: Value) -> i64 {
+    rt_tuple_count(tuple.unwrap_ptr(), value.unwrap_ptr())
+}
+
 
 /// Generic tuple min/max for int and float elements.
 /// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float.
 /// Returns i64 (for float, result is f64::to_bits()).
-#[no_mangle]
-pub extern "C" fn rt_tuple_minmax(tuple: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
+pub fn rt_tuple_minmax(tuple: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
     use crate::minmax_utils::{find_extremum_float, find_extremum_int};
     if tuple.is_null() {
         return 0;
@@ -103,11 +113,16 @@ pub extern "C" fn rt_tuple_minmax(tuple: *mut Obj, is_min: u8, elem_kind: u8) ->
         }
     }
 }
+#[export_name = "rt_tuple_minmax"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_minmax_abi(tuple: Value, is_min: u8, elem_kind: u8) -> i64 {
+    rt_tuple_minmax(tuple.unwrap_ptr(), is_min, elem_kind)
+}
+
 
 /// Generic tuple min/max with key function.
 /// `key_return_tag`: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1).
-#[no_mangle]
-pub extern "C" fn rt_tuple_minmax_with_key(
+pub fn rt_tuple_minmax_with_key(
     tuple: *mut Obj,
     key_fn: i64,
     captures: *mut Obj,
@@ -126,6 +141,19 @@ pub extern "C" fn rt_tuple_minmax_with_key(
         )
     }
 }
+#[export_name = "rt_tuple_minmax_with_key"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_tuple_minmax_with_key_abi(
+    tuple: Value,
+    key_fn: i64,
+    captures: Value,
+    capture_count: i64,
+    is_min: u8,
+    key_return_tag: u8,
+) -> Value {
+    Value::from_ptr(rt_tuple_minmax_with_key(tuple.unwrap_ptr(), key_fn, captures.unwrap_ptr(), capture_count, is_min, key_return_tag))
+}
+
 
 /// Find extremum (min or max) element in a tuple using a key function.
 unsafe fn find_tuple_extremum_with_key(

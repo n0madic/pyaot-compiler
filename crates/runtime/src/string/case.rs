@@ -2,13 +2,13 @@
 
 use crate::gc;
 use crate::object::{Obj, ObjHeader, StrObj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 use super::core::rt_make_str;
 
 /// Convert string to uppercase
 /// Returns: pointer to new allocated StrObj
-#[no_mangle]
-pub extern "C" fn rt_str_upper(str_obj: *mut Obj) -> *mut Obj {
+pub fn rt_str_upper(str_obj: *mut Obj) -> *mut Obj {
     if str_obj.is_null() {
         return std::ptr::null_mut();
     }
@@ -35,11 +35,16 @@ pub extern "C" fn rt_str_upper(str_obj: *mut Obj) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_str_upper"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_upper_abi(str_obj: Value) -> Value {
+    Value::from_ptr(rt_str_upper(str_obj.unwrap_ptr()))
+}
+
 
 /// Convert string to lowercase
 /// Returns: pointer to new allocated StrObj
-#[no_mangle]
-pub extern "C" fn rt_str_lower(str_obj: *mut Obj) -> *mut Obj {
+pub fn rt_str_lower(str_obj: *mut Obj) -> *mut Obj {
     if str_obj.is_null() {
         return std::ptr::null_mut();
     }
@@ -66,11 +71,16 @@ pub extern "C" fn rt_str_lower(str_obj: *mut Obj) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_str_lower"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_lower_abi(str_obj: Value) -> Value {
+    Value::from_ptr(rt_str_lower(str_obj.unwrap_ptr()))
+}
+
 
 /// Title case: first letter of each word capitalized
 /// Returns: new string
-#[no_mangle]
-pub extern "C" fn rt_str_title(str_obj: *mut Obj) -> *mut Obj {
+pub fn rt_str_title(str_obj: *mut Obj) -> *mut Obj {
     if str_obj.is_null() {
         return unsafe { rt_make_str(std::ptr::null(), 0) };
     }
@@ -105,11 +115,16 @@ pub extern "C" fn rt_str_title(str_obj: *mut Obj) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_str_title"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_title_abi(str_obj: Value) -> Value {
+    Value::from_ptr(rt_str_title(str_obj.unwrap_ptr()))
+}
+
 
 /// Capitalize: first character uppercase, rest lowercase
 /// Returns: new string
-#[no_mangle]
-pub extern "C" fn rt_str_capitalize(str_obj: *mut Obj) -> *mut Obj {
+pub fn rt_str_capitalize(str_obj: *mut Obj) -> *mut Obj {
     if str_obj.is_null() {
         return unsafe { rt_make_str(std::ptr::null(), 0) };
     }
@@ -139,11 +154,16 @@ pub extern "C" fn rt_str_capitalize(str_obj: *mut Obj) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_str_capitalize"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_capitalize_abi(str_obj: Value) -> Value {
+    Value::from_ptr(rt_str_capitalize(str_obj.unwrap_ptr()))
+}
+
 
 /// Swapcase: swap upper and lower case
 /// Returns: new string
-#[no_mangle]
-pub extern "C" fn rt_str_swapcase(str_obj: *mut Obj) -> *mut Obj {
+pub fn rt_str_swapcase(str_obj: *mut Obj) -> *mut Obj {
     if str_obj.is_null() {
         return unsafe { rt_make_str(std::ptr::null(), 0) };
     }
@@ -175,3 +195,9 @@ pub extern "C" fn rt_str_swapcase(str_obj: *mut Obj) -> *mut Obj {
         obj
     }
 }
+#[export_name = "rt_str_swapcase"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_str_swapcase_abi(str_obj: Value) -> Value {
+    Value::from_ptr(rt_str_swapcase(str_obj.unwrap_ptr()))
+}
+

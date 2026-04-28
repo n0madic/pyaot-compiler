@@ -17,6 +17,7 @@
 
 use crate::object::{Obj, StrObj, TypeTagKind};
 use crate::string::core::rt_make_str_impl;
+use pyaot_core_defs::Value;
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 
@@ -100,8 +101,7 @@ pub fn shutdown_string_pool() {
 ///
 /// # Safety
 /// If `len > 0`, `data` must be a valid pointer to at least `len` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn rt_make_str_interned(data: *const u8, len: usize) -> *mut Obj {
+pub unsafe fn rt_make_str_interned(data: *const u8, len: usize) -> *mut Obj {
     // Fall back to regular allocation for large strings
     if len >= MAX_INTERN_LENGTH {
         return rt_make_str_impl(data, len);
@@ -156,6 +156,12 @@ pub unsafe extern "C" fn rt_make_str_interned(data: *const u8, len: usize) -> *m
 
     new_str
 }
+#[export_name = "rt_make_str_interned"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_str_interned_abi(data: *const u8, len: usize) -> Value {
+    Value::from_ptr(unsafe { rt_make_str_interned(data, len) })
+}
+
 
 /// Prune dead strings from the pool during GC sweep
 ///

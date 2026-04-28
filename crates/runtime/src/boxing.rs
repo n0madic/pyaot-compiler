@@ -9,11 +9,11 @@
 
 use crate::gc;
 use crate::object::{FloatObj, Obj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 /// Box a float value as a heap-allocated FloatObj
 /// Used for list elements when the element type is float
-#[no_mangle]
-pub extern "C" fn rt_box_float(value: f64) -> *mut Obj {
+pub fn rt_box_float(value: f64) -> *mut Obj {
     let size = std::mem::size_of::<FloatObj>();
     let obj = gc::gc_alloc(size, TypeTagKind::Float as u8);
 
@@ -24,6 +24,12 @@ pub extern "C" fn rt_box_float(value: f64) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_box_float"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_box_float_abi(value: f64) -> Value {
+    Value::from_ptr(rt_box_float(value))
+}
+
 
 /// Unbox a float value from a heap-allocated FloatObj
 /// Used for list elements when the element type is float
@@ -31,8 +37,7 @@ pub extern "C" fn rt_box_float(value: f64) -> *mut Obj {
 /// # Panics
 /// Panics if `obj` is null or has wrong type tag. This catches type confusion
 /// bugs in both debug and release builds.
-#[no_mangle]
-pub extern "C" fn rt_unbox_float(obj: *mut Obj) -> f64 {
+pub fn rt_unbox_float(obj: *mut Obj) -> f64 {
     if obj.is_null() {
         return 0.0;
     }
@@ -46,10 +51,21 @@ pub extern "C" fn rt_unbox_float(obj: *mut Obj) -> f64 {
         (*float_obj).value
     }
 }
+#[export_name = "rt_unbox_float"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_unbox_float_abi(obj: Value) -> f64 {
+    rt_unbox_float(obj.unwrap_ptr())
+}
+
 
 /// Box None as a heap-allocated NoneObj
 /// Used for Union types when the value is None
-#[no_mangle]
-pub extern "C" fn rt_box_none() -> *mut Obj {
+pub fn rt_box_none() -> *mut Obj {
     crate::object::none_obj()
 }
+#[export_name = "rt_box_none"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_box_none_abi() -> Value {
+    Value::from_ptr(rt_box_none())
+}
+

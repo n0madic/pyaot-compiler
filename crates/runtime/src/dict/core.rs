@@ -5,6 +5,7 @@ use crate::debug_assert_type_tag;
 use crate::gc;
 use crate::hash_table_utils::{find_compact_slot_generic, CompactProbeConfig};
 use crate::object::{DictEntry, DictObj, Obj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 /// Sentinel value for empty slot in indices table
 pub(super) const EMPTY_INDEX: i64 = -1;
@@ -190,8 +191,7 @@ pub(super) unsafe fn dict_resize(dict: *mut DictObj) {
 
 /// Create a new dictionary with given initial capacity
 /// Returns: pointer to allocated DictObj
-#[no_mangle]
-pub extern "C" fn rt_make_dict(capacity: i64) -> *mut Obj {
+pub fn rt_make_dict(capacity: i64) -> *mut Obj {
     use std::alloc::{alloc_zeroed, Layout};
 
     // Ensure capacity is power of 2 for efficient mask-based probing.
@@ -236,6 +236,12 @@ pub extern "C" fn rt_make_dict(capacity: i64) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_make_dict"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_dict_abi(capacity: i64) -> Value {
+    Value::from_ptr(rt_make_dict(capacity))
+}
+
 
 /// Finalize a dictionary by freeing its indices and entries arrays.
 /// Called by GC during sweep phase before freeing the DictObj itself.
@@ -273,8 +279,7 @@ pub unsafe fn dict_finalize(dict: *mut Obj) {
 }
 
 /// Get length of dictionary (number of entries)
-#[no_mangle]
-pub extern "C" fn rt_dict_len(dict: *mut Obj) -> i64 {
+pub fn rt_dict_len(dict: *mut Obj) -> i64 {
     if dict.is_null() {
         return 0;
     }
@@ -285,3 +290,9 @@ pub extern "C" fn rt_dict_len(dict: *mut Obj) -> i64 {
         (*dict_obj).len as i64
     }
 }
+#[export_name = "rt_dict_len"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_len_abi(dict: Value) -> i64 {
+    rt_dict_len(dict.unwrap_ptr())
+}
+

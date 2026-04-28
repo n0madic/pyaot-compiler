@@ -16,9 +16,8 @@ pub(super) fn type_name(tag: TypeTagKind) -> &'static str {
 /// Compare two heap objects for equality with runtime type dispatch
 /// Returns 1 if equal, 0 if not equal
 /// Used for Union types where the actual type is determined at runtime
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
+pub fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
     // Handle null (None)
     if a.is_null() && b.is_null() {
         return 1;
@@ -119,6 +118,11 @@ pub extern "C" fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
         }
     }
 }
+#[export_name = "rt_obj_eq"]
+pub extern "C" fn rt_obj_eq_abi(a: Value, b: Value) -> i8 {
+    rt_obj_eq(a.unwrap_ptr(), b.unwrap_ptr())
+}
+
 
 /// Helper function to compare two orderable heap objects
 /// Returns Ordering or panics with TypeError for incompatible types
@@ -288,9 +292,8 @@ unsafe fn involves_nan(a: *mut Obj, b: *mut Obj) -> bool {
 ///
 /// Returns 1 if the comparison is true, 0 otherwise. NaN comparisons always
 /// return false (0) per Python semantics.
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
+pub fn rt_obj_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
     unsafe {
         // NaN comparisons always return False in Python
         if involves_nan(a, b) {
@@ -307,12 +310,16 @@ pub extern "C" fn rt_obj_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8 {
         result as i8
     }
 }
+#[export_name = "rt_obj_cmp"]
+pub extern "C" fn rt_obj_cmp_abi(a: Value, b: Value, op_tag: u8) -> i8 {
+    rt_obj_cmp(a.unwrap_ptr(), b.unwrap_ptr(), op_tag)
+}
+
 
 /// Runtime-dispatched subscript: obj[index] where obj has unknown type at compile time.
 /// Dispatches to the appropriate getter based on the object's type tag.
 /// Returns boxed value (*mut Obj) for all types.
-#[no_mangle]
-pub extern "C" fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
+pub fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
     use crate::object::*;
 
     if obj.is_null() {
@@ -361,13 +368,18 @@ pub extern "C" fn rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_any_getitem"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_any_getitem_abi(obj: Value, index: i64) -> Value {
+    Value::from_ptr(rt_any_getitem(obj.unwrap_ptr(), index))
+}
+
 
 /// Check if element is in container with runtime type dispatch
 /// Returns 1 if element is in container, 0 otherwise
 /// Used for Union container types where the actual type is determined at runtime
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
+pub fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
     if container.is_null() {
         unsafe {
             raise_exc!(
@@ -405,6 +417,11 @@ pub extern "C" fn rt_obj_contains(container: *mut Obj, elem: *mut Obj) -> i8 {
         }
     }
 }
+#[export_name = "rt_obj_contains"]
+pub extern "C" fn rt_obj_contains_abi(container: Value, elem: Value) -> i8 {
+    rt_obj_contains(container.unwrap_ptr(), elem.unwrap_ptr())
+}
+
 
 /// Check if list contains value using value equality (not pointer equality)
 unsafe fn rt_list_contains_value(list: *mut Obj, value: *mut Obj) -> i8 {
@@ -504,9 +521,8 @@ pub(super) unsafe fn rt_bytes_contains_value(bytes: *mut Obj, value: *mut Obj) -
 /// boxes a user-level `None` literal into when it crosses into an
 /// `Optional[Heap]` slot). Used by the `is None` / `is not None` lowering
 /// to sidestep the null-vs-NoneObj ABI asymmetry.
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_is_none(obj: *mut Obj) -> i8 {
+pub fn rt_is_none(obj: *mut Obj) -> i8 {
     let v = pyaot_core_defs::Value(obj as u64);
     if obj.is_null() || v.is_none() {
         return 1;
@@ -522,14 +538,18 @@ pub extern "C" fn rt_is_none(obj: *mut Obj) -> i8 {
         }
     }
 }
+#[export_name = "rt_is_none"]
+pub extern "C" fn rt_is_none_abi(obj: Value) -> i8 {
+    rt_is_none(obj.unwrap_ptr())
+}
+
 
 /// Check truthiness of any value with runtime type dispatch
 /// Returns 1 if truthy, 0 if falsy
 /// Falsy values: None, False, 0, 0.0, empty str/list/tuple/dict/set/bytes
 /// Used for filter(None, iterable) to filter out falsy values
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_is_truthy(obj: *mut Obj) -> i8 {
+pub fn rt_is_truthy(obj: *mut Obj) -> i8 {
     // None is falsy
     if obj.is_null() {
         return 0;
@@ -611,3 +631,8 @@ pub extern "C" fn rt_is_truthy(obj: *mut Obj) -> i8 {
         }
     }
 }
+#[export_name = "rt_is_truthy"]
+pub extern "C" fn rt_is_truthy_abi(obj: Value) -> i8 {
+    rt_is_truthy(obj.unwrap_ptr())
+}
+

@@ -12,16 +12,20 @@ use std::alloc::{alloc_zeroed, realloc, Layout};
 
 /// Append element to list (mutates list)
 /// This is the same as rt_list_push, but named to match Python's .append()
-#[no_mangle]
-pub extern "C" fn rt_list_append(list: *mut Obj, value: *mut Obj) {
+pub fn rt_list_append(list: *mut Obj, value: *mut Obj) {
     rt_list_push(list, value);
 }
+#[export_name = "rt_list_append"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_append_abi(list: Value, value: Value) {
+    rt_list_append(list.unwrap_ptr(), value.unwrap_ptr())
+}
+
 
 /// Pop element from list at given index
 /// Negative indices are supported
 /// Returns: the removed element, or null if out of bounds
-#[no_mangle]
-pub extern "C" fn rt_list_pop(list: *mut Obj, index: i64) -> *mut Obj {
+pub fn rt_list_pop(list: *mut Obj, index: i64) -> *mut Obj {
     if list.is_null() {
         return std::ptr::null_mut();
     }
@@ -61,11 +65,16 @@ pub extern "C" fn rt_list_pop(list: *mut Obj, index: i64) -> *mut Obj {
         result
     }
 }
+#[export_name = "rt_list_pop"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_pop_abi(list: Value, index: i64) -> Value {
+    Value::from_ptr(rt_list_pop(list.unwrap_ptr(), index))
+}
+
 
 /// Insert element at given index (mutates list)
 /// Negative indices are supported
-#[no_mangle]
-pub extern "C" fn rt_list_insert(list: *mut Obj, index: i64, value: *mut Obj) {
+pub fn rt_list_insert(list: *mut Obj, index: i64, value: *mut Obj) {
     if list.is_null() {
         return;
     }
@@ -126,12 +135,17 @@ pub extern "C" fn rt_list_insert(list: *mut Obj, index: i64, value: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_list_insert"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_insert_abi(list: Value, index: i64, value: Value) {
+    rt_list_insert(list.unwrap_ptr(), index, value.unwrap_ptr())
+}
+
 
 /// Remove first occurrence of value from list (mutates list)
 /// Uses value equality for heap objects, raw equality for primitives.
 /// Returns: 1 if found and removed, 0 otherwise
-#[no_mangle]
-pub extern "C" fn rt_list_remove(list: *mut Obj, value: *mut Obj) -> i8 {
+pub fn rt_list_remove(list: *mut Obj, value: *mut Obj) -> i8 {
     if list.is_null() {
         return 0;
     }
@@ -166,10 +180,15 @@ pub extern "C" fn rt_list_remove(list: *mut Obj, value: *mut Obj) -> i8 {
         0
     }
 }
+#[export_name = "rt_list_remove"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_remove_abi(list: Value, value: Value) -> i8 {
+    rt_list_remove(list.unwrap_ptr(), value.unwrap_ptr())
+}
+
 
 /// Clear all elements from list (mutates list)
-#[no_mangle]
-pub extern "C" fn rt_list_clear(list: *mut Obj) {
+pub fn rt_list_clear(list: *mut Obj) {
     if list.is_null() {
         return;
     }
@@ -188,10 +207,15 @@ pub extern "C" fn rt_list_clear(list: *mut Obj) {
         (*list_obj).len = 0;
     }
 }
+#[export_name = "rt_list_clear"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_clear_abi(list: Value) {
+    rt_list_clear(list.unwrap_ptr())
+}
+
 
 /// Reverse list in place (mutates list)
-#[no_mangle]
-pub extern "C" fn rt_list_reverse(list: *mut Obj) {
+pub fn rt_list_reverse(list: *mut Obj) {
     if list.is_null() {
         return;
     }
@@ -217,10 +241,15 @@ pub extern "C" fn rt_list_reverse(list: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_list_reverse"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_reverse_abi(list: Value) {
+    rt_list_reverse(list.unwrap_ptr())
+}
+
 
 /// Extend list with elements from another list (mutates first list)
-#[no_mangle]
-pub extern "C" fn rt_list_extend(list: *mut Obj, other: *mut Obj) {
+pub fn rt_list_extend(list: *mut Obj, other: *mut Obj) {
     if list.is_null() || other.is_null() {
         return;
     }
@@ -301,6 +330,12 @@ pub extern "C" fn rt_list_extend(list: *mut Obj, other: *mut Obj) {
         (*list_obj).len = new_len;
     }
 }
+#[export_name = "rt_list_extend"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_extend_abi(list: Value, other: Value) {
+    rt_list_extend(list.unwrap_ptr(), other.unwrap_ptr())
+}
+
 
 /// Compare two objects for sorting. Values are uniform tagged Values after F.7c.
 /// Returns -1 if a < b, 0 if a == b, 1 if a > b
@@ -392,8 +427,7 @@ unsafe fn compare_objects(a: *mut Obj, b: *mut Obj) -> i32 {
 
 /// Sort list in place
 /// reverse: 0 = ascending, non-zero = descending
-#[no_mangle]
-pub extern "C" fn rt_list_sort(list: *mut Obj, reverse: i8) {
+pub fn rt_list_sort(list: *mut Obj, reverse: i8) {
     if list.is_null() {
         return;
     }
@@ -433,6 +467,12 @@ pub extern "C" fn rt_list_sort(list: *mut Obj, reverse: i8) {
         });
     }
 }
+#[export_name = "rt_list_sort"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_sort_abi(list: Value, reverse: i8) {
+    rt_list_sort(list.unwrap_ptr(), reverse)
+}
+
 
 /// Compare two key objects for sorting
 /// Returns -1 if a < b, 0 if a == b, 1 if a > b
@@ -455,8 +495,7 @@ unsafe fn compare_key_objects(a: *mut Obj, b: *mut Obj) -> i32 {
 /// captures: tuple of captured variables (null if no captures)
 /// capture_count: number of captured variables
 /// key_return_tag: 0=heap, 1=Int(raw i64), 2=Bool(raw 0/1)
-#[no_mangle]
-pub extern "C" fn rt_list_sort_with_key(
+pub fn rt_list_sort_with_key(
     list: *mut Obj,
     reverse: i8,
     key_fn: i64,
@@ -536,10 +575,22 @@ pub extern "C" fn rt_list_sort_with_key(
         }
     }
 }
+#[export_name = "rt_list_sort_with_key"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_sort_with_key_abi(
+    list: Value,
+    reverse: i8,
+    key_fn: i64,
+    captures: Value,
+    capture_count: i64,
+    key_return_tag: u8,
+) {
+    rt_list_sort_with_key(list.unwrap_ptr(), reverse, key_fn, captures.unwrap_ptr(), capture_count, key_return_tag)
+}
+
 
 /// Replace list[start:stop] with values from another list
-#[no_mangle]
-pub extern "C" fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, values: *mut Obj) {
+pub fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, values: *mut Obj) {
     use crate::slice_utils::normalize_slice_indices;
     use std::alloc::{alloc_zeroed, Layout};
 
@@ -640,3 +691,9 @@ pub extern "C" fn rt_list_slice_assign(list: *mut Obj, start: i64, stop: i64, va
         }
     }
 }
+#[export_name = "rt_list_slice_assign"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_slice_assign_abi(list: Value, start: i64, stop: i64, values: Value) {
+    rt_list_slice_assign(list.unwrap_ptr(), start, stop, values.unwrap_ptr())
+}
+

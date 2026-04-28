@@ -5,6 +5,7 @@ use crate::debug_assert_type_tag;
 use crate::hash_table_utils::{eq_hashable_obj, hash_hashable_obj};
 use crate::object::{DictObj, Obj, StrObj, TypeTagKind};
 use crate::string::rt_make_str_interned;
+use pyaot_core_defs::Value;
 
 use super::core::{
     dict_resize, find_insert_slot, lookup_entry, real_entries_capacity, rt_make_dict, DUMMY_INDEX,
@@ -14,8 +15,7 @@ use super::core::{
 /// Set a key-value pair in the dictionary
 /// If key exists, updates value. If not, inserts new entry.
 /// String keys under 256 bytes are interned for memory efficiency.
-#[no_mangle]
-pub extern "C" fn rt_dict_set(dict: *mut Obj, mut key: *mut Obj, value: *mut Obj) {
+pub fn rt_dict_set(dict: *mut Obj, mut key: *mut Obj, value: *mut Obj) {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if dict.is_null() || key.is_null() {
@@ -115,11 +115,16 @@ pub extern "C" fn rt_dict_set(dict: *mut Obj, mut key: *mut Obj, value: *mut Obj
         }
     }
 }
+#[export_name = "rt_dict_set"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_set_abi(dict: Value, key: Value, value: Value) {
+    rt_dict_set(dict.unwrap_ptr(), key.unwrap_ptr(), value.unwrap_ptr())
+}
+
 
 /// Get a value from the dictionary by key
 /// Returns: pointer to value, or null if key not found
-#[no_mangle]
-pub extern "C" fn rt_dict_get(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
+pub fn rt_dict_get(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
     if dict.is_null() || key.is_null() {
         return std::ptr::null_mut();
     }
@@ -138,11 +143,16 @@ pub extern "C" fn rt_dict_get(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_dict_get"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_get_abi(dict: Value, key: Value) -> Value {
+    Value::from_ptr(rt_dict_get(dict.unwrap_ptr(), key.unwrap_ptr()))
+}
+
 
 /// Check if key exists in dictionary
 /// Returns: 1 (true) or 0 (false)
-#[no_mangle]
-pub extern "C" fn rt_dict_contains(dict: *mut Obj, key: *mut Obj) -> i8 {
+pub fn rt_dict_contains(dict: *mut Obj, key: *mut Obj) -> i8 {
     if dict.is_null() || key.is_null() {
         return 0;
     }
@@ -159,11 +169,16 @@ pub extern "C" fn rt_dict_contains(dict: *mut Obj, key: *mut Obj) -> i8 {
         }
     }
 }
+#[export_name = "rt_dict_contains"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_contains_abi(dict: Value, key: Value) -> i8 {
+    rt_dict_contains(dict.unwrap_ptr(), key.unwrap_ptr())
+}
+
 
 /// Get value with default if key not found
 /// Returns: value if found, otherwise default
-#[no_mangle]
-pub extern "C" fn rt_dict_get_default(
+pub fn rt_dict_get_default(
     dict: *mut Obj,
     key: *mut Obj,
     default: *mut Obj,
@@ -175,11 +190,20 @@ pub extern "C" fn rt_dict_get_default(
         result
     }
 }
+#[export_name = "rt_dict_get_default"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_get_default_abi(
+    dict: Value,
+    key: Value,
+    default: Value,
+) -> Value {
+    Value::from_ptr(rt_dict_get_default(dict.unwrap_ptr(), key.unwrap_ptr(), default.unwrap_ptr()))
+}
+
 
 /// Pop (remove and return) value for key
 /// Returns: value if found and removed, otherwise null
-#[no_mangle]
-pub extern "C" fn rt_dict_pop(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
+pub fn rt_dict_pop(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
     if dict.is_null() || key.is_null() {
         return std::ptr::null_mut();
     }
@@ -228,10 +252,15 @@ pub extern "C" fn rt_dict_pop(dict: *mut Obj, key: *mut Obj) -> *mut Obj {
         std::ptr::null_mut()
     }
 }
+#[export_name = "rt_dict_pop"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_pop_abi(dict: Value, key: Value) -> Value {
+    Value::from_ptr(rt_dict_pop(dict.unwrap_ptr(), key.unwrap_ptr()))
+}
+
 
 /// Clear all entries from dictionary
-#[no_mangle]
-pub extern "C" fn rt_dict_clear(dict: *mut Obj) {
+pub fn rt_dict_clear(dict: *mut Obj) {
     if dict.is_null() {
         return;
     }
@@ -257,11 +286,16 @@ pub extern "C" fn rt_dict_clear(dict: *mut Obj) {
         (*dict_obj).entries_len = 0;
     }
 }
+#[export_name = "rt_dict_clear"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_clear_abi(dict: Value) {
+    rt_dict_clear(dict.unwrap_ptr())
+}
+
 
 /// Create a shallow copy of dictionary (preserves insertion order)
 /// Returns: pointer to new DictObj
-#[no_mangle]
-pub extern "C" fn rt_dict_copy(dict: *mut Obj) -> *mut Obj {
+pub fn rt_dict_copy(dict: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if dict.is_null() {
@@ -300,10 +334,15 @@ pub extern "C" fn rt_dict_copy(dict: *mut Obj) -> *mut Obj {
         new_dict
     }
 }
+#[export_name = "rt_dict_copy"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_copy_abi(dict: Value) -> Value {
+    Value::from_ptr(rt_dict_copy(dict.unwrap_ptr()))
+}
+
 
 /// Update dictionary with entries from another dictionary (preserves insertion order of other)
-#[no_mangle]
-pub extern "C" fn rt_dict_update(dict: *mut Obj, other: *mut Obj) {
+pub fn rt_dict_update(dict: *mut Obj, other: *mut Obj) {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     if dict.is_null() || other.is_null() {
@@ -338,13 +377,18 @@ pub extern "C" fn rt_dict_update(dict: *mut Obj, other: *mut Obj) {
         gc_pop();
     }
 }
+#[export_name = "rt_dict_update"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_update_abi(dict: Value, other: Value) {
+    rt_dict_update(dict.unwrap_ptr(), other.unwrap_ptr())
+}
+
 
 /// dict.setdefault(key, default) - Get value for key, set to default if not present
 /// If key exists in dict, returns the existing value.
 /// If key not in dict, sets dict[key] = default and returns default.
 /// Returns: value for key (existing or newly set)
-#[no_mangle]
-pub extern "C" fn rt_dict_setdefault(dict: *mut Obj, key: *mut Obj, default: *mut Obj) -> *mut Obj {
+pub fn rt_dict_setdefault(dict: *mut Obj, key: *mut Obj, default: *mut Obj) -> *mut Obj {
     if dict.is_null() || key.is_null() {
         return default;
     }
@@ -362,12 +406,17 @@ pub extern "C" fn rt_dict_setdefault(dict: *mut Obj, key: *mut Obj, default: *mu
         }
     }
 }
+#[export_name = "rt_dict_setdefault"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_setdefault_abi(dict: Value, key: Value, default: Value) -> Value {
+    Value::from_ptr(rt_dict_setdefault(dict.unwrap_ptr(), key.unwrap_ptr(), default.unwrap_ptr()))
+}
+
 
 /// dict.popitem() - Remove and return (key, value) tuple of last inserted item
 /// Raises KeyError if dict is empty.
 /// Returns: pointer to 2-tuple (key, value)
-#[no_mangle]
-pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
+pub fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
     use crate::exceptions::ExceptionType;
     use crate::tuple::{rt_make_tuple, rt_tuple_set};
 
@@ -457,13 +506,18 @@ pub extern "C" fn rt_dict_popitem(dict: *mut Obj) -> *mut Obj {
         raise_exc!(ExceptionType::KeyError, "popitem(): dictionary is empty");
     }
 }
+#[export_name = "rt_dict_popitem"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_popitem_abi(dict: Value) -> Value {
+    Value::from_ptr(rt_dict_popitem(dict.unwrap_ptr()))
+}
+
 
 /// Create dict from keys with optional value
 /// keys_list: list of keys
 /// value: value for all keys (None if null)
 /// Returns: pointer to new DictObj
-#[no_mangle]
-pub extern "C" fn rt_dict_fromkeys(keys_list: *mut Obj, value: *mut Obj) -> *mut Obj {
+pub fn rt_dict_fromkeys(keys_list: *mut Obj, value: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::list::rt_list_len;
     use crate::object::ListObj;
@@ -505,11 +559,16 @@ pub extern "C" fn rt_dict_fromkeys(keys_list: *mut Obj, value: *mut Obj) -> *mut
         roots[0]
     }
 }
+#[export_name = "rt_dict_fromkeys"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_fromkeys_abi(keys_list: Value, value: Value) -> Value {
+    Value::from_ptr(rt_dict_fromkeys(keys_list.unwrap_ptr(), value.unwrap_ptr()))
+}
+
 
 /// Merge two dicts into a new dict (preserves insertion order)
 /// Returns: pointer to new DictObj
-#[no_mangle]
-pub extern "C" fn rt_dict_merge(dict1: *mut Obj, dict2: *mut Obj) -> *mut Obj {
+pub fn rt_dict_merge(dict1: *mut Obj, dict2: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     let result = rt_make_dict(0);
@@ -559,12 +618,17 @@ pub extern "C" fn rt_dict_merge(dict1: *mut Obj, dict2: *mut Obj) -> *mut Obj {
     gc_pop();
     roots[0]
 }
+#[export_name = "rt_dict_merge"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_merge_abi(dict1: Value, dict2: Value) -> Value {
+    Value::from_ptr(rt_dict_merge(dict1.unwrap_ptr(), dict2.unwrap_ptr()))
+}
+
 
 /// Create a dict from a list of (key, value) pairs
 /// Each element of the list should be a 2-tuple
 /// Returns: pointer to new DictObj
-#[no_mangle]
-pub extern "C" fn rt_dict_from_pairs(pairs: *mut Obj) -> *mut Obj {
+pub fn rt_dict_from_pairs(pairs: *mut Obj) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
     use crate::object::{ListObj, TupleObj};
 
@@ -609,3 +673,9 @@ pub extern "C" fn rt_dict_from_pairs(pairs: *mut Obj) -> *mut Obj {
 
     dict
 }
+#[export_name = "rt_dict_from_pairs"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_dict_from_pairs_abi(pairs: Value) -> Value {
+    Value::from_ptr(rt_dict_from_pairs(pairs.unwrap_ptr()))
+}
+

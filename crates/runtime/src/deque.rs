@@ -6,13 +6,13 @@
 use crate::exceptions::ExceptionType;
 use crate::gc;
 use crate::object::{DequeObj, Obj, TypeTagKind};
+use pyaot_core_defs::Value;
 
 /// Minimum ring buffer capacity (power of 2)
 const MIN_CAPACITY: usize = 8;
 
 /// Create an empty deque with optional maxlen (-1 = unbounded)
-#[no_mangle]
-pub extern "C" fn rt_make_deque(maxlen: i64) -> *mut Obj {
+pub fn rt_make_deque(maxlen: i64) -> *mut Obj {
     let deque_size = std::mem::size_of::<DequeObj>();
     let obj = gc::gc_alloc(deque_size, TypeTagKind::Deque as u8);
 
@@ -29,10 +29,15 @@ pub extern "C" fn rt_make_deque(maxlen: i64) -> *mut Obj {
 
     obj
 }
+#[export_name = "rt_make_deque"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_make_deque_abi(maxlen: i64) -> Value {
+    Value::from_ptr(rt_make_deque(maxlen))
+}
+
 
 /// Create a deque from an iterator with optional maxlen
-#[no_mangle]
-pub extern "C" fn rt_deque_from_iter(iter: *mut Obj, maxlen: i64) -> *mut Obj {
+pub fn rt_deque_from_iter(iter: *mut Obj, maxlen: i64) -> *mut Obj {
     use crate::gc::{gc_pop, gc_push, ShadowFrame};
 
     let obj = rt_make_deque(maxlen);
@@ -64,10 +69,15 @@ pub extern "C" fn rt_deque_from_iter(iter: *mut Obj, maxlen: i64) -> *mut Obj {
     gc_pop();
     root
 }
+#[export_name = "rt_deque_from_iter"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_from_iter_abi(iter: Value, maxlen: i64) -> Value {
+    Value::from_ptr(rt_deque_from_iter(iter.unwrap_ptr(), maxlen))
+}
+
 
 /// deque.append(elem) — add to the right end
-#[no_mangle]
-pub extern "C" fn rt_deque_append(deque: *mut Obj, elem: *mut Obj) {
+pub fn rt_deque_append(deque: *mut Obj, elem: *mut Obj) {
     unsafe {
         let d = deque as *mut DequeObj;
         let maxlen = (*d).maxlen;
@@ -89,10 +99,15 @@ pub extern "C" fn rt_deque_append(deque: *mut Obj, elem: *mut Obj) {
         (*d).len += 1;
     }
 }
+#[export_name = "rt_deque_append"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_append_abi(deque: Value, elem: Value) {
+    rt_deque_append(deque.unwrap_ptr(), elem.unwrap_ptr())
+}
+
 
 /// deque.appendleft(elem) — add to the left end
-#[no_mangle]
-pub extern "C" fn rt_deque_appendleft(deque: *mut Obj, elem: *mut Obj) {
+pub fn rt_deque_appendleft(deque: *mut Obj, elem: *mut Obj) {
     unsafe {
         let d = deque as *mut DequeObj;
         let maxlen = (*d).maxlen;
@@ -116,10 +131,15 @@ pub extern "C" fn rt_deque_appendleft(deque: *mut Obj, elem: *mut Obj) {
         (*d).len += 1;
     }
 }
+#[export_name = "rt_deque_appendleft"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_appendleft_abi(deque: Value, elem: Value) {
+    rt_deque_appendleft(deque.unwrap_ptr(), elem.unwrap_ptr())
+}
+
 
 /// deque.pop() — remove and return from right end
-#[no_mangle]
-pub extern "C" fn rt_deque_pop(deque: *mut Obj) -> *mut Obj {
+pub fn rt_deque_pop(deque: *mut Obj) -> *mut Obj {
     unsafe {
         let d = deque as *mut DequeObj;
         if (*d).len == 0 {
@@ -130,10 +150,15 @@ pub extern "C" fn rt_deque_pop(deque: *mut Obj) -> *mut Obj {
         (*(*d).data.add(idx)).0 as *mut Obj
     }
 }
+#[export_name = "rt_deque_pop"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_pop_abi(deque: Value) -> Value {
+    Value::from_ptr(rt_deque_pop(deque.unwrap_ptr()))
+}
+
 
 /// deque.popleft() — remove and return from left end
-#[no_mangle]
-pub extern "C" fn rt_deque_popleft(deque: *mut Obj) -> *mut Obj {
+pub fn rt_deque_popleft(deque: *mut Obj) -> *mut Obj {
     unsafe {
         let d = deque as *mut DequeObj;
         if (*d).len == 0 {
@@ -145,10 +170,15 @@ pub extern "C" fn rt_deque_popleft(deque: *mut Obj) -> *mut Obj {
         elem
     }
 }
+#[export_name = "rt_deque_popleft"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_popleft_abi(deque: Value) -> Value {
+    Value::from_ptr(rt_deque_popleft(deque.unwrap_ptr()))
+}
+
 
 /// deque.extend(iterable) — extend right side with elements from iterable
-#[no_mangle]
-pub extern "C" fn rt_deque_extend(deque: *mut Obj, iterable: *mut Obj) {
+pub fn rt_deque_extend(deque: *mut Obj, iterable: *mut Obj) {
     if iterable.is_null() {
         return;
     }
@@ -161,10 +191,15 @@ pub extern "C" fn rt_deque_extend(deque: *mut Obj, iterable: *mut Obj) {
         rt_deque_append(deque, elem);
     }
 }
+#[export_name = "rt_deque_extend"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_extend_abi(deque: Value, iterable: Value) {
+    rt_deque_extend(deque.unwrap_ptr(), iterable.unwrap_ptr())
+}
+
 
 /// deque.extendleft(iterable) — extend left side
-#[no_mangle]
-pub extern "C" fn rt_deque_extendleft(deque: *mut Obj, iterable: *mut Obj) {
+pub fn rt_deque_extendleft(deque: *mut Obj, iterable: *mut Obj) {
     if iterable.is_null() {
         return;
     }
@@ -177,6 +212,12 @@ pub extern "C" fn rt_deque_extendleft(deque: *mut Obj, iterable: *mut Obj) {
         rt_deque_appendleft(deque, elem);
     }
 }
+#[export_name = "rt_deque_extendleft"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_extendleft_abi(deque: Value, iterable: Value) {
+    rt_deque_extendleft(deque.unwrap_ptr(), iterable.unwrap_ptr())
+}
+
 
 /// Convert an iterable to an iterator. If already an iterator, return as-is.
 fn iterable_to_iterator(obj: *mut Obj) -> *mut Obj {
@@ -196,8 +237,7 @@ fn iterable_to_iterator(obj: *mut Obj) -> *mut Obj {
 }
 
 /// deque.rotate(n) — rotate n steps to the right (negative = left)
-#[no_mangle]
-pub extern "C" fn rt_deque_rotate(deque: *mut Obj, n: i64) {
+pub fn rt_deque_rotate(deque: *mut Obj, n: i64) {
     unsafe {
         let d = deque as *mut DequeObj;
         let len = (*d).len;
@@ -215,19 +255,29 @@ pub extern "C" fn rt_deque_rotate(deque: *mut Obj, n: i64) {
         (*d).head = ((*d).head + (*d).capacity - steps) % (*d).capacity;
     }
 }
+#[export_name = "rt_deque_rotate"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_rotate_abi(deque: Value, n: i64) {
+    rt_deque_rotate(deque.unwrap_ptr(), n)
+}
+
 
 /// len(deque)
-#[no_mangle]
-pub extern "C" fn rt_deque_len(deque: *mut Obj) -> i64 {
+pub fn rt_deque_len(deque: *mut Obj) -> i64 {
     unsafe {
         let d = deque as *mut DequeObj;
         (*d).len as i64
     }
 }
+#[export_name = "rt_deque_len"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_len_abi(deque: Value) -> i64 {
+    rt_deque_len(deque.unwrap_ptr())
+}
+
 
 /// deque[index] — get element by index
-#[no_mangle]
-pub extern "C" fn rt_deque_get(deque: *mut Obj, index: i64) -> *mut Obj {
+pub fn rt_deque_get(deque: *mut Obj, index: i64) -> *mut Obj {
     unsafe {
         let d = deque as *mut DequeObj;
         let len = (*d).len as i64;
@@ -239,10 +289,15 @@ pub extern "C" fn rt_deque_get(deque: *mut Obj, index: i64) -> *mut Obj {
         (*(*d).data.add(ring_idx)).0 as *mut Obj
     }
 }
+#[export_name = "rt_deque_get"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_get_abi(deque: Value, index: i64) -> Value {
+    Value::from_ptr(rt_deque_get(deque.unwrap_ptr(), index))
+}
+
 
 /// deque[index] = value
-#[no_mangle]
-pub extern "C" fn rt_deque_set(deque: *mut Obj, index: i64, value: *mut Obj) {
+pub fn rt_deque_set(deque: *mut Obj, index: i64, value: *mut Obj) {
     unsafe {
         let d = deque as *mut DequeObj;
         let len = (*d).len as i64;
@@ -254,20 +309,30 @@ pub extern "C" fn rt_deque_set(deque: *mut Obj, index: i64, value: *mut Obj) {
         *(*d).data.add(ring_idx) = pyaot_core_defs::Value(value as u64);
     }
 }
+#[export_name = "rt_deque_set"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_set_abi(deque: Value, index: i64, value: Value) {
+    rt_deque_set(deque.unwrap_ptr(), index, value.unwrap_ptr())
+}
+
 
 /// deque.clear()
-#[no_mangle]
-pub extern "C" fn rt_deque_clear(deque: *mut Obj) {
+pub fn rt_deque_clear(deque: *mut Obj) {
     unsafe {
         let d = deque as *mut DequeObj;
         (*d).head = 0;
         (*d).len = 0;
     }
 }
+#[export_name = "rt_deque_clear"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_clear_abi(deque: Value) {
+    rt_deque_clear(deque.unwrap_ptr())
+}
+
 
 /// deque.reverse()
-#[no_mangle]
-pub extern "C" fn rt_deque_reverse(deque: *mut Obj) {
+pub fn rt_deque_reverse(deque: *mut Obj) {
     unsafe {
         let d = deque as *mut DequeObj;
         let len = (*d).len;
@@ -283,10 +348,15 @@ pub extern "C" fn rt_deque_reverse(deque: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_deque_reverse"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_reverse_abi(deque: Value) {
+    rt_deque_reverse(deque.unwrap_ptr())
+}
+
 
 /// deque.copy() -> new deque
-#[no_mangle]
-pub extern "C" fn rt_deque_copy(deque: *mut Obj) -> *mut Obj {
+pub fn rt_deque_copy(deque: *mut Obj) -> *mut Obj {
     unsafe {
         let d = deque as *mut DequeObj;
         let new_obj = rt_make_deque((*d).maxlen);
@@ -299,10 +369,15 @@ pub extern "C" fn rt_deque_copy(deque: *mut Obj) -> *mut Obj {
         new_obj
     }
 }
+#[export_name = "rt_deque_copy"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_copy_abi(deque: Value) -> Value {
+    Value::from_ptr(rt_deque_copy(deque.unwrap_ptr()))
+}
+
 
 /// deque.count(value) — count occurrences
-#[no_mangle]
-pub extern "C" fn rt_deque_count(deque: *mut Obj, value: *mut Obj) -> i64 {
+pub fn rt_deque_count(deque: *mut Obj, value: *mut Obj) -> i64 {
     unsafe {
         let d = deque as *mut DequeObj;
         let mut count: i64 = 0;
@@ -316,6 +391,12 @@ pub extern "C" fn rt_deque_count(deque: *mut Obj, value: *mut Obj) -> i64 {
         count
     }
 }
+#[export_name = "rt_deque_count"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_deque_count_abi(deque: Value, value: Value) -> i64 {
+    rt_deque_count(deque.unwrap_ptr(), value.unwrap_ptr())
+}
+
 
 /// Finalize a deque (free the ring buffer)
 pub unsafe fn deque_finalize(obj: *mut Obj) {

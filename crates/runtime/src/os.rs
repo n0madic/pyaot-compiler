@@ -9,6 +9,7 @@ use crate::gc::{gc_pop, gc_push, ShadowFrame};
 use crate::object::{ListObj, Obj};
 use crate::utils::make_str_from_rust;
 use pyaot_core_defs::BuiltinExceptionKind;
+use pyaot_core_defs::Value;
 use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -58,8 +59,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 /// Get os.environ as a dict[str, str]
 /// Creates a new dict each time (environment could have changed)
-#[no_mangle]
-pub extern "C" fn rt_os_get_environ() -> *mut Obj {
+pub fn rt_os_get_environ() -> *mut Obj {
     let vars: Vec<(String, String)> = env::vars().collect();
     let count = vars.len();
 
@@ -87,11 +87,16 @@ pub extern "C" fn rt_os_get_environ() -> *mut Obj {
     gc_pop();
     roots[0]
 }
+#[export_name = "rt_os_get_environ"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_os_get_environ_abi() -> Value {
+    Value::from_ptr(rt_os_get_environ())
+}
+
 
 /// Join path components: os.path.join(path1, path2, ...)
 /// Takes a list of string path components and joins them
-#[no_mangle]
-pub extern "C" fn rt_os_path_join(parts: *mut Obj) -> *mut Obj {
+pub fn rt_os_path_join(parts: *mut Obj) -> *mut Obj {
     unsafe {
         if parts.is_null() {
             return make_str_from_rust("");
@@ -120,12 +125,17 @@ pub extern "C" fn rt_os_path_join(parts: *mut Obj) -> *mut Obj {
         make_str_from_rust(result)
     }
 }
+#[export_name = "rt_os_path_join"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_os_path_join_abi(parts: Value) -> Value {
+    Value::from_ptr(rt_os_path_join(parts.unwrap_ptr()))
+}
+
 
 /// Remove a file: os.remove(path)
 /// Raises FileNotFoundError, PermissionError, or IOError on failure
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_remove(path: *mut Obj) {
+pub fn rt_os_remove(path: *mut Obj) {
     unsafe {
         if path.is_null() {
             raise_exc!(BuiltinExceptionKind::IOError, "os.remove: path is None");
@@ -173,11 +183,15 @@ pub extern "C" fn rt_os_remove(path: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_os_remove"]
+pub extern "C" fn rt_os_remove_abi(path: Value) {
+    rt_os_remove(path.unwrap_ptr())
+}
+
 
 /// Check if a path exists: os.path.exists(path)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_path_exists(path: *mut Obj) -> i8 {
+pub fn rt_os_path_exists(path: *mut Obj) -> i8 {
     unsafe {
         if path.is_null() {
             return 0;
@@ -193,12 +207,16 @@ pub extern "C" fn rt_os_path_exists(path: *mut Obj) -> i8 {
         }
     }
 }
+#[export_name = "rt_os_path_exists"]
+pub extern "C" fn rt_os_path_exists_abi(path: Value) -> i8 {
+    rt_os_path_exists(path.unwrap_ptr())
+}
+
 
 // ============= Working with current directory =============
 
 /// Get current working directory: os.getcwd()
-#[no_mangle]
-pub extern "C" fn rt_os_getcwd() -> *mut Obj {
+pub fn rt_os_getcwd() -> *mut Obj {
     unsafe {
         match env::current_dir() {
             Ok(path) => {
@@ -215,11 +233,16 @@ pub extern "C" fn rt_os_getcwd() -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_os_getcwd"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_os_getcwd_abi() -> Value {
+    Value::from_ptr(rt_os_getcwd())
+}
+
 
 /// Change current working directory: os.chdir(path)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_chdir(path: *mut Obj) {
+pub fn rt_os_chdir(path: *mut Obj) {
     unsafe {
         if path.is_null() {
             raise_exc!(BuiltinExceptionKind::IOError, "os.chdir: path is None");
@@ -260,13 +283,17 @@ pub extern "C" fn rt_os_chdir(path: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_os_chdir"]
+pub extern "C" fn rt_os_chdir_abi(path: Value) {
+    rt_os_chdir(path.unwrap_ptr())
+}
+
 
 // ============= Listing files =============
 
 /// List files in directory: os.listdir(path='.')
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_listdir(path: *mut Obj) -> *mut Obj {
+pub fn rt_os_listdir(path: *mut Obj) -> *mut Obj {
     unsafe {
         let path_str = if path.is_null() {
             ".".to_string()
@@ -335,6 +362,11 @@ pub extern "C" fn rt_os_listdir(path: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_os_listdir"]
+pub extern "C" fn rt_os_listdir_abi(path: Value) -> Value {
+    Value::from_ptr(rt_os_listdir(path.unwrap_ptr()))
+}
+
 
 // ============= Path operations =============
 
@@ -342,9 +374,8 @@ pub extern "C" fn rt_os_listdir(path: *mut Obj) -> *mut Obj {
 ///
 /// Like CPython's os.path.abspath, this normalizes the path and makes it
 /// absolute but does NOT resolve symlinks (use os.path.realpath for that).
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_path_abspath(path: *mut Obj) -> *mut Obj {
+pub fn rt_os_path_abspath(path: *mut Obj) -> *mut Obj {
     unsafe {
         if path.is_null() {
             raise_exc!(
@@ -386,11 +417,15 @@ pub extern "C" fn rt_os_path_abspath(path: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_os_path_abspath"]
+pub extern "C" fn rt_os_path_abspath_abi(path: Value) -> Value {
+    Value::from_ptr(rt_os_path_abspath(path.unwrap_ptr()))
+}
+
 
 /// Check if path is a directory: os.path.isdir(path)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_path_isdir(path: *mut Obj) -> i8 {
+pub fn rt_os_path_isdir(path: *mut Obj) -> i8 {
     unsafe {
         if path.is_null() {
             return 0;
@@ -402,11 +437,15 @@ pub extern "C" fn rt_os_path_isdir(path: *mut Obj) -> i8 {
         }
     }
 }
+#[export_name = "rt_os_path_isdir"]
+pub extern "C" fn rt_os_path_isdir_abi(path: Value) -> i8 {
+    rt_os_path_isdir(path.unwrap_ptr())
+}
+
 
 /// Check if path is a file: os.path.isfile(path)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_path_isfile(path: *mut Obj) -> i8 {
+pub fn rt_os_path_isfile(path: *mut Obj) -> i8 {
     unsafe {
         if path.is_null() {
             return 0;
@@ -418,11 +457,15 @@ pub extern "C" fn rt_os_path_isfile(path: *mut Obj) -> i8 {
         }
     }
 }
+#[export_name = "rt_os_path_isfile"]
+pub extern "C" fn rt_os_path_isfile_abi(path: Value) -> i8 {
+    rt_os_path_isfile(path.unwrap_ptr())
+}
+
 
 /// Get basename of path: os.path.basename(path)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_path_basename(path: *mut Obj) -> *mut Obj {
+pub fn rt_os_path_basename(path: *mut Obj) -> *mut Obj {
     unsafe {
         if path.is_null() {
             return make_str_from_rust("");
@@ -442,11 +485,15 @@ pub extern "C" fn rt_os_path_basename(path: *mut Obj) -> *mut Obj {
         make_str_from_rust(&result)
     }
 }
+#[export_name = "rt_os_path_basename"]
+pub extern "C" fn rt_os_path_basename_abi(path: Value) -> Value {
+    Value::from_ptr(rt_os_path_basename(path.unwrap_ptr()))
+}
+
 
 /// Get dirname of path: os.path.dirname(path)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_path_dirname(path: *mut Obj) -> *mut Obj {
+pub fn rt_os_path_dirname(path: *mut Obj) -> *mut Obj {
     unsafe {
         if path.is_null() {
             return make_str_from_rust("");
@@ -466,11 +513,15 @@ pub extern "C" fn rt_os_path_dirname(path: *mut Obj) -> *mut Obj {
         make_str_from_rust(&result)
     }
 }
+#[export_name = "rt_os_path_dirname"]
+pub extern "C" fn rt_os_path_dirname_abi(path: Value) -> Value {
+    Value::from_ptr(rt_os_path_dirname(path.unwrap_ptr()))
+}
+
 
 /// Split path into (dirname, basename): os.path.split(path)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_path_split(path: *mut Obj) -> *mut Obj {
+pub fn rt_os_path_split(path: *mut Obj) -> *mut Obj {
     unsafe {
         let (dirname, basename) = if path.is_null() {
             (String::new(), String::new())
@@ -512,13 +563,17 @@ pub extern "C" fn rt_os_path_split(path: *mut Obj) -> *mut Obj {
         roots[0]
     }
 }
+#[export_name = "rt_os_path_split"]
+pub extern "C" fn rt_os_path_split_abi(path: Value) -> Value {
+    Value::from_ptr(rt_os_path_split(path.unwrap_ptr()))
+}
+
 
 // ============= Creating and deleting directories =============
 
 /// Create a directory: os.mkdir(path)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_mkdir(path: *mut Obj) {
+pub fn rt_os_mkdir(path: *mut Obj) {
     unsafe {
         if path.is_null() {
             raise_exc!(BuiltinExceptionKind::IOError, "os.mkdir: path is None");
@@ -566,11 +621,15 @@ pub extern "C" fn rt_os_mkdir(path: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_os_mkdir"]
+pub extern "C" fn rt_os_mkdir_abi(path: Value) {
+    rt_os_mkdir(path.unwrap_ptr())
+}
+
 
 /// Create directories recursively: os.makedirs(path, exist_ok=False)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_makedirs(path: *mut Obj, exist_ok: i8) {
+pub fn rt_os_makedirs(path: *mut Obj, exist_ok: i8) {
     unsafe {
         if path.is_null() {
             raise_exc!(BuiltinExceptionKind::IOError, "os.makedirs: path is None");
@@ -621,11 +680,15 @@ pub extern "C" fn rt_os_makedirs(path: *mut Obj, exist_ok: i8) {
         }
     }
 }
+#[export_name = "rt_os_makedirs"]
+pub extern "C" fn rt_os_makedirs_abi(path: Value, exist_ok: i8) {
+    rt_os_makedirs(path.unwrap_ptr(), exist_ok)
+}
+
 
 /// Remove a directory: os.rmdir(path)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_rmdir(path: *mut Obj) {
+pub fn rt_os_rmdir(path: *mut Obj) {
     unsafe {
         if path.is_null() {
             raise_exc!(BuiltinExceptionKind::IOError, "os.rmdir: path is None");
@@ -678,13 +741,17 @@ pub extern "C" fn rt_os_rmdir(path: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_os_rmdir"]
+pub extern "C" fn rt_os_rmdir_abi(path: Value) {
+    rt_os_rmdir(path.unwrap_ptr())
+}
+
 
 // ============= Renaming and moving =============
 
 /// Rename or move a file/directory: os.rename(src, dst)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_rename(src: *mut Obj, dst: *mut Obj) {
+pub fn rt_os_rename(src: *mut Obj, dst: *mut Obj) {
     unsafe {
         if src.is_null() || dst.is_null() {
             raise_exc!(BuiltinExceptionKind::IOError, "os.rename: path is None");
@@ -731,23 +798,31 @@ pub extern "C" fn rt_os_rename(src: *mut Obj, dst: *mut Obj) {
         }
     }
 }
+#[export_name = "rt_os_rename"]
+pub extern "C" fn rt_os_rename_abi(src: Value, dst: Value) {
+    rt_os_rename(src.unwrap_ptr(), dst.unwrap_ptr())
+}
+
 
 /// Replace file/directory: os.replace(src, dst) - same as rename but overwrites dst
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_replace(src: *mut Obj, dst: *mut Obj) {
+pub fn rt_os_replace(src: *mut Obj, dst: *mut Obj) {
     // On most platforms, fs::rename already has replace semantics
     // Call the same implementation as rename
     rt_os_rename(src, dst);
 }
+#[export_name = "rt_os_replace"]
+pub extern "C" fn rt_os_replace_abi(src: Value, dst: Value) {
+    rt_os_replace(src.unwrap_ptr(), dst.unwrap_ptr())
+}
+
 
 // ============= Environment variables =============
 
 /// Get environment variable: os.getenv(key, default=None)
 /// Returns string value or default (or None if default not provided)
-#[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_os_getenv(key: *mut Obj, default: *mut Obj) -> *mut Obj {
+pub fn rt_os_getenv(key: *mut Obj, default: *mut Obj) -> *mut Obj {
     unsafe {
         if key.is_null() {
             // If default is null pointer, return None singleton
@@ -780,13 +855,17 @@ pub extern "C" fn rt_os_getenv(key: *mut Obj, default: *mut Obj) -> *mut Obj {
         }
     }
 }
+#[export_name = "rt_os_getenv"]
+pub extern "C" fn rt_os_getenv_abi(key: Value, default: Value) -> Value {
+    Value::from_ptr(rt_os_getenv(key.unwrap_ptr(), default.unwrap_ptr()))
+}
+
 
 // ============= OS information =============
 
 /// Get OS name: os.name
 /// Returns 'posix' on Unix/Linux/macOS, 'nt' on Windows
-#[no_mangle]
-pub extern "C" fn rt_os_get_name() -> *mut Obj {
+pub fn rt_os_get_name() -> *mut Obj {
     unsafe {
         #[cfg(unix)]
         let name = "posix";
@@ -800,3 +879,9 @@ pub extern "C" fn rt_os_get_name() -> *mut Obj {
         make_str_from_rust(name)
     }
 }
+#[export_name = "rt_os_get_name"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_os_get_name_abi() -> Value {
+    Value::from_ptr(rt_os_get_name())
+}
+

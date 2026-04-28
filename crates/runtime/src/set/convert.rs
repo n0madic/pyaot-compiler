@@ -9,8 +9,7 @@ use std::alloc::{alloc_zeroed, Layout};
 
 /// Convert set to list (for iteration support)
 /// Returns: pointer to ListObj containing all set elements
-#[no_mangle]
-pub extern "C" fn rt_set_to_list(set: *mut Obj) -> *mut Obj {
+pub fn rt_set_to_list(set: *mut Obj) -> *mut Obj {
     if set.is_null() {
         // Return empty list
         let size = std::mem::size_of::<ListObj>();
@@ -76,3 +75,9 @@ pub extern "C" fn rt_set_to_list(set: *mut Obj) -> *mut Obj {
         list_obj
     }
 }
+#[export_name = "rt_set_to_list"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_to_list_abi(set: Value) -> Value {
+    Value::from_ptr(rt_set_to_list(set.unwrap_ptr()))
+}
+
