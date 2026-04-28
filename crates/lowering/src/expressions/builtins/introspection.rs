@@ -32,33 +32,52 @@ impl<'a> Lowering<'a> {
         match &type_expr.kind {
             // User-defined class - runtime check via class_id with inheritance support
             hir::ExprKind::ClassRef(class_id) => {
-                // Primitives (int, float, bool, None) can never be class instances
-                // Check at compile-time to avoid passing non-pointer to runtime
-                let is_primitive =
-                    matches!(obj_type, Type::Int | Type::Float | Type::Bool | Type::None);
-
-                if is_primitive {
-                    // Compile-time: primitives are never class instances
+                // Protocol: structural isinstance check via method-name registry
+                if hir_module
+                    .class_defs
+                    .get(class_id)
+                    .is_some_and(|cd| cd.is_protocol)
+                {
+                    let proto_result = self.lower_isinstance_protocol(
+                        obj_operand,
+                        &obj_type,
+                        *class_id,
+                        hir_module,
+                        mir_func,
+                    );
                     self.emit_instruction(mir::InstructionKind::Copy {
                         dest: result_local,
-                        src: mir::Operand::Constant(mir::Constant::Bool(false)),
+                        src: proto_result,
                     });
                 } else {
-                    // For class isinstance with heap types, need runtime check
-                    // Use inheritance-aware version that walks the parent chain
-                    // This correctly handles isinstance(Dog(), Animal) -> True
-                    // Use offset-adjusted class_id for multi-module support
-                    let effective_class_id = self.get_effective_class_id(*class_id);
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                        dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS_INHERITED,
-                        ),
-                        args: vec![
-                            obj_operand,
-                            mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
-                        ],
-                    });
+                    // Primitives (int, float, bool, None) can never be class instances
+                    // Check at compile-time to avoid passing non-pointer to runtime
+                    let is_primitive =
+                        matches!(obj_type, Type::Int | Type::Float | Type::Bool | Type::None);
+
+                    if is_primitive {
+                        // Compile-time: primitives are never class instances
+                        self.emit_instruction(mir::InstructionKind::Copy {
+                            dest: result_local,
+                            src: mir::Operand::Constant(mir::Constant::Bool(false)),
+                        });
+                    } else {
+                        // For class isinstance with heap types, need runtime check
+                        // Use inheritance-aware version that walks the parent chain
+                        // This correctly handles isinstance(Dog(), Animal) -> True
+                        // Use offset-adjusted class_id for multi-module support
+                        let effective_class_id = self.get_effective_class_id(*class_id);
+                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                            dest: result_local,
+                            func: mir::RuntimeFunc::Call(
+                                &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS_INHERITED,
+                            ),
+                            args: vec![
+                                obj_operand,
+                                mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                            ],
+                        });
+                    }
                 }
             }
             // Built-in type - can resolve statically for primitives
@@ -72,6 +91,7 @@ impl<'a> Lowering<'a> {
                             obj_operand.clone(),
                             &obj_type,
                             member,
+                            hir_module,
                             mir_func,
                         );
                         let combined = self.alloc_and_add_local(Type::Bool, mir_func);
@@ -153,31 +173,50 @@ impl<'a> Lowering<'a> {
         obj_operand: mir::Operand,
         obj_type: &Type,
         check_type: &Type,
+        hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
         let result_local = self.alloc_and_add_local(Type::Bool, mir_func);
 
-        // Class member: runtime inheritance check.
+        // Class member: runtime inheritance check (or structural Protocol check).
         if let Type::Class { class_id, .. } = check_type {
-            let is_primitive =
-                matches!(obj_type, Type::Int | Type::Float | Type::Bool | Type::None);
-            if is_primitive {
+            if hir_module
+                .class_defs
+                .get(class_id)
+                .is_some_and(|cd| cd.is_protocol)
+            {
+                let proto_result = self.lower_isinstance_protocol(
+                    obj_operand,
+                    obj_type,
+                    *class_id,
+                    hir_module,
+                    mir_func,
+                );
                 self.emit_instruction(mir::InstructionKind::Copy {
                     dest: result_local,
-                    src: mir::Operand::Constant(mir::Constant::Bool(false)),
+                    src: proto_result,
                 });
             } else {
-                let effective_class_id = self.get_effective_class_id(*class_id);
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS_INHERITED,
-                    ),
-                    args: vec![
-                        obj_operand,
-                        mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
-                    ],
-                });
+                let is_primitive =
+                    matches!(obj_type, Type::Int | Type::Float | Type::Bool | Type::None);
+                if is_primitive {
+                    self.emit_instruction(mir::InstructionKind::Copy {
+                        dest: result_local,
+                        src: mir::Operand::Constant(mir::Constant::Bool(false)),
+                    });
+                } else {
+                    let effective_class_id = self.get_effective_class_id(*class_id);
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: result_local,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS_INHERITED,
+                        ),
+                        args: vec![
+                            obj_operand,
+                            mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                        ],
+                    });
+                }
             }
             return mir::Operand::Local(result_local);
         }
@@ -859,6 +898,73 @@ impl<'a> Lowering<'a> {
         );
 
         Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Lower `isinstance(obj, Protocol)` as a structural check.
+    /// Emits N chained `rt_obj_has_method` calls (one per Protocol method) ANDed together.
+    /// Empty Protocol → `Bool(true)`; primitive obj_type → `Bool(false)`.
+    fn lower_isinstance_protocol(
+        &mut self,
+        obj_operand: mir::Operand,
+        obj_type: &Type,
+        proto_class_id: pyaot_utils::ClassId,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> mir::Operand {
+        // Collect the method names required by the Protocol
+        let method_hashes: Vec<i64> =
+            if let Some(proto_def) = hir_module.class_defs.get(&proto_class_id) {
+                proto_def
+                    .methods
+                    .iter()
+                    .filter_map(|func_id| hir_module.func_defs.get(func_id))
+                    .map(|func_def| {
+                        // HIR function names are mangled as "ClassName$method_name"
+                        let full = self.resolve(func_def.name);
+                        let short = if let Some(idx) = full.find('$') {
+                            &full[idx + 1..]
+                        } else {
+                            full
+                        };
+                        pyaot_utils::fnv1a_hash(short) as i64
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+
+        // Empty Protocol → every object satisfies it (including primitives)
+        if method_hashes.is_empty() {
+            return mir::Operand::Constant(mir::Constant::Bool(true));
+        }
+
+        // Primitives can never satisfy a non-empty Protocol (they're not class instances)
+        if matches!(obj_type, Type::Int | Type::Float | Type::Bool | Type::None) {
+            return mir::Operand::Constant(mir::Constant::Bool(false));
+        }
+
+        // Chain: result = has_m1 && has_m2 && ... && has_mN
+        let mut running: mir::Operand = mir::Operand::Constant(mir::Constant::Bool(true));
+        for hash in method_hashes {
+            let has_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_OBJ_HAS_METHOD),
+                vec![
+                    obj_operand.clone(),
+                    mir::Operand::Constant(mir::Constant::Int(hash)),
+                ],
+                Type::Bool,
+                mir_func,
+            );
+            let and_local = self.alloc_and_add_local(Type::Bool, mir_func);
+            self.emit_instruction(mir::InstructionKind::BinOp {
+                dest: and_local,
+                op: mir::BinOp::And,
+                left: running,
+                right: mir::Operand::Local(has_local),
+            });
+            running = mir::Operand::Local(and_local);
+        }
+        running
     }
 
     /// Lower setattr(obj, name, value) -> None

@@ -384,3 +384,16 @@ pub extern "C" fn rt_vtable_lookup_by_name(obj_ptr: *mut u8, name_hash: i64) -> 
         std::ptr::null()
     }
 }
+
+/// Check whether the object has a method with the given name hash.
+/// Returns 1 (true) if the method exists in the object's vtable, 0 (false) otherwise.
+/// Used for structural Protocol isinstance checks: `isinstance(obj, P)` emits one
+/// call per method required by P.
+#[no_mangle]
+pub extern "C" fn rt_obj_has_method(obj_ptr: *mut u8, name_hash: i64) -> i8 {
+    if rt_vtable_lookup_by_name(obj_ptr, name_hash).is_null() {
+        0
+    } else {
+        1
+    }
+}
