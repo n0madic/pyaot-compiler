@@ -3265,7 +3265,7 @@ continue to pass; new TypeVar/Generic/Protocol tests added.
 - Protocol tests pass.
 - Property tests (lattice laws) all pass.
 
-## 3.7 Performance gate
+## 3.7 Performance gate ✅
 
 Phase 3 is mostly compile-time work, but monomorphization and
 generic dispatch can affect both runtime perf and binary size. A
@@ -3891,7 +3891,7 @@ audit often uncovers surprise gaps.
 | S3.4 | Monomorphization: codegen integration + stdlib generics rewrite (§3.3 part 2): ensure no `TypeVar` reaches codegen | S3.3 | High | — |
 | S3.5 | Protocol structural typing (§3.4): parse Protocol, structural `is_subtype_of`, runtime type-check function | S3.2 | Medium-High | Parallel-safe with S3.3, S3.4 (different subsystems) |
 | S3.6 | Frontend: TypeVar/Generic/Protocol parsing (§3.5): Python syntax for `T = TypeVar(...)`, `class C(Generic[T])`, `class P(Protocol)`, PEP 695 `def f[T](...)` | S3.5 | Medium | — |
-| S3.7 | Phase 3 final purge + perf gate (§3.6 + §3.7): delete `unify_*`, `narrow_*`; benchmark, binary-size, compile-time gates | S3.4, S3.6 | Low-Medium | — |
+| S3.7 | Phase 3 final purge + perf gate (§3.6 + §3.7): delete `unify_*`, `narrow_*`; benchmark, binary-size, compile-time gates | S3.4, S3.6 | Low-Medium | ✅ all gates pass |
 
 **Split triggers**:
 

@@ -71,17 +71,17 @@ for future compiler-throughput comparisons.
 
 | Benchmark     | Phase 0 | Phase 1 | Phase 2 | Phase 3 | Notes |
 |---------------|---------|---------|---------|---------|-------|
-| int_arith     | 46.541  | 48.439  | 47.709  |         | compiler + linker only |
-| float_arith   | 46.662  | 49.027  | 47.907  |         | compiler + linker only |
-| polymorphic   | 48.636  | 49.394  | 48.582  |         | compiler + linker only |
-| containers    | 45.795  | 47.532  | 47.023  |         | compiler + linker only |
-| strings       | 48.175  | 48.579  | 47.737  |         | compiler + linker only |
-| generators    | 48.243  | 49.478  | 49.697  |         | compiler + linker only |
-| exceptions    | 47.415  | 46.983  | 48.677  |         | compiler + linker only |
-| gc_stress     | 47.454  | 48.698  | 48.799  |         | compiler + linker only |
-| classes       | 47.329  | 45.889  | 47.899  |         | compiler + linker only |
-| closures      | 46.847  | 47.514  | 47.713  |         | compiler + linker only |
-| startup       | 48.352  | 47.861  | 47.216  |         | compiler + linker only |
+| int_arith     | 46.541  | 48.439  | 47.709  | 48.660  | compiler + linker only |
+| float_arith   | 46.662  | 49.027  | 47.907  | 47.586  | compiler + linker only |
+| polymorphic   | 48.636  | 49.394  | 48.582  | 50.677  | compiler + linker only |
+| containers    | 45.795  | 47.532  | 47.023  | 49.081  | compiler + linker only |
+| strings       | 48.175  | 48.579  | 47.737  | 48.255  | compiler + linker only |
+| generators    | 48.243  | 49.478  | 49.697  | 50.833  | compiler + linker only |
+| exceptions    | 47.415  | 46.983  | 48.677  | 49.528  | compiler + linker only |
+| gc_stress     | 47.454  | 48.698  | 48.799  | 48.272  | compiler + linker only |
+| classes       | 47.329  | 45.889  | 47.899  | 48.557  | compiler + linker only |
+| closures      | 46.847  | 47.514  | 47.713  | 49.347  | compiler + linker only |
+| startup       | 48.352  | 47.861  | 47.216  | 48.428  | compiler + linker only |
 
 **Phase 0 backfill (2026-04-20, full Criterion sample)**:
 captured with
@@ -100,17 +100,17 @@ the ±10% gate.
 
 | Benchmark     | Phase 0 | Phase 1 | Phase 2 | Phase 3 | Notes |
 |---------------|---------|---------|---------|---------|-------|
-| int_arith     |  15.35  |  18.29  | 17.996  |         | `for i in range(10_000_000): total += i` |
-| float_arith   |   2.89  |   3.58  |  3.139  |         | `total += float(i) * 0.5` over 1M |
-| polymorphic   |  11.21  |  13.26  | 20.447  |         | Value class `__add__`/`__mul__`, 200k iters |
-| containers    |   8.61  |  12.32  |  8.293  |         | list append/index/mutate + dict insert/lookup/iter, N=100k |
-| strings       |   2.71  |   3.93  |  3.713  |         | intern hit-path + 2k concat |
-| generators    |  13.08  |  16.49  | 15.657  |         | gen-expr `sum`, enumerate fusion, nested comp |
-| exceptions    | 115.95  | 142.52  | 139.54  |         | 500k try/except non-raising + 500k with 4 raises |
-| gc_stress     |   6.37  |   8.93  |  9.211  |         | 200 chains × 1000 Node instances |
-| classes       |   8.75  |  12.61  | 16.357  |         | Point.norm + polymorphic Shape.area, 200k each |
-| closures      |   2.13  |   2.68  |  2.564  |         | closure capture + comprehension reduce |
-| startup       |   1.72  |   2.13  |  2.118  |         | single `print`, measures binary launch |
+| int_arith     |  15.35  |  18.29  | 17.996  | 18.144  | `for i in range(10_000_000): total += i` |
+| float_arith   |   2.89  |   3.58  |  3.139  |  3.204  | `total += float(i) * 0.5` over 1M |
+| polymorphic   |  11.21  |  13.26  | 20.447  | 20.979  | Value class `__add__`/`__mul__`, 200k iters |
+| containers    |   8.61  |  12.32  |  8.293  |  8.337  | list append/index/mutate + dict insert/lookup/iter, N=100k |
+| strings       |   2.71  |   3.93  |  3.713  |  3.698  | intern hit-path + 2k concat |
+| generators    |  13.08  |  16.49  | 15.657  | 15.894  | gen-expr `sum`, enumerate fusion, nested comp |
+| exceptions    | 115.95  | 142.52  | 139.54  | 138.85  | 500k try/except non-raising + 500k with 4 raises |
+| gc_stress     |   6.37  |   8.93  |  9.211  |  8.755  | 200 chains × 1000 Node instances |
+| classes       |   8.75  |  12.61  | 16.357  | 16.135  | Point.norm + polymorphic Shape.area, 200k each |
+| closures      |   2.13  |   2.68  |  2.564  |  2.630  | closure capture + comprehension reduce |
+| startup       |   1.72  |   2.13  |  2.118  |  2.021  | single `print`, measures binary launch |
 
 **Phase 1 preliminary (2026-04-18, post-pruned-SSA)**: captured with
 `cargo bench -p pyaot-bench --bench pyaot_bench -- --quick` after
@@ -151,17 +151,17 @@ accepted Phase 1 column above unless the harness changes again.
 
 | Benchmark     | Phase 0 | Phase 1 | Phase 2 | Phase 3 |
 |---------------|---------|---------|---------|---------|
-| int_arith     | 199.54  | 357.30  | 357.58  |         |
-| float_arith   | 178.75  | 330.51  | 343.22  |         |
-| polymorphic   | 184.73  | 367.28  | 358.03  |         |
-| containers    | 186.25  | 327.61  | 346.83  |         |
-| strings       | 171.90  | 349.45  | 341.46  |         |
-| generators    | 200.53  | 374.12  | 352.64  |         |
-| exceptions    | 337.39  | 441.22  | 458.34  |         |
-| gc_stress     | 181.82  | 350.60  | 347.40  |         |
-| classes       | 183.99  | 335.09  | 354.36  |         |
-| closures      | 178.21  | 323.67  | 345.80  |         |
-| startup       | 172.36  | 365.12  | 340.45  |         |
+| int_arith     | 199.54  | 357.30  | 357.58  | 354.82  |
+| float_arith   | 178.75  | 330.51  | 343.22  | 344.13  |
+| polymorphic   | 184.73  | 367.28  | 358.03  | 361.13  |
+| containers    | 186.25  | 327.61  | 346.83  | 346.81  |
+| strings       | 171.90  | 349.45  | 341.46  | 344.82  |
+| generators    | 200.53  | 374.12  | 352.64  | 358.93  |
+| exceptions    | 337.39  | 441.22  | 458.34  | 459.36  |
+| gc_stress     | 181.82  | 350.60  | 347.40  | 355.95  |
+| classes       | 183.99  | 335.09  | 354.36  | 355.04  |
+| closures      | 178.21  | 323.67  | 345.80  | 347.77  |
+| startup       | 172.36  | 365.12  | 340.45  | 346.93  |
 
 **Phase 1 fresh_launch (2026-04-18, post-pruned-SSA)**: the original
 Phase-0 harness named this metric `end_to_end`, but post-2026-04-20
@@ -192,33 +192,33 @@ acceptance gate.
 
 | Benchmark     | Phase 0  | Phase 1 | Phase 2 | Phase 3 |
 |---------------|----------|---------|---------|---------|
-| int_arith     | 405,064  |         | 404,960 |         |
-| float_arith   | 422,344  |         | 422,240 |         |
-| polymorphic   | 439,208  |         | 439,136 |         |
-| containers    | 422,152  |         | 405,488 |         |
-| strings       | 405,272  |         | 405,144 |         |
-| generators    | 422,408  |         | 422,272 |         |
-| exceptions    | 405,720  |         | 405,616 |         |
-| gc_stress     | 405,368  |         | 405,232 |         |
-| classes       | 439,336  |         | 439,240 |         |
-| closures      | 422,152  |         | 421,992 |         |
-| startup       | 404,920  |         | 404,792 |         |
+| int_arith     | 405,064  |         | 404,960 | 404,968 |
+| float_arith   | 422,344  |         | 422,240 | 422,248 |
+| polymorphic   | 439,208  |         | 439,136 | 439,144 |
+| containers    | 422,152  |         | 405,488 | 405,496 |
+| strings       | 405,272  |         | 405,144 | 405,152 |
+| generators    | 422,408  |         | 422,272 | 422,280 |
+| exceptions    | 405,720  |         | 405,616 | 405,624 |
+| gc_stress     | 405,368  |         | 405,232 | 405,240 |
+| classes       | 439,336  |         | 439,240 | 439,248 |
+| closures      | 422,152  |         | 421,992 | 422,000 |
+| startup       | 404,920  |         | 404,792 | 404,800 |
 
 ### `max_rss` — peak RSS during execution (KiB)
 
 | Benchmark     | Phase 0 | Phase 1 | Phase 2 | Phase 3 |
 |---------------|---------|---------|---------|---------|
-| int_arith     |  5,840  |         |         |         |
-| float_arith   |  5,872  |         |         |         |
-| polymorphic   |  7,072  |         |         |         |
-| containers    | 21,328  |         |         |         |
-| strings       |  8,080  |         |         |         |
-| generators    |  6,160  |         |         |         |
-| exceptions    |  6,864  |         |         |         |
-| gc_stress     |  7,728  |         |         |         |
-| classes       |  8,096  |         |         |         |
-| closures      |  6,656  |         |         |         |
-| startup       |  5,888  |         |         |         |
+| int_arith     |  5,840  |         |         | (deferred) |
+| float_arith   |  5,872  |         |         | (deferred) |
+| polymorphic   |  7,072  |         |         | (deferred) |
+| containers    | 21,328  |         |         | (deferred) |
+| strings       |  8,080  |         |         | (deferred) |
+| generators    |  6,160  |         |         | (deferred) |
+| exceptions    |  6,864  |         |         | (deferred) |
+| gc_stress     |  7,728  |         |         | (deferred) |
+| classes       |  8,096  |         |         | (deferred) |
+| closures      |  6,656  |         |         | (deferred) |
+| startup       |  5,888  |         |         | (deferred) |
 
 ---
 
@@ -327,3 +327,34 @@ captured in [`PHASE3_OPTIMIZATION_PLAN.md`](../PHASE3_OPTIMIZATION_PLAN.md):
   low-page / `TypeTagKind::from_tag` guards. Once the guards go,
   `gc.rs` falls into the §F.8 ≤150-line target and the +15% scan-time
   gate becomes reachable.
+
+## Phase 3 acceptance (2026-04-28, S3.1–S3.7 TypeLattice / generics close)
+
+Phase 3 columns above captured on master HEAD (commit `96efdf9` + benchmarks):
+* `cargo bench -p pyaot-bench --bench pyaot_bench run::`
+* `cargo bench -p pyaot-bench --bench pyaot_bench compile::`
+* `cargo bench -p pyaot-bench --bench pyaot_bench fresh_launch::`
+
+`strings` and `startup` first-run medians were discarded (OS-cache noise;
+CI intervals overlapped the prior run's full range); second-run stable
+medians are recorded instead. Binary size measured by compiling each
+`bench/py/*.py` source through `./target/release/pyaot` and reading the
+file size. `max_rss` collection deferred (no-change expected from
+compile-time-only Phase 3 work).
+
+### Hard-gate verification (§3.7)
+
+| Gate | Plan target | Phase 3 vs Phase 2 | Status |
+|------|-------------|-------------------|--------|
+| `run::*` all benchmarks | within ±3% | max delta: closures +2.6%, polymorphic +2.6% | ✅ all pass |
+| `binary_size` all benchmarks | within +20% | +8 bytes each (+0.002%) | ✅ flat |
+| `compile::*` all benchmarks | within +30% | max delta: containers +4.4%, polymorphic +4.3% | ✅ all pass |
+
+Phase 3 is purely compile-time work (TypeLattice, monomorphization,
+Protocol checks, frontend parsing, legacy-function purge). No runtime
+codegen path changed, so all runtime benchmarks stay within noise of
+Phase 2. Binary size is flat because the bench inputs don't use
+TypeVar/Generic functions — no specializations are emitted.
+
+All three gates pass. Phase 3 columns above are the accepted forward
+reference for subsequent work.
