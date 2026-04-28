@@ -109,14 +109,52 @@ impl AstToHir {
             }
         };
 
+        // PEP 695: `class Stack[T]:` — register scoped TypeVars before processing
+        // bases and body so `T` resolves in field/method annotations.
+        let pep695_saved = self.push_pep695_type_params(&class_def.type_params, class_span)?;
+
         // Parse base class from bases (single inheritance only)
         // Also detect if this is an exception class or Protocol
         let mut is_exception_class = false;
         let mut is_protocol = false;
         let mut base_exception_type: Option<u8> = None;
 
-        let base_class = if !class_def.bases.is_empty() {
-            let first_base = &class_def.bases[0];
+        // Pre-filter: strip compile-time-only Generic[T] / Protocol[T] bases.
+        // These carry no runtime parent; they exist purely to register the class
+        // as generic/structural in the type system. Each TypeVar arg is validated
+        // against the current typevar_defs so typos fail loudly.
+        let mut real_base_indices: Vec<usize> = Vec::new();
+        for (idx, base_expr) in class_def.bases.iter().enumerate() {
+            if let py::Expr::Subscript(sub) = base_expr {
+                if let py::Expr::Name(sub_name) = &*sub.value {
+                    let sub_name_str = sub_name.id.as_str();
+                    if sub_name_str == "Generic" || sub_name_str == "Protocol" {
+                        let sub_interned = self.interner.intern(sub_name_str);
+                        if self.types.typing_imports.contains(&sub_interned) {
+                            let tv_names =
+                                self.extract_generic_type_params(&sub.slice, class_span)?;
+                            for tv_name in &tv_names {
+                                if !self.types.typevar_defs.contains_key(tv_name) {
+                                    let name_str = self.interner.resolve(*tv_name);
+                                    return Err(CompilerError::parse_error(
+                                        format!("undefined TypeVar '{}' in Generic[...]", name_str),
+                                        class_span,
+                                    ));
+                                }
+                            }
+                            if sub_name_str == "Protocol" {
+                                is_protocol = true;
+                            }
+                            continue; // compile-time only; not a runtime base
+                        }
+                    }
+                }
+            }
+            real_base_indices.push(idx);
+        }
+
+        let base_class = if !real_base_indices.is_empty() {
+            let first_base = &class_def.bases[real_base_indices[0]];
             if let py::Expr::Name(name) = first_base {
                 let base_name_str = name.id.as_str();
 
@@ -451,6 +489,9 @@ impl AstToHir {
         };
 
         self.module.class_defs.insert(class_id, class_def);
+
+        // Restore TypeVars that were scoped to this PEP 695 class
+        self.pop_pep695_type_params(pep695_saved);
 
         Ok(())
     }
