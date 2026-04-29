@@ -76,11 +76,46 @@ pub fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
         return 0;
     }
 
-    // One primitive, one heap pointer → different types, cannot be equal
-    // (unless the primitive is None-tagged and the heap object is a NoneObj,
-    //  but that case is irrelevant for Stage C since both still arrive as *mut Obj).
+    // One primitive, one heap pointer → different types in Python's runtime
+    // type sense. The exception is the numeric tower: `8 == 8.0`, `True ==
+    // 1.0`, etc. A tagged Int/Bool on one side and a heap-boxed FloatObj on
+    // the other should compare as f64 to match CPython.
     if !va.is_ptr() || !vb.is_ptr() {
-        return 0;
+        let primitive_as_f64 = |v: Value| -> Option<f64> {
+            if v.is_int() {
+                Some(v.unwrap_int() as f64)
+            } else if v.is_bool() {
+                Some(if v.unwrap_bool() { 1.0 } else { 0.0 })
+            } else {
+                None
+            }
+        };
+        let heap_float_as_f64 = |p: *mut Obj| -> Option<f64> {
+            if p.is_null() {
+                return None;
+            }
+            unsafe {
+                if (*p).type_tag() == TypeTagKind::Float {
+                    Some((*(p as *mut FloatObj)).value)
+                } else {
+                    None
+                }
+            }
+        };
+        let f_a = if va.is_ptr() {
+            heap_float_as_f64(a)
+        } else {
+            primitive_as_f64(va)
+        };
+        let f_b = if vb.is_ptr() {
+            heap_float_as_f64(b)
+        } else {
+            primitive_as_f64(vb)
+        };
+        return match (f_a, f_b) {
+            (Some(x), Some(y)) if x == y => 1,
+            _ => 0,
+        };
     }
 
     // Both are real heap pointers — safe to dereference.

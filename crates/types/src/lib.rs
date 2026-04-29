@@ -648,6 +648,40 @@ impl TypeLattice for Type {
                         .collect(),
                 };
             }
+            // tuple[] ⊔ tuple[T..] → TupleVar[T..]. The empty tuple has no
+            // shape of its own, so the only meaningful join is the variadic
+            // of the non-empty side. This is what lets a class field
+            // initialised as `()` later refine to a homogeneous variadic
+            // tuple (e.g. `tuple[Node, ...]`); without it the resulting
+            // `Union[tuple[], tuple[Node]]` would lose its iterable shape.
+            // Different-arity non-empty tuples fall through to canonical
+            // Union construction below — preserving distinct shapes for
+            // pattern matching, see test_join_different_tuple_lengths.
+            if *b1 == builtin_classes::BUILTIN_TUPLE_CLASS_ID
+                && *b2 == builtin_classes::BUILTIN_TUPLE_CLASS_ID
+                && (a1.is_empty() || a2.is_empty())
+            {
+                let all_elems = a1.iter().chain(a2.iter());
+                let elem_ty = all_elems.cloned().fold(Type::Never, |acc, t| acc.join(&t));
+                return Type::tuple_var_of(elem_ty);
+            }
+            // TupleVar[] (no-arg) acts as "untyped variadic" — join with TupleVar[T]
+            // gives TupleVar[T] rather than Union[TupleVar[T], TupleVar[]].
+            if *b1 == builtin_classes::BUILTIN_TUPLE_VAR_CLASS_ID
+                && *b2 == builtin_classes::BUILTIN_TUPLE_VAR_CLASS_ID
+            {
+                return if a1.is_empty() {
+                    other.clone() // TupleVar[] ⊔ TupleVar[T] = TupleVar[T]
+                } else if a2.is_empty() {
+                    self.clone() // TupleVar[T] ⊔ TupleVar[] = TupleVar[T]
+                } else {
+                    // Different non-empty arities: element-wise join of first arg.
+                    Type::Generic {
+                        base: *b1,
+                        args: vec![a1[0].join(&a2[0])],
+                    }
+                };
+            }
         }
         // General case: collect, flatten, simplify, sort.
         make_canonical_union([self.clone(), other.clone()])
@@ -738,15 +772,25 @@ impl TypeLattice for Type {
             return excluded.iter().fold(self.clone(), |acc, m| acc.minus(m));
         }
         // Union on left: keep members not subsumed by `other`.
+        // Build the result Union directly instead of folding via `join`:
+        // `join` applies the numeric tower (Int ⊔ Float = Float, Bool ⊔ Int =
+        // Int), which would collapse a runtime-distinguishable union like
+        // `Union[Int, Float, Bool]` down to `Float`. Narrowing passes treat
+        // a single primitive as a hint to emit `rt_unbox_float`, which then
+        // dereferences a tagged Int (or unrelated heap object) — see the
+        // NiX.__mul__ regression where `Union[NiX, Int, Float, Bool] - NiX`
+        // collapsed to `Float` and produced a spurious unbox.
         if let Type::Union(ts) = self {
             let remaining: Vec<Type> = ts
                 .iter()
                 .map(|t| t.minus(other))
                 .filter(|t| *t != Type::Never)
                 .collect();
-            return remaining
-                .into_iter()
-                .fold(Type::Never, |acc, t| acc.join(&t));
+            return match remaining.len() {
+                0 => Type::Never,
+                1 => remaining.into_iter().next().unwrap(),
+                _ => Type::Union(remaining),
+            };
         }
         // Concrete type not subsumed by other: keep self.
         self.clone()

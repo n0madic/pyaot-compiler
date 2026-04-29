@@ -53,6 +53,13 @@ pub fn rt_unbox_float(obj: *mut Obj) -> f64 {
 #[export_name = "rt_unbox_float"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_unbox_float_abi(obj: Value) -> f64 {
+    // Union slots carry tagged Values: int/bool arrive tagged, floats as *mut FloatObj.
+    if obj.is_int() {
+        return obj.unwrap_int() as f64;
+    }
+    if obj.is_bool() {
+        return if obj.unwrap_bool() { 1.0 } else { 0.0 };
+    }
     rt_unbox_float(obj.unwrap_ptr())
 }
 

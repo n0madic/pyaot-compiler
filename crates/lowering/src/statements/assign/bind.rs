@@ -71,7 +71,11 @@ impl<'a> Lowering<'a> {
                             } else {
                                 val_ty.clone()
                             };
-                            let refined = Type::dict_of(refined_key, refined_val);
+                            let refined = if matches!(obj_type, Type::DefaultDict(..)) {
+                                Type::DefaultDict(Box::new(refined_key), Box::new(refined_val))
+                            } else {
+                                Type::dict_of(refined_key, refined_val)
+                            };
                             self.insert_var_type(*var_id, refined.clone());
                             if let Some(local_id) = self.get_var_local(var_id) {
                                 if let Some(local) = mir_func.locals.get_mut(&local_id) {

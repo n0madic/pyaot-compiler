@@ -202,7 +202,12 @@ impl AstToHir {
                             Ok(inner_type.join(&Type::None))
                         }
                         "Union" if is_typing_import => {
-                            // Union[A, B, ...] → Union of all types
+                            // Union[A, B, ...] → preserve every member as a
+                            // proper Union; using `.join(...)` here would
+                            // apply the numeric tower (Int ⊔ Float = Float)
+                            // and silently turn `Union[int, float]` into
+                            // `float`, breaking runtime narrowing and
+                            // isinstance dispatch.
                             let mut types = Vec::new();
                             if let py::Expr::Tuple(tuple) = &*sub.slice {
                                 for elem in &tuple.elts {
@@ -212,10 +217,11 @@ impl AstToHir {
                                 // Single type in Union (weird but possible)
                                 types.push(self.convert_type_annotation(&sub.slice)?);
                             }
-                            Ok(types
-                                .into_iter()
-                                .reduce(|a, b| a.join(&b))
-                                .unwrap_or(Type::Never))
+                            Ok(match types.len() {
+                                0 => Type::Never,
+                                1 => types.into_iter().next().unwrap(),
+                                _ => Type::Union(types),
+                            })
                         }
                         "Literal" if is_typing_import => {
                             // Literal[42] → int, Literal["hello"] → str (type erasure)
@@ -247,10 +253,38 @@ impl AstToHir {
             }
             py::Expr::BinOp(binop) => {
                 // Handle Union types: int | str
+                // PEP 604 union: `A | B` is a runtime type union, NOT a
+                // numeric-tower join. Preserve both members as a real Union
+                // so `int | float` stays distinguishable at runtime.
                 if matches!(binop.op, py::Operator::BitOr) {
                     let left = self.convert_type_annotation(&binop.left)?;
                     let right = self.convert_type_annotation(&binop.right)?;
-                    Ok(left.join(&right))
+                    let mut members = Vec::new();
+                    match left {
+                        Type::Union(ts) => members.extend(ts),
+                        Type::Never => {}
+                        other => members.push(other),
+                    }
+                    match right {
+                        Type::Union(ts) => {
+                            for t in ts {
+                                if !members.contains(&t) {
+                                    members.push(t);
+                                }
+                            }
+                        }
+                        Type::Never => {}
+                        other => {
+                            if !members.contains(&other) {
+                                members.push(other);
+                            }
+                        }
+                    }
+                    Ok(match members.len() {
+                        0 => Type::Never,
+                        1 => members.into_iter().next().unwrap(),
+                        _ => Type::Union(members),
+                    })
                 } else {
                     Err(CompilerError::parse_error(
                         "Only | operator supported for union types",
@@ -434,10 +468,15 @@ impl AstToHir {
                         }
                     }
                 }
-                let unioned = members
-                    .into_iter()
-                    .reduce(|a, b| a.join(&b))
-                    .unwrap_or(Type::Never);
+                // Build Union([Int, Float, ...]) without lattice join so that
+                // each member is checked independently at runtime.  Using
+                // `join` would apply the numeric tower (Int ⊔ Float = Float)
+                // and silently drop the Int check.
+                let unioned = match members.len() {
+                    0 => Type::Never,
+                    1 => members.into_iter().next().unwrap(),
+                    _ => Type::Union(members),
+                };
                 Ok(self.module.exprs.alloc(Expr {
                     kind: ExprKind::TypeRef(unioned),
                     ty: None,

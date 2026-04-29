@@ -238,6 +238,9 @@ pub fn rt_isinstance_class(obj: *mut Obj, class_id: i64) -> i8 {
 }
 #[export_name = "rt_isinstance_class"]
 pub extern "C" fn rt_isinstance_class_abi(obj: Value, class_id: i64) -> i8 {
+    if !obj.is_ptr() {
+        return 0;
+    }
     rt_isinstance_class(obj.unwrap_ptr(), class_id)
 }
 
@@ -271,6 +274,9 @@ pub fn rt_isinstance_class_inherited(obj: *mut Obj, target_class_id: i64) -> i8 
 }
 #[export_name = "rt_isinstance_class_inherited"]
 pub extern "C" fn rt_isinstance_class_inherited_abi(obj: Value, target_class_id: i64) -> i8 {
+    if !obj.is_ptr() {
+        return 0;
+    }
     rt_isinstance_class_inherited(obj.unwrap_ptr(), target_class_id)
 }
 
