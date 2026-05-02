@@ -516,7 +516,7 @@ pub(crate) fn resolve_builtin_call_type(
         // === Sorted ===
         Builtin::Sorted => {
             if arg_types.is_empty() {
-                return Some(Type::list_of(Type::Any));
+                return Some(Type::list_of(Type::Never));
             }
             let elem_type = extract_iterable_element_type(&arg_types[0]);
             Some(Type::list_of(elem_type))
@@ -525,7 +525,7 @@ pub(crate) fn resolve_builtin_call_type(
         // === List constructor ===
         Builtin::List => {
             if arg_types.is_empty() {
-                return Some(Type::list_of(Type::Any));
+                return Some(Type::list_of(Type::Never));
             }
             let elem_type = extract_iterable_element_type(&arg_types[0]);
             Some(Type::list_of(elem_type))
@@ -541,12 +541,12 @@ pub(crate) fn resolve_builtin_call_type(
         }
 
         // === Dict constructor ===
-        Builtin::Dict => Some(Type::dict_of(Type::Any, Type::Any)),
+        Builtin::Dict => Some(Type::dict_of(Type::Never, Type::Never)),
 
         // === Set constructor ===
         Builtin::Set => {
             if arg_types.is_empty() {
-                return Some(Type::set_of(Type::Any));
+                return Some(Type::set_of(Type::Never));
             }
             let elem_type = extract_iterable_element_type(&arg_types[0]);
             Some(Type::set_of(elem_type))
@@ -633,20 +633,24 @@ pub(crate) fn resolve_builtin_call_type(
 // =============================================================================
 
 /// Infer list type from pre-computed element types.
-/// Empty lists use the expression's type annotation if available.
+/// Empty lists use the expression's type annotation if available, else
+/// seed `list[Never]` so prescan-merging narrows through usage observation.
+/// Boundary coercion in lowering demotes `Never` → `Any` for unrefined empties.
 pub(crate) fn infer_list_type(elem_types: Vec<Type>, expr_ty: Option<&Type>) -> Type {
     if elem_types.is_empty() {
-        expr_ty.cloned().unwrap_or_else(|| Type::list_of(Type::Any))
+        expr_ty
+            .cloned()
+            .unwrap_or_else(|| Type::list_of(Type::Never))
     } else {
         Type::list_of(unify_element_types(elem_types))
     }
 }
 
 /// Infer dict type from pre-computed key and value types.
-/// Empty dicts default to Dict[Any, Any].
+/// Empty dicts seed `dict[Never, Never]`; see `infer_list_type` rationale.
 pub(crate) fn infer_dict_type(key_types: Vec<Type>, val_types: Vec<Type>) -> Type {
     if key_types.is_empty() {
-        Type::dict_of(Type::Any, Type::Any)
+        Type::dict_of(Type::Never, Type::Never)
     } else {
         Type::dict_of(
             unify_element_types(key_types),
@@ -656,10 +660,10 @@ pub(crate) fn infer_dict_type(key_types: Vec<Type>, val_types: Vec<Type>) -> Typ
 }
 
 /// Infer set type from pre-computed element types.
-/// Empty sets default to Set[Any].
+/// Empty sets seed `set[Never]`; see `infer_list_type` rationale.
 pub(crate) fn infer_set_type(elem_types: Vec<Type>) -> Type {
     if elem_types.is_empty() {
-        Type::set_of(Type::Any)
+        Type::set_of(Type::Never)
     } else {
         Type::set_of(unify_element_types(elem_types))
     }
@@ -786,7 +790,7 @@ mod tests {
     #[test]
     fn test_infer_list_type_empty() {
         let result = infer_list_type(vec![], None);
-        assert_eq!(result, Type::list_of(Type::Any));
+        assert_eq!(result, Type::list_of(Type::Never));
     }
 
     #[test]
@@ -800,7 +804,7 @@ mod tests {
     #[test]
     fn test_infer_dict_type_empty() {
         let result = infer_dict_type(vec![], vec![]);
-        assert_eq!(result, Type::dict_of(Type::Any, Type::Any));
+        assert_eq!(result, Type::dict_of(Type::Never, Type::Never));
     }
 
     #[test]
@@ -813,7 +817,7 @@ mod tests {
 
     #[test]
     fn test_infer_set_type_empty() {
-        assert_eq!(infer_set_type(vec![]), Type::set_of(Type::Any));
+        assert_eq!(infer_set_type(vec![]), Type::set_of(Type::Never));
     }
 
     #[test]

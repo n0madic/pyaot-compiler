@@ -657,9 +657,16 @@ impl MirMerger {
                         hir::ExprKind::Bool(_) => Type::Bool,
                         hir::ExprKind::Str(_) => Type::Str,
                         hir::ExprKind::None => Type::None,
+                        hir::ExprKind::List(elems) if elems.is_empty() => {
+                            Type::list_of(Type::Never)
+                        }
                         hir::ExprKind::List(_) => Type::list_of(Type::Any),
+                        hir::ExprKind::Dict(pairs) if pairs.is_empty() => {
+                            Type::dict_of(Type::Never, Type::Never)
+                        }
                         hir::ExprKind::Dict(_) => Type::dict_of(Type::Any, Type::Any),
                         hir::ExprKind::Tuple(_) => Type::tuple_of(vec![]),
+                        hir::ExprKind::Set(elems) if elems.is_empty() => Type::set_of(Type::Never),
                         hir::ExprKind::Set(_) => Type::set_of(Type::Any),
                         _ => Type::Any,
                     };

@@ -215,13 +215,23 @@ impl<'a> Lowering<'a> {
             }
             _ if obj_type.dict_kv().is_some() && !matches!(obj_type, Type::DefaultDict(..)) => {
                 let (_key_ty, value_ty) = obj_type.dict_kv().expect("checked above");
-                // Dict indexing: dict[key] returns value type
-                // Dict values are always stored as boxed pointers for GC, so we need to unbox primitives
+                // Dict indexing: dict[key] returns value type. Dict values
+                // are always stored as boxed/tagged Values; primitive
+                // value types unbox after the runtime call. For `Any`
+                // dict values the runtime call returns a boxed pointer —
+                // label the result `HeapAny` so downstream comparison /
+                // dispatch routes through `rt_obj_*` instead of treating
+                // raw `Any` bits as a primitive.
+                let result_ty = if matches!(value_ty, Type::Any) {
+                    Type::HeapAny
+                } else {
+                    value_ty.clone()
+                };
                 mir_func.add_local(mir::Local {
                     id: result_local,
                     name: None,
-                    ty: value_ty.clone(),
-                    is_gc_root: value_ty.is_heap(),
+                    ty: result_ty.clone(),
+                    is_gc_root: result_ty.is_heap(),
                 });
                 // Box key if needed (int/bool keys need boxing)
                 let index_type = self.seed_expr_type(index, hir_module);

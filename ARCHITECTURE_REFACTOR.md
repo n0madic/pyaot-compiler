@@ -2607,9 +2607,14 @@ bright-line grep, pass migration, workspace green — is met.
 - **§2.6 Pass migration** is complete: `emit_value_slot` (renamed from
   `box_primitive_if_needed`) is the canonical Value-slot encoder; helper
   `coerce_for_storage` unifies numeric-tower and dynamic-slot coercions.
-  `is_useless_container_ty` remains as a small lowering utility — its
-  removal in favour of pure `TypeLattice::is_subtype_of`/`meet` is
-  tracked as residual cleanup (technical debt, not blocking).
+  `is_useless_container_ty` was deleted (2026-05-02) by switching empty-
+  literal seeds (`[]` / `{}` / `set()`) from `*[Any]` (lattice top) to
+  `*[Never]` (lattice bottom, identity in `TypeLattice::join`). The
+  prescan now narrows correctly through `[].join([1, 2]) = list[Int]`,
+  so the fallback "useless container" filter is mathematically
+  unnecessary. Boundary coercion (`Type::demote_never_params_to_any` +
+  top-level `Never → Any`) at the lowering→MIR edge keeps unrefined
+  empties runtime-safe for codegen.
 - **§2.7 Final purge** bright-line grep is clean; both benchmark gates
   closed in Phase 3 — Polymorphic arithmetic gate (§P.1, `a4ad57e`),
   GC scan gate (§P.2, S3.3b.2 / `884785d`).
@@ -2654,7 +2659,7 @@ bright-line grep, pass migration, workspace green — is met.
 | Polymorphic arithmetic perf gate | §P.1 | ✅ raw f64 instance fields (`a4ad57e`, ±10% met) |
 | GC scan perf gate | §P.2 | ✅ closed by S3.3b.2 (`884785d`) — fn-ptr leak path eliminated |
 | GC belt-and-braces address-heuristic guard removal | §P.2 | ✅ guards removed in S3.3b.2 (`884785d`) |
-| `is_useless_container_ty` deletion | Lattice `is_subtype`/`meet` | ⏸ residual technical debt — function still in use as small lowering utility |
+| `is_useless_container_ty` deletion | Lattice `is_subtype`/`meet` (rejected — `Any` short-circuits symmetrically) | ✅ deleted 2026-05-02: empty-literal seeds switched from `*[Any]` (lattice top) to `*[Never]` (lattice bottom); `TypeLattice::join` narrows correctly through observation, fallback filter no longer needed. Boundary coercion `demote_never_params_to_any` (+ top-level `Never → Any`) at lowering→MIR edge keeps unrefined empties runtime-safe. |
 
 ## 2.1 Tag scheme finalization ✅
 
@@ -3024,20 +3029,35 @@ adoption:
   widening (Int|Bool → Float via `IntToFloat`) then delegates to `to_value_slot`
   for dynamic-slot boxing. ~14 combined call sites redirected.
 
-- `is_useless_container_ty` (`crates/lowering/src/lib.rs:39`) is **deferred
-  to Phase 3**: it is a seed-type prioritisation predicate (`Dict(Any,Any)` vs
-  tighter inferred types), orthogonal to Value representation. Phase 3 lattice
-  `is_subtype` / `meet` will replace it naturally.
+- `is_useless_container_ty` (`crates/lowering/src/lib.rs:39`) was a
+  seed-type prioritisation predicate (`Dict(Any,Any)` vs tighter inferred
+  types), orthogonal to Value representation. **Resolved 2026-05-02 by
+  fixing the source rather than the symptom**: empty-literal seeds (`[]`,
+  `{}`, `set()`) switched from `*[Any]` (lattice top) to `*[Never]`
+  (lattice bottom, identity in `TypeLattice::join`). Prescan now narrows
+  correctly: `[].join([1, 2]) = list[Never].join(list[Int]) = list[Int]`,
+  so the "useless container" fallback filter is mathematically
+  unnecessary. The original Phase 3 hope of replacing it via
+  `is_subtype_of`/`meet` was rejected because `Any` short-circuits
+  symmetrically in container subtyping (`list[Int] <: list[Any]` AND
+  `list[Any] <: list[Int]` both hold via the Any-element guard in
+  `is_subtype_of_inner`), so neither operation can distinguish the
+  lattice top container from a concrete one. Boundary coercion
+  (`Type::demote_never_params_to_any` for container parameters; bare
+  top-level `Never → Any`) at the lowering→MIR edge keeps unrefined
+  empties runtime-safe — `Type::Never` would otherwise route through
+  the Int sentinel arm in `pick_storage_def` and panic in
+  `type_to_cranelift`.
 
-The grep gate `grep -rn 'coerce_to_field_type|promote_to_float_if_needed'
-crates/` → 0 is now an exit criterion. `box_primitive_if_needed` is
-replaced in the grep by `to_value_slot` (verify it exists, not that it's 0).
-`is_useless_container_ty` deletion moves to Phase 3 acceptance.
+The grep gate `grep -rn 'coerce_to_field_type|promote_to_float_if_needed|
+is_useless_container' crates/` → 0 is now an exit criterion (all three
+deleted). `box_primitive_if_needed` is replaced in the grep by
+`to_value_slot` (verify it exists, not that it's 0).
 
 **Exit criterion**:
 
 - Every call site of the deleted helpers is gone.
-- `grep -rn 'box_primitive\|promote_to_float\|coerce_to_field\|is_useless_container' crates/` returns 0.
+- `grep -rn 'box_primitive\|promote_to_float\|coerce_to_field\|is_useless_container' crates/` returns 0 (last entry deleted 2026-05-02).
 
 ## 2.7 Final purge ✅ (perf gates §P.1/§P.2 closed in Phase 3 — `a4ad57e`/S3.3b.2)
 

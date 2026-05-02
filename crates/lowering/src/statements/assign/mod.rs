@@ -338,23 +338,19 @@ impl<'a> Lowering<'a> {
         // `Float` here — and the Int write gets coerced below.
         let has_explicit_type_hint = type_hint.is_some();
         let initial_var_type = type_hint.unwrap_or_else(|| {
-            // Priority: refined container type > prescan (when useful)
-            // > active block-narrowing storage type > stable/base var type
-            // > live narrowed var_type > RHS inference.
-            //
-            // Prescan is skipped if it's "uselessly wide" — an Any-
-            // parameterised container (Dict(Any, Any), List(Any),
-            // Set(Any)) — because the RHS-driven inference or later
-            // refinement will produce a tighter type.
+            // Priority: refined container type > prescan > block-narrowing
+            // storage type > stable/base var type > live narrowed var_type
+            // > RHS inference. Prescan now narrows correctly through
+            // `Never`-seeded empty literals so no shape filter is needed.
             let prescan = self
                 .lowering_seed_info
                 .current_local_seed_types
                 .get(&target)
+                .cloned();
+            let base = self
+                .get_base_var_type(&target)
                 .cloned()
-                .filter(|ty| !crate::is_useless_container_ty(ty));
-            let base = self.get_base_var_type(&target).cloned().filter(|ty| {
-                !matches!(ty, Type::Any | Type::HeapAny) && !crate::is_useless_container_ty(ty)
-            });
+                .filter(|ty| !matches!(ty, Type::Any | Type::HeapAny));
             self.lowering_seed_info
                 .refined_container_types
                 .get(&target)
@@ -384,13 +380,21 @@ impl<'a> Lowering<'a> {
 
         let mut var_type = initial_var_type;
         if !has_explicit_type_hint
-            && (matches!(var_type, Type::Any | Type::HeapAny)
-                || crate::is_useless_container_ty(&var_type))
+            && matches!(var_type, Type::Any | Type::HeapAny)
             && !matches!(value_type, Type::Any | Type::HeapAny)
-            && !crate::is_useless_container_ty(&value_type)
         {
             var_type = value_type.clone();
         }
+        // Boundary coercion: demote `Never` (top-level or in container
+        // parameters) to `Any` before this type escapes to MIR storage
+        // (`get_or_create_local`, global storage). A bare top-level
+        // `Never` would otherwise route through the Int sentinel arm in
+        // `pick_storage_def` and corrupt globals; container `Never`
+        // would panic in `type_to_cranelift`.
+        var_type = match var_type {
+            Type::Never => Type::Any,
+            other => other.demote_never_params_to_any(),
+        };
         // Box primitives when assigning to Union type (or narrowed Union variable)
         // or coerce through the numeric tower when the target local is
         // wider than the RHS (Area E §E.6: `x = 0; x += 0.5` widens

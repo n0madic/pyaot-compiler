@@ -170,6 +170,24 @@ impl Function {
             },
         );
 
+        // Boundary coercion: see `add_local`. Function params and the
+        // return type travel the same path to `type_to_cranelift` and
+        // must be free of `Never` (top-level or container parameter).
+        let demote = |t: Type| -> Type {
+            match t {
+                Type::Never => Type::Any,
+                other => other.demote_never_params_to_any(),
+            }
+        };
+        let params: Vec<Local> = params
+            .into_iter()
+            .map(|p| Local {
+                ty: demote(p.ty),
+                ..p
+            })
+            .collect();
+        let return_type = demote(return_type);
+
         Self {
             id,
             name,
@@ -187,7 +205,19 @@ impl Function {
         }
     }
 
-    pub fn add_local(&mut self, local: Local) -> LocalId {
+    pub fn add_local(&mut self, mut local: Local) -> LocalId {
+        // Boundary coercion at the absolute MIR-input edge. Lowering's
+        // empty-literal seed pipeline produces `list[Never]` /
+        // `dict[Never, Never]` etc. so `TypeLattice::join` correctly
+        // narrows through usage observation (`Never` is bottom, identity
+        // in `join`). When an empty container is never refined by usage,
+        // the residual `Never` must not reach codegen — `type_to_cranelift`
+        // panics on `Type::Never`. We demote here so every direct or
+        // indirect `add_local` call gets the same treatment.
+        local.ty = match local.ty {
+            pyaot_types::Type::Never => pyaot_types::Type::Any,
+            other => other.demote_never_params_to_any(),
+        };
         let id = local.id;
         self.locals.insert(id, local);
         id

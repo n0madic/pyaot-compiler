@@ -1025,11 +1025,24 @@ Per-VarId it records the merged type in
 
 **Consumer priority**. `get_or_create_local` and `lower_assign` both
 consult: `refined_var_types` (Area D empty-container refinement) >
-prescan (unless "uselessly wide" like `Dict(Any, Any)`) > prior
-`var_types` > RHS-inferred. The "uselessly wide" filter matters for
-module-level empty dict / list / set literals that later refine to a
-concrete element type — without the filter the prescan snapshot
-would shadow `refined_var_types`.
+prescan > prior `var_types` > RHS-inferred. The prescan is now reliable
+because empty-literal seeds (`[]`, `{}`, `set()`) use `*[Never]`
+(lattice bottom, identity in `TypeLattice::join`) instead of `*[Any]`
+(top), so `[].join([1, 2]) = list[Int]` correctly. Prior to the
+2026-05-02 deletion of `is_useless_container_ty`, a fallback filter
+skipped prescan when it produced a wide `*[Any]` shape; the
+Never-seed refactor made that filter mathematically unnecessary.
+
+**Boundary coercion**. `Type::demote_never_params_to_any` (for
+container args) plus a top-level `Never → Any` substitution at every
+boundary point — `Lowering::get_or_create_local`, `bind_var_op`,
+`lower_assign`, class-field refinement, plus `mir::Function::add_local`
+/ `mir::Function::new` and `Lowering::seed_expr_type` — keep
+unrefined empty containers (`list[Never]` for an `[]` never reached
+by usage) runtime-safe. `Type::Never` reaching codegen would panic in
+`type_to_cranelift`; reaching `pick_storage_def` would route through
+the Int sentinel and corrupt globals (mistakenly emitting
+`rt_global_set_int` for a heap pointer).
 
 **Return-type re-inference**. `reinfer_return_types_with_prescan`
 runs after prescan for un-annotated functions: seeds the `param_types`

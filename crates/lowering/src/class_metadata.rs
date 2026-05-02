@@ -15,7 +15,6 @@ use crate::{LoweredClassInfo, Lowering};
 impl<'a> Lowering<'a> {
     fn should_refine_field_seed_type(storage_ty: &Type) -> bool {
         matches!(storage_ty, Type::Any | Type::HeapAny)
-            || crate::is_useless_container_ty(storage_ty)
             || storage_ty
                 .tuple_elems()
                 .is_some_and(|elems| elems.is_empty())
@@ -310,7 +309,7 @@ impl<'a> Lowering<'a> {
                 if !Self::should_refine_field_seed_type(&storage_ty) {
                     continue;
                 }
-                let refined = class_fields
+                let refined_raw = class_fields
                     .get(&field_name)
                     .map(|prev| prev.join(&observed_ty))
                     .unwrap_or_else(|| {
@@ -324,6 +323,13 @@ impl<'a> Lowering<'a> {
                             storage_ty.join(&observed_ty)
                         }
                     });
+                // Boundary coercion: `Never` (top-level or in container
+                // parameters) becomes `Any` before the field type is
+                // consumed by codegen / vtable layout.
+                let refined = match refined_raw {
+                    Type::Never => Type::Any,
+                    other => other.demote_never_params_to_any(),
+                };
                 class_fields.insert(field_name, refined);
             }
         }

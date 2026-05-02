@@ -132,6 +132,94 @@ fn test_never_display() {
 }
 
 // ---------------------------------------------------------------------------
+// demote_never_params_to_any — boundary coercion at lowering→MIR
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_demote_never_in_list() {
+    let list_never = Type::list_of(Type::Never);
+    assert_eq!(
+        list_never.demote_never_params_to_any(),
+        Type::list_of(Type::Any)
+    );
+}
+
+#[test]
+fn test_demote_never_in_set() {
+    let set_never = Type::set_of(Type::Never);
+    assert_eq!(
+        set_never.demote_never_params_to_any(),
+        Type::set_of(Type::Any)
+    );
+}
+
+#[test]
+fn test_demote_never_in_dict() {
+    let dict_never = Type::dict_of(Type::Never, Type::Never);
+    assert_eq!(
+        dict_never.demote_never_params_to_any(),
+        Type::dict_of(Type::Any, Type::Any),
+    );
+    // Mixed: only one param is Never.
+    let dict_partial = Type::dict_of(Type::Str, Type::Never);
+    assert_eq!(
+        dict_partial.demote_never_params_to_any(),
+        Type::dict_of(Type::Str, Type::Any),
+    );
+}
+
+#[test]
+fn test_demote_never_nested() {
+    // list[list[Never]] → list[list[Any]]
+    let nested = Type::list_of(Type::list_of(Type::Never));
+    assert_eq!(
+        nested.demote_never_params_to_any(),
+        Type::list_of(Type::list_of(Type::Any)),
+    );
+}
+
+#[test]
+fn test_demote_never_in_iterator() {
+    let iter_never = Type::Iterator(Box::new(Type::Never));
+    assert_eq!(
+        iter_never.demote_never_params_to_any(),
+        Type::Iterator(Box::new(Type::Any)),
+    );
+}
+
+#[test]
+fn test_demote_never_in_union() {
+    // Union[list[Never], Int] — recurse into members; outer Union shape preserved.
+    let u = Type::Union(vec![Type::list_of(Type::Never), Type::Int]);
+    assert_eq!(
+        u.demote_never_params_to_any(),
+        Type::Union(vec![Type::list_of(Type::Any), Type::Int]),
+    );
+}
+
+#[test]
+fn test_demote_preserves_top_level_never() {
+    // Top-level Never is meaningful (e.g., return type of NoReturn fn) — leave alone.
+    assert_eq!(Type::Never.demote_never_params_to_any(), Type::Never);
+}
+
+#[test]
+fn test_demote_no_op_for_concrete_types() {
+    // Concrete element types are untouched.
+    let cases = [
+        Type::list_of(Type::Int),
+        Type::dict_of(Type::Str, Type::Int),
+        Type::set_of(Type::Float),
+        Type::Int,
+        Type::Any,
+        Type::None,
+    ];
+    for t in cases {
+        assert_eq!(t.clone().demote_never_params_to_any(), t);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Area E §E.1 — numeric tower (tested via TypeLattice::join)
 // ---------------------------------------------------------------------------
 

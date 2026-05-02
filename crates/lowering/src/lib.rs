@@ -32,20 +32,6 @@ fn first_arg_or_none(args: Vec<mir::Operand>) -> mir::Operand {
         .unwrap_or(mir::Operand::Constant(mir::Constant::None))
 }
 
-/// Whether `ty` is a container type with `Any` element / key / value
-/// parameters. Used by the Area E §E.6 prescan consumers to defer to
-/// later, more precise type sources (RHS inference, `refined_container_types`,
-/// etc.) rather than hard-coding a shape that will be tightened later.
-pub(crate) fn is_useless_container_ty(ty: &Type) -> bool {
-    if let Some(e) = ty.list_elem().or_else(|| ty.set_elem()) {
-        return *e == Type::Any;
-    }
-    if let Some((k, v)) = ty.dict_kv() {
-        return *k == Type::Any && *v == Type::Any;
-    }
-    false
-}
-
 impl<'a> Lowering<'a> {
     /// Helper to emit a boxing instruction and return the boxed operand.
     fn emit_box_primitive(
@@ -199,6 +185,10 @@ impl<'a> Lowering<'a> {
 
     /// Prefer the already-lowered MIR operand type when it is concrete; fall
     /// back to the seed/HIR hint only for dynamic `Any`/`HeapAny` cases.
+    /// When the lowered operand is `HeapAny` (guaranteed pointer) and the
+    /// seed gives `Any` (could be raw primitive), keep `HeapAny` — it is
+    /// the tighter shape and routes comparisons / dispatch through the
+    /// correct boxed paths (`rt_obj_*`).
     pub(crate) fn resolved_value_type_hint(
         &self,
         expr_id: hir::ExprId,
@@ -210,7 +200,14 @@ impl<'a> Lowering<'a> {
         if !matches!(lowered, Type::Any | Type::HeapAny) {
             return lowered;
         }
-        self.seed_expr_type(expr_id, hir_module)
+        let hint = self.seed_expr_type(expr_id, hir_module);
+        // HeapAny dominates Any: a guaranteed-pointer shape must not be
+        // demoted to ambiguous Any, otherwise compare/dispatch picks the
+        // raw-primitive path for a tagged Value.
+        if matches!(lowered, Type::HeapAny) && matches!(hint, Type::Any) {
+            return lowered;
+        }
+        hint
     }
 
     fn get_or_create_local(
@@ -224,21 +221,33 @@ impl<'a> Lowering<'a> {
         } else {
             // Priority: refined container types > prescan unified type
             // (Area E §E.6) > per-site var_type. Refined types win so
-            // `Dict(Any, Any)` tightened to `Dict(Str, Int)` by the
-            // empty-container pass is preserved.
+            // `dict[Any, Any]` tightened to `dict[Str, Int]` by the
+            // empty-container pass is preserved. Prescan now narrows
+            // correctly through `Never`-seeded empty literals (lattice
+            // bottom is identity in `join`), so no fallback filter is
+            // needed against `*[Any]` shapes.
             let prescan = self
                 .lowering_seed_info
                 .current_local_seed_types
                 .get(&var_id)
-                .cloned()
-                .filter(|ty| !is_useless_container_ty(ty));
-            let ty = self
+                .cloned();
+            let raw_ty = self
                 .lowering_seed_info
                 .refined_container_types
                 .get(&var_id)
                 .cloned()
                 .or(prescan)
                 .unwrap_or(var_type);
+            // Boundary coercion: an empty literal that was never refined
+            // by usage lands here as `list[Never]` etc. The MIR / codegen
+            // layer expects a runtime-safe shape — demote both top-level
+            // `Never` (would route through the Int sentinel in storage
+            // dispatch) and `Never` container parameters (would panic in
+            // `type_to_cranelift`) to `Any`.
+            let ty = match raw_ty {
+                Type::Never => Type::Any,
+                other => other.demote_never_params_to_any(),
+            };
             let local_id = self.alloc_local_id();
             self.insert_var_local(var_id, local_id);
             mir_func.add_local(mir::Local {

@@ -205,7 +205,7 @@ impl AstToHir {
                 args: vec![],
                 kwargs: Vec::new(),
             },
-            ty: Some(Type::set_of(Type::Any)),
+            ty: Some(Type::set_of(Type::Never)),
             span: comp_span,
         });
         let init_stmt = self.module.stmts.alloc(Stmt {

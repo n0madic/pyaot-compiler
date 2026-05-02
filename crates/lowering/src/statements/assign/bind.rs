@@ -366,14 +366,16 @@ impl<'a> Lowering<'a> {
             .get(&var_id)
             .cloned()
             .unwrap_or_else(|| value_type.clone());
-        let local_ty = if (matches!(prescanned_ty, Type::Any | Type::HeapAny)
-            || crate::is_useless_container_ty(&prescanned_ty))
+        let local_ty_raw = if matches!(prescanned_ty, Type::Any | Type::HeapAny)
             && !matches!(value_type, Type::Any | Type::HeapAny)
-            && !crate::is_useless_container_ty(value_type)
         {
             value_type.clone()
         } else {
             prescanned_ty
+        };
+        let local_ty = match local_ty_raw {
+            Type::Never => Type::Any,
+            other => other.demote_never_params_to_any(),
         };
         self.insert_var_type(var_id, local_ty.clone());
         let dest_local = self.get_or_create_local(var_id, local_ty.clone(), mir_func);

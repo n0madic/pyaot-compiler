@@ -14,6 +14,20 @@ impl<'a> Lowering<'a> {
         id
     }
 
+    /// Demote any `Never` reaching MIR storage to `Any`. Container
+    /// parameters use `Type::demote_never_params_to_any` (covariant args,
+    /// `Iterator`, `Union` recursion); a bare top-level `Type::Never`
+    /// (produced by `extract_iterable_element_type(list[Never])` and
+    /// similar element-type lookups for empty containers) becomes
+    /// `Type::Any` because `Never` has no runtime representation and
+    /// would panic in `type_to_cranelift`.
+    fn demote_for_mir_storage(ty: Type) -> Type {
+        match ty {
+            Type::Never => Type::Any,
+            other => other.demote_never_params_to_any(),
+        }
+    }
+
     /// Allocate a new local variable and add it to the function.
     /// This is a helper to reduce boilerplate when creating locals.
     pub(crate) fn alloc_and_add_local(
@@ -21,6 +35,7 @@ impl<'a> Lowering<'a> {
         ty: Type,
         mir_func: &mut mir::Function,
     ) -> LocalId {
+        let ty = Self::demote_for_mir_storage(ty);
         let local_id = self.alloc_local_id();
         mir_func.add_local(mir::Local {
             id: local_id,
@@ -39,6 +54,7 @@ impl<'a> Lowering<'a> {
         is_gc_root: bool,
         mir_func: &mut mir::Function,
     ) -> LocalId {
+        let ty = Self::demote_for_mir_storage(ty);
         let local_id = self.alloc_local_id();
         mir_func.add_local(mir::Local {
             id: local_id,

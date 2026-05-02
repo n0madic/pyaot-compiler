@@ -671,13 +671,18 @@ impl AstToHir {
             ExprKind::Bytes(_) => Type::Bytes,
             ExprKind::None => Type::None,
             ExprKind::List(elems) => {
-                // Infer element type from first element if available
+                // Infer element type from first element if available.
+                // Empty literal seeds with `Never` (lattice bottom) so
+                // `TypeLattice::join` correctly narrows through usage:
+                // `[].join([1, 2]) = list[Never].join(list[Int]) = list[Int]`.
+                // Boundary coercion in lowering demotes `Never` → `Any`
+                // for unrefined empties before MIR emission.
                 if let Some(first_elem_id) = elems.first() {
                     let first_elem = &self.module.exprs[*first_elem_id];
                     let elem_ty = self.infer_literal_type(first_elem);
                     Type::list_of(elem_ty)
                 } else {
-                    Type::list_of(Type::Any)
+                    Type::list_of(Type::Never)
                 }
             }
             ExprKind::Dict(pairs) => {
@@ -686,7 +691,7 @@ impl AstToHir {
                     let val_ty = self.infer_literal_type(&self.module.exprs[*val_id]);
                     Type::dict_of(key_ty, val_ty)
                 } else {
-                    Type::dict_of(Type::Any, Type::Any)
+                    Type::dict_of(Type::Never, Type::Never)
                 }
             }
             ExprKind::Tuple(elems) => {
@@ -702,7 +707,7 @@ impl AstToHir {
                     let elem_ty = self.infer_literal_type(first_elem);
                     Type::set_of(elem_ty)
                 } else {
-                    Type::set_of(Type::Any)
+                    Type::set_of(Type::Never)
                 }
             }
             // For other expressions, use the type annotation if available

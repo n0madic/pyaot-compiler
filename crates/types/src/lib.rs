@@ -250,6 +250,52 @@ impl Type {
         }
     }
 
+    /// Replace `Never` leaves at covariant container parameter positions
+    /// with `Any`. Used at the lowering→MIR boundary to keep runtime types
+    /// safe after the empty-literal seed pipeline introduces `Never`-
+    /// parameterized containers (so that `TypeLattice::join` correctly
+    /// narrows through usage observation — `Never` is bottom, identity in
+    /// `join`). When an empty container is never refined by usage, we land
+    /// here with `list[Never]` / `dict[Never, Never]` / `set[Never]` and
+    /// need `list[Any]` etc. for codegen.
+    ///
+    /// Demotion targets:
+    /// - `Generic { base, args }` (list / dict / set / tuple / tuple_var /
+    ///   user-defined generic) — covariant args.
+    /// - `DefaultDict(K, V)` — covariant in both.
+    /// - `Iterator(T)` — covariant.
+    /// - `Union[..]` — recurse into members.
+    ///
+    /// Untouched (semantic preservation):
+    /// - Top-level `Never` (meaningful for return types / dead code).
+    /// - `Function { params, ret }` (params are contravariant, not part of
+    ///   the empty-literal seed pipeline).
+    /// - Primitives, `Any`, `HeapAny`, `Class`, `Var`, `BuiltinException`,
+    ///   `RuntimeObject`, `File`, `NotImplementedT`.
+    pub fn demote_never_params_to_any(&self) -> Type {
+        let demote_param = |t: &Type| -> Type {
+            if matches!(t, Type::Never) {
+                Type::Any
+            } else {
+                t.demote_never_params_to_any()
+            }
+        };
+        match self {
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args.iter().map(demote_param).collect(),
+            },
+            Type::DefaultDict(k, v) => {
+                Type::DefaultDict(Box::new(demote_param(k)), Box::new(demote_param(v)))
+            }
+            Type::Iterator(t) => Type::Iterator(Box::new(demote_param(t))),
+            Type::Union(ts) => {
+                Type::Union(ts.iter().map(|t| t.demote_never_params_to_any()).collect())
+            }
+            _ => self.clone(),
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Container accessor API (S3.2) — works on both legacy variants and
     // `Type::Generic{base, args}` so call sites migrate once and survive S3.2c.

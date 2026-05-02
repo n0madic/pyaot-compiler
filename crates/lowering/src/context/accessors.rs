@@ -154,7 +154,7 @@ impl<'a> Lowering<'a> {
     /// `seed_expr_type_by_id`.
     pub(crate) fn seed_expr_type(&self, expr_id: hir::ExprId, hir_module: &hir::Module) -> Type {
         let expr = &hir_module.exprs[expr_id];
-        match &expr.kind {
+        let ty = match &expr.kind {
             hir::ExprKind::Var(var_id) => self
                 .codegen
                 .block_narrowed_locals
@@ -188,6 +188,17 @@ impl<'a> Lowering<'a> {
                 .cloned()
                 .or_else(|| expr.ty.clone())
                 .unwrap_or(Type::Any),
+        };
+        // Boundary coercion at the lowering-side read API. Internal
+        // join-state (`current_local_seed_types`, `refined_container_types`,
+        // `expr.ty` from empty-literal seeding) may carry `Never` for
+        // correct `TypeLattice::join` narrowing; consumers of the
+        // effective expression type expect a runtime-safe shape so that
+        // dispatch / unbox decisions (e.g. `dict_kv` value type for
+        // `RT_DICT_GET` unboxing) match what MIR / codegen sees.
+        match ty {
+            Type::Never => Type::Any,
+            other => other.demote_never_params_to_any(),
         }
     }
 
