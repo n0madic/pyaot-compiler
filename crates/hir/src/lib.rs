@@ -157,6 +157,11 @@ pub struct ClassDef {
     /// For exception classes: the base exception type tag (0-12 for built-in exceptions)
     /// None if not an exception class or if inheriting from a custom exception
     pub base_exception_type: Option<u8>,
+    /// TypeVar names declared for this class (from `Generic[T,U]` base or PEP-695 `class C[T]:`).
+    /// Empty for non-generic classes. Used by S3.3b.1 to type `self` as
+    /// `Type::Generic{class_id, [Var(T), Var(U), ...]}` so methods become
+    /// generic templates and can be monomorphized per call-site type.
+    pub type_params: Vec<InternedString>,
 }
 
 /// Class field definition

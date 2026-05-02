@@ -50,6 +50,7 @@ impl AstToHir {
                     // `rt_register_class(class_id, parent_tag)` so
                     // `except <parent>:` catches this class at runtime.
                     base_exception_type: Some(exc_def.parent.tag()),
+                    type_params: Vec::new(),
                 },
             );
         }

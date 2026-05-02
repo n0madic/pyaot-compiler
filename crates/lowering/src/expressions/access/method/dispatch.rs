@@ -105,6 +105,15 @@ impl<'a> Lowering<'a> {
                 hir_module,
                 mir_func,
             ),
+            Type::Generic { ref base, .. } => self.lower_class_method_call(
+                obj_operand,
+                method,
+                arg_operands,
+                base,
+                &obj_type,
+                hir_module,
+                mir_func,
+            ),
             Type::Iterator(elem_ty) => self.lower_generator_method(
                 obj_operand,
                 &method_name,

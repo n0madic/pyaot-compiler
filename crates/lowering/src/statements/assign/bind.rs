@@ -402,7 +402,14 @@ impl<'a> Lowering<'a> {
         value_type: &Type,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
-        if let Type::Class { class_id, .. } = obj_type {
+        // Accept both Type::Class and Type::Generic (user-defined generic class instance).
+        let derived_class_id: Option<ClassId> = match obj_type {
+            Type::Class { class_id, .. } => Some(*class_id),
+            Type::Generic { base, .. } => Some(*base),
+            _ => None,
+        };
+        if let Some(class_id_val) = derived_class_id {
+            let class_id = &class_id_val;
             if let Some(class_info) = self.get_class_info(class_id).cloned() {
                 // 1. @property setter
                 if let Some((_getter, Some(setter_id))) = class_info.properties.get(&field) {

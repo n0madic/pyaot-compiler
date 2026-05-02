@@ -200,9 +200,18 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
             }
         }
     }
+    // Vtables reference template method FuncIds directly (pre-mono devirt
+    // may have resolved CallVirtual → CallDirect(template), but the vtable
+    // entry itself is never rewritten). Keep such templates alive so codegen
+    // and devirt post-pass can still see them.
+    let vtable_refs: HashSet<FuncId> = module
+        .vtables
+        .iter()
+        .flat_map(|vt| vt.entries.iter().map(|e| e.method_func_id))
+        .collect();
     let templates_to_purge: Vec<FuncId> = templates
         .iter()
-        .filter(|id| !callee_refs.contains(id))
+        .filter(|id| !callee_refs.contains(id) && !vtable_refs.contains(id))
         .copied()
         .collect();
     for id in &templates_to_purge {

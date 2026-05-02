@@ -358,6 +358,7 @@ fn test_abstract_class_instantiation_fails() {
         is_exception_class: false,
         base_exception_type: None,
         is_protocol: false,
+        type_params: vec![],
     };
     module.class_defs.insert(class_id, class_def);
 
@@ -420,6 +421,7 @@ fn test_concrete_class_instantiation_succeeds() {
         is_exception_class: false,
         base_exception_type: None,
         is_protocol: false,
+        type_params: vec![],
     };
     module.class_defs.insert(class_id, class_def);
 

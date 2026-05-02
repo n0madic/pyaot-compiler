@@ -147,6 +147,10 @@ pub(crate) struct ScopeContext {
     /// returns `None` mid-walk and produces drifted names that break
     /// Union deduplication.
     pub(crate) current_class_name: Option<InternedString>,
+    /// TypeVar names in scope for the current class (from `Generic[T]` base or
+    /// PEP-695 `class C[T]:`). Used to type `self` as
+    /// `Type::Generic{class_id, [Var(T)..]}` in instance methods (S3.3b.1).
+    pub(crate) current_class_type_params: Vec<InternedString>,
     /// Variables declared as global in the current function scope
     pub(crate) global_vars: HashSet<InternedString>,
     /// Variables declared as nonlocal in the current function scope
@@ -170,6 +174,7 @@ impl ScopeContext {
         Self {
             current_class: None,
             current_class_name: None,
+            current_class_type_params: Vec::new(),
             global_vars: HashSet::new(),
             nonlocal_vars: HashSet::new(),
             scope_stack: Vec::new(),

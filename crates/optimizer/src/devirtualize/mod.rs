@@ -34,8 +34,11 @@ fn operand_class_id(operand: &Operand, func: &pyaot_mir::Function) -> Option<Cla
             .get(id)
             .map(|l| &l.ty)
             .or_else(|| func.params.iter().find(|p| p.id == *id).map(|p| &p.ty))?;
-        if let Type::Class { class_id, .. } = ty {
-            return Some(*class_id);
+        match ty {
+            Type::Class { class_id, .. } => return Some(*class_id),
+            // Generic user-class instance: Type::Generic{base, [Int]} etc.
+            Type::Generic { base, .. } => return Some(*base),
+            _ => {}
         }
     }
     None

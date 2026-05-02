@@ -112,6 +112,9 @@ impl AstToHir {
         // PEP 695: `class Stack[T]:` — register scoped TypeVars before processing
         // bases and body so `T` resolves in field/method annotations.
         let pep695_saved = self.push_pep695_type_params(&class_def.type_params, class_span)?;
+        // Collect TypeVar names for this class (S3.3b.1): PEP-695 params first.
+        let mut class_type_params: Vec<InternedString> =
+            pep695_saved.iter().map(|(n, _)| *n).collect();
 
         // Parse base class from bases (single inheritance only)
         // Also detect if this is an exception class or Protocol
@@ -144,6 +147,14 @@ impl AstToHir {
                             }
                             if sub_name_str == "Protocol" {
                                 is_protocol = true;
+                            } else {
+                                // Generic[T, U, ...]: add names not already registered
+                                // (PEP-695 params may overlap) to class_type_params.
+                                for &tv in &tv_names {
+                                    if !class_type_params.contains(&tv) {
+                                        class_type_params.push(tv);
+                                    }
+                                }
                             }
                             continue; // compile-time only; not a runtime base
                         }
@@ -215,6 +226,10 @@ impl AstToHir {
         // Save current class context
         let prev_class = self.scope.current_class;
         let prev_class_name = self.scope.current_class_name;
+        let prev_class_type_params = std::mem::replace(
+            &mut self.scope.current_class_type_params,
+            class_type_params.clone(),
+        );
         self.scope.current_class = Some(class_id);
         self.scope.current_class_name = Some(class_name);
 
@@ -431,6 +446,7 @@ impl AstToHir {
         // Restore class context
         self.scope.current_class = prev_class;
         self.scope.current_class_name = prev_class_name;
+        self.scope.current_class_type_params = prev_class_type_params;
 
         // Build PropertyDef structures from collected getters/setters
         let mut properties = Vec::new();
@@ -486,6 +502,7 @@ impl AstToHir {
             is_exception_class,
             base_exception_type,
             is_protocol,
+            type_params: class_type_params,
         };
 
         self.module.class_defs.insert(class_id, class_def);
@@ -565,20 +582,36 @@ impl AstToHir {
                         }
                     }
                     MethodKind::Instance => {
-                        // Regular instance method: 'self' gets the class type
+                        // Regular instance method: 'self' gets the class type.
+                        // For generic classes (type_params non-empty), pre-stamp
+                        // self as Type::Generic{class_id, [Var(T)..]} so the method
+                        // becomes a generic template (S3.3b.1).
                         if arg.def.arg.as_str() == "self" {
                             if let Some(current_class_id) = self.scope.current_class {
-                                // Use scope.current_class_name (set alongside current_class)
-                                // rather than reading from class_defs, which is not populated
-                                // until after the class body is walked — reading it here would
-                                // fall back to param_name and produce drifted Class type names
-                                // that break Union deduplication later.
-                                let current_class_name =
-                                    self.scope.current_class_name.unwrap_or(param_name);
-                                Some(Type::Class {
-                                    class_id: current_class_id,
-                                    name: current_class_name,
-                                })
+                                if !self.scope.current_class_type_params.is_empty() {
+                                    let args = self
+                                        .scope
+                                        .current_class_type_params
+                                        .iter()
+                                        .map(|&n| Type::Var(n))
+                                        .collect();
+                                    Some(Type::Generic {
+                                        base: current_class_id,
+                                        args,
+                                    })
+                                } else {
+                                    // Use scope.current_class_name (set alongside current_class)
+                                    // rather than reading from class_defs, which is not populated
+                                    // until after the class body is walked — reading it here would
+                                    // fall back to param_name and produce drifted Class type names
+                                    // that break Union deduplication later.
+                                    let current_class_name =
+                                        self.scope.current_class_name.unwrap_or(param_name);
+                                    Some(Type::Class {
+                                        class_id: current_class_id,
+                                        name: current_class_name,
+                                    })
+                                }
                             } else {
                                 None
                             }

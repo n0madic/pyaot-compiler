@@ -239,10 +239,31 @@ impl AstToHir {
                                 self.literal_value_to_type(&sub.slice, ann_span)
                             }
                         }
-                        _ => Err(CompilerError::parse_error(
-                            format!("Unknown generic type: {}", name.id),
-                            ann_span,
-                        )),
+                        _ => {
+                            // User-defined generic class: `MyClass[T]`.
+                            // Look the name up in the class map; if found,
+                            // convert the type arg(s) and emit Generic{base, args}.
+                            if let Some(&class_id) = self.symbols.class_map.get(&interned) {
+                                let args = match &*sub.slice {
+                                    py::Expr::Tuple(tuple) => {
+                                        let mut result = Vec::with_capacity(tuple.elts.len());
+                                        for elt in &tuple.elts {
+                                            result.push(self.convert_type_annotation(elt)?);
+                                        }
+                                        result
+                                    }
+                                    single => vec![self.convert_type_annotation(single)?],
+                                };
+                                return Ok(Type::Generic {
+                                    base: class_id,
+                                    args,
+                                });
+                            }
+                            Err(CompilerError::parse_error(
+                                format!("Unknown generic type: {}", name.id),
+                                ann_span,
+                            ))
+                        }
                     }
                 } else {
                     Err(CompilerError::parse_error(

@@ -139,7 +139,7 @@ def test_pep695_function() -> None:
 # Generic[T] base class: syntax is parsed; T comes from the module-level TypeVar.
 # Class methods use concrete types (class-method monomorph is S3.3b, deferred).
 class IntWrapper(Generic[T]):
-    val: int
+    val: int  # field stays concrete; T appears in method signatures
 
     def __init__(self, v: int) -> None:
         self.val = v
@@ -147,11 +147,34 @@ class IntWrapper(Generic[T]):
     def unwrap(self) -> int:
         return self.val
 
+    def transform(self, v: T) -> T:
+        return v
+
+    def set_val(self, v: int) -> None:
+        self.val = v
+
 
 def test_generic_base_class() -> None:
-    w: IntWrapper = IntWrapper(77)
+    w: IntWrapper[int] = IntWrapper(77)
     assert w.unwrap() == 77, f"generic_base_class: got {w.unwrap()}"
     print("generic_base_class: ok")
+
+
+def test_int_wrapper_int() -> None:
+    w: IntWrapper[int] = IntWrapper(10)
+    assert w.unwrap() == 10, f"int_wrapper_int unwrap: got {w.unwrap()}"
+    result: int = w.transform(42)
+    assert result == 42, f"int_wrapper_int transform: got {result}"
+    w.set_val(99)
+    assert w.unwrap() == 99, f"int_wrapper_int set_val: got {w.unwrap()}"
+    print("int_wrapper_int: ok")
+
+
+def test_int_wrapper_str() -> None:
+    ws: IntWrapper[str] = IntWrapper(0)
+    got: str = ws.transform("hello")
+    assert got == "hello", f"int_wrapper_str transform: got {got}"
+    print("int_wrapper_str: ok")
 
 
 # PEP 695 generic class: `class Cls[K]:` — K is scoped to the class body.
@@ -168,13 +191,18 @@ class TickBox[K]:
     def count(self) -> int:
         return self.n
 
+    def tag(self, label: K) -> K:
+        return label
+
 
 def test_pep695_class() -> None:
-    tb: TickBox = TickBox()
+    tb: TickBox[int] = TickBox()
     tb.tick()
     tb.tick()
     tb.tick()
     assert tb.count() == 3, f"pep695_class: got {tb.count()}"
+    labeled: int = tb.tag(7)
+    assert labeled == 7, f"pep695_class tag: got {labeled}"
     print("pep695_class: ok")
 
 
@@ -228,6 +256,8 @@ def main() -> None:
     test_identity_bool()
     test_pep695_function()
     test_generic_base_class()
+    test_int_wrapper_int()
+    test_int_wrapper_str()
     test_pep695_class()
     test_protocol_with_typeparam()
     test_pep695_alias()

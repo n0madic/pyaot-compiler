@@ -90,7 +90,7 @@ storage for statically-typed Float instance fields. `run::polymorphic`
 | TypeAlias | ✅ | PEP 613 (`x: TypeAlias = T`) and PEP 695 (`type X[T] = ...`) |
 | Literal[value] | ✅ | Erased to base type (`Literal[42]` → `int`) |
 | TypeVar | ✅ | Type erasure: unconstrained → untyped (inference), constrained → Union, bounded → bound type |
-| Generic[T] | ✅ | Base class syntax parsed; class body resolves T via TypeVar scope; class-method monomorph deferred (S3.3b) |
+| Generic[T] | ✅ | Base class syntax parsed; class body resolves T via TypeVar scope; generic-class instances typed `Type::Generic{class_id, args}` with method dispatch + field access (S3.3b.1) |
 | Protocol | ✅ | Structural subtyping with name-based vtable dispatch; works across different vtable layouts |
 | Protocol[T] | ✅ | Subscripted Protocol base parsed; T is compile-time only; runtime check is name-based |
 | PEP 695 generics | ✅ | `def fn[T]`, `class Cls[T]`, `type Alias[T]`; TypeVars scoped to enclosing body |
