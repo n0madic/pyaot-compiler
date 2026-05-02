@@ -187,6 +187,26 @@ impl<'a> Lowering<'a> {
             );
             return Ok(());
         }
+        // Any/HeapAny: use rt_iter_value for runtime type dispatch.
+        if matches!(iter_type, Type::Any | Type::HeapAny) {
+            let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
+            let iter_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_VALUE),
+                vec![iter_operand],
+                Type::HeapAny,
+                mir_func,
+            );
+            let value_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
+            self.codegen.iter_cache.insert(
+                iter_id,
+                IterState::Protocol {
+                    iter_local,
+                    value_local,
+                    elem_type: Type::HeapAny,
+                },
+            );
+            return Ok(());
+        }
         let Some((kind, elem_type)) = get_iterable_info(&iter_type) else {
             return Err(CompilerError::type_error(
                 format!(

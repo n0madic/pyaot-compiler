@@ -896,6 +896,8 @@ pub static RT_ITER_SET: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_set"
 pub static RT_ITER_BYTES: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_bytes");
 /// rt_iter_generator(container: *mut Obj) -> *mut Obj
 pub static RT_ITER_GENERATOR: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_generator");
+/// rt_iter_value(val: Value) -> *mut Obj — dynamic dispatch for Any/HeapAny iterables
+pub static RT_ITER_VALUE: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_iter_value");
 
 // --- MakeIterator: reversed variants ---
 /// rt_iter_reversed_list(container: *mut Obj) -> *mut Obj

@@ -61,6 +61,40 @@ pub(crate) enum IterableKind {
 /// Try to determine if an expression is an iterable and extract its kind and element type.
 /// Returns None if the type is not a supported iterable (e.g., range() should be handled separately).
 pub(crate) fn get_iterable_info(ty: &Type) -> Option<(IterableKind, Type)> {
+    // Union[A, B, ...]: all variants must be compatible iterables of the same kind.
+    // Element types are joined (least upper bound). An empty-tuple variant contributes
+    // IterableKind::Tuple but no element (treated as lattice bottom so other variants
+    // dominate the join, preserving precision).
+    if let Type::Union(variants) = ty {
+        if variants.is_empty() {
+            return None;
+        }
+        let mut shared_kind: Option<IterableKind> = None;
+        let mut joined_elem: Type = Type::Never;
+        for v in variants {
+            // Empty-tuple contributes kind=Tuple but no elements — treat as bottom.
+            if let Type::Generic { base, args } = v {
+                if *base == pyaot_types::builtin_classes::BUILTIN_TUPLE_CLASS_ID && args.is_empty()
+                {
+                    match shared_kind {
+                        None => shared_kind = Some(IterableKind::Tuple),
+                        Some(IterableKind::Tuple) => {}
+                        Some(_) => return None,
+                    }
+                    continue;
+                }
+            }
+            let (kind, elem) = get_iterable_info(v)?;
+            match shared_kind {
+                None => shared_kind = Some(kind),
+                Some(k) if k == kind => {}
+                Some(_) => return None,
+            }
+            joined_elem = joined_elem.join(&elem);
+        }
+        return shared_kind.map(|k| (k, joined_elem));
+    }
+
     if let Some(elem_ty) = ty.list_elem() {
         return Some((IterableKind::List, elem_ty.clone()));
     }

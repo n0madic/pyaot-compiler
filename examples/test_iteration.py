@@ -1321,4 +1321,38 @@ except ValueError as _e:
 
 print("§G.3 heap-captured gen-expr tests passed!")
 
+
+# ===== SECTION: Union-of-tuples iteration (microgpt regression) =====
+# Regression test for `cannot iterate over Union[tuple[T,T], tuple[T], tuple[]]`
+# in IterSetup. WPA joins distinct fixed-arity tuple variants of a class field
+# into a Union; `get_iterable_info` must produce a single iterable kind+elem
+# for the union so a `for x in self.field` loop compiles.
+class _UnionIterNode:
+    def __init__(self, label: str):
+        self.label = label
+        self._children = ()  # tuple[]
+
+    def link1(self, a: "_UnionIterNode") -> None:
+        self._children = (a,)  # tuple[Node]
+
+    def link2(self, a: "_UnionIterNode", b: "_UnionIterNode") -> None:
+        self._children = (a, b)  # tuple[Node, Node]
+
+
+def _ui_collect(root: _UnionIterNode, out: list[str]) -> None:
+    out.append(root.label)
+    for child in root._children:  # iterates Union[tuple[N,N], tuple[N], tuple[]]
+        _ui_collect(child, out)
+
+
+_ui_a = _UnionIterNode("a")
+_ui_b = _UnionIterNode("b")
+_ui_c = _UnionIterNode("c")
+_ui_b.link1(_ui_a)
+_ui_c.link2(_ui_a, _ui_b)
+_ui_order: list[str] = []
+_ui_collect(_ui_c, _ui_order)
+assert _ui_order == ["c", "a", "b", "a"], f"got {_ui_order}"
+print("Union-of-tuples iteration tests passed!")
+
 print("All iteration and comprehension tests passed!")

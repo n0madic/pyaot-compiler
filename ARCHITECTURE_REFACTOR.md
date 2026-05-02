@@ -535,7 +535,7 @@ same reasons as the rest of that surface.
    `TypeEnvironment`; `apply_narrowings` / `restore_types` removed.
    Stable seed data lives in `LoweringSeedInfo` (§1.4u Path A).
    See item 4 in the formal-close checklist above.
-5. 🟡 **microgpt.py diagnostic** (2026-04-18): fails at line 41
+5. ✅ **microgpt.py diagnostic** (2026-04-18): fails at line 41
    `return Value(self.data + other.data, ...)` with
    "unknown attribute 'data'". Prior ternary rebinds `other` via
    `other if isinstance(other, Value) else Value(other)`; both arms

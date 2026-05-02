@@ -200,6 +200,27 @@ impl<'a> Lowering<'a> {
                     Some(ann) => ann.clone(),
                     None => self.seed_infer_expr_type(rhs_expr, hir_module, scratch),
                 };
+                // For unannotated simple-var bindings, prefer the
+                // previously-refined container type if one exists (e.g.
+                // `topo = []` refined to `list[Value]` by
+                // `refine_empty_container_types`). Without this, the
+                // re-run prescan after refinement stores `list[Never]` back
+                // into `scratch`, shadowing the refined type and leaving
+                // loop-carried vars like `for v in reversed(topo)` typed
+                // as `Never` instead of the element type.
+                let rhs_ty = if type_hint.is_none() {
+                    if let hir::BindingTarget::Var(v) = target {
+                        self.lowering_seed_info
+                            .refined_container_types
+                            .get(v)
+                            .cloned()
+                            .unwrap_or(rhs_ty)
+                    } else {
+                        rhs_ty
+                    }
+                } else {
+                    rhs_ty
+                };
                 absorb_into_targets(target, &rhs_ty, scratch, loop_only, loop_depth, false);
             }
             hir::StmtKind::IterAdvance { iter, target } => {
@@ -933,6 +954,21 @@ fn merge_var(
 /// anything else returns `Type::Any` and the caller treats the loop var
 /// as untyped.
 fn elem_type_of_iterable(ty: &Type) -> Type {
+    // Union[A, B, ...]: join element types, skipping empty fixed-arity tuples.
+    if let Type::Union(variants) = ty {
+        let mut joined = Type::Never;
+        for v in variants {
+            if v.tuple_elems().is_some_and(|e| e.is_empty()) {
+                continue;
+            }
+            joined = joined.join(&elem_type_of_iterable(v));
+        }
+        return if matches!(joined, Type::Never) {
+            Type::Any
+        } else {
+            joined
+        };
+    }
     if let Some(e) = ty.list_elem() {
         return e.clone();
     }

@@ -1147,6 +1147,23 @@ impl<'a> Lowering<'a> {
 
 /// Extract the element type from an iterable type.
 pub(crate) fn extract_iterable_element_type(ty: &Type) -> Type {
+    // Union[A, B, ...]: join the element types of all variants.
+    // Empty fixed-arity tuples contribute no elements so are skipped to
+    // prevent widening the join to `Any`.
+    if let Type::Union(variants) = ty {
+        let mut joined = Type::Never;
+        for v in variants {
+            if v.tuple_elems().is_some_and(|e| e.is_empty()) {
+                continue;
+            }
+            joined = joined.join(&extract_iterable_element_type(v));
+        }
+        return if matches!(joined, Type::Never) {
+            Type::Any
+        } else {
+            joined
+        };
+    }
     if let Some(elem) = ty.list_elem() {
         return elem.clone();
     }

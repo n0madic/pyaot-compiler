@@ -7,7 +7,7 @@
 use indexmap::IndexMap;
 use pyaot_hir as hir;
 use pyaot_types::Type;
-use pyaot_utils::VarId;
+use pyaot_utils::{FuncId, VarId};
 
 use super::infer::extract_iterable_element_type;
 use crate::Lowering;
@@ -565,11 +565,59 @@ impl<'a> Lowering<'a> {
         //    positional arg-type accumulators.
         let mut accumulators: HashMap<pyaot_utils::FuncId, Vec<Type>> = HashMap::new();
 
+        // Pre-compute `self` type for each instance method so the overlay can
+        // seed it even when the `self` parameter has no explicit annotation.
+        // Without this, calls like `inner(self)` in an unannotated method body
+        // resolve `self` as `Any`, which prevents container-refinement from
+        // inferring the element type of lists populated inside nested functions.
+        let mut method_self_types: HashMap<FuncId, Type> = HashMap::new();
+        for (class_id, class_def) in &hir_module.class_defs {
+            let self_ty = if class_def.type_params.is_empty() {
+                Type::Class {
+                    class_id: *class_id,
+                    name: class_def.name,
+                }
+            } else {
+                Type::Generic {
+                    base: *class_id,
+                    args: class_def
+                        .type_params
+                        .iter()
+                        .map(|n| Type::Var(*n))
+                        .collect(),
+                }
+            };
+            for &method_func_id in &class_def.methods {
+                method_self_types.insert(method_func_id, self_ty.clone());
+            }
+            if let Some(init_id) = class_def.init_method {
+                method_self_types.insert(init_id, self_ty.clone());
+            }
+            for prop in &class_def.properties {
+                method_self_types.insert(prop.getter, self_ty.clone());
+                if let Some(setter_id) = prop.setter {
+                    method_self_types.insert(setter_id, self_ty.clone());
+                }
+            }
+        }
+
         for (_fid, func) in hir_module.func_defs.iter() {
             // Build a param-overlay for the enclosing function — the
             // arg-type inference uses it so that `inner(self)` where
             // `self: Value` resolves the arg as `Value`, not `Any`.
             let mut overlay: IndexMap<VarId, Type> = IndexMap::new();
+            // For instance methods with unannotated `self`, seed the first
+            // parameter with the owning class type so that nested calls
+            // like `build_topo(self)` propagate the concrete class type.
+            if func.method_kind == hir::MethodKind::Instance {
+                if let Some(self_ty) = method_self_types.get(_fid) {
+                    if let Some(first_param) = func.params.first() {
+                        if first_param.ty.is_none() {
+                            overlay.insert(first_param.var, self_ty.clone());
+                        }
+                    }
+                }
+            }
             for p in &func.params {
                 if let Some(ref ty) = p.ty {
                     overlay.insert(p.var, ty.clone());

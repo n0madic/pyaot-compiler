@@ -396,6 +396,40 @@ pub extern "C" fn rt_iter_generator_abi(gen: Value) -> Value {
     Value::from_ptr(rt_iter_generator(gen.unwrap_ptr()))
 }
 
+/// Create an iterator for a dynamically-typed Value (runtime type dispatch).
+/// Used when the iterable has `Any`/`HeapAny` type at compile time.
+pub fn rt_iter_value_dyn(obj: *mut Obj) -> *mut Obj {
+    let type_tag = unsafe { (*obj).header.type_tag };
+    match type_tag {
+        TypeTagKind::List => rt_iter_list(obj),
+        TypeTagKind::Tuple => rt_iter_tuple(obj),
+        TypeTagKind::Dict => rt_iter_dict(obj),
+        TypeTagKind::Set => rt_iter_set(obj),
+        TypeTagKind::Str => rt_iter_str(obj),
+        TypeTagKind::Bytes => rt_iter_bytes(obj),
+        TypeTagKind::Iterator | TypeTagKind::Generator => obj,
+        _ => unsafe {
+            use crate::exceptions::ExceptionType;
+            raise_exc!(
+                ExceptionType::TypeError,
+                "'{}' object is not iterable",
+                type_tag.type_name()
+            );
+        },
+    }
+}
+#[export_name = "rt_iter_value"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_iter_value_abi(val: Value) -> Value {
+    if !val.is_ptr() {
+        unsafe {
+            use crate::exceptions::ExceptionType;
+            raise_exc!(ExceptionType::TypeError, "object is not iterable");
+        }
+    }
+    Value::from_ptr(rt_iter_value_dyn(val.unwrap_ptr()))
+}
+
 /// Create an enumerate iterator wrapping an inner iterator
 /// Returns: pointer to new IteratorObj with Enumerate kind
 pub fn rt_iter_enumerate(inner_iter: *mut Obj, start: i64) -> *mut Obj {
