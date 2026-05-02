@@ -186,10 +186,17 @@ impl<'a> Lowering<'a> {
         let is_module_init = func_name == "__pyaot_module_init__";
 
         // For lambdas and gen-expr creators, infer parameter types from captures.
+        // For regular functions, fall back to call-site harvester hints
+        // (`lambda_param_type_hints`) so unannotated params declared at the
+        // top level (e.g. `def softmax(logits): ...` whose hint was set by
+        // `infer_nested_function_param_types`) flow into the MIR param's
+        // declared type instead of defaulting to `Type::Any` at line ~240.
         let inferred_param_types = if (is_lambda || is_genexp_creator) && !func.has_no_blocks() {
             self.infer_lambda_param_types(func, hir_module)
         } else {
-            Vec::new()
+            self.get_lambda_param_type_hints(&func.id)
+                .cloned()
+                .unwrap_or_default()
         };
 
         // Stage E (unified closure ABI): primitive-typed CAPTURE params of

@@ -66,6 +66,24 @@ impl<'a> Lowering<'a> {
             .clear();
         self.precompute_all_local_var_types(hir_module);
         self.reinfer_return_types_with_prescan(hir_module);
+        // Bounded fixpoint: re-run the call-site arg-type harvester with a
+        // prescan-enriched overlay so unannotated params get refined when
+        // the call site references prescan-typed locals (e.g.
+        // `softmax(logits)` where `logits = gpt(...)`). Cap at 3 rounds —
+        // each round only refines `Any → concrete`, so chains 3-deep cover
+        // real-world unannotated call graphs. Reruns invalidate prescan +
+        // return-type results, so we re-run those after each refinement.
+        for _ in 0..3 {
+            let changed = self.rerun_nested_function_param_types(hir_module);
+            if !changed {
+                break;
+            }
+            self.lowering_seed_info
+                .per_function_local_seed_types
+                .clear();
+            self.precompute_all_local_var_types(hir_module);
+            self.reinfer_return_types_with_prescan(hir_module);
+        }
         self.lowering_seed_info.base_var_types.clear();
         self.populate_base_var_types(hir_module);
         // §1.4u-b step 5 — populate `lowering_seed_info.expr_types` eagerly for

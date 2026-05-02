@@ -46,6 +46,7 @@ impl<'a> Lowering<'a> {
                 func_ptr_params: IndexSet::with_capacity(8),
                 varargs_params: IndexSet::with_capacity(4),
                 lambda_param_type_hints: IndexMap::with_capacity(8),
+                harvester_owned_hints: IndexSet::with_capacity(8),
                 decorated_to_wrapper: IndexMap::with_capacity(8),
                 wrapper_func_param_name: IndexMap::with_capacity(8),
             },

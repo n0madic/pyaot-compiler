@@ -12,6 +12,16 @@ use pyaot_utils::{FuncId, VarId};
 use super::infer::extract_iterable_element_type;
 use crate::Lowering;
 
+/// Discriminator for `infer_nested_function_param_types_inner` runs.
+/// `First` is the original early-pipeline pass (overlay = annotated
+/// params + `self`); `Rerun` augments the overlay with prescan locals
+/// so call-site arg types resolve against locals like `logits = gpt(...)`.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum HarvestMode {
+    First,
+    Rerun,
+}
+
 impl<'a> Lowering<'a> {
     // ==================== Pre-computation Phase ====================
 
@@ -538,7 +548,26 @@ impl<'a> Lowering<'a> {
     /// - Starred / keyword / unpacked arguments (too fragile at this
     ///   stage; fall back to `Any`).
     pub(crate) fn infer_nested_function_param_types(&mut self, hir_module: &hir::Module) {
+        let _ = self.infer_nested_function_param_types_inner(hir_module, HarvestMode::First);
+    }
+
+    /// Re-run the harvester after prescan + return-type inference have
+    /// populated `per_function_local_seed_types`. The rerun layers prescan
+    /// locals onto the call-site overlay so calls like `softmax(logits)` —
+    /// where `logits = gpt(...)` only gets a concrete type after prescan —
+    /// can finally see a non-`Any` arg type and refine the unannotated
+    /// param's hint. Returns `true` iff any hint was added or replaced.
+    pub(crate) fn rerun_nested_function_param_types(&mut self, hir_module: &hir::Module) -> bool {
+        self.infer_nested_function_param_types_inner(hir_module, HarvestMode::Rerun)
+    }
+
+    fn infer_nested_function_param_types_inner(
+        &mut self,
+        hir_module: &hir::Module,
+        mode: HarvestMode,
+    ) -> bool {
         use std::collections::HashMap;
+        let mut changed = false;
         // 1. Build `var_to_func`: Bind-target VarIds that hold a Closure or
         //    FuncRef. Captures are stored so step 2 can offset past them.
         let mut var_to_func: HashMap<VarId, (pyaot_utils::FuncId, usize)> = HashMap::new();
@@ -623,6 +652,21 @@ impl<'a> Lowering<'a> {
                     overlay.insert(p.var, ty.clone());
                 }
             }
+            // Rerun-only: layer prescan-inferred locals UNDER annotations
+            // (annotations win via `or_insert`; prescan fills the rest).
+            // This lets call-site arg expressions like `softmax(logits)`
+            // resolve `logits` to its prescan-derived type instead of `Any`.
+            if matches!(mode, HarvestMode::Rerun) {
+                if let Some(prescan) = self
+                    .lowering_seed_info
+                    .per_function_local_seed_types
+                    .get(_fid)
+                {
+                    for (var_id, ty) in prescan {
+                        overlay.entry(*var_id).or_insert_with(|| ty.clone());
+                    }
+                }
+            }
             // §1.17b-d — walk the CFG. Terminators carry exprs (Return /
             // Branch / Raise) that need scanning for embedded calls.
             for block in func.blocks.values() {
@@ -645,8 +689,13 @@ impl<'a> Lowering<'a> {
             }
         }
         // 3. Commit hints for eligible functions.
+        // Pre-collect local FuncIds for cross-module guard — only signatures
+        // declared in this HIR module may be refined; imported sigs that
+        // happen to live in `func_defs` (post-merge) must stay untouched.
+        let local_funcs: std::collections::HashSet<pyaot_utils::FuncId> =
+            hir_module.functions.iter().copied().collect();
         for (func_id, inferred) in accumulators {
-            if self.get_lambda_param_type_hints(&func_id).is_some() {
+            if !local_funcs.contains(&func_id) {
                 continue;
             }
             let Some(func_def) = hir_module.func_defs.get(&func_id) else {
@@ -688,8 +737,23 @@ impl<'a> Lowering<'a> {
                     .unwrap_or(ty);
                 hint.push(final_ty);
             }
+            // Origin-aware commit: HOF-registered hints (absent from
+            // `harvester_owned_hints`) are authoritative; first-pass entries
+            // we already set are stable; rerun may replace its own entries
+            // when the new hint differs.
+            let existing = self.get_lambda_param_type_hints(&func_id).cloned();
+            let is_harvester_owned = self.closures.harvester_owned_hints.contains(&func_id);
+            match (existing.as_ref(), is_harvester_owned, mode) {
+                (Some(_), false, _) => continue,
+                (Some(_), true, HarvestMode::First) => continue,
+                (Some(prev), true, HarvestMode::Rerun) if *prev == hint => continue,
+                _ => {}
+            }
             self.insert_lambda_param_type_hints(func_id, hint);
+            self.closures.harvester_owned_hints.insert(func_id);
+            changed = true;
         }
+        changed
     }
 
     /// Scan a HirTerminator's embedded exprs for resolved calls.

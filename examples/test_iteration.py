@@ -1355,4 +1355,47 @@ _ui_collect(_ui_c, _ui_order)
 assert _ui_order == ["c", "a", "b", "a"], f"got {_ui_order}"
 print("Union-of-tuples iteration tests passed!")
 
+
+# ===== SECTION: WPA call-site param-type rerun =====
+# Regression: unannotated function params get refined from call sites
+# that themselves rely on prescan-typed locals. Without the harvester
+# rerun, `_wpa_box_v(items)` would see `items: Any` and `items[0].v`
+# would fail with "unknown attribute 'v'".
+class _WpaBox:
+    def __init__(self, v: int):
+        self.v = v
+
+
+def _wpa_box_v(items):  # unannotated
+    return items[0].v
+
+
+_wpa_box_list = [_WpaBox(1), _WpaBox(2), _WpaBox(3)]
+assert _wpa_box_v(_wpa_box_list) == 1, "rerun harvester refines `items` to list[_WpaBox]"
+
+
+def _wpa_double_each(xs):  # unannotated
+    return [x * 2 for x in xs]
+
+
+_wpa_ints: list[int] = [1, 2, 3]
+_wpa_doubled = _wpa_double_each(_wpa_ints)
+assert _wpa_doubled[2] == 6, "list[int] arg drives `xs` hint"
+
+
+# Nested unannotated chain: chain_outer calls chain_inner. Round 1
+# refines chain_inner from `chain_outer(_WpaBox(5))`; round 2 sees the
+# refined chain_inner-prescan and refines chain_outer.
+def _wpa_chain_inner(g):  # leaf, unannotated
+    return g.v + 10
+
+
+def _wpa_chain_outer(f):  # caller, unannotated
+    return _wpa_chain_inner(f)
+
+
+assert _wpa_chain_outer(_WpaBox(5)) == 15, "nested rerun refines chained unannotated params"
+
+print("WPA call-site param-type rerun tests passed!")
+
 print("All iteration and comprehension tests passed!")
