@@ -6,29 +6,29 @@ Development roadmap for the Python AOT Compiler. Items are grouped by area and r
 
 ---
 
-## 0. Phase 3 — performance recovery after S2.7 close
+## 0. Phase 3 — closed (2026-05-02)
 
-After Phase 2 (S2.7 atomic Value migration) closed on 2026-04-27 with
-**three of five** §G hard gates met, two performance gates were
-deferred to a follow-on stage:
+Both performance gates deferred at S2.7 close are now met. Phase 3
+formally closed; all milestones §3.1–§3.7 ✅ in
+[`ARCHITECTURE_REFACTOR.md`](ARCHITECTURE_REFACTOR.md).
 
-* 🔴 **Polymorphic arithmetic** (+54% slower on `polymorphic.py` vs
-  Phase 1; gate target was +20% improvement). Plan: peephole-fold
-  abi_repair-injected wrap/unwrap round-trips, devirtualise stable
-  monomorphic CallVirtual sites, optionally hoist instance-field reads
-  out of inner loops. See [`PHASE3_OPTIMIZATION_PLAN.md`](PHASE3_OPTIMIZATION_PLAN.md) §P.1.
-* 🔴 **GC scan time** (+3% slower on `gc_stress`; gate target was +15%
-  improvement). The `mark_object` alignment / low-page /
-  `TypeTagKind::from_tag` guards still exist because closure /
-  decorator-factory / generator paths emit values that pass
-  `is_ptr()` without being heap objects. Plan: same diagnostic
-  protocol as F.10 (commit `ca3aa18`), fix at the source, then
-  delete the guards. See [`PHASE3_OPTIMIZATION_PLAN.md`](PHASE3_OPTIMIZATION_PLAN.md) §P.2.
+* ✅ **Polymorphic arithmetic** — closed by §P.1 (`a4ad57e`, raw f64
+  instance fields; ±10% gate met).
+* ✅ **GC scan time** — closed by S3.3b.2 (`884785d`, decorator
+  wrapper per-captured-fn specialisation eliminated the residual
+  fn-pointer leak that forced belt-and-braces guards in
+  `mark_object`; alignment / low-page / `TypeTagKind::from_tag`
+  guards removed in the same commit).
 
-Correctness invariants from S2.7 are intact: 514/514 workspace tests
-pass, 39/39 `gc_stress` runtime tests pass, §3 hard grep over the
-14 banned symbols returns 0, binary size flat within ±0.05% of
-Phase 0.
+Additional Phase 3 work landed beyond the two gates:
+* `rt_*` extern ABI retype — all 597 symbols use `Value` at the
+  boundary (s3.8 / `20ac673`).
+* Arithmetic fast-path inlining — `rt_add_int` etc. inlined as tag
+  arithmetic with cold overflow blocks (s3.9 / `2377637`).
+* Generic class-method monomorphisation (S3.3b.1 / `5b0128f`) and
+  decorator-wrapper specialisation (S3.3b.2 / `884785d` + `0a3cce0`).
+* TypeVar variance and stdlib generics rewrite formally deferred to
+  S3.8 / S3.9 (Amendment 2026-05-02).
 
 ---
 
@@ -192,12 +192,16 @@ for i in range(1000000):
 **Implemented**:
 - `TypeAlias` — PEP 613 (`x: TypeAlias = T`) and PEP 695 (`type X = T`) for type alias readability
 - `Literal[value]` — type erasure to base type (`Literal[42]` → `int`, `Literal["r", "w"]` → `str`)
-- `TypeVar` — type erasure: unconstrained → untyped (inference), constrained → Union, bounded → bound type
-- `Protocol` — structural subtyping with name-based virtual dispatch (FNV-1a hash); works across different vtable layouts
+- `TypeVar` — first-class via S3.3 monomorphisation: unconstrained `T` is preserved as `Type::Var` and substituted per call site; constrained / bounded forms erase to Union / bound.
+- `Protocol` — structural subtyping with name-based virtual dispatch (FNV-1a hash) plus **compile-time conformance check** (`Lowering::class_implements_protocol`, S3.4 / `f3cf0c6`); works across different vtable layouts.
+- PEP 695 generic class syntax (`class C[T]:`, `def f[T](...)`) and `Generic[T]` / `Protocol[T]` base forms (S3.5).
+- Generic class method monomorphisation: `IntWrapper[int]` and `IntWrapper[str]` produce distinct method specialisations (S3.3b.1 / `5b0128f`).
+- Decorator-wrapper per-captured-fn specialisation (S3.3b.2 / `884785d` + `0a3cce0`).
 
 **What remains (future)**:
-- Structural type checking at call sites (verify methods/signatures match Protocol definition)
-- Protocol inheritance (Protocol extending Protocol)
+- Protocol inheritance (Protocol extending Protocol).
+- TypeVar variance (`+T` covariant, `-T` contravariant) — deferred to post-Phase-3 S3.8 per Amendment 2026-05-02.
+- Inheritance widening for `class C(Base[T])` — deferred to S3.3c per Amendment 2026-05-02.
 
 ---
 
@@ -292,12 +296,19 @@ Low priority but occasionally needed:
 
 ## 8. Code TODOs from Source
 
-These are specific issues found in the codebase that should be addressed:
+The two previously-listed open TODOs were resolved by structural
+work that reshaped both files:
 
-| Location | Issue | Status |
-|----------|-------|--------|
-| `lowering/type_planning/pre_scan.rs:433` | Decorated function ID found but unused — should link decorated function to its wrapper for better type inference | 🟢 Open |
-| `lowering/expressions/calls.rs:101` | Full list unpacking for all call paths not yet complete | 🟢 Open |
+- `lowering/type_planning/pre_scan.rs:433` — file no longer exists
+  (the type-planning module was reorganised; pre-scan logic was
+  inlined into `infer.rs` / `closure_scan.rs`). The decorated-
+  function-ID linkage is now handled by S3.3b.2 wrapper specialisation.
+- `lowering/expressions/calls.rs:101` — `calls.rs` was split into
+  `calls/{args,class,closure,direct,mod}.rs`. List-unpacking paths
+  are now uniform via `resolve_call_args` + `build_varargs_tuple`.
+
+If new code-level TODOs surface, list them here with a one-line
+description and a 🟢 / 🟡 / 🔴 priority.
 
 Previously resolved:
 
@@ -306,3 +317,5 @@ Previously resolved:
 | `lowering/expressions/operators.rs` | List ordering comparisons (`<`, `<=`, `>`, `>=`) | ✅ `3b39c77` — lexicographic comparison via `rt_list_lt/lte/gt/gte` |
 | `lowering/generators/utils.rs` | Truthiness check for heap types in generators | ✅ `2e5b6ae` — proper truthiness via `convert_to_bool_in_block` |
 | `frontend-python/ast_to_hir/statements/context_managers.rs` | `__exit__` receives `(0,0,0)` instead of exception info | ✅ `6104e35` — real exception objects passed |
+| `lowering/type_planning/pre_scan.rs:433` | Decorated function ID linkage | ✅ S3.3b.2 (`884785d`) — wrapper-spec keys on captured FuncId via backward-trace |
+| `lowering/expressions/calls.rs:101` | List unpacking across call paths | ✅ refactor of `expressions/calls/` module |
