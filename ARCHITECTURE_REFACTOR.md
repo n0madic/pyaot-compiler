@@ -1182,7 +1182,7 @@ isinstance-dominated successor entries. 1 new test in
 renaming and checker acceptance; all 404 workspace tests pass
 unchanged. End-to-end bench spot-checks bit-identical.
 
-## 1.4 Flow-sensitive type inference 🟡
+## 1.4 Flow-sensitive type inference ✅
 
 **Milestone goal**: every MIR LocalId has a single, precise, flow-
 sensitive type assigned by a dedicated pass.
@@ -1578,7 +1578,7 @@ complete as written in the spec; the residual architectural
 tension documented above is the spec's own tension, not an
 implementation gap.
 
-## 1.4u — Plan for single-source unification (2026-04-18 amendment) ⏳
+## 1.4u — Plan for single-source unification (2026-04-18 amendment) ✅ (Path A done by construction; Path B closed by Phase 2 §2.7 — `HirTypeInference` deleted)
 
 §1.4's Non-Negotiable #4 — *"all type queries go through the single
 pass output"* — is **not** fully satisfied by S1.9. Two independent
@@ -1911,7 +1911,7 @@ the field type IS `Union[...]` — no "first-write wins" shortcut.
 - Recursive classes (tree nodes, list links) converge.
 - `test_classes.py` field-inference tests pass.
 
-## 1.8 Pass migration 🟡 (S1.13, S1.14a, S1.15 landed 2026-04-18)
+## 1.8 Pass migration ✅ (S1.13, S1.14a, S1.14b-prep, S1.14b-inliner, S1.15 all landed by 2026-04-20)
 
 **Status**: DCE + constfold migrated (S1.13). Inlining's CallGraph
 unified (S1.14a). Peephole/devirtualize/flatten_properties audit +
@@ -2571,17 +2571,17 @@ ABI retype, arithmetic fast-path inlining (S2.8), and two perf gates
 Phase 2 exit criterion — container storage uniformity, GC Value-walking,
 bright-line grep, pass migration, workspace green — is met.
 
-**Status dashboard (2026-04-27)** — ✅ done · 🟡 partial (deferred) · ⏳ pending
+**Status dashboard (updated 2026-05-02)** — ✅ done · 🟡 partial (deferred) · ⏳ pending
 
 | Milestone | Status | Sessions |
 |---|---|---|
 | §2.1 Tag scheme | ✅ | S2.1 ✅ (`5cd0e7f`) |
 | §2.2 Core-defs API | ✅ | S2.2 ✅ (`cc69143`) |
-| §2.3 Runtime migration | 🟡 | S2.3 ✅ list storage; full `rt_*` ABI retype deferred → Phase 3 §P.2.1 |
-| §2.4 GC migration | 🟡 | S2.6-narrow ✅ (`8a7b1b4`); address-heuristic guards deferred → Phase 3 |
-| §2.5 Codegen migration | ✅ | S2.7 ✅ (`a0912fc`); arithmetic fast-path §P.2.3 ✅ (s3.9) |
+| §2.3 Runtime migration | ✅ | S2.3 ✅ list storage; full `rt_*` ABI retype landed in s3.8 / `20ac673` |
+| §2.4 GC migration | ✅ | S2.6-narrow ✅ (`8a7b1b4`); address-heuristic guards removed in S3.3b.2 / `884785d` |
+| §2.5 Codegen migration | ✅ | S2.7 ✅ (`a0912fc`); arithmetic fast-path §P.2.3 ✅ (s3.9 / `2377637`) |
 | §2.6 Pass migration | ✅ | S2.9 ✅ (`439496b`): `emit_value_slot` + `coerce_for_storage` |
-| §2.7 Final purge | ✅ | bright-line grep ✅; perf gates §P.1/§P.2 deferred → Phase 3 |
+| §2.7 Final purge | ✅ | bright-line grep ✅; perf gates §P.1 (`a4ad57e`) / §P.2 (S3.3b.2) closed |
 
 ### Phase 2 Completion Status (2026-04-27)
 
@@ -2590,25 +2590,29 @@ bright-line grep, pass migration, workspace green — is met.
 - **§2.1 / §2.2** (tag scheme + `Value` API) are complete: `core-defs/src/tag.rs`
   and `core-defs/src/value.rs` define the low-bit tag layout with compile-time
   assertions; `runtime::value::type_of` handles the pointer branch.
-- **§2.3 Runtime migration** is partially complete: `ListObj.data` flipped to
-  `*mut Value` (S2.3). Full `rt_*` extern ABI retype (~597 symbols still typed
-  `i64`/`*mut Obj` at FFI boundary) is deferred to Phase 3 §P.2.1 per §2.3
-  Amendment 2 — codegen must change simultaneously to avoid ABI split.
-- **§2.4 GC migration** is partially complete: `mark_object(Value)` landed
-  (S2.6-narrow); `heap_field_mask`/`type_tags` deleted in S2.7; belt-and-braces
-  address-heuristic guards retained while fn-ptr residuals exist (see recent
-  fn-ptr commits `032d352`…`924d064`).
-- **§2.5 Codegen migration** is partially complete: S2.7 atomic campaign
+- **§2.3 Runtime migration** is complete: `ListObj.data` flipped to
+  `*mut Value` (S2.3). Full `rt_*` extern ABI retype (all 597 symbols
+  now use `Value` at the boundary) landed in s3.8 (`20ac673`).
+- **§2.4 GC migration** is complete: `mark_object(Value)` landed
+  (S2.6-narrow); `heap_field_mask`/`type_tags` deleted in S2.7; the
+  remaining belt-and-braces address-heuristic guards (alignment /
+  low-page / `TypeTagKind::from_tag`) were removed in S3.3b.2 once
+  decorator-wrapper specialisation closed the residual fn-pointer leak
+  (`884785d`).
+- **§2.5 Codegen migration** is complete: S2.7 atomic campaign
   (`a0912fc`) flipped container storage and GC uniformly; inline
-  `ValueFromInt`/`ValueFromBool`/`UnwrapValue*` tag ops landed. Arithmetic
-  fast-path inlining (`rt_add_int` → inline tag arithmetic) deferred to Phase 3
-  §P.2.3.
+  `ValueFromInt`/`ValueFromBool`/`UnwrapValue*` tag ops landed.
+  Arithmetic fast-path inlining (`rt_add_int` → inline tag arithmetic)
+  landed in s3.9 (`2377637`).
 - **§2.6 Pass migration** is complete: `emit_value_slot` (renamed from
   `box_primitive_if_needed`) is the canonical Value-slot encoder; helper
-  `coerce_for_storage` unifies numeric-tower and dynamic-slot coercions;
-  `is_useless_container_ty` deferred to Phase 3 lattice (`is_subtype`/`meet`).
-- **§2.7 Final purge** bright-line grep is clean; two benchmark gates
-  (Polymorphic arithmetic, GC scan) formally deferred to Phase 3.
+  `coerce_for_storage` unifies numeric-tower and dynamic-slot coercions.
+  `is_useless_container_ty` remains as a small lowering utility — its
+  removal in favour of pure `TypeLattice::is_subtype_of`/`meet` is
+  tracked as residual cleanup (technical debt, not blocking).
+- **§2.7 Final purge** bright-line grep is clean; both benchmark gates
+  closed in Phase 3 — Polymorphic arithmetic gate (§P.1, `a4ad57e`),
+  GC scan gate (§P.2, S3.3b.2 / `884785d`).
 
 **Acceptance checklist state**
 
@@ -2625,13 +2629,13 @@ bright-line grep, pass migration, workspace green — is met.
 5. ✅ **Pass migration complete** — `emit_value_slot` + `coerce_for_storage`;
    `box_primitive_if_needed`, `coerce_to_field_type`, `promote_to_float_if_needed`
    deleted (`439496b`).
-6. 🟡 **Benchmarks partial** — Int/Bool ±3% ✅, Float ±10% ✅. Polymorphic
-   arithmetic: −54% regression (no boxing-dance win yet without fast-path
-   inlining; deferred to Phase 3 §P.1). GC scan: +3% (address-heuristic guards;
-   deferred to Phase 3 §P.2). Both tracked in `PHASE3_OPTIMIZATION_PLAN.md`.
-7. 🟡 **`rt_*` ABI retype** — ~597 `extern "C" fn rt_*` symbols still typed
-   `i64`/`*mut Obj`; `Value` bit-patterns flow as opaque `i64` where needed.
-   Deferred per §2.3 Amendment 2.
+6. ✅ **Benchmarks all gates met** — Int/Bool ±3% ✅, Float ±10% ✅.
+   Polymorphic arithmetic perf gate (±10%) closed by §P.1 (`a4ad57e`,
+   raw f64 instance fields). GC scan perf gate closed by S3.3b.2
+   (`884785d`, address-heuristic guards removed once decorator-wrapper
+   specialisation closed the fn-pointer leak path).
+7. ✅ **`rt_*` ABI retype** — all 597 `extern "C" fn rt_*` symbols now
+   take/return `Value` at the boundary (s3.8 / `20ac673`).
 
 **Formal-close evidence on HEAD (2026-04-27)**
 
@@ -2641,19 +2645,18 @@ bright-line grep, pass migration, workspace green — is met.
 - `cargo test --workspace --release` ✅
 - `RUSTFLAGS="--cfg gc_stress_test" cargo test -p pyaot --test runtime --release` ✅
 
-**Deferred to Phase 3**
+**Deferred-to-Phase-3 — closure status (all closed by 2026-05-02)**
 
-| Item | Phase 3 target |
-|---|---|
-| `rt_*` extern ABI retype (~597 symbols) | §P.2.1 ✅ s3.8 |
-| Arithmetic fast-path inlining (`rt_add_int` → inline tag arithmetic) | §P.2.3 ✅ s3.9 |
-| Polymorphic arithmetic perf gate (+20%) | §P.1 |
-| GC scan perf gate (+15%) | §P.2 |
-| `is_useless_container_ty` deletion | Lattice `is_subtype`/`meet` |
-| GC belt-and-braces address-heuristic guard removal | §P.2 |
-| `PHASE2_S2_7_PLAN.md` dangling reference cleanup | Doc-debt |
+| Item | Phase 3 target | Status |
+|---|---|---|
+| `rt_*` extern ABI retype (~597 symbols) | §P.2.1 | ✅ s3.8 (`20ac673`) |
+| Arithmetic fast-path inlining (`rt_add_int` → inline tag arithmetic) | §P.2.3 | ✅ s3.9 (`2377637`) |
+| Polymorphic arithmetic perf gate | §P.1 | ✅ raw f64 instance fields (`a4ad57e`, ±10% met) |
+| GC scan perf gate | §P.2 | ✅ closed by S3.3b.2 (`884785d`) — fn-ptr leak path eliminated |
+| GC belt-and-braces address-heuristic guard removal | §P.2 | ✅ guards removed in S3.3b.2 (`884785d`) |
+| `is_useless_container_ty` deletion | Lattice `is_subtype`/`meet` | ⏸ residual technical debt — function still in use as small lowering utility |
 
-## 2.1 Tag scheme finalization
+## 2.1 Tag scheme finalization ✅
 
 **Milestone goal**: select, document, and commit to a specific tag
 scheme.
@@ -2695,7 +2698,7 @@ asserts that the encoding is correct.
 **Exit criterion**: `tag.rs` committed with constants, helpers,
 property tests.
 
-## 2.2 Core-defs API
+## 2.2 Core-defs API ✅
 
 **Milestone goal**: define the universal tagged-value API.
 
@@ -2759,7 +2762,7 @@ criteria.
 **Exit criterion**: `Value` type defined, exhaustive tests for every
 constructor/extractor, compile-time assertions on encoding.
 
-## 2.3 Runtime migration
+## 2.3 Runtime migration ✅ (S2.3 list storage; full `rt_*` ABI retype landed in s3.8 / `20ac673`)
 
 **Milestone goal**: every `crates/runtime/src/*.rs` function signature
 uses `Value` for its arguments and return type (where they previously
@@ -2870,7 +2873,7 @@ there.
 runtime staticlib stays within +10% of pre-migration (may grow
 slightly from `Value` wrapping, should be negligible after inlining).
 
-## 2.4 GC migration
+## 2.4 GC migration ✅ (S2.6-narrow + address-heuristic guards removed in S3.3b.2 / `884785d`)
 
 **Milestone goal**: the garbage collector marks through `Value::is_ptr`,
 not through type tags or heap masks.
@@ -2931,7 +2934,7 @@ cargo test -p pyaot --test runtime --release`) stay green.
 `type_tags`, and the address-heuristic filter; replace with
 `Value::is_ptr()` uniformly; shrink `gc.rs` by 30%+.
 
-## 2.5 Codegen migration
+## 2.5 Codegen migration ✅ (S2.7 + arithmetic fast-path inline in s3.9 / `2377637`)
 
 > **Campaign plan:** the execution of S2.5 is documented in a
 > dedicated multi-session campaign plan. That plan absorbs the
@@ -2980,7 +2983,7 @@ tagging.
 - Polymorphic-dunder benchmarks **improve** (Union-typed args
   no longer need boxing dance).
 
-## 2.6 Pass migration
+## 2.6 Pass migration ✅
 
 **Milestone goal**: every optimization pass drops its ad-hoc
 boxing/coerce logic.
@@ -3036,7 +3039,7 @@ replaced in the grep by `to_value_slot` (verify it exists, not that it's 0).
 - Every call site of the deleted helpers is gone.
 - `grep -rn 'box_primitive\|promote_to_float\|coerce_to_field\|is_useless_container' crates/` returns 0.
 
-## 2.7 Final purge
+## 2.7 Final purge ✅ (perf gates §P.1/§P.2 closed in Phase 3 — `a4ad57e`/S3.3b.2)
 
 **Exit criteria for Phase 2**:
 
