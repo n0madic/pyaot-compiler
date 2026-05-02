@@ -31,13 +31,22 @@ impl<'a> Lowering<'a> {
                     .get(func_id)
                     .cloned()
                     .unwrap_or_default();
-                // Collect block stmt-lists first (avoid borrow conflict with
-                // self.refine_empty_containers_in_block's &mut self).
-                let block_stmt_lists: Vec<Vec<hir::StmtId>> =
-                    func.blocks.values().map(|b| b.stmts.clone()).collect();
-                for stmts in &block_stmt_lists {
-                    self.refine_empty_containers_in_block(stmts, hir_module, &overlay);
-                }
+                // Flatten all blocks in CFG-insertion order so refinement
+                // can cross block boundaries — comprehension desugarings emit
+                // `__comp = []` in the entry block and `__comp.append(p)` in
+                // the for-loop body block; without flattening, the empty-list
+                // and the `.append()` live in different blocks and refinement
+                // misses the element type, leaving the synthetic var typed as
+                // `list[Never]`. Block insertion order is HIR construction
+                // order (a pre-order DFS of source-form statements), so the
+                // flattened sequence preserves intra-function "after this
+                // bind" semantics that the reassignment heuristic relies on.
+                let flattened: Vec<hir::StmtId> = func
+                    .blocks
+                    .values()
+                    .flat_map(|b| b.stmts.iter().copied())
+                    .collect();
+                self.refine_empty_containers_in_block(&flattened, hir_module, &overlay);
             }
         }
     }
