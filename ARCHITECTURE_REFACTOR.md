@@ -3052,7 +3052,10 @@ replaced in the grep by `to_value_slot` (verify it exists, not that it's 0).
 
 ---
 
-# Phase 3 — Type Lattice + Monomorphization
+# Phase 3 — Type Lattice + Monomorphization ✅
+
+**Status** (closed 2026-05-02): all milestones §3.1–§3.7 landed; legacy
+helpers grep returns 0; perf gates green; lattice property tests pass.
 
 **Duration**: 3–5 weeks.
 
@@ -3072,7 +3075,7 @@ generic call sites.
 - `types_match_for_isinstance` as a standalone — replaced by
   `is_subtype`.
 
-## 3.1 Lattice core API
+## 3.1 Lattice core API ✅
 
 **Milestone goal**: `types` crate exposes a proper lattice API.
 
@@ -3116,7 +3119,7 @@ activated here). A property-test failure is a blocker.
 **Exit criterion**: lattice laws all pass. Lattice API is used
 throughout (grep for deleted helpers returns 0).
 
-## 3.2 TypeVar support
+## 3.2 TypeVar support ✅ (variance deferred — see Amendment 2026-05-02)
 
 **Milestone goal**: `TypeVar`, `Generic`, and parameterized classes
 are first-class.
@@ -3139,6 +3142,34 @@ pub struct TypeVar {
 pub enum Variance { Invariant, Covariant, Contravariant }
 ```
 
+**Amendment 2026-05-02 — variance deferred, struct renamed.** The
+`TypeVar` struct as specified above was implemented as `TypeVarDef`
+without `id` / `name` / `variance` fields:
+
+```rust
+pub struct TypeVarDef {
+    pub constraints: Vec<Type>,
+    pub bound: Option<Type>,
+}
+```
+
+Type variables are identified by `InternedString` name carried in
+`Type::Var(InternedString)`, threaded through `hir::Module ↔
+mir::Module::typevar_defs: HashMap<InternedString, TypeVarDef>`.
+
+`Variance` is **not implemented**. Python's `typing.TypeVar(...,
+covariant=True)` / `contravariant=True` keyword arguments are parsed
+and silently ignored; `Generic[T]` containers are treated as
+invariant in subtype checks. Rationale for deferral: monomorphization
+substitutes concrete types per call site (S3.3), so variance only
+matters for unmonomorphized boundary cases (cross-module generic
+APIs, stdlib generics — both deferred per the §3.3 amendment below).
+Adding `Variance` later is purely additive — no migration risk.
+
+Re-activate this work as **post-Phase-3 feature S3.8** if/when a real
+use case surfaces (e.g., a user writes `class Container[+T]` and
+expects covariant container assignment to type-check).
+
 **Delete**: ad-hoc `Type::List(Box<Type>)`, `Type::Dict(K, V)`,
 `Type::Set(T)`, `Type::Tuple(Vec<Type>)`, `Type::TupleVar(Box<Type>)`.
 All become `Type::Generic { base: builtin_class_id, args: [...] }`.
@@ -3154,7 +3185,7 @@ type-specific variants for known-generic classes. `list[int]` and
 render as `Generic { ... }`. Tests pass. Frontend parses `class
 Stack(Generic[T])` into this form.
 
-## 3.3 Monomorphization pass ✅ (S3.3a — free functions)
+## 3.3 Monomorphization pass ✅ (S3.3a free fns + S3.3b.1 class methods + S3.3b.2 decorator wrappers)
 
 **Milestone goal**: every generic function/method has a specialized
 copy per concrete type instantiation at call sites.
@@ -3183,17 +3214,79 @@ function signature or body. All generic code is monomorphized.
 
 - `def first[T](xs: list[T]) -> T: return xs[0]` — called with
   `list[int]` and `list[str]` → produces `first_int` and `first_str`
-  specialized functions.
+  specialized functions. ✅
 - Generic stdlib functions (`map`, `filter`, `reduce`, `sorted`) are
-  defined generically, not hardcoded per-type.
-- Codegen-pre-check asserts no `TypeVar` in any signature.
+  defined generically, not hardcoded per-type. ⏸ **Deferred** — see
+  Amendment 2026-05-02 below.
+- Codegen-pre-check asserts no `TypeVar` in any signature. ✅
+  (`monomorphize::assert_no_var_remaining` runs after second WPA pass
+  in debug builds.)
+
+**Implemented stages**:
+
+- **S3.3a** (commits `80ac73c`, `df66611`, `d9da559`) — free
+  generic functions. `MonomorphizePass`, `derive_subst`,
+  `specialize_function` (Var-substitution clone).
+- **S3.3b.1** (commit `5b0128f`) — generic class methods. Pre-mono
+  devirt resolves `CallVirtual{Type::Generic{...}}` → `CallDirect(template)`
+  so methods using `Type::Var` get specialised. Constructor emits
+  `Type::Generic{class_id, [args]}` directly via shared
+  `pyaot_types::derive_subst`. Vararg packing in
+  `lower_class_method_call` matches post-devirt callee ABI. Strict
+  `assert_no_var_remaining` (locals included) reinstated.
+- **S3.3b.2** (commits `884785d`, `0a3cce0`) — decorator wrapper
+  per-captured-fn specialisation. `SpecKey::{Generic, Wrapper}` enum;
+  `Wrapper(wrapper_id, captured_id)` keyed on backward-traced
+  `FuncAddr` source. `specialize_wrapper` retypes fn-pointer param
+  to `Type::Function{params, ret}`. `devirt_indirect` rewrites
+  runtime-trampoline calls to `CallDirect{captured}` in two modes:
+  slot-for-slot match, and `*args` unpack (`rt_tuple_get` + per-type
+  unbox). `close_dead_closure_branch` folds the entry-block
+  type-tag check, `eliminate_unreachable_blocks` prunes the dead
+  closure-path block + stale phi sources. GC `mark_object` belt-and-
+  suspenders guards (alignment / low-page / `TypeTagKind::from_tag`)
+  removed since wrapper return locals no longer leak `Type::Any`.
+
+**Amendment 2026-05-02 — stdlib generics deferred**. The original
+exit criterion required `map` / `filter` / `reduce` / `sorted` to be
+defined as generic Python sources monomorphised per call site.
+Reality: these remain hard-coded as runtime functions
+(`crates/runtime/src/iterator/composite.rs::rt_map_new` etc.)
+operating on tagged `Value`. Rationale for deferral:
+
+- Tagged-`Value` storage (Phase 2) makes the runtime functions
+  already type-uniform — they accept any element type without
+  per-type specialisation. The performance argument that motivated
+  generic Python source no longer applies.
+- Rewriting the runtime as Python sources requires bootstrap
+  infrastructure (a stdlib Python module compiled into the runtime
+  archive) that is itself out of scope for Phase 3.
+- `MonomorphizePass` handles user-defined generics correctly, which
+  is the load-bearing feature.
+
+Re-activate as **post-Phase-3 feature S3.9** if a stdlib function
+needs Python-level expressivity (e.g., user-overridable comparator
+inlining for `sorted`). Until then, hard-coded runtime is the
+deliberate end-state.
+
+**Out of scope (queued, not blocking)**:
+
+- **S3.3c** — inheritance widening for `class C(Base[T])`. Frontend
+  rejects parameterised base classes ("Base class must be a simple
+  name"). No use case in `examples/`. Deferred until a concrete
+  consumer surfaces.
+- **S3.3b.3** — cross-module decorator wrappers. Current code
+  handles them correctly through the runtime trampoline; specialisation
+  would be a perf opt requiring wrapper-metadata propagation across
+  module boundaries. Deferred until a real cross-module decorator
+  appears in the test suite.
 
 ## 3.4 Protocol structural typing ✅
 
 **Milestone goal**: `isinstance(x, SomeProtocol)` checks for
 structural conformance, not class-hierarchy membership.
 
-**Implemented** (2026-04-28, commits `f3cf0c6`, `711dc13`, `<commit3>`):
+**Implemented** (2026-04-28, commits `f3cf0c6`, `711dc13`, `6ece23e`):
 
 - `Lowering::class_implements_protocol(impl_id, proto_id, hir_module)`
   checks structural conformance at compile time; `types_compatible_for_annotation`
@@ -3883,15 +3976,26 @@ audit often uncovers surprise gaps.
 
 ### Phase 3 — Type Lattice + Monomorphization
 
+All Phase 3 sessions landed by 2026-05-02. The session split below
+reflects the actual breakdown of monomorphization work into S3.3a
+(free fns), S3.3b.1 (class methods), S3.3b.2 (decorator wrappers).
+The original two-row split (S3.3 / S3.4) was inadequate for the
+amount of method/wrapper work that surfaced and was reorganised
+inline as the milestones executed.
+
 | ID | Scope | Deps | Complexity | Parallel? |
 |----|-------|------|------------|-----------|
-| S3.1 | Lattice trait + `Type` method migration (§3.1): `TypeLattice` impl for `Type`, migrate all callers to `join`/`meet`/`is_subtype_of`/`minus` | Phase 2 merged | Medium-High | ✅ |
-| S3.2 | TypeVar + Generic unification (§3.2): add `Type::Var`, `Type::Generic`; migrate `Type::List`/`Dict`/`Set`/`Tuple`/`TupleVar` to `Generic` representation | S3.1 | **HIGH** (widespread) | ✅ |
-| S3.3 | Monomorphization pass: specialization engine (§3.3 part 1): walk call sites, instantiate, dedup | S3.2 | **HIGH** | — |
-| S3.4 | Monomorphization: codegen integration + stdlib generics rewrite (§3.3 part 2): ensure no `TypeVar` reaches codegen | S3.3 | High | — |
-| S3.5 | Protocol structural typing (§3.4): parse Protocol, structural `is_subtype_of`, runtime type-check function | S3.2 | Medium-High | Parallel-safe with S3.3, S3.4 (different subsystems) |
-| S3.6 | Frontend: TypeVar/Generic/Protocol parsing (§3.5): Python syntax for `T = TypeVar(...)`, `class C(Generic[T])`, `class P(Protocol)`, PEP 695 `def f[T](...)` | S3.5 | Medium | — |
-| S3.7 | Phase 3 final purge + perf gate (§3.6 + §3.7): delete `unify_*`, `narrow_*`; benchmark, binary-size, compile-time gates | S3.4, S3.6 | Low-Medium | ✅ all gates pass |
+| S3.1 ✅ | Lattice trait + `Type` method migration (§3.1): `TypeLattice` impl for `Type`, migrate all callers to `join`/`meet`/`is_subtype_of`/`minus` | Phase 2 merged | Medium-High | — |
+| S3.2 ✅ | TypeVar + Generic unification (§3.2): add `Type::Var`, `Type::Generic`; migrate `Type::List`/`Dict`/`Set`/`Tuple`/`TupleVar` to `Generic` representation. Variance not implemented — see §3.2 Amendment 2026-05-02. | S3.1 | **HIGH** (widespread) | — |
+| S3.3a ✅ (commits `80ac73c`, `df66611`, `d9da559`) | Monomorphization: free generic functions (§3.3 stage a). `MonomorphizePass`, `derive_subst`, `specialize_function` Var-substitution clone. | S3.2 | **HIGH** | — |
+| S3.3b.1 ✅ (commit `5b0128f`) | Monomorphization: class methods (§3.3 stage b.1). Pre-mono devirt resolves `CallVirtual{Type::Generic}` → `CallDirect(template)`; constructor emits `Type::Generic` directly; vararg packing on the source side; strict `assert_no_var_remaining` reinstated. | S3.3a | **HIGH** | — |
+| S3.3b.2 ✅ (commits `884785d`, `0a3cce0`) | Monomorphization: decorator wrappers (§3.3 stage b.2). `SpecKey::Wrapper` keyed on captured FuncId (backward-traced from `FuncAddr`). `specialize_wrapper` retypes fn-pointer param. `devirt_indirect` rewrites runtime-trampoline calls to `CallDirect`, supporting both slot-for-slot and `*args` unpack shapes. Closure-path branch folded + dead block eliminated. GC `mark_object` sanity guards removed. | S3.3b.1 | **HIGH** | — |
+| S3.4 ✅ (commits `f3cf0c6`, `711dc13`, `6ece23e`) | Protocol structural typing (§3.4): compile-time `class_implements_protocol`, runtime `rt_obj_has_method`, dunder methods registered in `METHOD_NAME_REGISTRY`. | S3.2 | Medium-High | — |
+| S3.5 ✅ (commits `f6f8280`, `93117f0`, `df68b36`) | Frontend: TypeVar/Generic/Protocol parsing (§3.5). Python syntax for `T = TypeVar(...)`, `class C(Generic[T])`, `class P(Protocol)`, PEP 695 `def f[T](...)` and `class C[T]:`. | S3.4 | Medium | — |
+| S3.6 ✅ (commits `6dff0f9`, `96efdf9`) | Final purge (§3.6): deleted `unify_field_type`, `unify_numeric`, `unify_tuple_shapes`, `promote_numeric`, `normalize_union`, `narrow_to`, `narrow_excluding`. Grep returns 0. | S3.3, S3.5 | Low-Medium | — |
+| S3.7 ✅ (commit `6b5b1f6`) | Phase 3 perf gate (§3.7): benchmark, binary-size, compile-time gates all pass. | S3.6 | Low-Medium | — |
+| S3.8 ⏸ deferred (Amendment 2026-05-02) | TypeVar variance (`+T` covariant, `-T` contravariant, default invariant). Re-activate when a real use case requires variance-aware subtype checks for unmonomorphized generic boundaries. | S3.7 | Medium | — |
+| S3.9 ⏸ deferred (Amendment 2026-05-02) | Stdlib `map`/`filter`/`reduce`/`sorted` as Python-source generics. Current hard-coded runtime is type-uniform under tagged `Value` — perf argument obsolete. Re-activate if Python-level expressivity is required. | S3.7 | Medium-High | — |
 
 **Split triggers**:
 
@@ -3899,9 +4003,11 @@ audit often uncovers surprise gaps.
   Tuple` call sites exceed ~500 touches, split: S3.2a = add
   `Generic` variant; S3.2b = migrate List/Dict/Set; S3.2c = migrate
   Tuple / TupleVar.
-- **S3.3** (monomorphization core): potentially split by function
-  class: S3.3a = free functions; S3.3b = methods; S3.3c = stdlib
-  builtins.
+- **S3.3** (monomorphization core): split actually executed as
+  S3.3a (free fns) / S3.3b.1 (class methods) / S3.3b.2 (decorator
+  wrappers). Stdlib-builtin generics ("S3.3c" in the original
+  speculative split) was reframed as deferred S3.9 — see Amendment
+  2026-05-02 in §3.3.
 
 **Combined ok**:
 
@@ -4071,7 +4177,13 @@ the spec reflecting reality.
 
 ---
 
-*Last updated: 2026-04-21. Phase 0 is complete. Phase 1 is complete in
-production terms; the 2026-04-21 reassessment at the top of §1 is the
-authoritative statement of the current architecture, and the Path-A
-notes below are retained as implementation history only.*
+*Last updated: 2026-05-02. Phase 0, Phase 1, Phase 2, and Phase 3 all
+complete. Phase 1 production-terms statement at the top of §1 remains
+authoritative; Path-A notes retained as implementation history only.
+Phase 3 amendments (2026-05-02): TypeVar variance deferred to S3.8;
+stdlib generics rewrite deferred to S3.9 — both unblocked by the
+tagged-`Value` runtime delivered in Phase 2 making per-type
+specialisation unnecessary at the runtime boundary. Inheritance
+widening (`class C(Base[T])`, originally "S3.3c") and cross-module
+decorator specialisation ("S3.3b.3") remain queued without active
+demand from the test corpus.*
