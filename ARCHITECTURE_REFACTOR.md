@@ -531,9 +531,10 @@ same reasons as the rest of that surface.
    S1.6c/d/e landed all classes of violation fix. Debug builds
    panic on any violation; release builds skip the check for
    compile-time performance.
-4. 🟡 **Deletion audit** — 4 legacy maps relocated from
-   `SymbolTable` into `HirTypeInference` per S1.9 (dual state with
-   `TypeTable`). Full deletion needs §1.4u (HIR→MIR type unification).
+4. ✅ **Deletion audit** — legacy maps deleted from `SymbolTable` /
+   `TypeEnvironment`; `apply_narrowings` / `restore_types` removed.
+   Stable seed data lives in `LoweringSeedInfo` (§1.4u Path A).
+   See item 4 in the formal-close checklist above.
 5. 🟡 **microgpt.py diagnostic** (2026-04-18): fails at line 41
    `return Value(self.data + other.data, ...)` with
    "unknown attribute 'data'". Prior ternary rebinds `other` via
@@ -3912,7 +3913,7 @@ audit often uncovers surprise gaps.
 |----|-------|------|------------|-----------|
 | S1.1 ✅ | HIR CFG type definitions (§1.1 prep): add `HirBlock`, `HirBlockId`, `HirTerminator` alongside legacy `StmtKind` — both coexist | S0.* | Low-Medium | — |
 | S1.2 ✅ | Frontend HIR-CFG migration (§1.1 main): convert `ast_to_hir/*.rs` to emit CFG; leaves old `StmtKind::If/While/ForBind/Try/Match` as bridge | S1.1 | **HIGH** | — |
-| S1.3 ⏳ | CFG-portable consumer migration (§1.1 partial tail, **narrowed 2026-04-18**): move the lowering-core emission path (`statements/*`, `exceptions.rs`) and generator-desugar detection passes to walk HIR CFG. `Function.body` + legacy `StmtKind::{If, While, ForBind, Try, Match}` stay alive as a bridge; their deletion is deferred to the new S1.17b below. Never started — the post-S1.2 bridge already makes the CFG available, and downstream work skipped consumer migration, continuing to walk the legacy tree. Scope now folded into S1.17b (tree deletion forces all consumers to migrate at once). | S1.2 | **HIGH** | — |
+| S1.3 ✅ | CFG-portable consumer migration (§1.1 partial tail, **folded into S1.17b**): scope was narrowed 2026-04-18 (never independently started) and subsumed by S1.17b — tree deletion forced all consumers to migrate at once. `Function::body` and `StmtKind::{If, While, ForBind, Try, Match}` deleted in S1.17b-f (2026-04-20, 2f49dc0). | S1.2 | **HIGH** | — |
 | S1.4 ✅ | Dominator tree (§1.2): `crates/mir/src/dom_tree.rs`, Cooper-Harvey-Kennedy. Session row lists "Deps: S1.3" for conservative session ordering, but the actual code dependency is only "MIR structure unchanged" (which holds post-S1.2). Parallel-safe with S1.3. | S1.2 (code); S1.3 (ordering) | Medium | Parallel-safe with S1.3, S1.10 |
 | S1.5 ✅ | Phi MIR instruction + codegen-side block-param support (§1.3 prep) | S1.4 | Medium | — |
 | S1.6 ✅ | SSA renaming via Cytron algorithm (§1.3 main): rename all function bodies to SSA, activate SSA checker | S1.5 | **HIGH** | — |
