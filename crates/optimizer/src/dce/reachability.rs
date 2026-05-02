@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 
 use indexmap::IndexSet;
-use pyaot_mir::{terminator_successors, Function};
+use pyaot_mir::{terminator_successors, Function, InstructionKind};
 use pyaot_utils::BlockId;
 
 /// Remove blocks not reachable from the entry block.
@@ -19,8 +19,23 @@ pub fn eliminate_unreachable_blocks(func: &mut Function) -> bool {
     let removed = func.blocks.len() < before;
     if removed {
         func.invalidate_dom_tree();
+        // Phi sources may still reference removed predecessors. Without this
+        // cleanup the SSA invariant checker fires (PhiArityMismatch).
+        prune_phi_sources(func, &reachable);
     }
     removed
+}
+
+/// Remove phi sources whose pred BlockId is no longer in `reachable`.
+/// Called after `func.blocks` has been pruned to the reachable set.
+fn prune_phi_sources(func: &mut Function, reachable: &IndexSet<BlockId>) {
+    for block in func.blocks.values_mut() {
+        for inst in &mut block.instructions {
+            if let InstructionKind::Phi { sources, .. } = &mut inst.kind {
+                sources.retain(|(pred, _)| reachable.contains(pred));
+            }
+        }
+    }
 }
 
 /// BFS from entry_block to find all reachable blocks.

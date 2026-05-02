@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use pyaot_mir::{Constant, Function, InstructionKind, Operand, Terminator};
-use pyaot_utils::LocalId;
+use pyaot_utils::{BlockId, LocalId};
 
 /// What a local aliases, if anything. Used by `build_propagation_map`.
 ///
@@ -118,12 +118,36 @@ pub fn propagate_constants(func: &mut Function) -> bool {
     }
 
     let mut changed = false;
+    // (folder_block, dropped_target): edges removed by Branch→Goto folding.
+    // For each, the phi at `dropped_target` must lose one source whose
+    // pred BlockId equals `folder_block`. Without this, post-fold MIR has
+    // stale phi sources and the SSA invariant checker fires in debug builds.
+    let mut dropped_edges: Vec<(BlockId, BlockId)> = Vec::new();
 
-    for block in func.blocks.values_mut() {
+    for (block_id, block) in func.blocks.iter_mut() {
         for inst in &mut block.instructions {
             changed |= substitute_instruction_operands(&mut inst.kind, &props);
         }
-        changed |= substitute_terminator(&mut block.terminator, &props);
+        let (term_changed, dropped) = substitute_terminator(&mut block.terminator, &props);
+        if term_changed {
+            changed = true;
+        }
+        if let Some(target) = dropped {
+            dropped_edges.push((*block_id, target));
+        }
+    }
+
+    for (folder, target) in dropped_edges {
+        let Some(block) = func.blocks.get_mut(&target) else {
+            continue;
+        };
+        for inst in &mut block.instructions {
+            if let InstructionKind::Phi { sources, .. } = &mut inst.kind {
+                if let Some(idx) = sources.iter().position(|(p, _)| *p == folder) {
+                    sources.remove(idx);
+                }
+            }
+        }
     }
 
     changed
@@ -213,9 +237,17 @@ fn substitute_instruction_operands(
 }
 
 /// Substitute propagated values into terminator operands and simplify
-/// constant branches.
-fn substitute_terminator(term: &mut Terminator, props: &HashMap<LocalId, PropValue>) -> bool {
+/// constant branches. Returns `(changed, dropped_edge)`. When a `Branch`
+/// is folded to `Goto`, `dropped_edge = Some(non_taken_block)` — the caller
+/// must remove the corresponding phi source at that target. The dropped
+/// target may equal the taken target (when `then == else`); that case still
+/// removes one of the two parallel edges, so phi sources still need cleanup.
+fn substitute_terminator(
+    term: &mut Terminator,
+    props: &HashMap<LocalId, PropValue>,
+) -> (bool, Option<BlockId>) {
     let mut changed = false;
+    let mut dropped: Option<BlockId> = None;
 
     match term {
         Terminator::Return(Some(op)) => {
@@ -236,8 +268,13 @@ fn substitute_terminator(term: &mut Terminator, props: &HashMap<LocalId, PropVal
                     _ => None,
                 };
                 if let Some(truthy) = is_truthy {
-                    let target = if truthy { *then_block } else { *else_block };
+                    let (target, drop) = if truthy {
+                        (*then_block, *else_block)
+                    } else {
+                        (*else_block, *then_block)
+                    };
                     *term = Terminator::Goto(target);
+                    dropped = Some(drop);
                     changed = true;
                 }
             }
@@ -272,5 +309,5 @@ fn substitute_terminator(term: &mut Terminator, props: &HashMap<LocalId, PropVal
         | Terminator::Reraise => {}
     }
 
-    changed
+    (changed, dropped)
 }
