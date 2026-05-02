@@ -830,6 +830,15 @@ impl<'a> Lowering<'a> {
             | hir::ExprKind::StdlibAttr(_)
             | hir::ExprKind::StdlibConst(_)
             | hir::ExprKind::ExcCurrentValue => {}
+            hir::ExprKind::FormatSpec { value, .. } => {
+                self.scan_constructor_calls_in_expr(
+                    *value,
+                    hir_module,
+                    current_types,
+                    init_bindings,
+                    observed_arg_types,
+                );
+            }
             hir::ExprKind::List(items)
             | hir::ExprKind::Tuple(items)
             | hir::ExprKind::Set(items)

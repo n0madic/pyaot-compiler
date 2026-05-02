@@ -611,6 +611,9 @@ fn rewrite_expr_vars(expr_id: hir::ExprId, hir_module: &mut hir::Module, state: 
         | hir::ExprKind::StdlibAttr(_)
         | hir::ExprKind::StdlibConst(_)
         | hir::ExprKind::ExcCurrentValue => {}
+        hir::ExprKind::FormatSpec { value, .. } => {
+            rewrite_expr_vars(value, hir_module, state);
+        }
         hir::ExprKind::Call {
             func,
             args,

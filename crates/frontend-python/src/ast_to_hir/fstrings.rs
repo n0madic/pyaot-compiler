@@ -6,20 +6,7 @@ use pyaot_utils::{InternedString, Span};
 use rustpython_parser::ast as py;
 use rustpython_parser::ast::ConversionFlag;
 
-/// Parsed format specification (e.g., ">10.2f")
-#[derive(Debug, Default)]
-struct FormatSpec {
-    fill: Option<char>,      // Fill character (default: space)
-    align: Option<char>,     // '<' (left), '>' (right), '^' (center), '=' (pad after sign)
-    sign: Option<char>,      // '+', '-', ' '
-    zero_pad: bool,          // '0' flag (zero-pad, implies fill='0' and align='=' as defaults)
-    width: Option<u32>,      // Minimum field width
-    grouping: Option<char>,  // Grouping option: ',' or '_'
-    precision: Option<u32>,  // For floats: decimal places
-    type_char: Option<char>, // 'f', 's', 'd', 'x', 'X', 'o', 'b', etc.
-}
-
-/// Kind of placeholder in format string
+/// Kind of placeholder in a `.format()` string.
 #[derive(Debug)]
 enum PlaceholderKind {
     Auto,          // {}
@@ -27,134 +14,49 @@ enum PlaceholderKind {
     Named(String), // {name}
 }
 
-/// Parsed placeholder from format string
+/// Parsed placeholder: argument selector + raw format spec string.
 #[derive(Debug)]
 struct ParsedPlaceholder {
     kind: PlaceholderKind,
-    format_spec: FormatSpec,
-}
-
-impl FormatSpec {
-    /// Parse a format specification string (everything after ':' in a placeholder)
-    /// Format: [[fill]align][sign][0][width][.precision][type]
-    /// Python's full spec: [[fill]align][sign][z][#][0][width][grouping_option][.precision][type]
-    fn parse(spec: &str) -> Self {
-        let mut result = FormatSpec::default();
-        if spec.is_empty() {
-            return result;
-        }
-
-        let chars: Vec<char> = spec.chars().collect();
-        let mut i = 0;
-
-        // Check for fill+align (fill character followed by align)
-        // Or just align character
-        if chars.len() >= 2 && matches!(chars[1], '<' | '>' | '^' | '=') {
-            result.fill = Some(chars[0]);
-            result.align = Some(chars[1]);
-            i = 2;
-        } else if !chars.is_empty() && matches!(chars[0], '<' | '>' | '^' | '=') {
-            result.align = Some(chars[0]);
-            i = 1;
-        }
-
-        // Parse sign ('+', '-', ' ')
-        if i < chars.len() && matches!(chars[i], '+' | '-' | ' ') {
-            result.sign = Some(chars[i]);
-            i += 1;
-        }
-
-        // Parse zero-pad flag '0' (before width)
-        if i < chars.len() && chars[i] == '0' {
-            result.zero_pad = true;
-            i += 1;
-            // Set default fill/align for zero-pad if not explicitly set
-            if result.fill.is_none() {
-                result.fill = Some('0');
-            }
-            if result.align.is_none() {
-                result.align = Some('=');
-            }
-        }
-
-        // Parse width (sequence of digits)
-        let mut width_str = String::new();
-        while i < chars.len() && chars[i].is_ascii_digit() {
-            width_str.push(chars[i]);
-            i += 1;
-        }
-        if !width_str.is_empty() {
-            result.width = width_str.parse().ok();
-        }
-
-        // Parse grouping option (',' or '_')
-        if i < chars.len() && matches!(chars[i], ',' | '_') {
-            result.grouping = Some(chars[i]);
-            i += 1;
-        }
-
-        // Parse precision (.N)
-        if i < chars.len() && chars[i] == '.' {
-            i += 1;
-            let mut prec_str = String::new();
-            while i < chars.len() && chars[i].is_ascii_digit() {
-                prec_str.push(chars[i]);
-                i += 1;
-            }
-            if !prec_str.is_empty() {
-                result.precision = prec_str.parse().ok();
-            }
-        }
-
-        // Parse type character (f, s, d, x, X, o, b, etc.)
-        if i < chars.len() && chars[i].is_alphabetic() {
-            result.type_char = Some(chars[i]);
-        }
-
-        result
-    }
+    /// Raw format spec string (everything after ':' in the placeholder), e.g. ">10.2f".
+    spec: String,
 }
 
 impl ParsedPlaceholder {
-    /// Parse the content inside {} in a format string
-    /// Examples: "", "0", "name", ":>10", "0:>10", "name:<20.2f"
     fn parse(content: &str) -> Self {
-        // Split on ':' to separate field name from format spec
         let (field_part, spec_part) = match content.find(':') {
             Some(pos) => (&content[..pos], &content[pos + 1..]),
             None => (content, ""),
         };
 
-        // Parse the field part
         let kind = if field_part.is_empty() {
             PlaceholderKind::Auto
         } else if field_part.chars().all(|c| c.is_ascii_digit()) {
-            // Index placeholder
             match field_part.parse::<usize>() {
                 Ok(idx) => PlaceholderKind::Index(idx),
-                Err(_) => PlaceholderKind::Auto, // Fallback for very large numbers
+                Err(_) => PlaceholderKind::Auto,
             }
         } else {
-            // Named placeholder
             PlaceholderKind::Named(field_part.to_string())
         };
 
-        let format_spec = FormatSpec::parse(spec_part);
-
-        ParsedPlaceholder { kind, format_spec }
+        ParsedPlaceholder {
+            kind,
+            spec: spec_part.to_string(),
+        }
     }
 }
 
 impl AstToHir {
     /// Desugar an f-string into string concatenations.
-    /// f"Hello {name}!" becomes "Hello " + str(name) + "!"
+    /// `f"Hello {name!r:>10}!"` desugars into individual `FormatSpec` / `BuiltinCall::Str`
+    /// nodes joined with `BinOp::Add`.
     pub(crate) fn desugar_fstring(
         &mut self,
         values: &[py::Expr],
         fstring_span: Span,
     ) -> Result<ExprId> {
         if values.is_empty() {
-            // Empty f-string: f""
             let interned = self.interner.intern("");
             return Ok(self.module.exprs.alloc(Expr {
                 kind: ExprKind::Str(interned),
@@ -163,20 +65,17 @@ impl AstToHir {
             }));
         }
 
-        // Convert each part of the f-string
         let mut parts: Vec<ExprId> = Vec::new();
         for value in values {
             let part_id = self.convert_fstring_part(value, fstring_span)?;
             parts.push(part_id);
         }
 
-        // If only one part, return it directly
         if parts.len() == 1 {
             return Ok(parts[0]);
         }
 
-        // Chain the parts with string concatenation (BinOp::Add)
-        // ("a" + "b") + "c" etc.
+        // Chain with BinOp::Add
         let mut result = parts[0];
         for &part in &parts[1..] {
             result = self.module.exprs.alloc(Expr {
@@ -189,331 +88,183 @@ impl AstToHir {
                 span: fstring_span,
             });
         }
-
         Ok(result)
     }
 
-    /// Convert a single part of an f-string (either a literal string or a formatted value)
-    fn convert_fstring_part(&mut self, value: &py::Expr, fstring_span: Span) -> Result<ExprId> {
+    fn convert_fstring_part(&mut self, value: &py::Expr, span: Span) -> Result<ExprId> {
         match value {
             py::Expr::Constant(c) => {
-                // String literal part
                 if let py::Constant::Str(s) = &c.value {
                     let interned = self.interner.intern(s);
                     Ok(self.module.exprs.alloc(Expr {
                         kind: ExprKind::Str(interned),
                         ty: Some(Type::Str),
-                        span: fstring_span,
+                        span,
                     }))
                 } else {
                     Err(CompilerError::parse_error(
                         "Non-string constant in f-string",
-                        fstring_span,
+                        span,
                     ))
                 }
             }
-            py::Expr::FormattedValue(fv) => {
-                // Interpolated value: {expr} or {expr!s} or {expr!r}
-                self.convert_formatted_value(fv, fstring_span)
-            }
-            _ => {
-                // Shouldn't happen in a well-formed f-string
-                Err(CompilerError::parse_error(
-                    format!("Unexpected expression in f-string: {:?}", value),
-                    fstring_span,
-                ))
-            }
+            py::Expr::FormattedValue(fv) => self.convert_formatted_value(fv, span),
+            _ => Err(CompilerError::parse_error(
+                format!("Unexpected expression in f-string: {:?}", value),
+                span,
+            )),
         }
     }
 
-    /// Convert a FormattedValue (the {expr} part of an f-string)
+    /// Convert a `FormattedValue` (`{expr}`, `{expr!r}`, `{expr:spec}`).
     ///
-    /// Python semantics (PEP 498): conversion flag is applied BEFORE format spec.
-    /// - `f"{x!r:>20}"` → repr(x), then right-align to width 20
-    /// - `f"{x:.2f}"` → format x as float with 2 decimal places, then str()
+    /// PEP 498: conversion flag is applied BEFORE the format spec.
     fn convert_formatted_value(
         &mut self,
         fv: &py::ExprFormattedValue,
-        fstring_span: Span,
+        span: Span,
     ) -> Result<ExprId> {
-        // Convert the expression inside the braces
         let expr_id = self.convert_expr(*fv.value.clone())?;
 
-        match fv.conversion {
-            ConversionFlag::Repr => {
-                // !r: apply repr() first (conversion before formatting per PEP 498)
-                let repr_expr = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::Repr,
-                        args: vec![expr_id],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Str),
-                    span: fstring_span,
-                });
-                // Apply format spec to the repr string (string-level formatting only)
-                if let Some(ref format_spec) = fv.format_spec {
-                    self.apply_format_spec(repr_expr, format_spec, fstring_span)
-                } else {
-                    Ok(repr_expr)
-                }
-            }
-            ConversionFlag::Ascii => {
-                // !a: apply ascii() first (conversion before formatting per PEP 498)
-                let ascii_expr = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::Ascii,
-                        args: vec![expr_id],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Str),
-                    span: fstring_span,
-                });
-                if let Some(ref format_spec) = fv.format_spec {
-                    self.apply_format_spec(ascii_expr, format_spec, fstring_span)
-                } else {
-                    Ok(ascii_expr)
-                }
-            }
-            ConversionFlag::Str => {
-                // !s: apply str() first, then format spec (string-level formatting)
-                let str_expr = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::Str,
-                        args: vec![expr_id],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Str),
-                    span: fstring_span,
-                });
-                if let Some(ref format_spec) = fv.format_spec {
-                    self.apply_format_spec(str_expr, format_spec, fstring_span)
-                } else {
-                    Ok(str_expr)
-                }
-            }
-            ConversionFlag::None => {
-                // No conversion: apply format spec to original type (numeric formatting),
-                // then ensure string result
-                let formatted_expr = if let Some(ref format_spec) = fv.format_spec {
-                    self.apply_format_spec(expr_id, format_spec, fstring_span)?
-                } else {
-                    expr_id
-                };
-                let expr = &self.module.exprs[formatted_expr];
-                if matches!(expr.kind, ExprKind::Str(_)) {
-                    Ok(formatted_expr)
-                } else {
-                    Ok(self.module.exprs.alloc(Expr {
-                        kind: ExprKind::BuiltinCall {
-                            builtin: Builtin::Str,
-                            args: vec![formatted_expr],
-                            kwargs: vec![],
-                        },
-                        ty: Some(Type::Str),
-                        span: fstring_span,
-                    }))
-                }
-            }
-        }
-    }
-
-    /// Apply format spec to an expression (e.g., :.2f for float formatting)
-    fn apply_format_spec(
-        &mut self,
-        expr_id: ExprId,
-        format_spec: &py::Expr,
-        fstring_span: Span,
-    ) -> Result<ExprId> {
-        // The format_spec is a JoinedStr containing the format string parts
-        // For simple cases like ".2f", it will be a single Constant(Str(".2f"))
-        let spec_str = self.extract_format_spec_string(format_spec)?;
-
-        // Parse the format spec using the full parser
-        let spec = FormatSpec::parse(&spec_str);
-        let mut result = expr_id;
-
-        // Check if the original expression is numeric (for default alignment)
-        let is_numeric = matches!(
-            self.module.exprs[expr_id].ty,
-            Some(Type::Int) | Some(Type::Float)
-        );
-
-        // Apply precision for floats
-        if let Some(precision) = spec.precision {
-            if spec.type_char == Some('f') || spec.type_char == Some('F') {
-                let precision_expr = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::Int(precision as i64),
-                    ty: Some(Type::Int),
-                    span: fstring_span,
-                });
-
-                result = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::Round,
-                        args: vec![result, precision_expr],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Float),
-                    span: fstring_span,
-                });
-            }
-        }
-
-        // Apply grouping OR type_char conversions (mutually exclusive)
-        if let Some(sep) = spec.grouping {
-            let sep_expr = self.module.exprs.alloc(Expr {
-                kind: ExprKind::Int(sep as i64),
-                ty: Some(Type::Int),
-                span: fstring_span,
-            });
-
-            // Check if value is float (has precision with f/F type)
-            let is_float_fmt =
-                spec.precision.is_some() && matches!(spec.type_char, Some('f') | Some('F'));
-
-            if is_float_fmt {
-                let precision_expr = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::Int(
-                        spec.precision
-                            .expect("internal error: precision is Some, guaranteed by is_float_fmt")
-                            as i64,
-                    ),
-                    ty: Some(Type::Int),
-                    span: fstring_span,
-                });
-                result = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::FmtFloatGrouped,
-                        args: vec![result, precision_expr, sep_expr],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Str),
-                    span: fstring_span,
-                });
-            } else {
-                result = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::FmtIntGrouped,
-                        args: vec![result, sep_expr],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Str),
-                    span: fstring_span,
-                });
-            }
-        } else {
-            // Apply integer format type conversions
-            match spec.type_char {
-                Some('x') => {
-                    result = self.module.exprs.alloc(Expr {
-                        kind: ExprKind::BuiltinCall {
-                            builtin: Builtin::FmtHex,
-                            args: vec![result],
-                            kwargs: vec![],
-                        },
-                        ty: Some(Type::Str),
-                        span: fstring_span,
-                    });
-                }
-                Some('X') => {
-                    result = self.module.exprs.alloc(Expr {
-                        kind: ExprKind::BuiltinCall {
-                            builtin: Builtin::FmtHexUpper,
-                            args: vec![result],
-                            kwargs: vec![],
-                        },
-                        ty: Some(Type::Str),
-                        span: fstring_span,
-                    });
-                }
-                Some('o') => {
-                    result = self.module.exprs.alloc(Expr {
-                        kind: ExprKind::BuiltinCall {
-                            builtin: Builtin::FmtOct,
-                            args: vec![result],
-                            kwargs: vec![],
-                        },
-                        ty: Some(Type::Str),
-                        span: fstring_span,
-                    });
-                }
-                Some('b') => {
-                    result = self.module.exprs.alloc(Expr {
-                        kind: ExprKind::BuiltinCall {
-                            builtin: Builtin::FmtBin,
-                            args: vec![result],
-                            kwargs: vec![],
-                        },
-                        ty: Some(Type::Str),
-                        span: fstring_span,
-                    });
-                }
-                _ => {}
-            }
-        }
-
-        // Apply width/alignment if specified
-        if let Some(width) = spec.width {
-            // Ensure the value is a string before applying alignment
-            if !matches!(self.module.exprs[result].ty, Some(Type::Str)) {
-                result = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::Str,
-                        args: vec![result],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Str),
-                    span: fstring_span,
-                });
-            }
-
-            let width_expr = self.module.exprs.alloc(Expr {
-                kind: ExprKind::Int(width as i64),
-                ty: Some(Type::Int),
-                span: fstring_span,
-            });
-
-            let fill_char = spec.fill.unwrap_or(' ');
-            let fill_str = fill_char.to_string();
-            let fill_interned = self.interner.intern(&fill_str);
-            let fill_expr = self.module.exprs.alloc(Expr {
-                kind: ExprKind::Str(fill_interned),
-                ty: Some(Type::Str),
-                span: fstring_span,
-            });
-
-            // Default alignment: '>' (right) for numbers, '<' (left) for strings
-            let default_align = if is_numeric { '>' } else { '<' };
-            let align = spec.align.unwrap_or(default_align);
-            let method_name = match align {
-                '<' => "ljust",
-                '>' | '=' => "rjust",
-                '^' => "center",
-                _ => "ljust",
-            };
-
-            let method = self.interner.intern(method_name);
-            result = self.module.exprs.alloc(Expr {
-                kind: ExprKind::MethodCall {
-                    obj: result,
-                    method,
-                    args: vec![width_expr, fill_expr],
+        // Apply conversion flag (always produces Type::Str)
+        let converted = match fv.conversion {
+            ConversionFlag::Repr => self.module.exprs.alloc(Expr {
+                kind: ExprKind::BuiltinCall {
+                    builtin: Builtin::Repr,
+                    args: vec![expr_id],
                     kwargs: vec![],
                 },
                 ty: Some(Type::Str),
-                span: fstring_span,
-            });
-        }
+                span,
+            }),
+            ConversionFlag::Ascii => self.module.exprs.alloc(Expr {
+                kind: ExprKind::BuiltinCall {
+                    builtin: Builtin::Ascii,
+                    args: vec![expr_id],
+                    kwargs: vec![],
+                },
+                ty: Some(Type::Str),
+                span,
+            }),
+            ConversionFlag::Str => self.module.exprs.alloc(Expr {
+                kind: ExprKind::BuiltinCall {
+                    builtin: Builtin::Str,
+                    args: vec![expr_id],
+                    kwargs: vec![],
+                },
+                ty: Some(Type::Str),
+                span,
+            }),
+            ConversionFlag::None => expr_id,
+        };
 
-        Ok(result)
+        // Apply format spec if present
+        if let Some(ref spec_ast) = fv.format_spec {
+            self.apply_format_spec_node(converted, spec_ast, span)
+        } else if fv.conversion == ConversionFlag::None {
+            // No conversion, no spec: PEP 498 says call format(value, "").
+            // Route through FormatSpec so user-class __format__ is honoured.
+            let empty_spec = self.interner.intern("");
+            Ok(self.module.exprs.alloc(Expr {
+                kind: ExprKind::FormatSpec {
+                    value: converted,
+                    spec: empty_spec,
+                    span,
+                },
+                ty: Some(Type::Str),
+                span,
+            }))
+        } else {
+            // After conversion (!r/!s/!a) with no spec: already a str
+            Ok(converted)
+        }
     }
 
-    /// Extract the format spec as a string
+    /// Emit `ExprKind::FormatSpec` for static specs, or `Builtin::Format` for dynamic
+    /// (nested f-string) specs like `f"{x:.{n}f}"`.
+    fn apply_format_spec_node(
+        &mut self,
+        value: ExprId,
+        spec_ast: &py::Expr,
+        span: Span,
+    ) -> Result<ExprId> {
+        // Try to extract a static spec string first
+        let spec_str = self.extract_format_spec_string(spec_ast)?;
+
+        if !self.spec_is_dynamic(spec_ast) {
+            // Static spec: emit FormatSpec HIR node (lowered to rt_format at MIR level).
+            // Empty spec is allowed — lower_format_spec handles it correctly (calls
+            // __format__("") for user classes, rt_obj_to_str for primitives).
+            let spec_interned = self.interner.intern(&spec_str);
+            Ok(self.module.exprs.alloc(Expr {
+                kind: ExprKind::FormatSpec {
+                    value,
+                    spec: spec_interned,
+                    span,
+                },
+                ty: Some(Type::Str),
+                span,
+            }))
+        } else {
+            // Dynamic spec (nested f-string expressions): desugar spec to a str expression,
+            // then call format(value, spec_str_expr) — uses the same RT_FORMAT path.
+            let spec_expr = self.desugar_fstring_spec(spec_ast, span)?;
+            Ok(self.module.exprs.alloc(Expr {
+                kind: ExprKind::BuiltinCall {
+                    builtin: Builtin::Format,
+                    args: vec![value, spec_expr],
+                    kwargs: vec![],
+                },
+                ty: Some(Type::Str),
+                span,
+            }))
+        }
+    }
+
+    /// Check whether a format_spec AST node contains nested dynamic expressions.
+    fn spec_is_dynamic(&self, spec_ast: &py::Expr) -> bool {
+        if let py::Expr::JoinedStr(js) = spec_ast {
+            js.values
+                .iter()
+                .any(|v| matches!(v, py::Expr::FormattedValue(_)))
+        } else {
+            false
+        }
+    }
+
+    /// Desugar a format_spec JoinedStr to a str expression (for dynamic specs).
+    fn desugar_fstring_spec(&mut self, spec_ast: &py::Expr, span: Span) -> Result<ExprId> {
+        match spec_ast {
+            py::Expr::JoinedStr(js) => self.desugar_fstring(&js.values, span),
+            py::Expr::Constant(c) => {
+                let s = if let py::Constant::Str(s) = &c.value {
+                    s.as_str()
+                } else {
+                    ""
+                };
+                let interned = self.interner.intern(s);
+                Ok(self.module.exprs.alloc(Expr {
+                    kind: ExprKind::Str(interned),
+                    ty: Some(Type::Str),
+                    span,
+                }))
+            }
+            _ => {
+                let interned = self.interner.intern("");
+                Ok(self.module.exprs.alloc(Expr {
+                    kind: ExprKind::Str(interned),
+                    ty: Some(Type::Str),
+                    span,
+                }))
+            }
+        }
+    }
+
+    /// Extract the static format spec as a raw string (e.g., `">10.2f"`, `","`).
+    /// Returns `""` for empty or non-static specs.
     fn extract_format_spec_string(&self, format_spec: &py::Expr) -> Result<String> {
         match format_spec {
             py::Expr::JoinedStr(js) => {
-                // JoinedStr contains a list of values
                 let mut result = String::new();
                 for val in &js.values {
                     if let py::Expr::Constant(c) = val {
@@ -521,6 +272,7 @@ impl AstToHir {
                             result.push_str(s);
                         }
                     }
+                    // Dynamic parts (FormattedValue) are skipped; caller uses spec_is_dynamic
                 }
                 Ok(result)
             }
@@ -535,14 +287,9 @@ impl AstToHir {
         }
     }
 
-    /// Desugar a .format() call into string concatenations.
-    /// "Hello {}!".format(name) becomes "Hello " + str(name) + "!"
-    /// Supports:
-    /// - {} - auto-numbered positional
-    /// - {0}, {1} - indexed positional
-    /// - {name} - keyword arguments
-    /// - {:>10}, {:<5}, {:^20} - width and alignment
-    /// - {0:>10}, {name:<20} - combined
+    /// Desugar a `.format()` call: `"Hello {:>10}!".format(name)`.
+    ///
+    /// Supports `{}`, `{0}`, `{name}`, `{:spec}` placeholders.
     pub(crate) fn desugar_format_string(
         &mut self,
         format_str: &str,
@@ -550,7 +297,6 @@ impl AstToHir {
         kwargs: &[(InternedString, ExprId)],
         format_span: Span,
     ) -> Result<ExprId> {
-        // Parse the format string into parts (literals and placeholders)
         let mut parts: Vec<ExprId> = Vec::new();
         let mut current_literal = String::new();
         let mut auto_arg_index = 0;
@@ -559,11 +305,9 @@ impl AstToHir {
         while let Some(c) = chars.next() {
             if c == '{' {
                 if chars.peek() == Some(&'{') {
-                    // Escaped {{ -> literal {
                     chars.next();
                     current_literal.push('{');
                 } else {
-                    // Collect everything until matching '}'
                     let mut placeholder_content = String::new();
                     let mut found_close = false;
                     for ch in chars.by_ref() {
@@ -573,7 +317,6 @@ impl AstToHir {
                         }
                         placeholder_content.push(ch);
                     }
-
                     if !found_close {
                         return Err(CompilerError::parse_error(
                             "Unclosed { in format string",
@@ -581,7 +324,6 @@ impl AstToHir {
                         ));
                     }
 
-                    // Add current literal if not empty
                     if !current_literal.is_empty() {
                         let interned = self.interner.intern(&current_literal);
                         parts.push(self.module.exprs.alloc(Expr {
@@ -592,10 +334,8 @@ impl AstToHir {
                         current_literal.clear();
                     }
 
-                    // Parse the placeholder
                     let placeholder = ParsedPlaceholder::parse(&placeholder_content);
 
-                    // Resolve the argument based on placeholder kind
                     let arg_expr = match &placeholder.kind {
                         PlaceholderKind::Auto => {
                             if auto_arg_index < args.len() {
@@ -623,7 +363,6 @@ impl AstToHir {
                             }
                         }
                         PlaceholderKind::Named(name) => {
-                            // Look up in kwargs
                             let interned_name = self.interner.intern(name);
                             kwargs
                                 .iter()
@@ -638,17 +377,33 @@ impl AstToHir {
                         }
                     };
 
-                    // Apply formatting and add to parts
-                    let formatted = self.apply_format_placeholder(
-                        arg_expr,
-                        &placeholder.format_spec,
-                        format_span,
-                    )?;
+                    // Emit FormatSpec node or Str fallback
+                    let formatted = if placeholder.spec.is_empty() {
+                        self.module.exprs.alloc(Expr {
+                            kind: ExprKind::BuiltinCall {
+                                builtin: Builtin::Str,
+                                args: vec![arg_expr],
+                                kwargs: vec![],
+                            },
+                            ty: Some(Type::Str),
+                            span: format_span,
+                        })
+                    } else {
+                        let spec_interned = self.interner.intern(&placeholder.spec);
+                        self.module.exprs.alloc(Expr {
+                            kind: ExprKind::FormatSpec {
+                                value: arg_expr,
+                                spec: spec_interned,
+                                span: format_span,
+                            },
+                            ty: Some(Type::Str),
+                            span: format_span,
+                        })
+                    };
                     parts.push(formatted);
                 }
             } else if c == '}' {
                 if chars.peek() == Some(&'}') {
-                    // Escaped }} -> literal }
                     chars.next();
                     current_literal.push('}');
                 } else {
@@ -662,7 +417,6 @@ impl AstToHir {
             }
         }
 
-        // Add remaining literal
         if !current_literal.is_empty() {
             let interned = self.interner.intern(&current_literal);
             parts.push(self.module.exprs.alloc(Expr {
@@ -672,7 +426,6 @@ impl AstToHir {
             }));
         }
 
-        // Handle empty format string
         if parts.is_empty() {
             let interned = self.interner.intern("");
             return Ok(self.module.exprs.alloc(Expr {
@@ -682,7 +435,6 @@ impl AstToHir {
             }));
         }
 
-        // Chain parts with concatenation
         if parts.len() == 1 {
             return Ok(parts[0]);
         }
@@ -699,168 +451,6 @@ impl AstToHir {
                 span: format_span,
             });
         }
-
-        Ok(result)
-    }
-
-    /// Apply format specification to an expression for .format() placeholders
-    /// Handles precision, string conversion, and alignment
-    fn apply_format_placeholder(
-        &mut self,
-        expr_id: ExprId,
-        spec: &FormatSpec,
-        span: Span,
-    ) -> Result<ExprId> {
-        let mut result = expr_id;
-
-        // Check if the original expression is numeric (for default alignment)
-        let is_numeric = matches!(
-            self.module.exprs[expr_id].ty,
-            Some(Type::Int) | Some(Type::Float)
-        );
-
-        // Apply precision for floats (e.g., .2f)
-        if let Some(precision) = spec.precision {
-            if spec.type_char == Some('f') || spec.type_char == Some('F') {
-                let precision_expr = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::Int(precision as i64),
-                    ty: Some(Type::Int),
-                    span,
-                });
-                result = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::Round,
-                        args: vec![result, precision_expr],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Float),
-                    span,
-                });
-            }
-        }
-
-        // Apply grouping if specified (e.g., :, or :_)
-        if let Some(sep) = spec.grouping {
-            let sep_expr = self.module.exprs.alloc(Expr {
-                kind: ExprKind::Int(sep as i64),
-                ty: Some(Type::Int),
-                span,
-            });
-
-            let is_float_fmt =
-                spec.precision.is_some() && matches!(spec.type_char, Some('f') | Some('F'));
-
-            if is_float_fmt {
-                let precision_expr = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::Int(
-                        spec.precision
-                            .expect("internal error: precision is Some, guaranteed by is_float_fmt")
-                            as i64,
-                    ),
-                    ty: Some(Type::Int),
-                    span,
-                });
-                result = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::FmtFloatGrouped,
-                        args: vec![result, precision_expr, sep_expr],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Str),
-                    span,
-                });
-            } else {
-                result = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin: Builtin::FmtIntGrouped,
-                        args: vec![result, sep_expr],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Str),
-                    span,
-                });
-            }
-        } else {
-            // Convert to string based on type_char
-            let fmt_builtin = match spec.type_char {
-                Some('x') => Some(Builtin::FmtHex),
-                Some('X') => Some(Builtin::FmtHexUpper),
-                Some('o') => Some(Builtin::FmtOct),
-                Some('b') => Some(Builtin::FmtBin),
-                _ => None,
-            };
-
-            if let Some(builtin) = fmt_builtin {
-                // Integer format type: emit format-specific conversion
-                result = self.module.exprs.alloc(Expr {
-                    kind: ExprKind::BuiltinCall {
-                        builtin,
-                        args: vec![result],
-                        kwargs: vec![],
-                    },
-                    ty: Some(Type::Str),
-                    span,
-                });
-            } else {
-                // Default: convert to string using str()
-                let expr = &self.module.exprs[result];
-                let is_str = matches!(expr.kind, ExprKind::Str(_));
-                if !is_str {
-                    result = self.module.exprs.alloc(Expr {
-                        kind: ExprKind::BuiltinCall {
-                            builtin: Builtin::Str,
-                            args: vec![result],
-                            kwargs: vec![],
-                        },
-                        ty: Some(Type::Str),
-                        span,
-                    });
-                }
-            }
-        }
-
-        // Apply alignment if width is specified
-        if let Some(width) = spec.width {
-            let width_expr = self.module.exprs.alloc(Expr {
-                kind: ExprKind::Int(width as i64),
-                ty: Some(Type::Int),
-                span,
-            });
-
-            // Determine fill character (default is space)
-            let fill_char = spec.fill.unwrap_or(' ');
-            let fill_str = fill_char.to_string();
-            let fill_interned = self.interner.intern(&fill_str);
-            let fill_expr = self.module.exprs.alloc(Expr {
-                kind: ExprKind::Str(fill_interned),
-                ty: Some(Type::Str),
-                span,
-            });
-
-            // Determine alignment method
-            // Default alignment is '>' (right) for numbers, '<' (left) for strings
-            let default_align = if is_numeric { '>' } else { '<' };
-            let align = spec.align.unwrap_or(default_align);
-            let method_name = match align {
-                '<' => "ljust",
-                '>' => "rjust",
-                '^' => "center",
-                _ => "ljust", // Fallback
-            };
-
-            let method = self.interner.intern(method_name);
-            result = self.module.exprs.alloc(Expr {
-                kind: ExprKind::MethodCall {
-                    obj: result,
-                    method,
-                    args: vec![width_expr, fill_expr],
-                    kwargs: vec![],
-                },
-                ty: Some(Type::Str),
-                span,
-            });
-        }
-
         Ok(result)
     }
 }

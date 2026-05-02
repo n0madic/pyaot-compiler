@@ -3564,8 +3564,8 @@ See `MICROGPT_PLAN.md` §F for the original scoping.
     tagged dispatch.
   - `__format__` through Protocol — trivially structural.
   - F-string desugaring via SSA constant-fold — standard pass.
-  - Removal of `Builtin::FmtHex`/`FmtOct`/`FmtBin`/`FmtIntGrouped`/
-    `FmtFloatGrouped`/`Round` — folds into Phase 3 cleanup.
+  - Removal of `Builtin::FmtHex`/`FmtHexUpper`/`FmtOct`/`FmtBin`/
+    `FmtIntGrouped`/`FmtFloatGrouped`/`Round` (in format ctx) — SF.3.
 
 **When to schedule**: at least 1 stabilization week after Phase 3
 merges. Revisit `MICROGPT_PLAN.md` §F, simplify to reflect the new
@@ -4043,7 +4043,7 @@ inline as the milestones executed.
 |----|-------|------|
 | SF.1 | Simplify Area F plan in `MICROGPT_PLAN.md` §F for post-refactor architecture (tagged Value, Protocol dispatch, SSA folding) | All 3 phases merged + 1 week stabilization |
 | SF.2 | Implement `rt_format(value: Value, spec: Value) -> Value` + frontend f-string desugar + constant-fold pass | SF.1 |
-| SF.3 | Delete legacy `FmtHex`/`FmtOct`/`FmtBin`/`FmtIntGrouped`/`FmtFloatGrouped`/`Round` (in format ctx); test coverage for all format spec variants | SF.2 |
+| SF.3 | Delete legacy `FmtHex`/`FmtHexUpper`/`FmtOct`/`FmtBin`/`FmtIntGrouped`/`FmtFloatGrouped`/`Round` (in format ctx); test coverage for all format spec variants | SF.2 |
 
 ---
 

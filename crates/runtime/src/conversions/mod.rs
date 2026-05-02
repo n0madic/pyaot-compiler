@@ -19,7 +19,6 @@ pub use repr::{rt_repr_bool, rt_repr_collection, rt_repr_float, rt_repr_int, rt_
 pub use ascii::rt_ascii_collection;
 
 pub use type_cast::{
-    rt_float_fmt_grouped, rt_int_fmt_bin, rt_int_fmt_grouped, rt_int_fmt_hex, rt_int_fmt_hex_upper,
-    rt_int_fmt_oct, rt_int_to_bin, rt_int_to_hex, rt_int_to_oct, rt_obj_default_repr,
-    rt_str_to_int_with_base, rt_type_name, rt_type_name_extract,
+    rt_int_to_bin, rt_int_to_hex, rt_int_to_oct, rt_obj_default_repr, rt_str_to_int_with_base,
+    rt_type_name, rt_type_name_extract,
 };

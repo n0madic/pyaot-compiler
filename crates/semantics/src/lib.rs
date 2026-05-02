@@ -385,6 +385,9 @@ impl<'a> SemanticAnalyzer<'a> {
             | ExprKind::ExcCurrentValue
             | ExprKind::GeneratorIntrinsic(_) => {}
 
+            ExprKind::FormatSpec { value, .. } => {
+                self.analyze_expr(*value, module)?;
+            }
             ExprKind::IterHasNext(iter) => {
                 self.analyze_expr(*iter, module)?;
             }

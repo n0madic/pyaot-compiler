@@ -12,8 +12,10 @@ pub(crate) mod propagate;
 #[cfg(test)]
 mod tests;
 
-use pyaot_mir::{InstructionKind, Module, Operand};
-use pyaot_utils::{FuncId, StringInterner};
+use std::collections::HashMap;
+
+use pyaot_mir::{Constant, Function, InstructionKind, Module, Operand, RuntimeFunc};
+use pyaot_utils::{FuncId, LocalId, StringInterner};
 
 use crate::pass::OptimizationPass;
 
@@ -46,6 +48,9 @@ pub(crate) fn fold_constants_once(module: &mut Module, interner: &mut StringInte
                 changed |= try_fold_instruction(&mut inst.kind, interner);
             }
         }
+
+        // Phase 3: Fold rt_format(constant_value, constant_spec) → Const(Str)
+        changed |= fold_format_calls(func, interner);
     }
 
     changed
@@ -212,4 +217,98 @@ fn try_fold_instruction(kind: &mut InstructionKind, interner: &mut StringInterne
         }
         _ => false,
     }
+}
+
+/// Fold `rt_format(constant_value, constant_spec)` → `Const(Str)` at compile time.
+///
+/// Requires full-function SSA context to see through `ValueFromInt`/`ValueFromBool`
+/// boxing instructions that propagation doesn't track.
+fn fold_format_calls(func: &mut Function, interner: &mut StringInterner) -> bool {
+    use pyaot_core_defs::runtime_func_def::RT_FORMAT;
+
+    // Map each LocalId to its defining InstructionKind (cloned, so we can mutate later).
+    let def_map: HashMap<LocalId, InstructionKind> = func
+        .blocks
+        .values()
+        .flat_map(|b| b.instructions.iter())
+        .filter_map(|inst| {
+            let dest = match &inst.kind {
+                InstructionKind::ValueFromInt { dest, .. }
+                | InstructionKind::ValueFromBool { dest, .. }
+                | InstructionKind::RuntimeCall { dest, .. } => *dest,
+                _ => return None,
+            };
+            Some((dest, inst.kind.clone()))
+        })
+        .collect();
+
+    let mut changed = false;
+
+    for block in func.blocks.values_mut() {
+        for inst in &mut block.instructions {
+            let (dest, args) = match &inst.kind {
+                InstructionKind::RuntimeCall {
+                    dest,
+                    func: RuntimeFunc::Call(def),
+                    args,
+                } if std::ptr::eq(*def, &RT_FORMAT) && args.len() == 2 => (*dest, args.clone()),
+                _ => continue,
+            };
+
+            // spec must be a constant str (args[1])
+            let spec_interned = match &args[1] {
+                Operand::Constant(Constant::Str(s)) => *s,
+                _ => continue,
+            };
+            let spec_str = interner.resolve(spec_interned).to_string();
+
+            // Resolve the value operand (args[0]) to a primitive constant
+            let result: Option<String> = match &args[0] {
+                // Str is never boxed through ValueFromInt — passed as pointer directly
+                Operand::Constant(Constant::Str(s)) => {
+                    let s = interner.resolve(*s).to_string();
+                    pyaot_format_shared::format_str_spec(&s, &spec_str).ok()
+                }
+                Operand::Local(lid) => match def_map.get(lid) {
+                    // Int was boxed via ValueFromInt { src: Constant::Int(n) }
+                    Some(InstructionKind::ValueFromInt {
+                        src: Operand::Constant(Constant::Int(n)),
+                        ..
+                    }) => pyaot_format_shared::format_int_spec(*n, &spec_str).ok(),
+                    // Bool was boxed via ValueFromBool { src: Constant::Bool(b) }
+                    Some(InstructionKind::ValueFromBool {
+                        src: Operand::Constant(Constant::Bool(b)),
+                        ..
+                    }) => pyaot_format_shared::format_bool_spec(*b, &spec_str).ok(),
+                    // Float was boxed via RT_BOX_FLOAT { args: [Constant::Float(f)] }
+                    Some(InstructionKind::RuntimeCall {
+                        func: RuntimeFunc::Call(def),
+                        args: box_args,
+                        ..
+                    }) if std::ptr::eq(*def, &pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT)
+                        && box_args.len() == 1 =>
+                    {
+                        if let Operand::Constant(Constant::Float(f)) = &box_args[0] {
+                            pyaot_format_shared::format_float_spec(*f, &spec_str).ok()
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+
+            if let Some(result_str) = result {
+                let interned = interner.intern(&result_str);
+                inst.kind = InstructionKind::Const {
+                    dest,
+                    value: Constant::Str(interned),
+                };
+                changed = true;
+            }
+        }
+    }
+
+    changed
 }

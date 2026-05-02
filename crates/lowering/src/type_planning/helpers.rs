@@ -343,12 +343,6 @@ pub(crate) fn resolve_builtin_call_type(
         | Builtin::Bin
         | Builtin::Hex
         | Builtin::Oct
-        | Builtin::FmtBin
-        | Builtin::FmtHex
-        | Builtin::FmtHexUpper
-        | Builtin::FmtOct
-        | Builtin::FmtIntGrouped
-        | Builtin::FmtFloatGrouped
         | Builtin::Type => Some(Type::Str),
 
         // === Boolean-returning builtins ===

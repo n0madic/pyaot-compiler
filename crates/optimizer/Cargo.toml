@@ -9,6 +9,7 @@ pyaot-diagnostics = { path = "../diagnostics" }
 pyaot-mir = { path = "../mir" }
 pyaot-utils = { path = "../utils" }
 pyaot-types = { path = "../types" }
+pyaot-format-shared = { path = "../format-shared" }
 indexmap = { workspace = true }
 
 [lints.rust]

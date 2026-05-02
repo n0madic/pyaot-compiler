@@ -86,34 +86,6 @@ impl<'a> Lowering<'a> {
             hir::Builtin::Bin => self.lower_bin(args, hir_module, mir_func),
             hir::Builtin::Hex => self.lower_hex(args, hir_module, mir_func),
             hir::Builtin::Oct => self.lower_oct(args, hir_module, mir_func),
-            hir::Builtin::FmtBin => self.lower_fmt_int(
-                args,
-                hir_module,
-                mir_func,
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_FMT_BIN),
-            ),
-            hir::Builtin::FmtHex => self.lower_fmt_int(
-                args,
-                hir_module,
-                mir_func,
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_FMT_HEX),
-            ),
-            hir::Builtin::FmtHexUpper => self.lower_fmt_int(
-                args,
-                hir_module,
-                mir_func,
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_FMT_HEX_UPPER),
-            ),
-            hir::Builtin::FmtOct => self.lower_fmt_int(
-                args,
-                hir_module,
-                mir_func,
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_FMT_OCT),
-            ),
-            hir::Builtin::FmtIntGrouped => self.lower_fmt_int_grouped(args, hir_module, mir_func),
-            hir::Builtin::FmtFloatGrouped => {
-                self.lower_fmt_float_grouped(args, hir_module, mir_func)
-            }
             hir::Builtin::Repr => self.lower_repr(args, hir_module, mir_func),
             hir::Builtin::Ascii => self.lower_ascii(args, hir_module, mir_func),
             // Phase 5: Introspection

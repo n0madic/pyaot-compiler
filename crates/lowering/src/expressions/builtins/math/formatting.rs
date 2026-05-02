@@ -1,4 +1,4 @@
-//! Number formatting lowering: bin(), hex(), oct(), fmt_int(), fmt_int_grouped(), fmt_float_grouped()
+//! Number formatting lowering: bin(), hex(), oct()
 
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
@@ -67,78 +67,6 @@ impl<'a> Lowering<'a> {
         let result_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_TO_OCT),
             vec![n_operand],
-            Type::Str,
-            mir_func,
-        );
-
-        Ok(mir::Operand::Local(result_local))
-    }
-
-    /// Lower format-specific integer conversion (hex/oct/bin without prefix)
-    pub(in crate::expressions::builtins) fn lower_fmt_int(
-        &mut self,
-        args: &[hir::ExprId],
-        hir_module: &hir::Module,
-        mir_func: &mut mir::Function,
-        runtime_func: mir::RuntimeFunc,
-    ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 1, "fmt_int", self.call_span())?;
-
-        let n_expr = &hir_module.exprs[args[0]];
-        let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
-
-        let result_local =
-            self.emit_runtime_call(runtime_func, vec![n_operand], Type::Str, mir_func);
-
-        Ok(mir::Operand::Local(result_local))
-    }
-
-    /// Lower format integer with grouping separator: fmt_int_grouped(n, sep)
-    pub(in crate::expressions::builtins) fn lower_fmt_int_grouped(
-        &mut self,
-        args: &[hir::ExprId],
-        hir_module: &hir::Module,
-        mir_func: &mut mir::Function,
-    ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 2, "fmt_int_grouped", self.call_span())?;
-
-        let n_expr = &hir_module.exprs[args[0]];
-        let n_operand = self.lower_expr(n_expr, hir_module, mir_func)?;
-
-        let sep_expr = &hir_module.exprs[args[1]];
-        let sep_operand = self.lower_expr(sep_expr, hir_module, mir_func)?;
-
-        let result_local = self.emit_runtime_call(
-            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INT_FMT_GROUPED),
-            vec![n_operand, sep_operand],
-            Type::Str,
-            mir_func,
-        );
-
-        Ok(mir::Operand::Local(result_local))
-    }
-
-    /// Lower format float with precision and grouping: fmt_float_grouped(f, precision, sep)
-    pub(in crate::expressions::builtins) fn lower_fmt_float_grouped(
-        &mut self,
-        args: &[hir::ExprId],
-        hir_module: &hir::Module,
-        mir_func: &mut mir::Function,
-    ) -> Result<mir::Operand> {
-        self.require_exact_args(args, 3, "fmt_float_grouped", self.call_span())?;
-
-        let f_expr = &hir_module.exprs[args[0]];
-        let f_operand = self.lower_expr(f_expr, hir_module, mir_func)?;
-
-        let prec_expr = &hir_module.exprs[args[1]];
-        let prec_operand = self.lower_expr(prec_expr, hir_module, mir_func)?;
-
-        let sep_expr = &hir_module.exprs[args[2]];
-        let sep_operand = self.lower_expr(sep_expr, hir_module, mir_func)?;
-
-        let result_local = self.emit_runtime_call(
-            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FLOAT_FMT_GROUPED),
-            vec![f_operand, prec_operand, sep_operand],
             Type::Str,
             mir_func,
         );

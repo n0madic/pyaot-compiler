@@ -14,6 +14,7 @@ members = [
     "crates/optimizer",
     "crates/codegen-cranelift",
     "crates/linker",
+    "crates/format-shared",
     "crates/runtime",
     "crates/diagnostics",
     "crates/utils",

@@ -1054,6 +1054,7 @@ impl<'a> Lowering<'a> {
                 };
                 self.resolve_generator_intrinsic_type(intrinsic, expr.ty.as_ref(), iter_ty)
             }
+            hir::ExprKind::FormatSpec { .. } => Type::Str,
             _ => expr.ty.clone().unwrap_or(Type::Any),
         }
     }

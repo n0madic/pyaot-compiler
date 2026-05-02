@@ -698,31 +698,14 @@ pub static RT_INT_TO_BIN: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_to_
 pub static RT_INT_TO_HEX: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_to_hex");
 /// rt_int_to_oct(n: i64) -> *mut Obj
 pub static RT_INT_TO_OCT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_to_oct");
-/// rt_int_fmt_bin(n: i64) -> *mut Obj
-pub static RT_INT_FMT_BIN: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_fmt_bin");
-/// rt_int_fmt_hex(n: i64) -> *mut Obj
-pub static RT_INT_FMT_HEX: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_fmt_hex");
-/// rt_int_fmt_hex_upper(n: i64) -> *mut Obj
-pub static RT_INT_FMT_HEX_UPPER: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_fmt_hex_upper");
-/// rt_int_fmt_oct(n: i64) -> *mut Obj
-pub static RT_INT_FMT_OCT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_int_fmt_oct");
-/// rt_int_fmt_grouped(n: i64, sep: i64) -> *mut Obj
-pub static RT_INT_FMT_GROUPED: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_int_fmt_grouped");
-/// rt_float_fmt_grouped(f: f64, precision: i64, sep: i64) -> *mut Obj
-pub static RT_FLOAT_FMT_GROUPED: RuntimeFuncDef = RuntimeFuncDef::new(
-    "rt_float_fmt_grouped",
-    &[PF64, PI64, PI64],
-    Some(RI64),
-    true,
-);
 /// rt_type_name(obj: *mut Obj) -> *mut Obj
 pub static RT_TYPE_NAME: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_type_name");
 /// rt_type_name_extract(type_str: *mut Obj) -> *mut Obj
 pub static RT_TYPE_NAME_EXTRACT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_type_name_extract");
 /// rt_exc_class_name(instance: *mut Obj) -> *mut Obj
 pub static RT_EXC_CLASS_NAME: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_exc_class_name");
-/// rt_format_value(value: *mut Obj, spec: *mut Obj) -> *mut Obj
-pub static RT_FORMAT_VALUE: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_format_value");
+/// rt_format(value: Value, spec: Value) -> Value  — format spec dispatch (PEP 3101)
+pub static RT_FORMAT: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_format");
 
 // ===== ToStringRepr operations (repr/ascii) =====
 // ToStringRepr(target_kind, format) → static defs for all valid combinations.

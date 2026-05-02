@@ -22,6 +22,7 @@ stdlib-network = ["dep:ureq", "stdlib-json"]
 
 [dependencies]
 pyaot-core-defs = { path = "../core-defs" }
+pyaot-format-shared = { path = "../format-shared" }
 libc = "0.2"
 
 # Optional stdlib dependencies

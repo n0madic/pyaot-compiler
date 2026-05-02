@@ -813,7 +813,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// Lower format(value, format_spec='') -> str
-    /// Calls rt_format_value(boxed_value, spec_str) -> *mut Obj
+    /// Calls rt_format(boxed_value, spec_str) -> Value
     pub(super) fn lower_format(
         &mut self,
         args: &[hir::ExprId],
@@ -868,7 +868,50 @@ impl<'a> Lowering<'a> {
         };
 
         let result_local = self.emit_runtime_call(
-            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FORMAT_VALUE),
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FORMAT),
+            vec![boxed_value, spec_operand],
+            Type::Str,
+            mir_func,
+        );
+
+        Ok(mir::Operand::Local(result_local))
+    }
+
+    /// Lower `ExprKind::FormatSpec { value, spec }` — the desugared form of `f"{value:spec}"`.
+    /// Calls `rt_format(boxed_value, spec_str_obj) -> str`.
+    pub(in super::super) fn lower_format_spec(
+        &mut self,
+        value_id: hir::ExprId,
+        spec: pyaot_utils::InternedString,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
+        let value_expr = &hir_module.exprs[value_id];
+        let value_operand = self.lower_expr(value_expr, hir_module, mir_func)?;
+        let value_type = self.seed_expr_type(value_id, hir_module);
+
+        // Direct dispatch for user-class __format__
+        if let Type::Class { class_id, .. } = &value_type {
+            if let Some(format_func_id) = self
+                .get_class_info(class_id)
+                .and_then(|info| info.get_dunder_func("__format__"))
+            {
+                let spec_operand = self.lower_str_literal(spec, mir_func)?;
+                let result_local = self.alloc_and_add_local(Type::Str, mir_func);
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest: result_local,
+                    func: format_func_id,
+                    args: vec![value_operand, spec_operand],
+                });
+                return Ok(mir::Operand::Local(result_local));
+            }
+        }
+
+        let boxed_value = self.emit_value_slot(value_operand, &value_type, mir_func);
+        let spec_operand = self.lower_str_literal(spec, mir_func)?;
+
+        let result_local = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_FORMAT),
             vec![boxed_value, spec_operand],
             Type::Str,
             mir_func,

@@ -247,6 +247,11 @@ impl<'a> Lowering<'a> {
             // Standard library compile-time constant (math.pi, math.e)
             hir::ExprKind::StdlibConst(const_def) => self.lower_stdlib_const(const_def, mir_func),
 
+            // f-string format spec: `f"{value:spec}"` → rt_format(boxed_value, spec_str)
+            hir::ExprKind::FormatSpec { value, spec, .. } => {
+                self.lower_format_spec(*value, *spec, hir_module, mir_func)
+            }
+
             // §1.17b-c — generic iterator protocol. Emitted by the bridge
             // as the cond of a for-loop header's `Branch` terminator; consumed
             // by the CFG walker. Falls through to `lower_iter_has_next`
