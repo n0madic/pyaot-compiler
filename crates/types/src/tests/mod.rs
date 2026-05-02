@@ -414,7 +414,6 @@ fn test_accessor_roundtrip_generic_variant() {
 
 #[test]
 fn test_generic_subtyping_covariant() {
-    use crate::TypeLattice;
     use crate::{BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID};
 
     // List[Int] ≤ List[Any]
