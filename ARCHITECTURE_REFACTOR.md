@@ -2566,8 +2566,7 @@ pointer, list-elem-tag dispatch) collapse into one.
 **Post-close note (2026-04-27)**: Phase 2 is formally closed. Three items
 are deferred to Phase 3 rather than blocking closure: the full `rt_*` extern
 ABI retype, arithmetic fast-path inlining (S2.8), and two perf gates
-(Polymorphic +20%, GC scan +15%). Each has an explicit home in
-`PHASE3_OPTIMIZATION_PLAN.md` (§P.2.1, §P.2.3, §P.1, §P.2). Every other
+(Polymorphic +20%, GC scan +15%). Every other
 Phase 2 exit criterion — container storage uniformity, GC Value-walking,
 bright-line grep, pass migration, workspace green — is met.
 

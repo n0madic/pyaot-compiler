@@ -314,9 +314,6 @@ within +10% of Phase 0 across every benchmark. The Phase 2 columns
 above are therefore accepted as the formal-close snapshot;
 re-baselining for Phase 3 starts from these numbers.
 
-The follow-on optimisation work that targets these two gates is
-captured in [`PHASE3_OPTIMIZATION_PLAN.md`](../PHASE3_OPTIMIZATION_PLAN.md):
-
 * **§P.1** — peephole-fold the abi_repair-injected wrap/unwrap
   round-trips that survive into the hot loop, then devirtualise stable
   monomorphic CallVirtual sites. Expected to recover the polymorphic
