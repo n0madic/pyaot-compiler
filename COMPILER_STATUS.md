@@ -173,7 +173,7 @@ storage for statically-typed Float instance fields. `run::polymorphic`
 | @staticmethod | ✅ | |
 | @classmethod | ✅ | cls receives class_id as int |
 | @property | ✅ | Getter and setter |
-| User decorators | ✅ | Identity, wrapper, chained decorators, and `*args` forwarding (up to 8 args) |
+| User decorators | ✅ | Identity, wrapper, chained decorators, and `*args` forwarding (up to 8 args). Per-captured-fn specialisation (S3.3b.2) devirts the runtime trampoline to `CallDirect{captured}` whenever wrapper user-params match captured signature. |
 | @abstractmethod | ✅ | Compile-time enforcement |
 | `__slots__` | ✅ | Parsed and ignored (AOT compiler handles memory layout statically) |
 | Inheritance | ✅ | Single only |

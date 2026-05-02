@@ -549,6 +549,7 @@ mod tests {
             is_ssa: true,
             is_generic_template: false,
             typevar_params: Vec::new(),
+            wrapper_fn_ptr_capture_index: None,
             dom_tree_cache: std::cell::OnceCell::new(),
         }
     }
@@ -634,6 +635,7 @@ mod tests {
             is_ssa: true,
             is_generic_template: false,
             typevar_params: Vec::new(),
+            wrapper_fn_ptr_capture_index: None,
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 
@@ -685,6 +687,7 @@ mod tests {
             is_ssa: true,
             is_generic_template: false,
             typevar_params: Vec::new(),
+            wrapper_fn_ptr_capture_index: None,
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 
@@ -759,6 +762,7 @@ mod tests {
             is_ssa: true,
             is_generic_template: false,
             typevar_params: Vec::new(),
+            wrapper_fn_ptr_capture_index: None,
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 
@@ -833,6 +837,7 @@ mod tests {
             is_ssa: true,
             is_generic_template: false,
             typevar_params: Vec::new(),
+            wrapper_fn_ptr_capture_index: None,
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 
@@ -928,6 +933,7 @@ mod tests {
             is_ssa: true,
             is_generic_template: false,
             typevar_params: Vec::new(),
+            wrapper_fn_ptr_capture_index: None,
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 
@@ -986,6 +992,7 @@ mod tests {
             is_ssa: true,
             is_generic_template: false,
             typevar_params: Vec::new(),
+            wrapper_fn_ptr_capture_index: None,
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 
@@ -1053,6 +1060,7 @@ mod tests {
             is_ssa: true,
             is_generic_template: false,
             typevar_params: Vec::new(),
+            wrapper_fn_ptr_capture_index: None,
             dom_tree_cache: std::cell::OnceCell::new(),
         };
 

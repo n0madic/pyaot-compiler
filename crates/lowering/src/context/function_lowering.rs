@@ -417,6 +417,11 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        // S3.3b.2: tag wrapper functions with their fn-ptr capture index so
+        // `MonomorphizePass` can detect structural templates (decorator
+        // wrappers) and specialise them per captured-fn-id.
+        mir_func.wrapper_fn_ptr_capture_index = fn_ptr_capture_idx;
+
         // Add parameters to locals
         for param in params {
             mir_func.add_local(param);

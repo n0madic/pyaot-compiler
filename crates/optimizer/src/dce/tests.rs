@@ -629,6 +629,7 @@ fn test_phi_sources_pruned_after_unreachable_block_removal() {
         is_ssa: true,
         is_generic_template: false,
         typevar_params: Vec::new(),
+        wrapper_fn_ptr_capture_index: None,
         dom_tree_cache: std::cell::OnceCell::new(),
     };
 

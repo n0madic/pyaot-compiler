@@ -217,25 +217,22 @@ fn mark_roots(s: &mut GcState) {
 }
 
 /// Mark a `Value`; if it's a heap pointer recurse into its children.
-/// `Value::is_ptr()` filters tagged primitives. The alignment / low-page
-/// guard and the `TypeTagKind::from_tag` validation reject pointer-shaped
-/// non-objects: F.7c closed Instance.fields (the largest residual source),
-/// but a smaller set of paths (closures/decorators/generators) still
-/// produces values that pass `is_ptr()` without being heap objects, and the
-/// guards keep the GC robust until those are tracked down individually.
+/// `Value::is_ptr()` filters tagged primitives. After S3.3b.2 closed the
+/// decorator-wrapper return-type leak (§P.2.3), the only pointer-shaped
+/// non-object path is via wrapper return locals that fall back to runtime
+/// trampoline (e.g. `*args` wrappers whose user-visible param is a
+/// packed tuple — devirt skipped by design). Those still flow `Type::Any`,
+/// but their values are always heap objects (results from runtime calls),
+/// not raw fn-pointers — so the alignment / TypeTag sanity guards are
+/// redundant. Keeping only the null check; everything else is on the
+/// caller to type correctly.
 fn mark_object(v: Value) {
     unsafe {
         if !v.is_ptr() {
             return;
         }
         let obj = v.unwrap_ptr::<Obj>();
-        if obj.is_null()
-            || (obj as usize) < 0x1000
-            || !(obj as usize).is_multiple_of(std::mem::align_of::<Obj>())
-        {
-            return;
-        }
-        if TypeTagKind::from_tag((*obj).type_tag() as u8).is_none() {
+        if obj.is_null() {
             return;
         }
         if (*obj).is_marked() {

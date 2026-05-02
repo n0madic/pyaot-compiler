@@ -92,6 +92,14 @@ pub struct Function {
     /// Distinct TypeVar names used in the function signature.
     /// Empty when `is_generic_template` is false.
     pub typevar_params: Vec<InternedString>,
+    /// `Some(idx)` when this function is a decorator wrapper — `idx` is the
+    /// position of its fn-pointer parameter (the captured original function),
+    /// always 0 in the current ABI. This is a *structural* template marker,
+    /// orthogonal to `is_generic_template`: wrapper'ы не имеют `Type::Var` в
+    /// сигнатуре, но семантически параметрические по сигнатуре захваченной
+    /// функции. `MonomorphizePass` (S3.3b.2) использует это поле для
+    /// специализации wrapper'ов per captured-fn-id.
+    pub wrapper_fn_ptr_capture_index: Option<usize>,
     /// Lazily-computed dominator tree (Cooper–Harvey–Kennedy). Populated on
     /// first call to `dom_tree()`. CFG-mutating passes must call
     /// `invalidate_dom_tree()` to drop a stale cache.
@@ -174,6 +182,7 @@ impl Function {
             is_ssa: false,
             is_generic_template: false,
             typevar_params: Vec::new(),
+            wrapper_fn_ptr_capture_index: None,
             dom_tree_cache: OnceCell::new(),
         }
     }

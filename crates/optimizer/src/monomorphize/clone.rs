@@ -86,6 +86,122 @@ pub fn specialize_function(
         is_ssa: template.is_ssa,
         is_generic_template: false,
         typevar_params: Vec::new(),
+        // Specialised generic templates lose their wrapper status too;
+        // wrapper-mode specialisations override this in `specialize_wrapper`.
+        wrapper_fn_ptr_capture_index: None,
+        dom_tree_cache: std::cell::OnceCell::new(),
+    }
+}
+
+/// Clone a decorator-wrapper template into a per-captured-fn specialisation
+/// (S3.3b.2). Unlike `specialize_function` (Var-substitution), this mode:
+/// - retypes the fn-pointer parameter at `fn_ptr_param_idx` from `HeapAny` /
+///   `Int` (whatever the wrapper used) to `Type::Function { params, ret }` of
+///   the captured function;
+/// - clears `is_gc_root` on that param (a code pointer is not a heap object);
+/// - keeps the body unchanged at this stage — the indirect-call devirt pass
+///   (Stage D) rewrites the runtime trampoline to `CallDirect{captured_id}`
+///   in a separate step;
+/// - clears `is_generic_template` and `wrapper_fn_ptr_capture_index` (the
+///   specialisation is no longer a template).
+///
+/// Caller is responsible for picking `fresh_id`, `fresh_name`, and ensuring
+/// the spec cache is updated.
+pub fn specialize_wrapper(
+    template: &Function,
+    fn_ptr_param_idx: usize,
+    _captured_func_id: FuncId,
+    captured_signature: Type,
+    fresh_id: FuncId,
+    fresh_name: String,
+) -> Function {
+    // Wrapper mode uses an empty Var-substitution; types are not Var-bearing
+    // in the wrapper signature. We still flow the existing remapper so that
+    // ID space is freshened consistently.
+    let empty_subst: HashMap<InternedString, Type> = HashMap::new();
+    let mut remapper = InlineRemapper::new(0, 0);
+
+    // Params: clone, then retype the fn-ptr slot.
+    let params: Vec<Local> = template
+        .params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let new_id = remapper.remap_local(p.id);
+            if i == fn_ptr_param_idx {
+                Local {
+                    id: new_id,
+                    name: p.name,
+                    ty: captured_signature.clone(),
+                    is_gc_root: false,
+                }
+            } else {
+                Local {
+                    id: new_id,
+                    name: p.name,
+                    ty: p.ty.clone(),
+                    is_gc_root: p.ty.is_heap(),
+                }
+            }
+        })
+        .collect();
+
+    // Locals: clone unchanged. The fn-ptr param's local also needs retyping
+    // because params are added back as locals after Function::new in the
+    // builder; here we mirror that into the locals map.
+    let mut locals: IndexMap<LocalId, Local> = IndexMap::new();
+    for (_, local) in &template.locals {
+        let new_id = remapper.remap_local(local.id);
+        // If this local corresponds to the fn-ptr param, retype it.
+        let is_fn_ptr_param_local = template
+            .params
+            .get(fn_ptr_param_idx)
+            .is_some_and(|p| p.id == local.id);
+        let (ty, is_gc_root) = if is_fn_ptr_param_local {
+            (captured_signature.clone(), false)
+        } else {
+            (local.ty.clone(), local.is_gc_root)
+        };
+        locals.insert(
+            new_id,
+            Local {
+                id: new_id,
+                name: local.name,
+                ty,
+                is_gc_root,
+            },
+        );
+    }
+
+    // Blocks: clone with ID remap (no type subst needed here).
+    for (block_id, _) in &template.blocks {
+        remapper.remap_block(*block_id);
+    }
+    let mut blocks: IndexMap<BlockId, BasicBlock> = IndexMap::new();
+    for (_, block) in &template.blocks {
+        let new_block = remap_block_with_type_subst(&mut remapper, block, &empty_subst);
+        blocks.insert(new_block.id, new_block);
+    }
+
+    let entry_block = remapper.remap_block(template.entry_block);
+    // Return type stays as-is from the template at this stage; WPA pass 2
+    // (post-mono) refines it once the indirect-call devirt has narrowed
+    // dependent locals.
+    let return_type = template.return_type.clone();
+
+    Function {
+        id: fresh_id,
+        name: fresh_name,
+        params,
+        return_type,
+        locals,
+        blocks,
+        entry_block,
+        span: template.span,
+        is_ssa: template.is_ssa,
+        is_generic_template: false,
+        typevar_params: Vec::new(),
+        wrapper_fn_ptr_capture_index: None,
         dom_tree_cache: std::cell::OnceCell::new(),
     }
 }

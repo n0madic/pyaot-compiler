@@ -68,6 +68,7 @@ fn make_module_with_vtable(
         is_ssa: false,
         is_generic_template: false,
         typevar_params: Vec::new(),
+        wrapper_fn_ptr_capture_index: None,
         dom_tree_cache: std::cell::OnceCell::new(),
     };
 

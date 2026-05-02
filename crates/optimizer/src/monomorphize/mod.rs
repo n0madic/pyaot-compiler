@@ -13,6 +13,7 @@
 //! types).
 
 mod clone;
+mod devirt_indirect;
 
 use std::collections::{HashSet, VecDeque};
 
@@ -27,8 +28,43 @@ use self::clone::specialize_function;
 /// Maximum specialization depth to prevent infinite recursion on recursive generics.
 const MAX_SPECIALIZATION_DEPTH: usize = 8;
 
-/// Cache key: (template_func_id, concrete_arg_types_for_all_params).
-type SpecKey = (FuncId, Vec<Type>);
+/// Cache key for a specialisation. Two structurally distinct kinds:
+/// - `Generic`: Var-based specialisation (S3.3a/b.1) — keyed on the
+///   template FuncId plus the concrete arg-type vector at the call site.
+/// - `Wrapper`: structural specialisation of decorator wrappers (S3.3b.2)
+///   — keyed on `(wrapper_id, captured_func_id)`. The captured-function
+///   identity is the only axis of variation; argument types are derived
+///   from the captured function's signature, not the call site.
+#[derive(Debug, Clone, PartialEq)]
+enum SpecKey {
+    Generic(FuncId, Vec<Type>),
+    Wrapper(FuncId, FuncId),
+}
+
+/// Patch produced by `collect_*_call_patches`. Carries enough information
+/// for the worklist driver to clone the template and rewrite the call site.
+#[derive(Debug, Clone)]
+enum SpecPatch {
+    /// Var-substitution specialisation. `arg_types` are the concrete types
+    /// observed at the call site for each parameter slot; `derive_subst`
+    /// turns them into a Var→Type map.
+    Generic {
+        block_idx: usize,
+        instr_idx: usize,
+        template_id: FuncId,
+        arg_types: Vec<Type>,
+    },
+    /// Decorator-wrapper specialisation. `captured_func_id` was recovered
+    /// by backward-tracing the fn-ptr argument through `ValueFromInt` to
+    /// its `FuncAddr` source.
+    Wrapper {
+        block_idx: usize,
+        instr_idx: usize,
+        wrapper_id: FuncId,
+        fn_ptr_param_idx: usize,
+        captured_func_id: FuncId,
+    },
+}
 
 pub struct MonomorphizePass;
 
@@ -58,14 +94,22 @@ pub fn run(module: &mut Module, interner: &mut StringInterner) -> bool {
 /// Returns `true` if any specializations were created.
 fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bool {
     // --- Pre-pass: identify templates and monomorphic callers ---
-    let templates: HashSet<FuncId> = module
+    // Var-based templates (S3.3a/b.1).
+    let generic_templates: HashSet<FuncId> = module
         .functions
         .values()
         .filter(|f| f.is_generic_template)
         .map(|f| f.id)
         .collect();
+    // Wrapper templates (S3.3b.2): structural marker on decorator wrappers.
+    let wrapper_templates: HashSet<FuncId> = module
+        .functions
+        .values()
+        .filter(|f| f.wrapper_fn_ptr_capture_index.is_some())
+        .map(|f| f.id)
+        .collect();
 
-    if templates.is_empty() {
+    if generic_templates.is_empty() && wrapper_templates.is_empty() {
         return false;
     }
 
@@ -101,67 +145,47 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
     // specializations (e.g. `b.rebox().get()` — `rebox` specialization concretizes
     // `b2`'s type, which then unblocks `get`'s specialization) iterate to fixpoint.
     while let Some((caller_id, depth)) = worklist.pop_front() {
-        let patches = collect_template_call_patches(module, caller_id, &templates);
+        let mut patches = collect_template_call_patches(module, caller_id, &generic_templates);
+        patches.extend(collect_wrapper_call_patches(
+            module,
+            caller_id,
+            &wrapper_templates,
+        ));
         if patches.is_empty() {
             continue;
         }
 
         let mut progress = false;
-        for (block_idx, instr_idx, template_id, arg_types) in patches {
+        for patch in patches {
             if depth >= MAX_SPECIALIZATION_DEPTH {
                 eprintln!(
-                    "monomorphize: depth limit reached specializing {template_id:?} — \
+                    "monomorphize: depth limit reached on patch {patch:?} — \
                      call site will retain generic body"
                 );
                 continue;
             }
 
-            // Build subst from template param types + call-arg types.
-            let template = match module.functions.get(&template_id) {
-                Some(f) => f,
-                None => continue,
-            };
-            let param_types: Vec<Type> = template.params.iter().map(|p| p.ty.clone()).collect();
-            let subst = match derive_subst(&param_types, &arg_types) {
-                Some(s) => s,
-                None => {
-                    eprintln!(
-                        "monomorphize: cannot derive subst for {template_id:?} with \
-                         args {arg_types:?} — call site will use generic body"
-                    );
-                    continue;
-                }
-            };
+            let (block_idx, instr_idx, spec_key, spec_id_opt) =
+                match resolve_patch(module, &patch, &mut spec_cache, &mut next_id, interner) {
+                    Some(v) => v,
+                    None => continue,
+                };
 
-            // Cache lookup.
-            let spec_key: SpecKey = (template_id, arg_types);
-            let spec_id = if let Some(&(_, cached_id)) =
-                spec_cache.iter().find(|(k, _)| k == &spec_key)
-            {
-                cached_id
-            } else {
-                // Create specialization.
-                let fresh_id = FuncId::from(next_id);
-                next_id += 1;
-
-                let base_name = module.functions[&template_id].name.clone();
-                let type_suffix: Vec<String> =
-                    spec_key.1.iter().map(|t| format!("{t:?}")).collect();
-                let fresh_name = format!("{}@<{}>", base_name, type_suffix.join(","));
-                let _ = interner; // available for future use
-
-                let template_fn = &module.functions[&template_id];
-                let specialized = specialize_function(template_fn, &subst, fresh_id, fresh_name);
-
-                spec_cache.push((spec_key, fresh_id));
-                new_functions.push(specialized);
-
-                // Put the specialization on the worklist so its own template calls get resolved.
-                worklist.push_back((fresh_id, depth + 1));
-
+            // If a fresh specialization was created, push it to new_functions
+            // and to the worklist so its own internal template calls resolve.
+            if let Some(spec_func) = spec_id_opt {
+                let spec_id = spec_func.id;
+                new_functions.push(spec_func);
+                worklist.push_back((spec_id, depth + 1));
                 changed = true;
-                fresh_id
-            };
+            }
+
+            // The specialization id (cached or just-created).
+            let spec_id = spec_cache
+                .iter()
+                .find(|(k, _)| k == &spec_key)
+                .map(|(_, id)| *id)
+                .expect("spec_id was just inserted");
 
             // The specialization's concrete return type — used both to rewrite
             // the call-site `func` and to retype the caller's `dest` local so
@@ -212,9 +236,6 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
 
     // Insert all new specializations.
     for func in new_functions {
-        // Check any specialization we're about to add — it might itself be
-        // a specialization that produced more specializations; add them too
-        // by ensuring their blocks now reference fresh spec IDs.
         module.add_function(func);
     }
 
@@ -242,7 +263,7 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
         .iter()
         .flat_map(|vt| vt.entries.iter().map(|e| e.method_func_id))
         .collect();
-    let templates_to_purge: Vec<FuncId> = templates
+    let templates_to_purge: Vec<FuncId> = generic_templates
         .iter()
         .filter(|id| !callee_refs.contains(id) && !vtable_refs.contains(id))
         .copied()
@@ -254,15 +275,112 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
     changed
 }
 
-/// Collect (block_index, instr_index, template_id, arg_types) for all
-/// `CallDirect` instructions in `caller_id` that target a template.
+/// Resolve a `SpecPatch` into (block_idx, instr_idx, spec_key, optional new
+/// specialised function). Returns `None` if the patch can't be processed.
 ///
-/// Argument types are resolved from the caller's local type map.
+/// The cache is consulted; on a hit, returns the existing spec id. On a miss,
+/// builds a fresh specialisation via `specialize_function` (Generic mode) or
+/// `specialize_wrapper` (Wrapper mode), inserts it into the cache, and
+/// returns the freshly-built `Function`.
+fn resolve_patch(
+    module: &Module,
+    patch: &SpecPatch,
+    spec_cache: &mut Vec<(SpecKey, FuncId)>,
+    next_id: &mut u32,
+    _interner: &mut StringInterner,
+) -> Option<(usize, usize, SpecKey, Option<Function>)> {
+    match patch {
+        SpecPatch::Generic {
+            block_idx,
+            instr_idx,
+            template_id,
+            arg_types,
+        } => {
+            let template = module.functions.get(template_id)?;
+            let param_types: Vec<Type> = template.params.iter().map(|p| p.ty.clone()).collect();
+            let subst = derive_subst(&param_types, arg_types)?;
+            let spec_key = SpecKey::Generic(*template_id, arg_types.clone());
+
+            if spec_cache.iter().any(|(k, _)| k == &spec_key) {
+                return Some((*block_idx, *instr_idx, spec_key, None));
+            }
+
+            let fresh_id = FuncId::from(*next_id);
+            *next_id += 1;
+            let base_name = template.name.clone();
+            let type_suffix: Vec<String> = arg_types.iter().map(|t| format!("{t:?}")).collect();
+            let fresh_name = format!("{}@<{}>", base_name, type_suffix.join(","));
+            let specialized = specialize_function(template, &subst, fresh_id, fresh_name);
+            spec_cache.push((spec_key.clone(), fresh_id));
+            Some((*block_idx, *instr_idx, spec_key, Some(specialized)))
+        }
+        SpecPatch::Wrapper {
+            block_idx,
+            instr_idx,
+            wrapper_id,
+            fn_ptr_param_idx,
+            captured_func_id,
+        } => {
+            let wrapper = module.functions.get(wrapper_id)?;
+            let captured = module.functions.get(captured_func_id)?;
+            let captured_signature = Type::Function {
+                params: captured.params.iter().map(|p| p.ty.clone()).collect(),
+                ret: Box::new(captured.return_type.clone()),
+            };
+            let spec_key = SpecKey::Wrapper(*wrapper_id, *captured_func_id);
+
+            if spec_cache.iter().any(|(k, _)| k == &spec_key) {
+                return Some((*block_idx, *instr_idx, spec_key, None));
+            }
+
+            let fresh_id = FuncId::from(*next_id);
+            *next_id += 1;
+            let base_name = wrapper.name.clone();
+            let captured_name = captured.name.clone();
+            let fresh_name = format!("{base_name}@<{captured_name}>");
+            let mut specialized = clone::specialize_wrapper(
+                wrapper,
+                *fn_ptr_param_idx,
+                *captured_func_id,
+                captured_signature,
+                fresh_id,
+                fresh_name,
+            );
+            // Devirt the runtime trampoline calls inside the body now that
+            // the captured target is statically known. This converts
+            // `rt_call_with_tuple_args` into `CallDirect{captured_id, …}`
+            // and lets WPA pass 2 propagate the precise return type.
+            // Devirt is skipped when wrapper arity differs from captured
+            // (e.g. `*args` packing) — the runtime trampoline keeps the
+            // call correct in that case.
+            let captured_param_types: Vec<Type> =
+                captured.params.iter().map(|p| p.ty.clone()).collect();
+            let did_devirt = devirt_indirect::devirt_wrapper_indirect_calls(
+                &mut specialized,
+                *fn_ptr_param_idx,
+                *captured_func_id,
+                &captured_param_types,
+            );
+            // Tighten return type only when devirt actually wired the call to
+            // the captured target — otherwise the indirect trampoline still
+            // returns `Any` and downstream typing must reflect that.
+            if did_devirt {
+                specialized.return_type = captured.return_type.clone();
+            }
+            spec_cache.push((spec_key.clone(), fresh_id));
+            Some((*block_idx, *instr_idx, spec_key, Some(specialized)))
+        }
+    }
+}
+
+/// Collect Var-template patches for all `CallDirect` instructions in
+/// `caller_id` that target a Var-based generic template. Argument types
+/// are resolved from the caller's local type map.
 fn collect_template_call_patches(
     module: &Module,
     caller_id: FuncId,
     templates: &HashSet<FuncId>,
-) -> Vec<(usize, usize, FuncId, Vec<Type>)> {
+) -> Vec<SpecPatch> {
     let caller = match module.functions.get(&caller_id) {
         Some(f) => f,
         None => return Vec::new(),
@@ -292,11 +410,163 @@ fn collect_template_call_patches(
                 if arg_types.iter().any(|t| t.contains_var()) {
                     continue;
                 }
-                patches.push((block_idx, instr_idx, *func, arg_types));
+                patches.push(SpecPatch::Generic {
+                    block_idx,
+                    instr_idx,
+                    template_id: *func,
+                    arg_types,
+                });
             }
         }
     }
     patches
+}
+
+/// Collect wrapper-template patches for all `CallDirect` instructions in
+/// `caller_id` that target a decorator-wrapper function whose fn-pointer
+/// argument can be statically traced to a `FuncAddr` source.
+///
+/// Pattern recognised (mirror of `lower_wrapper_call:118-127`):
+/// ```text
+/// %raw   = FuncAddr { func: original_id }
+/// %fnptr = ValueFromInt { src: %raw }
+/// %dest  = CallDirect { func: wrapper_id, args: [%fnptr, ...] }
+/// ```
+/// All three instructions are required to live in the **same block** as the
+/// `CallDirect` for the trace to succeed. Calls whose fn-pointer originates
+/// elsewhere (parameter, dynamic dispatch, cross-block phi) are skipped —
+/// the wrapper retains its generic body and runtime trampoline.
+fn collect_wrapper_call_patches(
+    module: &Module,
+    caller_id: FuncId,
+    wrapper_templates: &HashSet<FuncId>,
+) -> Vec<SpecPatch> {
+    let caller = match module.functions.get(&caller_id) {
+        Some(f) => f,
+        None => return Vec::new(),
+    };
+
+    let mut patches = Vec::new();
+    for (block_idx, block) in caller.blocks.values().enumerate() {
+        for (instr_idx, instr) in block.instructions.iter().enumerate() {
+            if let InstructionKind::CallDirect { func, args, .. } = &instr.kind {
+                if !wrapper_templates.contains(func) {
+                    continue;
+                }
+                let wrapper = match module.functions.get(func) {
+                    Some(f) => f,
+                    None => continue,
+                };
+                let Some(fn_ptr_idx) = wrapper.wrapper_fn_ptr_capture_index else {
+                    continue;
+                };
+                let fnptr_arg = match args.get(fn_ptr_idx) {
+                    Some(Operand::Local(id)) => *id,
+                    _ => continue,
+                };
+                let Some(captured_id) =
+                    find_funcaddr_source(block.instructions.as_slice(), instr_idx, fnptr_arg)
+                else {
+                    continue;
+                };
+                patches.push(SpecPatch::Wrapper {
+                    block_idx,
+                    instr_idx,
+                    wrapper_id: *func,
+                    fn_ptr_param_idx: fn_ptr_idx,
+                    captured_func_id: captured_id,
+                });
+            }
+        }
+    }
+    patches
+}
+
+/// Backward-trace from `target_local` (used as an argument at
+/// `instructions[call_idx]`) up the same block looking for a
+/// `FuncAddr → ValueFromInt → ...` chain. Returns the captured FuncId on
+/// success, `None` if the producer is not a static `FuncAddr`.
+fn find_funcaddr_source(
+    instructions: &[pyaot_mir::Instruction],
+    call_idx: usize,
+    target_local: pyaot_utils::LocalId,
+) -> Option<FuncId> {
+    // Walk backward from just before `call_idx`. Track which local we're
+    // looking for; when we see a `ValueFromInt { dest, src: Local(L) }` that
+    // writes to it, switch to looking for `L`'s producer; when we see a
+    // `FuncAddr { dest, func }` that writes to it, return `func`.
+    let mut needle = target_local;
+    for i in (0..call_idx).rev() {
+        let inst = &instructions[i];
+        match &inst.kind {
+            InstructionKind::ValueFromInt {
+                dest,
+                src: Operand::Local(s),
+            } if *dest == needle => {
+                needle = *s;
+            }
+            InstructionKind::FuncAddr { dest, func } if *dest == needle => {
+                return Some(*func);
+            }
+            // Any other write to `needle` defeats the trace (the producer
+            // is not the simple FuncAddr→ValueFromInt pattern).
+            _ => {
+                if writes_local(&inst.kind, needle) {
+                    return None;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Returns true if `kind` writes to the local `target` (its `dest` matches).
+/// Used by `find_funcaddr_source` to abort the trace when an unrecognised
+/// producer hits the needle local. Listed with the actual MIR variants as of
+/// `crates/mir/src/instructions.rs`; variants without a `dest: LocalId`
+/// (control flow, GC frame management) are unreachable here.
+fn writes_local(kind: &InstructionKind, target: pyaot_utils::LocalId) -> bool {
+    use InstructionKind as K;
+    let dest = match kind {
+        K::Const { dest, .. }
+        | K::BinOp { dest, .. }
+        | K::UnOp { dest, .. }
+        | K::Call { dest, .. }
+        | K::CallDirect { dest, .. }
+        | K::CallNamed { dest, .. }
+        | K::CallVirtual { dest, .. }
+        | K::CallVirtualNamed { dest, .. }
+        | K::FuncAddr { dest, .. }
+        | K::BuiltinAddr { dest, .. }
+        | K::RuntimeCall { dest, .. }
+        | K::Copy { dest, .. }
+        | K::GcAlloc { dest, .. }
+        | K::FloatToInt { dest, .. }
+        | K::BoolToInt { dest, .. }
+        | K::IntToFloat { dest, .. }
+        | K::FloatBits { dest, .. }
+        | K::IntBitsToFloat { dest, .. }
+        | K::ValueFromInt { dest, .. }
+        | K::UnwrapValueInt { dest, .. }
+        | K::ValueFromBool { dest, .. }
+        | K::UnwrapValueBool { dest, .. }
+        | K::FloatAbs { dest, .. }
+        | K::ExcGetType { dest, .. }
+        | K::ExcHasException { dest, .. }
+        | K::ExcGetCurrent { dest, .. }
+        | K::ExcCheckType { dest, .. }
+        | K::ExcCheckClass { dest, .. }
+        | K::Refine { dest, .. }
+        | K::Phi { dest, .. } => *dest,
+        K::GcPush { .. }
+        | K::GcPop
+        | K::ExcPushFrame { .. }
+        | K::ExcPopFrame
+        | K::ExcClear
+        | K::ExcStartHandling
+        | K::ExcEndHandling => return false,
+    };
+    dest == target
 }
 
 /// Walk a single function in instruction order and propagate the source
@@ -393,5 +663,220 @@ pub fn assert_no_var_remaining(module: &Module) {
                 local.ty
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyaot_core_defs::runtime_func_def::RT_CALL_WITH_TUPLE_ARGS;
+    use pyaot_mir::{
+        BasicBlock, Function as MirFunction, Instruction as MirInstruction, Local, RuntimeFunc,
+        Terminator,
+    };
+    use pyaot_utils::{BlockId, LocalId};
+
+    fn make_block_with_funcaddr_chain() -> Vec<MirInstruction> {
+        // Mirrors lower_wrapper_call:118-127 layout:
+        //   raw    = FuncAddr { func: 7 }
+        //   tagged = ValueFromInt { src: raw }
+        //   _      = CallDirect { args: [tagged, ...] }
+        vec![
+            MirInstruction {
+                kind: InstructionKind::FuncAddr {
+                    dest: LocalId::from(10u32),
+                    func: FuncId::from(7u32),
+                },
+                span: None,
+            },
+            MirInstruction {
+                kind: InstructionKind::ValueFromInt {
+                    dest: LocalId::from(11u32),
+                    src: Operand::Local(LocalId::from(10u32)),
+                },
+                span: None,
+            },
+            MirInstruction {
+                kind: InstructionKind::CallDirect {
+                    dest: LocalId::from(12u32),
+                    func: FuncId::from(99u32),
+                    args: vec![Operand::Local(LocalId::from(11u32))],
+                },
+                span: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn backward_trace_finds_funcaddr_through_value_from_int() {
+        let instrs = make_block_with_funcaddr_chain();
+        let captured = find_funcaddr_source(&instrs, 2, LocalId::from(11u32));
+        assert_eq!(captured, Some(FuncId::from(7u32)));
+    }
+
+    #[test]
+    fn backward_trace_returns_none_for_dynamic_fnptr() {
+        // The fn-ptr was loaded via a Copy from an unrelated local.
+        let instrs = vec![
+            MirInstruction {
+                kind: InstructionKind::Copy {
+                    dest: LocalId::from(11u32),
+                    src: Operand::Local(LocalId::from(99u32)),
+                },
+                span: None,
+            },
+            MirInstruction {
+                kind: InstructionKind::CallDirect {
+                    dest: LocalId::from(12u32),
+                    func: FuncId::from(99u32),
+                    args: vec![Operand::Local(LocalId::from(11u32))],
+                },
+                span: None,
+            },
+        ];
+        let captured = find_funcaddr_source(&instrs, 1, LocalId::from(11u32));
+        assert_eq!(captured, None);
+    }
+
+    #[test]
+    fn collect_wrapper_patches_skips_non_wrapper_targets() {
+        // A caller that issues a CallDirect to a non-wrapper function
+        // produces no wrapper patches.
+        let mut module = Module::new();
+        // Caller function with one CallDirect to a func not in
+        // wrapper_templates.
+        let mut caller = MirFunction::new(
+            FuncId::from(0u32),
+            "caller".to_string(),
+            Vec::new(),
+            Type::None,
+            None,
+        );
+        let block_id = caller.entry_block;
+        caller.blocks.insert(
+            block_id,
+            BasicBlock {
+                id: block_id,
+                instructions: vec![MirInstruction {
+                    kind: InstructionKind::CallDirect {
+                        dest: LocalId::from(0u32),
+                        func: FuncId::from(42u32),
+                        args: vec![],
+                    },
+                    span: None,
+                }],
+                terminator: Terminator::Return(None),
+            },
+        );
+        module.add_function(caller);
+        let wrapper_templates = HashSet::new();
+        let patches = collect_wrapper_call_patches(&module, FuncId::from(0u32), &wrapper_templates);
+        assert!(patches.is_empty());
+    }
+
+    #[test]
+    fn spec_key_distinguishes_generic_from_wrapper() {
+        let g = SpecKey::Generic(FuncId::from(1u32), vec![Type::Int]);
+        let w = SpecKey::Wrapper(FuncId::from(1u32), FuncId::from(1u32));
+        assert_ne!(g, w);
+    }
+
+    #[test]
+    fn collect_wrapper_patches_finds_funcaddr_chain() {
+        // Build a module with one caller and one wrapper-template func.
+        let mut module = Module::new();
+
+        let wrapper_id = FuncId::from(7u32);
+        let mut wrapper = MirFunction::new(
+            wrapper_id,
+            "wrapper".to_string(),
+            vec![Local {
+                id: LocalId::from(0u32),
+                name: None,
+                ty: Type::HeapAny,
+                is_gc_root: false,
+            }],
+            Type::Any,
+            None,
+        );
+        wrapper.wrapper_fn_ptr_capture_index = Some(0);
+        // Body unused by the test — but wrapper needs at least entry block,
+        // already provided by Function::new.
+        module.add_function(wrapper);
+
+        // Caller: FuncAddr → ValueFromInt → CallDirect(wrapper, [tagged]).
+        let caller_id = FuncId::from(0u32);
+        let mut caller = MirFunction::new(
+            caller_id,
+            "caller".to_string(),
+            Vec::new(),
+            Type::None,
+            None,
+        );
+        let block_id = caller.entry_block;
+        caller.blocks.insert(
+            block_id,
+            BasicBlock {
+                id: block_id,
+                instructions: vec![
+                    MirInstruction {
+                        kind: InstructionKind::FuncAddr {
+                            dest: LocalId::from(1u32),
+                            func: FuncId::from(42u32),
+                        },
+                        span: None,
+                    },
+                    MirInstruction {
+                        kind: InstructionKind::ValueFromInt {
+                            dest: LocalId::from(2u32),
+                            src: Operand::Local(LocalId::from(1u32)),
+                        },
+                        span: None,
+                    },
+                    MirInstruction {
+                        kind: InstructionKind::CallDirect {
+                            dest: LocalId::from(3u32),
+                            func: wrapper_id,
+                            args: vec![Operand::Local(LocalId::from(2u32))],
+                        },
+                        span: None,
+                    },
+                ],
+                terminator: Terminator::Return(None),
+            },
+        );
+        // Caller needs locals registered for find_funcaddr_source to walk;
+        // the trace itself is local-id-driven, so absence is fine.
+        let _ = block_id;
+        module.add_function(caller);
+
+        let mut wrapper_templates = HashSet::new();
+        wrapper_templates.insert(wrapper_id);
+        let patches = collect_wrapper_call_patches(&module, caller_id, &wrapper_templates);
+        assert_eq!(patches.len(), 1);
+        match &patches[0] {
+            SpecPatch::Wrapper {
+                wrapper_id: wid,
+                fn_ptr_param_idx,
+                captured_func_id,
+                ..
+            } => {
+                assert_eq!(*wid, wrapper_id);
+                assert_eq!(*fn_ptr_param_idx, 0);
+                assert_eq!(*captured_func_id, FuncId::from(42u32));
+            }
+            other => panic!("expected Wrapper patch, got {other:?}"),
+        }
+    }
+
+    /// Compile-time check: ensure RT_CALL_WITH_TUPLE_ARGS is the symbol
+    /// devirt looks for. A future renaming would silently bypass devirt
+    /// without this guard.
+    #[test]
+    fn rt_call_with_tuple_args_symbol_is_stable() {
+        assert_eq!(RT_CALL_WITH_TUPLE_ARGS.symbol, "rt_call_with_tuple_args");
+        // Just to silence unused-import warnings on these helper types.
+        let _ = RuntimeFunc::Call(&RT_CALL_WITH_TUPLE_ARGS);
+        let _: BlockId = BlockId::from(0u32);
     }
 }

@@ -53,6 +53,7 @@ fn make_func(locals: Vec<Local>, instructions: Vec<InstructionKind>) -> Function
         is_ssa: false,
         is_generic_template: false,
         typevar_params: Vec::new(),
+        wrapper_fn_ptr_capture_index: None,
         dom_tree_cache: std::cell::OnceCell::new(),
     }
 }
@@ -407,6 +408,7 @@ fn test_constant_branch_simplification() {
         is_ssa: false,
         is_generic_template: false,
         typevar_params: Vec::new(),
+        wrapper_fn_ptr_capture_index: None,
         dom_tree_cache: std::cell::OnceCell::new(),
     };
 
@@ -719,6 +721,7 @@ fn test_phi_pruned_after_branch_to_goto_fold() {
         is_ssa: false,
         is_generic_template: false,
         typevar_params: Vec::new(),
+        wrapper_fn_ptr_capture_index: None,
         dom_tree_cache: std::cell::OnceCell::new(),
     };
 
