@@ -13,18 +13,16 @@
 //! types).
 
 mod clone;
-mod derive;
 
 use std::collections::{HashSet, VecDeque};
 
 use pyaot_mir::{Constant, Function, InstructionKind, Module, Operand};
-use pyaot_types::Type;
+use pyaot_types::{derive_subst, Type};
 use pyaot_utils::{FuncId, StringInterner};
 
 use crate::pass::OptimizationPass;
 
 use self::clone::specialize_function;
-use self::derive::derive_subst;
 
 /// Maximum specialization depth to prevent infinite recursion on recursive generics.
 const MAX_SPECIALIZATION_DEPTH: usize = 8;
@@ -99,14 +97,16 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
 
     let mut changed = false;
 
+    // Process callers; re-enqueue any caller where we made progress so chained
+    // specializations (e.g. `b.rebox().get()` — `rebox` specialization concretizes
+    // `b2`'s type, which then unblocks `get`'s specialization) iterate to fixpoint.
     while let Some((caller_id, depth)) = worklist.pop_front() {
-        // Collect call sites in this function that target a template.
-        // We can't mutate the function while iterating, so we gather patches first.
         let patches = collect_template_call_patches(module, caller_id, &templates);
         if patches.is_empty() {
             continue;
         }
 
+        let mut progress = false;
         for (block_idx, instr_idx, template_id, arg_types) in patches {
             if depth >= MAX_SPECIALIZATION_DEPTH {
                 eprintln!(
@@ -163,7 +163,23 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
                 fresh_id
             };
 
-            // Rewrite the call site in the caller.
+            // The specialization's concrete return type — used both to rewrite
+            // the call-site `func` and to retype the caller's `dest` local so
+            // chained method calls on that local can be specialized in the
+            // same caller pass.
+            let spec_return_type = new_functions
+                .iter()
+                .find(|f| f.id == spec_id)
+                .map(|f| f.return_type.clone())
+                .or_else(|| {
+                    module
+                        .functions
+                        .get(&spec_id)
+                        .map(|f| f.return_type.clone())
+                })
+                .unwrap_or(Type::Any);
+
+            // Rewrite the call site in the caller and update the dest local's type.
             let caller = module.functions.get_mut(&caller_id).expect("caller exists");
             let block = caller
                 .blocks
@@ -171,9 +187,26 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
                 .nth(block_idx)
                 .expect("block exists");
             let instr = &mut block.instructions[instr_idx];
-            if let InstructionKind::CallDirect { func, .. } = &mut instr.kind {
+            if let InstructionKind::CallDirect { dest, func, .. } = &mut instr.kind {
+                let dest_local = *dest;
                 *func = spec_id;
+                if let Some(local) = caller.locals.get_mut(&dest_local) {
+                    if local.ty.contains_var() || local.ty != spec_return_type {
+                        local.ty = spec_return_type;
+                        progress = true;
+                    }
+                }
             }
+        }
+
+        if progress {
+            // Propagate updated dest-local types forward through `Copy { dest,
+            // src: Local(s) }` chains so aliased variables see the concrete
+            // type before the next iteration's patch collection.
+            propagate_copy_types(module, caller_id);
+            // Re-enqueue caller: chained specializations may have unblocked
+            // patches that were skipped (arg type was Var on the previous pass).
+            worklist.push_back((caller_id, depth));
         }
     }
 
@@ -254,6 +287,8 @@ fn collect_template_call_patches(
                     })
                     .collect();
                 // Skip if any arg type is still a Var (caller is unresolved).
+                // The fixpoint loop in `monomorphize_module` retries this
+                // caller after chained specializations concretize its locals.
                 if arg_types.iter().any(|t| t.contains_var()) {
                     continue;
                 }
@@ -262,6 +297,53 @@ fn collect_template_call_patches(
         }
     }
     patches
+}
+
+/// Walk a single function in instruction order and propagate the source
+/// local's type through every `Copy { dest, src: Local(s) }`. Iterates until
+/// fixpoint within the function so multi-step aliasing chains converge.
+///
+/// Used by `monomorphize_module` after a specialization rewrites a CallDirect
+/// dest local: subsequent `b2 = b.rebox()` style aliases must see the
+/// concrete `Generic { args: [Int] }` type so chained method calls
+/// (`b2.get()`) collect their arg types correctly on the next pass.
+fn propagate_copy_types(module: &mut Module, caller_id: FuncId) {
+    let Some(func) = module.functions.get_mut(&caller_id) else {
+        return;
+    };
+    loop {
+        let mut changed = false;
+        let copies: Vec<(pyaot_utils::LocalId, pyaot_utils::LocalId)> = func
+            .blocks
+            .values()
+            .flat_map(|b| {
+                b.instructions.iter().filter_map(|inst| {
+                    if let InstructionKind::Copy {
+                        dest,
+                        src: Operand::Local(s),
+                    } = &inst.kind
+                    {
+                        Some((*dest, *s))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        for (dest, src) in copies {
+            let src_ty = func.locals.get(&src).map(|l| l.ty.clone());
+            if let (Some(src_ty), Some(dest_local)) = (src_ty, func.locals.get_mut(&dest)) {
+                if dest_local.ty != src_ty && (dest_local.ty.contains_var() || src_ty != Type::Any)
+                {
+                    dest_local.ty = src_ty;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 fn const_type(c: &Constant) -> Type {
@@ -301,12 +383,15 @@ pub fn assert_no_var_remaining(module: &Module) {
             func.id,
             func.return_type
         );
-        // Locals are intentionally not asserted: a non-template caller of an
-        // un-specialized generic method (e.g. `w.transform(42)` where the
-        // method is reached via `CallVirtual` and the template is retained
-        // for dispatch) can carry a `Var`-typed result local. Codegen handles
-        // these as raw Cranelift values, so the binary is correct; tightening
-        // this would require Var-aware return-type inference for surviving
-        // CallVirtual targets.
+        for local in func.locals.values() {
+            assert!(
+                !local.ty.contains_var(),
+                "monomorphize invariant: Var in local {:?} of {} ({:?}): {:?}",
+                local.id,
+                func.name,
+                func.id,
+                local.ty
+            );
+        }
     }
 }

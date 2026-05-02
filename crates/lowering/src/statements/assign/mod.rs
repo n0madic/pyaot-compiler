@@ -370,28 +370,6 @@ impl<'a> Lowering<'a> {
         let value_operand =
             self.lower_expr_expecting(expr, Some(initial_var_type.clone()), hir_module, mir_func)?;
 
-        // When the explicit hint is Generic{user_class_id,[concrete_args]} and the
-        // constructor returned Class{same_id}, promote the alloc-result local type to
-        // match the hint. Without this, WPA overwrites the local with Class{id} from
-        // the constructor return, losing the concrete type args needed for
-        // monomorphization of generic-class methods.
-        if has_explicit_type_hint {
-            if let (
-                Type::Generic {
-                    base: hint_base, ..
-                },
-                mir::Operand::Local(val_id),
-            ) = (&initial_var_type, &value_operand)
-            {
-                if let Some(val_local) = mir_func.locals.get_mut(val_id) {
-                    if matches!(&val_local.ty, Type::Class { class_id, .. } if class_id == hint_base)
-                    {
-                        val_local.ty = initial_var_type.clone();
-                    }
-                }
-            }
-        }
-
         let value_type = self.resolved_value_type_hint(value, &value_operand, hir_module, mir_func);
         let seed_value_type = self.seed_expr_type(value, hir_module);
         let semantic_value_type =

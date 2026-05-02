@@ -4,11 +4,65 @@ use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
-use pyaot_utils::InternedString;
+use pyaot_utils::{FuncId, InternedString};
 
+use crate::call_resolution::ParamClassification;
 use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
+    /// Pack `*args` extras for a method call.
+    ///
+    /// `arg_operands` is the user-supplied positional argument list (no
+    /// implicit `self` / `cls`). `func_id` is the HIR function id; `skip`
+    /// is the number of leading parameters consumed before user args
+    /// (1 for instance / classmethod, 0 for staticmethod).
+    ///
+    /// If the method has a `*args` parameter, the trailing extras are
+    /// packed into a runtime tuple and replaced with a single operand —
+    /// matching the ABI the function was lowered with. Without this,
+    /// `CallVirtual` works (codegen builds a per-call signature
+    /// dynamically), but post-devirt `CallDirect` mismatches the strict
+    /// callee ABI and `abi_repair` panics.
+    ///
+    /// Mirror of the regular-call path in `Lowering::resolve_call_args`
+    /// (see `crates/lowering/src/lib.rs` step 9).
+    fn pack_method_varargs(
+        &mut self,
+        arg_operands: Vec<mir::Operand>,
+        func_id: FuncId,
+        skip: usize,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Vec<mir::Operand> {
+        let Some(func_def) = hir_module.func_defs.get(&func_id) else {
+            return arg_operands;
+        };
+        if func_def.params.len() <= skip {
+            return arg_operands;
+        }
+        let user_params = &func_def.params[skip..];
+        let param_class = ParamClassification::from_params(user_params);
+        let Some(vararg_param) = param_class.vararg else {
+            return arg_operands;
+        };
+        let regular_count = param_class.regular.len();
+        if arg_operands.len() <= regular_count {
+            // No extras — vararg tuple stays empty (caller is responsible for
+            // shape match if it's a strict CallDirect; CallVirtual builds the
+            // per-call signature dynamically). Build an empty tuple so the
+            // call always has the same arity as the callee's params.
+            let tuple_local = self.build_varargs_tuple(Vec::new(), vararg_param, mir_func);
+            let mut packed = arg_operands;
+            packed.push(mir::Operand::Local(tuple_local));
+            return packed;
+        }
+        let mut packed: Vec<mir::Operand> = arg_operands[..regular_count].to_vec();
+        let extras: Vec<mir::Operand> = arg_operands[regular_count..].to_vec();
+        let tuple_local = self.build_varargs_tuple(extras, vararg_param, mir_func);
+        packed.push(mir::Operand::Local(tuple_local));
+        packed
+    }
+
     /// Lower instance method calls on user-defined classes.
     /// Uses virtual dispatch via vtable for polymorphic method calls.
     /// Also handles @staticmethod and @classmethod calls.
@@ -35,11 +89,14 @@ impl<'a> Lowering<'a> {
 
                 let result_local = self.alloc_and_add_local(return_type.clone(), mir_func);
 
+                let packed_args =
+                    self.pack_method_varargs(arg_operands, static_func_id, 0, hir_module, mir_func);
+
                 // Static method: call directly without self
                 self.emit_instruction(mir::InstructionKind::CallDirect {
                     dest: result_local,
                     func: static_func_id,
-                    args: arg_operands,
+                    args: packed_args,
                 });
 
                 return Ok(mir::Operand::Local(result_local));
@@ -55,12 +112,20 @@ impl<'a> Lowering<'a> {
 
                 let result_local = self.alloc_and_add_local(return_type.clone(), mir_func);
 
+                let packed_args = self.pack_method_varargs(
+                    arg_operands,
+                    class_method_func_id,
+                    1,
+                    hir_module,
+                    mir_func,
+                );
+
                 // Class method: call with effective (offset-adjusted) class_id as first arg
                 // Use get_effective_class_id for multi-module support
                 let mut call_args = vec![mir::Operand::Constant(mir::Constant::Int(
                     self.get_effective_class_id(*class_id),
                 ))];
-                call_args.extend(arg_operands);
+                call_args.extend(packed_args);
 
                 self.emit_instruction(mir::InstructionKind::CallDirect {
                     dest: result_local,
@@ -105,9 +170,12 @@ impl<'a> Lowering<'a> {
 
                 let result_local = self.alloc_and_add_local(return_type.clone(), mir_func);
 
+                let packed_args =
+                    self.pack_method_varargs(arg_operands, func_id, 1, hir_module, mir_func);
+
                 // Dunder methods use static dispatch: self is first arg
                 let mut call_args = vec![obj_operand];
-                call_args.extend(arg_operands);
+                call_args.extend(packed_args);
 
                 self.emit_instruction(mir::InstructionKind::CallDirect {
                     dest: result_local,
@@ -134,6 +202,9 @@ impl<'a> Lowering<'a> {
 
                 let result_local = self.alloc_and_add_local(return_type.clone(), mir_func);
 
+                let packed_args =
+                    self.pack_method_varargs(arg_operands, method_func_id, 1, hir_module, mir_func);
+
                 // Check if this method has a vtable slot (for virtual dispatch)
                 if let Some(&slot) = class_info.vtable_slots.get(&method) {
                     // For Protocol classes, use name-based dispatch since concrete classes
@@ -150,7 +221,7 @@ impl<'a> Lowering<'a> {
                             dest: result_local,
                             obj: obj_operand,
                             name_hash,
-                            args: arg_operands,
+                            args: packed_args,
                         });
                     } else {
                         // Use virtual dispatch via vtable
@@ -159,13 +230,13 @@ impl<'a> Lowering<'a> {
                             dest: result_local,
                             obj: obj_operand,
                             slot,
-                            args: arg_operands,
+                            args: packed_args,
                         });
                     }
                 } else {
                     // Fallback to static dispatch (shouldn't happen for class methods)
                     let mut call_args = vec![obj_operand];
-                    call_args.extend(arg_operands);
+                    call_args.extend(packed_args);
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,
                         func: method_func_id,

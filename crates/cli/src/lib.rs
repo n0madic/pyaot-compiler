@@ -259,6 +259,14 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
     // materialized types, then re-analyze the rewritten MIR so every
     // downstream consumer sees a single canonical view.
     pyaot_optimizer::type_inference::analyze_and_materialize_types(&mut mir_module);
+    // Pre-mono devirt: resolves CallVirtual on class-typed receivers to
+    // CallDirect(template), so MonomorphizePass can specialize methods that
+    // use Type::Var (e.g. unwrap(self) -> T → unwrap@<Int>).
+    //
+    // Safe because lower_class_method_call now packs *args before emitting
+    // CallVirtual (matching the callee ABI), so post-devirt CallDirect has
+    // the right arity for abi_repair to operate on.
+    pyaot_optimizer::devirtualize::devirtualize(&mut mir_module);
     if options.verbose {
         println!("Running monomorphization pass...");
     }

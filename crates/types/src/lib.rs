@@ -3,9 +3,12 @@
 #![forbid(unsafe_code)]
 
 pub mod builtin_classes;
+pub mod derive;
 pub mod dunders;
 pub mod exceptions;
 pub mod tag_kinds;
+
+pub use derive::derive_subst;
 
 pub use builtin_classes::{
     BUILTIN_DICT_CLASS_ID, BUILTIN_LIST_CLASS_ID, BUILTIN_SET_CLASS_ID, BUILTIN_TUPLE_CLASS_ID,

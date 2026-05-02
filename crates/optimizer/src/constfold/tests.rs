@@ -644,3 +644,100 @@ fn test_phi_through_propagation_folds() {
         other => panic!("Expected Const(Int(9)), got {:?}", other),
     }
 }
+
+/// Lock-in: `Branch{cond: Const(true), then: A, else: B}` folds to `Goto(A)`,
+/// and the φ-node at `B` (the dropped target) loses its `(folder, _)` source.
+/// Without this, post-fold MIR has stale phi sources and the SSA invariant
+/// checker fires (PhiArityMismatch).
+#[test]
+fn test_phi_pruned_after_branch_to_goto_fold() {
+    let folder = BlockId::from(0u32);
+    let taken = BlockId::from(1u32);
+    let dropped = BlockId::from(2u32);
+    let entry_local = LocalId::from(0u32);
+    let folder_val = LocalId::from(1u32);
+    let phi_dest = LocalId::from(2u32);
+
+    let mut locals_map = IndexMap::new();
+    locals_map.insert(entry_local, make_local(0, Type::Bool));
+    locals_map.insert(folder_val, make_local(1, Type::Int));
+    locals_map.insert(phi_dest, make_local(2, Type::Int));
+
+    let mut blocks = IndexMap::new();
+    // folder: cond = true; folder_val = 7; if cond goto taken else dropped
+    blocks.insert(
+        folder,
+        BasicBlock {
+            id: folder,
+            instructions: vec![
+                make_instruction(InstructionKind::Const {
+                    dest: entry_local,
+                    value: Constant::Bool(true),
+                }),
+                make_instruction(InstructionKind::Const {
+                    dest: folder_val,
+                    value: Constant::Int(7),
+                }),
+            ],
+            terminator: Terminator::Branch {
+                cond: Operand::Local(entry_local),
+                then_block: taken,
+                else_block: dropped,
+            },
+        },
+    );
+    blocks.insert(
+        taken,
+        BasicBlock {
+            id: taken,
+            instructions: vec![],
+            terminator: Terminator::Return(None),
+        },
+    );
+    // dropped: phi_dest = φ((folder, folder_val)); return phi_dest
+    blocks.insert(
+        dropped,
+        BasicBlock {
+            id: dropped,
+            instructions: vec![make_instruction(InstructionKind::Phi {
+                dest: phi_dest,
+                sources: vec![(folder, Operand::Local(folder_val))],
+            })],
+            terminator: Terminator::Return(Some(Operand::Local(phi_dest))),
+        },
+    );
+
+    let func = Function {
+        id: FuncId::from(0u32),
+        name: "test_phi_after_fold".to_string(),
+        params: vec![],
+        return_type: Type::None,
+        locals: locals_map,
+        blocks,
+        entry_block: folder,
+        span: None,
+        is_ssa: false,
+        is_generic_template: false,
+        typevar_params: Vec::new(),
+        dom_tree_cache: std::cell::OnceCell::new(),
+    };
+
+    let mut module = make_module(func);
+    let mut interner = StringInterner::new();
+    super::fold_constants(&mut module, &mut interner);
+
+    let f = module.functions.values().next().unwrap();
+    match &f.blocks[&folder].terminator {
+        Terminator::Goto(t) => assert_eq!(*t, taken),
+        other => panic!("expected Goto(taken), got {:?}", other),
+    }
+    let dropped_block = f.blocks.get(&dropped).expect("dropped target still exists");
+    for inst in &dropped_block.instructions {
+        if let InstructionKind::Phi { sources, .. } = &inst.kind {
+            assert!(
+                sources.iter().all(|(b, _)| *b != folder),
+                "phi at dropped target must drop the (folder, _) source"
+            );
+        }
+    }
+}

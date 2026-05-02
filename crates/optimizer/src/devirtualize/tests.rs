@@ -304,3 +304,117 @@ fn test_no_vtables_is_noop() {
 
     assert_eq!(module.functions.len(), 1);
 }
+
+/// S3.3b.1: receiver typed `Type::Generic { base: user_class_id, args }`
+/// resolves the same as `Type::Class { class_id }` — the args are stripped
+/// to find the vtable, but the call still devirts.
+#[test]
+fn test_devirtualize_generic_user_class_receiver() {
+    let class_id = ClassId::from(7u32);
+    let method_func_id = FuncId::from(1u32);
+    let slot = 0;
+    let receiver_type = Type::Generic {
+        base: class_id,
+        args: vec![Type::Int],
+    };
+
+    let obj_local = Local {
+        id: LocalId::from(0u32),
+        name: None,
+        ty: receiver_type.clone(),
+        is_gc_root: true,
+    };
+    let dest_local = make_local(1, Type::Int);
+
+    let instructions = vec![InstructionKind::CallVirtual {
+        dest: LocalId::from(1u32),
+        obj: Operand::Local(LocalId::from(0u32)),
+        slot,
+        args: vec![Operand::Constant(Constant::Int(42))],
+    }];
+
+    let mut module = make_module_with_vtable(
+        instructions,
+        vec![obj_local, dest_local],
+        vec![],
+        class_id,
+        method_func_id,
+        slot,
+        receiver_type,
+    );
+
+    super::devirtualize(&mut module);
+
+    let func = module.functions.get(&FuncId::from(0u32)).unwrap();
+    let block = func.blocks.values().next().unwrap();
+    let inst = &block.instructions[0];
+
+    match &inst.kind {
+        InstructionKind::CallDirect { func, args, .. } => {
+            assert_eq!(*func, method_func_id);
+            // self prepended + 1 user arg.
+            assert_eq!(args.len(), 2);
+            assert_eq!(args[0], Operand::Local(LocalId::from(0u32)));
+        }
+        other => panic!(
+            "Expected CallDirect after Generic-receiver devirt, got {:?}",
+            other
+        ),
+    }
+}
+
+/// `Type::Generic` whose `base` is a builtin container id (e.g. list) does
+/// NOT have a vtable in the module — devirt must leave the CallVirtual
+/// untouched (no panic, no spurious resolution).
+#[test]
+fn test_devirtualize_generic_builtin_no_vtable() {
+    use pyaot_types::builtin_classes::BUILTIN_LIST_CLASS_ID;
+
+    let class_id = ClassId::from(99u32); // unrelated user class with a vtable
+    let method_func_id = FuncId::from(1u32);
+    let slot = 0;
+
+    // Receiver is a list[int] — Type::Generic with builtin list base. No vtable
+    // for BUILTIN_LIST_CLASS_ID exists in the module's vtables vec.
+    let receiver_type = Type::Generic {
+        base: BUILTIN_LIST_CLASS_ID,
+        args: vec![Type::Int],
+    };
+
+    let obj_local = Local {
+        id: LocalId::from(0u32),
+        name: None,
+        ty: receiver_type,
+        is_gc_root: true,
+    };
+    let dest_local = make_local(1, Type::Int);
+
+    let instructions = vec![InstructionKind::CallVirtual {
+        dest: LocalId::from(1u32),
+        obj: Operand::Local(LocalId::from(0u32)),
+        slot,
+        args: vec![],
+    }];
+
+    // Stub class_type for the unrelated vtable entry — irrelevant to the test.
+    let mut interner = StringInterner::new();
+    let stub_class_type = make_class_type(&mut interner, class_id, "Other");
+    let mut module = make_module_with_vtable(
+        instructions,
+        vec![obj_local, dest_local],
+        vec![],
+        class_id,
+        method_func_id,
+        slot,
+        stub_class_type,
+    );
+
+    super::devirtualize(&mut module);
+
+    let func = module.functions.get(&FuncId::from(0u32)).unwrap();
+    let block = func.blocks.values().next().unwrap();
+    let inst = &block.instructions[0];
+
+    // Builtin-list receiver has no matching vtable → CallVirtual stays.
+    assert!(matches!(&inst.kind, InstructionKind::CallVirtual { .. }));
+}

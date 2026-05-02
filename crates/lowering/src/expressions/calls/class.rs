@@ -3,7 +3,7 @@
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
-use pyaot_types::Type;
+use pyaot_types::{derive_subst, Type};
 
 use crate::context::Lowering;
 
@@ -11,7 +11,15 @@ use super::ExpandedArg;
 
 impl<'a> Lowering<'a> {
     /// Lower a class instantiation: ClassName(args)
-    /// Creates instance, initializes fields to null, then calls __init__ if present
+    /// Creates instance, initializes fields to null, then calls __init__ if present.
+    ///
+    /// For generic classes (`class_def.type_params` non-empty), the result type
+    /// is `Type::Generic { class_id, args }` with `args` derived from the
+    /// `__init__` signature against user-supplied call args via
+    /// `pyaot_types::derive_subst`. This allows downstream `MonomorphizePass`
+    /// to specialize methods that use `T` (`unwrap(self) -> T`, etc.) and is the
+    /// architecturally correct alternative to a post-hoc local-type promotion in
+    /// `lower_assign` (per ARCHITECTURE_REFACTOR.md §5 — no ad-hoc escape hatches).
     pub(crate) fn lower_class_instantiation(
         &mut self,
         class_id: pyaot_utils::ClassId,
@@ -20,119 +28,183 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
+        self.lower_class_instantiation_with_subst(
+            class_id, None, args, kwargs, hir_module, mir_func,
+        )
+    }
+
+    /// Variant of `lower_class_instantiation` that accepts an explicit type-arg
+    /// substitution (PEP-695 `Cls[int](args)` and similar). When `explicit_args`
+    /// is `Some`, those types replace the derived `Generic { args }` and
+    /// `derive_subst` is skipped. Each entry corresponds positionally to
+    /// `class_def.type_params`.
+    pub(crate) fn lower_class_instantiation_with_subst(
+        &mut self,
+        class_id: pyaot_utils::ClassId,
+        explicit_type_args: Option<Vec<Type>>,
+        args: &[ExpandedArg],
+        kwargs: &[hir::KeywordArg],
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) -> Result<mir::Operand> {
         let class_info = self.get_class_info(&class_id).cloned();
 
-        if let Some(info) = class_info {
-            // Create the class type - get class name from class definition
-            let class_name = match hir_module.class_defs.get(&class_id) {
-                Some(class_def) => class_def.name,
-                None => {
-                    // If we can't find the class, return None
-                    return Ok(mir::Operand::Constant(mir::Constant::None));
-                }
-            };
+        let Some(info) = class_info else {
+            return Err(pyaot_diagnostics::CompilerError::semantic_error(
+                "cannot instantiate unknown class",
+                self.call_span(),
+            ));
+        };
 
-            let class_type = Type::Class {
-                class_id,
-                name: class_name,
-            };
+        let class_def = hir_module.class_defs.get(&class_id);
+        let class_name = match class_def {
+            Some(cd) => cd.name,
+            None => return Ok(mir::Operand::Constant(mir::Constant::None)),
+        };
+        let type_params = class_def
+            .map(|cd| cd.type_params.clone())
+            .unwrap_or_default();
 
-            // Allocate result local for the instance
-            let result_local = self.alloc_and_add_local(class_type.clone(), mir_func);
-
-            // Use offset-adjusted class_id for local classes
-            let effective_class_id = self.get_effective_class_id(class_id);
-
-            if let Some(new_func_id) = info.get_dunder_func("__new__") {
-                // __new__ path: call __new__(cls, *args) which returns an instance,
-                // then call __init__ on the result.
-                // __new__ receives cls (class_id as int) as first arg.
-                if let Some(new_func) = hir_module.func_defs.get(&new_func_id) {
-                    let new_params: Vec<_> = new_func.params.iter().skip(1).cloned().collect();
-                    let user_args = self.resolve_call_args(
-                        args,
-                        kwargs,
-                        &new_params,
-                        Some(new_func_id),
-                        1,
-                        self.call_span(),
-                        hir_module,
-                        mir_func,
-                    )?;
-
-                    let mut new_args = vec![mir::Operand::Constant(mir::Constant::Int(
-                        effective_class_id,
-                    ))];
-                    new_args.extend(user_args);
-
-                    self.emit_instruction(mir::InstructionKind::CallDirect {
-                        dest: result_local,
-                        func: new_func_id,
-                        args: new_args,
-                    });
-                }
-            } else {
-                // Default path: rt_make_instance(class_id, total_field_count)
-                self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                    dest: result_local,
-                    func: mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_MAKE_INSTANCE,
-                    ),
-                    args: vec![
-                        mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
-                        mir::Operand::Constant(mir::Constant::Int(info.total_field_count as i64)),
-                    ],
-                });
-            }
-
-            // Call __init__ if present
-            if let Some(init_func_id) = info.init_func {
-                // Get the __init__ function definition
+        // For generic classes, resolve __init__ args ahead of alloc so
+        // we can derive Type::Generic{class_id, [args]} from the call.
+        // The non-generic path keeps the original ordering (alloc first).
+        let mut prelowered_init_args: Option<Vec<mir::Operand>> = None;
+        let class_type: Type = if !type_params.is_empty() {
+            let derived = if let Some(args_explicit) = explicit_type_args {
+                args_explicit
+            } else if let Some(init_func_id) = info.init_func {
                 if let Some(init_func) = hir_module.func_defs.get(&init_func_id) {
-                    // Resolve arguments: __init__ takes self as first argument
-                    // Note: __init__ params include 'self', so we skip it when matching user args
                     let init_params: Vec<_> = init_func.params.iter().skip(1).cloned().collect();
-
-                    // Lower the user-provided arguments (skip self)
-                    // We use param_index_offset=1 because:
-                    // - default_value_slots uses (FuncId, param_index) where param_index is
-                    //   relative to the original function parameters (including self)
-                    // - init_params skips self, so param at index 0 in init_params is actually
-                    //   at index 1 in the original function
+                    let init_param_types: Vec<Type> = init_params
+                        .iter()
+                        .map(|p| p.ty.clone().unwrap_or(Type::Any))
+                        .collect();
                     let user_args = self.resolve_call_args(
                         args,
                         kwargs,
                         &init_params,
                         Some(init_func_id),
-                        1, // Offset by 1 because self is skipped
+                        1,
                         self.call_span(),
                         hir_module,
                         mir_func,
                     )?;
-
-                    // Build full args: self + user args
-                    let mut all_args = vec![mir::Operand::Local(result_local)];
-                    all_args.extend(user_args);
-
-                    // Create dummy local for __init__ return (always None)
-                    let init_result_local = self.alloc_and_add_local(Type::None, mir_func);
-
-                    // Call __init__
-                    self.emit_instruction(mir::InstructionKind::CallDirect {
-                        dest: init_result_local,
-                        func: init_func_id,
-                        args: all_args,
-                    });
+                    let user_arg_types: Vec<Type> = user_args
+                        .iter()
+                        .map(|op| self.operand_type(op, mir_func))
+                        .collect();
+                    let subst =
+                        derive_subst(&init_param_types, &user_arg_types).unwrap_or_default();
+                    prelowered_init_args = Some(user_args);
+                    type_params
+                        .iter()
+                        .map(|tv| subst.get(tv).cloned().unwrap_or(Type::Any))
+                        .collect()
+                } else {
+                    vec![Type::Any; type_params.len()]
                 }
+            } else {
+                vec![Type::Any; type_params.len()]
+            };
+            Type::Generic {
+                base: class_id,
+                args: derived,
             }
-
-            Ok(mir::Operand::Local(result_local))
         } else {
-            Err(pyaot_diagnostics::CompilerError::semantic_error(
-                "cannot instantiate unknown class",
-                self.call_span(),
-            ))
+            Type::Class {
+                class_id,
+                name: class_name,
+            }
+        };
+
+        // Allocate result local for the instance with the (possibly Generic) type.
+        let result_local = self.alloc_and_add_local(class_type.clone(), mir_func);
+
+        // Use offset-adjusted class_id for local classes
+        let effective_class_id = self.get_effective_class_id(class_id);
+
+        if let Some(new_func_id) = info.get_dunder_func("__new__") {
+            // __new__ path: call __new__(cls, *args) which returns an instance,
+            // then call __init__ on the result.
+            // __new__ receives cls (class_id as int) as first arg.
+            if let Some(new_func) = hir_module.func_defs.get(&new_func_id) {
+                let new_params: Vec<_> = new_func.params.iter().skip(1).cloned().collect();
+                let user_args = self.resolve_call_args(
+                    args,
+                    kwargs,
+                    &new_params,
+                    Some(new_func_id),
+                    1,
+                    self.call_span(),
+                    hir_module,
+                    mir_func,
+                )?;
+
+                let mut new_args = vec![mir::Operand::Constant(mir::Constant::Int(
+                    effective_class_id,
+                ))];
+                new_args.extend(user_args);
+
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest: result_local,
+                    func: new_func_id,
+                    args: new_args,
+                });
+            }
+        } else {
+            // Default path: rt_make_instance(class_id, total_field_count)
+            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                dest: result_local,
+                func: mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_MAKE_INSTANCE),
+                args: vec![
+                    mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                    mir::Operand::Constant(mir::Constant::Int(info.total_field_count as i64)),
+                ],
+            });
         }
+
+        // Call __init__ if present
+        if let Some(init_func_id) = info.init_func {
+            // Get the __init__ function definition
+            if let Some(init_func) = hir_module.func_defs.get(&init_func_id) {
+                // Resolve arguments: __init__ takes self as first argument
+                // Note: __init__ params include 'self', so we skip it when matching user args
+                let init_params: Vec<_> = init_func.params.iter().skip(1).cloned().collect();
+
+                // Re-use args if we already lowered them for type derivation;
+                // otherwise resolve now.
+                let user_args = if let Some(prelowered) = prelowered_init_args.take() {
+                    prelowered
+                } else {
+                    self.resolve_call_args(
+                        args,
+                        kwargs,
+                        &init_params,
+                        Some(init_func_id),
+                        1,
+                        self.call_span(),
+                        hir_module,
+                        mir_func,
+                    )?
+                };
+
+                // Build full args: self + user args
+                let mut all_args = vec![mir::Operand::Local(result_local)];
+                all_args.extend(user_args);
+
+                // Create dummy local for __init__ return (always None)
+                let init_result_local = self.alloc_and_add_local(Type::None, mir_func);
+
+                // Call __init__
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest: init_result_local,
+                    func: init_func_id,
+                    args: all_args,
+                });
+            }
+        }
+
+        Ok(mir::Operand::Local(result_local))
     }
 
     /// Lower a cross-module class instantiation: module.ClassName(args)

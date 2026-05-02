@@ -2,11 +2,18 @@
 //!
 //! `derive_subst` walks a pair of (template parameter type, concrete call-arg type)
 //! lists in lockstep, building a map from TypeVar names to concrete types.
+//!
+//! Single source of truth: shared by the optimizer's `MonomorphizePass`
+//! (free-function specialization) and the lowering's generic-class
+//! constructor (S3.3b.1 — to compute the result `Type::Generic { args }`
+//! from `__init__` argument types). Lives in this leaf crate so neither
+//! consumer takes a redundant dependency on the other.
 
 use std::collections::HashMap;
 
-use pyaot_types::Type;
 use pyaot_utils::InternedString;
+
+use crate::Type;
 
 /// Derive a substitution map from template parameter types and concrete argument types.
 ///
@@ -106,7 +113,6 @@ fn unify_into_subst(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pyaot_types::Type;
     use pyaot_utils::StringInterner;
 
     struct Ctx {
@@ -210,5 +216,27 @@ mod tests {
         let list_t = Type::list_of(Type::Var(t));
         let set_int = Type::set_of(Type::Int);
         assert!(derive_subst(&[list_t], &[set_int]).is_none());
+    }
+
+    /// Numeric tower preserved: Bool and Int remain runtime-distinct in
+    /// `derive_subst` because it unifies (structural eq), not joins.
+    /// This guards `feedback_numeric_tower_in_union_construction`.
+    #[test]
+    fn test_derive_subst_bool_int_distinct() {
+        let mut ctx = Ctx::new();
+        let t = ctx.intern("T");
+        // Specialization key for Generic{X, [Bool]} must differ from [Int].
+        let p_bool = vec![Type::Var(t)];
+        let a_bool = vec![Type::Bool];
+        let s_bool = derive_subst(&p_bool, &a_bool).unwrap();
+        assert_eq!(s_bool[&t], Type::Bool);
+
+        let p_int = vec![Type::Var(t)];
+        let a_int = vec![Type::Int];
+        let s_int = derive_subst(&p_int, &a_int).unwrap();
+        assert_eq!(s_int[&t], Type::Int);
+
+        // The two substitutions are not equal — keys collide only on the same arg type.
+        assert_ne!(s_bool[&t], s_int[&t]);
     }
 }

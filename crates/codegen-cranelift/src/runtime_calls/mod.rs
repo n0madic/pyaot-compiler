@@ -69,7 +69,7 @@ pub fn compile_runtime_call(
             if std::ptr::eq(*def, &RT_INSTANCE_GET_FIELD_F64) {
                 let inst_val = load_operand(builder, &args[0], ctx.symbols.var_map);
                 if let Operand::Constant(mir::Constant::Int(off)) = &args[1] {
-                    let byte_off = INSTANCE_FIELDS_OFFSET as i32 + (*off as i32) * PTR_SIZE as i32;
+                    let byte_off = INSTANCE_FIELDS_OFFSET + (*off as i32) * PTR_SIZE as i32;
                     let result =
                         builder
                             .ins()
@@ -83,7 +83,7 @@ pub fn compile_runtime_call(
             if std::ptr::eq(*def, &RT_INSTANCE_SET_FIELD_F64) {
                 let inst_val = load_operand(builder, &args[0], ctx.symbols.var_map);
                 if let Operand::Constant(mir::Constant::Int(off)) = &args[1] {
-                    let byte_off = INSTANCE_FIELDS_OFFSET as i32 + (*off as i32) * PTR_SIZE as i32;
+                    let byte_off = INSTANCE_FIELDS_OFFSET + (*off as i32) * PTR_SIZE as i32;
                     let value_val =
                         load_operand_as(builder, &args[2], ctx.symbols.var_map, cltypes::F64);
                     builder

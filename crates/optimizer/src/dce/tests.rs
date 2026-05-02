@@ -557,3 +557,90 @@ fn test_empty_function_no_panic() {
     eliminate_dead_code(&mut module);
     assert_eq!(module.functions[&FuncId::from(0u32)].blocks.len(), 1);
 }
+
+/// Regression: when an unreachable predecessor is removed by
+/// `eliminate_unreachable_blocks`, any φ-node in a surviving block that
+/// referenced it must drop the stale source. Without this, the SSA invariant
+/// checker fires (PhiArityMismatch) on debug builds. Lock-in for the fix
+/// in `crates/optimizer/src/dce/reachability.rs`.
+#[test]
+fn test_phi_sources_pruned_after_unreachable_block_removal() {
+    use indexmap::IndexMap;
+
+    let entry = bid(0);
+    let dead = bid(1);
+    let merge = bid(2);
+    let l_entry = lid(10);
+    let l_dead = lid(20);
+    let phi_dest = lid(30);
+
+    // entry: l_entry = 1; goto merge
+    // dead:  l_dead = 2; goto merge   (unreachable from entry)
+    // merge: phi_dest = φ((entry, l_entry), (dead, l_dead)); return phi_dest
+    let mut blocks = IndexMap::new();
+    blocks.insert(
+        entry,
+        BasicBlock {
+            id: entry,
+            instructions: vec![const_int(10, 1)],
+            terminator: Terminator::Goto(merge),
+        },
+    );
+    blocks.insert(
+        dead,
+        BasicBlock {
+            id: dead,
+            instructions: vec![const_int(20, 2)],
+            terminator: Terminator::Goto(merge),
+        },
+    );
+    blocks.insert(
+        merge,
+        BasicBlock {
+            id: merge,
+            instructions: vec![Instruction {
+                kind: InstructionKind::Phi {
+                    dest: phi_dest,
+                    sources: vec![
+                        (entry, Operand::Local(l_entry)),
+                        (dead, Operand::Local(l_dead)),
+                    ],
+                },
+                span: None,
+            }],
+            terminator: Terminator::Return(Some(Operand::Local(phi_dest))),
+        },
+    );
+
+    let mut locals = IndexMap::new();
+    locals.insert(l_entry, local(10));
+    locals.insert(l_dead, local(20));
+    locals.insert(phi_dest, local(30));
+
+    let mut func = Function {
+        id: FuncId::from(0u32),
+        name: "f".to_string(),
+        params: Vec::new(),
+        return_type: Type::Int,
+        locals,
+        blocks,
+        entry_block: entry,
+        span: None,
+        is_ssa: true,
+        is_generic_template: false,
+        typevar_params: Vec::new(),
+        dom_tree_cache: std::cell::OnceCell::new(),
+    };
+
+    let removed = eliminate_unreachable_blocks(&mut func);
+    assert!(removed, "unreachable block should be removed");
+    // dead block gone.
+    assert!(!func.blocks.contains_key(&dead));
+    // phi sources only reference surviving predecessors.
+    let phi = &func.blocks[&merge].instructions[0];
+    let InstructionKind::Phi { sources, .. } = &phi.kind else {
+        panic!("expected Phi, got {:?}", phi.kind);
+    };
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].0, entry);
+}
