@@ -256,9 +256,22 @@ impl<'a> Lowering<'a> {
             || matches!(&left_op, mir::Operand::Local(id) if mir_func.locals.get(id).is_some_and(|l| l.ty.is_union()));
         let right_is_union = right_ty.is_union()
             || matches!(&right_op, mir::Operand::Local(id) if mir_func.locals.get(id).is_some_and(|l| l.ty.is_union()));
+        // Class operand without a matching dunder reached this point because
+        // `dispatch_class_binop` returned `None` (the class lacks the
+        // forward dunder and the other operand is not a reflective Class).
+        // Falling through to a raw `mir::BinOp` would panic in codegen
+        // (`Class` lowers to an i64 pointer ABI; primitive arith expects
+        // f64/i64 numeric values). Route through the runtime helper
+        // instead — it now dispatches to user-defined dunders via
+        // `DUNDER_FUNC_REGISTRY` (see `runtime/src/ops/dunder_dispatch.rs`)
+        // and raises a precise TypeError if no dunder is defined, matching
+        // CPython's §3.3.8 behaviour. Safe because the runtime helper
+        // boxes any primitive operand via `emit_value_slot` first.
+        let left_is_class = matches!(left_ty, Type::Class { .. });
+        let right_is_class = matches!(right_ty, Type::Class { .. });
 
         // Union arithmetic: operands are already boxed pointers — use runtime dispatch
-        if left_is_union || right_is_union {
+        if left_is_union || right_is_union || left_is_class || right_is_class {
             let obj_func = match op {
                 hir::BinOp::Add => Some(mir::RuntimeFunc::Call(
                     &pyaot_core_defs::runtime_func_def::RT_OBJ_ADD,

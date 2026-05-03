@@ -2495,4 +2495,35 @@ assert isinstance(_pd_m, _PolyDunder), "polymorphic __mul__ via runtime dispatch
 
 print("Polymorphic dunder Union arithmetic dispatch: PASS")
 
+# Regression: `Class` operand without a matching dunder must route through
+# the runtime helper instead of falling through to a raw `mir::BinOp`. The
+# raw path used to cause a codegen panic
+# ("type mismatch ... declared Union(Float, Class) => I64, value is F64")
+# because the optimizer's `type_inference` pass joins `Class` with `Float`
+# into `Union[Float, Class]` for the dest local, but Cranelift still emits
+# `BinOp::Pow` as a primitive f64 operation. Routing through `rt_obj_pow`
+# lets the runtime dispatch via dunders (or raise a clean TypeError) and
+# wraps the result as a boxed Value, matching the dest's i64 ABI.
+class _RawBinopRegression:
+    __slots__ = ('x',)
+    def __init__(self, x): self.x = x
+    def __pow__(self, other): return _RawBinopRegression(self.x ** other)
+    def __mul__(self, other): return _RawBinopRegression(self.x * other)
+
+_rbr_v = _RawBinopRegression(4.0)
+# Class ** Float — class defines __pow__, so dispatch_class_binop emits
+# CallDirect — exercise the happy path.
+assert (_rbr_v ** 0.5).x == 2.0
+# Float ** Class — neither side has a matching dunder. Pre-fix: codegen
+# panic on raw `mir::BinOp::Pow`. Post-fix: runtime TypeError, raised by
+# `rt_obj_pow` after no dunder is found.
+_rbr_pow_caught = False
+try:
+    _rbr_unsupported = 2.0 ** _rbr_v
+except TypeError:
+    _rbr_pow_caught = True
+assert _rbr_pow_caught, "Float ** Class with no __rpow__ must raise TypeError, not codegen panic"
+
+print("Class binop without matching dunder: PASS")
+
 print("All class tests passed!")
