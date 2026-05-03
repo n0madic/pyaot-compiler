@@ -1469,6 +1469,38 @@ assert _wpa_sumloop_iter_total == 6, ".append-built list elem refined to _WpaSum
 _wpa_sumloop_total = sum(_wpa_sumloop_acc)
 assert _wpa_sumloop_total.v == 6, "sum() over class instances built via .append() in for-loop"
 
+# Regression: nested gen-expr inside an unannotated function whose return
+# type was a list comprehension over a `sum(genexp)` of class instances.
+# Before the post-desugar refine+prescan+reinfer fixpoint, the genexp's
+# return type was set to `Iterator(Any)` during pre-desugar planning (the
+# capture param types weren't yet propagated), and `sum(closure)` collapsed
+# to `Int`. The listcomp's `__comp_N = []` container then froze its element
+# type at `Int`, leaving `linear()` with return type `list[int]` and
+# `linear(...)[0].v` failing with "unknown attribute 'v'".
+class _WpaNestedV:
+    __slots__ = ('v',)
+    def __init__(self, v): self.v = v
+    def __add__(self, other):
+        if isinstance(other, _WpaNestedV):
+            return _WpaNestedV(self.v + other.v)
+        return _WpaNestedV(self.v + other)
+    def __radd__(self, other): return self + other
+    def __mul__(self, other):
+        if isinstance(other, _WpaNestedV):
+            return _WpaNestedV(self.v * other.v)
+        return _WpaNestedV(self.v * other)
+    def __rmul__(self, other): return self * other
+
+def _wpa_nested_linear(x, w):  # unannotated, both params resolved by harvester
+    return [sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]
+
+_wpa_nested_x = [_WpaNestedV(1), _WpaNestedV(2)]
+_wpa_nested_w = [[_WpaNestedV(3), _WpaNestedV(4)]]
+_wpa_nested_logits = _wpa_nested_linear(_wpa_nested_x, _wpa_nested_w)
+# 3*1 + 4*2 = 11. Pre-fix: linear() returned `list[int]`, so `_wpa_nested_logits[0]`
+# was Int and `.v` raised "unknown attribute" at compile time.
+assert _wpa_nested_logits[0].v == 11, "nested gen-expr listcomp resolves Class element"
+
 print("WPA call-site param-type rerun tests passed!")
 
 print("All iteration and comprehension tests passed!")

@@ -332,7 +332,7 @@ impl<'a> Lowering<'a> {
     /// returns `Float`, not `Int`). Only touches functions that have a
     /// prescan entry and are NOT explicitly annotated — annotated
     /// signatures are authoritative.
-    fn reinfer_return_types_with_prescan(&mut self, hir_module: &hir::Module) {
+    pub(crate) fn reinfer_return_types_with_prescan(&mut self, hir_module: &hir::Module) {
         let func_ids = hir_module.functions.to_vec();
         for func_id in &func_ids {
             let Some(func) = hir_module.func_defs.get(func_id) else {
