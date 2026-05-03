@@ -21,6 +21,53 @@ use pyaot_types::{typespec_to_type, Type};
 use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
+    /// Coerce a lowered argument operand to match the stdlib runtime symbol's
+    /// ABI parameter type. `lower_expr_expecting` only seeds the
+    /// `expected_type` hint on `codegen` — it does NOT insert coercion
+    /// instructions for sub-expressions like `Var`, `Index`, `Attribute`. The
+    /// generic `RuntimeCall` instruction is also not repaired by `abi_repair`
+    /// (which only fixes user-call ABIs). So the lowering must emit unbox /
+    /// widening instructions itself, or codegen will bitcast mismatched bits
+    /// (e.g. a tagged `Value` holding a `*FloatObj` interpreted as raw `f64`
+    /// produces a denormal pointer-as-float).
+    fn coerce_for_stdlib_call(
+        &mut self,
+        operand: mir::Operand,
+        arg_type: &Type,
+        expected: &TypeSpec,
+        mir_func: &mut mir::Function,
+    ) -> mir::Operand {
+        let expected_ty = typespec_to_type(expected);
+        if matches!(expected_ty, Type::Any | Type::HeapAny) {
+            return operand;
+        }
+        if arg_type == &expected_ty {
+            return operand;
+        }
+        match (&expected_ty, arg_type) {
+            (Type::Float, Type::Int | Type::Bool) => {
+                let dest = self.alloc_and_add_local(Type::Float, mir_func);
+                self.emit_instruction(mir::InstructionKind::IntToFloat { dest, src: operand });
+                mir::Operand::Local(dest)
+            }
+            (Type::Float, Type::Any | Type::HeapAny | Type::Union(_)) => {
+                self.unbox_if_needed(operand, &Type::Float, mir_func)
+            }
+            (Type::Int, Type::Bool) => {
+                let dest = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::BoolToInt { dest, src: operand });
+                mir::Operand::Local(dest)
+            }
+            (Type::Int, Type::Any | Type::HeapAny | Type::Union(_)) => {
+                self.unbox_if_needed(operand, &Type::Int, mir_func)
+            }
+            (Type::Bool, Type::Any | Type::HeapAny | Type::Union(_)) => {
+                self.unbox_if_needed(operand, &Type::Bool, mir_func)
+            }
+            _ => operand,
+        }
+    }
+
     fn stdlib_param_expected_type(&self, ty: &TypeSpec) -> Option<Type> {
         let expected = typespec_to_type(ty);
         if matches!(expected, Type::Any | Type::HeapAny) {
@@ -199,7 +246,14 @@ impl<'a> Lowering<'a> {
                 if hints.auto_box && matches!(param.ty, TypeSpec::Any) {
                     self.emit_value_slot(arg_operand, &arg_type, mir_func)
                 } else {
-                    arg_operand
+                    // Coerce the lowered operand to the param's expected ABI
+                    // type. The argument's static type may not match the
+                    // runtime symbol's signature — e.g. `math.log(self.data)`
+                    // where `self.data` reads as `Union[Float, V]` (boxed
+                    // tagged Value bits) but `rt_math_log` takes raw `f64`.
+                    // Without this, codegen bitcasts the Value's u64 bits to
+                    // f64, treating a heap pointer as a denormal float.
+                    self.coerce_for_stdlib_call(arg_operand, &arg_type, &param.ty, mir_func)
                 }
             } else if let Some(ref default) = param.default {
                 // Use default value

@@ -63,6 +63,31 @@ impl<'a> Lowering<'a> {
             }
         }
 
+        // Union / Any / HeapAny operand: route Neg / Pos / Invert through the
+        // generic runtime helper. The helper dispatches to the class's dunder
+        // when the runtime value is a class instance, and otherwise applies
+        // primitive negation. Without this, `MIR UnOp::Neg` with a non-Class
+        // operand bitcasts the tagged Value's `u64` bits as `f64` and `fneg`s
+        // them — corrupting heap pointers (a Class instance read via
+        // `self.data` where `data: Union[Float, V]` would crash with garbage).
+        if matches!(op, hir::UnOp::Neg | hir::UnOp::Pos | hir::UnOp::Invert)
+            && matches!(&operand_ty, Type::Union(_) | Type::Any | Type::HeapAny)
+        {
+            let runtime_func = match op {
+                hir::UnOp::Neg => &pyaot_core_defs::runtime_func_def::RT_OBJ_NEG,
+                hir::UnOp::Pos => &pyaot_core_defs::runtime_func_def::RT_OBJ_POS,
+                hir::UnOp::Invert => &pyaot_core_defs::runtime_func_def::RT_OBJ_INVERT,
+                _ => unreachable!(),
+            };
+            let result_local = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(runtime_func),
+                vec![operand_op],
+                operand_ty.clone(),
+                mir_func,
+            );
+            return Ok(mir::Operand::Local(result_local));
+        }
+
         let mir_op = match op {
             hir::UnOp::Neg => mir::UnOp::Neg,
             hir::UnOp::Not => mir::UnOp::Not,

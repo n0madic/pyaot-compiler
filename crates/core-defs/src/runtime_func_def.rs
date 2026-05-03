@@ -275,6 +275,12 @@ pub static RT_OBJ_FLOORDIV: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_obj_
 pub static RT_OBJ_MOD: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_obj_mod");
 /// rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj
 pub static RT_OBJ_POW: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_obj_pow");
+/// rt_obj_neg(a: *mut Obj) -> *mut Obj — unary negation with class-dunder dispatch
+pub static RT_OBJ_NEG: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_obj_neg");
+/// rt_obj_pos(a: *mut Obj) -> *mut Obj — unary plus with class-dunder dispatch
+pub static RT_OBJ_POS: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_obj_pos");
+/// rt_obj_invert(a: *mut Obj) -> *mut Obj — bitwise invert with class-dunder dispatch
+pub static RT_OBJ_INVERT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_obj_invert");
 /// rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj
 pub static RT_ANY_GETITEM: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_any_getitem");
 

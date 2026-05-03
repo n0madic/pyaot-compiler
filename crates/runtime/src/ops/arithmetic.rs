@@ -1,9 +1,9 @@
 //! Arithmetic operations for Python runtime (int, float, and boxed Union arithmetic)
 
 use super::dunder_dispatch::{
-    either_is_instance, try_class_dunder, FNV_ADD, FNV_FLOORDIV, FNV_MOD, FNV_MUL, FNV_POW,
-    FNV_RADD, FNV_RFLOORDIV, FNV_RMOD, FNV_RMUL, FNV_RPOW, FNV_RSUB, FNV_RTRUEDIV, FNV_SUB,
-    FNV_TRUEDIV,
+    either_is_instance, try_class_dunder, try_class_unary_dunder, FNV_ADD, FNV_FLOORDIV,
+    FNV_INVERT, FNV_MOD, FNV_MUL, FNV_NEG, FNV_POS, FNV_POW, FNV_RADD, FNV_RFLOORDIV, FNV_RMOD,
+    FNV_RMUL, FNV_RPOW, FNV_RSUB, FNV_RTRUEDIV, FNV_SUB, FNV_TRUEDIV,
 };
 use crate::exceptions::ExceptionType;
 use crate::object::{FloatObj, Obj, TypeTagKind};
@@ -488,4 +488,122 @@ pub fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
 #[export_name = "rt_obj_pow"]
 pub extern "C" fn rt_obj_pow_abi(a: Value, b: Value) -> Value {
     Value::from_ptr(rt_obj_pow(a.unwrap_ptr(), b.unwrap_ptr()))
+}
+
+// ==================== Unary obj operations (Union dispatch) ====================
+//
+// Generic unary helpers for Union-typed operands. The lowering routes
+// `-x` / `+x` / `~x` here when `x` has a static type that can hold either
+// a primitive (Int / Bool / Float) or a class instance — typical for
+// `-self.data` inside dunders where the planner widens `data` to
+// `Union[Float, Self]`. CPython's protocol: dispatch to the class's
+// `__neg__` / `__pos__` / `__invert__` when the runtime value is a class
+// instance, otherwise apply primitive negation/identity/bitwise-not.
+
+unsafe fn classify_unary(a: *mut Obj) -> TypeTagKind {
+    let va = Value(a as u64);
+    if va.is_int() {
+        TypeTagKind::Int
+    } else if va.is_bool() {
+        TypeTagKind::Bool
+    } else if va.is_ptr() && !a.is_null() {
+        (*a).type_tag()
+    } else {
+        TypeTagKind::None
+    }
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_neg(a: *mut Obj) -> *mut Obj {
+    unsafe {
+        if let Some(result) = try_class_unary_dunder(a, FNV_NEG) {
+            return result;
+        }
+        let tag = classify_unary(a);
+        match tag {
+            TypeTagKind::Int => {
+                let v = Value(a as u64).unwrap_int();
+                match v.checked_neg() {
+                    Some(neg) => Value::from_int(neg).0 as *mut Obj,
+                    None => raise_exc!(ExceptionType::OverflowError, "integer overflow"),
+                }
+            }
+            TypeTagKind::Bool => {
+                let v = if Value(a as u64).unwrap_bool() {
+                    1i64
+                } else {
+                    0i64
+                };
+                Value::from_int(-v).0 as *mut Obj
+            }
+            TypeTagKind::Float => {
+                let f = (*(a as *mut FloatObj)).value;
+                crate::boxing::rt_box_float(-f)
+            }
+            other => raise_exc!(
+                ExceptionType::TypeError,
+                "bad operand type for unary -: '{}'",
+                super::comparison::type_name(other)
+            ),
+        }
+    }
+}
+#[export_name = "rt_obj_neg"]
+pub extern "C" fn rt_obj_neg_abi(a: Value) -> Value {
+    Value::from_ptr(rt_obj_neg(a.unwrap_ptr()))
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_pos(a: *mut Obj) -> *mut Obj {
+    unsafe {
+        if let Some(result) = try_class_unary_dunder(a, FNV_POS) {
+            return result;
+        }
+        let tag = classify_unary(a);
+        match tag {
+            TypeTagKind::Int | TypeTagKind::Bool | TypeTagKind::Float => a,
+            other => raise_exc!(
+                ExceptionType::TypeError,
+                "bad operand type for unary +: '{}'",
+                super::comparison::type_name(other)
+            ),
+        }
+    }
+}
+#[export_name = "rt_obj_pos"]
+pub extern "C" fn rt_obj_pos_abi(a: Value) -> Value {
+    Value::from_ptr(rt_obj_pos(a.unwrap_ptr()))
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn rt_obj_invert(a: *mut Obj) -> *mut Obj {
+    unsafe {
+        if let Some(result) = try_class_unary_dunder(a, FNV_INVERT) {
+            return result;
+        }
+        let tag = classify_unary(a);
+        match tag {
+            TypeTagKind::Int => {
+                let v = Value(a as u64).unwrap_int();
+                Value::from_int(!v).0 as *mut Obj
+            }
+            TypeTagKind::Bool => {
+                let v = if Value(a as u64).unwrap_bool() {
+                    1i64
+                } else {
+                    0i64
+                };
+                Value::from_int(!v).0 as *mut Obj
+            }
+            other => raise_exc!(
+                ExceptionType::TypeError,
+                "bad operand type for unary ~: '{}'",
+                super::comparison::type_name(other)
+            ),
+        }
+    }
+}
+#[export_name = "rt_obj_invert"]
+pub extern "C" fn rt_obj_invert_abi(a: Value) -> Value {
+    Value::from_ptr(rt_obj_invert(a.unwrap_ptr()))
 }

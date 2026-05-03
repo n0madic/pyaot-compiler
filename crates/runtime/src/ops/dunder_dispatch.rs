@@ -42,6 +42,9 @@ pub(super) const FNV_MOD: u64 = fnv1a(b"__mod__");
 pub(super) const FNV_RMOD: u64 = fnv1a(b"__rmod__");
 pub(super) const FNV_POW: u64 = fnv1a(b"__pow__");
 pub(super) const FNV_RPOW: u64 = fnv1a(b"__rpow__");
+pub(super) const FNV_NEG: u64 = fnv1a(b"__neg__");
+pub(super) const FNV_POS: u64 = fnv1a(b"__pos__");
+pub(super) const FNV_INVERT: u64 = fnv1a(b"__invert__");
 
 /// Uniform calling convention for all binary-op dunders. Every dunder is
 /// called as `(self_obj, other_value) -> Value`. The `Value` return slot
@@ -123,4 +126,25 @@ pub(super) unsafe fn try_class_dunder(
     }
 
     None
+}
+
+/// Try to dispatch a unary-op dunder for class instances. Returns
+/// `Some(result)` when a dunder is registered (regardless of whether it
+/// returns NotImplemented — unary dunders rarely do, so we surface the
+/// returned Value verbatim). Returns `None` when the dunder isn't
+/// registered, so the caller can fall back to primitive negation.
+#[inline]
+pub(super) unsafe fn try_class_unary_dunder(a: *mut Obj, dunder_hash: u64) -> Option<*mut Obj> {
+    if !is_instance(a) {
+        return None;
+    }
+    let class_id = (*(a as *const InstanceObj)).class_id;
+    let func_ptr = lookup_dunder_func(class_id, dunder_hash);
+    if func_ptr.is_null() {
+        return None;
+    }
+    type UnaryDunderFn = unsafe extern "C" fn(*mut Obj) -> Value;
+    let f: UnaryDunderFn = std::mem::transmute(func_ptr);
+    let result = f(a);
+    Some(result.0 as *mut Obj)
 }
