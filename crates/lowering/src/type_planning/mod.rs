@@ -69,20 +69,34 @@ impl<'a> Lowering<'a> {
         // Bounded fixpoint: re-run the call-site arg-type harvester with a
         // prescan-enriched overlay so unannotated params get refined when
         // the call site references prescan-typed locals (e.g.
-        // `softmax(logits)` where `logits = gpt(...)`). Cap at 3 rounds —
-        // each round only refines `Any → concrete`, so chains 3-deep cover
-        // real-world unannotated call graphs. Reruns invalidate prescan +
-        // return-type results, so we re-run those after each refinement.
+        // `softmax(logits)` where `logits = gpt(...)`). Each round can also
+        // trigger return-type refinement (e.g. `def f(x: list[T]): result
+        // = []; for v in x: result.append(v); return result` — the
+        // 2nd-pass refinement turns `result` into `list[T]`, which only
+        // becomes the return type after a fresh prescan + return-type pass;
+        // callers like `out = f(x)` then need ANOTHER prescan to see the
+        // refined return type as `out`'s declared local). So the loop
+        // continues iterating while either harvester hints OR
+        // `func_return_types` changes — both feed into each other.
+        // Cap at 3 rounds (matches existing prescan bound; chains 3-deep
+        // dominate real code).
         for _ in 0..3 {
-            let changed = self.rerun_nested_function_param_types(hir_module);
-            if !changed {
-                break;
-            }
+            let prev_returns = self.func_return_types.inner.clone();
+            let harvester_changed = self.rerun_nested_function_param_types(hir_module);
+            // Re-run closure-capture scan so gen-expr / lambda captures of
+            // params whose type was just refined (via the harvester rerun)
+            // pick up the concrete type instead of the stale `Any` from the
+            // initial pre-scan.
+            self.precompute_closure_capture_types(hir_module);
             self.lowering_seed_info
                 .per_function_local_seed_types
                 .clear();
             self.precompute_all_local_var_types(hir_module);
             self.reinfer_return_types_with_prescan(hir_module);
+            let returns_changed = self.func_return_types.inner != prev_returns;
+            if !harvester_changed && !returns_changed {
+                break;
+            }
         }
         self.lowering_seed_info.base_var_types.clear();
         self.populate_base_var_types(hir_module);

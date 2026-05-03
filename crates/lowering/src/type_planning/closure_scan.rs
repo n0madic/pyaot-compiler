@@ -49,10 +49,22 @@ impl<'a> Lowering<'a> {
             for func_id in &hir_module.functions {
                 if let Some(func) = hir_module.func_defs.get(func_id) {
                     let mut func_var_types: IndexMap<VarId, Type> = IndexMap::new();
-                    // Seed from declared param types first.
-                    for param in &func.params {
+                    // Seed from declared param types first; for unannotated
+                    // params, fall back to call-site harvester hints
+                    // (`lambda_param_type_hints`). When this runs from inside
+                    // the WPA fixpoint loop, hints may already carry refined
+                    // types, which lets gen-expr / lambda captures pick up
+                    // a concrete element type instead of staying `Any`.
+                    let hint = self.get_lambda_param_type_hints(func_id).cloned();
+                    for (i, param) in func.params.iter().enumerate() {
                         if let Some(ref ty) = param.ty {
                             func_var_types.insert(param.var, ty.clone());
+                        } else if let Some(ref h) = hint {
+                            if let Some(ty) = h.get(i).cloned() {
+                                if !matches!(ty, Type::Any) {
+                                    func_var_types.insert(param.var, ty);
+                                }
+                            }
                         }
                     }
                     // For lifted closures, also seed from this function's own

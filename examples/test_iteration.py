@@ -1396,6 +1396,26 @@ def _wpa_chain_outer(f):  # caller, unannotated
 
 assert _wpa_chain_outer(_WpaBox(5)) == 15, "nested rerun refines chained unannotated params"
 
+
+# Empty-container return-type inference: function with annotated param but
+# no return annotation, building a list via .append() across CFG blocks
+# (loop body), should still infer the return type as `list[<elem>]`. Prior
+# to the harvester rerun's `func_return_types` change-detection, the
+# inferred return for `_wpa_collect` was `list[Never]` because the second
+# prescan ran with a stale `func_return_types`, and the call-site type for
+# `_wpa_collected = _wpa_collect(...)` resolved as `list[Never]`, breaking
+# attribute access on the elements.
+def _wpa_collect(items: list[_WpaBox]):  # NO return annotation
+    result = []
+    for item in items:
+        result.append(item)
+    return result
+
+
+_wpa_collected = _wpa_collect([_WpaBox(7), _WpaBox(8)])
+assert _wpa_collected[0].v == 7, "return type inferred as list[_WpaBox]"
+assert _wpa_collected[1].v == 8
+
 print("WPA call-site param-type rerun tests passed!")
 
 print("All iteration and comprehension tests passed!")
