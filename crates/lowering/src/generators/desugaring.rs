@@ -371,7 +371,9 @@ fn shape_infer_type(
                 for cdef in m.class_defs.values() {
                     if cdef.id == class_id {
                         if let Some(fdef) = cdef.fields.iter().find(|f| f.name == *attr) {
-                            return Some(fdef.ty.clone());
+                            if !matches!(fdef.ty, Type::Any) {
+                                return Some(fdef.ty.clone());
+                            }
                         }
                     }
                 }
@@ -705,30 +707,10 @@ impl<'a> Lowering<'a> {
             return Ok(());
         }
 
-        // Area G §G.10: propagate capture types onto gen-expr creator
-        // params before desugaring. Gen-exprs receive their free variables
-        // through `ExprKind::Closure { func, captures }` (see
-        // comprehensions.rs::desugar_generator_expression). At call time,
-        // `lower_closure_call` prepends capture values to the call args,
-        // so the creator's first N params *are* the captures. The frontend
-        // creates those params with `ty: None`, but the resume function's
-        // for-loop element type (used to select the right unbox step via
-        // `emit_tuple_get`) is inferred here at desugar time via
-        // `VarTypeMap`, which only sees typed params. Without this pass a
-        // nested gen-expr like
-        //     [sum(wi * xi for wi, xi in zip(wo, x)) for wo in w]
-        // leaves the inner zip's tuple elements as `Any` and the
-        // `wi * xi` multiplication overflows on raw pointers.
-        //
-        // Iterate up to a small bound so nested captures (inner gen-expr
-        // capturing an outer gen-expr's capture param) converge.
-        let gen_func_set: std::collections::HashSet<FuncId> =
-            gen_func_ids.iter().copied().collect();
-        for _ in 0..3 {
-            if !self.propagate_genexp_capture_types(hir_module, &gen_func_set) {
-                break;
-            }
-        }
+        // Capture types are now propagated inside `build_lowering_seed_info`'s
+        // fixpoint (via `propagate_closure_capture_param_types`) before desugar
+        // runs. By the time we reach here every Closure creator's params already
+        // hold their final types. No propagation needed at desugar time.
 
         // Find max VarId in the module to allocate fresh VarIds above it
         let mut max_var_id: u32 = 0;
@@ -746,17 +728,18 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    /// For every `ExprKind::Closure { func, captures }` whose `func` is a
-    /// gen-expr creator, resolve each capture's type via `VarTypeMap` and
-    /// write it onto the corresponding `func.params[i].ty`. Returns
-    /// `true` if any param type was updated — callers can iterate to
-    /// fixed-point for nested gen-expr chains.
-    /// Re-run capture type propagation after the post-desugar harvester
-    /// has refined the call-site arg types. Unlike `propagate_genexp_capture_types`,
-    /// this version considers all `Closure` expressions (not just gen-exprs)
-    /// and overwrites existing capture types when the resolved type is more
-    /// precise (lattice-join with the existing type to ensure monotonicity).
-    pub(crate) fn repropagate_capture_types_post_desugar(&self, m: &mut hir::Module) -> bool {
+    /// Monotone capture-type propagation for all `Closure` expressions.
+    ///
+    /// For every `ExprKind::Closure { func, captures }`, resolves each
+    /// capture's type via `VarTypeMap` + harvester hints + prescan overlay,
+    /// then lattice-joins the result with the existing `func.params[i].ty`
+    /// (force-widening, never narrows). Returns `true` iff any param was
+    /// widened — used as a convergence signal in the type-planning fixpoint.
+    ///
+    /// Called inside `build_lowering_seed_info`'s fixpoint so capture types
+    /// are final BEFORE generator desugaring runs. No gen-expr-only filter —
+    /// lambdas and listcomp closures benefit equally.
+    pub(crate) fn propagate_closure_capture_param_types(&self, m: &mut hir::Module) -> bool {
         let vmap = VarTypeMap::build(m);
         let mut hint_var_types: std::collections::HashMap<VarId, Type> =
             std::collections::HashMap::new();
@@ -812,13 +795,22 @@ impl<'a> Lowering<'a> {
                     if matches!(ty, Type::Any) {
                         continue;
                     }
+                    // REPLACE semantics for captures: each Closure expression
+                    // is a single-source binding (one defining scope per gen-
+                    // expr / lambda), and the source's type monotonically
+                    // improves across fixpoint iterations as harvester hints
+                    // and prescan converge. Lattice-join here would pin a
+                    // pre-convergence type (e.g. `list[Int]` set in iter 0
+                    // before the call-site `linear(...)` was typed) and the
+                    // join with the eventual `list[V]` produces `list[Union[
+                    // Int, V]]` — polluting downstream lowering. Replacing
+                    // each iter takes the latest "best estimate" from the
+                    // current outer-scope state.
                     let existing = func_def.params[i].ty.clone();
-                    let new_ty = match existing {
-                        Some(prev) if prev == ty => continue,
-                        Some(prev) => prev.join(&ty),
-                        None => ty,
-                    };
-                    param_updates.push((i, new_ty));
+                    if existing.as_ref() == Some(&ty) {
+                        continue;
+                    }
+                    param_updates.push((i, ty));
                 }
                 if !param_updates.is_empty() {
                     updates.push((*func, param_updates));
@@ -831,111 +823,6 @@ impl<'a> Lowering<'a> {
                 for (idx, ty) in param_updates {
                     if let Some(param) = func_def.params.get_mut(idx) {
                         param.ty = Some(ty);
-                    }
-                }
-            }
-        }
-        changed
-    }
-
-    fn propagate_genexp_capture_types(
-        &self,
-        m: &mut hir::Module,
-        gen_func_set: &std::collections::HashSet<FuncId>,
-    ) -> bool {
-        let vmap = VarTypeMap::build(m);
-        // Build a `VarId → Type` overlay from harvester hints / prescan that
-        // were populated by the pre-desugar `build_lowering_seed_info` pass.
-        // Without this, gen-expr captures of unannotated outer-scope params
-        // (e.g. `softmax(logits)` where `logits` is the unannotated softmax
-        // param feeding `(v.data for v in logits)`) resolve to `Any` because
-        // `VarTypeMap.by_param` only sees explicit annotations. With it the
-        // capture's `__capture_logits` param.ty becomes `list[Value]`, and
-        // `iter_elem_type` for `for val in __capture_logits` extracts the
-        // correct element type instead of falling back to `Type::Int`.
-        let mut hint_var_types: std::collections::HashMap<VarId, Type> =
-            std::collections::HashMap::new();
-        for (func_id, func_def) in &m.func_defs {
-            if let Some(hints) = self.get_lambda_param_type_hints(func_id) {
-                for (i, ty) in hints.iter().enumerate() {
-                    if matches!(ty, Type::Any) {
-                        continue;
-                    }
-                    if let Some(param) = func_def.params.get(i) {
-                        if param.ty.is_none() {
-                            hint_var_types
-                                .entry(param.var)
-                                .or_insert_with(|| ty.clone());
-                        }
-                    }
-                }
-            }
-        }
-        // Also lift prescan-derived local types (e.g. `logits = [Value(0)]`
-        // at module level → `list[Value]` in prescan) so a capture of a
-        // module-level local resolves correctly.
-        for prescan in self
-            .lowering_seed_info
-            .per_function_local_seed_types
-            .values()
-        {
-            for (var_id, ty) in prescan {
-                if matches!(ty, Type::Any) {
-                    continue;
-                }
-                hint_var_types.entry(*var_id).or_insert_with(|| ty.clone());
-            }
-        }
-        // Collect (func_id, param_idx -> type) updates before mutating to
-        // satisfy the borrow checker.
-        let mut updates: Vec<(FuncId, Vec<(usize, Type)>)> = Vec::new();
-        for (_eid, expr) in m.exprs.iter() {
-            if let hir::ExprKind::Closure { func, captures } = &expr.kind {
-                if !gen_func_set.contains(func) {
-                    continue;
-                }
-                let Some(func_def) = m.func_defs.get(func) else {
-                    continue;
-                };
-                let mut param_updates = Vec::new();
-                for (i, cap_id) in captures.iter().enumerate() {
-                    if i >= func_def.params.len() {
-                        break;
-                    }
-                    if func_def.params[i].ty.is_some() {
-                        continue;
-                    }
-                    let cap_expr = &m.exprs[*cap_id];
-                    // Try Var → hint/prescan first (covers unannotated outer
-                    // params and prescan-typed locals); fall back to the
-                    // existing shape inference; then to expr.ty; finally Any.
-                    let hint_ty = if let hir::ExprKind::Var(v) = &cap_expr.kind {
-                        hint_var_types.get(v).cloned()
-                    } else {
-                        None
-                    };
-                    let ty = hint_ty
-                        .or_else(|| shape_infer_type(m, &vmap, *cap_id, 0, self.interner))
-                        .or_else(|| cap_expr.ty.clone())
-                        .unwrap_or(Type::Any);
-                    if !matches!(ty, Type::Any) {
-                        param_updates.push((i, ty));
-                    }
-                }
-                if !param_updates.is_empty() {
-                    updates.push((*func, param_updates));
-                }
-            }
-        }
-
-        let changed = !updates.is_empty();
-        for (func_id, param_updates) in updates {
-            if let Some(func_def) = m.func_defs.get_mut(&func_id) {
-                for (idx, ty) in param_updates {
-                    if let Some(param) = func_def.params.get_mut(idx) {
-                        if param.ty.is_none() {
-                            param.ty = Some(ty);
-                        }
                     }
                 }
             }
@@ -960,11 +847,23 @@ impl<'a> Lowering<'a> {
         let gen_vars = collect_generator_vars(&func, m);
         let num_locals = gen_vars.len() as u32 + 5;
 
-        // 2. Infer yield type
-        let yield_elem_type = self.infer_generator_yield_type_for_desugar(&func, m);
-        self.func_return_types
+        // 2. Read the converged Iterator(yield) that type-planning already set.
+        // `build_lowering_seed_info` → `infer_return_type_from_func` populates
+        // `func_return_types[func_id] = Iterator(yield_ty)` for every generator
+        // function. `populate_generator_return_types_on_funcdef` additionally
+        // mirrors it onto `func_defs[func_id].return_type`. Both are final
+        // before `desugar_generators` is called.
+        let creator_return_type = self
+            .func_return_types
             .inner
-            .insert(func_id, Type::Iterator(Box::new(yield_elem_type)));
+            .get(&func_id)
+            .cloned()
+            .expect("type-planning must populate generator return type before desugar");
+        // Validate that type-planning produced Iterator(_) as expected.
+        let _ = match &creator_return_type {
+            Type::Iterator(inner) => (**inner).clone(),
+            other => panic!("generator return type must be Iterator(_), got {:?}", other),
+        };
 
         // 3. Allocate VarIds for resume function
         let gen_obj_var = VarId(*next_var_id);
@@ -1037,13 +936,6 @@ impl<'a> Lowering<'a> {
         m.functions.push(resume_func_id);
 
         // 5. Replace original function body with creator logic
-        // Retrieve the already-stored return type (Iterator[elem_type])
-        let creator_return_type = self
-            .func_return_types
-            .inner
-            .get(&func_id)
-            .cloned()
-            .unwrap_or_else(|| Type::Iterator(Box::new(Type::Any)));
         let creator_body =
             build_creator_body(m, &func, &gen_vars, num_locals, &creator_return_type, span);
         let mut creator_cfg = CfgBuilder::new();
@@ -1058,7 +950,14 @@ impl<'a> Lowering<'a> {
             .get_mut(&func_id)
             .expect("internal error: generator func_id not found in HIR module");
         original.is_generator = false;
-        // Set return type so callers know this returns an iterator
+        // `populate_generator_return_types_on_funcdef` (Step 1) already set this
+        // before desugar ran; write it again to keep the FuncDef consistent with
+        // the creator stub. The debug_assert verifies the pre-desugar pass agreed.
+        debug_assert_eq!(
+            original.return_type,
+            Some(creator_return_type.clone()),
+            "pre-desugar return_type must match type-planning result"
+        );
         original.return_type = Some(creator_return_type);
         original.blocks = creator_blocks;
         original.entry_block = creator_entry_block;
@@ -1092,7 +991,14 @@ impl<'a> Lowering<'a> {
             // (`yield (v, i)` where v and i are for-loop targets) resolve to
             // their inferred types even though type planning hasn't run yet.
             let iter_type = m.exprs[for_gen.iter_expr].ty.clone().unwrap_or(Type::Any);
-            let elem_ty = get_iterable_info(&iter_type).map(|(_k, ty)| ty);
+            // `m.exprs[..].ty` is only populated by `eagerly_populate_expr_types`
+            // (which runs AFTER the type-planning fixpoint). During the fixpoint
+            // we may know the iter's element type via the iterating Var's
+            // resolved param type — fall back to shape inference so the
+            // Attribute fallback below sees the right `elem_ty`.
+            let elem_ty = get_iterable_info(&iter_type)
+                .map(|(_k, ty)| ty)
+                .or_else(|| arg_elem_type(m, &vmap, for_gen.iter_expr, 0, self.interner));
 
             if let Some(yield_eid) = for_gen.yield_expr {
                 let yield_ty = m.exprs[yield_eid].ty.clone().unwrap_or(Type::Any);
@@ -1111,15 +1017,28 @@ impl<'a> Lowering<'a> {
                 // Attribute access: yield v.field — only valid when the
                 // for-loop target is a single Var leaf (tuple targets expose
                 // multiple names, so this shortcut can't apply).
+                // Prefer `refined_class_field_types` (populated from constructor
+                // call sites) over the static `class_info.field_types` since the
+                // static map carries the unrefined HIR field type (`Any` for
+                // unannotated `__slots__` fields like `V.data`).
                 if let hir::BindingTarget::Var(target_var) = for_gen.target {
                     let ye = &m.exprs[yield_eid];
                     if let hir::ExprKind::Attribute { obj, attr } = &ye.kind {
                         if let hir::ExprKind::Var(vid) = &m.exprs[*obj].kind {
                             if *vid == target_var {
                                 if let Some(Type::Class { class_id, .. }) = &elem_ty {
+                                    if let Some(ft) =
+                                        self.get_refined_class_field_type(class_id, attr)
+                                    {
+                                        if !matches!(ft, Type::Any) {
+                                            return ft.clone();
+                                        }
+                                    }
                                     if let Some(ci) = self.classes.class_info.get(class_id) {
                                         if let Some(ft) = ci.field_types.get(attr) {
-                                            return ft.clone();
+                                            if !matches!(ft, Type::Any) {
+                                                return ft.clone();
+                                            }
                                         }
                                     }
                                 }
@@ -2057,6 +1976,16 @@ mod tests {
         module.functions.push(func_id);
 
         let mut lowering = Lowering::new(&mut interner);
+        // Simulate what `build_lowering_seed_info` does: populate func_return_types
+        // and FuncDef.return_type so desugar_generators can read them without
+        // running the full type-planning pipeline.
+        let yield_ty = Type::tuple_of(vec![Type::Int, Type::Int]);
+        let iter_ty = Type::Iterator(Box::new(yield_ty));
+        lowering
+            .func_return_types
+            .inner
+            .insert(func_id, iter_ty.clone());
+        module.func_defs.get_mut(&func_id).unwrap().return_type = Some(iter_ty);
         lowering.desugar_generators(&mut module).unwrap();
 
         let resume_func_id = FuncId(func_id.0 + RESUME_FUNC_ID_OFFSET);

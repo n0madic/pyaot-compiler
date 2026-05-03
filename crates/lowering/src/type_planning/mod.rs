@@ -24,7 +24,7 @@ use crate::context::Lowering;
 
 impl<'a> Lowering<'a> {
     /// Run type planning: pre-scan + return type inference for all functions.
-    pub(crate) fn build_lowering_seed_info(&mut self, hir_module: &hir::Module) {
+    pub(crate) fn build_lowering_seed_info(&mut self, hir_module: &mut hir::Module) {
         self.precompute_closure_capture_types(hir_module);
         self.process_module_decorated_functions(hir_module);
         // First-pass refinement — handles `x = [1, 2, 3]` /
@@ -101,9 +101,29 @@ impl<'a> Lowering<'a> {
         // reads), so deeper call chains may need one more round. Change
         // detection short-circuits on already-converged inputs, so the
         // extra cap is free when not needed.
-        for _ in 0..4 {
+        // Cap = 10. Each "hop" in a chain like
+        //   inner_genexp → outer_listcomp → callee_return → caller_prescan
+        //     → caller_arg_at_call_site → next_callee_param_hint
+        // takes one fixpoint iter to propagate, with an additional 1-iter lag
+        // because harvester reads PREVIOUS iter's prescan (its own clear+rebuild
+        // happens after harvester runs). Real-world chains observed in micro-
+        // grad-style code (`softmax(linear(x))`, `sum([sum(genexp) for ...])`)
+        // need ~6-8 hops; 10 leaves headroom and the change-detection short-
+        // circuits the loop the moment everything converges, so the cap costs
+        // nothing on shallow programs.
+        //
+        // `prescan_changed` is essential: a change to a callee's return type
+        // in iter N first reaches the caller's prescan in iter N+1, then the
+        // harvester's hint for the caller-of-caller in iter N+2. Without
+        // tracking prescan changes the loop breaks at iter N+1 even though
+        // iter N+2 still has work to do.
+        for _ in 0..10 {
             let prev_returns = self.func_return_types.inner.clone();
             let prev_refined = self.lowering_seed_info.refined_container_types.clone();
+            let prev_prescan = self
+                .lowering_seed_info
+                .per_function_local_seed_types
+                .clone();
             let harvester_changed = self.rerun_nested_function_param_types(hir_module);
             self.lowering_seed_info
                 .per_function_local_seed_types
@@ -115,18 +135,57 @@ impl<'a> Lowering<'a> {
             // types only resolved this round (refined call returns,
             // refined nested-fn params) get their element type updated.
             self.refine_empty_container_types(hir_module);
+            // Propagate capture types using lattice-join so Closure creator
+            // params see the freshest resolved types. Runs after refine so
+            // the hint overlay reflects the just-sharpened container types.
+            let captures_changed = self.propagate_closure_capture_param_types(hir_module);
             let returns_changed = self.func_return_types.inner != prev_returns;
             let refined_changed = self.lowering_seed_info.refined_container_types != prev_refined;
-            if !harvester_changed && !returns_changed && !refined_changed {
+            let prescan_changed =
+                self.lowering_seed_info.per_function_local_seed_types != prev_prescan;
+            if !harvester_changed
+                && !returns_changed
+                && !refined_changed
+                && !captures_changed
+                && !prescan_changed
+            {
                 break;
             }
         }
         self.lowering_seed_info.base_var_types.clear();
         self.populate_base_var_types(hir_module);
+        // Mirror the converged Iterator(yield) onto each generator FuncDef so
+        // callers reading `module.func_defs[fid].return_type` (e.g.
+        // `closure_result_type`) see the correct type BEFORE desugar runs.
+        // Required for desugar to be a pure structural rewrite.
+        self.populate_generator_return_types_on_funcdef(hir_module);
         // §1.4u-b step 5 — populate `lowering_seed_info.expr_types` eagerly for
         // every non-Var ExprId. Lowering-side queries become cache hits
         // for stable (non-narrowing-sensitive) expressions.
         self.eagerly_populate_expr_types(hir_module);
+    }
+
+    /// Write the converged `Iterator(yield_type)` from `func_return_types` onto
+    /// each generator's HIR `FuncDef.return_type` field. This lets
+    /// `closure_result_type` (which reads `func_defs[fid].return_type`) resolve
+    /// the generator's effective return type at any point AFTER
+    /// `build_lowering_seed_info` finishes — in particular before
+    /// `desugar_generators` runs, making desugar a pure structural rewrite
+    /// that only reads already-finalised types rather than computing them.
+    pub(crate) fn populate_generator_return_types_on_funcdef(&self, hir_module: &mut hir::Module) {
+        let gen_func_ids: Vec<pyaot_utils::FuncId> = hir_module
+            .func_defs
+            .iter()
+            .filter(|(_, f)| f.is_generator && f.return_type.is_none())
+            .map(|(id, _)| *id)
+            .collect();
+        for func_id in gen_func_ids {
+            if let Some(ty) = self.func_return_types.inner.get(&func_id).cloned() {
+                if let Some(func) = hir_module.func_defs.get_mut(&func_id) {
+                    func.return_type = Some(ty);
+                }
+            }
+        }
     }
 
     /// §1.4u-b step 5: walk every `ExprId` in the module and force

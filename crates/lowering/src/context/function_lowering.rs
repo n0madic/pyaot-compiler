@@ -56,7 +56,7 @@ impl<'a> Lowering<'a> {
         // expr captures of unannotated outer-scope params resolve as `Any`
         // and the desugarer's `iter_elem_type` falls back to `Type::Int`,
         // breaking attribute access on the iterated element.
-        self.build_lowering_seed_info(&hir_module);
+        self.build_lowering_seed_info(&mut hir_module);
 
         // Desugar generator functions into regular functions at HIR level.
         // After this, no functions in `hir_module.functions` have
@@ -76,33 +76,12 @@ impl<'a> Lowering<'a> {
                     .or_insert(*func_id);
             }
         }
-        // Post-desugar fixpoint: refine + prescan + reinfer all need to
-        // re-run because:
-        //   - `module.func_defs[gen].return_type` was set from `None` to
-        //     `Iterator(yield_type)` during desugar, but cached
-        //     `func_return_types[caller]` and `expr_types[sum(closure)]`
-        //     still reflect the pre-desugar `Iterator(Any)`.
-        //   - Refined container types (e.g. `__comp_N = []` from a
-        //     desugared listcomp) had their element type pinned when the
-        //     genexp's return type was still `Any`, so the listcomp's
-        //     refined type is stale `list[Int]`.
-        //   - Three iterations cover dependency chains up to length 3
-        //     (genexp → caller(linear) → caller-of-caller(loss = sum(...))).
-        // The expr_types cache must be cleared between iterations because
-        // `seed_expr_type` is cache-backed and would otherwise replay the
-        // pre-desugar `Int` interpretation of `sum(closure)`.
-        for _ in 0..6 {
-            self.rerun_nested_function_param_types(&hir_module);
-            self.repropagate_capture_types_post_desugar(&mut hir_module);
-            self.lowering_seed_info.refined_container_types.clear();
-            self.refine_empty_container_types(&hir_module);
-            self.lowering_seed_info
-                .per_function_local_seed_types
-                .clear();
-            self.precompute_all_local_var_types(&hir_module);
-            self.lowering_seed_info.expr_types.clear();
-            self.reinfer_return_types_with_prescan(&hir_module);
-        }
+        // Post-desugar: all type maps converged before desugar ran (Variant B).
+        // Re-populate caches because desugar added new VarIds (resume function
+        // locals) and new ExprIds (generator intrinsics, creator stub bodies).
+        // One prescan pass covers the new $resume functions (their params are
+        // explicitly typed so this is cheap).
+        self.precompute_all_local_var_types(&hir_module);
         self.lowering_seed_info.base_var_types.clear();
         self.populate_base_var_types(&hir_module);
         self.lowering_seed_info.expr_types.clear();

@@ -1359,13 +1359,19 @@ impl<'a> Lowering<'a> {
             .unwrap_or(Type::Any)
     }
 
-    /// `Closure { func, … }` → the callee function's declared return
-    /// type, or `Any` if unknown.
+    /// `Closure { func, … }` → the callee function's return type, or `Any` if
+    /// unknown. Checks the type-planning side map (`func_return_types.inner`)
+    /// first so that generator return types updated within the fixpoint loop
+    /// (by `reinfer_return_types_with_prescan`) are visible to callers like
+    /// `sum(genexp)` before `populate_generator_return_types_on_funcdef` runs.
     pub(super) fn closure_result_type(
         &self,
         func_id: pyaot_utils::FuncId,
         module: &hir::Module,
     ) -> Type {
+        if let Some(ty) = self.get_func_return_type(&func_id) {
+            return ty.clone();
+        }
         module
             .func_defs
             .get(&func_id)
