@@ -2460,4 +2460,39 @@ assert abs(_f1_p.y - 598.0) < 1e-9, f"§F.1 reassign y: {_f1_p.y}"
 
 print("Float field GC stress (§F.1): PASS")
 
+# ===== Section: Polymorphic dunder + Union arithmetic runtime dispatch =====
+# Regression: when a binary-op dunder's `other` parameter is widened by the
+# type planner to `Union[Self, int, float, bool]`, lowering routes
+# `self.x + other` through `rt_obj_add`. Pre-fix `rt_obj_add` only handled
+# primitives — a runtime class instance in `other` raised "unsupported
+# operand type(s) for +: 'object' and ...". Post-fix the runtime arithmetic
+# helpers route Class operands through user-defined dunders via the new
+# DUNDER_FUNC_REGISTRY (see `runtime/src/ops/dunder_dispatch.rs`).
+class _PolyDunder:
+    __slots__ = ('y',)
+    def __init__(self, y): self.y = y
+    # No isinstance fast-path: forces the Union arithmetic path inside the
+    # dunder body. `self.y + other` is `Union + Union` at lowering time;
+    # if `other` happens to be _PolyDunder at runtime, the runtime dispatch
+    # routes back through `_PolyDunder.__radd__`.
+    def __add__(self, other): return _PolyDunder(self.y + other)
+    def __radd__(self, other): return _PolyDunder(self.y + other)
+    def __mul__(self, other): return _PolyDunder(self.y * other)
+    def __rmul__(self, other): return _PolyDunder(self.y * other)
+
+_pd_a = _PolyDunder(10)
+_pd_b = _PolyDunder(20)
+# Direct: __add__ runs; inside, `self.y + other` hits Union dispatch.
+_pd_r = _pd_a + _pd_b
+assert isinstance(_pd_r, _PolyDunder), "Union arithmetic preserves Class via runtime dunder"
+# Reflected dispatch chain: int + _PolyDunder via compile-time __radd__,
+# then inside __radd__ the Union arithmetic fires.
+_pd_sum = sum([_PolyDunder(1), _PolyDunder(2), _PolyDunder(3)])
+assert isinstance(_pd_sum, _PolyDunder), "sum() over polymorphic-dunder class instances"
+# Mixed forward path
+_pd_m = _PolyDunder(7) * _PolyDunder(3)
+assert isinstance(_pd_m, _PolyDunder), "polymorphic __mul__ via runtime dispatch"
+
+print("Polymorphic dunder Union arithmetic dispatch: PASS")
+
 print("All class tests passed!")

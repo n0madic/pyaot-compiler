@@ -1,5 +1,10 @@
 //! Arithmetic operations for Python runtime (int, float, and boxed Union arithmetic)
 
+use super::dunder_dispatch::{
+    either_is_instance, try_class_dunder, FNV_ADD, FNV_FLOORDIV, FNV_MOD, FNV_MUL, FNV_POW,
+    FNV_RADD, FNV_RFLOORDIV, FNV_RMOD, FNV_RMUL, FNV_RPOW, FNV_RSUB, FNV_RTRUEDIV, FNV_SUB,
+    FNV_TRUEDIV,
+};
 use crate::exceptions::ExceptionType;
 use crate::object::{FloatObj, Obj, TypeTagKind};
 use pyaot_core_defs::Value;
@@ -162,6 +167,21 @@ pub(super) unsafe fn extract_numeric_pair(a: *mut Obj, b: *mut Obj) -> (f64, f64
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_add(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        // Class instance operand: route through user-defined dunders (CPython
+        // §3.3.8 protocol). Polymorphic-`other` parameters in user dunders
+        // (typed Union[Self, int, float, bool] by the planner) reach here
+        // when the runtime value is actually another Class instance.
+        if either_is_instance(a, b) {
+            if let Some(result) = try_class_dunder(a, b, FNV_ADD, FNV_RADD) {
+                return result;
+            }
+            raise_exc!(
+                ExceptionType::TypeError,
+                "unsupported operand type(s) for +: '{}' and '{}'",
+                super::comparison::type_name((*a).type_tag()),
+                super::comparison::type_name((*b).type_tag())
+            );
+        }
         let (va_f, vb_f, both_int, vai, vbi) = extract_numeric_pair(a, b);
         // Reconstruct type tags using Value so tagged primitives are handled correctly.
         let va = Value(a as u64);
@@ -209,6 +229,17 @@ pub extern "C" fn rt_obj_add_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_sub(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if either_is_instance(a, b) {
+            if let Some(result) = try_class_dunder(a, b, FNV_SUB, FNV_RSUB) {
+                return result;
+            }
+            raise_exc!(
+                ExceptionType::TypeError,
+                "unsupported operand type(s) for -: '{}' and '{}'",
+                super::comparison::type_name((*a).type_tag()),
+                super::comparison::type_name((*b).type_tag())
+            );
+        }
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
             match vai.checked_sub(vbi) {
@@ -230,6 +261,17 @@ pub extern "C" fn rt_obj_sub_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_mul(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if either_is_instance(a, b) {
+            if let Some(result) = try_class_dunder(a, b, FNV_MUL, FNV_RMUL) {
+                return result;
+            }
+            raise_exc!(
+                ExceptionType::TypeError,
+                "unsupported operand type(s) for *: '{}' and '{}'",
+                super::comparison::type_name((*a).type_tag()),
+                super::comparison::type_name((*b).type_tag())
+            );
+        }
         let va_tagged = Value(a as u64);
         let vb_tagged = Value(b as u64);
         let tag_a = if va_tagged.is_ptr() {
@@ -280,6 +322,17 @@ pub extern "C" fn rt_obj_mul_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_div(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if either_is_instance(a, b) {
+            if let Some(result) = try_class_dunder(a, b, FNV_TRUEDIV, FNV_RTRUEDIV) {
+                return result;
+            }
+            raise_exc!(
+                ExceptionType::TypeError,
+                "unsupported operand type(s) for /: '{}' and '{}'",
+                super::comparison::type_name((*a).type_tag()),
+                super::comparison::type_name((*b).type_tag())
+            );
+        }
         let (va, vb, _, _, _) = extract_numeric_pair(a, b);
         if vb == 0.0 {
             raise_exc!(ExceptionType::ZeroDivisionError, "division by zero");
@@ -295,6 +348,17 @@ pub extern "C" fn rt_obj_div_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_floordiv(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if either_is_instance(a, b) {
+            if let Some(result) = try_class_dunder(a, b, FNV_FLOORDIV, FNV_RFLOORDIV) {
+                return result;
+            }
+            raise_exc!(
+                ExceptionType::TypeError,
+                "unsupported operand type(s) for //: '{}' and '{}'",
+                super::comparison::type_name((*a).type_tag()),
+                super::comparison::type_name((*b).type_tag())
+            );
+        }
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
             if vbi == 0 {
@@ -329,6 +393,17 @@ pub extern "C" fn rt_obj_floordiv_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_mod(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if either_is_instance(a, b) {
+            if let Some(result) = try_class_dunder(a, b, FNV_MOD, FNV_RMOD) {
+                return result;
+            }
+            raise_exc!(
+                ExceptionType::TypeError,
+                "unsupported operand type(s) for %: '{}' and '{}'",
+                super::comparison::type_name((*a).type_tag()),
+                super::comparison::type_name((*b).type_tag())
+            );
+        }
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int {
             if vbi == 0 {
@@ -362,6 +437,17 @@ pub extern "C" fn rt_obj_mod_abi(a: Value, b: Value) -> Value {
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn rt_obj_pow(a: *mut Obj, b: *mut Obj) -> *mut Obj {
     unsafe {
+        if either_is_instance(a, b) {
+            if let Some(result) = try_class_dunder(a, b, FNV_POW, FNV_RPOW) {
+                return result;
+            }
+            raise_exc!(
+                ExceptionType::TypeError,
+                "unsupported operand type(s) for **: '{}' and '{}'",
+                super::comparison::type_name((*a).type_tag()),
+                super::comparison::type_name((*b).type_tag())
+            );
+        }
         let (va, vb, both_int, vai, vbi) = extract_numeric_pair(a, b);
         if both_int && vbi >= 0 {
             let exp = vbi as u32;

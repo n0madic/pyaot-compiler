@@ -1156,6 +1156,12 @@ pub static RT_ISSUBCLASS: RuntimeFuncDef =
 /// Used for structural Protocol isinstance checks.
 pub static RT_OBJ_HAS_METHOD: RuntimeFuncDef =
     RuntimeFuncDef::new("rt_obj_has_method", &[PI64, PI64], Some(RI8), false);
+/// rt_register_dunder_func(class_id: i64, name_hash: i64, func_ptr: i64) -> void
+/// Registers a binary-op dunder method's function pointer so runtime
+/// arithmetic ops (`rt_obj_add`, `rt_obj_mul`, etc.) can dispatch through
+/// user-defined dunders when an operand is a class instance.
+pub static RT_REGISTER_DUNDER_FUNC: RuntimeFuncDef =
+    RuntimeFuncDef::void("rt_register_dunder_func", &[PI64, PI64, PI64]);
 
 // ===== Struct_time field access =====
 

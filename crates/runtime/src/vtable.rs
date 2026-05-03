@@ -439,3 +439,87 @@ pub extern "C" fn rt_obj_has_method(obj_ptr: *mut u8, name_hash: i64) -> i8 {
         0
     }
 }
+
+// ==================== Dunder Function Registry ====================
+// Maps (class_id, dunder_name_hash) → function pointer. Distinct from
+// METHOD_NAME_REGISTRY (Protocol dispatch via vtable slot) because
+// dunders are dispatched compile-time via CallDirect and have no vtable
+// slot — yet runtime Union arithmetic still needs to find them. Used by
+// `crates/runtime/src/ops/dunder_dispatch.rs::try_class_dunder` to route
+// `rt_obj_add`/`rt_obj_mul`/etc. through user-defined dunders when an
+// operand turns out to be a class instance at runtime.
+
+const MAX_DUNDERS_PER_CLASS: usize = 32;
+
+#[derive(Copy, Clone)]
+struct DunderEntry {
+    name_hash: u64,
+    func_ptr: VtablePtr,
+}
+
+#[derive(Copy, Clone)]
+struct DunderTable {
+    entries: [DunderEntry; MAX_DUNDERS_PER_CLASS],
+    count: usize,
+}
+
+impl DunderTable {
+    const fn new() -> Self {
+        Self {
+            entries: [DunderEntry {
+                name_hash: 0,
+                func_ptr: VtablePtr::null(),
+            }; MAX_DUNDERS_PER_CLASS],
+            count: 0,
+        }
+    }
+}
+
+static DUNDER_FUNC_REGISTRY: RegistryStorage<DunderTable, MAX_CLASSES> =
+    RegistryStorage(UnsafeCell::new({
+        const EMPTY: DunderTable = DunderTable::new();
+        [EMPTY; MAX_CLASSES]
+    }));
+
+/// Register a dunder method's function pointer for runtime binary-op dispatch.
+/// Called during class init for every dunder in `class_info.dunder_methods`.
+#[no_mangle]
+pub extern "C" fn rt_register_dunder_func(class_id: i64, name_hash: i64, func_ptr: i64) {
+    if class_id < 0 || class_id >= MAX_CLASSES as i64 {
+        eprintln!(
+            "WARNING: rt_register_dunder_func: class_id {} out of range [0, {})",
+            class_id, MAX_CLASSES
+        );
+        return;
+    }
+    unsafe {
+        let registry = &mut *DUNDER_FUNC_REGISTRY.0.get();
+        let table = &mut registry[class_id as usize];
+        if table.count >= MAX_DUNDERS_PER_CLASS {
+            eprintln!(
+                "WARNING: class {} exceeds maximum dunders per class ({}), dunder with hash {} dropped",
+                class_id, MAX_DUNDERS_PER_CLASS, name_hash
+            );
+            return;
+        }
+        table.entries[table.count] = DunderEntry {
+            name_hash: name_hash as u64,
+            func_ptr: VtablePtr(func_ptr as *const u8),
+        };
+        table.count += 1;
+    }
+}
+
+/// Look up a dunder method's function pointer by class id + name hash.
+/// Returns null if the class doesn't define this dunder. Used by runtime
+/// arithmetic ops to route `obj + obj` through user-defined dunders.
+pub(crate) unsafe fn lookup_dunder_func(class_id: u8, name_hash: u64) -> *const u8 {
+    let registry = &*DUNDER_FUNC_REGISTRY.0.get();
+    let table = &registry[class_id as usize];
+    for i in 0..table.count {
+        if table.entries[i].name_hash == name_hash {
+            return table.entries[i].func_ptr.0;
+        }
+    }
+    std::ptr::null()
+}

@@ -11,6 +11,15 @@ use crate::context::Lowering;
 /// Below this threshold, regular StrConcat is used (simpler and still efficient for 2 strings)
 const STRING_BUILDER_THRESHOLD: usize = 3;
 
+/// True iff `ty` is a `Union` whose variants include at least one `Class`.
+fn union_contains_class(ty: &Type) -> bool {
+    if let Type::Union(variants) = ty {
+        variants.iter().any(|v| matches!(v, Type::Class { .. }))
+    } else {
+        false
+    }
+}
+
 // Op → dunder-name mappings live on `hir::BinOp` itself
 // (`forward_dunder` / `reflected_dunder`) so every consumer — binary-op
 // dispatch, type planning, reductions — shares one source of truth.
@@ -286,11 +295,39 @@ impl<'a> Lowering<'a> {
                 } else {
                     self.emit_value_slot(right_op, &right_ty, mir_func)
                 };
-                // Result is Union (boxed pointer)
+                // Default result type for primitive Union arithmetic is the
+                // numeric tower as a boxed value. When either operand Union
+                // includes a `Class` variant, runtime dispatch may now route
+                // through user-defined dunders (see
+                // `runtime/src/ops/dunder_dispatch.rs`) and return a class
+                // instance — the local must be typed widely enough to keep
+                // downstream attribute access correct, so propagate the
+                // input Union into the result type in that case.
+                let union_result_ty =
+                    if union_contains_class(&left_ty) || union_contains_class(&right_ty) {
+                        let mut variants: Vec<Type> = vec![Type::Int, Type::Float];
+                        if let Type::Union(left_variants) = &left_ty {
+                            for v in left_variants {
+                                if matches!(v, Type::Class { .. }) && !variants.contains(v) {
+                                    variants.push(v.clone());
+                                }
+                            }
+                        }
+                        if let Type::Union(right_variants) = &right_ty {
+                            for v in right_variants {
+                                if matches!(v, Type::Class { .. }) && !variants.contains(v) {
+                                    variants.push(v.clone());
+                                }
+                            }
+                        }
+                        Type::Union(variants)
+                    } else {
+                        Type::Union(vec![Type::Int, Type::Float])
+                    };
                 let union_result = self.emit_runtime_call(
                     rt_func,
                     vec![boxed_left, boxed_right],
-                    Type::Union(vec![Type::Int, Type::Float]),
+                    union_result_ty,
                     mir_func,
                 );
                 return Ok(mir::Operand::Local(union_result));

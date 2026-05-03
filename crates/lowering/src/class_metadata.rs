@@ -1495,6 +1495,40 @@ impl<'a> Lowering<'a> {
                 );
             }
 
+            // Register dunder function pointers in DUNDER_FUNC_REGISTRY so
+            // runtime arithmetic ops (`rt_obj_add`, `rt_obj_mul`, etc.) can
+            // dispatch through user-defined dunders when an operand turns
+            // out to be a class instance at runtime (Union[Class, ...] +
+            // Class case). Distinct from METHOD_NAME_REGISTRY (Protocol
+            // dispatch via vtable slot) — dunders have no vtable slot.
+            let dunder_funcs: Vec<(i64, pyaot_utils::FuncId)> = self
+                .get_class_info(class_id)
+                .map(|ci| {
+                    ci.dunder_methods
+                        .iter()
+                        .map(|(&name, &func_id)| (pyaot_utils::fnv1a_hash(name) as i64, func_id))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (name_hash, func_id) in dunder_funcs {
+                let func_addr_local = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::FuncAddr {
+                    dest: func_addr_local,
+                    func: func_id,
+                });
+                self.emit_runtime_call_void(
+                    mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_REGISTER_DUNDER_FUNC,
+                    ),
+                    vec![
+                        mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
+                        mir::Operand::Constant(mir::Constant::Int(name_hash)),
+                        mir::Operand::Local(func_addr_local),
+                    ],
+                    mir_func,
+                );
+            }
+
             // For exception classes, also register the class name for error messages
             if class_def.is_exception_class {
                 // class_def.name is already an InternedString, use it directly

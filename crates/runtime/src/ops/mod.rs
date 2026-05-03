@@ -2,6 +2,7 @@
 
 mod arithmetic;
 mod comparison;
+mod dunder_dispatch;
 mod printing;
 
 // Re-export all public functions
