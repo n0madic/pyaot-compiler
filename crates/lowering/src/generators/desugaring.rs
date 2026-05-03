@@ -757,6 +757,48 @@ impl<'a> Lowering<'a> {
         gen_func_set: &std::collections::HashSet<FuncId>,
     ) -> bool {
         let vmap = VarTypeMap::build(m);
+        // Build a `VarId → Type` overlay from harvester hints / prescan that
+        // were populated by the pre-desugar `build_lowering_seed_info` pass.
+        // Without this, gen-expr captures of unannotated outer-scope params
+        // (e.g. `softmax(logits)` where `logits` is the unannotated softmax
+        // param feeding `(v.data for v in logits)`) resolve to `Any` because
+        // `VarTypeMap.by_param` only sees explicit annotations. With it the
+        // capture's `__capture_logits` param.ty becomes `list[Value]`, and
+        // `iter_elem_type` for `for val in __capture_logits` extracts the
+        // correct element type instead of falling back to `Type::Int`.
+        let mut hint_var_types: std::collections::HashMap<VarId, Type> =
+            std::collections::HashMap::new();
+        for (func_id, func_def) in &m.func_defs {
+            if let Some(hints) = self.get_lambda_param_type_hints(func_id) {
+                for (i, ty) in hints.iter().enumerate() {
+                    if matches!(ty, Type::Any) {
+                        continue;
+                    }
+                    if let Some(param) = func_def.params.get(i) {
+                        if param.ty.is_none() {
+                            hint_var_types
+                                .entry(param.var)
+                                .or_insert_with(|| ty.clone());
+                        }
+                    }
+                }
+            }
+        }
+        // Also lift prescan-derived local types (e.g. `logits = [Value(0)]`
+        // at module level → `list[Value]` in prescan) so a capture of a
+        // module-level local resolves correctly.
+        for prescan in self
+            .lowering_seed_info
+            .per_function_local_seed_types
+            .values()
+        {
+            for (var_id, ty) in prescan {
+                if matches!(ty, Type::Any) {
+                    continue;
+                }
+                hint_var_types.entry(*var_id).or_insert_with(|| ty.clone());
+            }
+        }
         // Collect (func_id, param_idx -> type) updates before mutating to
         // satisfy the borrow checker.
         let mut updates: Vec<(FuncId, Vec<(usize, Type)>)> = Vec::new();
@@ -777,7 +819,16 @@ impl<'a> Lowering<'a> {
                         continue;
                     }
                     let cap_expr = &m.exprs[*cap_id];
-                    let ty = shape_infer_type(m, &vmap, *cap_id, 0, self.interner)
+                    // Try Var → hint/prescan first (covers unannotated outer
+                    // params and prescan-typed locals); fall back to the
+                    // existing shape inference; then to expr.ty; finally Any.
+                    let hint_ty = if let hir::ExprKind::Var(v) = &cap_expr.kind {
+                        hint_var_types.get(v).cloned()
+                    } else {
+                        None
+                    };
+                    let ty = hint_ty
+                        .or_else(|| shape_infer_type(m, &vmap, *cap_id, 0, self.interner))
                         .or_else(|| cap_expr.ty.clone())
                         .unwrap_or(Type::Any);
                     if !matches!(ty, Type::Any) {
@@ -930,7 +981,12 @@ impl<'a> Lowering<'a> {
     }
 
     /// Simplified yield type inference for the desugaring pass.
-    fn infer_generator_yield_type_for_desugar(
+    /// Also reused by `infer_return_type_from_func` (see
+    /// `type_planning/mod.rs`) so generator functions get
+    /// `Iterator(yield_type)` as their inferred return type before
+    /// `desugar_generators` runs — required for callers like `sum(genexp)`
+    /// to see the gen-expr's element type at type-planning time.
+    pub(crate) fn infer_generator_yield_type_for_desugar(
         &self,
         func: &hir::Function,
         m: &hir::Module,

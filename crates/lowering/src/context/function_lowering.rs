@@ -18,12 +18,6 @@ impl<'a> Lowering<'a> {
         // First pass: build class info
         self.build_class_info(&hir_module);
 
-        // Desugar generator functions into regular functions at HIR level.
-        // Must run after build_class_info (needs class field info for yield type
-        // inference) and before function name map / type planning (so the desugared
-        // functions are visible to both).
-        self.desugar_generators(&mut hir_module)?;
-
         // Split HIR VarIds before type planning when a later write would force
         // a raw local to hold a heap value (or vice versa). Doing this before
         // the global/type-planning scans keeps all downstream maps keyed by the
@@ -37,7 +31,8 @@ impl<'a> Lowering<'a> {
         // This must happen before lowering any functions since they may reference globals.
         self.scan_global_var_types(&hir_module);
 
-        // Second pass: build function name map
+        // Second pass: build function name map (original functions; resume
+        // functions added by `desugar_generators` are appended below).
         for func_id in &hir_module.functions {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 let func_name = self.interner.resolve(func.name).to_string();
@@ -50,9 +45,51 @@ impl<'a> Lowering<'a> {
         // once at function definition time and shared across all calls.
         self.scan_mutable_defaults(&hir_module);
 
-        // Phase 1: Type Planning — pre-scan + compute types for all expressions
-        // Fills type_map, closure_capture_types, lambda_param_type_hints, func_return_types
+        // Phase 1: Type Planning — pre-scan + compute types for all expressions.
+        // Fills type_map, closure_capture_types, lambda_param_type_hints, func_return_types.
+        // Runs BEFORE generator desugaring: generator functions have
+        // `is_generator: true`, so `infer_return_type_from_func` returns
+        // `Iterator(yield_type)` (computed via `infer_generator_yield_type_for_desugar`
+        // which doesn't require desugaring to have run). The desugarer
+        // then runs WITH access to closure_capture_types, harvester hints,
+        // and the synthesized Iterator return types — without these, gen-
+        // expr captures of unannotated outer-scope params resolve as `Any`
+        // and the desugarer's `iter_elem_type` falls back to `Type::Int`,
+        // breaking attribute access on the iterated element.
         self.build_lowering_seed_info(&hir_module);
+
+        // Desugar generator functions into regular functions at HIR level.
+        // After this, no functions in `hir_module.functions` have
+        // `is_generator: true`; new `$resume` functions are appended.
+        self.desugar_generators(&mut hir_module)?;
+
+        // Register the new `$resume` functions in the name map and rebuild
+        // prescan / base-var entries for them. The resume functions are
+        // synthesized with explicit param/local type hints so the prescan
+        // walker fills in `per_function_local_seed_types` correctly.
+        for func_id in &hir_module.functions {
+            if let Some(func) = hir_module.func_defs.get(func_id) {
+                let func_name = self.interner.resolve(func.name).to_string();
+                self.symbols
+                    .func_name_map
+                    .entry(func_name)
+                    .or_insert(*func_id);
+            }
+        }
+        self.lowering_seed_info
+            .per_function_local_seed_types
+            .clear();
+        self.precompute_all_local_var_types(&hir_module);
+        self.lowering_seed_info.base_var_types.clear();
+        self.populate_base_var_types(&hir_module);
+        // Re-cache `expr_types` for the (now-rewritten) module: original
+        // generator bodies were replaced by creator stubs, new resume-function
+        // bodies didn't exist when the first eager pass ran, and
+        // `func_return_types[gen]` was overwritten from `Type::None` /
+        // `Type::Iterator(?)` to `Type::Iterator(yield_type)`. Discard the
+        // stale cache so call-site types resolve correctly during lowering.
+        self.lowering_seed_info.expr_types.clear();
+        self.eagerly_populate_expr_types(&hir_module);
 
         // Phase 2: Code Generation — lower functions using type_map
         // After desugaring, no functions should have is_generator=true

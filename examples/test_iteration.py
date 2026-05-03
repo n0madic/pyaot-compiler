@@ -1416,6 +1416,20 @@ _wpa_collected = _wpa_collect([_WpaBox(7), _WpaBox(8)])
 assert _wpa_collected[0].v == 7, "return type inferred as list[_WpaBox]"
 assert _wpa_collected[1].v == 8
 
+
+# Generator expression inside an unannotated function — the gen-expr captures
+# the outer-scope unannotated parameter and iterates it. Before the
+# `desugar_generators` reorder, the desugarer ran BEFORE type planning, so
+# the harvester-derived hint for the outer parameter wasn't available, and
+# `iter_elem_type` fell back to `Type::Int`, leaving `v` typed as `Int`
+# inside the gen-expr body. Compile-time error: "unknown attribute 'data'".
+def _wpa_genexp_max(items):  # unannotated
+    return max(v.v for v in items)
+
+
+_wpa_genexp_input = [_WpaBox(3), _WpaBox(7), _WpaBox(2)]
+assert _wpa_genexp_max(_wpa_genexp_input) == 7, "gen-expr inside unannotated fn types `v` as _WpaBox"
+
 print("WPA call-site param-type rerun tests passed!")
 
 print("All iteration and comprehension tests passed!")

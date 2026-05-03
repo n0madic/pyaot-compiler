@@ -83,11 +83,6 @@ impl<'a> Lowering<'a> {
         for _ in 0..3 {
             let prev_returns = self.func_return_types.inner.clone();
             let harvester_changed = self.rerun_nested_function_param_types(hir_module);
-            // Re-run closure-capture scan so gen-expr / lambda captures of
-            // params whose type was just refined (via the harvester rerun)
-            // pick up the concrete type instead of the stale `Any` from the
-            // initial pre-scan.
-            self.precompute_closure_capture_types(hir_module);
             self.lowering_seed_info
                 .per_function_local_seed_types
                 .clear();
@@ -110,7 +105,7 @@ impl<'a> Lowering<'a> {
     /// `seed_expr_type_by_id` to compute+cache the result. `Var` arms
     /// skip the cache (effective type is context-sensitive); all
     /// other arms populate `lowering_seed_info.expr_types`.
-    fn eagerly_populate_expr_types(&mut self, hir_module: &hir::Module) {
+    pub(crate) fn eagerly_populate_expr_types(&mut self, hir_module: &hir::Module) {
         let ids: Vec<hir::ExprId> = hir_module.exprs.iter().map(|(id, _)| id).collect();
         for expr_id in ids {
             let _ = self.seed_expr_type_by_id(expr_id, hir_module);
@@ -132,7 +127,7 @@ impl<'a> Lowering<'a> {
     /// VarIds are globally unique per HIR module, so cross-function
     /// flattening is collision-free. The map is never mutated by
     /// `lower_function` or by narrowing.
-    fn populate_base_var_types(&mut self, hir_module: &hir::Module) {
+    pub(crate) fn populate_base_var_types(&mut self, hir_module: &hir::Module) {
         let from_prescan: Vec<(pyaot_utils::VarId, Type)> = self
             .lowering_seed_info
             .per_function_local_seed_types
@@ -370,6 +365,26 @@ impl<'a> Lowering<'a> {
         module: &hir::Module,
         param_types: &IndexMap<VarId, Type>,
     ) -> Type {
+        // Generator functions don't have meaningful `Return(expr)` (Python
+        // forbids `return value` inside `def`-generators); their effective
+        // return type is `Iterator(yield_type)` derived from the body's
+        // `Yield` expressions. Compute it here so the type planner sees
+        // the right type at call sites BEFORE `desugar_generators` runs.
+        // After desugar, the original generator function becomes a creator
+        // stub that returns the generator object — this synthetic type
+        // matches what desugar later writes into `func_return_types`.
+        // Generator functions don't have meaningful `Return(expr)` (Python
+        // forbids `return value` inside `def`-generators); their effective
+        // return type is `Iterator(yield_type)` derived from the body's
+        // `Yield` expressions. Compute it here so the type planner sees the
+        // right type at call sites BEFORE `desugar_generators` runs. After
+        // desugar, the original generator function becomes a creator stub
+        // and `func_return_types[gen]` is OVERWRITTEN to the same value
+        // (line ~829 of `generators/desugaring.rs`).
+        if func.is_generator {
+            let yield_ty = self.infer_generator_yield_type_for_desugar(func, module);
+            return Type::Iterator(Box::new(yield_ty));
+        }
         let mut return_types = Vec::new();
         for block in func.blocks.values() {
             // `Return(expr)` can appear as a block terminator (normal path)
