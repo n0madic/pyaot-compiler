@@ -66,30 +66,58 @@ impl<'a> Lowering<'a> {
             .clear();
         self.precompute_all_local_var_types(hir_module);
         self.reinfer_return_types_with_prescan(hir_module);
-        // Bounded fixpoint: re-run the call-site arg-type harvester with a
-        // prescan-enriched overlay so unannotated params get refined when
-        // the call site references prescan-typed locals (e.g.
-        // `softmax(logits)` where `logits = gpt(...)`). Each round can also
-        // trigger return-type refinement (e.g. `def f(x: list[T]): result
-        // = []; for v in x: result.append(v); return result` — the
-        // 2nd-pass refinement turns `result` into `list[T]`, which only
-        // becomes the return type after a fresh prescan + return-type pass;
-        // callers like `out = f(x)` then need ANOTHER prescan to see the
-        // refined return type as `out`'s declared local). So the loop
-        // continues iterating while either harvester hints OR
-        // `func_return_types` changes — both feed into each other.
-        // Cap at 3 rounds (matches existing prescan bound; chains 3-deep
-        // dominate real code).
-        for _ in 0..3 {
+        // Bounded fixpoint: harvester → prescan → reinfer → refine.
+        //
+        // Re-run the call-site arg-type harvester with a prescan-enriched
+        // overlay so unannotated params get refined when the call site
+        // references prescan-typed locals (e.g. `softmax(logits)` where
+        // `logits = gpt(...)`). Each round can also trigger return-type
+        // refinement (e.g. `def f(x: list[T]): result = []; for v in x:
+        // result.append(v); return result` — the 2nd-pass refinement turns
+        // `result` into `list[T]`, which only becomes the return type after
+        // a fresh prescan + return-type pass; callers like `out = f(x)`
+        // then need ANOTHER prescan to see the refined return type as
+        // `out`'s declared local).
+        //
+        // `refine_empty_container_types` participates in the loop because
+        // prescan reads `refined_container_types` for unannotated `x = []`
+        // binds (see `local_prescan.rs` rhs_ty fallback). Without in-loop
+        // refine, a chain like
+        //   probs = softmax(logits)             # softmax return refined later
+        //   losses = []
+        //   for i in range(n): losses.append(-probs[i].log())
+        //   total = sum(losses)
+        // freezes `losses` at `list[Any]` from the line-48 refine pass —
+        // by the time `softmax` resolves to `list[Value]`, no one
+        // re-derives `losses`'s element type. `sum(losses)` then collapses
+        // to `Int` and `total.data` raises "unknown attribute" at compile
+        // time. Re-running refine inside the loop using the freshly-rebuilt
+        // prescan overlay closes that gap.
+        //
+        // Loop continues while harvester hints, `func_return_types`, OR
+        // `refined_container_types` changed — all three feed into each
+        // other. Cap raised 3 → 4: in-loop refine extends the effective
+        // dependency chain by one hop (refine writes → next-round prescan
+        // reads), so deeper call chains may need one more round. Change
+        // detection short-circuits on already-converged inputs, so the
+        // extra cap is free when not needed.
+        for _ in 0..4 {
             let prev_returns = self.func_return_types.inner.clone();
+            let prev_refined = self.lowering_seed_info.refined_container_types.clone();
             let harvester_changed = self.rerun_nested_function_param_types(hir_module);
             self.lowering_seed_info
                 .per_function_local_seed_types
                 .clear();
             self.precompute_all_local_var_types(hir_module);
             self.reinfer_return_types_with_prescan(hir_module);
+            // Re-run empty-container refinement with the just-rebuilt
+            // prescan overlay so containers populated from values whose
+            // types only resolved this round (refined call returns,
+            // refined nested-fn params) get their element type updated.
+            self.refine_empty_container_types(hir_module);
             let returns_changed = self.func_return_types.inner != prev_returns;
-            if !harvester_changed && !returns_changed {
+            let refined_changed = self.lowering_seed_info.refined_container_types != prev_refined;
+            if !harvester_changed && !returns_changed && !refined_changed {
                 break;
             }
         }

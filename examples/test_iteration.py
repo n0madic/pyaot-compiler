@@ -1430,6 +1430,45 @@ def _wpa_genexp_max(items):  # unannotated
 _wpa_genexp_input = [_WpaBox(3), _WpaBox(7), _WpaBox(2)]
 assert _wpa_genexp_max(_wpa_genexp_input) == 7, "gen-expr inside unannotated fn types `v` as _WpaBox"
 
+# Regression: container refinement participates in the type-planning
+# fixpoint loop. Pre-fix: `refine_empty_container_types` ran only twice
+# before the harvester-rerun loop, so a list `acc = []` whose elements were
+# `.append()`-ed inside a for-loop from a value typed via an unannotated
+# function-return refinement got frozen at `list[Any]` — the harvester
+# would later refine the function's return type, but the empty-container
+# refinement never re-ran, so `acc`'s elem type stayed `Any`. Downstream:
+# `sum(acc)` then collapsed to `Int` (helpers.rs `Builtin::Sum` doesn't
+# match `Type::Class` on `Any`) and `total.v` raised "unknown attribute"
+# at compile time. Post-fix: in-loop refine sees the refined return type
+# after harvester+reinfer completes, so `acc: list[_WpaSumloopValue]`.
+class _WpaSumloopValue:
+    __slots__ = ('v',)
+    def __init__(self, v: int): self.v = v
+    def __add__(self, other):
+        if isinstance(other, _WpaSumloopValue):
+            return _WpaSumloopValue(self.v + other.v)
+        return _WpaSumloopValue(self.v + other)
+    def __radd__(self, other): return _WpaSumloopValue(self.v + other)
+
+def _wpa_sumloop_make(xs):  # unannotated — return refined by rerun
+    return [_WpaSumloopValue(x) for x in xs]
+
+_wpa_sumloop_seed = [1, 2, 3]
+_wpa_sumloop_probs = _wpa_sumloop_make(_wpa_sumloop_seed)
+_wpa_sumloop_acc = []
+for _wpa_sumloop_i in range(3):
+    _wpa_sumloop_acc.append(_wpa_sumloop_probs[_wpa_sumloop_i])
+# Direct iteration check: if refine misses, `_wpa_sumloop_x.v` would be a
+# compile-time "unknown attribute" since elem would be `Any`/`Int`.
+_wpa_sumloop_iter_total = 0
+for _wpa_sumloop_x in _wpa_sumloop_acc:
+    _wpa_sumloop_iter_total = _wpa_sumloop_iter_total + _wpa_sumloop_x.v
+assert _wpa_sumloop_iter_total == 6, ".append-built list elem refined to _WpaSumloopValue"
+# sum() check: exercises Builtin::Sum which uses the refined elem type.
+# Pre-fix: collapsed to `Int` → `.v` access compile-fail.
+_wpa_sumloop_total = sum(_wpa_sumloop_acc)
+assert _wpa_sumloop_total.v == 6, "sum() over class instances built via .append() in for-loop"
+
 print("WPA call-site param-type rerun tests passed!")
 
 print("All iteration and comprehension tests passed!")
