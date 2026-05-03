@@ -2526,4 +2526,116 @@ assert _rbr_pow_caught, "Float ** Class with no __rpow__ must raise TypeError, n
 
 print("Class binop without matching dunder: PASS")
 
+# ===== Section: Unannotated __slots__ field refined to Float by constructor =====
+# Regression: when `__slots__` declares a field but no class-body annotation
+# is given (frontend-level type stays `Any`), constructor-call refinement is
+# the only place the concrete primitive type lives. The read path
+# (`lower_attribute`) consulted `refined_class_field_types` and emitted
+# `RT_INSTANCE_GET_FIELD_F64` (raw f64), but the write path (`bind_attr_op`)
+# fell back to `class_info.field_types` (still `Any`) and routed through
+# `RT_INSTANCE_SET_FIELD` which boxed the f64 into a `FloatObj`. The read then
+# interpreted the FloatObj pointer bits as a denormal f64 (~1e-313).
+# Fix: make `bind_attr_op` consult `get_refined_class_field_type` first,
+# matching the read path.
+class _RefSymBasic:
+    __slots__ = ('data',)
+    def __init__(self, data): self.data = data
+
+_refsym_x = _RefSymBasic(0.5)
+assert _refsym_x.data == 0.5, f"unannotated slot refined-Float read: got {_refsym_x.data}"
+
+# Reassignment must round-trip: write picks F64 fast-path because refined,
+# read picks F64 fast-path — symmetry preserved across mutations.
+_refsym_x.data = 1.25
+assert _refsym_x.data == 1.25, f"unannotated slot refined-Float reassign: got {_refsym_x.data}"
+
+# Multiple instances share the same refined storage label — every instance
+# must round-trip the same way.
+_refsym_list = [_RefSymBasic(float(i) * 0.125) for i in range(50)]
+for _i in range(50):
+    _expected = float(_i) * 0.125
+    _got = _refsym_list[_i].data
+    assert abs(_got - _expected) < 1e-12, f"unannotated slot refined-Float idx {_i}: got {_got}, want {_expected}"
+
+# Mixed write paths: `__init__` write + later attribute write — both must
+# agree on the F64 fast-path label, otherwise one path boxes and the other
+# reads raw bits.
+class _RefSymMutate:
+    __slots__ = ('v',)
+    def __init__(self, v): self.v = v
+    def double(self): self.v = self.v * 2.0
+
+_refsym_m = _RefSymMutate(3.5)
+_refsym_m.double()
+assert _refsym_m.v == 7.0, f"unannotated slot mutate (init+method): got {_refsym_m.v}"
+_refsym_m.v = -2.5
+assert _refsym_m.v == -2.5, f"unannotated slot direct write: got {_refsym_m.v}"
+
+print("Unannotated __slots__ refined-Float read/write symmetry: PASS")
+
+# ===== Section: Unary -/+/~ on Union/Any operand (runtime obj dispatch) =====
+# Regression: when `lower_unop` saw an operand typed `Union[Float, Class]` /
+# `Any` / `HeapAny`, it fell through to `MIR UnOp::Neg`. Codegen lowered
+# that as `fneg(bitcast<f64>(operand))`. For a heap-pointer operand
+# (FloatObj or class instance) the bitcast turns the pointer bits into a
+# denormal f64; the result corrupts the field on store, and any later
+# dereference (e.g. `(-self.data).x`) SIGSEGVs.
+# Fix: route Neg/Pos/Invert through `rt_obj_neg/pos/invert` runtime
+# helpers when the operand is Union/Any/HeapAny. The helper inspects the
+# tag and dispatches to `__neg__/__pos__/__invert__` for class instances,
+# checked-negation for Int, identity for Bool, and `rt_box_float(-f)` for
+# FloatObj.
+class _UnaryUnionV:
+    __slots__ = ('data',)
+    def __init__(self, data): self.data = data
+    def __neg__(self): return _UnaryUnionV(-self.data)
+    def __pos__(self): return _UnaryUnionV(+self.data)
+
+# Field typed `Union[Float, _UnaryUnionV]` — assignments below pick both
+# branches so neither collapses out.
+def _unary_union_make(flag: bool):
+    n = _UnaryUnionV(0.0)
+    if flag:
+        n.data = 0.5  # Float branch
+    else:
+        n.data = _UnaryUnionV(2.0)  # Class branch
+    return n
+
+# Float-branch unary: must hit primitive negation inside `rt_obj_neg` (no
+# raw fneg over a pointer-shaped Value).
+_uu_float = _unary_union_make(True)
+_uu_neg = -_uu_float.data  # Union[Float, V] operand → rt_obj_neg
+# After negation we get either a Float or a class instance. Both branches
+# round-trip through assignment to a Float-refined field.
+_uu_back = _UnaryUnionV(0.0)
+_uu_back.data = _uu_neg
+# When the operand was Float, result is -0.5 (boxed FloatObj after rt_obj_neg
+# returns Value). When operand was Class, result is _UnaryUnionV(-2.0).
+# We can't observe the field after Union assignment without a type guard,
+# so verify no crash by accessing .data of the wrapper class instead.
+_uu_neg_class = -_UnaryUnionV(7.5)
+assert _uu_neg_class.data == -7.5, "unary -Class via __neg__"
+_uu_pos_class = +_UnaryUnionV(-3.25)
+assert _uu_pos_class.data == -3.25, "unary +Class via __pos__"
+
+# `-self.data` inside a method where `data: Union[Float, V]` — pre-fix this
+# was the canonical SIGSEGV crash (mgj.py repro).
+class _UnarySelfData:
+    __slots__ = ('data',)
+    def __init__(self, data): self.data = data
+    def neg_data(self):
+        # self.data is Union[Float, _UnaryUnionV]. Without rt_obj_neg this
+        # bitcasts the heap-pointer Value as f64 and corrupts memory.
+        return -self.data
+
+_uds_a = _UnarySelfData(0.5)
+_uds_neg_a = _uds_a.neg_data()  # Float operand → primitive neg path inside rt_obj_neg
+# Assigning the Union result back into a Float-refined slot exercises both
+# write-path coercion and the post-negation Value tag.
+_uds_back = _UnarySelfData(0.0)
+_uds_back.data = _uds_neg_a
+# Just having reached this line proves no SIGSEGV — that's the regression.
+
+print("Unary -/+/~ on Union/Any operand via runtime dispatch: PASS")
+
 print("All class tests passed!")

@@ -426,11 +426,22 @@ impl<'a> Lowering<'a> {
                 }
                 // 2. Regular instance field
                 if let Some(&offset) = class_info.field_offsets.get(&field) {
-                    let field_ty = class_info
+                    let storage_ty = class_info
                         .field_types
                         .get(&field)
                         .cloned()
                         .unwrap_or(Type::Any);
+                    // Mirror the read path (`lower_attribute`): prefer the
+                    // constructor-refined type so the F64 fast-path for stores
+                    // agrees with the F64 fast-path for loads. Without this an
+                    // unannotated `Float`-refined field reads raw f64 via
+                    // RT_INSTANCE_GET_FIELD_F64 but writes via the generic
+                    // RT_INSTANCE_SET_FIELD with a boxed FloatObj — the read
+                    // then interprets pointer bits as a denormal float.
+                    let field_ty = self
+                        .get_refined_class_field_type(class_id, &field)
+                        .cloned()
+                        .unwrap_or(storage_ty);
                     if matches!(field_ty, Type::Float) {
                         let f64_op = self.coerce_for_storage(
                             value_operand,
