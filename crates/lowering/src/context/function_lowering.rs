@@ -91,7 +91,9 @@ impl<'a> Lowering<'a> {
         // The expr_types cache must be cleared between iterations because
         // `seed_expr_type` is cache-backed and would otherwise replay the
         // pre-desugar `Int` interpretation of `sum(closure)`.
-        for _ in 0..3 {
+        for _ in 0..6 {
+            self.rerun_nested_function_param_types(&hir_module);
+            self.repropagate_capture_types_post_desugar(&mut hir_module);
             self.lowering_seed_info.refined_container_types.clear();
             self.refine_empty_container_types(&hir_module);
             self.lowering_seed_info

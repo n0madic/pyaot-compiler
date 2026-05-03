@@ -1501,6 +1501,22 @@ _wpa_nested_logits = _wpa_nested_linear(_wpa_nested_x, _wpa_nested_w)
 # was Int and `.v` raised "unknown attribute" at compile time.
 assert _wpa_nested_logits[0].v == 11, "nested gen-expr listcomp resolves Class element"
 
+# Regression: chained unannotated nested function — `softmax(linear(x))[0].v`.
+# Pre-fix the harvester pinned softmax::logits to whatever linear(x) returned
+# at the time of the pre-desugar pass (`list[Int]`), even though linear's
+# return type narrowed to `list[Class]` after desugar widened the inner
+# gen-expr's yield type. The post-desugar harvester rerun + capture-type
+# repropagate fixpoint widens softmax::logits to `list[Class]` so its body
+# is lowered with `e: Class` and `e / total` returns `Class`.
+def _wpa_chained_softmax(logits):  # unannotated, hint refined by call site
+    return [e + e for e in logits]   # avoid runtime div-of-class issue
+
+_wpa_chained_x = [_WpaNestedV(1), _WpaNestedV(2)]
+_wpa_chained_logits = _wpa_nested_linear(_wpa_chained_x, [[_WpaNestedV(2), _WpaNestedV(3)]])
+_wpa_chained_probs = _wpa_chained_softmax(_wpa_chained_logits)
+# Compile-time: probs[0] must type as _WpaNestedV so .v access succeeds.
+assert _wpa_chained_probs[0].v >= 0, "softmax(linear(x))[0].v compile-type chain"
+
 print("WPA call-site param-type rerun tests passed!")
 
 print("All iteration and comprehension tests passed!")

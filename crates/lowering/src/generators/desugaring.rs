@@ -751,6 +751,93 @@ impl<'a> Lowering<'a> {
     /// write it onto the corresponding `func.params[i].ty`. Returns
     /// `true` if any param type was updated — callers can iterate to
     /// fixed-point for nested gen-expr chains.
+    /// Re-run capture type propagation after the post-desugar harvester
+    /// has refined the call-site arg types. Unlike `propagate_genexp_capture_types`,
+    /// this version considers all `Closure` expressions (not just gen-exprs)
+    /// and overwrites existing capture types when the resolved type is more
+    /// precise (lattice-join with the existing type to ensure monotonicity).
+    pub(crate) fn repropagate_capture_types_post_desugar(&self, m: &mut hir::Module) -> bool {
+        let vmap = VarTypeMap::build(m);
+        let mut hint_var_types: std::collections::HashMap<VarId, Type> =
+            std::collections::HashMap::new();
+        for (func_id, func_def) in &m.func_defs {
+            if let Some(hints) = self.get_lambda_param_type_hints(func_id) {
+                for (i, ty) in hints.iter().enumerate() {
+                    if matches!(ty, Type::Any) {
+                        continue;
+                    }
+                    if let Some(param) = func_def.params.get(i) {
+                        if param.ty.is_none() {
+                            hint_var_types
+                                .entry(param.var)
+                                .or_insert_with(|| ty.clone());
+                        }
+                    }
+                }
+            }
+        }
+        for prescan in self
+            .lowering_seed_info
+            .per_function_local_seed_types
+            .values()
+        {
+            for (var_id, ty) in prescan {
+                if matches!(ty, Type::Any) {
+                    continue;
+                }
+                hint_var_types.entry(*var_id).or_insert_with(|| ty.clone());
+            }
+        }
+        let mut updates: Vec<(FuncId, Vec<(usize, Type)>)> = Vec::new();
+        for (_eid, expr) in m.exprs.iter() {
+            if let hir::ExprKind::Closure { func, captures } = &expr.kind {
+                let Some(func_def) = m.func_defs.get(func) else {
+                    continue;
+                };
+                let mut param_updates = Vec::new();
+                for (i, cap_id) in captures.iter().enumerate() {
+                    if i >= func_def.params.len() {
+                        break;
+                    }
+                    let cap_expr = &m.exprs[*cap_id];
+                    let hint_ty = if let hir::ExprKind::Var(v) = &cap_expr.kind {
+                        hint_var_types.get(v).cloned()
+                    } else {
+                        None
+                    };
+                    let ty = hint_ty
+                        .or_else(|| shape_infer_type(m, &vmap, *cap_id, 0, self.interner))
+                        .or_else(|| cap_expr.ty.clone())
+                        .unwrap_or(Type::Any);
+                    if matches!(ty, Type::Any) {
+                        continue;
+                    }
+                    let existing = func_def.params[i].ty.clone();
+                    let new_ty = match existing {
+                        Some(prev) if prev == ty => continue,
+                        Some(prev) => prev.join(&ty),
+                        None => ty,
+                    };
+                    param_updates.push((i, new_ty));
+                }
+                if !param_updates.is_empty() {
+                    updates.push((*func, param_updates));
+                }
+            }
+        }
+        let changed = !updates.is_empty();
+        for (func_id, param_updates) in updates {
+            if let Some(func_def) = m.func_defs.get_mut(&func_id) {
+                for (idx, ty) in param_updates {
+                    if let Some(param) = func_def.params.get_mut(idx) {
+                        param.ty = Some(ty);
+                    }
+                }
+            }
+        }
+        changed
+    }
+
     fn propagate_genexp_capture_types(
         &self,
         m: &mut hir::Module,
