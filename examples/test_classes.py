@@ -2638,4 +2638,57 @@ _uds_back.data = _uds_neg_a
 
 print("Unary -/+/~ on Union/Any operand via runtime dispatch: PASS")
 
+# =============================================================================
+# Section: rmsnorm-style call-site feedback loop with class element
+# Regression: when a callee is reinvoked on its own return value, the
+# harvester previously folded `list[Class]` (from a non-self call site)
+# and `list[Float]` (from the rebound call site, where the seeded return
+# type collapsed `xi * scale` to Float) into `list[Any]`. The body's
+# prescan with `Any`-typed params then re-derived `list[Float]`,
+# pinning a self-consistent but wrong fixed point and triggering an
+# `OverflowError: integer overflow` at runtime when `xi * xi` was
+# treated as integer multiplication on a heap pointer.
+# Element-wise class-vs-primitive override in `join_nested_arg_ty`
+# resolves the disagreement in favour of the class.
+# =============================================================================
+
+class _RmsValue:
+    __slots__ = ('data',)
+    def __init__(self, data): self.data = data
+    def __mul__(self, other):
+        other = other if isinstance(other, _RmsValue) else _RmsValue(other)
+        return _RmsValue(self.data * other.data)
+    def __add__(self, other):
+        other = other if isinstance(other, _RmsValue) else _RmsValue(other)
+        return _RmsValue(self.data + other.data)
+    def __radd__(self, other): return self if other == 0 else self + other
+    def __rmul__(self, other): return self * other
+
+
+def _rmsnorm(x):
+    # `xi` MUST be typed as `_RmsValue` for this to work — if it
+    # collapses to `Float`, `xi * xi` becomes float-mul on a heap
+    # pointer and either segfaults or yields garbage.
+    ms = sum(xi * xi for xi in x)
+    scale = 0.5  # plain float constant; xi * scale forces the Class*Float case
+    return [xi * scale for xi in x]
+
+
+_rms_init = [_RmsValue(2.0), _RmsValue(3.0), _RmsValue(4.0)]
+# First call site: `x` is `list[_RmsValue]` from a literal.
+_rms_x = _rmsnorm(_rms_init)
+# Rebound call site: `x` is now `_rmsnorm`'s return type. Without the
+# class-vs-primitive override, this rebound call's arg-type observation
+# (carrying the seeded `list[Float]`) would dominate and pin the
+# accumulator at `list[Any]`.
+_rms_x = _rmsnorm(_rms_x)
+_rms_x = _rmsnorm(_rms_x)
+# If the harvester collapsed to list[Any]/list[Float], xi*xi inside
+# _rmsnorm would have crashed before reaching this assertion.
+assert len(_rms_x) == 3, f"_rmsnorm chain len: {len(_rms_x)}"
+assert _rms_x[0].data == 2.0 * 0.5 * 0.5 * 0.5, (
+    f"_rmsnorm chain element value: {_rms_x[0].data}"
+)
+print("rmsnorm-style call-site feedback loop: PASS")
+
 print("All class tests passed!")

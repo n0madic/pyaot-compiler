@@ -1056,12 +1056,85 @@ impl<'a> Lowering<'a> {
 /// distinct call sites. `Never` is the accumulator's empty seed.
 /// `Any` provides no new information and is ignored. Otherwise pick
 /// the concrete type; if they differ, fall back to `Any` (conservative).
+///
+/// **Same-base containers get an element-wise class-vs-primitive
+/// override.** Concretely: `list[Value] ⊔ list[Float] → list[Value]`,
+/// not `list[Any]`. Without this override, a chain like
+///     x = [t + p for t, p in zip(...)]   # list[Value] at call site 1
+///     x = rmsnorm(x)                     # rmsnorm seeded list[Float]
+///     x = rmsnorm(x)                     # call site 2/3 see list[Float]
+/// folds the accumulator to `list[Any]` and the fixpoint never
+/// re-derives `list[Value]`. The class observation came from the
+/// non-self-referential call site; the primitive observations came
+/// from rmsnorm's own seeded return type at the rebound call sites.
+/// We resolve the disagreement in favour of the class because it
+/// is the more specific shape and is provably runtime-correct
+/// (the primitive observation was a stale numeric-tower collapse).
+///
+/// At the top level (non-container argument), the override is
+/// **NOT** applied — legitimate polymorphism like
+///     _g13_combine(_G13(3), 5)
+///     _g13_combine(_G13(3), _G13(10))
+/// has `other: Int` then `other: _G13`; both must be widened to
+/// `Any` so the ABI accepts boxed primitives at the Int call site.
+/// Containers are different because the storage layout for
+/// `list[Value]` and `list[Float]` is disjoint and there is no
+/// boxed-primitive slot — only one of them can be the "real" type.
 fn join_nested_arg_ty(a: Type, b: Type) -> Type {
     match (a, b) {
         (Type::Never, x) | (x, Type::Never) => x,
         (Type::Any, x) | (x, Type::Any) => x,
         (a, b) if a == b => a,
+        // Element-wise prefer-class for same-base containers.
+        (Type::Generic { base: ba, args: aa }, Type::Generic { base: bb, args: ab })
+            if ba == bb && aa.len() == ab.len() =>
+        {
+            Type::Generic {
+                base: ba,
+                args: aa
+                    .into_iter()
+                    .zip(ab)
+                    .map(|(x, y)| prefer_class_or_any_elem(x, y))
+                    .collect(),
+            }
+        }
+        // Top level: legitimate polymorphism widens to Any.
         _ => Type::Any,
+    }
+}
+
+/// Element-wise join for container args: prefer Class when the
+/// other side is a numeric primitive (numeric primitives at distinct
+/// call sites tend to come from self-feedback in numeric-tower-prone
+/// inference). `Never` and `Any` carry no information and yield the
+/// other side. Otherwise fall back to `Any`.
+fn prefer_class_or_any_elem(a: Type, b: Type) -> Type {
+    if a == b {
+        return a;
+    }
+    // Lattice identities — neither carries information.
+    if matches!(&a, Type::Never) {
+        return b;
+    }
+    if matches!(&b, Type::Never) {
+        return a;
+    }
+    if matches!(&a, Type::Any) {
+        return b;
+    }
+    if matches!(&b, Type::Any) {
+        return a;
+    }
+    let a_is_class = matches!(&a, Type::Class { .. });
+    let b_is_class = matches!(&b, Type::Class { .. });
+    let a_is_numeric = matches!(&a, Type::Int | Type::Bool | Type::Float);
+    let b_is_numeric = matches!(&b, Type::Int | Type::Bool | Type::Float);
+    if a_is_class && b_is_numeric {
+        a
+    } else if b_is_class && a_is_numeric {
+        b
+    } else {
+        Type::Any
     }
 }
 
