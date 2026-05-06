@@ -60,6 +60,12 @@ impl AstToHir {
         // 5. Save outer scope
         let outer_var_map = std::mem::take(&mut self.symbols.var_map);
         let outer_global_vars = std::mem::take(&mut self.scope.global_vars);
+        // Lift the outer scope's pending_stmts out of the way so any
+        // comprehension desugared inside the lambda body doesn't drop its
+        // init/loop stmts into the enclosing scope's queue (and so the
+        // outer queue can't leak into the lambda body either). Restored
+        // verbatim after the lambda body is captured.
+        let outer_pending_stmts = std::mem::take(&mut self.scope.pending_stmts);
 
         // 5.5 Auto-propagate global variables to nested scope
         // These variables use global storage instead of being captured
@@ -111,8 +117,14 @@ impl AstToHir {
             });
         }
 
-        // 7. Convert lambda body expression
+        // 7. Convert lambda body expression. List/dict/set comprehensions
+        // inside the body register their init+loop stmts via
+        // `scope.pending_stmts`; harvest them so they run before the
+        // return. Without this, `lambda n: [i for i in range(n)]`
+        // returns the comp's empty-list bind without ever executing the
+        // loop, so callers see `None` / a length-0 list.
         let body_expr = self.convert_expr(*lambda.body)?;
+        let body_pending = self.take_pending_stmts();
 
         // 8. Create return statement
         let return_stmt = self.module.stmts.alloc(Stmt {
@@ -120,8 +132,10 @@ impl AstToHir {
             span: lambda_span,
         });
 
-        // 9. Create and register function
-        let body_stmts = vec![CfgStmt::stmt(return_stmt)];
+        // 9. Create and register function — pending stmts (e.g. comp
+        // desugaring output) must run before the return.
+        let mut body_stmts = body_pending;
+        body_stmts.push(CfgStmt::stmt(return_stmt));
         let mut cfg = CfgBuilder::new();
         let entry_block = cfg.new_block();
         cfg.enter(entry_block);
@@ -149,6 +163,7 @@ impl AstToHir {
         // 10. Restore scope
         self.scope.global_vars = outer_global_vars;
         self.symbols.var_map = outer_var_map;
+        self.scope.pending_stmts = outer_pending_stmts;
 
         // 11. Create capture expressions (references to outer variables)
         let captures: Vec<ExprId> = captured_vars

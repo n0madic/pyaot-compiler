@@ -576,6 +576,71 @@ transform = lambda x: x * factor + addend
 result_transform: int = transform(10)
 assert result_transform == 23, "result_transform should equal 23"
 
+# ===== SECTION: Lambda body containing comprehensions =====
+# Regression: list/dict/set comprehensions desugar by pushing init+loop
+# stmts into `scope.pending_stmts`, expecting the enclosing context to
+# flush them before the value is read. `convert_lambda` previously wrapped
+# only the single body expression in a Return statement and dropped the
+# pending stmts on the floor — so `lambda n: [i for i in range(n)]`
+# returned a fresh empty list (or `None` when the empty-list bind was
+# itself dropped). Lambdas now harvest pending stmts before emitting
+# the return.
+
+# Plain list-comp inside a lambda body
+lc_lambda = lambda n: [i for i in range(n)]
+lc_result = lc_lambda(4)
+assert lc_result == [0, 1, 2, 3], f"lambda + listcomp expected [0,1,2,3], got {lc_result}"
+
+# List-comp with a captured outer variable
+lc_capture_offset: int = 100
+lc_capture_lambda = lambda n: [i + lc_capture_offset for i in range(n)]
+lc_capture_result = lc_capture_lambda(3)
+assert lc_capture_result == [100, 101, 102], (
+    f"lambda + listcomp with capture expected [100,101,102], got {lc_capture_result}"
+)
+
+# Nested list-comp (matrix builder — the microgpt.py `matrix` lambda shape)
+matrix_lambda = lambda rows, cols: [[0 for _ in range(cols)] for _ in range(rows)]
+matrix_result = matrix_lambda(2, 3)
+assert len(matrix_result) == 2, f"matrix outer len: {len(matrix_result)}"
+assert matrix_result[0] == [0, 0, 0], f"matrix row 0: {matrix_result[0]}"
+assert matrix_result[1] == [0, 0, 0], f"matrix row 1: {matrix_result[1]}"
+
+# Dict-comp inside a lambda body. Compare element-wise — direct
+# `dict == dict` literal-equality has a pre-existing pyaot quirk
+# unrelated to this fix.
+dict_lambda = lambda n: {i: i * i for i in range(n)}
+dict_result = dict_lambda(3)
+assert len(dict_result) == 3, f"lambda + dictcomp len: {len(dict_result)}"
+assert dict_result[0] == 0 and dict_result[1] == 1 and dict_result[2] == 4, (
+    f"lambda + dictcomp values: {dict_result}"
+)
+
+# Set-comp inside a lambda body. Compare via membership / size — set
+# literal equality has the same caveat as dicts at module scope.
+set_lambda = lambda n: {i % 3 for i in range(n)}
+set_result = set_lambda(7)
+assert len(set_result) == 3, f"lambda + setcomp len: {len(set_result)}"
+assert 0 in set_result and 1 in set_result and 2 in set_result, (
+    f"lambda + setcomp members: {set_result}"
+)
+
+# Lambda used as a callback whose comprehension references a captured var
+items = [1, 2, 3]
+build_pairs = lambda s: [(it, s) for it in items]
+pairs_result = build_pairs("x")
+assert pairs_result == [(1, "x"), (2, "x"), (3, "x")], (
+    f"lambda + listcomp + capture mismatch: {pairs_result}"
+)
+
+# Lambda inside a list-comp (outer scope's pending stmts must not leak
+# into the lambda body, and the lambda's pending stmts must not leak
+# back into the outer comp). Compare element-wise.
+outer_listcomp_with_lambda = [(lambda y: [y * j for j in range(3)])(i) for i in range(2)]
+assert len(outer_listcomp_with_lambda) == 2
+assert outer_listcomp_with_lambda[0][0] == 0 and outer_listcomp_with_lambda[0][1] == 0 and outer_listcomp_with_lambda[0][2] == 0
+assert outer_listcomp_with_lambda[1][0] == 0 and outer_listcomp_with_lambda[1][1] == 1 and outer_listcomp_with_lambda[1][2] == 2
+
 # ===== SECTION: Default parameters =====
 
 def add_simple(a: int, b: int = 10) -> int:
