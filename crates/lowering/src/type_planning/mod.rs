@@ -35,6 +35,7 @@ impl<'a> Lowering<'a> {
         self.infer_nested_function_param_types(hir_module);
         self.infer_all_return_types(hir_module);
         self.precompute_all_local_var_types(hir_module);
+        self.propagate_globals_from_prescan();
         // Area E §E.6 — re-infer return types for unannotated functions
         // after prescan has widened any numeric locals (e.g.
         // `x = 0; x += 0.5; return x` → `Float`, not `Int`).
@@ -65,6 +66,7 @@ impl<'a> Lowering<'a> {
             .per_function_local_seed_types
             .clear();
         self.precompute_all_local_var_types(hir_module);
+        self.propagate_globals_from_prescan();
         self.reinfer_return_types_with_prescan(hir_module);
         // Bounded fixpoint: harvester → prescan → reinfer → refine.
         //
@@ -129,6 +131,7 @@ impl<'a> Lowering<'a> {
                 .per_function_local_seed_types
                 .clear();
             self.precompute_all_local_var_types(hir_module);
+            self.propagate_globals_from_prescan();
             self.reinfer_return_types_with_prescan(hir_module);
             // Re-run empty-container refinement with the just-rebuilt
             // prescan overlay so containers populated from values whose
@@ -196,6 +199,39 @@ impl<'a> Lowering<'a> {
         let ids: Vec<hir::ExprId> = hir_module.exprs.iter().map(|(id, _)| id).collect();
         for expr_id in ids {
             let _ = self.seed_expr_type_by_id(expr_id, hir_module);
+        }
+    }
+
+    /// Propagate prescan-inferred types for module-level globals into
+    /// `symbols.global_var_types`. `scan_global_var_types` (run before
+    /// `build_lowering_seed_info`) only seeds globals whose RHS is a
+    /// literal shape (`x = [1, 2]`); when a global is initialised by a
+    /// function call (`wte = make_matrix(...)`), its type only becomes
+    /// available once `infer_all_return_types` + prescan have run.
+    /// Cross-function references like `gpt()` reading `wte` go through
+    /// `get_var_type`, which checks `global_var_types` — without this
+    /// propagation, those references see `Any` even after prescan has
+    /// figured out the real type. This must be called after every
+    /// `precompute_all_local_var_types` so the next iteration's prescans
+    /// (and the harvester / refinement passes that consume them) see
+    /// the freshly-resolved global types. Only writes non-`Any` types
+    /// so a transient `Any` from an early iteration never clobbers a
+    /// concrete type set by `scan_global_var_types` or a previous round.
+    pub(crate) fn propagate_globals_from_prescan(&mut self) {
+        let globals: Vec<VarId> = self.symbols.globals.iter().copied().collect();
+        for var_id in globals {
+            for prescan in self
+                .lowering_seed_info
+                .per_function_local_seed_types
+                .values()
+            {
+                if let Some(ty) = prescan.get(&var_id) {
+                    if !matches!(ty, Type::Any) {
+                        self.symbols.global_var_types.insert(var_id, ty.clone());
+                        break;
+                    }
+                }
+            }
         }
     }
 

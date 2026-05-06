@@ -179,12 +179,33 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // Check for list concatenation (+)
+        // Check for list concatenation (+) and repetition (*)
         if let Some(elem_ty) = left_ty.list_elem() {
             if matches!(op, hir::BinOp::Add) {
                 let list_result = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_CONCAT),
                     vec![left_op, right_op],
+                    Type::list_of(elem_ty.clone()),
+                    mir_func,
+                );
+                return Ok(mir::Operand::Local(list_result));
+            }
+            if matches!(op, hir::BinOp::Mul) && matches!(right_ty, Type::Int | Type::Bool) {
+                let list_result = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_REPEAT),
+                    vec![left_op, right_op],
+                    Type::list_of(elem_ty.clone()),
+                    mir_func,
+                );
+                return Ok(mir::Operand::Local(list_result));
+            }
+        }
+        // Reflected: int * list — same runtime, swap operands.
+        if let Some(elem_ty) = right_ty.list_elem() {
+            if matches!(op, hir::BinOp::Mul) && matches!(left_ty, Type::Int | Type::Bool) {
+                let list_result = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_LIST_REPEAT),
+                    vec![right_op, left_op],
                     Type::list_of(elem_ty.clone()),
                     mir_func,
                 );

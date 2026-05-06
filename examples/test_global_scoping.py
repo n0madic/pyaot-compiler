@@ -342,4 +342,64 @@ test_deeply_nested_propagation()
 test_mixed_global_local()
 test_multiple_globals_propagation()
 
+# ===== SECTION: Global init via function call (cross-function type propagation) =====
+# Regression: when a global is initialised by a function call rather than a
+# literal (`wte = make_matrix(...)` vs `wte = [[...], [...]]`), the legacy
+# `scan_global_var_types` only seeded literal-shaped RHS. Cross-function
+# reads then saw the global as `Any`, which collapsed downstream
+# inference (e.g. `sum(losses)` → `Int`, `loss.data` → "unknown attribute").
+# The fix propagates prescan-derived types into `global_var_types` after
+# `precompute_all_local_var_types` runs, so other functions resolve
+# the global to its real shape.
+
+def make_int_matrix(rows: int, cols: int) -> list[list[int]]:
+    # Explicit loops because nested list comprehensions have a pre-existing
+    # closure-capture bug for the outer index — unrelated to what this
+    # section tests.
+    out: list[list[int]] = []
+    for r in range(rows):
+        row: list[int] = []
+        for c in range(cols):
+            row.append(r * cols + c)
+        out.append(row)
+    return out
+
+# Initialised via call — type is `list[list[int]]` only after WPA + prescan.
+mat_g_via_call = make_int_matrix(3, 4)
+
+def read_call_init_matrix() -> int:
+    # Without the propagation fix, `mat_g_via_call` resolves to `Any` here,
+    # `mat_g_via_call[1]` is `Any`, and `[1][2]` returns a wrong-typed value.
+    row = mat_g_via_call[1]
+    return row[2]
+
+assert read_call_init_matrix() == 6, "global initialised via function call must keep its element type"
+
+def make_pair_floats() -> list[float]:
+    return [0.5, 1.5, 2.5]
+
+floats_via_call = make_pair_floats()
+
+def sum_call_init_floats() -> float:
+    total = 0.0
+    for v in floats_via_call:
+        total = total + v
+    return total
+
+assert sum_call_init_floats() == 4.5, "float-list global initialised via function call must be iterable as floats"
+
+# Sequence repetition at module level (depends on both the
+# `list * int → list[T]` typing rule AND the global propagation).
+zeros_global = [0.0] * 5
+
+def consume_zeros() -> float:
+    s = 0.0
+    for v in zeros_global:
+        s = s + v
+    return s + zeros_global[2]
+
+assert consume_zeros() == 0.0, "[0.0]*n global must propagate as list[Float]"
+
+print("Global init via function call tests passed!")
+
 print("All global scoping tests passed!")

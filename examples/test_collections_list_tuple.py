@@ -1063,6 +1063,83 @@ assert insert_list == [100], "remove after insert"
 
 print("Empty container type inference tests passed!")
 
+# ===== SECTION: Sequence repetition (list/tuple/bytes * int) =====
+# Regression: `[0.0] * n` previously typed as `Any` (no `list * int` rule in
+# `resolve_binop_type`) and lowered to a raw `mir::BinOp::Mul` (pointer
+# arithmetic on the list pointer — silently corrupted memory or returned
+# length-0). The fix routes `list * int` through `rt_list_repeat` and
+# refines the type to `list[T]`. Tuple and bytes repetition coverage too
+# so the typing rule path doesn't drift.
+
+# Float-list repetition with positive count (the microgpt.py case)
+rep_floats = [0.0] * 5
+assert len(rep_floats) == 5
+for rep_i in range(5):
+    assert rep_floats[rep_i] == 0.0, f"rep_floats[{rep_i}] should be 0.0"
+
+# Multi-element pattern
+rep_pattern = [1, 2, 3] * 2
+assert rep_pattern == [1, 2, 3, 1, 2, 3]
+
+# Reflected: int * list
+rep_reflected = 3 * [7]
+assert rep_reflected == [7, 7, 7]
+
+# Non-zero count from a runtime value (defeats constant folding)
+rep_n = 4
+rep_dyn = [9.5] * rep_n
+assert len(rep_dyn) == 4
+assert rep_dyn[0] == 9.5 and rep_dyn[3] == 9.5
+
+# Bool * list — Bool is a subtype of Int in Python (True == 1, False == 0)
+rep_bool_true = [42] * True
+assert rep_bool_true == [42]
+rep_bool_false = [42] * False
+assert rep_bool_false == []
+
+# Edge cases: 0 and negative produce empty list (CPython semantics)
+rep_zero = [42] * 0
+assert rep_zero == []
+rep_negative = [99] * -3
+assert rep_negative == []
+
+# Empty source list times any positive count is still empty
+rep_empty_src: list[int] = []
+rep_from_empty = rep_empty_src * 100
+assert rep_from_empty == []
+
+# Heap elements (str): each slot points at the same underlying object
+rep_str = ["abc"] * 3
+assert len(rep_str) == 3
+assert rep_str[0] == "abc" and rep_str[1] == "abc" and rep_str[2] == "abc"
+
+# Original list is not mutated by repetition (rt_list_repeat allocates fresh)
+rep_src = [10, 20]
+rep_dst = rep_src * 2
+rep_src.append(30)
+assert rep_dst == [10, 20, 10, 20], "repeat result must be independent of source"
+assert rep_src == [10, 20, 30]
+
+# Bytes repetition still works (was already handled before the fix; here as
+# a regression guard against accidental rewiring).
+rep_bytes = b"ab" * 3
+assert rep_bytes == b"ababab"
+rep_bytes_zero = b"ab" * 0
+assert rep_bytes_zero == b""
+
+# String repetition — pre-existing case, regression guard.
+rep_str_mul = "x" * 5
+assert rep_str_mul == "xxxxx"
+rep_str_mul_zero = "z" * 0
+assert rep_str_mul_zero == ""
+
+# NOTE: tuple repetition (`(1, 2) * 3`) and reflected `int * "str"` are not
+# yet supported — `rt_tuple_repeat` doesn't exist, and `lower_binop` only
+# dispatches `RT_STR_MUL` / `RT_BYTES_REPEAT` when the LEFT operand is
+# Str/Bytes. Add coverage when those gaps are filled.
+
+print("Sequence repetition tests passed!")
+
 # ===== SECTION: New unpacking shapes (BindingTarget migration) =====
 
 # Flat — baseline

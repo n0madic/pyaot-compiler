@@ -180,3 +180,61 @@ pub fn rt_list_concat(list1: *mut Obj, list2: *mut Obj) -> *mut Obj {
 pub extern "C" fn rt_list_concat_abi(list1: Value, list2: Value) -> Value {
     Value::from_ptr(rt_list_concat(list1.unwrap_ptr(), list2.unwrap_ptr()))
 }
+
+/// Repeat a list `count` times (Python's `list * int` / `int * list`).
+/// Negative or zero counts produce an empty list (CPython behaviour).
+/// Each repeated slot copies the same `Value` bits — for heap-pointer
+/// elements this matches CPython's "shallow repetition" semantics where
+/// every slot references the same underlying object.
+pub fn rt_list_repeat(list: *mut Obj, count: i64) -> *mut Obj {
+    use crate::gc::{gc_pop, gc_push, ShadowFrame};
+
+    if list.is_null() || count <= 0 {
+        return rt_make_list(0);
+    }
+
+    unsafe {
+        let src = list as *mut ListObj;
+        let len = (*src).len;
+        if len == 0 {
+            return rt_make_list(0);
+        }
+
+        let count_usize = count as usize;
+        let total_len = match len.checked_mul(count_usize) {
+            Some(l) => l,
+            None => {
+                raise_exc!(ExceptionType::OverflowError, "list repetition too long");
+            }
+        };
+
+        // Root the source list across rt_make_list (which calls gc_alloc)
+        // so a GC collection during that call cannot free it.
+        let mut roots: [*mut Obj; 1] = [list];
+        let mut frame = ShadowFrame {
+            prev: std::ptr::null_mut(),
+            nroots: 1,
+            roots: roots.as_mut_ptr(),
+        };
+        gc_push(&mut frame);
+
+        let new_list = rt_make_list(total_len as i64);
+        let new_list_obj = new_list as *mut ListObj;
+
+        gc_pop();
+
+        let src_data = (*src).data;
+        let dst_data = (*new_list_obj).data;
+        for i in 0..count_usize {
+            std::ptr::copy_nonoverlapping(src_data, dst_data.add(i * len), len);
+        }
+
+        (*new_list_obj).len = total_len;
+        new_list
+    }
+}
+#[export_name = "rt_list_repeat"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_list_repeat_abi(list: Value, count: i64) -> Value {
+    Value::from_ptr(rt_list_repeat(list.unwrap_ptr(), count))
+}

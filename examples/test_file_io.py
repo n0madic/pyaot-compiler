@@ -227,8 +227,46 @@ assert bin_payload[0] == 0x00 and bin_payload[3] == 0xFF, (
 )
 print("binary-mode read regression test passed!")
 
+# Test 17d: Regression — `open(path)` without an explicit mode argument.
+# `make_str_constant` (used to build the default "r" mode operand) used to
+# emit a `Const Str` MIR instruction followed by `MakeStr(Local)` — codegen
+# rejects `Const` for heap-allocated values. The fix passes the interned
+# string directly as a `Constant` operand to the `MakeStr` runtime call.
+# Cover both the raw `open(path)` form and the comprehension/iter form
+# from microgpt.py line 19.
+default_mode_path = "/tmp/test_aot_default_mode.txt"
+with open(default_mode_path, "w") as default_mode_w:
+    default_mode_w.write("default-mode-line-1\ndefault-mode-line-2\n")
+
+# Bare `open(path)` — defaults to "r"
+default_mode_f = open(default_mode_path)
+default_mode_content = default_mode_f.read()
+default_mode_f.close()
+assert default_mode_content.startswith("default-mode-line-1"), (
+    f"open(path) without mode must default to read; got {default_mode_content!r}"
+)
+
+# `for line in open(path)` — same default-mode path inside an iterator/comp
+default_mode_lines: list[str] = []
+for default_mode_line in open(default_mode_path):
+    default_mode_lines.append(default_mode_line.strip())
+assert default_mode_lines == ["default-mode-line-1", "default-mode-line-2"], (
+    f"for-line iter over open(path) without mode mismatch: {default_mode_lines}"
+)
+
+# Comprehension form (matches microgpt.py:19)
+default_mode_comp = [
+    line.strip() for line in open(default_mode_path) if line.strip()
+]
+assert default_mode_comp == ["default-mode-line-1", "default-mode-line-2"], (
+    f"comprehension over open(path) without mode mismatch: {default_mode_comp}"
+)
+
+print("default-mode open() regression test passed!")
+
 # Test 18: Clean up temporary files with os.remove
 import os
+os.remove(default_mode_path)
 
 os.remove(ctx_reuse_file)
 os.remove(bin_file)

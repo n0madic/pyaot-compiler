@@ -84,16 +84,9 @@ impl<'a> Lowering<'a> {
     /// Helper: create a heap-allocated string constant
     fn make_str_constant(&mut self, s: &str, mir_func: &mut mir::Function) -> mir::Operand {
         let interned = self.intern(s);
-        let const_local = self.alloc_stack_local(Type::Str, mir_func);
-
-        self.emit_instruction(mir::InstructionKind::Const {
-            dest: const_local,
-            value: mir::Constant::Str(interned),
-        });
-
         let local = self.emit_runtime_call(
             mir::RuntimeFunc::MakeStr,
-            vec![mir::Operand::Local(const_local)],
+            vec![mir::Operand::Constant(mir::Constant::Str(interned))],
             Type::Str,
             mir_func,
         );

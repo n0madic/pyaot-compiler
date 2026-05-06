@@ -168,6 +168,21 @@ pub(crate) fn resolve_binop_type(op: &hir::BinOp, left_ty: &Type, right_ty: &Typ
     {
         return Some(Type::Str);
     }
+    // Sequence repetition: list/bytes * int (and reflected int * sequence).
+    // Python's `[0.0] * n` returns the same sequence type. Tuple repetition
+    // is intentionally NOT typed here yet — there's no `rt_tuple_repeat`
+    // runtime helper, and lowering would otherwise fall through to a raw
+    // `mir::BinOp::Mul` which corrupts the tuple pointer. Falling back to
+    // `expr.ty.unwrap_or(Any)` for tuples keeps the program compiling
+    // (Any → boxed slot) until tuple-repeat runtime support is added.
+    if matches!(op, hir::BinOp::Mul) {
+        if *right_ty == Type::Int && (left_ty.is_list_like() || *left_ty == Type::Bytes) {
+            return Some(left_ty.clone());
+        }
+        if *left_ty == Type::Int && (right_ty.is_list_like() || *right_ty == Type::Bytes) {
+            return Some(right_ty.clone());
+        }
+    }
     if *left_ty == Type::Str && matches!(op, hir::BinOp::Mod) {
         return Some(Type::Str);
     }

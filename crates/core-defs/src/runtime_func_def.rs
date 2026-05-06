@@ -457,6 +457,8 @@ pub static RT_LIST_TAIL_TO_TUPLE_BOOL: RuntimeFuncDef =
     RuntimeFuncDef::ptr_binary("rt_list_tail_to_tuple_bool");
 /// rt_list_concat(a: *mut Obj, b: *mut Obj) -> *mut Obj
 pub static RT_LIST_CONCAT: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_list_concat");
+/// rt_list_repeat(list: *mut Obj, count: i64) -> *mut Obj
+pub static RT_LIST_REPEAT: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_list_repeat");
 
 // ===== Tuple operations =====
 
