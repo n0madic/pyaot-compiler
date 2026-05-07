@@ -309,30 +309,92 @@ impl<'a> Lowering<'a> {
                 if !Self::should_refine_field_seed_type(&storage_ty) {
                     continue;
                 }
+                // An empty-tuple seed (`()` from `__init__`'s default arg)
+                // is a placeholder shape, not a constraint — joining it
+                // with the first observed concrete tuple promotes the
+                // result to `TupleVar[T]` (per the empty-tuple ⊔ tuple
+                // rule), which then refuses to merge element-wise with
+                // later same-arity fixed tuples and degenerates to a
+                // `Union[TupleVar[Int], tuple[Float, Float]]` shape.
+                // Iterating that Union yields raw bits whose runtime tag
+                // doesn't match the consumer's expected element type
+                // (the autograd `_local_grads` field SEGV in
+                // `Value.backward()` was traced to this — `local_grad`
+                // unboxed Int-tagged Value bits as a Float pointer at
+                // 0x18, dereferenced, crashed). Treat empty-tuple storage
+                // identically to `Any`: use the observed type directly so
+                // subsequent observations element-wise join cleanly.
+                let storage_uninformative = matches!(storage_ty, Type::Any | Type::HeapAny)
+                    || storage_ty
+                        .tuple_elems()
+                        .is_some_and(|elems| elems.is_empty());
                 let refined_raw = class_fields
                     .get(&field_name)
                     .map(|prev| prev.join(&observed_ty))
                     .unwrap_or_else(|| {
-                        // `Any`/`HeapAny` storage carries no information; the
-                        // observed concrete type is strictly more informative.
-                        // `join(Any, T) = Any` would discard `observed_ty`, so
-                        // we take it directly when storage is untyped.
-                        if matches!(storage_ty, Type::Any | Type::HeapAny) {
+                        if storage_uninformative {
                             observed_ty.clone()
                         } else {
                             storage_ty.join(&observed_ty)
                         }
                     });
+                // Collapse `Union[tuple[A, B], tuple[A], …]` (heterogeneous
+                // fixed-arity tuples of the same element kind) into
+                // `TupleVar[join_of_elements]`. The default `join` falls
+                // back to a Union for different non-empty arities to
+                // preserve shape distinctions for pattern matching, but
+                // for an *iterable* field type that's a footgun: lowering
+                // can't pick a precise `IterSourceKind` for a Union of
+                // tuples (see `type_to_iter_source`), so it falls through
+                // to `IterSourceKind::List` and the runtime then tries to
+                // iterate the tuple as a list — reading past the inline
+                // data layout and corrupting subsequent iterator state.
+                // The autograd `Value._local_grads` field is the
+                // motivating case: `__add__` writes a 2-tuple `(1, 1)`,
+                // `__pow__` writes a 1-tuple `(d,)`, and the resulting
+                // `Union[tuple[Float, Float], tuple[Float]]` produced an
+                // iterator that mis-dispatched into `iter_next_dict` via
+                // a corrupted `kind` field at runtime.
+                let collapsed = Self::collapse_tuple_union_to_var(refined_raw);
                 // Boundary coercion: `Never` (top-level or in container
                 // parameters) becomes `Any` before the field type is
                 // consumed by codegen / vtable layout.
-                let refined = match refined_raw {
+                let refined = match collapsed {
                     Type::Never => Type::Any,
                     other => other.demote_never_params_to_any(),
                 };
                 class_fields.insert(field_name, refined);
             }
         }
+    }
+
+    /// If `ty` is `Union[tuple[…], …]` consisting entirely of same-base
+    /// fixed-arity tuples (`Generic{TUPLE_ID, args}`) or already-`TupleVar`
+    /// members, collapse it to a single `TupleVar[join_of_all_elements]`
+    /// so iteration can pick a single deterministic source kind. Returns
+    /// the type unchanged when the pattern doesn't match.
+    fn collapse_tuple_union_to_var(ty: Type) -> Type {
+        let Type::Union(members) = &ty else {
+            return ty;
+        };
+        let mut element_join = Type::Never;
+        for m in members {
+            if let Some(elems) = m.tuple_elems() {
+                for e in elems {
+                    element_join = element_join.join(e);
+                }
+            } else if let Some(e) = m.tuple_var_elem() {
+                element_join = element_join.join(e);
+            } else {
+                // A non-tuple member — give up and keep the Union.
+                return ty;
+            }
+        }
+        if matches!(element_join, Type::Never) {
+            // All-empty tuples — meaningless; preserve the original.
+            return ty;
+        }
+        Type::tuple_var_of(element_join)
     }
 
     /// Refine class field seed types from **cross-instance** attribute
@@ -365,12 +427,18 @@ impl<'a> Lowering<'a> {
         &mut self,
         hir_module: &hir::Module,
     ) {
-        // Collect (class_id, field, value_expr_id) triples first so we can
-        // mutate `refined_class_field_types` afterwards without juggling
-        // borrows of `hir_module` and `self` simultaneously.
-        let mut writes: Vec<(ClassId, InternedString, hir::ExprId)> = Vec::new();
+        // Collect (func_id, class_id, field, value_expr_id) tuples first so
+        // each write is paired with the function whose prescan overlay
+        // should drive its `seed_infer_expr_type` query. Per-function
+        // overlays are essential because zip-destructured iter targets
+        // (`for child, local_grad in zip(v._children, v._local_grads)`)
+        // get their narrowed types only via the per-function local seed
+        // map; without that, a `BinOp` involving `child.grad` collapses
+        // to `Any` in the global infer.
+        let mut writes: Vec<(pyaot_utils::FuncId, ClassId, InternedString, hir::ExprId)> =
+            Vec::new();
 
-        for func in hir_module.func_defs.values() {
+        for (fid, func) in hir_module.func_defs.iter() {
             if func.has_no_blocks() {
                 continue;
             }
@@ -378,20 +446,54 @@ impl<'a> Lowering<'a> {
                 for &stmt_id in &block.stmts {
                     let stmt = &hir_module.stmts[stmt_id];
                     if let hir::StmtKind::Bind { target, value, .. } = &stmt.kind {
+                        let mut local_writes = Vec::new();
                         Self::collect_attr_writes_in_target(
                             target,
                             *value,
                             hir_module,
                             self,
-                            &mut writes,
+                            &mut local_writes,
                         );
+                        for (cid, fname, val_id) in local_writes {
+                            writes.push((*fid, cid, fname, val_id));
+                        }
                     }
                 }
             }
         }
 
-        for (class_id, field, value_expr_id) in writes {
-            let value_ty = self.seed_expr_type(value_expr_id, hir_module);
+        let empty_overlay: IndexMap<VarId, Type> = IndexMap::new();
+        for (func_id, class_id, field, value_expr_id) in writes {
+            // Use the full pre-scan inference (`seed_infer_expr_type`)
+            // rather than the cached read API (`seed_expr_type`): the
+            // cached form has no BinOp/Compare/MethodCall/etc. arms and
+            // falls back to a `lowering_seed_info.expr_types` cache
+            // lookup, but the cache is only populated by
+            // `eagerly_populate_expr_types` AFTER the fixpoint loop
+            // converges. Our pass runs INSIDE the loop, so without the
+            // full inference path every BinOp value collapses to `Any`
+            // — exactly the autograd `child.grad += local_grad * v.grad`
+            // case where the harvest must observe the BinOp's `Float`
+            // result, not a stale `Any`.
+            //
+            // The per-function prescan overlay carries types for vars
+            // bound by `IterAdvance` and other CFG-sensitive sites that
+            // global var_types doesn't see — without the overlay,
+            // `child` and `local_grad` resolve to `Any` and the whole
+            // BinOp collapses again.
+            let overlay = self
+                .lowering_seed_info
+                .per_function_local_seed_types
+                .get(&func_id)
+                .cloned()
+                .unwrap_or_else(IndexMap::new);
+            let overlay = if overlay.is_empty() {
+                &empty_overlay
+            } else {
+                &overlay
+            };
+            let value_expr = &hir_module.exprs[value_expr_id];
+            let value_ty = self.seed_infer_expr_type(value_expr, hir_module, overlay);
             // Skip writes whose RHS we can't type precisely — joining `Any`
             // would only erase information, and aggressive widening would
             // break code that legitimately stays inside a narrow precise
@@ -927,6 +1029,34 @@ impl<'a> Lowering<'a> {
                 then_val,
                 else_val,
             } => {
+                // Apply `isinstance(var, T)` narrowing to the recursion
+                // overlays so any `ClassName(...)` call inside a branch
+                // sees the narrowed (or excluded) type for `var`. Without
+                // this, the very common idiom
+                //
+                //     other = other if isinstance(other, Value) else Value(other)
+                //
+                // pollutes the harvested `data` field type for `Value`:
+                // the `Value(other)` call in the else branch is recorded
+                // with the *un-narrowed* `other` type (the WPA-harvested
+                // param type, e.g. `Union[Value, int, float, bool]`),
+                // which then `join`s into `data: Union[Float, Class[Value]]`
+                // and propagates downstream — `_local_grads` element type
+                // collapses to `Any`, the autograd `child.grad += local_grad
+                // * v.grad` aug-assign loses precision, and the field write
+                // corrupts tagged-Value bits at runtime (the
+                // `Value.backward()` SEGV in microgpt-style code).
+                //
+                // The else branch must see `other.minus(Value)` —
+                // `Union[int, float, bool]` collapses through the numeric
+                // tower to `Float`, which is the correct `data` type for
+                // numeric arithmetic.
+                let cond_expr = &hir_module.exprs[*cond];
+                let narrow = self.extract_simple_isinstance_narrowing(
+                    cond_expr,
+                    hir_module,
+                    Some(current_types),
+                );
                 self.scan_constructor_calls_in_expr(
                     *cond,
                     hir_module,
@@ -934,20 +1064,41 @@ impl<'a> Lowering<'a> {
                     init_bindings,
                     observed_arg_types,
                 );
-                self.scan_constructor_calls_in_expr(
-                    *then_val,
-                    hir_module,
-                    current_types,
-                    init_bindings,
-                    observed_arg_types,
-                );
-                self.scan_constructor_calls_in_expr(
-                    *else_val,
-                    hir_module,
-                    current_types,
-                    init_bindings,
-                    observed_arg_types,
-                );
+                if let Some((var_id, then_narrow, else_narrow)) = narrow {
+                    let mut then_overlay = current_types.clone();
+                    then_overlay.insert(var_id, then_narrow);
+                    let mut else_overlay = current_types.clone();
+                    else_overlay.insert(var_id, else_narrow);
+                    self.scan_constructor_calls_in_expr(
+                        *then_val,
+                        hir_module,
+                        &then_overlay,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                    self.scan_constructor_calls_in_expr(
+                        *else_val,
+                        hir_module,
+                        &else_overlay,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                } else {
+                    self.scan_constructor_calls_in_expr(
+                        *then_val,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                    self.scan_constructor_calls_in_expr(
+                        *else_val,
+                        hir_module,
+                        current_types,
+                        init_bindings,
+                        observed_arg_types,
+                    );
+                }
             }
             hir::ExprKind::BinOp { left, right, .. }
             | hir::ExprKind::Compare { left, right, .. }
@@ -1406,13 +1557,35 @@ impl<'a> Lowering<'a> {
         param_idx: usize,
         arg_ty: Type,
     ) {
-        if matches!(arg_ty, Type::Any | Type::HeapAny) {
+        if Self::contains_any_or_heap_any(&arg_ty) {
             return;
         }
         observed_arg_types
             .entry((class_id, param_idx))
             .and_modify(|prev| *prev = prev.join(&arg_ty))
             .or_insert(arg_ty);
+    }
+
+    /// Recursive `Any` / `HeapAny` reachability check. Returns `true` if
+    /// the type tree contains either anywhere — Union members, Generic
+    /// args, DefaultDict K/V, Iterator inner, Function params/ret. Used by
+    /// `record_constructor_arg_type` to reject observations whose precision
+    /// hasn't converged yet.
+    fn contains_any_or_heap_any(ty: &Type) -> bool {
+        match ty {
+            Type::Any | Type::HeapAny => true,
+            Type::Union(ts) => ts.iter().any(Self::contains_any_or_heap_any),
+            Type::Generic { args, .. } => args.iter().any(Self::contains_any_or_heap_any),
+            Type::DefaultDict(k, v) => {
+                Self::contains_any_or_heap_any(k) || Self::contains_any_or_heap_any(v)
+            }
+            Type::Iterator(t) => Self::contains_any_or_heap_any(t),
+            Type::Function { params, ret } => {
+                params.iter().any(Self::contains_any_or_heap_any)
+                    || Self::contains_any_or_heap_any(ret)
+            }
+            _ => false,
+        }
     }
 
     /// Build vtables from class information and export to MIR module.

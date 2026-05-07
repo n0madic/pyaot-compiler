@@ -1068,7 +1068,7 @@ impl<'a> Lowering<'a> {
     /// supplied `param_types` overlay first so it works during pre-scan
     /// (before `self.symbols.var_types` is populated for the function
     /// currently being analysed).
-    fn extract_simple_isinstance_narrowing(
+    pub(crate) fn extract_simple_isinstance_narrowing(
         &self,
         cond: &hir::Expr,
         module: &hir::Module,

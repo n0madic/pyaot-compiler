@@ -147,6 +147,19 @@ impl<'a> Lowering<'a> {
             // types only resolved this round (refined call returns,
             // refined nested-fn params) get their element type updated.
             self.refine_empty_container_types(hir_module);
+            // Re-run the constructor-call harvester. The first invocation
+            // (line 58, before the loop) sees only the seed types; later
+            // iterations may sharpen field types (e.g. `data: Any → Float`
+            // once `Value(2.0)` is harvested), and the constructor calls
+            // that pass `(other.data, self.data)` as a tuple-shaped argument
+            // need that refined `data` type to harvest `_local_grads` as
+            // `tuple[Float, Float]` instead of `tuple[Any, Any]`. Without
+            // the re-run, the autograd `local_grad * v.grad` BinOp inside
+            // `Value.backward()` reads `local_grad: Any`, the cross-instance
+            // harvester then can't precise-type the field write, and the
+            // `child.grad += …` slot corrupts at runtime (the
+            // microgpt SEGV).
+            self.refine_class_fields_from_constructor_calls(hir_module);
             // Re-run cross-instance class field write harvester — RHS
             // expression types can sharpen each iteration (e.g. as a
             // generator's yield type converges, an `obj.x = next(gen)` write
