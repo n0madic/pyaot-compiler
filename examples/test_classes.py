@@ -2799,4 +2799,35 @@ assert _coc_join_xs[1][0].value == 7, (
 )
 print("lattice-join multi-source refinement: PASS")
 
+# =============================================================================
+# Closure-from-var dispatch
+# =============================================================================
+# `find_elem_via_call_arg` resolves `Call { func: Var(v), args }` through a
+# module-wide `var_to_func` map (built once per pass from
+# `Bind { Var, Closure | FuncRef }` statements) — same pattern the harvester
+# uses in `closure_scan.rs`. Without this, `f = some_func; f(var)` would
+# leave caller's `var` at `list[Any]` because the call site never resolves
+# to a concrete callee body.
+
+class _CocFwdPayload:
+    __slots__ = ('value',)
+    def __init__(self, v): self.value = v
+
+
+def _coc_fwd_append(store, k):
+    # Caller forwards `store` here through the funcref-bound var. Body
+    # sees `store.append(k)` (depth 0); refinement collects `_CocFwdPayload`
+    # as the element type and propagates back to the caller's binding.
+    store.append(k)
+
+
+_coc_fwd_f = _coc_fwd_append
+_coc_fwd_xs = []
+_coc_fwd_f(_coc_fwd_xs, _CocFwdPayload(11))
+_coc_fwd_f(_coc_fwd_xs, _CocFwdPayload(13))
+assert _coc_fwd_xs[0].value + _coc_fwd_xs[1].value == 24, (
+    f"closure-from-var sum: {_coc_fwd_xs[0].value + _coc_fwd_xs[1].value}"
+)
+print("closure-from-var dispatch: PASS")
+
 print("All class tests passed!")

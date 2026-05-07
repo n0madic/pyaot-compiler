@@ -7,12 +7,56 @@
 //! This pass scans statement blocks for empty container assignments and refines
 //! their element type from subsequent method calls (append, insert, add, etc.).
 
+use std::collections::{HashMap, HashSet};
+
 use indexmap::IndexMap;
 use pyaot_hir as hir;
 use pyaot_types::{Type, TypeLattice};
-use pyaot_utils::VarId;
+use pyaot_utils::{FuncId, VarId};
 
 use crate::Lowering;
+
+/// Build a map from `VarId` to `(callee FuncId, capture count)` by scanning
+/// all `Bind { Var, Closure | FuncRef }` statements in the module. Mirrors
+/// the same pattern used by `infer_nested_function_param_types_inner` in
+/// `closure_scan.rs` (last-bind-wins on rebinds).
+///
+/// Used by `find_elem_via_call_arg` to resolve `Call { func: Var(v), args }`
+/// to a concrete callee body, so caller-side container refinement can chase
+/// element-type signals through indirected calls.
+fn build_var_to_func_map(hir_module: &hir::Module) -> HashMap<VarId, (FuncId, usize)> {
+    let mut map: HashMap<VarId, (FuncId, usize)> = HashMap::new();
+    for (_stmt_id, stmt) in hir_module.stmts.iter() {
+        let hir::StmtKind::Bind { target, value, .. } = &stmt.kind else {
+            continue;
+        };
+        let hir::BindingTarget::Var(var_id) = target else {
+            continue;
+        };
+        let value_expr = &hir_module.exprs[*value];
+        match &value_expr.kind {
+            hir::ExprKind::Closure { func, captures } => {
+                map.insert(*var_id, (*func, captures.len()));
+            }
+            hir::ExprKind::FuncRef(func_id) => {
+                map.insert(*var_id, (*func_id, 0));
+            }
+            _ => {}
+        }
+    }
+    map
+}
+
+/// Resolution result for `obj.method(...)` — which FuncId backs the method
+/// body, and how many leading params it consumes for `self`/`cls` (so the
+/// caller can map call-site arg indices to callee param slots).
+#[derive(Clone, Copy)]
+struct MethodResolution {
+    func_id: FuncId,
+    /// Slot offset of the first user-visible (non-self/cls) param.
+    /// 0 for static methods, 1 for instance/dunder/classmethod.
+    self_offset: usize,
+}
 
 /// Return the element type of a list-like or set-like container, or None
 /// if the type is not a recognized container.
@@ -83,6 +127,72 @@ fn wrap_list(inner: Type, depth: usize) -> Type {
 }
 
 impl<'a> Lowering<'a> {
+    /// Resolve `obj.method(...)` to the FuncId backing the method body and
+    /// the leading-param offset (`self_offset`) that separates `self`/`cls`
+    /// slots from user-visible positional args.
+    ///
+    /// Mirrors the priority order in `lower_class_method_call`
+    /// (`expressions/access/method/class.rs:82-248`):
+    ///
+    /// 1. `static_methods` — `@staticmethod` bodies, no implicit first param
+    ///    (offset 0).
+    /// 2. `class_methods` — `@classmethod` bodies, `cls` is first (offset 1).
+    /// 3. `dunder_methods` — `__add__`/`__eq__`/etc, `self` is first
+    ///    (offset 1).
+    /// 4. `method_funcs` — regular instance methods, `self` is first
+    ///    (offset 1). Inherited methods are already merged in by the
+    ///    topological build in `class_metadata.rs`, so no parent-chain walk
+    ///    is needed here.
+    ///
+    /// Returns `None` when:
+    /// - `obj_ty` is not a user-class (`Any`/`HeapAny`/`Union`/`Iterator`/
+    ///   builtin containers — `get_class_info` is `None`).
+    /// - The class is cross-module (no entry in our `class_info` map).
+    /// - The method name isn't found in any of the four registries.
+    fn resolve_method_func(
+        &self,
+        obj_ty: &Type,
+        method: pyaot_utils::InternedString,
+    ) -> Option<MethodResolution> {
+        let class_id = match obj_ty {
+            Type::Class { class_id, .. } => *class_id,
+            // `Generic { base }` covers user-defined generic classes
+            // (`Stack[T]`); builtin container ClassIds (LIST/DICT/SET/TUPLE)
+            // simply have no `class_info` entry, so the `?` below returns
+            // `None` and we fall through cleanly.
+            Type::Generic { base, .. } => *base,
+            _ => return None,
+        };
+        let info = self.get_class_info(&class_id)?;
+
+        if let Some(&fid) = info.static_methods.get(&method) {
+            return Some(MethodResolution {
+                func_id: fid,
+                self_offset: 0,
+            });
+        }
+        if let Some(&fid) = info.class_methods.get(&method) {
+            return Some(MethodResolution {
+                func_id: fid,
+                self_offset: 1,
+            });
+        }
+        let method_str = self.interner.resolve(method);
+        if let Some(fid) = info.get_dunder_func(method_str) {
+            return Some(MethodResolution {
+                func_id: fid,
+                self_offset: 1,
+            });
+        }
+        if let Some(&fid) = info.method_funcs.get(&method) {
+            return Some(MethodResolution {
+                func_id: fid,
+                self_offset: 1,
+            });
+        }
+        None
+    }
+
     /// Refine types of empty containers by scanning for subsequent method calls.
     /// Must run before lowering so that `get_var_type` returns the refined type.
     ///
@@ -91,6 +201,11 @@ impl<'a> Lowering<'a> {
     /// block is treated as a flat stmt list; "subsequent uses" are read from
     /// `block.stmts[i+1..]`.
     pub(crate) fn refine_empty_container_types(&mut self, hir_module: &hir::Module) {
+        // Build a module-wide var-to-FuncId map once per refine pass.
+        // Used by `find_elem_via_call_arg` to resolve `Call(Var(v), ...)`
+        // — closures/funcrefs assigned to a variable. Pattern mirrors
+        // `infer_nested_function_param_types_inner` in `closure_scan.rs`.
+        let var_to_func = build_var_to_func_map(hir_module);
         for func_id in hir_module.functions.iter() {
             if let Some(func) = hir_module.func_defs.get(func_id) {
                 let overlay = self
@@ -114,8 +229,19 @@ impl<'a> Lowering<'a> {
                     .values()
                     .flat_map(|b| b.stmts.iter().copied())
                     .collect();
-                self.refine_empty_containers_in_block(&flattened, hir_module, &overlay);
-                self.refine_indexed_var_types_in_func(func_id, &flattened, hir_module, &overlay);
+                self.refine_empty_containers_in_block(
+                    &flattened,
+                    hir_module,
+                    &overlay,
+                    &var_to_func,
+                );
+                self.refine_indexed_var_types_in_func(
+                    func_id,
+                    &flattened,
+                    hir_module,
+                    &overlay,
+                    &var_to_func,
+                );
             }
         }
     }
@@ -150,6 +276,7 @@ impl<'a> Lowering<'a> {
         stmts: &[hir::StmtId],
         hir_module: &hir::Module,
         overlay: &IndexMap<VarId, Type>,
+        var_to_func: &HashMap<VarId, (FuncId, usize)>,
     ) {
         let Some(func) = hir_module.func_defs.get(func_id) else {
             return;
@@ -229,8 +356,15 @@ impl<'a> Lowering<'a> {
                 })
                 .map(|i| i + 1)
                 .unwrap_or(0);
-            let elem_ty =
-                self.find_elem_type_from_usage(var_id, &stmts[scan_start..], hir_module, overlay);
+            let mut visited: HashSet<FuncId> = HashSet::new();
+            let elem_ty = self.find_elem_type_from_usage(
+                var_id,
+                &stmts[scan_start..],
+                hir_module,
+                overlay,
+                var_to_func,
+                &mut visited,
+            );
             // `find_elem_type_from_usage` accumulates via lattice join with
             // `Never` as identity, so an empty accumulator means "no signal";
             // `Any` means a top-level absorbing source-point poisoned the
@@ -264,6 +398,7 @@ impl<'a> Lowering<'a> {
         stmts: &[hir::StmtId],
         hir_module: &hir::Module,
         overlay: &IndexMap<VarId, Type>,
+        var_to_func: &HashMap<VarId, (FuncId, usize)>,
     ) {
         for (i, stmt_id) in stmts.iter().enumerate() {
             let stmt = &hir_module.stmts[*stmt_id];
@@ -302,11 +437,14 @@ impl<'a> Lowering<'a> {
                     }
                 } else if is_empty_list || is_empty_set {
                     // Scan subsequent statements for method calls on this variable
+                    let mut visited: HashSet<FuncId> = HashSet::new();
                     let elem_ty = self.find_elem_type_from_usage(
                         target,
                         &stmts[i + 1..],
                         hir_module,
                         overlay,
+                        var_to_func,
+                        &mut visited,
                     );
                     // After the lattice-join rewrite, no signal returns
                     // `Never`; only an unrelated absorbing observation
@@ -355,6 +493,8 @@ impl<'a> Lowering<'a> {
         stmts: &[hir::StmtId],
         hir_module: &hir::Module,
         overlay: &IndexMap<VarId, Type>,
+        var_to_func: &HashMap<VarId, (FuncId, usize)>,
+        visited: &mut HashSet<FuncId>,
     ) -> Type {
         let mut accum = Type::Never;
         for stmt_id in stmts {
@@ -391,6 +531,12 @@ impl<'a> Lowering<'a> {
                             let Some(capture_param) = closure_func.params.get(cap_idx) else {
                                 continue;
                             };
+                            // Cycle-guard for closures too — a closure body
+                            // could indirectly reach itself through nested
+                            // calls, leading to unbounded recursion.
+                            if !visited.insert(*closure_func_id) {
+                                continue;
+                            }
                             let closure_overlay = self
                                 .lowering_seed_info
                                 .per_function_local_seed_types
@@ -403,13 +549,23 @@ impl<'a> Lowering<'a> {
                                     &block.stmts,
                                     hir_module,
                                     &closure_overlay,
+                                    var_to_func,
+                                    visited,
                                 );
                                 accum = accum.join(&result);
                             }
+                            visited.remove(closure_func_id);
                         }
                     }
                     // Direct / nested call forwarding `var` to a callee.
-                    if let Some(ty) = self.find_elem_via_call_arg(var, value_expr, hir_module) {
+                    if let Some(ty) = self.find_elem_via_call_arg(
+                        var,
+                        value_expr,
+                        hir_module,
+                        overlay,
+                        var_to_func,
+                        visited,
+                    ) {
                         accum = accum.join(&ty);
                     }
                 }
@@ -420,7 +576,14 @@ impl<'a> Lowering<'a> {
                         accum = accum.join(&ty);
                     }
                     let expr = &hir_module.exprs[*expr_id];
-                    if let Some(ty) = self.find_elem_via_call_arg(var, expr, hir_module) {
+                    if let Some(ty) = self.find_elem_via_call_arg(
+                        var,
+                        expr,
+                        hir_module,
+                        overlay,
+                        var_to_func,
+                        visited,
+                    ) {
                         accum = accum.join(&ty);
                     }
                 }
@@ -443,33 +606,85 @@ impl<'a> Lowering<'a> {
     ///
     /// Walks through `Call`, `BuiltinCall`, and `MethodCall` wrappers (so
     /// `print(gpt(keys))` and `total = sum(gpt(keys))` both reach `gpt`'s
-    /// body via the inner `Call`). For each FuncRef call site, finds args
-    /// matching `Var(var)` and recurses into the callee's body keyed on the
-    /// corresponding param VarId. All callee bodies and all args are
-    /// scanned, with results merged via `join`. Returns `None` only when no
-    /// concrete signal was found (the accumulator never left `Never`).
+    /// body via the inner `Call`).
     ///
-    /// Skips unresolved (dynamic) call sites — Var-typed callable, attribute
-    /// dispatch through VTable, etc. Those need a separate method-dispatch
-    /// pass to resolve which FuncId is invoked.
+    /// Resolves callee FuncId from three call-site shapes:
+    /// 1. `Call { func: FuncRef(fid), .. }` — direct top-level function.
+    /// 2. `Call { func: Closure { func, captures }, .. }` — inline closure
+    ///    expression (rare — usually closures get bound to a name first).
+    /// 3. `Call { func: Var(v), .. }` — variable holding a closure/funcref;
+    ///    resolved through `var_to_func` (built once per pass from `Bind`
+    ///    statements). `param_slot = capture_count + arg_idx`.
+    ///
+    /// For `MethodCall { obj, method, args, .. }` — resolves the method
+    /// FuncId through `resolve_method_func` after `seed_infer`-ing `obj`'s
+    /// type. Skips dynamic dispatch where `obj`'s type isn't a known class
+    /// (Any/HeapAny/Union/external classes return `None` from the
+    /// resolver). For methods, `param_slot = self_offset + arg_idx` where
+    /// `self_offset` is 0 for `@staticmethod` and 1 for instance / dunder /
+    /// `@classmethod`.
+    ///
+    /// `visited` is a per-pass cycle-guard: each FuncId is added before
+    /// recursing into its body and removed afterwards. Without this, mutual
+    /// recursion (`a.m(var)` → calls `b.n(var)` → calls back) loops
+    /// forever.
     fn find_elem_via_call_arg(
         &self,
         var: VarId,
         expr: &hir::Expr,
         hir_module: &hir::Module,
+        overlay: &IndexMap<VarId, Type>,
+        var_to_func: &HashMap<VarId, (FuncId, usize)>,
+        visited: &mut HashSet<FuncId>,
     ) -> Option<Type> {
         let mut accum = Type::Never;
         let mut found = false;
         match &expr.kind {
             hir::ExprKind::Call { func, args, .. } => {
                 let func_expr = &hir_module.exprs[*func];
-                if let hir::ExprKind::FuncRef(fid) = &func_expr.kind {
-                    let fid = *fid;
-                    if let Some(callee) = hir_module.func_defs.get(&fid) {
-                        let capture_count = self
-                            .get_closure_capture_types(&fid)
+                // Resolve callee FuncId from the three supported call-site
+                // shapes. `capture_count` is the leading-param offset that
+                // must be applied when mapping arg index → callee param slot:
+                // captures appear as the first N params of the closure and
+                // are not provided by the call site.
+                let resolved: Option<(FuncId, usize)> = match &func_expr.kind {
+                    hir::ExprKind::FuncRef(fid) => {
+                        let cap = self
+                            .get_closure_capture_types(fid)
                             .map(|v| v.len())
                             .unwrap_or(0);
+                        Some((*fid, cap))
+                    }
+                    hir::ExprKind::Closure { func, captures } => Some((*func, captures.len())),
+                    hir::ExprKind::Var(v) => var_to_func.get(v).copied(),
+                    _ => None,
+                };
+                if let Some((fid, capture_count)) = resolved {
+                    if let Some(callee) = hir_module.func_defs.get(&fid) {
+                        // Seed callee_overlay with caller-side arg types so
+                        // body scans see concrete param types even when the
+                        // harvester hasn't yet built `lambda_param_type_hints`
+                        // for this callee.
+                        let mut callee_overlay = self
+                            .lowering_seed_info
+                            .per_function_local_seed_types
+                            .get(&fid)
+                            .cloned()
+                            .unwrap_or_default();
+                        for (arg_idx, call_arg) in args.iter().enumerate() {
+                            let hir::CallArg::Regular(arg_id) = call_arg else {
+                                continue;
+                            };
+                            let arg_expr = &hir_module.exprs[*arg_id];
+                            let arg_ty = self.seed_infer_expr_type(arg_expr, hir_module, overlay);
+                            if arg_ty == Type::Any || arg_ty == Type::Never {
+                                continue;
+                            }
+                            let param_slot = capture_count + arg_idx;
+                            if let Some(param) = callee.params.get(param_slot) {
+                                callee_overlay.insert(param.var, arg_ty);
+                            }
+                        }
                         for (arg_idx, call_arg) in args.iter().enumerate() {
                             let hir::CallArg::Regular(arg_id) = call_arg else {
                                 continue;
@@ -482,24 +697,25 @@ impl<'a> Lowering<'a> {
                             let Some(param) = callee.params.get(param_slot) else {
                                 continue;
                             };
-                            let callee_overlay = self
-                                .lowering_seed_info
-                                .per_function_local_seed_types
-                                .get(&fid)
-                                .cloned()
-                                .unwrap_or_default();
+                            // Cycle-guard before recursing into callee body.
+                            if !visited.insert(fid) {
+                                continue;
+                            }
                             for block in callee.blocks.values() {
                                 let result = self.find_elem_type_from_usage(
                                     param.var,
                                     &block.stmts,
                                     hir_module,
                                     &callee_overlay,
+                                    var_to_func,
+                                    visited,
                                 );
                                 if result != Type::Any && result != Type::Never {
                                     accum = accum.join(&result);
                                     found = true;
                                 }
                             }
+                            visited.remove(&fid);
                         }
                     }
                 }
@@ -509,7 +725,14 @@ impl<'a> Lowering<'a> {
                         continue;
                     };
                     let arg_expr = &hir_module.exprs[*arg_id];
-                    if let Some(ty) = self.find_elem_via_call_arg(var, arg_expr, hir_module) {
+                    if let Some(ty) = self.find_elem_via_call_arg(
+                        var,
+                        arg_expr,
+                        hir_module,
+                        overlay,
+                        var_to_func,
+                        visited,
+                    ) {
                         accum = accum.join(&ty);
                         found = true;
                     }
@@ -518,23 +741,117 @@ impl<'a> Lowering<'a> {
             hir::ExprKind::BuiltinCall { args, .. } => {
                 for arg_id in args {
                     let arg_expr = &hir_module.exprs[*arg_id];
-                    if let Some(ty) = self.find_elem_via_call_arg(var, arg_expr, hir_module) {
+                    if let Some(ty) = self.find_elem_via_call_arg(
+                        var,
+                        arg_expr,
+                        hir_module,
+                        overlay,
+                        var_to_func,
+                        visited,
+                    ) {
                         accum = accum.join(&ty);
                         found = true;
                     }
                 }
             }
-            hir::ExprKind::MethodCall { obj, args, .. } => {
+            hir::ExprKind::MethodCall {
+                obj, method, args, ..
+            } => {
+                // Recurse into obj/args first — covers `m(...).n(var)`
+                // chains and arg-passing patterns. This must happen before
+                // method resolution because resolution may fail (Any obj),
+                // and we still want to find signals deeper in the tree.
                 let obj_expr = &hir_module.exprs[*obj];
-                if let Some(ty) = self.find_elem_via_call_arg(var, obj_expr, hir_module) {
+                if let Some(ty) = self.find_elem_via_call_arg(
+                    var,
+                    obj_expr,
+                    hir_module,
+                    overlay,
+                    var_to_func,
+                    visited,
+                ) {
                     accum = accum.join(&ty);
                     found = true;
                 }
                 for arg_id in args {
                     let arg_expr = &hir_module.exprs[*arg_id];
-                    if let Some(ty) = self.find_elem_via_call_arg(var, arg_expr, hir_module) {
+                    if let Some(ty) = self.find_elem_via_call_arg(
+                        var,
+                        arg_expr,
+                        hir_module,
+                        overlay,
+                        var_to_func,
+                        visited,
+                    ) {
                         accum = accum.join(&ty);
                         found = true;
+                    }
+                }
+                // Resolve `obj.method(...)` to a concrete callee body via
+                // class info, then scan that body for `var` mutations.
+                // `MethodCall.args: Vec<ExprId>` (no CallArg wrap, unlike
+                // `Call.args`), so we iterate ExprIds directly.
+                let obj_ty = self.seed_infer_expr_type(obj_expr, hir_module, overlay);
+                if let Some(MethodResolution {
+                    func_id: fid,
+                    self_offset,
+                }) = self.resolve_method_func(&obj_ty, *method)
+                {
+                    if let Some(callee) = hir_module.func_defs.get(&fid) {
+                        // Seed callee_overlay with caller-side arg types so
+                        // that body usage of OTHER params (`store[idx].append(k)`
+                        // — `k` is param 3, not the var we're scanning)
+                        // sees the concrete caller-arg type instead of `Any`.
+                        // The harvester pass doesn't visit MethodCall arg
+                        // types yet, so without this seeding the recursive
+                        // `extract_elem_type_from_method_call` call rejects
+                        // the appended value as `Any` and the whole chain
+                        // collapses to `Never`.
+                        let mut callee_overlay = self
+                            .lowering_seed_info
+                            .per_function_local_seed_types
+                            .get(&fid)
+                            .cloned()
+                            .unwrap_or_default();
+                        for (arg_idx, arg_id) in args.iter().enumerate() {
+                            let arg_expr = &hir_module.exprs[*arg_id];
+                            let arg_ty = self.seed_infer_expr_type(arg_expr, hir_module, overlay);
+                            if arg_ty == Type::Any || arg_ty == Type::Never {
+                                continue;
+                            }
+                            let param_slot = self_offset + arg_idx;
+                            if let Some(param) = callee.params.get(param_slot) {
+                                callee_overlay.insert(param.var, arg_ty);
+                            }
+                        }
+                        for (arg_idx, arg_id) in args.iter().enumerate() {
+                            let arg_expr = &hir_module.exprs[*arg_id];
+                            if !matches!(&arg_expr.kind, hir::ExprKind::Var(v) if *v == var) {
+                                continue;
+                            }
+                            let param_slot = self_offset + arg_idx;
+                            let Some(param) = callee.params.get(param_slot) else {
+                                continue;
+                            };
+                            if !visited.insert(fid) {
+                                continue;
+                            }
+                            for block in callee.blocks.values() {
+                                let result = self.find_elem_type_from_usage(
+                                    param.var,
+                                    &block.stmts,
+                                    hir_module,
+                                    &callee_overlay,
+                                    var_to_func,
+                                    visited,
+                                );
+                                if result != Type::Any && result != Type::Never {
+                                    accum = accum.join(&result);
+                                    found = true;
+                                }
+                            }
+                            visited.remove(&fid);
+                        }
                     }
                 }
             }
