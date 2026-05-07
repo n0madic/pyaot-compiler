@@ -335,6 +335,172 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Refine class field seed types from **cross-instance** attribute
+    /// writes. Complements `refine_class_fields_from_constructor_calls`,
+    /// which only sees `__init__` arg flow. This pass walks every function
+    /// in the module looking for `Bind { target: Attr { obj, field, .. },
+    /// value }` where `obj` is a class instance and `field` is one of that
+    /// class's known fields. The RHS expression type (computed via the
+    /// converged seed pipeline) is joined into `refined_class_field_types`
+    /// so the field's effective type reflects writes through any reference,
+    /// not just `self.X = ...`.
+    ///
+    /// Why this exists:
+    ///   Autograd-style code mutates a sibling instance's field —
+    ///   `child.grad += local_grad * v.grad` accumulates a Float result into
+    ///   `Value.grad`, but the frontend's pre-WPA scan can't infer
+    ///   `local_grad * v.grad` precisely (operands are reads from a
+    ///   `tuple`/`Attribute` that need the full prescan to type). The field
+    ///   was harvested as `Int` from the constructor literal `self.grad = 0`
+    ///   alone, so the Float write later slammed boxed-FloatObj pointer bits
+    ///   into the slot — read sites then unbox them as raw integers (or
+    ///   worse, as object pointers in the `Value.backward()` SEGV).
+    ///
+    /// Conservative join semantics:
+    ///   - `Any` / `HeapAny` RHS contributes nothing (would dilute precision).
+    ///   - `Never` RHS skipped (uninitialised slot).
+    ///   - Writes are joined via the lattice; reads converge through the
+    ///     normal fixpoint loop in `build_lowering_seed_info`.
+    pub(crate) fn refine_class_fields_from_cross_instance_writes(
+        &mut self,
+        hir_module: &hir::Module,
+    ) {
+        // Collect (class_id, field, value_expr_id) triples first so we can
+        // mutate `refined_class_field_types` afterwards without juggling
+        // borrows of `hir_module` and `self` simultaneously.
+        let mut writes: Vec<(ClassId, InternedString, hir::ExprId)> = Vec::new();
+
+        for func in hir_module.func_defs.values() {
+            if func.has_no_blocks() {
+                continue;
+            }
+            for block in func.blocks.values() {
+                for &stmt_id in &block.stmts {
+                    let stmt = &hir_module.stmts[stmt_id];
+                    if let hir::StmtKind::Bind { target, value, .. } = &stmt.kind {
+                        Self::collect_attr_writes_in_target(
+                            target,
+                            *value,
+                            hir_module,
+                            self,
+                            &mut writes,
+                        );
+                    }
+                }
+            }
+        }
+
+        for (class_id, field, value_expr_id) in writes {
+            let value_ty = self.seed_expr_type(value_expr_id, hir_module);
+            // Skip writes whose RHS we can't type precisely — joining `Any`
+            // would only erase information, and aggressive widening would
+            // break code that legitimately stays inside a narrow precise
+            // type (e.g. `count: int = 0; count = count + 1` — the BinOp
+            // seed may transiently see `Any` while the prescan converges
+            // but the steady-state remains `Int`).
+            if matches!(value_ty, Type::Any | Type::HeapAny | Type::Never) {
+                continue;
+            }
+            let storage_ty = self
+                .get_class_info(&class_id)
+                .and_then(|info| info.field_types.get(&field))
+                .cloned()
+                .unwrap_or(Type::Any);
+            let class_fields = self
+                .lowering_seed_info
+                .refined_class_field_types
+                .entry(class_id)
+                .or_default();
+            let refined_raw = class_fields
+                .get(&field)
+                .map(|prev| prev.join(&value_ty))
+                .unwrap_or_else(|| {
+                    if matches!(storage_ty, Type::Any | Type::HeapAny) {
+                        value_ty.clone()
+                    } else {
+                        storage_ty.join(&value_ty)
+                    }
+                });
+            let refined = match refined_raw {
+                Type::Never => Type::Any,
+                other => other.demote_never_params_to_any(),
+            };
+            class_fields.insert(field, refined);
+        }
+    }
+
+    /// Walk a `BindingTarget` recursively, recording every leaf attribute
+    /// write `obj.field = …` whose `obj` resolves to a class instance with
+    /// a registered field of that name. The recursion handles tuple-unpack
+    /// targets (`(self.a, self.b) = …`) which are valid in Python.
+    ///
+    /// When `obj_ty` cannot be narrowed (e.g. iterator-element vars whose
+    /// type wasn't propagated through a tuple destructuring of a `zip` of
+    /// containers with mixed-shape elements), the `field` name is matched
+    /// against every known class that has a field of that name. The harvest
+    /// is conservative: any matching class's field gets widened. False
+    /// positives are bounded by the field-name match — a class without that
+    /// field is never touched.
+    fn collect_attr_writes_in_target(
+        target: &hir::BindingTarget,
+        value: hir::ExprId,
+        hir_module: &hir::Module,
+        lowering: &Lowering<'_>,
+        out: &mut Vec<(ClassId, InternedString, hir::ExprId)>,
+    ) {
+        match target {
+            hir::BindingTarget::Attr { obj, field, .. } => {
+                let obj_ty = lowering.seed_expr_type(*obj, hir_module);
+                let class_id = match obj_ty {
+                    Type::Class { class_id, .. } => Some(class_id),
+                    Type::Generic { ref base, .. } => {
+                        // Generic class types (e.g. parametric instances) — the
+                        // base class id still owns the field offset table.
+                        if hir_module.class_defs.contains_key(base) {
+                            Some(*base)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(class_id) = class_id {
+                    if let Some(info) = lowering.get_class_info(&class_id) {
+                        if info.field_offsets.contains_key(field) {
+                            out.push((class_id, *field, value));
+                        }
+                    }
+                } else {
+                    // obj_ty could not be narrowed — fall back to a
+                    // field-name lookup across every class. Autograd-style
+                    // tuple-destructured for-targets (`for child, grad in
+                    // zip(v._children, v._local_grads)`) typically lose
+                    // their concrete element type when one zip arg has a
+                    // wider element type than the other. The write is
+                    // still legitimate; harvesting it across every class
+                    // that has the field is monotonic — read sites only
+                    // converge faster.
+                    for (cid, info) in lowering.class_info_iter() {
+                        if info.field_offsets.contains_key(field) {
+                            out.push((*cid, *field, value));
+                        }
+                    }
+                }
+            }
+            hir::BindingTarget::Tuple { elts, .. } => {
+                for elt in elts {
+                    Self::collect_attr_writes_in_target(elt, value, hir_module, lowering, out);
+                }
+            }
+            hir::BindingTarget::Starred { inner, .. } => {
+                Self::collect_attr_writes_in_target(inner, value, hir_module, lowering, out);
+            }
+            hir::BindingTarget::Var(_)
+            | hir::BindingTarget::Index { .. }
+            | hir::BindingTarget::ClassAttr { .. } => {}
+        }
+    }
+
     fn collect_init_field_bindings(
         &self,
         hir_module: &hir::Module,

@@ -56,6 +56,14 @@ impl<'a> Lowering<'a> {
         // (attribute access, iterable element typing) from getting stuck at
         // constructor-default placeholders like `Tuple([])`.
         self.refine_class_fields_from_constructor_calls(hir_module);
+        // Pair the constructor-call harvester with a cross-instance write
+        // harvester. The constructor pass only looks at `__init__` arg flow;
+        // it cannot see the autograd-style `child.grad += rhs` pattern where
+        // `child` is a sibling instance and the RHS only types precisely
+        // after prescan. Without this, an unannotated numeric field stays
+        // `Int` from `self.grad = 0` and the later `Float` write through
+        // `child.grad += …` corrupts the slot bits.
+        self.refine_class_fields_from_cross_instance_writes(hir_module);
         // Constructor-call field refinement can make a later prescan pass
         // strictly more precise for loop-carried locals like:
         //   for v in reversed(topo):
@@ -122,6 +130,7 @@ impl<'a> Lowering<'a> {
         for _ in 0..10 {
             let prev_returns = self.func_return_types.inner.clone();
             let prev_refined = self.lowering_seed_info.refined_container_types.clone();
+            let prev_class_fields = self.lowering_seed_info.refined_class_field_types.clone();
             let prev_prescan = self
                 .lowering_seed_info
                 .per_function_local_seed_types
@@ -138,17 +147,32 @@ impl<'a> Lowering<'a> {
             // types only resolved this round (refined call returns,
             // refined nested-fn params) get their element type updated.
             self.refine_empty_container_types(hir_module);
+            // Re-run cross-instance class field write harvester — RHS
+            // expression types can sharpen each iteration (e.g. as a
+            // generator's yield type converges, an `obj.x = next(gen)` write
+            // becomes typed instead of `Any`). The pass is monotone: it only
+            // joins into existing entries, so re-running is safe and cheap.
+            self.refine_class_fields_from_cross_instance_writes(hir_module);
             // Propagate capture types using lattice-join so Closure creator
             // params see the freshest resolved types. Runs after refine so
             // the hint overlay reflects the just-sharpened container types.
             let captures_changed = self.propagate_closure_capture_param_types(hir_module);
             let returns_changed = self.func_return_types.inner != prev_returns;
             let refined_changed = self.lowering_seed_info.refined_container_types != prev_refined;
+            // Track class-field refinement changes so the loop iterates
+            // again whenever a numeric write up-tiers a field type. Without
+            // this, a single-pass widening (e.g. `grad: Int → Float` from
+            // an aug-assign harvested in iter N) leaves prescan local types
+            // stale at `Int`, the codegen then sees a F64 value flowing
+            // into an Any-declared local and panics with a type mismatch.
+            let class_fields_changed =
+                self.lowering_seed_info.refined_class_field_types != prev_class_fields;
             let prescan_changed =
                 self.lowering_seed_info.per_function_local_seed_types != prev_prescan;
             if !harvester_changed
                 && !returns_changed
                 && !refined_changed
+                && !class_fields_changed
                 && !captures_changed
                 && !prescan_changed
             {

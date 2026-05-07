@@ -249,6 +249,23 @@ impl AstToHir {
         // Track all method names in this class (for removing overrides from inherited abstract set)
         let mut defined_method_names: IndexSet<InternedString> = IndexSet::new();
 
+        // Pre-scan the entire class body to discover all instance field names
+        // before we start the per-method type harvester. The harvester needs
+        // this set so it can also recognise cross-instance writes — patterns
+        // like `child.grad += rhs` or `node.next = other` mutate a field on
+        // a different instance of the same class, but historically the scan
+        // only walked `self.X = ...` and so missed those write sites entirely.
+        // The result was unannotated numeric fields silently typed `Int` from
+        // a constructor literal even though autograd-style methods stored
+        // `Float` results into them through `obj.grad += ...`, corrupting the
+        // tagged-Value slot bits.
+        //
+        // Source of field names, in order of authority:
+        //   1. Class-level annotations: `x: int` (instance field declaration)
+        //   2. `__slots__ = (...)` literal tuple of names
+        //   3. `self.X = ...` writes inside any method
+        let class_field_names = self.collect_class_field_names(&class_def.body);
+
         for stmt in class_def.body {
             match stmt {
                 py::Stmt::AnnAssign(ann_assign) => {
@@ -328,7 +345,22 @@ impl AstToHir {
                     // (e.g. fields only set in `reset()` / `configure()`) still
                     // gets its fields discovered via whichever method writes them
                     // first.
-                    let observed = self.scan_method_for_self_fields(&func_def.body, &func_def.args);
+                    //
+                    // The `class_field_names` set was pre-computed from a sweep
+                    // over the entire class body. Passing it lets the per-method
+                    // scan also capture cross-instance writes like
+                    // `child.grad += rhs` (autograd-style) — those would
+                    // otherwise be invisible because the harvester historically
+                    // only saw `self.X` writes. Without it, an unannotated field
+                    // refined as `Int` from `__init__` would silently store
+                    // `Float` values via a different method, producing tagged-
+                    // Value bits that read back as garbage pointers (the SEGV
+                    // in `Value.backward()` on autograd-style code).
+                    let observed = self.scan_method_for_self_fields(
+                        &func_def.body,
+                        &func_def.args,
+                        &class_field_names,
+                    );
                     for (name_str, inferred_ty) in observed {
                         // Skip fields already declared at class level.
                         let name_interned = self.interner.intern(&name_str);
@@ -736,15 +768,141 @@ impl AstToHir {
         Ok(func_id)
     }
 
+    /// Pre-scan the entire class body to enumerate every instance field name
+    /// before any per-method type harvesting runs. Three sources contribute:
+    ///
+    ///   1. Class-level `AnnAssign` without value (`x: int`) — explicit
+    ///      instance field declarations.
+    ///   2. `__slots__ = (...)` literal tuple of strings — CPython's memory
+    ///      optimization, conveniently the same set of names.
+    ///   3. `self.X = ...`, `self.X += ...`, `self.X: T = ...` writes inside
+    ///      any method body (recursively into control flow blocks).
+    ///
+    /// The resulting set drives the cross-instance write detection in
+    /// `scan_stmts_for_self_fields`: `<expr>.X = rhs` patterns where `expr`
+    /// is **not** `self` but `X` is a known field still contribute their RHS
+    /// type to the field, so a method that mutates a sibling instance's
+    /// fields (autograd-style `child.grad += rhs`, linked-list `node.next =
+    /// other`) widens the harvested type as it should.
+    fn collect_class_field_names(&self, body: &[py::Stmt]) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for stmt in body {
+            match stmt {
+                py::Stmt::AnnAssign(ann) => {
+                    // Instance field declaration: `x: int` (no value).
+                    if ann.value.is_none() {
+                        if let py::Expr::Name(name) = &*ann.target {
+                            names.insert(name.id.to_string());
+                        }
+                    }
+                }
+                py::Stmt::Assign(assign) => {
+                    // `__slots__ = ('a', 'b', ...)` — extract literal names.
+                    if assign.targets.len() == 1 {
+                        if let py::Expr::Name(name) = &assign.targets[0] {
+                            if name.id.as_str() == "__slots__" {
+                                if let py::Expr::Tuple(tup) = &*assign.value {
+                                    for elt in &tup.elts {
+                                        if let py::Expr::Constant(c) = elt {
+                                            if let py::Constant::Str(s) = &c.value {
+                                                names.insert(s.clone());
+                                            }
+                                        }
+                                    }
+                                } else if let py::Expr::List(lst) = &*assign.value {
+                                    for elt in &lst.elts {
+                                        if let py::Expr::Constant(c) = elt {
+                                            if let py::Constant::Str(s) = &c.value {
+                                                names.insert(s.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                py::Stmt::FunctionDef(func_def) => {
+                    Self::collect_self_field_names_in_stmts(&func_def.body, &mut names);
+                }
+                _ => {}
+            }
+        }
+        names
+    }
+
+    /// Recursive helper: walk method body collecting `self.X = ...` field
+    /// names. Pure name discovery — no type inference here, that happens in
+    /// `scan_stmts_for_self_fields` after we know the full field set.
+    fn collect_self_field_names_in_stmts(stmts: &[py::Stmt], out: &mut HashSet<String>) {
+        for stmt in stmts {
+            match stmt {
+                py::Stmt::Assign(assign) => {
+                    if assign.targets.len() == 1 {
+                        if let py::Expr::Attribute(attr) = &assign.targets[0] {
+                            if let py::Expr::Name(name) = &*attr.value {
+                                if name.id.as_str() == "self" {
+                                    out.insert(attr.attr.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                py::Stmt::AugAssign(aug) => {
+                    if let py::Expr::Attribute(attr) = &*aug.target {
+                        if let py::Expr::Name(name) = &*attr.value {
+                            if name.id.as_str() == "self" {
+                                out.insert(attr.attr.to_string());
+                            }
+                        }
+                    }
+                }
+                py::Stmt::AnnAssign(ann) => {
+                    if let py::Expr::Attribute(attr) = &*ann.target {
+                        if let py::Expr::Name(name) = &*attr.value {
+                            if name.id.as_str() == "self" {
+                                out.insert(attr.attr.to_string());
+                            }
+                        }
+                    }
+                }
+                py::Stmt::If(if_stmt) => {
+                    Self::collect_self_field_names_in_stmts(&if_stmt.body, out);
+                    Self::collect_self_field_names_in_stmts(&if_stmt.orelse, out);
+                }
+                py::Stmt::For(for_stmt) => {
+                    Self::collect_self_field_names_in_stmts(&for_stmt.body, out);
+                }
+                py::Stmt::While(while_stmt) => {
+                    Self::collect_self_field_names_in_stmts(&while_stmt.body, out);
+                }
+                py::Stmt::Try(try_stmt) => {
+                    Self::collect_self_field_names_in_stmts(&try_stmt.body, out);
+                    for handler in &try_stmt.handlers {
+                        let py::ExceptHandler::ExceptHandler(h) = handler;
+                        Self::collect_self_field_names_in_stmts(&h.body, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Scan a method's body for `self.field = value` and `self.field: T = v`
     /// assignments, collecting inferred types per field name. Multiple writes
     /// within the same method unify via `join`.
+    ///
+    /// `known_fields` enumerates every instance field name discovered across
+    /// the whole class body (see `collect_class_field_names`). It enables a
+    /// secondary pattern: `<other>.X = rhs` where `X` is a known field still
+    /// counts as a write, so cross-instance mutations widen the field type.
     ///
     /// Returns an IndexMap preserving first-seen order for stable codegen.
     fn scan_method_for_self_fields(
         &mut self,
         body: &[py::Stmt],
         args: &py::Arguments,
+        known_fields: &HashSet<String>,
     ) -> IndexMap<String, Type> {
         // Build param name → inferred type. Annotation wins; default value
         // provides a fallback (so `children=()` infers as Tuple([]) without
@@ -778,11 +936,23 @@ impl AstToHir {
         }
 
         let mut out: IndexMap<String, Type> = IndexMap::new();
-        self.scan_stmts_for_self_fields(body, &param_types, &mut out);
+        self.scan_stmts_for_self_fields(body, &param_types, known_fields, &mut out);
         out
     }
 
-    /// Recursively scan statements for `self.field = value` patterns.
+    /// Recursively scan statements for instance-field write patterns.
+    ///
+    /// Two write categories are recognised:
+    ///
+    ///   1. `self.X = rhs` (and `+=` / annotated forms) — primary writes.
+    ///   2. `<expr>.X = rhs` where `expr` is **not** `self` and `X` is in
+    ///      `known_fields` — cross-instance writes, e.g.
+    ///      `child.grad += local_grad * v.grad` in autograd code or
+    ///      `node.next = other` in linked-list code. Without this, methods
+    ///      that mutate sibling-instance fields are invisible to type
+    ///      inference and a numeric field gets harvested as `Int` from
+    ///      a constructor literal even though peer methods write `Float`.
+    ///
     /// Types are merged across writes via `join`, which preserves tuple-shape
     /// information — a field assigned tuples of different lengths in different
     /// branches infers as `TupleVar` instead of `Any`.
@@ -790,6 +960,7 @@ impl AstToHir {
         &mut self,
         stmts: &[py::Stmt],
         param_types: &std::collections::HashMap<String, Type>,
+        known_fields: &HashSet<String>,
         out: &mut IndexMap<String, Type>,
     ) {
         for stmt in stmts {
@@ -797,11 +968,23 @@ impl AstToHir {
                 py::Stmt::Assign(assign) => {
                     if assign.targets.len() == 1 {
                         if let py::Expr::Attribute(attr) = &assign.targets[0] {
-                            if let py::Expr::Name(name) = &*attr.value {
-                                if name.id.as_str() == "self" {
-                                    let field_name = attr.attr.to_string();
-                                    let ty =
-                                        self.infer_field_type_from_rhs(&assign.value, param_types);
+                            let field_name = attr.attr.to_string();
+                            let is_self = matches!(
+                                &*attr.value,
+                                py::Expr::Name(n) if n.id.as_str() == "self"
+                            );
+                            // Self-write: always recorded. Non-self write
+                            // counts only if the attribute is a known field
+                            // of this class — otherwise we'd pollute the
+                            // field set with names that belong to some
+                            // other class (e.g. `logger.info = ...` style).
+                            if is_self || known_fields.contains(&field_name) {
+                                let ty = self.infer_field_type_from_rhs(&assign.value, param_types);
+                                // Cross-instance writes only contribute if the
+                                // RHS produced something concrete — `Any`
+                                // would dilute a precise type without adding
+                                // information.
+                                if is_self || !matches!(ty, Type::Any) {
                                     out.entry(field_name)
                                         .and_modify(|prev| *prev = prev.join(&ty))
                                         .or_insert(ty);
@@ -810,58 +993,76 @@ impl AstToHir {
                         }
                     }
                 }
-                // `self.f <op>= <rhs>` — merge the RHS type through the
-                // numeric tower (Area E §E.3). `x += y` desugars to
-                // `x = x + y` in HIR, but the AST-level scan runs before
-                // desugaring and sees `AugAssign` directly; without this
-                // arm, compound assignments on fields were invisible and
-                // could not widen the inferred field type.
+                // `<obj>.f <op>= <rhs>` — same dual treatment as `=`. The
+                // augmented form is the dominant pattern for accumulator
+                // fields like autograd's `child.grad += ...`, so missing it
+                // here would defeat the cross-instance widening entirely.
                 py::Stmt::AugAssign(aug) => {
                     if let py::Expr::Attribute(attr) = &*aug.target {
-                        if let py::Expr::Name(name) = &*attr.value {
-                            if name.id.as_str() == "self" {
-                                let field_name = attr.attr.to_string();
-                                let rhs_ty =
-                                    self.infer_field_type_from_rhs(&aug.value, param_types);
-                                if !matches!(rhs_ty, Type::Any) {
-                                    out.entry(field_name)
-                                        .and_modify(|prev| *prev = prev.join(&rhs_ty))
-                                        .or_insert(rhs_ty);
-                                }
+                        let field_name = attr.attr.to_string();
+                        let is_self = matches!(
+                            &*attr.value,
+                            py::Expr::Name(n) if n.id.as_str() == "self"
+                        );
+                        if is_self || known_fields.contains(&field_name) {
+                            let rhs_ty = self.infer_field_type_from_rhs(&aug.value, param_types);
+                            if !matches!(rhs_ty, Type::Any) {
+                                out.entry(field_name)
+                                    .and_modify(|prev| *prev = prev.join(&rhs_ty))
+                                    .or_insert(rhs_ty);
                             }
                         }
                     }
                 }
                 py::Stmt::AnnAssign(ann) => {
                     if let py::Expr::Attribute(attr) = &*ann.target {
-                        if let py::Expr::Name(name) = &*attr.value {
-                            if name.id.as_str() == "self" {
-                                let field_name = attr.attr.to_string();
-                                let ty = self
-                                    .convert_type_annotation(&ann.annotation)
-                                    .unwrap_or(Type::Any);
-                                // Explicit annotation wins — overwrite prior inference.
+                        let field_name = attr.attr.to_string();
+                        let is_self = matches!(
+                            &*attr.value,
+                            py::Expr::Name(n) if n.id.as_str() == "self"
+                        );
+                        if is_self || known_fields.contains(&field_name) {
+                            let ty = self
+                                .convert_type_annotation(&ann.annotation)
+                                .unwrap_or(Type::Any);
+                            if is_self {
+                                // Explicit annotation on `self.X` wins over
+                                // prior inference within the same method.
                                 out.insert(field_name, ty);
+                            } else if !matches!(ty, Type::Any) {
+                                out.entry(field_name)
+                                    .and_modify(|prev| *prev = prev.join(&ty))
+                                    .or_insert(ty);
                             }
                         }
                     }
                 }
                 // Recurse into control-flow blocks to find conditional assignments.
                 py::Stmt::If(if_stmt) => {
-                    self.scan_stmts_for_self_fields(&if_stmt.body, param_types, out);
-                    self.scan_stmts_for_self_fields(&if_stmt.orelse, param_types, out);
+                    self.scan_stmts_for_self_fields(&if_stmt.body, param_types, known_fields, out);
+                    self.scan_stmts_for_self_fields(
+                        &if_stmt.orelse,
+                        param_types,
+                        known_fields,
+                        out,
+                    );
                 }
                 py::Stmt::For(for_stmt) => {
-                    self.scan_stmts_for_self_fields(&for_stmt.body, param_types, out);
+                    self.scan_stmts_for_self_fields(&for_stmt.body, param_types, known_fields, out);
                 }
                 py::Stmt::While(while_stmt) => {
-                    self.scan_stmts_for_self_fields(&while_stmt.body, param_types, out);
+                    self.scan_stmts_for_self_fields(
+                        &while_stmt.body,
+                        param_types,
+                        known_fields,
+                        out,
+                    );
                 }
                 py::Stmt::Try(try_stmt) => {
-                    self.scan_stmts_for_self_fields(&try_stmt.body, param_types, out);
+                    self.scan_stmts_for_self_fields(&try_stmt.body, param_types, known_fields, out);
                     for handler in &try_stmt.handlers {
                         let py::ExceptHandler::ExceptHandler(h) = handler;
-                        self.scan_stmts_for_self_fields(&h.body, param_types, out);
+                        self.scan_stmts_for_self_fields(&h.body, param_types, known_fields, out);
                     }
                 }
                 _ => {}
