@@ -14,6 +14,30 @@ use pyaot_utils::VarId;
 
 use crate::Lowering;
 
+/// Return the element type of a list-like or set-like container, or None
+/// if the type is not a recognized container.
+fn elem_type_of(ty: &Type) -> Option<&Type> {
+    ty.list_elem().or_else(|| ty.set_elem())
+}
+
+/// True when `ty` carries no actionable refinement signal: `Any`, `Never`, or
+/// a container whose element type is itself uninformative (e.g. `list[Never]`
+/// from a `[]` literal). These leak through as fake refinements when an
+/// `append([])` is observed before any concrete element-typed call site.
+fn is_uninformative_elem_type(ty: &Type) -> bool {
+    match ty {
+        Type::Any | Type::Never => true,
+        _ => match elem_type_of(ty) {
+            Some(inner) => is_uninformative_elem_type(inner),
+            None => match ty {
+                // Empty dict literal — both K and V inferred as Never.
+                Type::Generic { args, .. } if args.iter().any(is_uninformative_elem_type) => true,
+                _ => false,
+            },
+        },
+    }
+}
+
 impl<'a> Lowering<'a> {
     /// Refine types of empty containers by scanning for subsequent method calls.
     /// Must run before lowering so that `get_var_type` returns the refined type.
@@ -47,7 +71,136 @@ impl<'a> Lowering<'a> {
                     .flat_map(|b| b.stmts.iter().copied())
                     .collect();
                 self.refine_empty_containers_in_block(&flattened, hir_module, &overlay);
+                self.refine_indexed_var_types_in_func(func_id, &flattened, hir_module, &overlay);
             }
+        }
+    }
+
+    /// Refine types of unannotated container-typed variables (function params
+    /// and locally-bound vars) by scanning the body for the
+    /// `var[idx].append(arg)` pattern (container-of-container indexed
+    /// mutation), or by recursing into a callee body when `var` is forwarded
+    /// to a function.
+    ///
+    /// The motivating case is built on the caller side and mutated in the
+    /// callee:
+    ///     keys = [[] for _ in range(n_layer)]   # caller — outer list[list[?]]
+    ///     gpt(token_id, keys, values)            # forwards keys to callee
+    ///     ...
+    ///     def gpt(..., keys, values):
+    ///         keys[li].append(k)                 # inner mutation
+    /// Empty-container refinement only handles `var = []` literal binds, so
+    /// the listcomp-built outer list and the callee's param both miss out.
+    /// This pass closes both gaps: `find_elem_type_from_usage` already knows
+    /// how to follow callee bodies (via `find_elem_via_call_arg`) and how to
+    /// recognize `var[idx].append(arg)` (Case 2 in
+    /// `extract_elem_type_from_method_call`).
+    ///
+    /// We write to `refined_container_types[var]` only — the harvester
+    /// remains the source of truth for call-site arg-type inference, and
+    /// MIR param-type selection in `function_lowering` reads
+    /// `refined_container_types` before falling through to harvester hints.
+    fn refine_indexed_var_types_in_func(
+        &mut self,
+        func_id: &pyaot_utils::FuncId,
+        stmts: &[hir::StmtId],
+        hir_module: &hir::Module,
+        overlay: &IndexMap<VarId, Type>,
+    ) {
+        let Some(func) = hir_module.func_defs.get(func_id) else {
+            return;
+        };
+        let capture_count = self
+            .get_closure_capture_types(func_id)
+            .map(|v| v.len())
+            .unwrap_or(0);
+
+        // Collect candidate vars: unannotated params plus all locally-bound
+        // vars in this function. We snapshot now because we mutate self below.
+        let mut candidates: Vec<VarId> = func
+            .params
+            .iter()
+            .skip(capture_count)
+            .filter(|p| p.ty.is_none())
+            .map(|p| p.var)
+            .collect();
+        for stmt_id in stmts {
+            let stmt = &hir_module.stmts[*stmt_id];
+            if let hir::StmtKind::Bind {
+                target: hir::BindingTarget::Var(target_var),
+                type_hint: None,
+                ..
+            } = &stmt.kind
+            {
+                candidates.push(*target_var);
+            }
+        }
+        candidates.sort_by_key(|v| v.0);
+        candidates.dedup();
+
+        for var_id in candidates {
+            // Determine current type: refined > overlay > Any.
+            let prev = self
+                .lowering_seed_info
+                .refined_container_types
+                .get(&var_id)
+                .cloned();
+            // Skip if already refined to a concrete element type.
+            if let Some(prev_ty) = &prev {
+                if let Some(elem) = elem_type_of(prev_ty) {
+                    if !is_uninformative_elem_type(elem) {
+                        continue;
+                    }
+                }
+            }
+            // Only refine if the current best-known type is a container
+            // (`list[..]`, `set[..]`) with an uninformative element; otherwise
+            // the indexed-mutation refinement would invent a container shape
+            // around an unrelated scalar.
+            let current_overlay_ty = overlay.get(&var_id).cloned();
+            let probe_ty = prev.as_ref().or(current_overlay_ty.as_ref());
+            let (is_list_like, is_set_like) = match probe_ty {
+                Some(t) => (t.list_elem().is_some(), t.set_elem().is_some()),
+                None => (false, false),
+            };
+            if !(is_list_like || is_set_like) {
+                continue;
+            }
+
+            // For locally-bound vars, scan starts AFTER the binding stmt —
+            // otherwise `find_elem_type_from_usage` immediately returns `Any`
+            // when it sees `var = ...` as a reassignment. Params don't have
+            // a binding so we scan from the start.
+            let scan_start = stmts
+                .iter()
+                .position(|stmt_id| {
+                    let stmt = &hir_module.stmts[*stmt_id];
+                    matches!(
+                        &stmt.kind,
+                        hir::StmtKind::Bind {
+                            target: hir::BindingTarget::Var(t),
+                            ..
+                        } if *t == var_id
+                    )
+                })
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let elem_ty =
+                self.find_elem_type_from_usage(var_id, &stmts[scan_start..], hir_module, overlay);
+            if elem_ty == Type::Any || is_uninformative_elem_type(&elem_ty) {
+                continue;
+            }
+            let refined = if is_set_like {
+                Type::set_of(elem_ty)
+            } else {
+                Type::list_of(elem_ty)
+            };
+            if Some(&refined) == prev.as_ref() {
+                continue;
+            }
+            self.lowering_seed_info
+                .refined_container_types
+                .insert(var_id, refined);
         }
     }
 
@@ -102,7 +255,6 @@ impl<'a> Lowering<'a> {
                         hir_module,
                         overlay,
                     );
-
                     if elem_ty != Type::Any {
                         let refined = if is_empty_list {
                             Type::list_of(elem_ty)
@@ -130,13 +282,6 @@ impl<'a> Lowering<'a> {
         for stmt_id in stmts {
             let stmt = &hir_module.stmts[*stmt_id];
             match &stmt.kind {
-                hir::StmtKind::Expr(expr_id) => {
-                    if let Some(ty) =
-                        self.extract_elem_type_from_method_call(var, *expr_id, hir_module, overlay)
-                    {
-                        return ty;
-                    }
-                }
                 // Stop at reassignment to the same variable — any
                 // subsequent `.append` targets a different list.
                 hir::StmtKind::Bind {
@@ -204,6 +349,32 @@ impl<'a> Lowering<'a> {
                             }
                         }
                     }
+                    // Direct call: `f(..., var, ...)` — recurse into the callee
+                    // body keyed on the corresponding param VarId. Catches the
+                    // container-of-container pattern where the outer list is
+                    // built on the caller side
+                    //     keys = [[] for _ in range(n_layer)]
+                    //     gpt(token_id, keys, values)
+                    // and the inner-list mutation lives in the callee
+                    //     def gpt(..., keys, values):
+                    //         keys[li].append(k)
+                    if let Some(ty) = self.find_elem_via_call_arg(var, value_expr, hir_module) {
+                        return ty;
+                    }
+                }
+                hir::StmtKind::Expr(expr_id) => {
+                    if let Some(ty) =
+                        self.extract_elem_type_from_method_call(var, *expr_id, hir_module, overlay)
+                    {
+                        return ty;
+                    }
+                    // Bare statement-position call; recurse into callee body
+                    // for `gpt(..., keys, ...)` patterns where the result is
+                    // discarded.
+                    let expr = &hir_module.exprs[*expr_id];
+                    if let Some(ty) = self.find_elem_via_call_arg(var, expr, hir_module) {
+                        return ty;
+                    }
                 }
                 hir::StmtKind::Return(_)
                 | hir::StmtKind::Break
@@ -219,8 +390,111 @@ impl<'a> Lowering<'a> {
         Type::Any
     }
 
+    /// If `expr` (or any sub-expression) is a `Call(FuncRef, args)` and one
+    /// positional arg is `Var(var)`, recurse into the callee body keyed on
+    /// the corresponding param VarId. Returns the element type that the
+    /// param's body usage reveals (or None). Skips unresolved (dynamic) call
+    /// sites.
+    ///
+    /// Walks through `BuiltinCall` and other wrapper expressions so combos
+    /// like `print(gpt(keys))` or `total = sum(gpt(keys))` reach `gpt`'s
+    /// body via the inner Call.
+    fn find_elem_via_call_arg(
+        &self,
+        var: VarId,
+        expr: &hir::Expr,
+        hir_module: &hir::Module,
+    ) -> Option<Type> {
+        match &expr.kind {
+            hir::ExprKind::Call { func, args, .. } => {
+                let func_expr = &hir_module.exprs[*func];
+                if let hir::ExprKind::FuncRef(fid) = &func_expr.kind {
+                    let fid = *fid;
+                    if let Some(callee) = hir_module.func_defs.get(&fid) {
+                        let capture_count = self
+                            .get_closure_capture_types(&fid)
+                            .map(|v| v.len())
+                            .unwrap_or(0);
+                        for (arg_idx, call_arg) in args.iter().enumerate() {
+                            let hir::CallArg::Regular(arg_id) = call_arg else {
+                                continue;
+                            };
+                            let arg_expr = &hir_module.exprs[*arg_id];
+                            if !matches!(&arg_expr.kind, hir::ExprKind::Var(v) if *v == var) {
+                                continue;
+                            }
+                            let param_slot = capture_count + arg_idx;
+                            let Some(param) = callee.params.get(param_slot) else {
+                                continue;
+                            };
+                            let callee_overlay = self
+                                .lowering_seed_info
+                                .per_function_local_seed_types
+                                .get(&fid)
+                                .cloned()
+                                .unwrap_or_default();
+                            for block in callee.blocks.values() {
+                                let result = self.find_elem_type_from_usage(
+                                    param.var,
+                                    &block.stmts,
+                                    hir_module,
+                                    &callee_overlay,
+                                );
+                                if !is_uninformative_elem_type(&result) && result != Type::Any {
+                                    return Some(result);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Recurse into args.
+                for call_arg in args {
+                    let hir::CallArg::Regular(arg_id) = call_arg else {
+                        continue;
+                    };
+                    let arg_expr = &hir_module.exprs[*arg_id];
+                    if let Some(ty) = self.find_elem_via_call_arg(var, arg_expr, hir_module) {
+                        return Some(ty);
+                    }
+                }
+            }
+            hir::ExprKind::BuiltinCall { args, .. } => {
+                for arg_id in args {
+                    let arg_expr = &hir_module.exprs[*arg_id];
+                    if let Some(ty) = self.find_elem_via_call_arg(var, arg_expr, hir_module) {
+                        return Some(ty);
+                    }
+                }
+            }
+            hir::ExprKind::MethodCall { obj, args, .. } => {
+                let obj_expr = &hir_module.exprs[*obj];
+                if let Some(ty) = self.find_elem_via_call_arg(var, obj_expr, hir_module) {
+                    return Some(ty);
+                }
+                for arg_id in args {
+                    let arg_expr = &hir_module.exprs[*arg_id];
+                    if let Some(ty) = self.find_elem_via_call_arg(var, arg_expr, hir_module) {
+                        return Some(ty);
+                    }
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
     /// Check if an expression is `var.append(expr)` / `var.insert(_, expr)` / `var.add(expr)`
     /// and return the element type from the argument.
+    ///
+    /// Also handles the container-of-container pattern `var[idx].append(expr)`
+    /// where the outer container is `var` and the inner container is the
+    /// element type — yields `list[type_of(expr)]` so the outer var refines
+    /// to `list[list[T]]`. Mirrors the same set of mutator method names
+    /// (`append`, `insert`, `add`, `remove`) but only applies when the
+    /// receiver is a Subscript on `var`. This catches the idiomatic
+    ///     keys = [[] for _ in range(n_layer)]
+    ///     keys[li].append(k)
+    /// where the inner empty list never has a separate binding to refine.
     fn extract_elem_type_from_method_call(
         &self,
         var: VarId,
@@ -229,32 +503,52 @@ impl<'a> Lowering<'a> {
         overlay: &IndexMap<VarId, Type>,
     ) -> Option<Type> {
         let expr = &hir_module.exprs[expr_id];
-        if let hir::ExprKind::MethodCall {
+        let hir::ExprKind::MethodCall {
             obj, method, args, ..
         } = &expr.kind
-        {
-            // Check that the object is our variable
-            let obj_expr = &hir_module.exprs[*obj];
-            if !matches!(&obj_expr.kind, hir::ExprKind::Var(v) if *v == var) {
-                return None;
+        else {
+            return None;
+        };
+
+        let method_name = self.interner.resolve(*method);
+        let value_arg_idx = match method_name {
+            "append" | "add" | "remove" => Some(0),
+            "insert" => Some(1), // insert(index, value)
+            _ => None,
+        };
+        let idx = value_arg_idx?;
+        let arg_id = args.get(idx)?;
+        let arg_expr = &hir_module.exprs[*arg_id];
+
+        let obj_expr = &hir_module.exprs[*obj];
+        match &obj_expr.kind {
+            // Case 1: var.append(expr) — element type is type_of(expr).
+            // Skip uninformative arg types (`Any`, `Never`, `list[Never]` from
+            // empty literals) so the scan can keep looking for a concrete
+            // signal further down — e.g. a sibling `var[idx].append(elem)` or
+            // a `gpt(var)` call whose body refines the inner element type.
+            hir::ExprKind::Var(v) if *v == var => {
+                let ty = self.seed_infer_expr_type(arg_expr, hir_module, overlay);
+                if !is_uninformative_elem_type(&ty) {
+                    return Some(ty);
+                }
             }
-
-            let method_name = self.interner.resolve(*method);
-            let value_arg_idx = match method_name {
-                "append" | "add" | "remove" => Some(0),
-                "insert" => Some(1), // insert(index, value)
-                _ => None,
-            };
-
-            if let Some(idx) = value_arg_idx {
-                if let Some(arg_id) = args.get(idx) {
-                    let arg_expr = &hir_module.exprs[*arg_id];
-                    let ty = self.seed_infer_expr_type(arg_expr, hir_module, overlay);
-                    if ty != Type::Any {
-                        return Some(ty);
+            // Case 2: var[idx].append(expr) — element type is `list[type_of(expr)]`
+            // (outer container holds inner lists; inner list element type is the
+            // appended value type). Reject uninformative arg types (`Any`,
+            // `Never`, `list[Never]`) so we don't refine the outer type to
+            // `list[list[Never]]` from a coincidental indexed empty-append —
+            // the wrapping `list[..]` would conceal the missing element info.
+            hir::ExprKind::Index { obj: inner_obj, .. } => {
+                let inner_obj_expr = &hir_module.exprs[*inner_obj];
+                if matches!(&inner_obj_expr.kind, hir::ExprKind::Var(v) if v == &var) {
+                    let arg_ty = self.seed_infer_expr_type(arg_expr, hir_module, overlay);
+                    if !is_uninformative_elem_type(&arg_ty) {
+                        return Some(Type::list_of(arg_ty));
                     }
                 }
             }
+            _ => {}
         }
         None
     }

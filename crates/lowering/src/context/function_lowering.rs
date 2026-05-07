@@ -275,9 +275,18 @@ impl<'a> Lowering<'a> {
             // Check if this parameter is a cell pointer (nonlocal variable)
             let is_cell_param = func.nonlocal_vars.contains(&hir_param.var);
 
-            // Use declared type if available, otherwise inferred type, otherwise Any
-            // Declared types take precedence over inferred types
+            // Use declared type if available, otherwise refined container type
+            // (from `refine_container_param_types_in_func`), otherwise inferred
+            // (harvester hint), otherwise Any. Declared types win.
             let base_ty = hir_param.ty.clone().unwrap_or_else(|| {
+                if let Some(refined) = self
+                    .lowering_seed_info
+                    .refined_container_types
+                    .get(&hir_param.var)
+                    .cloned()
+                {
+                    return refined;
+                }
                 if i < inferred_param_types.len() {
                     inferred_param_types[i].clone()
                 } else {

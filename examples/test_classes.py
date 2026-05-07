@@ -2691,4 +2691,49 @@ assert _rms_x[0].data == 2.0 * 0.5 * 0.5 * 0.5, (
 )
 print("rmsnorm-style call-site feedback loop: PASS")
 
+# =============================================================================
+# Container-of-container parameter refinement
+# =============================================================================
+# The outer list is built on the caller side via a listcomp:
+#   keys = [[] for _ in range(n_layer)]
+# and the inner-list mutation lives in the callee:
+#   def _coc_gpt(keys, values):
+#       keys[li].append(v)
+# Empty-container refinement only handles `var = []` literal binds, so
+# the listcomp-built outer list and the callee's param both miss out
+# unless `find_elem_type_from_usage` follows the call site into the
+# callee body and recognizes `var[idx].append(arg)`. Without this,
+# `keys[idx][j].data` on either side type-checks as `Any` (no `.attr`)
+# or pins `list[list[Never]]` from the desugared listcomp's
+# `var.append([])` call.
+
+class _CocValue:
+    __slots__ = ('data',)
+    def __init__(self, data): self.data = data
+
+
+def _coc_gpt(keys, values):
+    n = 2
+    for li in range(n):
+        v = _CocValue(li * 1.0 + 0.5)
+        keys[li].append(v)
+        values[li].append(v)
+    # Indexed access on a container-of-container param must resolve to
+    # `_CocValue` after refinement; otherwise `.data` fails to typecheck.
+    return keys[0][0].data + values[1][0].data
+
+
+_coc_n_layer = 2
+_coc_keys = [[] for _ in range(_coc_n_layer)]
+_coc_values = [[] for _ in range(_coc_n_layer)]
+_coc_total = _coc_gpt(_coc_keys, _coc_values)
+assert _coc_total == 0.5 + 1.5, f"_coc_gpt total: {_coc_total}"
+
+# Caller-side comprehension over the container-of-container also needs
+# refinement to flow back: without it `vi.data` fails to typecheck
+# because `vi` resolves to `Any`.
+_coc_flat = [vi.data for sublist in _coc_keys for vi in sublist]
+assert _coc_flat == [0.5, 1.5], f"_coc_flat: {_coc_flat}"
+print("container-of-container refinement: PASS")
+
 print("All class tests passed!")
