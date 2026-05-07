@@ -51,11 +51,11 @@ fn build_var_to_func_map(hir_module: &hir::Module) -> HashMap<VarId, (FuncId, us
 /// body, and how many leading params it consumes for `self`/`cls` (so the
 /// caller can map call-site arg indices to callee param slots).
 #[derive(Clone, Copy)]
-struct MethodResolution {
-    func_id: FuncId,
+pub(crate) struct MethodResolution {
+    pub(crate) func_id: FuncId,
     /// Slot offset of the first user-visible (non-self/cls) param.
     /// 0 for static methods, 1 for instance/dunder/classmethod.
-    self_offset: usize,
+    pub(crate) self_offset: usize,
 }
 
 /// Return the element type of a list-like or set-like container, or None
@@ -127,6 +127,67 @@ fn wrap_list(inner: Type, depth: usize) -> Type {
 }
 
 impl<'a> Lowering<'a> {
+    /// Pre-scan every `MethodCall` site in the module and accumulate a
+    /// per-FuncId map of `param.var → joined caller-arg type`. The
+    /// harvester deliberately doesn't visit method-call args (committing
+    /// them as `lambda_param_type_hints` breaks dunders like `__exit__`
+    /// whose arg shape varies between code paths), but refinement still
+    /// needs the data: without it `Cache.add(self, store, k)`'s `k` stays
+    /// `Any` inside the body, and `store.append(k)` fails to refine
+    /// `store`'s element type.
+    ///
+    /// Output is consumed only by the refinement pass — layered onto each
+    /// function's `overlay` for the duration of the scan, never written
+    /// back to `lambda_param_type_hints` or `per_function_local_seed_types`,
+    /// so it can't influence MIR param type selection or break dunders.
+    pub(crate) fn build_method_arg_seeds(
+        &self,
+        hir_module: &hir::Module,
+    ) -> HashMap<FuncId, IndexMap<VarId, Type>> {
+        let mut out: HashMap<FuncId, IndexMap<VarId, Type>> = HashMap::new();
+        for (_expr_id, expr) in hir_module.exprs.iter() {
+            let hir::ExprKind::MethodCall {
+                obj, method, args, ..
+            } = &expr.kind
+            else {
+                continue;
+            };
+            let obj_expr = &hir_module.exprs[*obj];
+            let obj_ty = self.seed_infer_expr_type(obj_expr, hir_module, &IndexMap::new());
+            let Some(MethodResolution {
+                func_id,
+                self_offset,
+            }) = self.resolve_method_func(&obj_ty, *method)
+            else {
+                continue;
+            };
+            let Some(callee) = hir_module.func_defs.get(&func_id) else {
+                continue;
+            };
+            let entry = out.entry(func_id).or_default();
+            for (arg_idx, arg_id) in args.iter().enumerate() {
+                let arg_expr = &hir_module.exprs[*arg_id];
+                let arg_ty = self.seed_infer_expr_type(arg_expr, hir_module, &IndexMap::new());
+                if arg_ty == Type::Any || arg_ty == Type::Never {
+                    continue;
+                }
+                let param_slot = self_offset + arg_idx;
+                let Some(param) = callee.params.get(param_slot) else {
+                    continue;
+                };
+                // Multiple call sites: lattice-join across observations
+                // so a stable concrete-type wins over Any/Never. Mirrors
+                // `join_nested_arg_ty` semantics for paramater types.
+                let joined = match entry.get(&param.var) {
+                    Some(existing) => existing.join(&arg_ty),
+                    None => arg_ty,
+                };
+                entry.insert(param.var, joined);
+            }
+        }
+        out
+    }
+
     /// Resolve `obj.method(...)` to the FuncId backing the method body and
     /// the leading-param offset (`self_offset`) that separates `self`/`cls`
     /// slots from user-visible positional args.
@@ -149,7 +210,7 @@ impl<'a> Lowering<'a> {
     ///   builtin containers — `get_class_info` is `None`).
     /// - The class is cross-module (no entry in our `class_info` map).
     /// - The method name isn't found in any of the four registries.
-    fn resolve_method_func(
+    pub(crate) fn resolve_method_func(
         &self,
         obj_ty: &Type,
         method: pyaot_utils::InternedString,
@@ -206,14 +267,42 @@ impl<'a> Lowering<'a> {
         // — closures/funcrefs assigned to a variable. Pattern mirrors
         // `infer_nested_function_param_types_inner` in `closure_scan.rs`.
         let var_to_func = build_var_to_func_map(hir_module);
+        // Build a per-FuncId map of `param.var → caller-arg type` from
+        // every `MethodCall` site in the module. The harvester
+        // (`infer_nested_function_param_types`) doesn't visit method-call
+        // arg types because committing them to `lambda_param_type_hints`
+        // breaks dunder methods like `__exit__(self, exc_type, exc_val,
+        // exc_tb)` whose arg-shape varies between no-error path
+        // (`(None, None, None)`) and exception path (`(type, val, tb)`).
+        // We collect the same data here for refinement-only use, so
+        // callee body scans see concrete param types from caller-arg
+        // inference without affecting MIR param type selection.
+        let method_arg_seeds = self.build_method_arg_seeds(hir_module);
         for func_id in hir_module.functions.iter() {
             if let Some(func) = hir_module.func_defs.get(func_id) {
-                let overlay = self
+                let mut overlay = self
                     .lowering_seed_info
                     .per_function_local_seed_types
                     .get(func_id)
                     .cloned()
                     .unwrap_or_default();
+                // Layer method-arg-seeded types onto the function's
+                // overlay (only for non-Any/Never values, and only when
+                // the existing entry is uninformative). This lets
+                // `extract_elem_type_from_method_call` see e.g. `k: Int`
+                // inside `Cache.add` body, even before harvester /
+                // prescan would converge.
+                if let Some(seeds) = method_arg_seeds.get(func_id) {
+                    for (var_id, ty) in seeds {
+                        let need_seed = match overlay.get(var_id) {
+                            Some(existing) => is_uninformative_elem_type(existing),
+                            None => true,
+                        };
+                        if need_seed {
+                            overlay.insert(*var_id, ty.clone());
+                        }
+                    }
+                }
                 // Flatten all blocks in CFG-insertion order so refinement
                 // can cross block boundaries — comprehension desugarings emit
                 // `__comp = []` in the entry block and `__comp.append(p)` in

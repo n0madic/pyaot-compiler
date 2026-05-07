@@ -2830,4 +2830,36 @@ assert _coc_fwd_xs[0].value + _coc_fwd_xs[1].value == 24, (
 )
 print("closure-from-var dispatch: PASS")
 
+# =============================================================================
+# Method dispatch with typed list args (ABI through MethodCall)
+# =============================================================================
+# After container refinement types `store: list[Int]` for the method param,
+# `lower_method_call` must dispatch `.append(k)` through the list-method
+# path (`rt_list_append`). Pre-fix the dispatcher saw `obj_type=Any`
+# (because `store`'s type wasn't seeded into the lowering var-types map
+# from the caller-arg observation) and fell through to the registry-walk
+# path that picked `rt_deque_append` first — wrong runtime, wrong elem
+# layout, garbage results.
+#
+# `build_method_arg_seeds` collects caller-side arg types from every
+# `MethodCall` site at the start of each refinement pass and layers them
+# onto the callee's overlay (refinement-only, never written to
+# `lambda_param_type_hints` so dunder methods like `__exit__` keep their
+# variable arg shape).
+
+class _CocMethCache:
+    __slots__ = ()
+    def add(self, store, k):
+        store.append(k)
+
+
+_coc_meth_cache = _CocMethCache()
+_coc_meth_keys = []
+_coc_meth_cache.add(_coc_meth_keys, 7)
+_coc_meth_cache.add(_coc_meth_keys, 11)
+assert _coc_meth_keys[0] + _coc_meth_keys[1] == 18, (
+    f"method-dispatch typed-list sum: {_coc_meth_keys[0] + _coc_meth_keys[1]}"
+)
+print("method-dispatch typed-list args: PASS")
+
 print("All class tests passed!")
