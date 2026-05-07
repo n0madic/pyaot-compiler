@@ -2871,4 +2871,72 @@ assert _coc_meth_keys[0] + _coc_meth_keys[1] == 18, (
 )
 print("method-dispatch typed-list args: PASS")
 
+# =============================================================================
+# sum(genexp) with class instances — generator yield-type inference
+# =============================================================================
+# `sum(a[j] * b[j] for j in range(n))` over `list[V]` must yield V (not Int
+# from range's elem_ty fall-through). The genexp's yield expression
+# `a[j] * b[j]` shape-infers via the desugar-side fallback path, which
+# previously did not handle:
+#   - `Call { func: ClassRef }` (constructor) → list literals
+#     `[V(0.5), ...]` shape-inferred to `list[Any]`
+#   - `Index` / `Slice` over `list[V]` → returned None (no class type)
+#   - `BuiltinCall::Sum` (and other generic builtins) inside listcomp body
+#   - `Call { func: Var }` resolving to a Bind-bound FuncRef
+#   - Capture variables typed `Any` on the genexp's params (the actual
+#     types live in `lambda_param_type_hints`)
+#   - Cross-callee return types not yet synced to `func_def.return_type`
+#     (still in the type-planning side map during the fixpoint)
+#
+# Without these, microgpt-style chains like
+#   q = linear(x, w); q_h = q[0:k]; sum(q_h[j] * q_h[j] for j in range(k))
+# inferred the genexp's element type as Int, sum() routed through the
+# integer fast path, and `total.value` failed at compile time.
+
+class _SumGenexpV:
+    __slots__ = ('value',)
+
+    def __init__(self, value):
+        self.value = value
+
+    def __add__(self, other):
+        if isinstance(other, _SumGenexpV):
+            return _SumGenexpV(self.value + other.value)
+        return _SumGenexpV(self.value + other)
+
+    def __radd__(self, other):
+        return self + other
+
+    def __mul__(self, other):
+        if isinstance(other, _SumGenexpV):
+            return _SumGenexpV(self.value * other.value)
+        return _SumGenexpV(self.value * other)
+
+    def __rmul__(self, other):
+        return self * other
+
+
+def _sum_genexp_make_q():
+    return [_SumGenexpV(0.5), _SumGenexpV(0.6), _SumGenexpV(0.7), _SumGenexpV(0.8)]
+
+
+# Direct list literal of class instances — shape_infer's ClassRef arm
+_sg_a = [_SumGenexpV(1.0), _SumGenexpV(2.0), _SumGenexpV(3.0)]
+_sg_b = [_SumGenexpV(10.0), _SumGenexpV(20.0), _SumGenexpV(30.0)]
+_sg_dot = sum(_sg_a[j] * _sg_b[j] for j in range(3))
+assert _sg_dot.value == 140.0, f"dot product: {_sg_dot.value}"
+
+# zip-based (covers the BinOp + tuple-target augment_target_var_types)
+_sg_dot_zip = sum(ai * bi for ai, bi in zip(_sg_a, _sg_b))
+assert _sg_dot_zip.value == 140.0, f"dot zip: {_sg_dot_zip.value}"
+
+# Function-returned list + slice — shape_infer's Call→FuncRef + Slice arms
+# plus the func_returns side-map overlay
+_sg_q = _sum_genexp_make_q()
+_sg_q_h = _sg_q[0:2]
+_sg_partial = sum(_sg_q_h[j] * _sg_q_h[j] for j in range(2))
+assert _sg_partial.value == 0.61, f"slice sum: {_sg_partial.value}"
+
+print("sum(genexp) over class instances: PASS")
+
 print("All class tests passed!")

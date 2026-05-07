@@ -77,6 +77,13 @@ struct VarTypeMap {
     /// resolve `wo` in `for wo in w: ... zip(wo, x) ...` to the element
     /// type of `w`.
     by_for_iter: HashMap<VarId, hir::ExprId>,
+    /// FuncId → return type from the type-planning side map
+    /// (`func_return_types.inner`). The HIR `func_def.return_type` field
+    /// is only synced after the fixpoint by
+    /// `populate_generator_return_types_on_funcdef`, so during the
+    /// fixpoint shape-infer needs this side map to resolve the actual
+    /// inferred return type of unannotated callees.
+    func_returns: HashMap<FuncId, Type>,
 }
 
 impl VarTypeMap {
@@ -94,6 +101,20 @@ impl VarTypeMap {
         }
         map
     }
+}
+
+/// Resolve a callee's return type, preferring the type-planning side
+/// map (`vmap.func_returns`, populated from `func_return_types.inner`)
+/// over the HIR `func_def.return_type` field. The HIR field is only
+/// synced after the fixpoint runs, so during shape-inference we need
+/// the side map to see the actual inferred return types.
+fn lookup_func_return_type(m: &hir::Module, vmap: &VarTypeMap, func_id: &FuncId) -> Option<Type> {
+    if let Some(ty) = vmap.func_returns.get(func_id) {
+        if !matches!(ty, Type::Any) {
+            return Some(ty.clone());
+        }
+    }
+    m.func_defs.get(func_id).and_then(|f| f.return_type.clone())
 }
 
 fn collect_bind_targets_in_func(m: &hir::Module, func: &hir::Function, map: &mut VarTypeMap) {
@@ -245,18 +266,37 @@ fn shape_infer_type(
             };
             Some(ty)
         }
-        hir::ExprKind::FuncRef(func_id) => {
-            m.func_defs.get(func_id).and_then(|f| f.return_type.clone())
-        }
-        hir::ExprKind::Closure { func, .. } => {
-            m.func_defs.get(func).and_then(|f| f.return_type.clone())
-        }
+        hir::ExprKind::FuncRef(func_id) => lookup_func_return_type(m, vmap, func_id),
+        hir::ExprKind::Closure { func, .. } => lookup_func_return_type(m, vmap, func),
         hir::ExprKind::Call { func, .. } => match &m.exprs[*func].kind {
-            hir::ExprKind::FuncRef(func_id) => {
-                m.func_defs.get(func_id).and_then(|f| f.return_type.clone())
+            hir::ExprKind::FuncRef(func_id) => lookup_func_return_type(m, vmap, func_id),
+            hir::ExprKind::Closure { func, .. } => lookup_func_return_type(m, vmap, func),
+            // Constructor call `ClassName(...)` returns a class instance.
+            // Without this, list literals like `[V(1.0), V(2.0)]` shape-infer
+            // to `list[Any]`, which propagates through `zip` → `tuple[Any,
+            // Any]` and breaks `sum(genexp)` element-type inference for
+            // class-based pipelines.
+            hir::ExprKind::ClassRef(class_id) => {
+                m.class_defs.get(class_id).map(|cdef| Type::Class {
+                    class_id: *class_id,
+                    name: cdef.name,
+                })
             }
-            hir::ExprKind::Closure { func, .. } => {
-                m.func_defs.get(func).and_then(|f| f.return_type.clone())
+            // `def linear(x, w): ...; q = linear(...)` — calls go through a
+            // Var bound to a FuncRef. Walk the Bind RHS to recover the
+            // callee's return type so shape-infer can resolve `q[i]` etc.
+            hir::ExprKind::Var(vid) => {
+                vmap.by_value
+                    .get(vid)
+                    .and_then(|value_eid| match &m.exprs[*value_eid].kind {
+                        hir::ExprKind::FuncRef(func_id) => {
+                            lookup_func_return_type(m, vmap, func_id)
+                        }
+                        hir::ExprKind::Closure { func, .. } => {
+                            lookup_func_return_type(m, vmap, func)
+                        }
+                        _ => None,
+                    })
             }
             _ => None,
         },
@@ -343,6 +383,19 @@ fn shape_infer_type(
             ..
         } => Some(Type::Iterator(Box::new(Type::Int))),
 
+        // Generic fallback for other builtins (Sum, Min, Max, Len, Sorted,
+        // List, Tuple, Set, Dict, Reversed, Iter, Next, ...).
+        // Required so a yield expression `sum(genexp_inner)` shape-infers
+        // to its actual return type (V for class elements) instead of
+        // falling through to the for-loop's iter element type.
+        hir::ExprKind::BuiltinCall { builtin, args, .. } => {
+            let arg_types: Vec<Type> = args
+                .iter()
+                .map(|a| shape_infer_type(m, vmap, *a, depth + 1, interner).unwrap_or(Type::Any))
+                .collect();
+            crate::type_planning::helpers::resolve_builtin_call_type(builtin, args, &arg_types, m)
+        }
+
         hir::ExprKind::MethodCall { obj, method, .. } => {
             // Resolve `.items() / .keys() / .values()` on dict-typed
             // receivers. Returns the *container* type the method yields —
@@ -380,6 +433,36 @@ fn shape_infer_type(
             }
             None
         }
+
+        // `obj[i]` — element type of list/dict/set/tuple/string. Used by
+        // gen-expr yield expressions like `sum(a[j] * b[j] for j in ...)`
+        // where `a` / `b` are `list[V]`. Without this the BinOp falls
+        // back to Any and the genexp's yield type collapses to the
+        // for-loop iter element type (e.g. `Int` from `range`).
+        hir::ExprKind::Index { obj, .. } => {
+            let obj_ty = shape_infer_type(m, vmap, *obj, depth + 1, interner)?;
+            if let Some(elem) = obj_ty.list_elem() {
+                return Some(elem.clone());
+            }
+            if let Some(elem) = obj_ty.set_elem() {
+                return Some(elem.clone());
+            }
+            if let Some(elem) = obj_ty.tuple_var_elem() {
+                return Some(elem.clone());
+            }
+            if let Some((_, vt)) = obj_ty.dict_kv() {
+                return Some(vt.clone());
+            }
+            if obj_ty == Type::Str {
+                return Some(Type::Str);
+            }
+            None
+        }
+
+        // `obj[a:b]` returns the same container type with the same element
+        // type. Used by `q[hs:hs+head_dim]` patterns inside generator-expr
+        // yield expressions where the slice result is then indexed/iterated.
+        hir::ExprKind::Slice { obj, .. } => shape_infer_type(m, vmap, *obj, depth + 1, interner),
 
         _ => None,
     }
@@ -984,9 +1067,51 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Build a `VarTypeMap` with two overlays applied so the shape-infer
+    /// fallback resolves capture variables and refined globals correctly:
+    ///
+    /// 1. **Lambda capture hints**: `closures.lambda_param_type_hints[fid]`
+    ///    is keyed by the genexp's func_id and contains the call-site
+    ///    capture types. These override the genexp's own param entries
+    ///    (which would otherwise be `Type::Any` since captures lack
+    ///    annotations).
+    /// 2. **Refined empty containers**: every `__comp_N` temp produced by
+    ///    listcomp / dictcomp / setcomp desugaring starts as `[]` / `{}`,
+    ///    so its `Bind` RHS shape-infers to `list[Any]`. After
+    ///    `refine_empty_container_types` resolves the actual element type
+    ///    via the subsequent `.append()` calls, that refined type is
+    ///    available in `lowering_seed_info.refined_container_types` —
+    ///    layer it onto `by_param` (which `resolve_var_type` checks
+    ///    first) so the genexp's yield expression sees `list[V]` instead
+    ///    of `list[Any]`.
+    fn build_vmap_with_overlays(&self, func: &hir::Function, m: &hir::Module) -> VarTypeMap {
+        let mut vmap = VarTypeMap::build(m);
+        if let Some(hints) = self.get_lambda_param_type_hints(&func.id) {
+            for (param, hint) in func.params.iter().zip(hints.iter()) {
+                if !matches!(hint, Type::Any) {
+                    vmap.by_param.insert(param.var, hint.clone());
+                }
+            }
+        }
+        for (var_id, refined_ty) in &self.lowering_seed_info.refined_container_types {
+            if !matches!(refined_ty, Type::Any) {
+                vmap.by_param.insert(*var_id, refined_ty.clone());
+            }
+        }
+        // Populate the func_return_types side map so shape-infer can
+        // resolve calls to unannotated callees (whose HIR
+        // `func_def.return_type` field is still `None` until the post-
+        // fixpoint sync runs). Reads `self.func_return_types.inner` —
+        // the canonical store for inferred return types.
+        for (fid, ty) in &self.func_return_types.inner {
+            vmap.func_returns.insert(*fid, ty.clone());
+        }
+        vmap
+    }
+
     fn infer_yield_type_raw(&self, func: &hir::Function, m: &hir::Module) -> Type {
         if let Some(for_gen) = detect_for_loop_generator(func, m) {
-            let vmap = VarTypeMap::build(m);
+            let vmap = self.build_vmap_with_overlays(func, m);
             // Use the module-wide Var/param index so Var refs in yield expressions
             // (`yield (v, i)` where v and i are for-loop targets) resolve to
             // their inferred types even though type planning hasn't run yet.
@@ -1053,7 +1178,7 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        let vmap = VarTypeMap::build(m);
+        let vmap = self.build_vmap_with_overlays(func, m);
         let mut joined: Option<Type> = None;
         let mut saw_any = false;
         for yi in collect_yield_info(func, m) {
@@ -1093,6 +1218,7 @@ fn shape_infer_yield_expr(
         by_param: vmap.by_param.clone(),
         by_value: vmap.by_value.clone(),
         by_for_iter: vmap.by_for_iter.clone(),
+        func_returns: vmap.func_returns.clone(),
     };
 
     // Compute the iter's element type once.
