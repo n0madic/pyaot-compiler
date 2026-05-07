@@ -9,7 +9,7 @@
 
 use indexmap::IndexMap;
 use pyaot_hir as hir;
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeLattice};
 use pyaot_utils::VarId;
 
 use crate::Lowering;
@@ -22,8 +22,11 @@ fn elem_type_of(ty: &Type) -> Option<&Type> {
 
 /// True when `ty` carries no actionable refinement signal: `Any`, `Never`, or
 /// a container whose element type is itself uninformative (e.g. `list[Never]`
-/// from a `[]` literal). These leak through as fake refinements when an
-/// `append([])` is observed before any concrete element-typed call site.
+/// from a `[]` literal). Used for outer-level guards that protect already-
+/// refined types and for the candidate-shape filter; the per-source-point
+/// scan itself accumulates everything via lattice join, where `Never` is
+/// the identity, so empty-literal sources merge harmlessly with concrete
+/// ones (`Never ⊔ Float = Float`, `list[Never] ⊔ list[Float] = list[Float]`).
 fn is_uninformative_elem_type(ty: &Type) -> bool {
     match ty {
         Type::Any | Type::Never => true,
@@ -36,6 +39,47 @@ fn is_uninformative_elem_type(ty: &Type) -> bool {
             },
         },
     }
+}
+
+/// If `expr` is a chain of `Index{...Var(target)}`, return the chain depth:
+/// `Var(target)` → 0, `target[i]` → 1, `target[i][j]` → 2, etc. Returns
+/// `None` for any node that isn't a pure subscript on `target` — including
+/// `Slice` (slices preserve container rank, unlike `Index` which strips one
+/// level), `BinOp`, `Call`, attribute access, etc.
+///
+/// The depth value drives `extract_elem_type_from_method_call`: when
+/// `target[i]...[k].append(arg)` is seen, the outer container's element
+/// type is `arg_ty` wrapped in `list_of` `k` times — so a 3-deep mutation
+/// `var[i][j][k].append(x)` refines `var` to `list[list[list[T]]]`.
+fn subscript_depth_to_var(
+    expr: &hir::Expr,
+    target: VarId,
+    hir_module: &hir::Module,
+) -> Option<usize> {
+    match &expr.kind {
+        hir::ExprKind::Var(v) if *v == target => Some(0),
+        hir::ExprKind::Index { obj, .. } => {
+            // The Index's `index` payload is whatever scalar the Python
+            // bracket holds — number, name, attr lookup, even arithmetic.
+            // We don't care what it is, only that the *shape* is `obj[...]`
+            // — that's what guarantees one-level-of-rank reduction.
+            // `Slice` is a *separate* ExprKind, so it never reaches here;
+            // `var[1:2].append(x)` parses as `MethodCall { obj: Slice {...} }`
+            // and the slice node bottoms this match out at `_ => None`.
+            subscript_depth_to_var(&hir_module.exprs[*obj], target, hir_module).map(|d| d + 1)
+        }
+        _ => None,
+    }
+}
+
+/// Wrap `inner` in `list_of` `depth` times. `wrap_list(T, 0) == T`,
+/// `wrap_list(T, 1) == list[T]`, `wrap_list(T, 2) == list[list[T]]`.
+fn wrap_list(inner: Type, depth: usize) -> Type {
+    let mut ty = inner;
+    for _ in 0..depth {
+        ty = Type::list_of(ty);
+    }
+    ty
 }
 
 impl<'a> Lowering<'a> {
@@ -187,7 +231,16 @@ impl<'a> Lowering<'a> {
                 .unwrap_or(0);
             let elem_ty =
                 self.find_elem_type_from_usage(var_id, &stmts[scan_start..], hir_module, overlay);
-            if elem_ty == Type::Any || is_uninformative_elem_type(&elem_ty) {
+            // `find_elem_type_from_usage` accumulates via lattice join with
+            // `Never` as identity, so an empty accumulator means "no signal";
+            // `Any` means a top-level absorbing source-point poisoned the
+            // accumulator (rare — `extract_elem_type_from_method_call`
+            // rejects `Any` arg types). Skip both — neither carries useful
+            // refinement information.
+            if elem_ty == Type::Any
+                || elem_ty == Type::Never
+                || is_uninformative_elem_type(&elem_ty)
+            {
                 continue;
             }
             let refined = if is_set_like {
@@ -255,7 +308,10 @@ impl<'a> Lowering<'a> {
                         hir_module,
                         overlay,
                     );
-                    if elem_ty != Type::Any {
+                    // After the lattice-join rewrite, no signal returns
+                    // `Never`; only an unrelated absorbing observation
+                    // returns `Any`. Either way, don't refine.
+                    if elem_ty != Type::Any && elem_ty != Type::Never {
                         let refined = if is_empty_list {
                             Type::list_of(elem_ty)
                         } else {
@@ -271,7 +327,28 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Look through subsequent statements for method calls that reveal the element type.
+    /// Walk the statement list and accumulate every observed element-type
+    /// signal for `var` via `TypeLattice::join`. Source-points include:
+    ///
+    /// - `var[...]*.{append,insert,add,remove}(arg)` mutators at any
+    ///   subscript depth (via `extract_elem_type_from_method_call` →
+    ///   `subscript_depth_to_var` + `wrap_list`).
+    /// - Closures that capture `var` — recurse into the closure body keyed
+    ///   on the corresponding `__capture_*` param.
+    /// - Direct / nested calls forwarding `var` to a callee — recurse into
+    ///   the callee body via `find_elem_via_call_arg`.
+    ///
+    /// Returns `Type::Never` (lattice bottom) when no signal is found.
+    /// `Never` is the join identity, so callers can compare against it as
+    /// "no information"; concrete signals merge cleanly via the lattice
+    /// (`list[Never] ⊔ list[Float] = list[Float]`, `Bool ⊔ Int = Int`,
+    /// etc.).
+    ///
+    /// Reassignment (`var = ...`) breaks the loop — past the rebind the var
+    /// holds a different value whose element-type observations would be
+    /// unrelated and pollute the accumulator. A future SSA-based pass could
+    /// recover those by Phi-merging per-version observations; for now we
+    /// stop conservatively.
     fn find_elem_type_from_usage(
         &self,
         var: VarId,
@@ -279,30 +356,24 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         overlay: &IndexMap<VarId, Type>,
     ) -> Type {
+        let mut accum = Type::Never;
         for stmt_id in stmts {
             let stmt = &hir_module.stmts[*stmt_id];
             match &stmt.kind {
-                // Stop at reassignment to the same variable — any
-                // subsequent `.append` targets a different list.
+                // Reassignment ends the meaningful scan window for `var`.
                 hir::StmtKind::Bind {
                     target: hir::BindingTarget::Var(target_var),
                     ..
                 } if *target_var == var => {
-                    return Type::Any;
+                    break;
                 }
-                // Nested closure that captures our variable — recurse into
-                // the closure function's body, replacing the captured-var
-                // references with the corresponding `__capture_*` param.
-                // Catches the idiomatic Python pattern
-                //     topo = []
-                //     def build_topo(v):
-                //         topo.append(v)   # captures topo from the outer scope
-                //     build_topo(self)
-                // where the `.append()` that reveals the element type lives
-                // inside a nested function, not as a sibling of the empty-list
-                // bind.
                 hir::StmtKind::Bind { value, .. } => {
                     let value_expr = &hir_module.exprs[*value];
+                    // Closure capture: `var` flows into a nested function via
+                    // `__capture_<n>`. Recurse into every block of the closure
+                    // body using the closure's own overlay so its params are
+                    // typed (e.g. `def f(v): topo.append(v)` where `topo`
+                    // captures and `v` is a harvester-typed param).
                     if let hir::ExprKind::Closure {
                         func: closure_func_id,
                         captures,
@@ -313,11 +384,6 @@ impl<'a> Lowering<'a> {
                             if !matches!(&cap_expr.kind, hir::ExprKind::Var(v) if *v == var) {
                                 continue;
                             }
-                            // Captured vars become the first `cap_idx`
-                            // leading params (`__capture_*`) on the closure
-                            // function — translate `var` to the matching
-                            // capture-param VarId so the recursion keys on
-                            // the right identifier inside the callee body.
                             let Some(closure_func) = hir_module.func_defs.get(closure_func_id)
                             else {
                                 continue;
@@ -325,11 +391,6 @@ impl<'a> Lowering<'a> {
                             let Some(capture_param) = closure_func.params.get(cap_idx) else {
                                 continue;
                             };
-                            // Use the closure's own prescan overlay so
-                            // `append(v)` where `v` is a closure param
-                            // resolves to the nested-function-inferred
-                            // type (via `infer_nested_function_param_types`)
-                            // rather than `Any`.
                             let closure_overlay = self
                                 .lowering_seed_info
                                 .per_function_local_seed_types
@@ -343,37 +404,24 @@ impl<'a> Lowering<'a> {
                                     hir_module,
                                     &closure_overlay,
                                 );
-                                if result != Type::Any {
-                                    return result;
-                                }
+                                accum = accum.join(&result);
                             }
                         }
                     }
-                    // Direct call: `f(..., var, ...)` — recurse into the callee
-                    // body keyed on the corresponding param VarId. Catches the
-                    // container-of-container pattern where the outer list is
-                    // built on the caller side
-                    //     keys = [[] for _ in range(n_layer)]
-                    //     gpt(token_id, keys, values)
-                    // and the inner-list mutation lives in the callee
-                    //     def gpt(..., keys, values):
-                    //         keys[li].append(k)
+                    // Direct / nested call forwarding `var` to a callee.
                     if let Some(ty) = self.find_elem_via_call_arg(var, value_expr, hir_module) {
-                        return ty;
+                        accum = accum.join(&ty);
                     }
                 }
                 hir::StmtKind::Expr(expr_id) => {
                     if let Some(ty) =
                         self.extract_elem_type_from_method_call(var, *expr_id, hir_module, overlay)
                     {
-                        return ty;
+                        accum = accum.join(&ty);
                     }
-                    // Bare statement-position call; recurse into callee body
-                    // for `gpt(..., keys, ...)` patterns where the result is
-                    // discarded.
                     let expr = &hir_module.exprs[*expr_id];
                     if let Some(ty) = self.find_elem_via_call_arg(var, expr, hir_module) {
-                        return ty;
+                        accum = accum.join(&ty);
                     }
                 }
                 hir::StmtKind::Return(_)
@@ -387,24 +435,31 @@ impl<'a> Lowering<'a> {
                 | hir::StmtKind::IterSetup { .. } => {}
             }
         }
-        Type::Any
+        accum
     }
 
-    /// If `expr` (or any sub-expression) is a `Call(FuncRef, args)` and one
-    /// positional arg is `Var(var)`, recurse into the callee body keyed on
-    /// the corresponding param VarId. Returns the element type that the
-    /// param's body usage reveals (or None). Skips unresolved (dynamic) call
-    /// sites.
+    /// Lattice-join every element-type signal reachable from `expr` for
+    /// occurrences of `Var(var)` passed to a callee.
     ///
-    /// Walks through `BuiltinCall` and other wrapper expressions so combos
-    /// like `print(gpt(keys))` or `total = sum(gpt(keys))` reach `gpt`'s
-    /// body via the inner Call.
+    /// Walks through `Call`, `BuiltinCall`, and `MethodCall` wrappers (so
+    /// `print(gpt(keys))` and `total = sum(gpt(keys))` both reach `gpt`'s
+    /// body via the inner `Call`). For each FuncRef call site, finds args
+    /// matching `Var(var)` and recurses into the callee's body keyed on the
+    /// corresponding param VarId. All callee bodies and all args are
+    /// scanned, with results merged via `join`. Returns `None` only when no
+    /// concrete signal was found (the accumulator never left `Never`).
+    ///
+    /// Skips unresolved (dynamic) call sites — Var-typed callable, attribute
+    /// dispatch through VTable, etc. Those need a separate method-dispatch
+    /// pass to resolve which FuncId is invoked.
     fn find_elem_via_call_arg(
         &self,
         var: VarId,
         expr: &hir::Expr,
         hir_module: &hir::Module,
     ) -> Option<Type> {
+        let mut accum = Type::Never;
+        let mut found = false;
         match &expr.kind {
             hir::ExprKind::Call { func, args, .. } => {
                 let func_expr = &hir_module.exprs[*func];
@@ -440,21 +495,23 @@ impl<'a> Lowering<'a> {
                                     hir_module,
                                     &callee_overlay,
                                 );
-                                if !is_uninformative_elem_type(&result) && result != Type::Any {
-                                    return Some(result);
+                                if result != Type::Any && result != Type::Never {
+                                    accum = accum.join(&result);
+                                    found = true;
                                 }
                             }
                         }
                     }
                 }
-                // Recurse into args.
+                // Recurse into nested call args (e.g. `print(gpt(keys))`).
                 for call_arg in args {
                     let hir::CallArg::Regular(arg_id) = call_arg else {
                         continue;
                     };
                     let arg_expr = &hir_module.exprs[*arg_id];
                     if let Some(ty) = self.find_elem_via_call_arg(var, arg_expr, hir_module) {
-                        return Some(ty);
+                        accum = accum.join(&ty);
+                        found = true;
                     }
                 }
             }
@@ -462,39 +519,52 @@ impl<'a> Lowering<'a> {
                 for arg_id in args {
                     let arg_expr = &hir_module.exprs[*arg_id];
                     if let Some(ty) = self.find_elem_via_call_arg(var, arg_expr, hir_module) {
-                        return Some(ty);
+                        accum = accum.join(&ty);
+                        found = true;
                     }
                 }
             }
             hir::ExprKind::MethodCall { obj, args, .. } => {
                 let obj_expr = &hir_module.exprs[*obj];
                 if let Some(ty) = self.find_elem_via_call_arg(var, obj_expr, hir_module) {
-                    return Some(ty);
+                    accum = accum.join(&ty);
+                    found = true;
                 }
                 for arg_id in args {
                     let arg_expr = &hir_module.exprs[*arg_id];
                     if let Some(ty) = self.find_elem_via_call_arg(var, arg_expr, hir_module) {
-                        return Some(ty);
+                        accum = accum.join(&ty);
+                        found = true;
                     }
                 }
             }
             _ => {}
         }
-        None
+        if found && accum != Type::Any {
+            Some(accum)
+        } else {
+            None
+        }
     }
 
-    /// Check if an expression is `var.append(expr)` / `var.insert(_, expr)` / `var.add(expr)`
-    /// and return the element type from the argument.
+    /// Check if an expression is a mutator method call on a subscript chain
+    /// rooted at `var` (depth 0 = `var.append(expr)`, depth 1 =
+    /// `var[i].append(expr)`, depth 2 = `var[i][j].append(expr)`, …) and
+    /// return the corresponding outer-element type.
     ///
-    /// Also handles the container-of-container pattern `var[idx].append(expr)`
-    /// where the outer container is `var` and the inner container is the
-    /// element type — yields `list[type_of(expr)]` so the outer var refines
-    /// to `list[list[T]]`. Mirrors the same set of mutator method names
-    /// (`append`, `insert`, `add`, `remove`) but only applies when the
-    /// receiver is a Subscript on `var`. This catches the idiomatic
-    ///     keys = [[] for _ in range(n_layer)]
-    ///     keys[li].append(k)
-    /// where the inner empty list never has a separate binding to refine.
+    /// At depth `k` the appended value `expr` lives `k` levels deep below
+    /// the outer container, so `var`'s element type is `wrap_list(arg_ty, k)`
+    /// — yielding refinements like `list[T]` (depth 1), `list[list[T]]`
+    /// (depth 2), `list[list[list[T]]]` (depth 3).
+    ///
+    /// Returns `None` when the receiver isn't a pure subscript chain on
+    /// `var` (e.g. attribute access, slice, computed receiver), when the
+    /// method isn't a recognized mutator, or when `arg_ty` is `Any`. We
+    /// intentionally allow `Never` and `list[Never]` (from empty literals)
+    /// to propagate — the caller folds source-points via lattice join, where
+    /// `Never` is the identity and `list[Never] ⊔ list[T] = list[T]`. This
+    /// preserves caller-side refinement when the only concrete signal lives
+    /// further down the body or in a forwarded callee.
     fn extract_elem_type_from_method_call(
         &self,
         var: VarId,
@@ -521,36 +591,16 @@ impl<'a> Lowering<'a> {
         let arg_expr = &hir_module.exprs[*arg_id];
 
         let obj_expr = &hir_module.exprs[*obj];
-        match &obj_expr.kind {
-            // Case 1: var.append(expr) — element type is type_of(expr).
-            // Skip uninformative arg types (`Any`, `Never`, `list[Never]` from
-            // empty literals) so the scan can keep looking for a concrete
-            // signal further down — e.g. a sibling `var[idx].append(elem)` or
-            // a `gpt(var)` call whose body refines the inner element type.
-            hir::ExprKind::Var(v) if *v == var => {
-                let ty = self.seed_infer_expr_type(arg_expr, hir_module, overlay);
-                if !is_uninformative_elem_type(&ty) {
-                    return Some(ty);
-                }
-            }
-            // Case 2: var[idx].append(expr) — element type is `list[type_of(expr)]`
-            // (outer container holds inner lists; inner list element type is the
-            // appended value type). Reject uninformative arg types (`Any`,
-            // `Never`, `list[Never]`) so we don't refine the outer type to
-            // `list[list[Never]]` from a coincidental indexed empty-append —
-            // the wrapping `list[..]` would conceal the missing element info.
-            hir::ExprKind::Index { obj: inner_obj, .. } => {
-                let inner_obj_expr = &hir_module.exprs[*inner_obj];
-                if matches!(&inner_obj_expr.kind, hir::ExprKind::Var(v) if v == &var) {
-                    let arg_ty = self.seed_infer_expr_type(arg_expr, hir_module, overlay);
-                    if !is_uninformative_elem_type(&arg_ty) {
-                        return Some(Type::list_of(arg_ty));
-                    }
-                }
-            }
-            _ => {}
+        let depth = subscript_depth_to_var(obj_expr, var, hir_module)?;
+        let arg_ty = self.seed_infer_expr_type(arg_expr, hir_module, overlay);
+        // Reject `Any` because lattice join treats it as top — a single
+        // `Any`-typed source-point would absorb every concrete sibling and
+        // collapse the accumulator. Allow `Never` / `list[Never]`: they're
+        // join-identity, so they don't pollute concrete observations.
+        if arg_ty == Type::Any {
+            return None;
         }
-        None
+        Some(wrap_list(arg_ty, depth))
     }
 
     /// Look through subsequent statements for dict index assignments (`d[key] = value`)

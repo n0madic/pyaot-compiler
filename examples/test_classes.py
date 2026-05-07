@@ -2736,4 +2736,67 @@ _coc_flat = [vi.data for sublist in _coc_keys for vi in sublist]
 assert _coc_flat == [0.5, 1.5], f"_coc_flat: {_coc_flat}"
 print("container-of-container refinement: PASS")
 
+# =============================================================================
+# Subscript-chain refinement of arbitrary depth (3+ levels)
+# =============================================================================
+# Generalizes container-of-container refinement to any depth via
+# `subscript_depth_to_var` + `wrap_list`. A `var[i][j].append(x)`
+# mutation on a 3-deep param refines `var` to `list[list[list[T]]]`,
+# letting `grid[i][j][k].data` typecheck through to the leaf class.
+#
+# We exercise depth-3 through type-check (`.data` on a 3-level subscript
+# is unreachable without the wider refinement) and shallow-write/shallow-read.
+# A loop-driven write/read pair on every 3-deep slot is intentionally avoided
+# here — it's blocked by an unrelated runtime issue with chained-subscript
+# reads after multiple writes (separate from refinement, predates this pass).
+
+class _CocDeepV:
+    __slots__ = ('data',)
+    def __init__(self, data): self.data = data
+
+
+def _coc_deep_fill(grid):
+    # depth-2 mutation on a 3-deep grid — `grid[0][0].append(...)` refines
+    # `grid` to `list[list[list[_CocDeepV]]]` because the appended argument
+    # is a list of `_CocDeepV` (depth-2 wrap of element type).
+    grid[0][0].append([_CocDeepV(7.0)])
+    # depth-3 read: grid[i][j][k].data must typecheck.
+    return grid[0][0][0][0].data
+
+
+_coc_grid = [[[] for _ in range(2)] for _ in range(2)]
+_coc_deep_total = _coc_deep_fill(_coc_grid)
+assert _coc_deep_total == 7.0, f"_coc_deep_fill total: {_coc_deep_total}"
+print("subscript-chain depth-3 refinement: PASS")
+
+# =============================================================================
+# Lattice-join across multiple append-points
+# =============================================================================
+# Two source-points contribute to the same var's element type:
+# `_jvar.append([])` provides `list[Never]` (uninformative on its own)
+# and `_jvar.append(...)` provides a concrete element type. The fixpoint
+# scan accumulates both via `TypeLattice::join`; `Never` is the lattice
+# identity, so `list[Never] ⊔ list[T] = list[T]` and the concrete
+# observation wins. Pre-fixpoint behaviour was first-match-wins, which
+# locked the element type at `list[Never]` and broke downstream code.
+
+class _JoinPayload:
+    __slots__ = ('value',)
+    def __init__(self, v): self.value = v
+
+
+def _coc_join_collect():
+    xs = []
+    xs.append([])                  # list[Never] — join identity
+    xs.append([_JoinPayload(7)])   # list[_JoinPayload] — wins via join
+    return xs
+
+
+_coc_join_xs = _coc_join_collect()
+assert len(_coc_join_xs) == 2, f"_coc_join_xs len: {len(_coc_join_xs)}"
+assert _coc_join_xs[1][0].value == 7, (
+    f"_coc_join_xs[1][0].value: {_coc_join_xs[1][0].value}"
+)
+print("lattice-join multi-source refinement: PASS")
+
 print("All class tests passed!")
