@@ -439,6 +439,14 @@ fn shape_infer_type(
         // where `a` / `b` are `list[V]`. Without this the BinOp falls
         // back to Any and the genexp's yield type collapses to the
         // for-loop iter element type (e.g. `Int` from `range`).
+        //
+        // For `Any`/`HeapAny` obj types (which arise when capture-param
+        // types are still partially-resolved during the type-planning
+        // fixpoint), return `Any` rather than `None`. This lets
+        // `resolve_binop_type` route through its Class arm — so a
+        // `V * k_h[t][j]` where `k_h` is typed `list[Any]` still infers
+        // the BinOp as `V`, which is the right yield type for
+        // `sum(genexp)` over class instances.
         hir::ExprKind::Index { obj, .. } => {
             let obj_ty = shape_infer_type(m, vmap, *obj, depth + 1, interner)?;
             if let Some(elem) = obj_ty.list_elem() {
@@ -456,13 +464,30 @@ fn shape_infer_type(
             if obj_ty == Type::Str {
                 return Some(Type::Str);
             }
+            // Indexing through `Any` / `HeapAny` / `Never` keeps the chain
+            // alive — propagate `Any` so a sibling concrete operand in the
+            // surrounding BinOp wins through `resolve_binop_type`'s Class
+            // arm. `Never` arises from empty-container literals (`keys =
+            // [[]]` shape-infers as `list[list[Never]]`); the runtime list
+            // is later filled with class elements via `.append()`, but
+            // shape-infer can't see that mutation. Returning `Any` lets
+            // the chain converge instead of pinning the genexp's yield
+            // type to the for-loop's iter element type (e.g. `Int` from
+            // `range`).
+            if matches!(obj_ty, Type::Any | Type::HeapAny | Type::Never) {
+                return Some(Type::Any);
+            }
             None
         }
 
         // `obj[a:b]` returns the same container type with the same element
         // type. Used by `q[hs:hs+head_dim]` patterns inside generator-expr
         // yield expressions where the slice result is then indexed/iterated.
-        hir::ExprKind::Slice { obj, .. } => shape_infer_type(m, vmap, *obj, depth + 1, interner),
+        // For `Any` obj, propagate `Any` for the same reason as `Index`.
+        hir::ExprKind::Slice { obj, .. } => {
+            let obj_ty = shape_infer_type(m, vmap, *obj, depth + 1, interner)?;
+            Some(obj_ty)
+        }
 
         _ => None,
     }

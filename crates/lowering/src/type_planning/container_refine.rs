@@ -405,18 +405,23 @@ impl<'a> Lowering<'a> {
                 .refined_container_types
                 .get(&var_id)
                 .cloned();
-            // Skip if already refined to a concrete element type.
-            if let Some(prev_ty) = &prev {
-                if let Some(elem) = elem_type_of(prev_ty) {
-                    if !is_uninformative_elem_type(elem) {
-                        continue;
-                    }
-                }
-            }
             // Only refine if the current best-known type is a container
             // (`list[..]`, `set[..]`) with an uninformative element; otherwise
             // the indexed-mutation refinement would invent a container shape
             // around an unrelated scalar.
+            //
+            // Re-run on every fixpoint iteration even when `prev` already has
+            // a concrete element: the new observation may carry a strictly
+            // more informative type (e.g. `list[Int]` → `list[V]` once a
+            // forwarded-callee's return type converges from `Int` to a class
+            // type). We `lattice-join` `prev` with the new accumulator below
+            // so we never regress; first-write-wins would have pinned `keys`
+            // to whatever its earliest-iter element type was, even after
+            // upstream chains converged. (Microgpt's `keys[li].append(k)`
+            // pattern hits this — `k` comes from `linear(...)` which infers
+            // as `list[Int]` early and `list[V]` after the genexp yield-type
+            // converges, so without re-running keys stays `list[list[list[
+            // Int]]]` and the genexp's runtime dispatch breaks.)
             let current_overlay_ty = overlay.get(&var_id).cloned();
             let probe_ty = prev.as_ref().or(current_overlay_ty.as_ref());
             let (is_list_like, is_set_like) = match probe_ty {
@@ -466,17 +471,31 @@ impl<'a> Lowering<'a> {
             {
                 continue;
             }
-            let refined = if is_set_like {
+            let new_refined = if is_set_like {
                 Type::set_of(elem_ty)
             } else {
                 Type::list_of(elem_ty)
             };
-            if Some(&refined) == prev.as_ref() {
+            // REPLACE semantics across fixpoint iterations: each round's
+            // accumulator is itself produced by `find_elem_type_from_usage`'s
+            // internal lattice-join over all source-points seen *in that
+            // round*, so the freshest scan already represents the best
+            // multi-source view. Joining with `prev` would mix stale
+            // early-iter observations (when a forwarded callee's return
+            // hadn't converged) with current ones — e.g. iter 0 sees `k:
+            // list[Int]` and refines `keys` to `list[list[list[Int]]]`,
+            // iter N sees `k: list[V]`; joining yields `list[list[list[
+            // Union[Int, V]]]]`, which is strictly worse for downstream
+            // dispatch than the converged `list[list[list[V]]]`.
+            //
+            // Mirrors the REPLACE-semantics rationale documented in
+            // `propagate_closure_capture_param_types` for the same reason.
+            if Some(&new_refined) == prev.as_ref() {
                 continue;
             }
             self.lowering_seed_info
                 .refined_container_types
-                .insert(var_id, refined);
+                .insert(var_id, new_refined);
         }
     }
 
