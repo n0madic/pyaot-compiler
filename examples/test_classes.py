@@ -2939,4 +2939,73 @@ assert _sg_partial.value == 0.61, f"slice sum: {_sg_partial.value}"
 
 print("sum(genexp) over class instances: PASS")
 
+# =============================================================================
+# Generator captures must be loaded in for-loop resume body
+# =============================================================================
+# When a gen-expr or list-comp captures variables (e.g. `q_h` from an outer
+# binding) and is invoked from inside a for-loop, the resume function for
+# the for-loop generator must reload the captured slots before evaluating
+# the yield expression. `build_generic_resume` / `build_while_loop_resume`
+# / `build_trailing_yield` all do this, but `build_for_loop_resume` was
+# the only path that skipped it — captured Vars compiled to reads of
+# never-initialised locals (zero / null), producing SEGV the moment the
+# value reached a runtime call (e.g. `rt_obj_mul` deref of null operand).
+#
+# Trigger: any rebinding of a captured Var inside a for-loop body, where
+# the genexp inside the body references that Var. This happened in
+# microgpt-style attention blocks (`for h: q_h = q[hs:hs+k]; sum(...)`)
+# and similar loop-over-rebinding patterns.
+
+class _LoopCaptureV:
+    __slots__ = ('value',)
+
+    def __init__(self, value):
+        self.value = value
+
+    def __add__(self, other):
+        if isinstance(other, _LoopCaptureV):
+            return _LoopCaptureV(self.value + other.value)
+        return _LoopCaptureV(self.value + other)
+
+    def __radd__(self, other):
+        return self + other
+
+    def __mul__(self, other):
+        if isinstance(other, _LoopCaptureV):
+            return _LoopCaptureV(self.value * other.value)
+        return _LoopCaptureV(self.value * other)
+
+    def __rmul__(self, other):
+        return self * other
+
+
+_lc_q = [
+    _LoopCaptureV(0.5),
+    _LoopCaptureV(0.6),
+    _LoopCaptureV(0.7),
+    _LoopCaptureV(0.8),
+]
+
+_lc_results = []
+for _lc_h in range(2):
+    _lc_hs = _lc_h * 2
+    _lc_q_h = _lc_q[_lc_hs : _lc_hs + 2]  # rebind inside loop body
+    _lc_s = sum(_lc_q_h[j] * _lc_q_h[j] for j in range(2))
+    _lc_results.append(_lc_s.value)
+
+assert abs(_lc_results[0] - 0.61) < 1e-9, f"loop iter 0: {_lc_results[0]}"
+assert abs(_lc_results[1] - 1.13) < 1e-9, f"loop iter 1: {_lc_results[1]}"
+
+# Plain rebind (no slice) — exercises the same load path
+_lc_alias_results = []
+for _lc_h2 in range(2):
+    _lc_alias = _lc_q  # captured via plain alias, still rebound per iter
+    _lc_alias_results.append(sum(_lc_alias[j] * _lc_alias[j] for j in range(4)).value)
+
+assert _lc_alias_results == _lc_alias_results[:1] * 2, (
+    f"alias rebind: {_lc_alias_results}"
+)
+
+print("genexp captures load in for-loop resume: PASS")
+
 print("All class tests passed!")

@@ -964,6 +964,7 @@ impl<'a> Lowering<'a> {
         let resume_body = if let Some(for_gen) = detect_for_loop_generator(&func, m) {
             build_for_loop_resume(
                 m,
+                &gen_vars,
                 &for_gen,
                 gen_obj_var,
                 state_var,
@@ -1682,8 +1683,10 @@ fn build_while_update(
 // For-loop resume
 // ============================================================================
 
+#[allow(clippy::too_many_arguments)]
 fn build_for_loop_resume(
     m: &mut hir::Module,
+    gen_vars: &[GeneratorVar],
     fg: &super::ForLoopGenerator,
     gen_obj_var: VarId,
     state_var: VarId,
@@ -1693,6 +1696,35 @@ fn build_for_loop_resume(
 ) -> Vec<GenStmt> {
     let num_trailing = fg.trailing_yields.len();
     let mut stmts = mk_resume_preamble(m, gen_obj_var, state_var, span);
+
+    // Load capture parameters from generator slots BEFORE any yield-expression
+    // executes. The creator stub (`build_creator_body`) seeds each `is_param`
+    // gen_var into its slot at generator-creation time; the for-loop resume
+    // body must read them back so the yield expression can reference them
+    // (e.g. `q_h[j] * q_h[j]` over a captured `q_h`). Without this,
+    // references to captured Vars compile to reads of an uninitialised local
+    // (zero / null), producing SEGV the moment the value enters a runtime
+    // call (e.g. `rt_obj_mul`).
+    //
+    // Mirrors the load step in `build_generic_resume` / `build_while_init`
+    // / `build_trailing_yield`. We restrict to `is_param` so we don't
+    // pre-load assigned vars (the for-loop target gets its value from
+    // `IterAdvance`; other assigned vars are bound by the body itself).
+    // Iter at slot 0 is loaded specially below — `collect_generator_vars`
+    // skips slot 0 for params, so this filter is consistent with the
+    // creator's allocation order.
+    for gv in gen_vars.iter().filter(|gv| gv.is_param) {
+        let get = mk_get_local(m, gen_obj_var, gv.gen_local_idx, gv.ty.clone(), span);
+        stmts.push(mk_leaf_stmt(
+            m,
+            hir::StmtKind::Bind {
+                target: hir::BindingTarget::Var(gv.var_id),
+                value: get,
+                type_hint: Some(gv.ty.clone()),
+            },
+            span,
+        ));
+    }
 
     // if state == 0: set state = 1 (first call initialization)
     {
