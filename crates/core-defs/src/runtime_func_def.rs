@@ -283,6 +283,21 @@ pub static RT_OBJ_POS: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_obj_pos");
 pub static RT_OBJ_INVERT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_obj_invert");
 /// rt_any_getitem(obj: *mut Obj, index: i64) -> *mut Obj
 pub static RT_ANY_GETITEM: RuntimeFuncDef = RuntimeFuncDef::ptr_binary("rt_any_getitem");
+/// rt_obj_slice(obj: *mut Obj, start: i64, end: i64) -> *mut Obj — Any/HeapAny
+/// runtime-dispatched slicing. Routes to the type-specific slicer based on
+/// the object's `TypeTagKind`. Used by `lower_slice` when `obj_type` is
+/// `Any` / `HeapAny`, replacing the silent `None`-constant fallback that
+/// produced empty-shape lists for downstream consumers.
+pub static RT_OBJ_SLICE: RuntimeFuncDef = RuntimeFuncDef::ptr_ternary("rt_obj_slice");
+/// rt_obj_slice_step(obj: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj
+pub static RT_OBJ_SLICE_STEP: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_obj_slice_step");
+/// rt_obj_len(obj: *mut Obj) -> i64 — Any/HeapAny runtime-dispatched length.
+/// Routes to the type-specific length helper based on `TypeTagKind`. Used
+/// by `lower_len` when `select_len_func` returns `None` (Any/HeapAny),
+/// replacing the silent `Const(0)` fallback that misreported the length
+/// of legitimate non-empty containers when the compile-time element type
+/// collapsed to `Any`.
+pub static RT_OBJ_LEN: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_obj_len");
 
 // ===== Set operations =====
 

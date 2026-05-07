@@ -182,6 +182,23 @@ impl<'a> Lowering<'a> {
                     .collect();
                 self.builtin_call_result_type(builtin, args, &arg_types, hir_module, expr)
             }
+            // `obj[a:b]` preserves the container type — slicing list[V] gives
+            // list[V], slicing str gives str, etc. Without this arm the read
+            // API falls through to the cache; for inline slice expressions
+            // (e.g. `len(ki[0:2])`) the cache may carry stale `Any` from an
+            // early type-planning round, and downstream `lower_len` /
+            // `select_len_func` then see `Any` → fall back to `Const(0)`,
+            // silently producing 0-length results. Mirrors the
+            // `compute_seed_expr_type` Slice arm in `type_planning/infer.rs`.
+            hir::ExprKind::Slice { obj, .. } => self.seed_expr_type(*obj, hir_module),
+            // `obj[i]` element type — same rationale as Slice. Without this
+            // arm `len(d[k])` and similar inline uses fall back to `Any`
+            // and downstream dispatch silently degrades.
+            hir::ExprKind::Index { obj, index } => {
+                let obj_ty = self.seed_expr_type(*obj, hir_module);
+                let index_expr = &hir_module.exprs[*index];
+                self.index_result_type(&obj_ty, index_expr, expr)
+            }
             _ => self
                 .lowering_seed_info
                 .lookup(expr_id)

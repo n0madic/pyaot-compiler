@@ -50,7 +50,15 @@ pub(crate) fn select_print_func(ty: &Type) -> &'static RuntimeFuncDef {
 // =============================================================================
 
 /// Select the runtime function for `len(arg)` based on arg type.
-/// Returns `None` for types that need special handling (e.g., Class with __len__, Any).
+/// For typed containers picks the type-specialised length helper; for
+/// `Any` / `HeapAny` (parameter shapes that lost concrete information
+/// through unannotated callees, comprehension for-targets, etc.) falls
+/// back to `RT_OBJ_LEN`, which dispatches by runtime tag. Without the
+/// `Any` fallback, `lower_len` collapsed to `Const(0)` for `len(x)`
+/// where `x: Any` — silently misreporting non-empty containers (e.g.
+/// `len(out[0])` where `out: list[Any]` because the comprehension's
+/// element type lost its concrete shape).
+/// Returns `None` only for `Class` (which dispatches via `__len__`).
 pub(crate) fn select_len_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
     if ty.is_list_like() {
         return Some(&runtime_func_def::RT_LIST_LEN);
@@ -75,6 +83,7 @@ pub(crate) fn select_len_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
         Type::RuntimeObject(pyaot_core_defs::TypeTagKind::Deque) => {
             Some(&pyaot_stdlib_defs::modules::collections::DEQUE_LEN.codegen)
         }
+        Type::Any | Type::HeapAny => Some(&runtime_func_def::RT_OBJ_LEN),
         _ => None,
     }
 }
@@ -127,7 +136,14 @@ pub(crate) fn type_to_iter_source(ty: &Type) -> mir::IterSourceKind {
 // =============================================================================
 
 /// Select the runtime function for simple slicing (no step) by object type.
-/// Returns `None` for types that need special handling or do not support slicing.
+/// For typed list/tuple/str/bytes we pick the type-specialised slicer
+/// directly; for `Any` / `HeapAny` (parameter shapes that lost concrete
+/// information through unannotated callees) we fall back to
+/// `RT_OBJ_SLICE`, which dispatches by runtime tag. Without the Any
+/// fallback, `lower_slice` silently returned a `None` constant — a
+/// `keys[li][0][hs:hs+head_dim]` chain in microgpt-style code then
+/// produced empty-shape lists with no diagnostic, eventually segfaulting
+/// downstream when the empty-list elements were dereferenced.
 pub(crate) fn select_slicing_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
     if ty.is_list_like() {
         return Some(&runtime_func_def::RT_LIST_SLICE);
@@ -138,12 +154,13 @@ pub(crate) fn select_slicing_func(ty: &Type) -> Option<&'static RuntimeFuncDef> 
     match ty {
         Type::Str => Some(&runtime_func_def::RT_STR_SLICE),
         Type::Bytes => Some(&runtime_func_def::RT_BYTES_SLICE),
+        Type::Any | Type::HeapAny => Some(&runtime_func_def::RT_OBJ_SLICE),
         _ => None,
     }
 }
 
 /// Select the runtime function for step slicing (with step) by object type.
-/// Returns `None` for types that need special handling or do not support slicing.
+/// See `select_slicing_func` for the Any/HeapAny rationale.
 pub(crate) fn select_slicing_step_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
     if ty.is_list_like() {
         return Some(&runtime_func_def::RT_LIST_SLICE_STEP);
@@ -154,6 +171,7 @@ pub(crate) fn select_slicing_step_func(ty: &Type) -> Option<&'static RuntimeFunc
     match ty {
         Type::Str => Some(&runtime_func_def::RT_STR_SLICE_STEP),
         Type::Bytes => Some(&runtime_func_def::RT_BYTES_SLICE_STEP),
+        Type::Any | Type::HeapAny => Some(&runtime_func_def::RT_OBJ_SLICE_STEP),
         _ => None,
     }
 }

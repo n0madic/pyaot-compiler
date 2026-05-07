@@ -3056,4 +3056,74 @@ assert _tu_p == 100 and _tu_q == 200 and _tu_z == 300, (
 
 print("tuple-unpack module-level globals: PASS")
 
+# =============================================================================
+# Slice / len / index dispatch through Any-typed container chains
+# =============================================================================
+# When a container's element type collapses to `Any` (typically because
+# the for-target of a comprehension is bound through `IterAdvance` without
+# a registered seed type), dispatch helpers used to silently degrade:
+#   - `select_slicing_func(Any)` returned `None` → `lower_slice` emitted
+#     a `Constant::None`, producing zero-length slices for non-empty
+#     lists routed through the listcomp result.
+#   - `select_len_func(Any)` returned `None` → `lower_len` fell into its
+#     `_ => Const(0)` fallback, silently misreporting `len(x)` for any
+#     `x: Any` regardless of the actual runtime type.
+#   - `seed_expr_type` (the read API) had no `Slice` / `Index` arms, so
+#     inline expressions like `len(ki[0:2])` (without an intermediate
+#     local binding) saw `Any` and triggered the same degradation.
+# All three combined to make microgpt-style listcomps return empty
+# slices that downstream `__mul__` calls then dereferenced as null
+# operands, segfaulting in `rt_obj_mul`.
+#
+# Fixes (architectural, not point fixes):
+#   1. New runtime helpers `rt_obj_slice` / `rt_obj_slice_step` /
+#      `rt_obj_len` that dispatch by `TypeTagKind` at runtime — mirror
+#      the existing `rt_any_getitem` pattern.
+#   2. `select_slicing_func` / `select_slicing_step_func` / `select_len_func`
+#      now route `Any` / `HeapAny` to those helpers instead of falling
+#      through to silent zero/None constants.
+#   3. `seed_expr_type` (read API) gained `Slice` and `Index` arms so
+#      inline subscript / slice expressions resolve their result type
+#      without needing a temp-var binding to populate the cache.
+#   4. `lower_slice` falls back to the lowered MIR operand's type when
+#      `seed_expr_type` returns `Any` — the operand often carries a
+#      tighter shape after `lower_expr` ran.
+
+class _SliceAnyV:
+    __slots__ = ('value',)
+    def __init__(self, v):
+        self.value = v
+
+
+_slc_keys, _slc_values = [[]], [[]]
+
+
+def _slc_drive(k):
+    """k is `list[list[list[V]]]` after refinement; the listcomp body
+    slices through `ki[0:2]` where `ki` is a comprehension for-target.
+    Pre-fix the slice silently produced an empty list because the
+    for-target's compile-time type was `Any`."""
+    k[0].append([_SliceAnyV(1.0), _SliceAnyV(2.0), _SliceAnyV(3.0), _SliceAnyV(4.0)])
+    out = [ki[0:2] for ki in k[0]]
+    assert len(out) == 1, f"outer listcomp len: {len(out)}"
+    assert len(out[0]) == 2, f"inner slice len: {len(out[0])}"
+
+
+_slc_drive(_slc_keys)
+
+
+# Inline `len(ki[0:2])` without intermediate local binding — exercises the
+# read-API `Slice` / `Index` arms in `seed_expr_type`.
+_slc_arr = [_SliceAnyV(0.5), _SliceAnyV(0.6), _SliceAnyV(0.7), _SliceAnyV(0.8)]
+_slc_inline_len = len(_slc_arr[0:2])
+assert _slc_inline_len == 2, f"inline len(slice): {_slc_inline_len}"
+
+# `len(out[0])` where `out: list[Any]` — exercises the `RT_OBJ_LEN`
+# runtime dispatch via `select_len_func(Any)`.
+_slc_runtime_dispatch = [[_SliceAnyV(0.1), _SliceAnyV(0.2), _SliceAnyV(0.3)]]
+_slc_taken = _slc_runtime_dispatch[0]
+assert len(_slc_taken) == 3, f"runtime-dispatched len: {len(_slc_taken)}"
+
+print("slice/len/index dispatch through Any: PASS")
+
 print("All class tests passed!")

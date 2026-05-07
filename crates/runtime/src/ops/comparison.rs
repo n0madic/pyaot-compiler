@@ -407,6 +407,95 @@ pub extern "C" fn rt_any_getitem_abi(obj: Value, index: i64) -> Value {
     Value::from_ptr(rt_any_getitem(obj.unwrap_ptr(), index))
 }
 
+/// Runtime-dispatched slicing: obj[start:end] where obj has unknown type at
+/// compile time. Mirrors `rt_any_getitem`'s dispatch table for Index, but
+/// for Slice (delegates to the type-specific slice-runtime). Required when
+/// lowering sees `obj_type == Any | HeapAny` — without this, `lower_slice`
+/// silently falls through and returns a `None` constant, producing
+/// empty-list shapes for downstream consumers and triggering null-deref
+/// SEGVs in compiled patterns like microgpt's `[ki[hs:hs+head_dim] for ki
+/// in keys[li]]` where `ki`'s element type collapses to `Any` because of
+/// gpt's (unannotated) `keys` / `values` params.
+///
+/// Sentinel handling: `i64::MIN` for unspecified start, `i64::MAX` for
+/// unspecified end — matches the codegen-side defaults emitted by
+/// `lower_slice`. Each typed runtime slicer already understands these
+/// sentinels, so we just forward.
+pub fn rt_obj_slice(obj: *mut Obj, start: i64, end: i64) -> *mut Obj {
+    if obj.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        match (*obj).type_tag() {
+            TypeTagKind::List => crate::list::rt_list_slice(obj, start, end),
+            TypeTagKind::Tuple => crate::tuple::rt_tuple_slice(obj, start, end),
+            TypeTagKind::Str => crate::string::rt_str_slice(obj, start, end),
+            TypeTagKind::Bytes => crate::bytes::rt_bytes_slice(obj, start, end),
+            _ => std::ptr::null_mut(),
+        }
+    }
+}
+#[export_name = "rt_obj_slice"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_obj_slice_abi(obj: Value, start: i64, end: i64) -> Value {
+    Value::from_ptr(rt_obj_slice(obj.unwrap_ptr(), start, end))
+}
+
+/// Runtime-dispatched slicing with step: `obj[start:end:step]`. See
+/// `rt_obj_slice` for the Any-typed motivation.
+pub fn rt_obj_slice_step(obj: *mut Obj, start: i64, end: i64, step: i64) -> *mut Obj {
+    if obj.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        match (*obj).type_tag() {
+            TypeTagKind::List => crate::list::rt_list_slice_step(obj, start, end, step),
+            TypeTagKind::Tuple => crate::tuple::rt_tuple_slice_step(obj, start, end, step),
+            TypeTagKind::Str => crate::string::rt_str_slice_step(obj, start, end, step),
+            TypeTagKind::Bytes => crate::bytes::rt_bytes_slice_step(obj, start, end, step),
+            _ => std::ptr::null_mut(),
+        }
+    }
+}
+/// Runtime-dispatched length: `len(obj)` where obj has unknown type at
+/// compile time. Mirrors `rt_obj_slice`'s dispatch, but for `len()`.
+/// Without this, `len(obj)` for `obj: Any | HeapAny` falls into the
+/// `lower_len` Any-arm fallback that emits `Const(0)`, silently
+/// reporting zero length for legitimate non-empty containers — common
+/// for `len(out[0])` where `out` is `list[Any]` because its element
+/// expression's type collapsed to `Any` somewhere in the type-planning
+/// fixpoint.
+pub fn rt_obj_len(obj: *mut Obj) -> i64 {
+    if obj.is_null() {
+        return 0;
+    }
+    unsafe {
+        match (*obj).type_tag() {
+            TypeTagKind::List => crate::list::rt_list_len(obj),
+            TypeTagKind::Tuple => crate::tuple::rt_tuple_len(obj),
+            TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
+                crate::dict::rt_dict_len(obj)
+            }
+            TypeTagKind::Set => crate::set::rt_set_len(obj),
+            TypeTagKind::Str => crate::string::rt_str_len_int(obj),
+            TypeTagKind::Bytes => crate::bytes::rt_bytes_len(obj),
+            TypeTagKind::Deque => crate::deque::rt_deque_len(obj),
+            _ => 0,
+        }
+    }
+}
+#[export_name = "rt_obj_len"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_obj_len_abi(obj: Value) -> i64 {
+    rt_obj_len(obj.unwrap_ptr())
+}
+
+#[export_name = "rt_obj_slice_step"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_obj_slice_step_abi(obj: Value, start: i64, end: i64, step: i64) -> Value {
+    Value::from_ptr(rt_obj_slice_step(obj.unwrap_ptr(), start, end, step))
+}
+
 /// Check if element is in container with runtime type dispatch
 /// Returns 1 if element is in container, 0 otherwise
 /// Used for Union container types where the actual type is determined at runtime

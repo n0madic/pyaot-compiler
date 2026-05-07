@@ -3,6 +3,7 @@
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
+use pyaot_types::Type;
 
 use crate::context::Lowering;
 use crate::type_dispatch::{select_slicing_func, select_slicing_step_func};
@@ -20,8 +21,30 @@ impl<'a> Lowering<'a> {
     ) -> Result<mir::Operand> {
         let obj_expr = &hir_module.exprs[obj];
         let obj_operand = self.lower_expr(obj_expr, hir_module, mir_func)?;
-        // Use seed_expr_type for proper type inference
-        let obj_type = self.seed_expr_type(obj, hir_module);
+        // Use seed_expr_type for proper type inference, but prefer the
+        // already-lowered MIR operand's type when seed-side is `Any` /
+        // `HeapAny`. The seed-side query may legitimately resolve to `Any`
+        // for HIR Vars whose name binds through an iter-advance pattern in
+        // a desugared comprehension body — the for-target gets a fresh
+        // VarId that isn't seeded by the type-planning fixpoint, even
+        // though `lower_expr` placed the value in a typed MIR local.
+        // Without this fallback `select_slicing_func` picked
+        // `RT_OBJ_SLICE` for a statically-known `list[V]` source. The
+        // runtime dispatch still works, but the MIR result local is then
+        // typed `Any`, so downstream `len(...)` queries fall through to
+        // the `Any` arm of `lower_len` which collapses to `Const(0)` —
+        // silently producing zero-length lists from valid slices.
+        let seed_type = self.seed_expr_type(obj, hir_module);
+        let obj_type = if matches!(seed_type, Type::Any | Type::HeapAny) {
+            let lowered = self.operand_type(&obj_operand, mir_func);
+            if matches!(lowered, Type::Any | Type::HeapAny) {
+                seed_type
+            } else {
+                lowered
+            }
+        } else {
+            seed_type
+        };
 
         // Default values for slice: use sentinel values for unspecified start/end
         // i64::MIN for unspecified start, i64::MAX for unspecified end

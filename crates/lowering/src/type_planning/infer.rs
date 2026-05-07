@@ -1283,7 +1283,7 @@ impl<'a> Lowering<'a> {
 
     /// Result type of `obj[index]` via the `__getitem__` resolution
     /// helper. Falls back to `expr.ty` / `Any`.
-    pub(super) fn index_result_type(
+    pub(crate) fn index_result_type(
         &self,
         obj_ty: &Type,
         index_expr: &hir::Expr,
