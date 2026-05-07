@@ -112,18 +112,65 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
 
 /// Infer the type of a binary operation from operand types.
 /// Returns `None` if the type cannot be determined (caller should apply fallback).
+/// Distribute a BinOp element-wise over the variants of a right-hand
+/// `Union`, then join the per-variant results into a canonical type. The
+/// helper is conservative: any variant whose result we can't compute
+/// (operand combination has no rule) contributes its own type to the join,
+/// matching the previous "return the Union as-is" fallback for that arm.
+fn distribute_binop_over_union(op: &hir::BinOp, left_ty: &Type, variants: &[Type]) -> Type {
+    let mut acc = Type::Never;
+    for v in variants {
+        let part = resolve_binop_type(op, left_ty, v).unwrap_or_else(|| v.clone());
+        acc = acc.join(&part);
+    }
+    if matches!(acc, Type::Never) {
+        Type::Any
+    } else {
+        acc
+    }
+}
+
+/// Mirror of `distribute_binop_over_union` for the left-hand `Union` case.
+fn distribute_binop_over_union_left(op: &hir::BinOp, variants: &[Type], right_ty: &Type) -> Type {
+    let mut acc = Type::Never;
+    for v in variants {
+        let part = resolve_binop_type(op, v, right_ty).unwrap_or_else(|| v.clone());
+        acc = acc.join(&part);
+    }
+    if matches!(acc, Type::Never) {
+        Type::Any
+    } else {
+        acc
+    }
+}
+
 pub(crate) fn resolve_binop_type(op: &hir::BinOp, left_ty: &Type, right_ty: &Type) -> Option<Type> {
-    // Union arithmetic: result is Union since the actual type depends on runtime values.
-    // Division always returns float even for Union (Python 3 semantics).
+    // Union arithmetic: result is Union since the actual type depends on
+    // runtime values. Division always returns float even for Union (Python
+    // 3 semantics).
     if left_ty.is_union() || right_ty.is_union() {
         if matches!(op, hir::BinOp::Div) {
             return Some(Type::Float);
         }
-        // Return the Union type directly (preserve it through the pipeline)
-        if left_ty.is_union() {
-            return Some(left_ty.clone());
+        // Distribute the BinOp element-wise over Union variants and join
+        // the per-variant results. The previous behaviour returned the
+        // Union side untouched, which propagates an irrelevant `Self`
+        // variant into the result whenever an unannotated numeric dunder
+        // param carries the auto-generated `Union[Self, int, float, bool]`
+        // seed: e.g. inside `Value.__pow__`, `self.data**other` with
+        // `self.data: Float` and `other: Union[Value, int, float, bool]`
+        // returned the full Union (including `Class[Value]`), which then
+        // polluted the harvested `data` field type and degraded runtime
+        // dispatch.  Distributing instead yields `Float` for the numeric
+        // variants — the only ones that legitimately participate in
+        // Float-side arithmetic — and only retains the class variant if
+        // the dunder genuinely returns it.
+        if let Type::Union(variants) = right_ty {
+            return Some(distribute_binop_over_union(op, left_ty, variants));
         }
-        return Some(right_ty.clone());
+        if let Type::Union(variants) = left_ty {
+            return Some(distribute_binop_over_union_left(op, variants, right_ty));
+        }
     }
 
     // Class types with arithmetic dunders return the class type

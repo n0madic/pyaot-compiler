@@ -324,15 +324,11 @@ impl<'a> Lowering<'a> {
                 // 0x18, dereferenced, crashed). Treat empty-tuple storage
                 // identically to `Any`: use the observed type directly so
                 // subsequent observations element-wise join cleanly.
-                let storage_uninformative = matches!(storage_ty, Type::Any | Type::HeapAny)
-                    || storage_ty
-                        .tuple_elems()
-                        .is_some_and(|elems| elems.is_empty());
                 let refined_raw = class_fields
                     .get(&field_name)
                     .map(|prev| prev.join(&observed_ty))
                     .unwrap_or_else(|| {
-                        if storage_uninformative {
+                        if matches!(storage_ty, Type::Any | Type::HeapAny) {
                             observed_ty.clone()
                         } else {
                             storage_ty.join(&observed_ty)
@@ -1557,35 +1553,13 @@ impl<'a> Lowering<'a> {
         param_idx: usize,
         arg_ty: Type,
     ) {
-        if Self::contains_any_or_heap_any(&arg_ty) {
+        if matches!(arg_ty, Type::Any | Type::HeapAny) {
             return;
         }
         observed_arg_types
             .entry((class_id, param_idx))
             .and_modify(|prev| *prev = prev.join(&arg_ty))
             .or_insert(arg_ty);
-    }
-
-    /// Recursive `Any` / `HeapAny` reachability check. Returns `true` if
-    /// the type tree contains either anywhere — Union members, Generic
-    /// args, DefaultDict K/V, Iterator inner, Function params/ret. Used by
-    /// `record_constructor_arg_type` to reject observations whose precision
-    /// hasn't converged yet.
-    fn contains_any_or_heap_any(ty: &Type) -> bool {
-        match ty {
-            Type::Any | Type::HeapAny => true,
-            Type::Union(ts) => ts.iter().any(Self::contains_any_or_heap_any),
-            Type::Generic { args, .. } => args.iter().any(Self::contains_any_or_heap_any),
-            Type::DefaultDict(k, v) => {
-                Self::contains_any_or_heap_any(k) || Self::contains_any_or_heap_any(v)
-            }
-            Type::Iterator(t) => Self::contains_any_or_heap_any(t),
-            Type::Function { params, ret } => {
-                params.iter().any(Self::contains_any_or_heap_any)
-                    || Self::contains_any_or_heap_any(ret)
-            }
-            _ => false,
-        }
     }
 
     /// Build vtables from class information and export to MIR module.

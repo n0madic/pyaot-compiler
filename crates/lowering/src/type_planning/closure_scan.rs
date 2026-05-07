@@ -996,27 +996,62 @@ impl<'a> Lowering<'a> {
                 then_val,
                 else_val,
             } => {
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*cond],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*then_val],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*else_val],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
+                // Apply `isinstance(var, T)` narrowing to the recursion
+                // overlays so that arg-type observations inside ternary
+                // branches reflect the narrowed (or excluded) type for
+                // `var`. Matches the constructor harvester's IfExpr arm
+                // — without this, a `Value(other)` call in the else
+                // branch of `other if isinstance(other, Value) else
+                // Value(other)` records `other`'s pre-narrowed
+                // polymorphic seed (`Union[Self, int, float, bool]`),
+                // so the harvested `Value.__init__`'s `data` param hint
+                // ends up as `Union[Float, Class[Self]]` instead of
+                // `Float`. The downstream effect is that `__init__` is
+                // emitted with a `Union`-typed param, primitive callers
+                // get boxed into a `Value`-tagged slot, and `self.data
+                // = d` stuffs tagged-Value bits into the F64 slot —
+                // observable as denormal float reads at runtime
+                // (microgpt training step computes loss=NaN through the
+                // `softmax` call chain).
+                let cond_expr = &hir_module.exprs[*cond];
+                let narrow =
+                    self.extract_simple_isinstance_narrowing(cond_expr, hir_module, Some(overlay));
+                self.scan_expr_for_calls(cond_expr, hir_module, var_to_func, overlay, accumulators);
+                if let Some((var_id, then_narrow, else_narrow)) = narrow {
+                    let mut then_overlay = overlay.clone();
+                    then_overlay.insert(var_id, then_narrow);
+                    let mut else_overlay = overlay.clone();
+                    else_overlay.insert(var_id, else_narrow);
+                    self.scan_expr_for_calls(
+                        &hir_module.exprs[*then_val],
+                        hir_module,
+                        var_to_func,
+                        &then_overlay,
+                        accumulators,
+                    );
+                    self.scan_expr_for_calls(
+                        &hir_module.exprs[*else_val],
+                        hir_module,
+                        var_to_func,
+                        &else_overlay,
+                        accumulators,
+                    );
+                } else {
+                    self.scan_expr_for_calls(
+                        &hir_module.exprs[*then_val],
+                        hir_module,
+                        var_to_func,
+                        overlay,
+                        accumulators,
+                    );
+                    self.scan_expr_for_calls(
+                        &hir_module.exprs[*else_val],
+                        hir_module,
+                        var_to_func,
+                        overlay,
+                        accumulators,
+                    );
+                }
             }
             hir::ExprKind::MethodCall { obj, args, .. } => {
                 self.scan_expr_for_calls(
