@@ -384,6 +384,25 @@ impl<'a> Lowering<'a> {
             dest: dest_local,
             src: coerced,
         });
+        // Module-level globals also need an `rt_global_set_<type>` call so
+        // cross-function reads via `rt_global_get_<type>` see the written
+        // value. `lower_assign` (the simple-target entry) handles this for
+        // direct `Var(..) = expr`; here we mirror that for the tuple-unpack
+        // / nested-binding paths so `a, b = 1, 2` at module level commits
+        // both globals (without this, only the local Copy is emitted, the
+        // global slot stays zero, and any function reading `b` sees 0).
+        if self.is_global(&var_id) {
+            let runtime_func = self.get_global_set_func(&local_ty);
+            let effective_var_id = self.get_effective_var_id(var_id);
+            self.emit_runtime_call_void(
+                runtime_func,
+                vec![
+                    mir::Operand::Constant(mir::Constant::Int(effective_var_id)),
+                    mir::Operand::Local(dest_local),
+                ],
+                mir_func,
+            );
+        }
         Ok(())
     }
 

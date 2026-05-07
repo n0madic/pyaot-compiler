@@ -369,28 +369,37 @@ impl AstToHir {
                 std::mem::swap(&mut self.symbols.var_map, &mut self.symbols.module_var_map);
 
                 // Check if this is an assignment statement - we need to track
-                // explicitly assigned variables for globals detection
+                // explicitly assigned variables for globals detection.
+                // `target_names` collects every leaf-Name reachable from the
+                // assignment target, recursing through Tuple / List / Starred
+                // so multi-target unpacks like `a, n_embd = 1, 4` register
+                // BOTH `a` and `n_embd` as module globals (without this, the
+                // unpacked vars stay function-local-shaped and downstream
+                // function bodies reading them via `rt_global_get_*` see
+                // never-initialised slots).
                 let is_assignment = matches!(&stmt, py::Stmt::Assign(_) | py::Stmt::AnnAssign(_));
-
-                // Get the target variable name before conversion
-                let target_name = match &stmt {
-                    py::Stmt::Assign(assign) => {
-                        // Get first target (for simple assignments)
-                        if let Some(py::Expr::Name(name)) = assign.targets.first() {
-                            Some(self.interner.intern(&name.id))
-                        } else {
-                            None
+                let mut target_names: Vec<InternedString> = Vec::new();
+                if is_assignment {
+                    match &stmt {
+                        py::Stmt::Assign(assign) => {
+                            for target in &assign.targets {
+                                Self::collect_assignment_target_names(
+                                    target,
+                                    &mut self.interner,
+                                    &mut target_names,
+                                );
+                            }
                         }
-                    }
-                    py::Stmt::AnnAssign(ann_assign) => {
-                        if let py::Expr::Name(name) = &*ann_assign.target {
-                            Some(self.interner.intern(&name.id))
-                        } else {
-                            None
+                        py::Stmt::AnnAssign(ann_assign) => {
+                            Self::collect_assignment_target_names(
+                                &ann_assign.target,
+                                &mut self.interner,
+                                &mut target_names,
+                            );
                         }
+                        _ => {}
                     }
-                    _ => None,
-                };
+                }
 
                 // For Match statements: snapshot var_map keys before conversion
                 // so we can detect new variables bound by case patterns.
@@ -403,10 +412,10 @@ impl AstToHir {
 
                 let stmt = self.convert_stmt(stmt)?;
 
-                // Mark the target variable as a module-level assignment
+                // Mark each target leaf as a module-level assignment.
                 if is_assignment {
-                    if let Some(name) = target_name {
-                        if let Some(&var_id) = self.symbols.var_map.get(&name) {
+                    for name in &target_names {
+                        if let Some(&var_id) = self.symbols.var_map.get(name) {
                             self.scope.module_level_assignments.insert(var_id);
                         }
                     }
@@ -430,6 +439,35 @@ impl AstToHir {
             }
         }
         Ok(())
+    }
+
+    /// Walk an assignment-target expression and intern every Name leaf.
+    /// Recurses through Tuple / List / Starred so destructuring assignments
+    /// like `a, b = ...` and `[x, *rest] = ...` register every bound name.
+    /// Non-Name leaves (Attribute, Subscript) are skipped — they don't
+    /// introduce new module-scope bindings.
+    fn collect_assignment_target_names(
+        expr: &py::Expr,
+        interner: &mut StringInterner,
+        out: &mut Vec<InternedString>,
+    ) {
+        match expr {
+            py::Expr::Name(name) => out.push(interner.intern(&name.id)),
+            py::Expr::Tuple(t) => {
+                for elt in &t.elts {
+                    Self::collect_assignment_target_names(elt, interner, out);
+                }
+            }
+            py::Expr::List(l) => {
+                for elt in &l.elts {
+                    Self::collect_assignment_target_names(elt, interner, out);
+                }
+            }
+            py::Expr::Starred(s) => {
+                Self::collect_assignment_target_names(&s.value, interner, out);
+            }
+            _ => {}
+        }
     }
 
     fn finalize_module(&mut self) {

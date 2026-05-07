@@ -3008,4 +3008,52 @@ assert _lc_alias_results == _lc_alias_results[:1] * 2, (
 
 print("genexp captures load in for-loop resume: PASS")
 
+# =============================================================================
+# Tuple-unpack assignment at module level must register every leaf as a global
+# =============================================================================
+# `a, b = 1, 2` at module scope was previously broken: the frontend's
+# `target_name` extractor only matched `Expr::Name` targets and bailed on
+# `Expr::Tuple`, so neither `a` nor `b` was added to
+# `scope.module_level_assignments`. `finalize_module` then only promoted
+# names in that set to `module.globals`, so the tuple-unpacked vars stayed
+# function-local-shaped — module init wrote them as locals while function
+# bodies reading them via `rt_global_get_<type>` saw never-initialised
+# slots (zero), producing silently-wrong values (`n_embd` reads as 0,
+# making `range(n_embd)` empty, causing downstream `[V(0.5) for _ in
+# range(n_embd)]` to return `[]` and SEGV the next dereferencer).
+#
+# Fix recurses through Tuple / List / Starred targets in
+# `collect_assignment_target_names`, and `bind_var_op` now mirrors
+# `lower_assign`'s `rt_global_set_<type>` emission for tuple-unpacked
+# globals so all bound leaves commit to the global slot.
+
+_tu_a, _tu_b = 1, 4
+_tu_c, _tu_d, _tu_e = 10, 20, 30
+
+def _tu_read():
+    return _tu_a + _tu_b + _tu_c + _tu_d + _tu_e
+
+assert _tu_read() == 65, f"tuple-unpack global sum: {_tu_read()}"
+
+class _TuV:
+    __slots__ = ('value',)
+    def __init__(self, v):
+        self.value = v
+
+def _tu_listcomp():
+    return [_TuV(0.5) for _ in range(_tu_b)]
+
+_tu_xs = _tu_listcomp()
+assert len(_tu_xs) == 4, f"tuple-unpack-driven listcomp len: {len(_tu_xs)}"
+assert _tu_xs[0].value == 0.5, f"tuple-unpack-driven listcomp [0]: {_tu_xs[0].value}"
+
+# Nested tuple-unpack pattern (e.g. `(a, b), c = (1, 2), 3`)
+_tu_pair, _tu_z = (100, 200), 300
+_tu_p, _tu_q = _tu_pair
+assert _tu_p == 100 and _tu_q == 200 and _tu_z == 300, (
+    f"nested tuple-unpack: {_tu_p}, {_tu_q}, {_tu_z}"
+)
+
+print("tuple-unpack module-level globals: PASS")
+
 print("All class tests passed!")
