@@ -486,6 +486,21 @@ impl AstToHir {
     }
 
     /// Generate the base case statements for a comprehension's innermost body.
+    ///
+    /// CRITICAL: any sub-expression in `elt`, `key`, `value` may itself be a
+    /// listcomp / dictcomp / setcomp that desugars by pushing its
+    /// `__comp_N = []; for ...: __comp_N.append(...)` to `pending_stmts`.
+    /// Those pending stmts represent **per-iteration work** of the OUTER
+    /// comprehension and must execute inside the outer loop body, not
+    /// before it. We swap `pending_stmts` to a fresh empty vec around each
+    /// `convert_expr` call, then prepend whatever the inner desugar
+    /// produced into the returned body.
+    ///
+    /// Without this, `[[[] for _ in range(N)] for _ in range(M)]`
+    /// evaluates the inner listcomp ONCE (inner pending lands in the
+    /// surrounding scope), and every outer iteration appends the SAME
+    /// inner-list reference — `g[0] is g[1]` becomes `True` and writes to
+    /// `g[1][k]` clobber `g[0][k]`.
     fn generate_comprehension_base_case(
         &mut self,
         action: &ComprehensionAction<'_>,
@@ -493,7 +508,11 @@ impl AstToHir {
     ) -> Result<Vec<CfgStmt>> {
         match action {
             ComprehensionAction::ListAppend { elt, result_var } => {
+                let outer_pending = std::mem::take(&mut self.scope.pending_stmts);
                 let elt_id = self.convert_expr((*elt).clone())?;
+                let inner_pending = std::mem::take(&mut self.scope.pending_stmts);
+                self.scope.pending_stmts = outer_pending;
+
                 let list_ref = self.module.exprs.alloc(Expr {
                     kind: ExprKind::Var(*result_var),
                     ty: None,
@@ -514,15 +533,21 @@ impl AstToHir {
                     kind: StmtKind::Expr(append_call),
                     span: comp_span,
                 });
-                Ok(vec![CfgStmt::stmt(append_stmt)])
+                let mut body = inner_pending;
+                body.push(CfgStmt::stmt(append_stmt));
+                Ok(body)
             }
             ComprehensionAction::DictSet {
                 key,
                 value,
                 result_var,
             } => {
+                let outer_pending = std::mem::take(&mut self.scope.pending_stmts);
                 let key_id = self.convert_expr((*key).clone())?;
                 let value_id = self.convert_expr((*value).clone())?;
+                let inner_pending = std::mem::take(&mut self.scope.pending_stmts);
+                self.scope.pending_stmts = outer_pending;
+
                 let dict_ref = self.module.exprs.alloc(Expr {
                     kind: ExprKind::Var(*result_var),
                     ty: None,
@@ -540,10 +565,16 @@ impl AstToHir {
                     },
                     span: comp_span,
                 });
-                Ok(vec![CfgStmt::stmt(set_stmt)])
+                let mut body = inner_pending;
+                body.push(CfgStmt::stmt(set_stmt));
+                Ok(body)
             }
             ComprehensionAction::SetAdd { elt, result_var } => {
+                let outer_pending = std::mem::take(&mut self.scope.pending_stmts);
                 let elem_id = self.convert_expr((*elt).clone())?;
+                let inner_pending = std::mem::take(&mut self.scope.pending_stmts);
+                self.scope.pending_stmts = outer_pending;
+
                 let set_ref = self.module.exprs.alloc(Expr {
                     kind: ExprKind::Var(*result_var),
                     ty: None,
@@ -564,10 +595,16 @@ impl AstToHir {
                     kind: StmtKind::Expr(method_call),
                     span: comp_span,
                 });
-                Ok(vec![CfgStmt::stmt(add_stmt)])
+                let mut body = inner_pending;
+                body.push(CfgStmt::stmt(add_stmt));
+                Ok(body)
             }
             ComprehensionAction::Yield { elt } => {
+                let outer_pending = std::mem::take(&mut self.scope.pending_stmts);
                 let yield_value = self.convert_expr((*elt).clone())?;
+                let inner_pending = std::mem::take(&mut self.scope.pending_stmts);
+                self.scope.pending_stmts = outer_pending;
+
                 let yield_expr_id = self.module.exprs.alloc(Expr {
                     kind: ExprKind::Yield(Some(yield_value)),
                     ty: None,
@@ -577,7 +614,9 @@ impl AstToHir {
                     kind: StmtKind::Expr(yield_expr_id),
                     span: comp_span,
                 });
-                Ok(vec![CfgStmt::stmt(yield_stmt)])
+                let mut body = inner_pending;
+                body.push(CfgStmt::stmt(yield_stmt));
+                Ok(body)
             }
         }
     }

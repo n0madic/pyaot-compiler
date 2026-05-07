@@ -2756,17 +2756,26 @@ class _CocDeepV:
 
 
 def _coc_deep_fill(grid):
-    # depth-2 mutation on a 3-deep grid — `grid[0][0].append(...)` refines
-    # `grid` to `list[list[list[_CocDeepV]]]` because the appended argument
-    # is a list of `_CocDeepV` (depth-2 wrap of element type).
-    grid[0][0].append([_CocDeepV(7.0)])
-    # depth-3 read: grid[i][j][k].data must typecheck.
-    return grid[0][0][0][0].data
+    # Loop-driven depth-2 mutation on a 3-deep grid — exercises both
+    # refinement (refine `grid: list[list[list[_CocDeepV]]]` from the
+    # appended class instance) and the nested-listcomp aliasing fix
+    # (without the fix, `grid[0][...]` and `grid[1][...]` would alias
+    # the same inner list, producing wrong sums).
+    for i in range(2):
+        for j in range(2):
+            grid[i][j].append(_CocDeepV(i * 10.0 + j))
+    return (
+        grid[0][0][0].data
+        + grid[0][1][0].data
+        + grid[1][0][0].data
+        + grid[1][1][0].data
+    )
 
 
 _coc_grid = [[[] for _ in range(2)] for _ in range(2)]
 _coc_deep_total = _coc_deep_fill(_coc_grid)
-assert _coc_deep_total == 7.0, f"_coc_deep_fill total: {_coc_deep_total}"
+# Expected: 0 + 1 + 10 + 11 = 22.0
+assert _coc_deep_total == 22.0, f"_coc_deep_fill total: {_coc_deep_total}"
 print("subscript-chain depth-3 refinement: PASS")
 
 # =============================================================================
