@@ -180,10 +180,22 @@ impl<'a> Lowering<'a> {
                     // FloatObj pointer for Float — see §F.1, pointer for heap
                     // shapes). `emit_instance_get_field` emits the unbox for
                     // Float fields automatically and relabels other reads.
-                    let read_type = self
-                        .get_refined_class_field_type(class_id, &attr)
-                        .cloned()
-                        .unwrap_or(storage_type);
+                    //
+                    // Override to `HeapAny` if the cross-instance harvester
+                    // recorded a compound write to this field (autograd-
+                    // style accumulator). The runtime tag may be a heap
+                    // pointer, so we mustn't `UnwrapValueInt` the load —
+                    // `emit_instance_get_field` with `read_type == HeapAny`
+                    // returns the tagged `Value` verbatim, which downstream
+                    // `lower_binop` then routes through `rt_obj_*` (commit
+                    // 1d41b98) for correct tag-aware arithmetic.
+                    let read_type = if self.field_has_heap_writes(*class_id, attr) {
+                        Type::HeapAny
+                    } else {
+                        self.get_refined_class_field_type(class_id, &attr)
+                            .cloned()
+                            .unwrap_or(storage_type)
+                    };
 
                     let result_local =
                         self.emit_instance_get_field(obj_operand, offset, read_type, mir_func);

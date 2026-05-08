@@ -3278,4 +3278,74 @@ assert _crh_ma_two.extra == 7, f"mixed arity extra: {_crh_ma_two.extra}"
 print("ClassRef harvester (mixed-arity call sites): PASS")
 
 
+# =============================================================================
+# Section: heap-typed field side-table for autograd-style accumulation
+# Regression: when a class field is statically typed `Int` (frontend
+# inferred from `self.field = 0` literal in `__init__`) but later
+# receives compound-RHS writes whose runtime tag may be a heap pointer
+# (e.g. `child.field += other_obj.attr * scalar` where `other_obj.attr`
+# is a runtime-dispatched tagged Value), the bind-site previously
+# re-encoded the heap pointer as `INT` via `ValueFromInt` (corrupting
+# high bits into the integer payload) and the read-site `UnwrapValueInt`
+# decoded the bogus int as the field value. Squaring or accumulating
+# that bogus int surfaces as `OverflowError: integer overflow` deep
+# inside an unrelated loop.
+#
+# The fix records a side-set `class_fields_with_heap_writes` from the
+# cross-instance harvester for compound-RHS writes whose seed type
+# collapses to `Any`/`HeapAny`, and lowering's bind / read paths treat
+# those slots as `HeapAny` end-to-end (no UnwrapValueInt round-trip).
+# Test mirrors microgpt's autograd `child.grad += local_grad * v.grad`
+# pattern: `_HeapWriteAccum.acc` is statically `Int` (from `acc = 0`)
+# but receives `Float * Int = Float` heap-boxed values from cross-
+# instance accumulation, then the post-loop arithmetic squares it —
+# pre-fix this surfaced as integer overflow.
+# =============================================================================
+
+class _HeapWriteAccumValue:
+    __slots__ = ('data', 'acc')
+    def __init__(self, d):
+        self.data = d
+        self.acc = 0  # frontend infers Int from literal `0`
+    def __mul__(self, other):
+        other = other if isinstance(other, _HeapWriteAccumValue) else _HeapWriteAccumValue(other)
+        return _HeapWriteAccumValue(self.data * other.data)
+    def add_grad(self, scalar):
+        # Cross-instance compound write: `self.acc + scalar * something`
+        # where `scalar` is HeapAny-shaped (tuple-element from a
+        # heterogeneous tuple) and `something.data` is Float. The BinOp
+        # dispatch routes through `rt_obj_*` returning a tagged Value
+        # whose runtime tag is a heap-pointer FloatObj. Without the
+        # heap-writes side-table the bind site would re-tag the pointer
+        # as INT, and a later read would decode it as a garbage int
+        # → OverflowError on subsequent arithmetic.
+        self.acc = self.acc + scalar * self.data
+
+
+_hwa_a = _HeapWriteAccumValue(2.0)
+_hwa_b = _HeapWriteAccumValue(3.0)
+# Heterogeneous tuple — first element is Float, second is Int. Iterating
+# unpacks each element as `Any` / `HeapAny`-shaped (tagged Value). When
+# `add_grad` is called with that scalar, the cross-instance compound
+# write `self.acc = self.acc + scalar * self.data` produces a tagged
+# Float-pointer Value, which the harvester's compound-RHS detection
+# marks `acc` as heap-typed.
+for _hwa_scalar in (1.5, 1):
+    _hwa_a.add_grad(_hwa_scalar)
+    _hwa_b.add_grad(_hwa_scalar)
+
+# Pre-fix: reading `_hwa_a.acc` via `UnwrapValueInt` on a tagged
+# FloatObj pointer would decode pointer bits as a garbage int (e.g.
+# 5_000_000_000+); squaring it would overflow i64 and raise
+# `OverflowError`. Post-fix: read returns the tagged Value, and the
+# `** 2` BinOp dispatches through `rt_obj_pow` to produce a real Float.
+# 1.5 * 2.0 + 1 * 2.0 = 5.0, squared = 25.0
+# 1.5 * 3.0 + 1 * 3.0 = 7.5, squared = 56.25
+_hwa_a_acc_sq = _hwa_a.acc ** 2
+_hwa_b_acc_sq = _hwa_b.acc ** 2
+assert _hwa_a_acc_sq == 25.0, f"heap-writes acc_a^2: {_hwa_a_acc_sq}"
+assert _hwa_b_acc_sq == 56.25, f"heap-writes acc_b^2: {_hwa_b_acc_sq}"
+print("Heap-typed field side-table (autograd-style accumulation): PASS")
+
+
 print("All class tests passed!")

@@ -24,7 +24,7 @@ use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::{dunders::canonical_dunder_name, Type};
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, Span, StringInterner, VarId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Key function source for sort/sorted operations
 pub enum KeyFuncSource {
@@ -442,6 +442,21 @@ pub struct LoweringSeedInfo {
     /// type is narrower than the storage type, lowering emits `Refine` or
     /// `Unbox + Refine` after `RT_INSTANCE_GET_FIELD`.
     pub refined_class_field_types: IndexMap<ClassId, IndexMap<InternedString, Type>>,
+    /// Class fields whose cross-instance writes carry a runtime-dispatched
+    /// tagged `Value` (compound RHS — `BinOp` / `Call` / `MethodCall` /
+    /// `BuiltinCall` whose seed type collapses to `Any` / `HeapAny`).
+    ///
+    /// The harvester records but does NOT widen the static
+    /// `field_types` here, because that would dilute precise types on
+    /// unrelated annotated fields and break f64 fast-paths /
+    /// monomorphization. Instead, lowering's read & write paths
+    /// consult this set: when present, the field is treated as
+    /// `HeapAny` end-to-end (boxed primitives via `emit_value_slot` on
+    /// store, no `UnwrapValueInt` on load), so a heap pointer stored
+    /// by an autograd-style `child.grad += local_grad * v.grad`
+    /// survives a subsequent read instead of being decoded as a
+    /// garbage int.
+    pub class_fields_with_heap_writes: HashSet<(ClassId, InternedString)>,
 }
 
 /// Narrowed block-local shadow plus the stable storage type it shadows.
@@ -461,6 +476,7 @@ impl LoweringSeedInfo {
             expr_types: HashMap::new(),
             base_var_types: IndexMap::new(),
             refined_class_field_types: IndexMap::new(),
+            class_fields_with_heap_writes: HashSet::new(),
         }
     }
 

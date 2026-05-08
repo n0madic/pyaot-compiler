@@ -229,6 +229,37 @@ impl<'a> Lowering<'a> {
             .get(class_id)
             .and_then(|fields| fields.get(field))
     }
+
+    /// True if `(class_id, field)` was recorded by the cross-instance
+    /// harvester as receiving a compound runtime-dispatched RHS whose
+    /// runtime tag may be a heap pointer (autograd-style accumulation).
+    /// Lowering's bind / read paths consult this to suppress
+    /// `UnwrapValueInt` / `ValueFromInt` round-trips that would corrupt
+    /// pointer bits — see `class_fields_with_heap_writes` doc comment.
+    pub(crate) fn field_has_heap_writes(
+        &self,
+        class_id: pyaot_utils::ClassId,
+        field: InternedString,
+    ) -> bool {
+        self.lowering_seed_info
+            .class_fields_with_heap_writes
+            .contains(&(class_id, field))
+    }
+
+    /// Mark `(class_id, field)` as receiving a heap-shaped runtime
+    /// write. Idempotent. Called from
+    /// `refine_class_fields_from_cross_instance_writes` when the RHS
+    /// seed type collapses to `Any` / `HeapAny` for a structurally
+    /// compound expression.
+    pub(crate) fn mark_class_field_heap_writes(
+        &mut self,
+        class_id: pyaot_utils::ClassId,
+        field: InternedString,
+    ) {
+        self.lowering_seed_info
+            .class_fields_with_heap_writes
+            .insert((class_id, field));
+    }
 }
 
 // =============================================================================

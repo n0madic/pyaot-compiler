@@ -497,14 +497,39 @@ impl<'a> Lowering<'a> {
                 _ => Type::Any,
             });
         }
-        if let Type::Class { class_id, .. } = obj_ty {
-            if let Some(class_info) = self.get_class_info(class_id) {
+        // Both plain class instances (`Type::Class`) and generic
+        // instances (`Type::Generic { base, args }`) reach the same
+        // field tables — `args` only affects type-var substitution at
+        // monomorphization time. Without this `Generic` arm, attribute
+        // access on `tb: TickBox[int]` falls through to the
+        // `expr.ty.unwrap_or(Any)` branch and the seed-type pipeline
+        // sees `Any` for `self.n`, which then poisons the cross-
+        // instance harvester (a `BinOp self.n + 1` resolves to `Any`,
+        // gets misread as a compound RHS, and falsely marks the field
+        // as heap-typed).
+        let class_id_opt = match obj_ty {
+            Type::Class { class_id, .. } => Some(*class_id),
+            Type::Generic { base, .. } => Some(*base),
+            _ => None,
+        };
+        if let Some(class_id) = class_id_opt {
+            if let Some(class_info) = self.get_class_info(&class_id) {
                 // Handle __class__ on exception class instances
                 let attr_name = self.resolve(attr);
                 if attr_name == "__class__" && class_info.is_exception_class {
                     return Some(Type::Str);
                 }
-                if let Some(field_ty) = self.get_refined_class_field_type(class_id, &attr) {
+                // If the cross-instance harvester recorded a compound
+                // write to this field (a runtime-dispatched RHS whose
+                // tag may be a heap pointer), report `HeapAny` here so
+                // the seed-type pipeline keeps the slot tag-aware all
+                // the way through to the bind / read MIR — otherwise a
+                // narrow `Int` seed would feed `UnwrapValueInt` on a
+                // pointer and surface as `OverflowError`.
+                if self.field_has_heap_writes(class_id, attr) {
+                    return Some(Type::HeapAny);
+                }
+                if let Some(field_ty) = self.get_refined_class_field_type(&class_id, &attr) {
                     return Some(field_ty.clone());
                 }
                 if let Some(field_ty) = class_info.field_types.get(&attr) {
@@ -519,7 +544,7 @@ impl<'a> Lowering<'a> {
             }
             // Fall through to cross-module class info (for classes imported
             // from other modules — no local `class_info` entry exists).
-            if let Some(info) = self.get_cross_module_class_info(class_id) {
+            if let Some(info) = self.get_cross_module_class_info(&class_id) {
                 if let Some(field_ty) = info.field_types.get(&attr) {
                     return Some(field_ty.clone());
                 }

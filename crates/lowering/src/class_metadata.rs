@@ -496,7 +496,34 @@ impl<'a> Lowering<'a> {
             // type (e.g. `count: int = 0; count = count + 1` — the BinOp
             // seed may transiently see `Any` while the prescan converges
             // but the steady-state remains `Int`).
+            //
+            // BUT we still need to remember that an `Any` / `HeapAny`
+            // RHS came from a compound expression (BinOp / Call / …)
+            // — those genuinely produce heap-shaped runtime values
+            // (e.g. autograd `child.grad += local_grad * v.grad` where
+            // the rt_obj_* dispatch returns a tagged Value that may
+            // be a boxed FloatObj pointer). Without this signal,
+            // lowering's read & write paths assume the field stays
+            // `Int` and decode the heap pointer as a garbage int via
+            // `UnwrapValueInt`, surfacing later as `OverflowError`
+            // when the bogus int feeds into another arithmetic op.
+            // The `class_fields_with_heap_writes` side-set lets the
+            // lowering paths treat the slot as `HeapAny` end-to-end
+            // without diluting the static `field_types` (which would
+            // break f64 fast-paths and generic monomorphization).
             if matches!(value_ty, Type::Any | Type::HeapAny | Type::Never) {
+                if matches!(value_ty, Type::Any | Type::HeapAny) {
+                    let is_compound_rhs = matches!(
+                        value_expr.kind,
+                        hir::ExprKind::BinOp { .. }
+                            | hir::ExprKind::Call { .. }
+                            | hir::ExprKind::MethodCall { .. }
+                            | hir::ExprKind::BuiltinCall { .. }
+                    );
+                    if is_compound_rhs {
+                        self.mark_class_field_heap_writes(class_id, field);
+                    }
+                }
                 continue;
             }
             let storage_ty = self

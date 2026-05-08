@@ -457,10 +457,24 @@ impl<'a> Lowering<'a> {
                     // RT_INSTANCE_GET_FIELD_F64 but writes via the generic
                     // RT_INSTANCE_SET_FIELD with a boxed FloatObj — the read
                     // then interprets pointer bits as a denormal float.
-                    let field_ty = self
-                        .get_refined_class_field_type(class_id, &field)
-                        .cloned()
-                        .unwrap_or(storage_ty);
+                    //
+                    // Override to `HeapAny` if the cross-instance harvester
+                    // recorded a compound write (autograd-style
+                    // `child.grad += local_grad * v.grad`) — the field's
+                    // runtime tag may be a heap pointer, so we must NOT
+                    // re-encode it as INT via the standard primitive
+                    // coercion. `coerce_for_instance_field_store` with
+                    // `field_ty == HeapAny` falls through to
+                    // `coerce_for_storage` which boxes primitives via
+                    // `emit_value_slot` and passes already-tagged Values
+                    // verbatim. See `class_fields_with_heap_writes`.
+                    let field_ty = if self.field_has_heap_writes(*class_id, field) {
+                        Type::HeapAny
+                    } else {
+                        self.get_refined_class_field_type(class_id, &field)
+                            .cloned()
+                            .unwrap_or(storage_ty)
+                    };
                     if matches!(field_ty, Type::Float) {
                         let f64_op = self.coerce_for_storage(
                             value_operand,

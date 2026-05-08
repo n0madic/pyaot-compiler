@@ -98,6 +98,7 @@ impl<'a> Lowering<'a> {
                 expr_types: HashMap::with_capacity(256),
                 base_var_types: IndexMap::with_capacity(estimated_vars),
                 refined_class_field_types: IndexMap::with_capacity(class_count),
+                class_fields_with_heap_writes: std::collections::HashSet::new(),
             },
             func_return_types: FuncReturnTypes {
                 inner: IndexMap::with_capacity(func_count),
