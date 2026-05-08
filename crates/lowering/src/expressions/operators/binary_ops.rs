@@ -290,9 +290,37 @@ impl<'a> Lowering<'a> {
         // boxes any primitive operand via `emit_value_slot` first.
         let left_is_class = matches!(left_ty, Type::Class { .. });
         let right_is_class = matches!(right_ty, Type::Class { .. });
+        // Any / HeapAny operands carry a tagged `Value` at runtime (could
+        // be an INT/BOOL tag, NONE, or a heap pointer to FloatObj / Class
+        // instance / etc.). Falling through to a raw `mir::BinOp::Mul`
+        // here treats the tagged-pointer bits as an i64 and emits an
+        // unconditional `imul` — when the operand happens to be a heap
+        // pointer (e.g. `local_grad` from a `zip(_children, _local_grads)`
+        // unpack where `_local_grads: TupleVar[Float]` collapses through
+        // `Any` per slot), the result either overflows the checked
+        // primitive arithmetic (`OverflowError: integer overflow`) or
+        // silently corrupts memory. Route through `rt_obj_*` instead,
+        // which dispatches on the `TypeTagKind` of the boxed Value.
+        // Restrict to `HeapAny` only — `Any` may legitimately carry a
+        // raw `i64` (e.g. wrapper-call return slots whose value is
+        // narrowed to a primitive int by devirt/inlining), and routing
+        // those through `rt_obj_*` would treat the raw int as a tagged
+        // Value and mis-dispatch. `HeapAny` is the conservative
+        // tag-aware case where the value is guaranteed to be in
+        // tagged-Value form (post-§F.7c BigBang).
+        let left_is_any = matches!(left_ty, Type::HeapAny)
+            || matches!(&left_op, mir::Operand::Local(id) if mir_func.locals.get(id).is_some_and(|l| matches!(l.ty, Type::HeapAny)));
+        let right_is_any = matches!(right_ty, Type::HeapAny)
+            || matches!(&right_op, mir::Operand::Local(id) if mir_func.locals.get(id).is_some_and(|l| matches!(l.ty, Type::HeapAny)));
 
-        // Union arithmetic: operands are already boxed pointers — use runtime dispatch
-        if left_is_union || right_is_union || left_is_class || right_is_class {
+        // Union / Any arithmetic: operands are already boxed pointers — use runtime dispatch
+        if left_is_union
+            || right_is_union
+            || left_is_class
+            || right_is_class
+            || left_is_any
+            || right_is_any
+        {
             let obj_func = match op {
                 hir::BinOp::Add => Some(mir::RuntimeFunc::Call(
                     &pyaot_core_defs::runtime_func_def::RT_OBJ_ADD,
@@ -319,12 +347,16 @@ impl<'a> Lowering<'a> {
             };
 
             if let Some(rt_func) = obj_func {
-                let boxed_left = if left_is_union {
+                // Union, Any and HeapAny operands are already in tagged-Value
+                // representation at runtime; only primitive (Int / Bool /
+                // Float / Str / etc.) operands need to be boxed via
+                // `emit_value_slot` before passing to `rt_obj_*`.
+                let boxed_left = if left_is_union || left_is_any {
                     left_op
                 } else {
                     self.emit_value_slot(left_op, &left_ty, mir_func)
                 };
-                let boxed_right = if right_is_union {
+                let boxed_right = if right_is_union || right_is_any {
                     right_op
                 } else {
                     self.emit_value_slot(right_op, &right_ty, mir_func)
@@ -336,28 +368,32 @@ impl<'a> Lowering<'a> {
                 // `runtime/src/ops/dunder_dispatch.rs`) and return a class
                 // instance — the local must be typed widely enough to keep
                 // downstream attribute access correct, so propagate the
-                // input Union into the result type in that case.
-                let union_result_ty =
-                    if union_contains_class(&left_ty) || union_contains_class(&right_ty) {
-                        let mut variants: Vec<Type> = vec![Type::Int, Type::Float];
-                        if let Type::Union(left_variants) = &left_ty {
-                            for v in left_variants {
-                                if matches!(v, Type::Class { .. }) && !variants.contains(v) {
-                                    variants.push(v.clone());
-                                }
+                // input Union into the result type in that case. When an
+                // operand is `Any`/`HeapAny`, the runtime dispatch may
+                // return any boxed Value (including a class instance), so
+                // we widen to `HeapAny` to keep downstream lowering correct.
+                let union_result_ty = if left_is_any || right_is_any {
+                    Type::HeapAny
+                } else if union_contains_class(&left_ty) || union_contains_class(&right_ty) {
+                    let mut variants: Vec<Type> = vec![Type::Int, Type::Float];
+                    if let Type::Union(left_variants) = &left_ty {
+                        for v in left_variants {
+                            if matches!(v, Type::Class { .. }) && !variants.contains(v) {
+                                variants.push(v.clone());
                             }
                         }
-                        if let Type::Union(right_variants) = &right_ty {
-                            for v in right_variants {
-                                if matches!(v, Type::Class { .. }) && !variants.contains(v) {
-                                    variants.push(v.clone());
-                                }
+                    }
+                    if let Type::Union(right_variants) = &right_ty {
+                        for v in right_variants {
+                            if matches!(v, Type::Class { .. }) && !variants.contains(v) {
+                                variants.push(v.clone());
                             }
                         }
-                        Type::Union(variants)
-                    } else {
-                        Type::Union(vec![Type::Int, Type::Float])
-                    };
+                    }
+                    Type::Union(variants)
+                } else {
+                    Type::Union(vec![Type::Int, Type::Float])
+                };
                 let union_result = self.emit_runtime_call(
                     rt_func,
                     vec![boxed_left, boxed_right],

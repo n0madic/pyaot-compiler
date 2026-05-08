@@ -604,6 +604,23 @@ impl<'a> Lowering<'a> {
                     src: value_operand,
                 });
                 mir::Operand::Local(int_dest)
+            } else if matches!(value_ty, Type::HeapAny) {
+                // The MIR operand is already a tagged `Value` from a
+                // runtime dispatch (e.g. `rt_obj_add`). The static
+                // field type narrowed to `Int` because the harvester
+                // skipped `Any`-shaped writes, but the runtime value
+                // could carry any tag. Unwrap as int and re-tag: this
+                // is a round-trip identity when the runtime value is
+                // genuinely INT-tagged (e.g. autograd accumulating
+                // tagged-INT grads); when it isn't, the result is
+                // garbage but at least no high pointer bits leak into
+                // the integer payload to surface as `OverflowError`.
+                let int_dest = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                    dest: int_dest,
+                    src: value_operand,
+                });
+                mir::Operand::Local(int_dest)
             } else {
                 self.coerce_for_storage(value_operand, value_ty, field_ty, mir_func)
             };
@@ -615,7 +632,16 @@ impl<'a> Lowering<'a> {
             return mir::Operand::Local(dest);
         }
         if matches!(field_ty, Type::Bool) {
-            let coerced = self.coerce_for_storage(value_operand, value_ty, field_ty, mir_func);
+            let coerced = if matches!(value_ty, Type::HeapAny) {
+                let bool_dest = self.alloc_and_add_local(Type::Bool, mir_func);
+                self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+                    dest: bool_dest,
+                    src: value_operand,
+                });
+                mir::Operand::Local(bool_dest)
+            } else {
+                self.coerce_for_storage(value_operand, value_ty, field_ty, mir_func)
+            };
             let dest = self.alloc_and_add_local(Type::HeapAny, mir_func);
             self.emit_instruction(mir::InstructionKind::ValueFromBool { dest, src: coerced });
             return mir::Operand::Local(dest);
