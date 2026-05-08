@@ -3126,4 +3126,156 @@ assert len(_slc_taken) == 3, f"runtime-dispatched len: {len(_slc_taken)}"
 
 print("slice/len/index dispatch through Any: PASS")
 
+# =============================================================================
+# Section: ClassRef harvester slot mapping for `__init__` params
+# Regression: closure_scan's `scan_expr_for_calls` previously had no
+# `ExprKind::ClassRef` arm, so positional args of constructor calls
+# (`MyClass(a, b)`) were never observed. When the arm was added but the
+# accumulator slot mapping ignored `self`, the first call-site arg type
+# (e.g. `Float`) was committed as `__init__`'s slot-0 param hint —
+# i.e. `self: Float`. That hint leaked into every method body's
+# `self.<field>` reads via the seed overlay, which made the lowering of
+# expressions like `float(self.data > 0)` think the comparison's LHS
+# was already-Float (Float fast-path), then the outer `float(...)`
+# emitted `IntToFloat` on an f64 operand → cranelift verifier panic
+# `fcvt_from_sint.f64 v_n` with `v_n: f64`.
+#
+# The fix: the resolver returns `(FuncId, harvest_skip)` where
+# `harvest_skip = 1` for ClassRef (skip self) and 0 for FuncRef /
+# Closure / Var. At harvest, args are written into
+# `entry[harvest_skip + i]`, so slot 0 stays `Never` and the commit
+# loop's `params[0].ty.unwrap_or(...)` correctly seeds it with
+# `Class[Self]` (populated by instance-method `self` typing).
+#
+# These cases cover: (a) the canonical autograd reproducer from
+# microgpt, (b) a direct slot-0 pollution probe where a concrete
+# float-shaped constructor arg would visibly corrupt `self.attr`
+# reads if it leaked, (c) two unrelated classes co-existing without
+# cross-pollution, (d) constructors with default-valued tail params.
+# =============================================================================
+
+# (a) Canonical autograd reproducer — the microgpt-style relu method
+#     with `float(self.data > 0)` and constructor invocation in the
+#     same expression. Pre-fix: cranelift panic. Post-fix: real value.
+
+class _ClassRefHarvAutograd:
+    __slots__ = ('data', 'children', 'local_grads')
+    def __init__(self, d, c=(), g=()):
+        self.data = d
+        self.children = c
+        self.local_grads = g
+    def __mul__(self, o):
+        o = o if isinstance(o, _ClassRefHarvAutograd) else _ClassRefHarvAutograd(o)
+        return _ClassRefHarvAutograd(
+            self.data * o.data,
+            (self, o),
+            (o.data, self.data),
+        )
+    def relu(self):
+        # The bug-trigger expression: comparison Float > Int → Bool,
+        # then float(Bool) emits BoolToInt + IntToFloat. With self
+        # leaked as Float, the comparison fast-paths to Float, and the
+        # outer float() retried IntToFloat on an f64 → verifier panic.
+        return _ClassRefHarvAutograd(
+            max(0.0, self.data),
+            (self,),
+            (float(self.data > 0),),
+        )
+
+
+_crh_a = _ClassRefHarvAutograd(2.0)
+_crh_b = _ClassRefHarvAutograd(3.0)
+_crh_c = (_crh_a * _crh_b).relu()
+assert _crh_c.data == 6.0, f"autograd .data: {_crh_c.data}"
+# `local_grads` carries `(o.data, self.data)` from __mul__ then `(float(self.data > 0),)`
+# from relu. relu's branch is taken because (a*b).data == 6.0 > 0.
+assert _crh_c.local_grads == (1.0,), f"autograd .local_grads: {_crh_c.local_grads}"
+assert len(_crh_c.children) == 1, f"autograd .children len: {len(_crh_c.children)}"
+print("ClassRef harvester (autograd): PASS")
+
+
+# (b) Direct slot-0 pollution probe. If the first call-site arg type
+#     leaks into self's hint, then inside a method `self` would be
+#     viewed as a primitive (Float here), and `self.label` (a str
+#     attribute) would either fail to lower or emit wrong code. We
+#     return a string-typed value derived from `self.label` and assert
+#     the runtime value is the original string — only possible if
+#     `self`'s param hint was NOT polluted by the float arg.
+
+class _ClassRefHarvSlotProbe:
+    __slots__ = ('value', 'label')
+    def __init__(self, v, lbl):
+        self.value = v
+        self.label = lbl
+    def describe(self):
+        # If self leaked as Float, `self.label` would be lowered as a
+        # primitive attr access on a Float (no such attr → either
+        # compile error or memory garbage). The assertion below would
+        # fail with a corrupted string.
+        return self.label + "/" + self.label
+
+
+_crh_probe_a = _ClassRefHarvSlotProbe(1.5, "alpha")
+_crh_probe_b = _ClassRefHarvSlotProbe(99.25, "beta")
+assert _crh_probe_a.describe() == "alpha/alpha", f"slot probe a: {_crh_probe_a.describe()}"
+assert _crh_probe_b.describe() == "beta/beta", f"slot probe b: {_crh_probe_b.describe()}"
+print("ClassRef harvester (slot-0 string probe): PASS")
+
+
+# (c) Two distinct classes constructed in the same module — neither
+#     accumulator should leak into the other. Pre-fix the harvester
+#     keyed accumulators by FuncId only, but if slot-0 was being
+#     written, both classes' `self` params would carry whichever first
+#     arg was observed last during the fixpoint scan.
+
+class _ClassRefHarvFloatBag:
+    __slots__ = ('x',)
+    def __init__(self, x):
+        self.x = x
+    def doubled(self):
+        return self.x + self.x
+
+
+class _ClassRefHarvIntBag:
+    __slots__ = ('n',)
+    def __init__(self, n):
+        self.n = n
+    def squared(self):
+        return self.n * self.n
+
+
+_crh_fb = _ClassRefHarvFloatBag(2.5)
+_crh_ib = _ClassRefHarvIntBag(7)
+assert _crh_fb.doubled() == 5.0, f"FloatBag doubled: {_crh_fb.doubled()}"
+assert _crh_ib.squared() == 49, f"IntBag squared: {_crh_ib.squared()}"
+print("ClassRef harvester (no cross-class slot pollution): PASS")
+
+
+# (d) Mixed-arity call sites — some calls pass 1 arg, others 2. The
+#     harvester must accumulate observations only for the slots that
+#     each call actually covers, never reaching back into earlier
+#     param slots. Verifies that non_capture_params iteration commits
+#     only what's been observed and does not cross-pollinate.
+
+class _ClassRefHarvMixedArity:
+    __slots__ = ('head', 'extra')
+    def __init__(self, h, e=0):
+        self.head = h
+        self.extra = e
+    def head_doubled(self):
+        # Only touches `head` so the default-value path for `extra`
+        # is exercised at construction but not at access.
+        return self.head + self.head
+
+
+_crh_ma_one = _ClassRefHarvMixedArity(11)         # uses default for `e`
+_crh_ma_two = _ClassRefHarvMixedArity(13, 7)      # passes both
+assert _crh_ma_one.head_doubled() == 22, f"mixed arity one: {_crh_ma_one.head_doubled()}"
+assert _crh_ma_two.head_doubled() == 26, f"mixed arity two: {_crh_ma_two.head_doubled()}"
+# Direct access on the explicitly-supplied path should not be affected
+# by the harvested type for `extra` either way.
+assert _crh_ma_two.extra == 7, f"mixed arity extra: {_crh_ma_two.extra}"
+print("ClassRef harvester (mixed-arity call sites): PASS")
+
+
 print("All class tests passed!")
