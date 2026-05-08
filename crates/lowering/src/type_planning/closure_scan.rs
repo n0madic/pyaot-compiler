@@ -581,7 +581,12 @@ impl<'a> Lowering<'a> {
         use std::collections::HashMap;
         let mut changed = false;
         // 1. Build `var_to_func`: Bind-target VarIds that hold a Closure or
-        //    FuncRef. Captures are stored so step 2 can offset past them.
+        //    FuncRef. The second tuple field is `harvest_skip` — how many
+        //    leading param slots the call-site `args` do NOT cover. For
+        //    Closure/FuncRef the captures are stored separately on the
+        //    Closure node and don't appear in `Call.args`, so the skip is
+        //    always 0 here. (ClassRef is resolved inline at the call site
+        //    where the skip becomes 1 to step over `self`.)
         let mut var_to_func: HashMap<VarId, (pyaot_utils::FuncId, usize)> = HashMap::new();
         for (_stmt_id, stmt) in hir_module.stmts.iter() {
             let hir::StmtKind::Bind { target, value, .. } = &stmt.kind else {
@@ -592,8 +597,8 @@ impl<'a> Lowering<'a> {
             };
             let value_expr = &hir_module.exprs[*value];
             match &value_expr.kind {
-                hir::ExprKind::Closure { func, captures } => {
-                    var_to_func.insert(*var_id, (*func, captures.len()));
+                hir::ExprKind::Closure { func, .. } => {
+                    var_to_func.insert(*var_id, (*func, 0));
                 }
                 hir::ExprKind::FuncRef(func_id) => {
                     var_to_func.insert(*var_id, (*func_id, 0));
@@ -886,16 +891,30 @@ impl<'a> Lowering<'a> {
     ) {
         if let hir::ExprKind::Call { func, args, .. } = &expr.kind {
             let func_expr = &hir_module.exprs[*func];
+            // The second tuple field `harvest_skip` is how many leading
+            // param slots `args` does NOT cover at this call site:
+            //  - FuncRef / Closure / Var: 0 (captures live on the Closure
+            //    node, not in `Call.args`).
+            //  - ClassRef: 1 (call args map to `__init__` params [1..],
+            //    skipping the implicit `self`).
+            // Without the skip, ClassRef-call observations would be written
+            // into the accumulator at slot 0 — which is `self`'s slot — and
+            // the commit loop's `inferred.get(0)` would carry the user-arg
+            // type into `self`'s param hint, propagating `Float` (or
+            // whatever the first arg's type is) into `self.data` reads via
+            // the seed-overlay and breaking downstream ABIs.
             let resolved = match &func_expr.kind {
-                hir::ExprKind::FuncRef(fid) => Some((*fid, 0)),
-                hir::ExprKind::Closure {
-                    func: fid,
-                    captures,
-                } => Some((*fid, captures.len())),
+                hir::ExprKind::FuncRef(fid) => Some((*fid, 0usize)),
+                hir::ExprKind::Closure { func: fid, .. } => Some((*fid, 0usize)),
                 hir::ExprKind::Var(v) => var_to_func.get(v).copied(),
+                hir::ExprKind::ClassRef(class_id) => hir_module
+                    .class_defs
+                    .get(class_id)
+                    .and_then(|c| c.init_method)
+                    .map(|init_id| (init_id, 1usize)),
                 _ => None,
             };
-            if let Some((fid, capture_offset)) = resolved {
+            if let Some((fid, harvest_skip)) = resolved {
                 let mut positional_tys: Vec<Type> = Vec::with_capacity(args.len());
                 let mut skip = false;
                 for call_arg in args {
@@ -906,31 +925,23 @@ impl<'a> Lowering<'a> {
                             positional_tys.push(ty);
                         }
                         hir::CallArg::Starred(_) => {
-                            // Skip — starred args unpack variably.
                             skip = true;
                             break;
                         }
                     }
                 }
                 if !skip {
-                    // Accumulator is per-positional-arg (0-indexed
-                    // over the NON-capture positional params).
-                    // `capture_offset` is tracked elsewhere via
-                    // `get_closure_capture_types`; at the call site
-                    // only positional args matter.
-                    let _ = capture_offset;
+                    let needed_len = harvest_skip + positional_tys.len();
                     let entry = accumulators
                         .entry(fid)
-                        .or_insert_with(|| vec![Type::Never; positional_tys.len()]);
-                    if entry.len() < positional_tys.len() {
-                        entry.resize(positional_tys.len(), Type::Never);
+                        .or_insert_with(|| vec![Type::Never; needed_len]);
+                    if entry.len() < needed_len {
+                        entry.resize(needed_len, Type::Never);
                     }
                     for (i, ty) in positional_tys.into_iter().enumerate() {
-                        // Join concrete observations; `Any` is a no-op
-                        // so the first concrete arg-type wins over
-                        // later `Any`s.
-                        let existing = std::mem::replace(&mut entry[i], Type::Never);
-                        entry[i] = join_nested_arg_ty(existing, ty);
+                        let slot = harvest_skip + i;
+                        let existing = std::mem::replace(&mut entry[slot], Type::Never);
+                        entry[slot] = join_nested_arg_ty(existing, ty);
                     }
                 }
             }
