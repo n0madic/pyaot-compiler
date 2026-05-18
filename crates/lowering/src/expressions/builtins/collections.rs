@@ -169,7 +169,7 @@ impl<'a> Lowering<'a> {
 
         // After §F.7c BigBang: RT_ITER_NEXT returns tagged Value bits which is
         // exactly what RT_SET_ADD wants — pass through without re-boxing.
-        let elem_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
+        let elem_local = self.alloc_and_add_local(Type::Any, mir_func);
 
         // Push exception frame to catch StopIteration
         let exc_frame_local = self.alloc_and_add_local(Type::Int, mir_func);

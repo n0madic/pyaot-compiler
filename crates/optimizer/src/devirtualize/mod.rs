@@ -9,8 +9,7 @@ mod tests;
 
 use std::collections::HashMap;
 
-use pyaot_mir::{InstructionKind, Module, Operand};
-use pyaot_types::Type;
+use pyaot_mir::{HeapShape, InstructionKind, MirType, Module, Operand};
 use pyaot_utils::{ClassId, FuncId, StringInterner};
 
 use crate::pass::OptimizationPass;
@@ -27,18 +26,26 @@ fn build_vtable_map(module: &Module) -> HashMap<(ClassId, usize), FuncId> {
 }
 
 /// Get the ClassId from an operand's type within a function, if statically known.
+///
+/// Stage F.2: reads `resolved_mir_type()` instead of `local.ty` so the
+/// predicate works on the physical MirType layer. Both `Type::Class` and
+/// `Type::Generic` (user-generic class instance) map to
+/// `MirType::Heap(HeapShape::Class { id, .. })`, so the single match arm
+/// covers both cases.
 fn operand_class_id(operand: &Operand, func: &pyaot_mir::Function) -> Option<ClassId> {
     if let Operand::Local(id) = operand {
-        let ty = func
+        let mir_ty = func
             .locals
             .get(id)
-            .map(|l| &l.ty)
-            .or_else(|| func.params.iter().find(|p| p.id == *id).map(|p| &p.ty))?;
-        match ty {
-            Type::Class { class_id, .. } => return Some(*class_id),
-            // Generic user-class instance: Type::Generic{base, [Int]} etc.
-            Type::Generic { base, .. } => return Some(*base),
-            _ => {}
+            .map(|l| l.resolved_mir_type())
+            .or_else(|| {
+                func.params
+                    .iter()
+                    .find(|p| p.id == *id)
+                    .map(|p| p.resolved_mir_type())
+            })?;
+        if let MirType::Heap(HeapShape::Class { id: class_id, .. }) = mir_ty {
+            return Some(class_id);
         }
     }
     None

@@ -932,7 +932,8 @@ impl<'a> Lowering<'a> {
         let cls_expr = &hir_module.exprs[args[0]];
         let cls_operand = self.lower_expr(cls_expr, hir_module, mir_func)?;
 
-        // Result type is Any (instance pointer) since we don't know the class statically here
+        // Result is a heap-allocated instance pointer — guaranteed tagged (HeapAny).
+        // We don't know the class statically, but we know it's a heap object.
         let result_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_OBJECT_NEW),
             vec![cls_operand],
@@ -1043,45 +1044,24 @@ impl<'a> Lowering<'a> {
                                 .get(&attr_interned)
                                 .cloned()
                                 .unwrap_or(Type::Any);
-                            if matches!(field_ty, Type::Float) {
-                                let f64_op = self.coerce_for_storage(
-                                    value_operand,
-                                    &value_ty,
-                                    &Type::Float,
-                                    mir_func,
-                                );
-                                self.emit_runtime_call(
-                                    mir::RuntimeFunc::Call(
-                                        &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD_F64,
-                                    ),
-                                    vec![
-                                        obj_operand,
-                                        mir::Operand::Constant(mir::Constant::Int(offset as i64)),
-                                        f64_op,
-                                    ],
-                                    Type::None,
-                                    mir_func,
-                                );
-                            } else {
-                                let coerced = self.coerce_for_instance_field_store(
-                                    value_operand,
-                                    &value_ty,
-                                    &field_ty,
-                                    mir_func,
-                                );
-                                self.emit_runtime_call(
-                                    mir::RuntimeFunc::Call(
-                                        &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD,
-                                    ),
-                                    vec![
-                                        obj_operand,
-                                        mir::Operand::Constant(mir::Constant::Int(offset as i64)),
-                                        coerced,
-                                    ],
-                                    Type::None,
-                                    mir_func,
-                                );
-                            }
+                            let coerced = self.coerce_for_instance_field_store(
+                                value_operand,
+                                &value_ty,
+                                &field_ty,
+                                mir_func,
+                            );
+                            self.emit_runtime_call(
+                                mir::RuntimeFunc::Call(
+                                    &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD,
+                                ),
+                                vec![
+                                    obj_operand,
+                                    mir::Operand::Constant(mir::Constant::Int(offset as i64)),
+                                    coerced,
+                                ],
+                                Type::None,
+                                mir_func,
+                            );
 
                             return Ok(mir::Operand::Constant(mir::Constant::None));
                         }

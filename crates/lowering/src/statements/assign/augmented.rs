@@ -50,11 +50,23 @@ impl<'a> Lowering<'a> {
                     .and_then(|info| info.get_dunder_func("__delitem__"));
 
                 if let Some(func_id) = delitem_func {
-                    let dummy_local = self.alloc_and_add_local(Type::Any, mir_func);
+                    // Type::None: __delitem__ always returns None; verifier accepts
+                    // None-returning callee with any pointer-shaped dest.
+                    let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
+                    // Phase 4: box index arg if __delitem__ param[1] is annotated primitive.
+                    let index_ty = self.operand_type(&index_operand, mir_func);
+                    let coerced_index = self.box_dunder_arg_if_needed(
+                        index_operand,
+                        &index_ty,
+                        func_id,
+                        1,
+                        hir_module,
+                        mir_func,
+                    );
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: dummy_local,
                         func: func_id,
-                        args: vec![obj_operand, index_operand],
+                        args: vec![obj_operand, coerced_index],
                     });
                 }
             }

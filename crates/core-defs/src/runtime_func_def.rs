@@ -31,6 +31,54 @@ pub enum ReturnType {
     I32,
 }
 
+/// Stage B.2 of Strong-Typed MIR Rewrite plan v2: MirType semantic
+/// annotation for runtime function parameters/return.
+///
+/// Distinguishes runtime callers' interpretation of an `i64` register —
+/// is it raw bits (e.g., array index), a tagged `Value`, or a heap
+/// pointer? Cranelift sees them all as i64 but the MIR verifier needs
+/// to know the semantic to do per-arg type validation.
+///
+/// Default mapping when not explicitly annotated (see
+/// `infer_mir_semantic`):
+///   * `ParamType::I64`  → `MirSemantic::Raw` (conservative — caller
+///                          may store a raw integer here)
+///   * `ParamType::F64`  → `MirSemantic::Raw`
+///   * `ParamType::I8`   → `MirSemantic::Raw`
+///   * `ParamType::I32`  → `MirSemantic::Raw`
+///
+/// Functions that actually pass tagged Values or heap pointers in their
+/// I64 slots MUST annotate explicitly to enable the verifier check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirSemantic {
+    /// Raw register value matching the Cranelift type class.
+    Raw,
+    /// Tagged `Value` (any of TAG_PTR/TAG_INT/TAG_BOOL/TAG_NONE).
+    Tagged,
+    /// Heap pointer with statically-known shape. Includes the tag
+    /// kind so the verifier knows the concrete heap shape expected.
+    Heap(crate::tag_kinds::TypeTagKind),
+}
+
+impl MirSemantic {
+    /// Default semantic for a given Cranelift register class. Used when
+    /// the RuntimeFuncDef hasn't been annotated yet.
+    pub const fn infer_param(pt: ParamType) -> Self {
+        match pt {
+            ParamType::I64 | ParamType::F64 | ParamType::I8 | ParamType::I32 => MirSemantic::Raw,
+        }
+    }
+
+    /// Default semantic for a return type.
+    pub const fn infer_return(rt: ReturnType) -> Self {
+        match rt {
+            ReturnType::I64 | ReturnType::F64 | ReturnType::I8 | ReturnType::I32 => {
+                MirSemantic::Raw
+            }
+        }
+    }
+}
+
 /// Declarative description of a runtime function's ABI.
 ///
 /// Used by codegen to build a Cranelift signature and emit a call instruction
@@ -39,14 +87,23 @@ pub enum ReturnType {
 pub struct RuntimeFuncDef {
     /// Symbol name for linking (e.g., `"rt_list_append"`)
     pub symbol: &'static str,
-    /// Parameter types in order
+    /// Parameter types in order (Cranelift register class).
     pub params: &'static [ParamType],
-    /// Return type, or `None` for void functions
+    /// Return type, or `None` for void functions.
     pub returns: Option<ReturnType>,
     /// Whether the return value is a GC-managed heap pointer.
     /// When `true`, codegen calls `update_gc_root_if_needed` after storing
     /// the result.
     pub gc_roots_result: bool,
+    /// Stage B.2: explicit per-parameter MirSemantic annotation. Length
+    /// must match `params` when populated. When `None`, the verifier
+    /// uses `MirSemantic::infer_param` (defaults to Raw). Sub-agent
+    /// migration progressively fills this for ~200 definitions to enable
+    /// strict per-arg type validation in the verifier.
+    pub mir_param_semantics: Option<&'static [MirSemantic]>,
+    /// Stage B.2: explicit return MirSemantic annotation. When `None`,
+    /// the verifier uses `MirSemantic::infer_return`.
+    pub mir_return_semantic: Option<MirSemantic>,
 }
 
 // Shorthand aliases for use in static definitions (private, used within this module)
@@ -65,8 +122,27 @@ pub const R_F64: ReturnType = ReturnType::F64;
 pub const R_I8: ReturnType = ReturnType::I8;
 pub const R_I32: ReturnType = ReturnType::I32;
 
+// Stage B.2: well-known Tagged-passing semantic slices. Helpers use these
+// when the "ptr_*" naming convention indicates the param/return is a
+// tagged Value (`*mut Obj` cast to i64). Sub-agent migration can refine
+// per-function later (Heap shape annotations when shape is known).
+const TAGGED_1: &[MirSemantic] = &[MirSemantic::Tagged];
+const TAGGED_2: &[MirSemantic] = &[MirSemantic::Tagged, MirSemantic::Tagged];
+const TAGGED_3: &[MirSemantic] = &[
+    MirSemantic::Tagged,
+    MirSemantic::Tagged,
+    MirSemantic::Tagged,
+];
+const TAGGED_4: &[MirSemantic] = &[
+    MirSemantic::Tagged,
+    MirSemantic::Tagged,
+    MirSemantic::Tagged,
+    MirSemantic::Tagged,
+];
+
 impl RuntimeFuncDef {
-    /// General constructor.
+    /// General constructor (no explicit MIR semantic). Verifier falls back
+    /// to inferring from the Cranelift register class.
     pub const fn new(
         symbol: &'static str,
         params: &'static [ParamType],
@@ -78,17 +154,45 @@ impl RuntimeFuncDef {
             params,
             returns,
             gc_roots_result,
+            mir_param_semantics: None,
+            mir_return_semantic: None,
+        }
+    }
+
+    /// Stage B.2: constructor with explicit MIR semantics for both
+    /// params and return. Use when the function's argument/return
+    /// interpretation differs from the default Cranelift register class
+    /// inference (e.g., I64 register holds a Tagged Value rather than
+    /// raw integer).
+    pub const fn new_typed(
+        symbol: &'static str,
+        params: &'static [ParamType],
+        returns: Option<ReturnType>,
+        gc_roots_result: bool,
+        mir_param_semantics: &'static [MirSemantic],
+        mir_return_semantic: Option<MirSemantic>,
+    ) -> Self {
+        Self {
+            symbol,
+            params,
+            returns,
+            gc_roots_result,
+            mir_param_semantics: Some(mir_param_semantics),
+            mir_return_semantic,
         }
     }
 
     /// Unary: one I64 param, returns I64, GC-tracked.
-    /// Typical for `(obj) -> obj` functions.
+    /// Typical for `(obj) -> obj` functions — both param and return
+    /// carry a Tagged Value.
     pub const fn ptr_unary(symbol: &'static str) -> Self {
         Self {
             symbol,
             params: &[PI64],
             returns: Some(RI64),
             gc_roots_result: true,
+            mir_param_semantics: Some(TAGGED_1),
+            mir_return_semantic: Some(MirSemantic::Tagged),
         }
     }
 
@@ -100,6 +204,8 @@ impl RuntimeFuncDef {
             params: &[PI64, PI64],
             returns: Some(RI64),
             gc_roots_result: true,
+            mir_param_semantics: Some(TAGGED_2),
+            mir_return_semantic: Some(MirSemantic::Tagged),
         }
     }
 
@@ -110,6 +216,8 @@ impl RuntimeFuncDef {
             params: &[PI64, PI64, PI64],
             returns: Some(RI64),
             gc_roots_result: true,
+            mir_param_semantics: Some(TAGGED_3),
+            mir_return_semantic: Some(MirSemantic::Tagged),
         }
     }
 
@@ -120,6 +228,8 @@ impl RuntimeFuncDef {
             params: &[PI64, PI64, PI64, PI64],
             returns: Some(RI64),
             gc_roots_result: true,
+            mir_param_semantics: Some(TAGGED_4),
+            mir_return_semantic: Some(MirSemantic::Tagged),
         }
     }
 
@@ -130,17 +240,21 @@ impl RuntimeFuncDef {
             params,
             returns: None,
             gc_roots_result: false,
+            mir_param_semantics: None,
+            mir_return_semantic: None,
         }
     }
 
     /// Unary returning raw i64 (not GC-tracked).
-    /// Typical for `len()`, hash, etc.
+    /// Typical for `len()`, hash, etc. — param is Tagged Value, return is Raw.
     pub const fn unary_to_i64(symbol: &'static str) -> Self {
         Self {
             symbol,
             params: &[PI64],
             returns: Some(RI64),
             gc_roots_result: false,
+            mir_param_semantics: Some(TAGGED_1),
+            mir_return_semantic: Some(MirSemantic::Raw),
         }
     }
 
@@ -151,6 +265,8 @@ impl RuntimeFuncDef {
             params: &[PI64, PI64],
             returns: Some(RI64),
             gc_roots_result: false,
+            mir_param_semantics: Some(TAGGED_2),
+            mir_return_semantic: Some(MirSemantic::Raw),
         }
     }
 
@@ -161,6 +277,8 @@ impl RuntimeFuncDef {
             params: &[PI64],
             returns: Some(RI8),
             gc_roots_result: false,
+            mir_param_semantics: Some(TAGGED_1),
+            mir_return_semantic: Some(MirSemantic::Raw),
         }
     }
 
@@ -171,7 +289,34 @@ impl RuntimeFuncDef {
             params: &[PI64, PI64],
             returns: Some(RI8),
             gc_roots_result: false,
+            mir_param_semantics: Some(TAGGED_2),
+            mir_return_semantic: Some(MirSemantic::Raw),
         }
+    }
+
+    /// Stage B.2 helper: lookup the semantic for parameter `idx`,
+    /// falling back to `MirSemantic::infer_param` when not explicitly
+    /// annotated.
+    pub fn param_semantic(&self, idx: usize) -> MirSemantic {
+        if let Some(sems) = self.mir_param_semantics {
+            if idx < sems.len() {
+                return sems[idx];
+            }
+        }
+        // Fallback: infer from Cranelift register class.
+        if idx < self.params.len() {
+            MirSemantic::infer_param(self.params[idx])
+        } else {
+            MirSemantic::Raw
+        }
+    }
+
+    /// Stage B.2 helper: resolved return semantic with fallback.
+    pub fn return_semantic(&self) -> Option<MirSemantic> {
+        if let Some(s) = self.mir_return_semantic {
+            return Some(s);
+        }
+        self.returns.map(MirSemantic::infer_return)
     }
 }
 
@@ -524,8 +669,9 @@ pub static RT_CALL_WITH_CAPTURES_AND_ARGS: RuntimeFuncDef = RuntimeFuncDef {
     params: &[PI64, PI64, PI64],
     returns: Some(RI64),
     gc_roots_result: false,
+    mir_param_semantics: None,
+    mir_return_semantic: None,
 };
-
 // ===== Bytes operations =====
 
 /// rt_make_bytes_zero(len: i64) -> *mut Obj
@@ -988,9 +1134,30 @@ pub static RT_ZIP_NEXT: RuntimeFuncDef = RuntimeFuncDef::ptr_unary("rt_zip_next"
 pub static RT_MAP_NEW: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_map_new");
 /// rt_filter_new(func_ptr: i64, iter: *mut Obj, captures: *mut Obj, capture_count: i64) -> *mut Obj
 pub static RT_FILTER_NEW: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_filter_new");
+/// Phase 4+ Extension E2a: parallel tagged-delivery variants. Same
+/// signature as the legacy `rt_*_new`, but the runtime stores
+/// `IteratorKind::MapTagged` / `FilterTagged` and the dispatcher passes
+/// both the input element and the callback's return value through
+/// verbatim. Lowering routes to these when the callback callee is
+/// `phase4_safe` (its prologue does its own UnboxValue and its return
+/// path goes through BoxValue per Phase 4 Commit 4).
+/// rt_map_new_tagged(func_ptr: i64, iter: *mut Obj, captures: *mut Obj, capture_count: i64) -> *mut Obj
+pub static RT_MAP_NEW_TAGGED: RuntimeFuncDef = RuntimeFuncDef::ptr_quaternary("rt_map_new_tagged");
+/// rt_filter_new_tagged(func_ptr: i64, iter: *mut Obj, captures: *mut Obj, capture_count: i64) -> *mut Obj
+pub static RT_FILTER_NEW_TAGGED: RuntimeFuncDef =
+    RuntimeFuncDef::ptr_quaternary("rt_filter_new_tagged");
 /// rt_reduce(func_ptr, iter, initial, has_initial, captures, capture_count) -> *mut Obj
 pub static RT_REDUCE: RuntimeFuncDef = RuntimeFuncDef::new(
     "rt_reduce",
+    &[PI64, PI64, PI64, PI64, PI64, PI64],
+    Some(RI64),
+    true,
+);
+/// Phase 4+ Extension E2b: parallel tagged-delivery variant of `rt_reduce`.
+/// Passes accumulator + element to callback verbatim; callback's prologue
+/// performs its own UnboxValue, and its return goes through BoxValue.
+pub static RT_REDUCE_TAGGED: RuntimeFuncDef = RuntimeFuncDef::new(
+    "rt_reduce_tagged",
     &[PI64, PI64, PI64, PI64, PI64, PI64],
     Some(RI64),
     true,
@@ -1121,23 +1288,6 @@ pub static RT_INSTANCE_GET_FIELD: RuntimeFuncDef =
 /// rt_instance_set_field(inst: *mut Obj, offset: i64, value: i64) -> void
 pub static RT_INSTANCE_SET_FIELD: RuntimeFuncDef =
     RuntimeFuncDef::void("rt_instance_set_field", &[PI64, PI64, PI64]);
-/// rt_instance_get_field_f64(inst: *mut Obj, offset: i64) -> f64
-/// Reads a raw f64 from a float instance field (no FloatObj heap-boxing).
-pub static RT_INSTANCE_GET_FIELD_F64: RuntimeFuncDef = RuntimeFuncDef::new(
-    "rt_instance_get_field_f64",
-    &[PI64, PI64],
-    Some(RF64),
-    false,
-);
-/// rt_instance_set_field_f64(inst: *mut Obj, offset: i64, value: f64) -> void
-/// Writes a raw f64 to a float instance field (no FloatObj heap-boxing).
-pub static RT_INSTANCE_SET_FIELD_F64: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_instance_set_field_f64", &[PI64, PI64, PF64]);
-/// rt_register_class_raw_field_mask(class_id: u8, mask: i64) -> void
-/// Registers a per-class bitmask of raw (non-heap) fields so the GC can skip them.
-/// Bit k = 1 → field k stores raw f64 bits; the GC must not dereference it.
-pub static RT_REGISTER_CLASS_RAW_FIELD_MASK: RuntimeFuncDef =
-    RuntimeFuncDef::void("rt_register_class_raw_field_mask", &[PI8, PI64]);
 /// rt_get_type_tag(obj: *mut Obj) -> i64
 pub static RT_GET_TYPE_TAG: RuntimeFuncDef = RuntimeFuncDef::unary_to_i64("rt_get_type_tag");
 /// rt_isinstance_class(obj: *mut Obj, class_id: i64) -> i8

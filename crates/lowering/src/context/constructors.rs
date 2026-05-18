@@ -42,6 +42,7 @@ impl<'a> Lowering<'a> {
                 dynamic_closure_vars: IndexSet::new(),
                 dynamic_closure_return_types: IndexMap::with_capacity(8),
                 closure_capture_types: IndexMap::with_capacity(func_count / 4 + 1),
+                closure_capture_mir_types: IndexMap::with_capacity(func_count / 4 + 1),
                 wrapper_func_ids: IndexSet::with_capacity(8),
                 func_ptr_params: IndexSet::with_capacity(8),
                 varargs_params: IndexSet::with_capacity(4),
@@ -98,7 +99,7 @@ impl<'a> Lowering<'a> {
                 expr_types: HashMap::with_capacity(256),
                 base_var_types: IndexMap::with_capacity(estimated_vars),
                 refined_class_field_types: IndexMap::with_capacity(class_count),
-                class_fields_with_heap_writes: std::collections::HashSet::new(),
+                phase4_unsafe_funcs: IndexSet::with_capacity(8),
             },
             func_return_types: FuncReturnTypes {
                 inner: IndexMap::with_capacity(func_count),

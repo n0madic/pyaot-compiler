@@ -71,7 +71,7 @@ impl<'a> Lowering<'a> {
         // them — corrupting heap pointers (a Class instance read via
         // `self.data` where `data: Union[Float, V]` would crash with garbage).
         if matches!(op, hir::UnOp::Neg | hir::UnOp::Pos | hir::UnOp::Invert)
-            && matches!(&operand_ty, Type::Union(_) | Type::Any | Type::HeapAny)
+            && matches!(&operand_ty, Type::Union(_) | Type::Any)
         {
             let runtime_func = match op {
                 hir::UnOp::Neg => &pyaot_core_defs::runtime_func_def::RT_OBJ_NEG,
@@ -79,7 +79,7 @@ impl<'a> Lowering<'a> {
                 hir::UnOp::Invert => &pyaot_core_defs::runtime_func_def::RT_OBJ_INVERT,
                 _ => unreachable!(),
             };
-            let result_local = self.emit_runtime_call(
+            let result_local = self.emit_tagged_runtime_call(
                 mir::RuntimeFunc::Call(runtime_func),
                 vec![operand_op],
                 operand_ty.clone(),

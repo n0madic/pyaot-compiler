@@ -2,8 +2,8 @@
 
 use indexmap::IndexMap;
 use pyaot_mir::{
-    BasicBlock, Constant, Function, Instruction, InstructionKind, Local, Module, Operand,
-    Terminator, VtableEntry, VtableInfo,
+    BasicBlock, Constant, Function, FunctionKind, Instruction, InstructionKind, Local, Module,
+    Operand, Terminator, VtableEntry, VtableInfo,
 };
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, ClassId, FuncId, LocalId, StringInterner};
@@ -21,6 +21,8 @@ fn make_local(id: u32, ty: Type) -> Local {
         name: None,
         ty,
         is_gc_root: false,
+        abi_immutable: false,
+        mir_ty: None,
     }
 }
 
@@ -58,6 +60,7 @@ fn make_module_with_vtable(
 
     let caller = Function {
         id: caller_id,
+        kind: FunctionKind::Regular,
         name: "caller".to_string(),
         params: caller_params,
         return_type: Type::None,
@@ -69,7 +72,10 @@ fn make_module_with_vtable(
         is_generic_template: false,
         typevar_params: Vec::new(),
         wrapper_fn_ptr_capture_index: None,
+        phase4_return_abi_flipped: false,
+        phase4_original_return_type: None,
         dom_tree_cache: std::cell::OnceCell::new(),
+        signature: None,
     };
 
     // Create a stub callee function
@@ -112,6 +118,8 @@ fn test_devirtualize_known_class() {
         name: None,
         ty: class_type.clone(),
         is_gc_root: true,
+        abi_immutable: false,
+        mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
 
@@ -165,6 +173,8 @@ fn test_skip_unknown_type() {
         name: None,
         ty: Type::Any,
         is_gc_root: true,
+        abi_immutable: false,
+        mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
 
@@ -208,6 +218,8 @@ fn test_skip_missing_vtable_slot() {
         name: None,
         ty: class_type.clone(),
         is_gc_root: true,
+        abi_immutable: false,
+        mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
 
@@ -252,6 +264,8 @@ fn test_devirtualize_obj_in_params() {
         name: None,
         ty: class_type.clone(),
         is_gc_root: true,
+        abi_immutable: false,
+        mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
 
@@ -324,6 +338,8 @@ fn test_devirtualize_generic_user_class_receiver() {
         name: None,
         ty: receiver_type.clone(),
         is_gc_root: true,
+        abi_immutable: false,
+        mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
 
@@ -387,6 +403,8 @@ fn test_devirtualize_generic_builtin_no_vtable() {
         name: None,
         ty: receiver_type,
         is_gc_root: true,
+        abi_immutable: false,
+        mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
 

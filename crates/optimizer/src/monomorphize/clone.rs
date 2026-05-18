@@ -40,6 +40,12 @@ pub fn specialize_function(
                 name: p.name,
                 ty: new_ty.clone(),
                 is_gc_root: new_ty.is_heap(),
+                // Preserve ABI immutability from template: monomorphization
+                // must not relax the prologue-unbox contract.
+                abi_immutable: p.abi_immutable,
+                // Phase 3e: derive mir_ty from substituted type at register
+                // level so monomorphized params have precise MirType.
+                mir_ty: Some(pyaot_mir::type_to_mir_type_register(&new_ty)),
             }
         })
         .collect();
@@ -49,6 +55,9 @@ pub fn specialize_function(
     for (_, local) in &template.locals {
         let new_id = remapper.remap_local(local.id);
         let new_ty = local.ty.substitute(subst);
+        // Phase 3e: derive mir_ty from substituted ty at register level.
+        // Was `mir_ty: None` which forced fallback translation.
+        let new_mir_ty = pyaot_mir::type_to_mir_type_register(&new_ty);
         locals.insert(
             new_id,
             Local {
@@ -56,6 +65,8 @@ pub fn specialize_function(
                 name: local.name,
                 ty: new_ty.clone(),
                 is_gc_root: new_ty.is_heap(),
+                abi_immutable: local.abi_immutable,
+                mir_ty: Some(new_mir_ty),
             },
         );
     }
@@ -76,6 +87,9 @@ pub fn specialize_function(
 
     Function {
         id: fresh_id,
+        // Inherit kind from template: a specialised generic still belongs to
+        // the same conceptual category (lambda / class method / etc.).
+        kind: template.kind,
         name: fresh_name,
         params,
         return_type,
@@ -89,7 +103,10 @@ pub fn specialize_function(
         // Specialised generic templates lose their wrapper status too;
         // wrapper-mode specialisations override this in `specialize_wrapper`.
         wrapper_fn_ptr_capture_index: None,
+        phase4_return_abi_flipped: false,
+        phase4_original_return_type: None,
         dom_tree_cache: std::cell::OnceCell::new(),
+        signature: None,
     }
 }
 
@@ -134,13 +151,22 @@ pub fn specialize_wrapper(
                     name: p.name,
                     ty: captured_signature.clone(),
                     is_gc_root: false,
+                    abi_immutable: false,
+                    // Wrapper-specialization mir_ty deliberately None: the
+                    // captured_signature is a Function type whose precise
+                    // FuncPtr MirType is computed by Phase 3e's verifier
+                    // separately. Setting it explicitly here broke
+                    // decorator_factory_optimized.
+                    mir_ty: None,
                 }
             } else {
                 Local {
                     id: new_id,
                     name: p.name,
                     ty: p.ty.clone(),
-                    is_gc_root: p.ty.is_heap(),
+                    is_gc_root: p.computed_is_gc_root(),
+                    abi_immutable: false,
+                    mir_ty: None,
                 }
             }
         })
@@ -169,6 +195,10 @@ pub fn specialize_wrapper(
                 name: local.name,
                 ty,
                 is_gc_root,
+                abi_immutable: local.abi_immutable,
+                // Wrapper-specialization: keep mir_ty None to preserve
+                // decorator_factory_optimized behavior.
+                mir_ty: None,
             },
         );
     }
@@ -191,6 +221,9 @@ pub fn specialize_wrapper(
 
     Function {
         id: fresh_id,
+        // Inherit kind from template: a wrapper specialisation is still a
+        // lambda / regular / whatever the template was.
+        kind: template.kind,
         name: fresh_name,
         params,
         return_type,
@@ -202,7 +235,10 @@ pub fn specialize_wrapper(
         is_generic_template: false,
         typevar_params: Vec::new(),
         wrapper_fn_ptr_capture_index: None,
+        phase4_return_abi_flipped: false,
+        phase4_original_return_type: None,
         dom_tree_cache: std::cell::OnceCell::new(),
+        signature: None,
     }
 }
 

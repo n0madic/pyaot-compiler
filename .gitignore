@@ -42,3 +42,6 @@ examples/*_out
 IMPROVEMENT_PLAN.md
 .claude/commands
 .claude/feature_contracts
+# Test compilation artifacts (output of pyaot examples/*.py -o examples/*)
+examples/test_*
+!examples/test_*.py

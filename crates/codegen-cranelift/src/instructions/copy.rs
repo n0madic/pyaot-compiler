@@ -10,7 +10,7 @@ use pyaot_mir::{self as mir, Operand};
 use pyaot_types::Type;
 
 use crate::context::CodegenContext;
-use crate::utils::{declare_runtime_function, load_operand, type_to_cranelift};
+use crate::utils::{declare_runtime_function, load_operand, mir_type_to_cranelift};
 
 /// Compile a Copy instruction with type coercion between MIR types.
 pub(crate) fn compile_copy(
@@ -21,20 +21,32 @@ pub(crate) fn compile_copy(
 ) -> Result<()> {
     let src_val = load_operand(builder, src, ctx.symbols.var_map);
 
-    let src_ty = match src {
-        Operand::Local(local_id) => ctx.symbols.locals.get(local_id).map(|l| &l.ty),
-        Operand::Constant(c) => Some(match c {
-            mir::Constant::Int(_) => &Type::Int,
-            mir::Constant::Float(_) => &Type::Float,
-            mir::Constant::Bool(_) => &Type::Bool,
-            mir::Constant::None => &Type::None,
-            _ => &Type::Int,
-        }),
+    // Stage C.3 step 3: src/dest Cranelift register class derived from
+    // resolved MirType so type coercion respects the actual declared
+    // var widths (which now follow mir_ty per Stage C.3 step 1).
+    let src_cl_ty = match src {
+        Operand::Local(local_id) => ctx
+            .symbols
+            .locals
+            .get(local_id)
+            .map(|l| mir_type_to_cranelift(&l.resolved_mir_type()))
+            .unwrap_or(cltypes::I64),
+        Operand::Constant(c) => match c {
+            mir::Constant::Int(_) => cltypes::I64,
+            mir::Constant::Float(_) => cltypes::F64,
+            mir::Constant::Bool(_) => cltypes::I8,
+            mir::Constant::None => cltypes::I8,
+            _ => cltypes::I64,
+        },
     };
-    let dest_ty = ctx.symbols.locals.get(dest).map(|l| &l.ty);
-
-    let src_cl_ty = src_ty.map(type_to_cranelift).unwrap_or(cltypes::I64);
-    let dest_cl_ty = dest_ty.map(type_to_cranelift).unwrap_or(cltypes::I64);
+    let dest_cl_ty = ctx
+        .symbols
+        .locals
+        .get(dest)
+        .map(|l| mir_type_to_cranelift(&l.resolved_mir_type()))
+        .unwrap_or(cltypes::I64);
+    // Suppress unused warning for kept-for-context Type import.
+    let _ = Type::Int;
 
     let result_val = match (src_cl_ty, dest_cl_ty) {
         (t1, t2) if t1 == t2 => src_val,
@@ -71,8 +83,8 @@ pub(crate) fn compile_copy(
             {
                 if src_cl_ty != dest_cl_ty {
                     eprintln!(
-                        "Warning: Unhandled type conversion {:?} -> {:?} (src: {:?}, dest: {:?})",
-                        src_cl_ty, dest_cl_ty, src_ty, dest_ty
+                        "Warning: Unhandled type conversion {:?} -> {:?}",
+                        src_cl_ty, dest_cl_ty
                     );
                 }
             }

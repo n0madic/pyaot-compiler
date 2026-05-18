@@ -137,8 +137,6 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
         monomorphic_callers.into_iter().map(|id| (id, 0)).collect();
 
     // Accumulated new specializations to add to module after the worklist drains.
-    let mut new_functions: Vec<Function> = Vec::new();
-
     let mut changed = false;
 
     // Process callers; re-enqueue any caller where we made progress so chained
@@ -171,11 +169,17 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
                     None => continue,
                 };
 
-            // If a fresh specialization was created, push it to new_functions
-            // and to the worklist so its own internal template calls resolve.
+            // If a fresh specialization was created, add it to the module
+            // immediately (NOT to a deferred new_functions Vec) so the
+            // worklist's next pop can find this spec via
+            // `module.functions.get(&spec_id)` and chain-specialize any
+            // template calls in its body. Pushing to a deferred Vec — the
+            // prior shape — caused `collect_template_call_patches` to
+            // return empty for the popped spec id (caller not found),
+            // leaving the inner template calls unspecialized. Phase 3a-4.
             if let Some(spec_func) = spec_id_opt {
                 let spec_id = spec_func.id;
-                new_functions.push(spec_func);
+                module.add_function(spec_func);
                 worklist.push_back((spec_id, depth + 1));
                 changed = true;
             }
@@ -190,17 +194,13 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
             // The specialization's concrete return type — used both to rewrite
             // the call-site `func` and to retype the caller's `dest` local so
             // chained method calls on that local can be specialized in the
-            // same caller pass.
-            let spec_return_type = new_functions
-                .iter()
-                .find(|f| f.id == spec_id)
+            // same caller pass. Specs are now in `module.functions`
+            // immediately (Phase 3a-4 fix); the prior fallback through a
+            // deferred `new_functions` Vec is gone.
+            let spec_return_type = module
+                .functions
+                .get(&spec_id)
                 .map(|f| f.return_type.clone())
-                .or_else(|| {
-                    module
-                        .functions
-                        .get(&spec_id)
-                        .map(|f| f.return_type.clone())
-                })
                 .unwrap_or(Type::Any);
 
             // Rewrite the call site in the caller and update the dest local's type.
@@ -216,7 +216,15 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
                 *func = spec_id;
                 if let Some(local) = caller.locals.get_mut(&dest_local) {
                     if local.ty.contains_var() || local.ty != spec_return_type {
-                        local.ty = spec_return_type;
+                        local.ty = spec_return_type.clone();
+                        // Phase 3a-1 (Strong-Typed MIR): keep parallel
+                        // mir_ty in sync with the narrowed ty. Without
+                        // this, the lowering-emitted mir_ty (originally
+                        // a Var translation) persists and downstream
+                        // passes / verifier see a stale Var-typed slot
+                        // even after specialization.
+                        local.mir_ty =
+                            Some(pyaot_mir::type_to_mir_type_register(&spec_return_type));
                         progress = true;
                     }
                 }
@@ -232,11 +240,6 @@ fn monomorphize_module(module: &mut Module, interner: &mut StringInterner) -> bo
             // patches that were skipped (arg type was Var on the previous pass).
             worklist.push_back((caller_id, depth));
         }
-    }
-
-    // Insert all new specializations.
-    for func in new_functions {
-        module.add_function(func);
     }
 
     // --- Post-pass: purge zero-caller templates ---
@@ -499,9 +502,10 @@ fn find_funcaddr_source(
     for i in (0..call_idx).rev() {
         let inst = &instructions[i];
         match &inst.kind {
-            InstructionKind::ValueFromInt {
+            InstructionKind::BoxValue {
                 dest,
                 src: Operand::Local(s),
+                ..
             } if *dest == needle => {
                 needle = *s;
             }
@@ -546,10 +550,8 @@ fn writes_local(kind: &InstructionKind, target: pyaot_utils::LocalId) -> bool {
         | K::IntToFloat { dest, .. }
         | K::FloatBits { dest, .. }
         | K::IntBitsToFloat { dest, .. }
-        | K::ValueFromInt { dest, .. }
-        | K::UnwrapValueInt { dest, .. }
-        | K::ValueFromBool { dest, .. }
-        | K::UnwrapValueBool { dest, .. }
+        | K::BoxValue { dest, .. }
+        | K::UnboxValue { dest, .. }
         | K::FloatAbs { dest, .. }
         | K::ExcGetType { dest, .. }
         | K::ExcHasException { dest, .. }
@@ -679,7 +681,7 @@ mod tests {
     fn make_block_with_funcaddr_chain() -> Vec<MirInstruction> {
         // Mirrors lower_wrapper_call:118-127 layout:
         //   raw    = FuncAddr { func: 7 }
-        //   tagged = ValueFromInt { src: raw }
+        //   tagged = BoxValue { src: raw, src_type: Int }
         //   _      = CallDirect { args: [tagged, ...] }
         vec![
             MirInstruction {
@@ -690,9 +692,10 @@ mod tests {
                 span: None,
             },
             MirInstruction {
-                kind: InstructionKind::ValueFromInt {
+                kind: InstructionKind::BoxValue {
                     dest: LocalId::from(11u32),
                     src: Operand::Local(LocalId::from(10u32)),
+                    src_type: Type::Int,
                 },
                 span: None,
             },
@@ -708,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn backward_trace_finds_funcaddr_through_value_from_int() {
+    fn backward_trace_finds_funcaddr_through_box_value() {
         let instrs = make_block_with_funcaddr_chain();
         let captured = find_funcaddr_source(&instrs, 2, LocalId::from(11u32));
         assert_eq!(captured, Some(FuncId::from(7u32)));
@@ -793,8 +796,10 @@ mod tests {
             vec![Local {
                 id: LocalId::from(0u32),
                 name: None,
-                ty: Type::HeapAny,
+                ty: Type::Any,
                 is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
             }],
             Type::Any,
             None,
@@ -827,9 +832,10 @@ mod tests {
                         span: None,
                     },
                     MirInstruction {
-                        kind: InstructionKind::ValueFromInt {
+                        kind: InstructionKind::BoxValue {
                             dest: LocalId::from(2u32),
                             src: Operand::Local(LocalId::from(1u32)),
+                            src_type: Type::Int,
                         },
                         span: None,
                     },
@@ -878,5 +884,181 @@ mod tests {
         // Just to silence unused-import warnings on these helper types.
         let _ = RuntimeFunc::Call(&RT_CALL_WITH_TUPLE_ARGS);
         let _: BlockId = BlockId::from(0u32);
+    }
+
+    /// Phase 3a-4 regression: when a freshly-created specialization's
+    /// body contains a `CallDirect` to another generic template, the
+    /// monomorphizer must chain-specialize that inner call too. The
+    /// bug was that fresh specs were accumulated in a deferred Vec and
+    /// only inserted into `module.functions` AFTER the worklist drained;
+    /// `collect_template_call_patches(module, fresh_spec_id, ...)`
+    /// returned empty because the caller wasn't found in module.
+    ///
+    /// Repro pattern:
+    ///   template_outer(v: T) -> T:
+    ///       return template_inner(v)
+    ///   template_inner(v: T) -> T:
+    ///       return v
+    ///   caller():
+    ///       x: int = template_outer(42)  // triggers chain spec
+    ///
+    /// After monomorphize_module both `template_outer@<Int>` AND
+    /// `template_inner@<Int>` must exist and the inner call inside the
+    /// outer spec must point at `template_inner@<Int>` (not the
+    /// template).
+    #[test]
+    fn chain_spec_through_nested_template_call() {
+        let mut module = Module::new();
+        let mut interner = pyaot_utils::StringInterner::new();
+        let var_t = interner.intern("T");
+        let var_ty = Type::Var(var_t);
+
+        // template_inner(v: T) -> T { return v }
+        let inner_id = FuncId::from(10u32);
+        let mut inner = MirFunction::new(
+            inner_id,
+            "template_inner".to_string(),
+            vec![Local {
+                id: LocalId::from(0u32),
+                name: None,
+                ty: var_ty.clone(),
+                is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
+            }],
+            var_ty.clone(),
+            None,
+        );
+        inner.is_generic_template = true;
+        inner.typevar_params = vec![var_t];
+        let entry = inner.entry_block;
+        inner.blocks.insert(
+            entry,
+            BasicBlock {
+                id: entry,
+                instructions: vec![],
+                terminator: Terminator::Return(Some(Operand::Local(LocalId::from(0u32)))),
+            },
+        );
+        module.add_function(inner);
+
+        // template_outer(v: T) -> T { return template_inner(v) }
+        let outer_id = FuncId::from(11u32);
+        let mut outer = MirFunction::new(
+            outer_id,
+            "template_outer".to_string(),
+            vec![Local {
+                id: LocalId::from(0u32),
+                name: None,
+                ty: var_ty.clone(),
+                is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
+            }],
+            var_ty.clone(),
+            None,
+        );
+        outer.is_generic_template = true;
+        outer.typevar_params = vec![var_t];
+        let inner_dest = LocalId::from(1u32);
+        outer.locals.insert(
+            inner_dest,
+            Local {
+                id: inner_dest,
+                name: None,
+                ty: var_ty.clone(),
+                is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
+            },
+        );
+        let entry = outer.entry_block;
+        outer.blocks.insert(
+            entry,
+            BasicBlock {
+                id: entry,
+                instructions: vec![MirInstruction {
+                    kind: InstructionKind::CallDirect {
+                        dest: inner_dest,
+                        func: inner_id,
+                        args: vec![Operand::Local(LocalId::from(0u32))],
+                    },
+                    span: None,
+                }],
+                terminator: Terminator::Return(Some(Operand::Local(inner_dest))),
+            },
+        );
+        module.add_function(outer);
+
+        // caller(): x = template_outer(42)
+        let caller_id = FuncId::from(12u32);
+        let mut caller = MirFunction::new(
+            caller_id,
+            "caller".to_string(),
+            Vec::new(),
+            Type::None,
+            None,
+        );
+        let dest = LocalId::from(0u32);
+        caller.locals.insert(
+            dest,
+            Local {
+                id: dest,
+                name: None,
+                ty: Type::Int,
+                is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
+            },
+        );
+        let entry = caller.entry_block;
+        caller.blocks.insert(
+            entry,
+            BasicBlock {
+                id: entry,
+                instructions: vec![MirInstruction {
+                    kind: InstructionKind::CallDirect {
+                        dest,
+                        func: outer_id,
+                        args: vec![Operand::Constant(Constant::Int(42))],
+                    },
+                    span: None,
+                }],
+                terminator: Terminator::Return(None),
+            },
+        );
+        module.add_function(caller);
+
+        monomorphize_module(&mut module, &mut interner);
+
+        // After mono, both templates must have an Int specialization, AND
+        // the inner call inside outer@<Int> must point at inner@<Int> (a
+        // FuncId distinct from `inner_id` — the original template).
+        let outer_spec = module
+            .functions
+            .values()
+            .find(|f| f.name.starts_with("template_outer@<"))
+            .expect("template_outer was not specialised");
+        let inner_call_target = outer_spec
+            .blocks
+            .values()
+            .flat_map(|b| b.instructions.iter())
+            .find_map(|i| match &i.kind {
+                InstructionKind::CallDirect { func, .. } => Some(*func),
+                _ => None,
+            })
+            .expect("outer spec missing inner CallDirect");
+        assert_ne!(
+            inner_call_target, inner_id,
+            "outer@<Int> still calls the template, chain-spec did not fire"
+        );
+        let inner_spec_present = module
+            .functions
+            .values()
+            .any(|f| f.name.starts_with("template_inner@<"));
+        assert!(
+            inner_spec_present,
+            "template_inner was not chain-specialised"
+        );
     }
 }

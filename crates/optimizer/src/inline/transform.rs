@@ -197,6 +197,11 @@ fn perform_inline(
             name: param.name,
             ty: param.ty.clone(),
             is_gc_root: param.is_gc_root,
+            abi_immutable: false,
+            // Phase 3e: preserve mir_ty from the inlined callee param so
+            // body locals keep their precise MirType signature instead of
+            // falling back to register-level translation of `ty`.
+            mir_ty: param.mir_ty.clone(),
         };
         caller.locals.insert(new_param_id, new_local);
 
@@ -218,6 +223,10 @@ fn perform_inline(
             name: local.name,
             ty: local.ty.clone(),
             is_gc_root: local.is_gc_root,
+            abi_immutable: false,
+            // Phase 3e: preserve mir_ty from the inlined callee local so
+            // body operations keep their precise MirType signature.
+            mir_ty: local.mir_ty.clone(),
         };
         caller.locals.insert(new_id, new_local);
     }

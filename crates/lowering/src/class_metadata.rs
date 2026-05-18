@@ -14,7 +14,7 @@ use crate::{LoweredClassInfo, Lowering};
 
 impl<'a> Lowering<'a> {
     fn should_refine_field_seed_type(storage_ty: &Type) -> bool {
-        matches!(storage_ty, Type::Any | Type::HeapAny)
+        matches!(storage_ty, Type::Any)
             || storage_ty
                 .tuple_elems()
                 .is_some_and(|elems| elems.is_empty())
@@ -279,7 +279,7 @@ impl<'a> Lowering<'a> {
         }
 
         for ((class_id, param_idx), observed_ty) in observed_arg_types {
-            if matches!(observed_ty, Type::Any | Type::HeapAny) {
+            if matches!(observed_ty, Type::Any) {
                 continue;
             }
             let Some(field_names) = init_bindings
@@ -328,7 +328,7 @@ impl<'a> Lowering<'a> {
                     .get(&field_name)
                     .map(|prev| prev.join(&observed_ty))
                     .unwrap_or_else(|| {
-                        if matches!(storage_ty, Type::Any | Type::HeapAny) {
+                        if matches!(storage_ty, Type::Any) {
                             observed_ty.clone()
                         } else {
                             storage_ty.join(&observed_ty)
@@ -497,22 +497,14 @@ impl<'a> Lowering<'a> {
             // seed may transiently see `Any` while the prescan converges
             // but the steady-state remains `Int`).
             //
-            // BUT we still need to remember that an `Any` / `HeapAny`
-            // RHS came from a compound expression (BinOp / Call / …)
-            // — those genuinely produce heap-shaped runtime values
-            // (e.g. autograd `child.grad += local_grad * v.grad` where
-            // the rt_obj_* dispatch returns a tagged Value that may
-            // be a boxed FloatObj pointer). Without this signal,
-            // lowering's read & write paths assume the field stays
-            // `Int` and decode the heap pointer as a garbage int via
-            // `UnwrapValueInt`, surfacing later as `OverflowError`
-            // when the bogus int feeds into another arithmetic op.
-            // The `class_fields_with_heap_writes` side-set lets the
-            // lowering paths treat the slot as `HeapAny` end-to-end
-            // without diluting the static `field_types` (which would
-            // break f64 fast-paths and generic monomorphization).
-            if matches!(value_ty, Type::Any | Type::HeapAny | Type::Never) {
-                if matches!(value_ty, Type::Any | Type::HeapAny) {
+            // For compound `Any` / `HeapAny` RHS (BinOp / Call / … —
+            // genuine heap-shaped runtime values from `rt_obj_*` dispatch),
+            // widen the refined field type to `Any` so subsequent reads /
+            // writes route through the generic tagged-`Value` path. Storage
+            // is uniform tagged `Value` after Phase 2, so widening no
+            // longer breaks F64 fast-paths or generic monomorphization.
+            if matches!(value_ty, Type::Any | Type::Never) {
+                if matches!(value_ty, Type::Any) {
                     let is_compound_rhs = matches!(
                         value_expr.kind,
                         hir::ExprKind::BinOp { .. }
@@ -521,7 +513,12 @@ impl<'a> Lowering<'a> {
                             | hir::ExprKind::BuiltinCall { .. }
                     );
                     if is_compound_rhs {
-                        self.mark_class_field_heap_writes(class_id, field);
+                        let class_fields = self
+                            .lowering_seed_info
+                            .refined_class_field_types
+                            .entry(class_id)
+                            .or_default();
+                        class_fields.insert(field, Type::Any);
                     }
                 }
                 continue;
@@ -540,7 +537,7 @@ impl<'a> Lowering<'a> {
                 .get(&field)
                 .map(|prev| prev.join(&value_ty))
                 .unwrap_or_else(|| {
-                    if matches!(storage_ty, Type::Any | Type::HeapAny) {
+                    if matches!(storage_ty, Type::Any) {
                         value_ty.clone()
                     } else {
                         storage_ty.join(&value_ty)
@@ -551,6 +548,22 @@ impl<'a> Lowering<'a> {
                 other => other.demote_never_params_to_any(),
             };
             class_fields.insert(field, refined);
+        }
+    }
+
+    /// Fold every refined class-field type into the corresponding
+    /// `LoweredClassInfo.field_types` entry, then drain the refined map.
+    /// After this pass, `class_info.field_types` is the single source of
+    /// truth for storage layout and read-time labelling — lowering reads
+    /// only it, no separate refined map.
+    pub(crate) fn fold_refined_field_types_into_storage(&mut self) {
+        let refined = std::mem::take(&mut self.lowering_seed_info.refined_class_field_types);
+        for (class_id, fields) in refined {
+            if let Some(info) = self.classes.class_info.get_mut(&class_id) {
+                for (field_name, refined_ty) in fields {
+                    info.field_types.insert(field_name, refined_ty);
+                }
+            }
         }
     }
 
@@ -1580,7 +1593,7 @@ impl<'a> Lowering<'a> {
         param_idx: usize,
         arg_ty: Type,
     ) {
-        if matches!(arg_ty, Type::Any | Type::HeapAny) {
+        if matches!(arg_ty, Type::Any) {
             return;
         }
         observed_arg_types
@@ -1693,42 +1706,6 @@ impl<'a> Lowering<'a> {
                 ],
                 mir_func,
             );
-
-            // Register raw f64 field mask: bit k = 1 means field k holds a
-            // raw f64 bit pattern rather than a tagged Value pointer. The GC
-            // must skip those slots to avoid dereferencing float bits as ptrs.
-            let raw_field_mask: u64 = self
-                .get_class_info(class_id)
-                .map(|ci| {
-                    ci.field_offsets
-                        .iter()
-                        .filter(|(name, _)| {
-                            matches!(ci.field_types.get(*name), Some(pyaot_types::Type::Float))
-                        })
-                        .fold(
-                            0u64,
-                            |m, (_, &off)| {
-                                if off < 64 {
-                                    m | (1u64 << off)
-                                } else {
-                                    m
-                                }
-                            },
-                        )
-                })
-                .unwrap_or(0);
-            if raw_field_mask != 0 {
-                self.emit_runtime_call_void(
-                    mir::RuntimeFunc::Call(
-                        &pyaot_core_defs::runtime_func_def::RT_REGISTER_CLASS_RAW_FIELD_MASK,
-                    ),
-                    vec![
-                        mir::Operand::Constant(mir::Constant::Int(effective_class_id)),
-                        mir::Operand::Constant(mir::Constant::Int(raw_field_mask as i64)),
-                    ],
-                    mir_func,
-                );
-            }
 
             // Register dunder function pointers (__del__, __copy__, __deepcopy__)
             // These are called from the runtime via function pointer registries.

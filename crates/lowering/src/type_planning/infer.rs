@@ -519,17 +519,18 @@ impl<'a> Lowering<'a> {
                 if attr_name == "__class__" && class_info.is_exception_class {
                     return Some(Type::Str);
                 }
-                // If the cross-instance harvester recorded a compound
-                // write to this field (a runtime-dispatched RHS whose
-                // tag may be a heap pointer), report `HeapAny` here so
-                // the seed-type pipeline keeps the slot tag-aware all
-                // the way through to the bind / read MIR — otherwise a
-                // narrow `Int` seed would feed `UnwrapValueInt` on a
-                // pointer and surface as `OverflowError`.
-                if self.field_has_heap_writes(class_id, attr) {
-                    return Some(Type::HeapAny);
-                }
-                if let Some(field_ty) = self.get_refined_class_field_type(&class_id, &attr) {
+                // After Phase 2, refined types are folded into
+                // `class_info.field_types` post type-planning, so reading
+                // it here is the single source of truth. During the
+                // type-planning fixpoint loop itself we may still observe
+                // pre-fold storage labels — refinements applied in later
+                // iterations narrow those reads.
+                if let Some(field_ty) = self
+                    .lowering_seed_info
+                    .refined_class_field_types
+                    .get(&class_id)
+                    .and_then(|fields| fields.get(&attr))
+                {
                     return Some(field_ty.clone());
                 }
                 if let Some(field_ty) = class_info.field_types.get(&attr) {
@@ -748,10 +749,10 @@ impl<'a> Lowering<'a> {
             }
             hir::ExprKind::StdlibCall { func, args } => {
                 let declared = typespec_to_type(&func.return_type);
-                if !matches!(declared, Type::Any | Type::HeapAny) {
+                if !matches!(declared, Type::Any) {
                     declared
                 } else if let Some(annotated) = expr.ty.clone() {
-                    if !matches!(annotated, Type::Any | Type::HeapAny) {
+                    if !matches!(annotated, Type::Any) {
                         annotated
                     } else {
                         match func.name {
@@ -1008,10 +1009,10 @@ impl<'a> Lowering<'a> {
             }
             hir::ExprKind::StdlibCall { func, args } => {
                 let declared = typespec_to_type(&func.return_type);
-                if !matches!(declared, Type::Any | Type::HeapAny) {
+                if !matches!(declared, Type::Any) {
                     declared
                 } else if let Some(annotated) = expr.ty.clone() {
-                    if !matches!(annotated, Type::Any | Type::HeapAny) {
+                    if !matches!(annotated, Type::Any) {
                         annotated
                     } else {
                         match func.name {
@@ -1269,7 +1270,22 @@ impl<'a> Lowering<'a> {
     /// Result type of `left op right`. Prefers a class-dunder's inferred
     /// return type, falls back to the numeric-tower helper, then to the
     /// HIR-annotated `expr.ty`, then `Any`.
-    pub(super) fn binop_result_type(
+    ///
+    /// For `Union` operands, the per-variant distribution is class-aware
+    /// via `resolve_binop_type_class_aware`: a `Class[T]` variant in
+    /// `Float ** Union[Self, int, float, bool]` (the polymorphic
+    /// numeric-dunder seed) is DROPPED from the join when `T` defines
+    /// no dispatched dunder for `op`. Without this filter, the
+    /// structural "Class on side → class type" fallback in
+    /// `helpers::resolve_binop_type` returns `Class[T]` for every Class
+    /// variant, polluting harvested field types in autograd-style code
+    /// (microgpt's `Value.data` widening to `Union[Float, Class[Value]]`,
+    /// which breaks `RT_INSTANCE_GET_FIELD_F64` fast-path and reduction
+    /// iter unbox in `softmax`/Adam). Direct (non-Union) Class operands
+    /// keep the structural fallback so explicit user code like
+    /// `obj * 2` for an arbitrary class still type-plans as the class
+    /// without requiring upfront dunder presence.
+    pub(crate) fn binop_result_type(
         &self,
         op: &hir::BinOp,
         left_ty: &Type,
@@ -1279,7 +1295,11 @@ impl<'a> Lowering<'a> {
         if let Some(ty) = self.resolve_class_binop_return(op, left_ty, right_ty) {
             ty
         } else {
-            helpers::resolve_binop_type(op, left_ty, right_ty)
+            let check = |class_id: pyaot_utils::ClassId, dunder: &str| -> bool {
+                self.get_class_info(&class_id)
+                    .is_some_and(|ci| ci.get_dunder_func(dunder).is_some())
+            };
+            helpers::resolve_binop_type_class_aware(op, left_ty, right_ty, &check)
                 .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))
         }
     }

@@ -474,7 +474,7 @@ fn shape_infer_type(
             // the chain converge instead of pinning the genexp's yield
             // type to the for-loop's iter element type (e.g. `Int` from
             // `range`).
-            if matches!(obj_ty, Type::Any | Type::HeapAny | Type::Never) {
+            if matches!(obj_ty, Type::Any | Type::Never) {
                 return Some(Type::Any);
             }
             None
@@ -528,7 +528,7 @@ fn mk_get_local(
     ty: Type,
     span: Span,
 ) -> hir::ExprId {
-    let g = mk_var(m, gen_obj_var, Type::HeapAny, span);
+    let g = mk_var(m, gen_obj_var, Type::Any, span);
     mk_expr(
         m,
         hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::GetLocal { gen: g, idx }),
@@ -545,7 +545,7 @@ fn mk_set_local(
     value: hir::ExprId,
     span: Span,
 ) -> hir::ExprId {
-    let g = mk_var(m, gen_obj_var, Type::HeapAny, span);
+    let g = mk_var(m, gen_obj_var, Type::Any, span);
     mk_expr(
         m,
         hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::SetLocal { gen: g, idx, value }),
@@ -560,7 +560,7 @@ fn mk_set_local(
 
 /// Allocate a `GeneratorIntrinsic::SetState` expression.
 fn mk_set_state(m: &mut hir::Module, gen_obj_var: VarId, state: i64, span: Span) -> hir::ExprId {
-    let g = mk_var(m, gen_obj_var, Type::HeapAny, span);
+    let g = mk_var(m, gen_obj_var, Type::Any, span);
     mk_expr(
         m,
         hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::SetState { gen: g, state }),
@@ -577,7 +577,7 @@ fn clone_expr(m: &mut hir::Module, eid: hir::ExprId) -> hir::ExprId {
 
 /// Build: `__gen_set_exhausted(gen_obj); return 0`
 fn mk_exhaust_block(m: &mut hir::Module, gen_obj_var: VarId, span: Span) -> Vec<GenStmt> {
-    let g = mk_var(m, gen_obj_var, Type::HeapAny, span);
+    let g = mk_var(m, gen_obj_var, Type::Any, span);
     let set_exhausted = mk_expr(
         m,
         hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::SetExhausted(g)),
@@ -601,7 +601,7 @@ fn mk_resume_preamble(
 ) -> Vec<GenStmt> {
     let mut stmts = Vec::new();
     // state = __gen_get_state(gen_obj)
-    let g1 = mk_var(m, gen_obj_var, Type::HeapAny, span);
+    let g1 = mk_var(m, gen_obj_var, Type::Any, span);
     let get_state = mk_expr(
         m,
         hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::GetState(g1)),
@@ -619,7 +619,7 @@ fn mk_resume_preamble(
     ));
 
     // if __gen_is_exhausted(gen_obj): return 0
-    let g2 = mk_var(m, gen_obj_var, Type::HeapAny, span);
+    let g2 = mk_var(m, gen_obj_var, Type::Any, span);
     let is_exhausted = mk_expr(
         m,
         hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::IsExhausted(g2)),
@@ -1025,7 +1025,7 @@ impl<'a> Lowering<'a> {
             params: vec![hir::Param {
                 name: gen_obj_name,
                 var: gen_obj_var,
-                ty: Some(Type::HeapAny),
+                ty: Some(Type::Any),
                 default: None,
                 kind: hir::ParamKind::Regular,
                 span,
@@ -1178,8 +1178,11 @@ impl<'a> Lowering<'a> {
                         if let hir::ExprKind::Var(vid) = &m.exprs[*obj].kind {
                             if *vid == target_var {
                                 if let Some(Type::Class { class_id, .. }) = &elem_ty {
-                                    if let Some(ft) =
-                                        self.get_refined_class_field_type(class_id, attr)
+                                    if let Some(ft) = self
+                                        .lowering_seed_info
+                                        .refined_class_field_types
+                                        .get(class_id)
+                                        .and_then(|fields| fields.get(attr))
                                     {
                                         if !matches!(ft, Type::Any) {
                                             return ft.clone();
@@ -1428,7 +1431,7 @@ fn build_generic_resume(
             let prev = &yield_infos[i - 1];
             if let Some(target) = prev.assignment_target {
                 // Get sent value and assign directly to the target VarId
-                let g = mk_var(m, gen_obj_var, Type::HeapAny, span);
+                let g = mk_var(m, gen_obj_var, Type::Any, span);
                 let get_sent = mk_expr(
                     m,
                     hir::ExprKind::GeneratorIntrinsic(hir::GeneratorIntrinsic::GetSentValue(g)),

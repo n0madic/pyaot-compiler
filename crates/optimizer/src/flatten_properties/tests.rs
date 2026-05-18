@@ -3,8 +3,8 @@
 use indexmap::IndexMap;
 use pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD;
 use pyaot_mir::{
-    BasicBlock, Constant, Function, Instruction, InstructionKind, Local, Module, Operand,
-    RuntimeFunc, Terminator,
+    BasicBlock, Constant, Function, FunctionKind, Instruction, InstructionKind, Local, Module,
+    Operand, RuntimeFunc, Terminator,
 };
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, ClassId, FuncId, LocalId, StringInterner};
@@ -22,6 +22,8 @@ fn make_local(id: u32, ty: Type) -> Local {
         name: None,
         ty,
         is_gc_root: false,
+        abi_immutable: false,
+        mir_ty: None,
     }
 }
 
@@ -36,6 +38,8 @@ fn make_trivial_getter(func_id: FuncId, offset: i64, self_type: Type) -> Functio
         name: None,
         ty: self_type,
         is_gc_root: true,
+        abi_immutable: false,
+        mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
     let block_id = BlockId::from(0u32);
@@ -62,6 +66,7 @@ fn make_trivial_getter(func_id: FuncId, offset: i64, self_type: Type) -> Functio
 
     Function {
         id: func_id,
+        kind: FunctionKind::ClassMethod,
         name: "Foo$x".to_string(),
         params: vec![self_param],
         return_type: Type::Int,
@@ -73,7 +78,10 @@ fn make_trivial_getter(func_id: FuncId, offset: i64, self_type: Type) -> Functio
         is_generic_template: false,
         typevar_params: Vec::new(),
         wrapper_fn_ptr_capture_index: None,
+        phase4_return_abi_flipped: false,
+        phase4_original_return_type: None,
         dom_tree_cache: std::cell::OnceCell::new(),
+        signature: None,
     }
 }
 
@@ -84,6 +92,8 @@ fn make_caller_with_call(caller_id: FuncId, getter_id: FuncId, obj_type: Type) -
         name: None,
         ty: obj_type,
         is_gc_root: true,
+        abi_immutable: false,
+        mir_ty: None,
     };
     let dest_local = make_local(11, Type::Int);
     let block_id = BlockId::from(0u32);
@@ -108,6 +118,7 @@ fn make_caller_with_call(caller_id: FuncId, getter_id: FuncId, obj_type: Type) -
 
     Function {
         id: caller_id,
+        kind: FunctionKind::Regular,
         name: "main".to_string(),
         params: vec![],
         return_type: Type::Int,
@@ -119,7 +130,10 @@ fn make_caller_with_call(caller_id: FuncId, getter_id: FuncId, obj_type: Type) -
         is_generic_template: false,
         typevar_params: Vec::new(),
         wrapper_fn_ptr_capture_index: None,
+        phase4_return_abi_flipped: false,
+        phase4_original_return_type: None,
         dom_tree_cache: std::cell::OnceCell::new(),
+        signature: None,
     }
 }
 
@@ -171,6 +185,8 @@ fn test_skip_non_trivial_getter_multiple_blocks() {
         name: None,
         ty: class_type.clone(),
         is_gc_root: true,
+        abi_immutable: false,
+        mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
     let block0 = BlockId::from(0u32);
@@ -206,6 +222,7 @@ fn test_skip_non_trivial_getter_multiple_blocks() {
 
     let getter = Function {
         id: getter_id,
+        kind: FunctionKind::ClassMethod,
         name: "Foo$x".to_string(),
         params: vec![self_param],
         return_type: Type::Int,
@@ -217,7 +234,10 @@ fn test_skip_non_trivial_getter_multiple_blocks() {
         is_generic_template: false,
         typevar_params: Vec::new(),
         wrapper_fn_ptr_capture_index: None,
+        phase4_return_abi_flipped: false,
+        phase4_original_return_type: None,
         dom_tree_cache: std::cell::OnceCell::new(),
+        signature: None,
     };
 
     let caller = make_caller_with_call(caller_id, getter_id, class_type);
@@ -247,6 +267,8 @@ fn test_skip_non_trivial_getter_multiple_instructions() {
         name: None,
         ty: class_type.clone(),
         is_gc_root: true,
+        abi_immutable: false,
+        mir_ty: None,
     };
     let dest_local = make_local(1, Type::Int);
     let extra_local = make_local(2, Type::Int);
@@ -282,6 +304,7 @@ fn test_skip_non_trivial_getter_multiple_instructions() {
 
     let getter = Function {
         id: getter_id,
+        kind: FunctionKind::ClassMethod,
         name: "Foo$x".to_string(),
         params: vec![self_param],
         return_type: Type::Int,
@@ -293,7 +316,10 @@ fn test_skip_non_trivial_getter_multiple_instructions() {
         is_generic_template: false,
         typevar_params: Vec::new(),
         wrapper_fn_ptr_capture_index: None,
+        phase4_return_abi_flipped: false,
+        phase4_original_return_type: None,
         dom_tree_cache: std::cell::OnceCell::new(),
+        signature: None,
     };
 
     let caller = make_caller_with_call(caller_id, getter_id, class_type);
@@ -326,6 +352,8 @@ fn test_skip_call_with_multiple_args() {
         name: None,
         ty: class_type,
         is_gc_root: true,
+        abi_immutable: false,
+        mir_ty: None,
     };
     let dest_local = make_local(11, Type::Int);
     let block_id = BlockId::from(0u32);
@@ -353,6 +381,7 @@ fn test_skip_call_with_multiple_args() {
 
     let caller = Function {
         id: caller_id,
+        kind: FunctionKind::Regular,
         name: "main".to_string(),
         params: vec![],
         return_type: Type::None,
@@ -364,7 +393,10 @@ fn test_skip_call_with_multiple_args() {
         is_generic_template: false,
         typevar_params: Vec::new(),
         wrapper_fn_ptr_capture_index: None,
+        phase4_return_abi_flipped: false,
+        phase4_original_return_type: None,
         dom_tree_cache: std::cell::OnceCell::new(),
+        signature: None,
     };
 
     let mut module = Module::new();

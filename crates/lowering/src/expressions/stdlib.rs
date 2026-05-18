@@ -38,7 +38,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
         let expected_ty = typespec_to_type(expected);
-        if matches!(expected_ty, Type::Any | Type::HeapAny) {
+        if matches!(expected_ty, Type::Any) {
             return operand;
         }
         if arg_type == &expected_ty {
@@ -50,7 +50,7 @@ impl<'a> Lowering<'a> {
                 self.emit_instruction(mir::InstructionKind::IntToFloat { dest, src: operand });
                 mir::Operand::Local(dest)
             }
-            (Type::Float, Type::Any | Type::HeapAny | Type::Union(_)) => {
+            (Type::Float, Type::Any | Type::Union(_)) => {
                 self.unbox_if_needed(operand, &Type::Float, mir_func)
             }
             (Type::Int, Type::Bool) => {
@@ -58,10 +58,10 @@ impl<'a> Lowering<'a> {
                 self.emit_instruction(mir::InstructionKind::BoolToInt { dest, src: operand });
                 mir::Operand::Local(dest)
             }
-            (Type::Int, Type::Any | Type::HeapAny | Type::Union(_)) => {
+            (Type::Int, Type::Any | Type::Union(_)) => {
                 self.unbox_if_needed(operand, &Type::Int, mir_func)
             }
-            (Type::Bool, Type::Any | Type::HeapAny | Type::Union(_)) => {
+            (Type::Bool, Type::Any | Type::Union(_)) => {
                 self.unbox_if_needed(operand, &Type::Bool, mir_func)
             }
             _ => operand,
@@ -70,7 +70,7 @@ impl<'a> Lowering<'a> {
 
     fn stdlib_param_expected_type(&self, ty: &TypeSpec) -> Option<Type> {
         let expected = typespec_to_type(ty);
-        if matches!(expected, Type::Any | Type::HeapAny) {
+        if matches!(expected, Type::Any) {
             None
         } else {
             Some(expected)
@@ -85,20 +85,20 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
     ) -> Type {
         let declared = typespec_to_type(&func_def.return_type);
-        if !matches!(declared, Type::Any | Type::HeapAny) {
+        if !matches!(declared, Type::Any) {
             return declared;
         }
 
         if let Some(expr) = expr {
             if let Some(annotated) = expr.ty.clone() {
-                if !matches!(annotated, Type::Any | Type::HeapAny) {
+                if !matches!(annotated, Type::Any) {
                     return annotated;
                 }
             }
         }
 
         if let Some(expected) = self.codegen.expected_type.clone() {
-            if !matches!(expected, Type::Any | Type::HeapAny) {
+            if !matches!(expected, Type::Any) {
                 return expected;
             }
         }
@@ -393,7 +393,7 @@ impl<'a> Lowering<'a> {
         let result_type = {
             let t = typespec_to_type(&method_def.return_type);
             if matches!(t, Type::Any) {
-                Type::HeapAny
+                Type::Any
             } else {
                 t
             }

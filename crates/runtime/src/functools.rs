@@ -235,3 +235,105 @@ pub extern "C" fn rt_reduce_abi(
         )
     })
 }
+
+/// Phase 4+ Extension E2b: tagged-delivery variant of `rt_reduce`.
+/// Asymmetric semantics:
+///   - INPUT accumulator and element flow through to the callback
+///     verbatim — callback's prologue does its own `UnboxValue` for
+///     primitive-typed params (Step E1).
+///   - OUTPUT (the callback's return, which becomes the next iteration's
+///     accumulator and the final result) is re-wrapped according to
+///     `result_box_kind` encoded in `capture_count` bits 16-23. Lambdas
+///     are not return-ABI flipped today, so primitive-typed returns
+///     come back as raw bits; the re-wrap keeps `acc` uniformly tagged
+///     across iterations and final result.
+///
+/// Encoding (same shape as `rt_map_new` tagged variant):
+///   bits 0-7  : actual capture count (low 7 bits consumed)
+///   bits 16-23: result_box_kind (0=passthrough, 1=int, 2=bool)
+///
+/// # Safety
+/// Same constraints as `rt_reduce`: callers must pass valid iterator
+/// and tuple pointers.
+pub unsafe fn rt_reduce_tagged(
+    func_ptr: i64,
+    iter: *mut Obj,
+    initial: *mut Obj,
+    has_initial: i64,
+    captures: *mut Obj,
+    capture_count: i64,
+) -> *mut Obj {
+    let cc_byte = (capture_count as u8) & 0x7F;
+    let result_box_kind = (capture_count >> 16) as u8;
+
+    let rewrap = |v: *mut Obj| -> *mut Obj {
+        match result_box_kind {
+            1 => pyaot_core_defs::Value::from_int(v as i64).0 as *mut Obj,
+            2 => pyaot_core_defs::Value::from_bool((v as i64) != 0).0 as *mut Obj,
+            _ => v,
+        }
+    };
+
+    let mut acc = if has_initial == 0 {
+        let first_elem = rt_iter_next_internal(iter, false);
+        let inner_iter = iter as *mut IteratorObj;
+        if (*inner_iter).exhausted {
+            raise_exc!(
+                pyaot_core_defs::BuiltinExceptionKind::TypeError,
+                "reduce() of empty iterable with no initial value"
+            );
+        }
+        // Initial accumulator comes directly from the inner iterator —
+        // already a tagged Value, no rewrap needed.
+        first_elem
+    } else {
+        // Caller-provided initial arrives as raw primitive bits in
+        // `initial` (the ABI shim's `Value::unwrap_ptr` strips the tag).
+        // Wrap it into a tagged Value so the callback's prologue
+        // `UnboxValue` reads matching bit shape on the first iteration.
+        rewrap(initial)
+    };
+
+    loop {
+        let elem = rt_iter_next_internal(iter, false);
+        let inner_iter = iter as *mut IteratorObj;
+        if (*inner_iter).exhausted {
+            // Final return: unwrap the tagged accumulator back to the
+            // caller's primitive shape. The caller's dest local was
+            // allocated with the callback's declared return type
+            // (Int / Bool / heap), so we mirror the unwrap of the
+            // legacy reduce that returns raw bits directly.
+            return match result_box_kind {
+                1 => pyaot_core_defs::Value(acc as u64).unwrap_int() as *mut Obj,
+                2 => i64::from(pyaot_core_defs::Value(acc as u64).unwrap_bool()) as *mut Obj,
+                _ => acc,
+            };
+        }
+        // Callback returns raw primitive for primitive-typed lambdas;
+        // re-wrap before the next iteration so the callback's tagged
+        // ABI contract for `acc` is honoured.
+        let raw_result = call_reduce_with_captures(func_ptr, captures, cc_byte, acc, elem);
+        acc = rewrap(raw_result);
+    }
+}
+#[export_name = "rt_reduce_tagged"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_reduce_tagged_abi(
+    func_ptr: i64,
+    iter: Value,
+    initial: Value,
+    has_initial: i64,
+    captures: Value,
+    capture_count: i64,
+) -> Value {
+    Value::from_ptr(unsafe {
+        rt_reduce_tagged(
+            func_ptr,
+            iter.unwrap_ptr(),
+            initial.unwrap_ptr(),
+            has_initial,
+            captures.unwrap_ptr(),
+            capture_count,
+        )
+    })
+}

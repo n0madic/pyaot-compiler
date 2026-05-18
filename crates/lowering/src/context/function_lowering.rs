@@ -107,6 +107,15 @@ impl<'a> Lowering<'a> {
         // Sixth pass: project per-class metadata into `mir::Module.class_info`
         // so optimizer passes (WPA field inference) can consume it.
         for (class_id, info) in self.classes.class_info.iter() {
+            // Phase 2c: auto-populate field_mir_types from legacy
+            // field_types via storage-level translation. Fields are
+            // storage slots → primitives map to Tagged; heap shapes
+            // map to specific Heap variants.
+            let field_mir_types: indexmap::IndexMap<_, _> = info
+                .field_types
+                .iter()
+                .map(|(name, ty)| (*name, mir::type_to_mir_type_storage(ty)))
+                .collect();
             self.mir_module.class_info.insert(
                 *class_id,
                 mir::ClassMetadata {
@@ -114,6 +123,7 @@ impl<'a> Lowering<'a> {
                     init_func_id: info.init_func,
                     field_offsets: info.field_offsets.clone(),
                     field_types: info.field_types.clone(),
+                    field_mir_types,
                     base_class: info.base_class,
                     is_protocol: hir_module
                         .class_defs
@@ -267,6 +277,12 @@ impl<'a> Lowering<'a> {
         // (var_id, param_local, concrete_base_ty).
         let mut prologue_unboxes: Vec<(VarId, LocalId, Type)> = Vec::new();
 
+        // Phase 5c (commit ?): the function-level `phase4_user_abi_flipped`
+        // tracker was deleted because the per-Local `abi_immutable` flag
+        // (Phase 4 E1) supersedes it. WPA's `materialize_function_types`
+        // checks `abi_immutable_param_ids` derived from the per-param
+        // flag instead of the function-level boolean.
+
         // Convert parameters from HIR to MIR
         let mut params = Vec::new();
         for (i, hir_param) in func.params.iter().enumerate() {
@@ -299,23 +315,95 @@ impl<'a> Lowering<'a> {
                 self.closures.varargs_params.insert(hir_param.var);
             }
 
-            // Stage E: primitive-typed CAPTURE params of lambda-like
-            // functions take the tagged Value ABI. See block-level comment
-            // above for the design rationale.
+            // Stage E (unified closure ABI): primitive-typed CAPTURE params of
+            // lambda-like callees take the tagged Value ABI. Captures arrive
+            // tagged from `rt_tuple_get` regardless of dispatch path (closure
+            // trampoline / HOF dispatcher / wrapper CallDirect — all three
+            // build their captures tuple with primitives boxed as tagged Values).
+            // The MIR slot is `Type::Any`; prologue `rt_unbox_*`
+            // writes a fresh concrete-typed local so body code keeps the
+            // raw-int / raw-bool / raw-float fast paths.
+            //
+            // fn-ptr captures are a special case: they are wrapped via `ValueFromInt` at
+            // the producer side; route through `Int` arm so `UnwrapValueInt` recovers the
+            // raw text-segment address. fn-ptr captures only appear in lambda-like funcs.
             let is_fn_ptr_capture = Some(i) == fn_ptr_capture_idx
                 && is_lambda_like
                 && i < capture_count
                 && !is_cell_param
                 && hir_param.kind != hir::ParamKind::VarPositional;
-            let needs_prologue_unbox = is_lambda_like
-                && i < capture_count
-                && !is_cell_param
+            // Phase 4 (Storage-Uniform): primitive-typed user-visible
+            // params take the tagged Value ABI for `phase4_safe` callees.
+            // Direct `CallDirect` sites get coerced via `abi_repair` (which
+            // emits `BoxValue` automatically when the callee param is
+            // `Type::Any`). Closure-dispatched lambda-like callees rely
+            // on the trampoline marker bit + `extract_tuple_keeping_values`
+            // for the same effect. Generator resume functions and the
+            // module init function are excluded — their ABIs are special
+            // and don't go through the standard call paths.
+            let primitive_typed = matches!(base_ty, Type::Int | Type::Bool | Type::Float);
+            let is_generator_resume = func.id.0 >= pyaot_utils::RESUME_FUNC_ID_OFFSET;
+            let is_phase4_callee =
+                self.is_phase4_safe(func.id) && !is_module_init && !is_generator_resume;
+            // Lambda-like phase4 path: flip every primitive-typed user
+            // param on phase4-safe lambdas. Phase 4+ Extension E2d: the
+            // earlier `capture_count > 0` gate was a closure-trampoline
+            // optimisation (marker bit has no effect without captures).
+            // With HOF tagged runtime variants (`rt_map_new_tagged` etc.)
+            // routing phase4-safe lambdas, captureless lambdas now also
+            // receive tagged args and need the prologue unbox.
+            let lambda_user_param_flip =
+                is_lambda_like && i >= capture_count && primitive_typed && is_phase4_callee;
+            // Regular function phase4 path: flip every primitive-typed
+            // user param. `abi_repair::coerce_operand` handles direct call
+            // sites via the existing `Type::Any` coercion arm. Methods
+            // (devirtualized into `CallDirect`) are covered by the same
+            // mechanism. The `self` receiver of methods is `Type::Class`,
+            // not primitive, so it isn't affected.
+            // Regular function phase4 path: flip every primitive-typed
+            // user param. `abi_repair::coerce_operand` handles direct call
+            // sites via the existing `Type::Any` coercion arm. Methods
+            // (devirtualized into `CallDirect`) are covered by the same
+            // mechanism. The `self` receiver of methods is `Type::Class`,
+            // not primitive, so it isn't affected.
+            // Phase 4 Commit 3 (regular function flip): only flip params
+            // whose primitive type comes from an explicit Python annotation
+            // (`hir_param.ty.is_some()`). Unannotated params get a
+            // harvested `base_ty` derived from one set of call sites that
+            // can disagree with other call sites — e.g.
+            // `_G13Method(self, data)` is harvested as `data: Int` from
+            // the literal `_G13Method(3)` call, but the body's recursive
+            // `_G13Method(self.data + other.data)` call passes a `Float`
+            // (field widened to Float). Flipping the param ABI then
+            // causes the caller to deliver a tagged Float Value while the
+            // prologue's `UnboxValue Int` interprets the bit pattern as
+            // Int — yielding garbage. Annotated params have a stable ABI
+            // contract (`def f(x: int)` always receives int), so the flip
+            // is safe there.
+            //
+            // Companion fixes that make annotated-param storage-write
+            // cascades (`self.x = arg`) work end-to-end: `box_fusion`
+            // propagates the source's `ty` / `is_gc_root` to the Copy's
+            // dest local; `type_inference::refine_function_params`
+            // skips `Type::Any` params for Phase 4-flipped callees so
+            // WPA call-site joins do not narrow the seed back to a
+            // primitive.
+            let has_annotation = hir_param.ty.is_some();
+            let regular_user_param_flip =
+                !is_lambda_like && primitive_typed && has_annotation && is_phase4_callee;
+            let user_param_phase4_unbox = !is_cell_param
                 && hir_param.kind != hir::ParamKind::VarPositional
-                && (matches!(base_ty, Type::Int | Type::Bool | Type::Float) || is_fn_ptr_capture);
+                && (lambda_user_param_flip || regular_user_param_flip);
+            let needs_prologue_unbox = (!is_cell_param
+                && hir_param.kind != hir::ParamKind::VarPositional
+                && is_lambda_like
+                && i < capture_count
+                && (primitive_typed || is_fn_ptr_capture))
+                || user_param_phase4_unbox;
 
             // For nonlocal parameters, the type is a cell pointer (heap object pointer)
             let param_ty = if is_cell_param {
-                Type::HeapAny
+                Type::Any
             } else if needs_prologue_unbox {
                 Type::Any
             } else {
@@ -354,6 +442,9 @@ impl<'a> Lowering<'a> {
                     base_ty.clone()
                 };
                 prologue_unboxes.push((hir_param.var, local_id, prologue_ty));
+                // Phase 5c: removed the function-level phase4_user_abi_flipped
+                // tracker — superseded by per-Local abi_immutable (Phase 4 E1).
+                let _ = user_param_phase4_unbox;
             }
 
             // §P.2.2: fn-ptr params (set by name-matching heuristic on
@@ -364,11 +455,26 @@ impl<'a> Lowering<'a> {
             // pointer. Mirrors the FuncAddr-destination guard in
             // `optimizer/type_inference.rs::materialize_function_types`.
             let is_fn_ptr_param = self.is_func_ptr_param(&hir_param.var);
+            // Phase 2 (Strong-Typed MIR Rewrite): when prologue emits
+            // UnboxValue, the param slot holds a tagged `Value` (the
+            // Phase 4 flipped ABI). Otherwise, the param holds a
+            // register-level representation matching the declared type.
+            let mir_ty = if needs_prologue_unbox {
+                Some(mir::MirType::Tagged)
+            } else {
+                Some(mir::type_to_mir_type_register(&param_ty))
+            };
             let mir_param = mir::Local {
                 id: local_id,
                 name: Some(hir_param.name),
                 ty: param_ty.clone(),
                 is_gc_root: is_cell_param || (param_ty.is_heap() && !is_fn_ptr_param), // Cells are heap objects
+                // Step E1: per-param ABI immutability. True iff this param
+                // has a lowering-emitted prologue UnboxValue / capture
+                // unbox — narrowing back to a primitive would invalidate
+                // the prologue's tagged-bit interpretation.
+                abi_immutable: needs_prologue_unbox,
+                mir_ty,
             };
             params.push(mir_param);
         }
@@ -437,19 +543,113 @@ impl<'a> Lowering<'a> {
             func.return_type.clone().unwrap_or(Type::None)
         };
 
-        // Store the inferred return type for later lookup
+        // Phase 4 (Storage-Uniform Commit 4): flip the return ABI when
+        // the declared return type is a primitive on a `phase4_safe`
+        // callee. The MIR-level `return_type` becomes `Type::Any` so
+        // CallDirect/Call dest locals (allocated from
+        // `get_func_return_type`) and `abi_repair`'s callsite logic see
+        // a uniform tagged Value. `lower_return` boxes the raw operand
+        // immediately before `Terminator::Return`. The body's
+        // *declared* return type (used for `check_expr_type` /
+        // `lower_expr_expecting` bidirectional inference) stays raw,
+        // tracked in `self.symbols.current_func_return_type`, so frontend
+        // type checks keep their primitive contract.
+        //
+        // Restricted to functions with an explicit annotation
+        // (`has_explicit_return_type`): unannotated returns are inferred
+        // from body shape and can disagree with what call sites observe;
+        // an annotation is a stable ABI promise.
+        let is_generator_resume_func = func.id.0 >= pyaot_utils::RESUME_FUNC_ID_OFFSET;
+        let is_phase4_callee_for_return =
+            self.is_phase4_safe(func.id) && !is_module_init && !is_generator_resume_func;
+        let return_primitive_typed = matches!(return_type, Type::Int | Type::Bool | Type::Float);
+        // Class methods (instance methods reachable via `CallVirtual`) are
+        // excluded from return-ABI flipping: vtable dispatch callers cannot
+        // statically guarantee which concrete override they invoke, so a
+        // uniform flip across the entire hierarchy is required. The
+        // `precompute_flippable_method_funcs` pre-pass that attempted this
+        // cross-hierarchy uniformity check was removed in Stage E.4 — it was
+        // dead code (all tests pass without it). Class methods therefore
+        // remain conservatively non-flipped; only top-level functions,
+        // lambdas, nested functions, and genexp creators are eligible.
+        //
+        // Stage E.3 follow-up: @property getter and setter functions live in
+        // `ClassDef::properties`, NOT in `ClassDef::methods`, so they were
+        // previously missed by this predicate and erroneously received
+        // `phase4_return_abi_flipped = true`. The check now covers properties
+        // explicitly — property getters/setters are class methods and must
+        // return raw primitives directly without the tagged-Value ABI flip.
+        let is_class_method = hir_module.class_defs.values().any(|cd| {
+            cd.methods.contains(&func.id)
+                || cd.init_method == Some(func.id)
+                || cd
+                    .properties
+                    .iter()
+                    .any(|p| p.getter == func.id || p.setter == Some(func.id))
+        });
+        // Lambda return-flip extension: lambdas with annotated primitive
+        // return types also flip — they box their return value before
+        // `Terminator::Return`, the closure trampoline propagates the tagged
+        // Value verbatim, and HOF runtime callbacks see `result_box_kind == 0`
+        // so they pass through. Closes the "raw bits in Type::Any dest from
+        // closure dispatch" gap.
+        let phase4_return_abi_flipped = !is_class_method
+            && return_primitive_typed
+            && has_explicit_return_type
+            && is_phase4_callee_for_return;
+
+        // Store the *declared* return type for body-side type checking.
+        // (Bidirectional `check_expr_type` / `lower_expr_expecting` rely
+        // on the primitive view; the ABI flip is purely about the
+        // function boundary, not the body's local typing.)
+        self.symbols.current_func_return_type = Some(return_type.clone());
+
+        // Side-table value seen by callers' CallDirect dest allocation:
+        // keep the *declared* primitive type even when the return ABI is
+        // flipped. Caller's dest local is allocated raw (e.g. `Int`); a
+        // post-lowering rewriter inserts an `Any`-typed temp + `UnboxValue`
+        // between the call and the raw dest, so consumers (print, binops,
+        // field stores) see a primitive operand with raw bits. The MIR
+        // function signature is independently set to `Type::Any` below so
+        // codegen and `abi_repair` see the tagged ABI contract.
         self.insert_func_return_type(func.id, return_type.clone());
 
-        // Store the current function's return type for type inference during lowering
-        self.symbols.current_func_return_type = Some(return_type.clone());
+        let abi_return_type = if phase4_return_abi_flipped {
+            Type::Any
+        } else {
+            return_type.clone()
+        };
 
         let mut mir_func = mir::Function::new(
             func.id,
             func_name,
             params.clone(),
-            return_type,
+            abi_return_type,
             Some(func.span),
         );
+
+        // Phase 5c: function-level phase4_user_abi_flipped was deleted —
+        // per-Local `abi_immutable` (Phase 4 E1) provides finer-grained
+        // protection of ABI-bound locals from WPA narrowing.
+        mir_func.phase4_return_abi_flipped = phase4_return_abi_flipped;
+        if phase4_return_abi_flipped {
+            // `return_type` (above) is the original primitive shape; the
+            // MIR function's ABI signature was just overridden to
+            // `Type::Any`. Stash the original for the post-merge
+            // rewriter (`rewrite_phase4_callee_returns`).
+            mir_func.phase4_original_return_type = Some(return_type.clone());
+        }
+        // Phase 4 Commit 5: generator resume functions ship every yielded
+        // value as a tagged `Value` (codegen boxes the operand of
+        // `Terminator::Return` into i64 so the for-loop / `next()` consumer
+        // can unwrap uniformly via the same path as List / Dict / Tuple /
+        // Set iterators). Mark them as return-flipped so the unified WPA
+        // guard in `materialize_function_return_types` protects the
+        // `Type::Any` signature from re-narrowing — supersedes the prior
+        // `func_id.0 >= RESUME_FUNC_ID_OFFSET` special case.
+        if is_generator_resume_func {
+            mir_func.phase4_return_abi_flipped = true;
+        }
 
         // Mark generic templates (functions whose param/return types contain
         // Type::Var) so WPA can skip them and the monomorphizer can find them.
@@ -490,24 +690,24 @@ impl<'a> Lowering<'a> {
             let concrete_local = self.alloc_and_add_local(base_ty.clone(), &mut mir_func);
             match base_ty {
                 Type::Int => {
-                    self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                    self.emit_instruction(mir::InstructionKind::UnboxValue {
                         dest: concrete_local,
                         src: mir::Operand::Local(param_local),
+                        dest_type: Type::Int,
                     });
                 }
                 Type::Bool => {
-                    self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+                    self.emit_instruction(mir::InstructionKind::UnboxValue {
                         dest: concrete_local,
                         src: mir::Operand::Local(param_local),
+                        dest_type: Type::Bool,
                     });
                 }
                 Type::Float => {
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    self.emit_instruction(mir::InstructionKind::UnboxValue {
                         dest: concrete_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
-                        ),
-                        args: vec![mir::Operand::Local(param_local)],
+                        src: mir::Operand::Local(param_local),
+                        dest_type: Type::Float,
                     });
                 }
                 _ => unreachable!(
@@ -552,7 +752,7 @@ impl<'a> Lowering<'a> {
             let cell_local = self.emit_runtime_call_gc(
                 make_cell_func,
                 vec![initial_value],
-                Type::HeapAny,
+                Type::Any,
                 &mut mir_func,
             );
 
@@ -597,7 +797,20 @@ impl<'a> Lowering<'a> {
             // Create a default return value that matches the function's return type
             // For abstract methods (which have pass bodies), this provides a dummy return value.
             // Since abstract classes can't be instantiated, these methods won't actually be called.
-            let default_return = match &mir_func.return_type {
+            //
+            // Phase 4 Commit 4 — when `phase4_return_abi_flipped`, the
+            // signature return type is `Type::Any` but the *declared*
+            // primitive shape lives in `current_func_return_type`. Generate
+            // the default against the declared type, then box.
+            let declared_for_default = if mir_func.phase4_return_abi_flipped {
+                self.symbols
+                    .current_func_return_type
+                    .clone()
+                    .unwrap_or_else(|| mir_func.return_type.clone())
+            } else {
+                mir_func.return_type.clone()
+            };
+            let mut default_return = match &declared_for_default {
                 Type::Int => mir::Operand::Constant(mir::Constant::Int(0)),
                 Type::Float => mir::Operand::Constant(mir::Constant::Float(0.0)),
                 Type::Bool => mir::Operand::Constant(mir::Constant::Bool(false)),
@@ -615,6 +828,12 @@ impl<'a> Lowering<'a> {
                 }
                 _ => mir::Operand::Constant(mir::Constant::None),
             };
+            if mir_func.phase4_return_abi_flipped
+                && matches!(declared_for_default, Type::Int | Type::Bool | Type::Float)
+            {
+                default_return =
+                    self.emit_value_slot(default_return, &declared_for_default, &mut mir_func);
+            }
             self.current_block_mut().terminator = mir::Terminator::Return(Some(default_return));
         }
 

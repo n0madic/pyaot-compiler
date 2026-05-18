@@ -290,28 +290,64 @@ impl<'a> Lowering<'a> {
         // boxes any primitive operand via `emit_value_slot` first.
         let left_is_class = matches!(left_ty, Type::Class { .. });
         let right_is_class = matches!(right_ty, Type::Class { .. });
-        // Any / HeapAny operands carry a tagged `Value` at runtime (could
-        // be an INT/BOOL tag, NONE, or a heap pointer to FloatObj / Class
-        // instance / etc.). Falling through to a raw `mir::BinOp::Mul`
-        // here treats the tagged-pointer bits as an i64 and emits an
-        // unconditional `imul` — when the operand happens to be a heap
-        // pointer (e.g. `local_grad` from a `zip(_children, _local_grads)`
-        // unpack where `_local_grads: TupleVar[Float]` collapses through
-        // `Any` per slot), the result either overflows the checked
-        // primitive arithmetic (`OverflowError: integer overflow`) or
-        // silently corrupts memory. Route through `rt_obj_*` instead,
-        // which dispatches on the `TypeTagKind` of the boxed Value.
-        // Restrict to `HeapAny` only — `Any` may legitimately carry a
-        // raw `i64` (e.g. wrapper-call return slots whose value is
-        // narrowed to a primitive int by devirt/inlining), and routing
-        // those through `rt_obj_*` would treat the raw int as a tagged
-        // Value and mis-dispatch. `HeapAny` is the conservative
-        // tag-aware case where the value is guaranteed to be in
-        // tagged-Value form (post-§F.7c BigBang).
-        let left_is_any = matches!(left_ty, Type::HeapAny)
-            || matches!(&left_op, mir::Operand::Local(id) if mir_func.locals.get(id).is_some_and(|l| matches!(l.ty, Type::HeapAny)));
-        let right_is_any = matches!(right_ty, Type::HeapAny)
-            || matches!(&right_op, mir::Operand::Local(id) if mir_func.locals.get(id).is_some_and(|l| matches!(l.ty, Type::HeapAny)));
+        // Load-bearing `HeapAny` vs `Any` distinction. `HeapAny`
+        // operands carry a tagged `Value` at runtime (INT/BOOL tag,
+        // NONE, or heap pointer to FloatObj/Class/etc.) — route them
+        // through `rt_obj_*` which dispatches on `Value::tag()`.
+        // `Any` is NOT yet guaranteed tagged: the lambda return-flip
+        // closes the closure-trampoline source for non-address-taken
+        // lambdas, but two sources still leak raw bits into
+        // `Type::Any` slots:
+        //
+        //   * Address-taken closure dispatch via `emit_closure_call`
+        //     (decorator-factory / curried-chain). Inner funcs are
+        //     marked `phase4_unsafe` by `mark_address_taken_funcrefs`,
+        //     so they are NOT return-flipped — their bodies still
+        //     return raw primitive bits.
+        //   * Devirtualization / inlining narrowing of wrapper-call
+        //     dest locals that were typed `Type::Any` at the call
+        //     boundary but never went through a `BoxValue` insertion.
+        //
+        // Verified by attempting collapse: SEGVs in `runtime_match`,
+        // `runtime_decorator_factory`, `runtime_decorator_factory_optimized`.
+        // After F.1 HeapAny deletion, "guaranteed-tagged Any" is detected via
+        // mir_ty: only locals allocated via alloc_and_add_local get an explicit
+        // mir_ty = Some(Tagged). Variable locals (ty: Any, mir_ty: None) may
+        // carry raw primitive bits from legacy trampolines and must NOT be
+        // routed through rt_obj_* — they use raw BinOp instead.
+        let left_is_any = self.operand_is_guaranteed_tagged(&left_op, &left_ty, mir_func);
+        let right_is_any = self.operand_is_guaranteed_tagged(&right_op, &right_ty, mir_func);
+
+        // Phase 4 ext: HOF lambda user-params arrive tagged from the HOF
+        // runtime (sorted_tagged / map_tagged / reduce_tagged). When such a
+        // param is used directly in a BinOp without a prologue UnboxValue
+        // (because lambda_user_param_flip didn't fire on unannotated params),
+        // the operand carries tagged Value bits but the BinOp expects Raw.
+        // Route through `rt_obj_*` (which dispatches on Value::tag at
+        // runtime) by treating the param-operand as if it were HeapAny.
+        // Restricted to lambda-typed callees so non-HOF Tagged operands
+        // (closure trampoline raw-bit leaks documented in feedback notes)
+        // still hit the raw-BinOp path.
+        let is_lambda_callee = mir_func.is_lambda_like();
+        let operand_is_lambda_tagged_param = |op: &mir::Operand| -> bool {
+            if !is_lambda_callee {
+                return false;
+            }
+            let mir::Operand::Local(id) = op else {
+                return false;
+            };
+            // Param locals are recorded as the first N locals in mir_func.params.
+            let is_param = mir_func.params.iter().any(|p| p.id == *id);
+            if !is_param {
+                return false;
+            }
+            mir_func
+                .locals
+                .get(id)
+                .is_some_and(|l| matches!(l.resolved_mir_type(), pyaot_mir::MirType::Tagged))
+        };
+        let left_is_lambda_param_tagged = operand_is_lambda_tagged_param(&left_op);
+        let right_is_lambda_param_tagged = operand_is_lambda_tagged_param(&right_op);
 
         // Union / Any arithmetic: operands are already boxed pointers — use runtime dispatch
         if left_is_union
@@ -320,6 +356,8 @@ impl<'a> Lowering<'a> {
             || right_is_class
             || left_is_any
             || right_is_any
+            || left_is_lambda_param_tagged
+            || right_is_lambda_param_tagged
         {
             let obj_func = match op {
                 hir::BinOp::Add => Some(mir::RuntimeFunc::Call(
@@ -351,6 +389,31 @@ impl<'a> Lowering<'a> {
                 // representation at runtime; only primitive (Int / Bool /
                 // Float / Str / etc.) operands need to be boxed via
                 // `emit_value_slot` before passing to `rt_obj_*`.
+                //
+                // Storage-Uniform invariant guard: when the operand is a
+                // Local declared `Type::Any` / `Type::Any`, downstream
+                // WPA passes might otherwise narrow it to a primitive
+                // (e.g. monomorphization specialising a wrapper template
+                // where the result of `result = func(*args)` resolves to
+                // Int via a flipped callee). Such narrowing would leave the
+                // `rt_obj_*` call expecting tagged Value but receiving raw
+                // primitive bits, causing a SEGV. Mark these operand Locals
+                // as `abi_immutable = true` so WPA preserves their Any /
+                // HeapAny type — they are ABI-bound at this dispatch site.
+                if left_is_any {
+                    if let mir::Operand::Local(id) = &left_op {
+                        if let Some(l) = mir_func.locals.get_mut(id) {
+                            l.abi_immutable = true;
+                        }
+                    }
+                }
+                if right_is_any {
+                    if let mir::Operand::Local(id) = &right_op {
+                        if let Some(l) = mir_func.locals.get_mut(id) {
+                            l.abi_immutable = true;
+                        }
+                    }
+                }
                 let boxed_left = if left_is_union || left_is_any {
                     left_op
                 } else {
@@ -373,7 +436,7 @@ impl<'a> Lowering<'a> {
                 // return any boxed Value (including a class instance), so
                 // we widen to `HeapAny` to keep downstream lowering correct.
                 let union_result_ty = if left_is_any || right_is_any {
-                    Type::HeapAny
+                    Type::Any
                 } else if union_contains_class(&left_ty) || union_contains_class(&right_ty) {
                     let mut variants: Vec<Type> = vec![Type::Int, Type::Float];
                     if let Type::Union(left_variants) = &left_ty {
@@ -394,12 +457,36 @@ impl<'a> Lowering<'a> {
                 } else {
                     Type::Union(vec![Type::Int, Type::Float])
                 };
-                let union_result = self.emit_runtime_call(
+                let union_result = self.emit_tagged_runtime_call(
                     rt_func,
                     vec![boxed_left, boxed_right],
                     union_result_ty,
                     mir_func,
                 );
+                // Reconcile static and runtime types: when the
+                // class-aware `binop_result_type` (the type-planning
+                // `expr.ty` for this BinOp) narrowed the result to a
+                // primitive `Float`/`Int`, but the runtime dispatch
+                // returns a tagged `Value` (i64), insert an unbox so
+                // the operand's cranelift type matches the narrowed
+                // static type. Without this, downstream lowering that
+                // reads `seed_expr_type` (e.g. `lower_abs` emitting
+                // `FloatAbs` on a `Float`-typed BinOp) would feed
+                // an i64 operand into an f64-expecting instruction.
+                // Note on the static / runtime type mismatch: the
+                // class-aware `binop_result_type` may narrow the
+                // *static* result to `Float` (by dropping a
+                // `Class[Self]` Union variant whose dispatched dunder
+                // is missing), but the runtime dispatch above still
+                // returns a tagged `Value` (i64). Coercion is NOT
+                // inserted here — the caller's chosen consumer (e.g.
+                // `lower_abs`'s `FloatAbs` arm) is responsible for
+                // checking its operand's MIR type and unboxing via
+                // `rt_unbox_float` when the seed-derived static type
+                // narrows past it. Inserting a coercion here would
+                // produce an f64 operand that downstream Union-typed
+                // slots (`union_y: int | float = ...`) would then
+                // need to re-box, defeating the purpose.
                 return Ok(mir::Operand::Local(union_result));
             }
         }
@@ -661,7 +748,11 @@ impl<'a> Lowering<'a> {
         });
 
         // Output local — receives the merged value from both branches.
-        let final_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
+        // Use HeapAny (→ Tagged mir_ty) because the two branches may produce
+        // different concrete Heap shapes (e.g. forward __mul__ returns Str while
+        // reflected __rmul__ also returns Str, but result_ty was Class(LhsType)).
+        // Tagged accepts any heap-pointer-shaped source in the verifier.
+        let final_local = self.alloc_and_add_local(Type::Any, mir_func);
 
         let reflected_bb = self.new_block();
         let cont_bb = self.new_block();
@@ -745,7 +836,7 @@ impl<'a> Lowering<'a> {
     /// `param_idx` is the 0-based index of the parameter in the target
     /// function's signature. Returns the operand unchanged when the
     /// parameter is concrete or when the argument is already heap-typed.
-    pub(in crate::expressions) fn box_dunder_arg_if_needed(
+    pub(crate) fn box_dunder_arg_if_needed(
         &mut self,
         operand: mir::Operand,
         arg_ty: &Type,
@@ -754,12 +845,13 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> mir::Operand {
+        // Box args for Any/Union/HeapAny-typed params (tagged Value consumers).
         let needs_box = hir_module
             .func_defs
             .get(&func_id)
             .and_then(|f| f.params.get(param_idx))
             .and_then(|p| p.ty.as_ref())
-            .is_some_and(|t| matches!(t, Type::Any | Type::Union(_) | Type::HeapAny));
+            .is_some_and(|t| matches!(t, Type::Any | Type::Union(_)));
         if needs_box {
             self.emit_value_slot(operand, arg_ty, mir_func)
         } else {

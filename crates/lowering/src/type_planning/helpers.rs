@@ -10,6 +10,39 @@ use pyaot_types::{Type, TypeLattice, TypeTagKind};
 
 use super::infer::extract_iterable_element_type;
 
+/// Callback signature for "does class `id` define dunder `name`?".
+/// Passed by the `Lowering` context to free helper functions so they can
+/// consult class metadata without depending on the full lowering state.
+/// `None` means callers without class info (free-function callers).
+type ClassHasDunderFn<'a> = Option<&'a dyn Fn(pyaot_utils::ClassId, &str) -> bool>;
+
+/// Whether a reduction's iterator element type "resolves to Float" at
+/// runtime — i.e. the runtime tag is guaranteed to encode an f64 value
+/// (either a tagged INT/BOOL that promotes to float, or a heap-pointer
+/// to a `FloatObj` after `rt_box_float`). When this returns `true`,
+/// reduction lowering (`min`/`max`/`sum`/list-comprehension) routes
+/// the unbox through `rt_unbox_float` (whose ABI shim handles all
+/// numeric tags) instead of `UnwrapValueInt` (which arithmetic-shifts
+/// a pointer's bits into garbage int).
+///
+/// Conservative coverage:
+///   - `Type::Float` — pure float fast-path (legacy behaviour).
+///   - `Type::Any` — tagged `Value` of unknown shape; `rt_unbox_float`'s
+///     ABI shim handles `is_int`/`is_bool`/`is_ptr→FloatObj` cases.
+///   - `Type::Union(variants)` containing `Float` (typically the
+///     polymorphic-dunder seed `Union[Float, Class[Self]]` for a
+///     class field whose runtime values are all `FloatObj` boxes).
+///
+/// Returns `false` for pure `Int`/`Bool`/`Class[T]`/etc — those keep
+/// their existing typed paths.
+pub(crate) fn iter_elem_resolves_to_float(elem_ty: &Type) -> bool {
+    match elem_ty {
+        Type::Float | Type::Any => true,
+        Type::Union(variants) => variants.iter().any(|v| matches!(v, Type::Float)),
+        _ => false,
+    }
+}
+
 /// Resolve the return type of a method call based on the object type and method name.
 /// Returns `None` if the method is not recognized (caller should apply its own fallback).
 pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Option<Type> {
@@ -110,20 +143,49 @@ pub(crate) fn resolve_method_return_type(obj_ty: &Type, method_name: &str) -> Op
     }
 }
 
-/// Infer the type of a binary operation from operand types.
-/// Returns `None` if the type cannot be determined (caller should apply fallback).
 /// Distribute a BinOp element-wise over the variants of a right-hand
 /// `Union`, then join the per-variant results into a canonical type. The
 /// helper is conservative: any variant whose result we can't compute
 /// (operand combination has no rule) contributes its own type to the join,
 /// matching the previous "return the Union as-is" fallback for that arm.
-fn distribute_binop_over_union(op: &hir::BinOp, left_ty: &Type, variants: &[Type]) -> Type {
+///
+/// `class_has_dunder`: optional callback for class-aware filtering. When
+/// provided, a `Class { class_id }` variant is DROPPED from the join if
+/// the class has neither the forward dunder (when on the same side as
+/// the operand here) nor the reflected dunder (when on the opposite
+/// side from a non-Class operand). This addresses the polymorphic-
+/// dunder-seed pollution: `Float ** Union[Self, int, float, bool]`
+/// distributing `Class[Self]` into the result via the structural
+/// "Class on side → class type" fallback even when `Self` defines no
+/// `__rpow__`. The structural fallback is preserved when the callback
+/// is `None` (free-function callers without `&Lowering`).
+fn distribute_binop_over_union(
+    op: &hir::BinOp,
+    left_ty: &Type,
+    variants: &[Type],
+    class_has_dunder: ClassHasDunderFn<'_>,
+) -> Type {
     let mut acc = Type::Never;
+    let mut had_any = false;
     for v in variants {
+        // Class-on-the-right variant: when we have a class-info callback,
+        // drop the variant if neither the forward dunder (on left's
+        // class — only meaningful when left_ty is also Class) nor the
+        // reflected dunder (on this variant's class) is defined. The
+        // structural fallback returns the variant as-is, which is
+        // correct only when at least one dispatched dunder applies.
+        if let (Some(check), Type::Class { class_id, .. }) = (class_has_dunder, v) {
+            if !class_pair_handles_op(
+                op, left_ty, *class_id, check, /* variant_is_right = */ true,
+            ) {
+                continue;
+            }
+        }
         let part = resolve_binop_type(op, left_ty, v).unwrap_or_else(|| v.clone());
         acc = acc.join(&part);
+        had_any = true;
     }
-    if matches!(acc, Type::Never) {
+    if !had_any || matches!(acc, Type::Never) {
         Type::Any
     } else {
         acc
@@ -131,20 +193,101 @@ fn distribute_binop_over_union(op: &hir::BinOp, left_ty: &Type, variants: &[Type
 }
 
 /// Mirror of `distribute_binop_over_union` for the left-hand `Union` case.
-fn distribute_binop_over_union_left(op: &hir::BinOp, variants: &[Type], right_ty: &Type) -> Type {
+fn distribute_binop_over_union_left(
+    op: &hir::BinOp,
+    variants: &[Type],
+    right_ty: &Type,
+    class_has_dunder: ClassHasDunderFn<'_>,
+) -> Type {
     let mut acc = Type::Never;
+    let mut had_any = false;
     for v in variants {
+        if let (Some(check), Type::Class { class_id, .. }) = (class_has_dunder, v) {
+            if !class_pair_handles_op(
+                op, right_ty, *class_id, check, /* variant_is_right = */ false,
+            ) {
+                continue;
+            }
+        }
         let part = resolve_binop_type(op, v, right_ty).unwrap_or_else(|| v.clone());
         acc = acc.join(&part);
+        had_any = true;
     }
-    if matches!(acc, Type::Never) {
+    if !had_any || matches!(acc, Type::Never) {
         Type::Any
     } else {
         acc
     }
 }
 
+/// Returns true if at least one dispatched dunder applies to a binop
+/// where one side is a `Class { class_id: variant_class }` Union variant
+/// and the other side is `other_ty`. `variant_is_right` selects whether
+/// the variant is on the right (forward = `other_ty`'s class — only
+/// meaningful if Class — and reflected = `variant_class.<reflected>`)
+/// or the left (forward = `variant_class.<forward>` and reflected =
+/// `other_ty`'s class). When neither candidate exists, the binop has no
+/// valid dispatch — runtime would raise `TypeError` — so the variant is
+/// dropped from the result join.
+fn class_pair_handles_op(
+    op: &hir::BinOp,
+    other_ty: &Type,
+    variant_class: pyaot_utils::ClassId,
+    class_has_dunder: &dyn Fn(pyaot_utils::ClassId, &str) -> bool,
+    variant_is_right: bool,
+) -> bool {
+    let forward = op.forward_dunder();
+    let reflected = op.reflected_dunder();
+    let (forward_class, reflected_class) = if variant_is_right {
+        // op = other_ty (left) <op> variant_class (right)
+        (
+            if let Type::Class { class_id, .. } = other_ty {
+                Some(*class_id)
+            } else {
+                None
+            },
+            Some(variant_class),
+        )
+    } else {
+        // op = variant_class (left) <op> other_ty (right)
+        (
+            Some(variant_class),
+            if let Type::Class { class_id, .. } = other_ty {
+                Some(*class_id)
+            } else {
+                None
+            },
+        )
+    };
+    let forward_ok = forward_class.is_some_and(|c| class_has_dunder(c, forward));
+    let reflected_ok = reflected_class.is_some_and(|c| class_has_dunder(c, reflected));
+    forward_ok || reflected_ok
+}
+
 pub(crate) fn resolve_binop_type(op: &hir::BinOp, left_ty: &Type, right_ty: &Type) -> Option<Type> {
+    resolve_binop_type_inner(op, left_ty, right_ty, None)
+}
+
+/// Class-aware version: when a `Class` variant appears inside a
+/// `Union`, the callback lets the resolver consult the class's dunder
+/// table and DROP the variant if no dispatched dunder applies.
+/// Free-function callers pass `None` and get the legacy structural
+/// behaviour where every Class variant is preserved.
+pub(crate) fn resolve_binop_type_class_aware(
+    op: &hir::BinOp,
+    left_ty: &Type,
+    right_ty: &Type,
+    class_has_dunder: &dyn Fn(pyaot_utils::ClassId, &str) -> bool,
+) -> Option<Type> {
+    resolve_binop_type_inner(op, left_ty, right_ty, Some(class_has_dunder))
+}
+
+fn resolve_binop_type_inner(
+    op: &hir::BinOp,
+    left_ty: &Type,
+    right_ty: &Type,
+    class_has_dunder: ClassHasDunderFn<'_>,
+) -> Option<Type> {
     // Union arithmetic: result is Union since the actual type depends on
     // runtime values. Division always returns float even for Union (Python
     // 3 semantics).
@@ -166,10 +309,20 @@ pub(crate) fn resolve_binop_type(op: &hir::BinOp, left_ty: &Type, right_ty: &Typ
         // Float-side arithmetic — and only retains the class variant if
         // the dunder genuinely returns it.
         if let Type::Union(variants) = right_ty {
-            return Some(distribute_binop_over_union(op, left_ty, variants));
+            return Some(distribute_binop_over_union(
+                op,
+                left_ty,
+                variants,
+                class_has_dunder,
+            ));
         }
         if let Type::Union(variants) = left_ty {
-            return Some(distribute_binop_over_union_left(op, variants, right_ty));
+            return Some(distribute_binop_over_union_left(
+                op,
+                variants,
+                right_ty,
+                class_has_dunder,
+            ));
         }
     }
 
@@ -318,11 +471,7 @@ pub(crate) fn resolve_index_type(obj_ty: &Type, index_expr: &hir::Expr) -> Type 
     if let Some(elem) = obj_ty.list_elem() {
         // List elements with Any type are heap pointers from ListGet
         let t = elem.clone();
-        return if matches!(t, Type::Any) {
-            Type::HeapAny
-        } else {
-            t
-        };
+        return if matches!(t, Type::Any) { Type::Any } else { t };
     }
     if let Some((_, val)) = obj_ty.dict_kv() {
         return val.clone();
@@ -336,11 +485,7 @@ pub(crate) fn resolve_index_type(obj_ty: &Type, index_expr: &hir::Expr) -> Type 
                 if actual_idx >= 0 && (actual_idx as usize) < elems.len() {
                     let t = elems[actual_idx as usize].clone();
                     // Tuple slots are tagged Values; Any elements are promoted to HeapAny.
-                    return if matches!(t, Type::Any) {
-                        Type::HeapAny
-                    } else {
-                        t
-                    };
+                    return if matches!(t, Type::Any) { Type::Any } else { t };
                 }
             }
             // Fallback: homogeneous → single type, heterogeneous → union
@@ -353,22 +498,14 @@ pub(crate) fn resolve_index_type(obj_ty: &Type, index_expr: &hir::Expr) -> Type 
                     .reduce(|a, b| a.join(&b))
                     .unwrap_or(Type::Never)
             };
-            return if matches!(t, Type::Any) {
-                Type::HeapAny
-            } else {
-                t
-            };
+            return if matches!(t, Type::Any) { Type::Any } else { t };
         }
     }
     // Variable-length tuple — indexing always returns the element type.
     // Bounds-checked at runtime via rt_tuple_get.
     if let Some(elem) = obj_ty.tuple_var_elem() {
         let t = elem.clone();
-        return if matches!(t, Type::Any) {
-            Type::HeapAny
-        } else {
-            t
-        };
+        return if matches!(t, Type::Any) { Type::Any } else { t };
     }
     Type::Any
 }

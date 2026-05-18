@@ -19,7 +19,9 @@ use crate::exceptions::{
     compile_try_setjmp,
 };
 use crate::instructions::calls::box_primitive;
-use crate::utils::{declare_runtime_function, get_call_result, load_operand, type_to_cranelift};
+use crate::utils::{
+    declare_runtime_function, get_call_result, load_operand, mir_type_to_cranelift,
+};
 
 /// Inline `Value::from_int(x)` — `(x << 3) | INT_TAG`. Same shape as
 /// `instructions::tag::compile_value_from_int` but reusable from
@@ -102,10 +104,8 @@ pub fn compile_terminator(
                     // iterators, so yields must arrive as tagged Value bits.
                     let is_generator_resume = ctx.debug.function_name.ends_with("$resume");
                     let coerced_val = if is_generator_resume
-                        || matches!(
-                            ctx.debug.return_type,
-                            Type::Union(_) | Type::Any | Type::HeapAny
-                        ) {
+                        || matches!(ctx.debug.return_type, Type::Union(_) | Type::Any)
+                    {
                         let source_ty = operand_semantic_type(operand, ctx);
                         match source_ty {
                             // §F.7d.2: Int/Bool boxing happens inline as
@@ -137,7 +137,12 @@ pub fn compile_terminator(
                         // (I64|I8, F64) arms below, Cranelift's verifier rejects
                         // the function ("result has type i64, must match function
                         // signature of f64").
-                        let expected_type = type_to_cranelift(ctx.debug.return_type);
+                        // Stage C.3 step 3: derive expected return type via MirType
+                        // so it matches the signature path taken by declare_function /
+                        // define_function (Stage C.3 step 2).
+                        let expected_type = mir_type_to_cranelift(
+                            &pyaot_mir::type_to_mir_type_register(ctx.debug.return_type),
+                        );
                         let val_type = builder.func.dfg.value_type(ret_val);
                         if val_type != expected_type {
                             match (val_type, expected_type) {
@@ -299,7 +304,7 @@ fn coerce_phi_source_for_dest(
         return Ok(value);
     };
 
-    if !matches!(dest_ty, Type::Union(_) | Type::Any | Type::HeapAny) {
+    if !matches!(dest_ty, Type::Union(_) | Type::Any) {
         return Ok(value);
     }
 

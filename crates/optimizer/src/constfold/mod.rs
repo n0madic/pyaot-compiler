@@ -15,6 +15,7 @@ mod tests;
 use std::collections::HashMap;
 
 use pyaot_mir::{Constant, Function, InstructionKind, Module, Operand, RuntimeFunc};
+use pyaot_types::Type;
 use pyaot_utils::{FuncId, LocalId, StringInterner};
 
 use crate::pass::OptimizationPass;
@@ -233,8 +234,7 @@ fn fold_format_calls(func: &mut Function, interner: &mut StringInterner) -> bool
         .flat_map(|b| b.instructions.iter())
         .filter_map(|inst| {
             let dest = match &inst.kind {
-                InstructionKind::ValueFromInt { dest, .. }
-                | InstructionKind::ValueFromBool { dest, .. }
+                InstructionKind::BoxValue { dest, .. }
                 | InstructionKind::RuntimeCall { dest, .. } => *dest,
                 _ => return None,
             };
@@ -270,17 +270,24 @@ fn fold_format_calls(func: &mut Function, interner: &mut StringInterner) -> bool
                     pyaot_format_shared::format_str_spec(&s, &spec_str).ok()
                 }
                 Operand::Local(lid) => match def_map.get(lid) {
-                    // Int was boxed via ValueFromInt { src: Constant::Int(n) }
-                    Some(InstructionKind::ValueFromInt {
+                    // Int was boxed via BoxValue { src: Constant::Int(n), src_type: Int }
+                    Some(InstructionKind::BoxValue {
                         src: Operand::Constant(Constant::Int(n)),
+                        src_type: Type::Int,
                         ..
                     }) => pyaot_format_shared::format_int_spec(*n, &spec_str).ok(),
-                    // Bool was boxed via ValueFromBool { src: Constant::Bool(b) }
-                    Some(InstructionKind::ValueFromBool {
+                    // Bool was boxed via BoxValue { src: Constant::Bool(b), src_type: Bool }
+                    Some(InstructionKind::BoxValue {
                         src: Operand::Constant(Constant::Bool(b)),
+                        src_type: Type::Bool,
                         ..
                     }) => pyaot_format_shared::format_bool_spec(*b, &spec_str).ok(),
-                    // Float was boxed via RT_BOX_FLOAT { args: [Constant::Float(f)] }
+                    // Float was boxed via BoxValue { src: Constant::Float(f), src_type: Float }
+                    Some(InstructionKind::BoxValue {
+                        src: Operand::Constant(Constant::Float(f)),
+                        ..
+                    }) => pyaot_format_shared::format_float_spec(*f, &spec_str).ok(),
+                    // Float was boxed via RT_BOX_FLOAT { args: [Constant::Float(f)] } (legacy)
                     Some(InstructionKind::RuntimeCall {
                         func: RuntimeFunc::Call(def),
                         args: box_args,

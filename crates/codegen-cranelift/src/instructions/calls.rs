@@ -172,10 +172,10 @@ pub(crate) fn compile_call_indirect(
         arg_vals.push(arg_val);
     }
 
-    // Get the destination type to determine return type
+    // Get the destination type to determine return type (Stage C.3 step 3).
     let dest_local = ctx.symbols.locals.get(dest);
     let return_type = dest_local
-        .map(|l| crate::utils::type_to_cranelift(&l.ty))
+        .map(|l| crate::utils::mir_type_to_cranelift(&l.resolved_mir_type()))
         .unwrap_or(cltypes::I64);
 
     // Build the signature for the indirect call using actual value types
@@ -253,7 +253,7 @@ pub(crate) fn compile_call_virtual(
             ))
         }
     };
-    let return_type = crate::utils::type_to_cranelift(&dest_local.ty);
+    let return_type = crate::utils::mir_type_to_cranelift(&dest_local.resolved_mir_type());
 
     // Build the signature for the indirect call using actual value types
     let mut sig = ctx.module.make_signature();
@@ -330,7 +330,7 @@ pub(crate) fn compile_call_virtual_named(
         .locals
         .get(dest)
         .expect("internal error: dest local not found for CallVirtualNamed");
-    let return_type = crate::utils::type_to_cranelift(&dest_local.ty);
+    let return_type = crate::utils::mir_type_to_cranelift(&dest_local.resolved_mir_type());
 
     // Build signature for indirect call
     let mut sig = ctx.module.make_signature();

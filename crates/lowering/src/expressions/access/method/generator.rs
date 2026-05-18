@@ -39,24 +39,26 @@ impl<'a> Lowering<'a> {
                 let raw_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_GENERATOR_SEND),
                     vec![obj_operand, value_operand],
-                    Type::HeapAny,
+                    Type::Any,
                     mir_func,
                 );
 
                 let result_local = match elem_ty {
                     Type::Int => {
                         let dest = self.alloc_and_add_local(Type::Int, mir_func);
-                        self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                        self.emit_instruction(mir::InstructionKind::UnboxValue {
                             dest,
                             src: mir::Operand::Local(raw_local),
+                            dest_type: Type::Int,
                         });
                         dest
                     }
                     Type::Bool => {
                         let dest = self.alloc_and_add_local(Type::Bool, mir_func);
-                        self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+                        self.emit_instruction(mir::InstructionKind::UnboxValue {
                             dest,
                             src: mir::Operand::Local(raw_local),
+                            dest_type: Type::Bool,
                         });
                         dest
                     }

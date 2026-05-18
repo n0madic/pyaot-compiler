@@ -157,7 +157,7 @@ impl<'a> Lowering<'a> {
                         mir::Operand::Local(remaining_dict),
                         mir::Operand::Local(*key_local),
                     ],
-                    Type::HeapAny,
+                    Type::Any,
                     mir_func,
                 );
             }
@@ -248,10 +248,11 @@ impl<'a> Lowering<'a> {
         self.push_block(has_key_bb);
 
         // DictGet returns a boxed pointer for primitive values; use HeapAny to represent
-        // the intermediate boxed pointer. For heap types, it returns the pointer directly.
+        // the intermediate boxed pointer. For heap and Any types, it returns the tagged
+        // Value directly — use HeapAny to signal guaranteed-tagged representation.
         let dict_value_type = match &param_type {
-            Type::Int | Type::Float | Type::Bool => Type::HeapAny, // boxed pointer
-            _ => param_type.clone(),                               // direct pointer
+            Type::Int | Type::Float | Type::Bool | Type::Any => Type::Any, // boxed or tagged Value
+            _ => param_type.clone(),                                       // direct pointer
         };
         let dict_value = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_GET),

@@ -673,6 +673,8 @@ impl<'a> Lowering<'a> {
             let closure_local = if let mir::Operand::Local(l) = inner_result.clone() {
                 l
             } else {
+                // In the tuple-dispatch case branch, inner_result is a
+                // closure TupleObj — a tagged heap pointer.
                 let tmp = self.alloc_and_add_local(Type::Any, mir_func);
                 self.emit_instruction(mir::InstructionKind::Copy {
                     dest: tmp,

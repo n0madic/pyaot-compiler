@@ -81,7 +81,7 @@ impl<'a> Lowering<'a> {
                         gen_op,
                         mir::Operand::Constant(mir::Constant::Int(*idx as i64)),
                     ],
-                    Type::HeapAny,
+                    Type::Any,
                     mir_func,
                 );
                 let result = self.unbox_if_needed(mir::Operand::Local(loaded), &read_ty, mir_func);
@@ -152,7 +152,7 @@ impl<'a> Lowering<'a> {
                 let raw = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&RT_GENERATOR_GET_SENT_VALUE),
                     vec![gen_op],
-                    Type::HeapAny,
+                    Type::Any,
                     mir_func,
                 );
                 let elem_ty = expr.ty.clone().unwrap_or(Type::Int);
@@ -173,23 +173,25 @@ impl<'a> Lowering<'a> {
                 let raw = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&RT_ITER_NEXT_NO_EXC),
                     vec![iter_op],
-                    Type::HeapAny,
+                    Type::Any,
                     mir_func,
                 );
                 let dest = match &dest_ty {
                     Type::Int => {
                         let d = self.alloc_and_add_local(Type::Int, mir_func);
-                        self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                        self.emit_instruction(mir::InstructionKind::UnboxValue {
                             dest: d,
                             src: mir::Operand::Local(raw),
+                            dest_type: Type::Int,
                         });
                         d
                     }
                     Type::Bool => {
                         let d = self.alloc_and_add_local(Type::Bool, mir_func);
-                        self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+                        self.emit_instruction(mir::InstructionKind::UnboxValue {
                             dest: d,
                             src: mir::Operand::Local(raw),
+                            dest_type: Type::Bool,
                         });
                         d
                     }

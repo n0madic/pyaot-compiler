@@ -42,6 +42,7 @@ impl<'a> Lowering<'a> {
         }
         let user_params = &func_def.params[skip..];
         let param_class = ParamClassification::from_params(user_params);
+
         let Some(vararg_param) = param_class.vararg else {
             return arg_operands;
         };

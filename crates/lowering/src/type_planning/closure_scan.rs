@@ -1093,6 +1093,84 @@ impl<'a> Lowering<'a> {
                     );
                 }
             }
+            // f-string format spec wrapping a value expression — recurse so
+            // inline calls inside `f"...{matrix(5)}..."` get harvested.
+            hir::ExprKind::FormatSpec { value, .. } => {
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*value],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+            }
+            // Container literals, subscript, attribute — recurse so inline
+            // calls inside `[matrix(5)]`, `d[matrix(5)]`, etc. get harvested.
+            hir::ExprKind::Tuple(elements) | hir::ExprKind::List(elements) => {
+                for e in elements {
+                    self.scan_expr_for_calls(
+                        &hir_module.exprs[*e],
+                        hir_module,
+                        var_to_func,
+                        overlay,
+                        accumulators,
+                    );
+                }
+            }
+            hir::ExprKind::Set(elements) => {
+                for e in elements {
+                    self.scan_expr_for_calls(
+                        &hir_module.exprs[*e],
+                        hir_module,
+                        var_to_func,
+                        overlay,
+                        accumulators,
+                    );
+                }
+            }
+            hir::ExprKind::Dict(items) => {
+                for (k, v) in items {
+                    self.scan_expr_for_calls(
+                        &hir_module.exprs[*k],
+                        hir_module,
+                        var_to_func,
+                        overlay,
+                        accumulators,
+                    );
+                    self.scan_expr_for_calls(
+                        &hir_module.exprs[*v],
+                        hir_module,
+                        var_to_func,
+                        overlay,
+                        accumulators,
+                    );
+                }
+            }
+            hir::ExprKind::Index { obj, index } => {
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*obj],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*index],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+            }
+            hir::ExprKind::Attribute { obj, .. } => {
+                self.scan_expr_for_calls(
+                    &hir_module.exprs[*obj],
+                    hir_module,
+                    var_to_func,
+                    overlay,
+                    accumulators,
+                );
+            }
             _ => {}
         }
     }

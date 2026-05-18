@@ -1,8 +1,8 @@
 //! Tests for dead code elimination
 
 use pyaot_mir::{
-    BasicBlock, BinOp, Constant, Function, Instruction, InstructionKind, Local, Module, Operand,
-    RuntimeFunc, Terminator,
+    BasicBlock, BinOp, Constant, Function, FunctionKind, Instruction, InstructionKind, Local,
+    Module, Operand, RuntimeFunc, Terminator,
 };
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, FuncId, LocalId};
@@ -17,6 +17,8 @@ fn local(id: u32) -> Local {
         name: None,
         ty: Type::Int,
         is_gc_root: false,
+        abi_immutable: false,
+        mir_ty: None,
     }
 }
 
@@ -619,6 +621,7 @@ fn test_phi_sources_pruned_after_unreachable_block_removal() {
 
     let mut func = Function {
         id: FuncId::from(0u32),
+        kind: FunctionKind::Regular,
         name: "f".to_string(),
         params: Vec::new(),
         return_type: Type::Int,
@@ -630,7 +633,10 @@ fn test_phi_sources_pruned_after_unreachable_block_removal() {
         is_generic_template: false,
         typevar_params: Vec::new(),
         wrapper_fn_ptr_capture_index: None,
+        phase4_return_abi_flipped: false,
+        phase4_original_return_type: None,
         dom_tree_cache: std::cell::OnceCell::new(),
+        signature: None,
     };
 
     let removed = eliminate_unreachable_blocks(&mut func);

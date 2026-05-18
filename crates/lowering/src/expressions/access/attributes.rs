@@ -167,35 +167,16 @@ impl<'a> Lowering<'a> {
 
                 // 2. Check for regular field access
                 if let Some(&offset) = class_info.field_offsets.get(&attr) {
-                    let storage_type = class_info
+                    // Storage is uniform tagged `Value`. The logical type
+                    // (`field_types[field]`) drives the post-load unbox in
+                    // `emit_instance_get_field`. Refined types and the
+                    // heap-writes side-table are folded into `field_types`
+                    // post type-planning (Phase 2).
+                    let read_type = class_info
                         .field_types
                         .get(&attr)
                         .cloned()
                         .unwrap_or(Type::Any);
-                    // The refined class field type reflects the actual values
-                    // flowing into `self.<field>` across all constructor call
-                    // sites. WPA param inference narrows the `__init__`
-                    // parameter to the same type, so runtime storage matches
-                    // the refined label (raw primitive for Int / Bool, boxed
-                    // FloatObj pointer for Float — see §F.1, pointer for heap
-                    // shapes). `emit_instance_get_field` emits the unbox for
-                    // Float fields automatically and relabels other reads.
-                    //
-                    // Override to `HeapAny` if the cross-instance harvester
-                    // recorded a compound write to this field (autograd-
-                    // style accumulator). The runtime tag may be a heap
-                    // pointer, so we mustn't `UnwrapValueInt` the load —
-                    // `emit_instance_get_field` with `read_type == HeapAny`
-                    // returns the tagged `Value` verbatim, which downstream
-                    // `lower_binop` then routes through `rt_obj_*` (commit
-                    // 1d41b98) for correct tag-aware arithmetic.
-                    let read_type = if self.field_has_heap_writes(*class_id, attr) {
-                        Type::HeapAny
-                    } else {
-                        self.get_refined_class_field_type(class_id, &attr)
-                            .cloned()
-                            .unwrap_or(storage_type)
-                    };
 
                     let result_local =
                         self.emit_instance_get_field(obj_operand, offset, read_type, mir_func);
@@ -310,9 +291,20 @@ impl<'a> Lowering<'a> {
 
                 // Lower method arguments
                 let mut call_args = vec![self_operand];
-                for arg_id in args {
+                for (arg_idx, arg_id) in args.iter().enumerate() {
                     let arg_expr = &hir_module.exprs[*arg_id];
-                    call_args.push(self.lower_expr(arg_expr, hir_module, mir_func)?);
+                    let arg_op = self.lower_expr(arg_expr, hir_module, mir_func)?;
+                    // Phase 4: box arg if parent method param is annotated primitive.
+                    let arg_ty = self.operand_type(&arg_op, mir_func);
+                    let coerced = self.box_dunder_arg_if_needed(
+                        arg_op,
+                        &arg_ty,
+                        parent_method_func_id,
+                        arg_idx + 1, // skip self (param 0)
+                        hir_module,
+                        mir_func,
+                    );
+                    call_args.push(coerced);
                 }
 
                 // Emit direct call to parent method (static dispatch)

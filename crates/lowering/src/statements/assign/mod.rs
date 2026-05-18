@@ -131,16 +131,39 @@ impl<'a> Lowering<'a> {
                         func: *func,
                     });
 
+                    // Phase 4 (Storage-Uniform): mirror of `lower_closure`
+                    // marker injection. OR-in the
+                    // `PHASE4_TAGGED_USER_ARGS_MARKER` bit when the callee
+                    // is `phase4_safe` so the trampoline switches user-arg
+                    // extraction to `extract_tuple_keeping_values`. The
+                    // lambda body's prologue unboxes primitive-annotated
+                    // user params via `UnboxValue` MIR ops.
+                    let func_addr_marked = if self.is_phase4_safe(*func) && !captures.is_empty() {
+                        let marked = self.alloc_and_add_local(Type::Int, mir_func);
+                        self.emit_instruction(mir::InstructionKind::BinOp {
+                            dest: marked,
+                            op: mir::BinOp::BitOr,
+                            left: mir::Operand::Local(func_addr_local),
+                            right: mir::Operand::Constant(mir::Constant::Int(
+                                crate::PHASE4_TAGGED_USER_ARGS_MARKER,
+                            )),
+                        });
+                        marked
+                    } else {
+                        func_addr_local
+                    };
+
                     // §F.5: wrap the raw i64 function pointer as a tagged
                     // `Value::from_int` so the closure tuple slot 0 reads
                     // as `is_ptr() == false`. Without this, the GC's mark
                     // walk would treat the function-code address as a heap
                     // pointer and either follow it (SEGV) or rely on the
                     // address-heuristic filter, which §F.8 removes.
-                    let func_addr_value = self.alloc_stack_local(Type::HeapAny, mir_func);
-                    self.emit_instruction(mir::InstructionKind::ValueFromInt {
+                    let func_addr_value = self.alloc_stack_local(Type::Any, mir_func);
+                    self.emit_instruction(mir::InstructionKind::BoxValue {
                         dest: func_addr_value,
-                        src: mir::Operand::Local(func_addr_local),
+                        src: mir::Operand::Local(func_addr_marked),
+                        src_type: Type::Int,
                     });
 
                     // Lower all capture expressions
@@ -178,10 +201,11 @@ impl<'a> Lowering<'a> {
                     let fn_ptr_idx = self.wrapper_fn_ptr_capture_index(*func, hir_module);
                     for (i, capture_op) in capture_operands.iter().enumerate() {
                         let stored_op = if Some(i) == fn_ptr_idx {
-                            let wrapped = self.alloc_stack_local(Type::HeapAny, mir_func);
-                            self.emit_instruction(mir::InstructionKind::ValueFromInt {
+                            let wrapped = self.alloc_stack_local(Type::Any, mir_func);
+                            self.emit_instruction(mir::InstructionKind::BoxValue {
                                 dest: wrapped,
                                 src: capture_op.clone(),
+                                src_type: Type::Int,
                             });
                             mir::Operand::Local(wrapped)
                         } else {
@@ -350,7 +374,7 @@ impl<'a> Lowering<'a> {
             let base = self
                 .get_base_var_type(&target)
                 .cloned()
-                .filter(|ty| !matches!(ty, Type::Any | Type::HeapAny));
+                .filter(|ty| !matches!(ty, Type::Any));
             self.lowering_seed_info
                 .refined_container_types
                 .get(&target)
@@ -368,20 +392,19 @@ impl<'a> Lowering<'a> {
 
         let value_type = self.resolved_value_type_hint(value, &value_operand, hir_module, mir_func);
         let seed_value_type = self.seed_expr_type(value, hir_module);
-        let semantic_value_type =
-            if matches!(value_type, Type::Any | Type::HeapAny | Type::Union(_))
-                && seed_value_type != value_type
-                && !matches!(seed_value_type, Type::Any | Type::HeapAny | Type::Union(_))
-            {
-                seed_value_type
-            } else {
-                value_type.clone()
-            };
+        let semantic_value_type = if matches!(value_type, Type::Any | Type::Union(_))
+            && seed_value_type != value_type
+            && !matches!(seed_value_type, Type::Any | Type::Union(_))
+        {
+            seed_value_type
+        } else {
+            value_type.clone()
+        };
 
         let mut var_type = initial_var_type;
         if !has_explicit_type_hint
-            && matches!(var_type, Type::Any | Type::HeapAny)
-            && !matches!(value_type, Type::Any | Type::HeapAny)
+            && matches!(var_type, Type::Any)
+            && !matches!(value_type, Type::Any)
         {
             var_type = value_type.clone();
         }
@@ -450,6 +473,43 @@ impl<'a> Lowering<'a> {
         } else {
             // Local variable: standard copy
             let dest_local = self.get_or_create_local(target, var_type.clone(), mir_func);
+            // Storage-Uniform invariant: a `Type::Any` / `Type::Any` slot
+            // must hold a tagged Value, never raw primitive bits. When the
+            // dest local was previously allocated as Any (e.g. via prescan
+            // fallback or an earlier reference before this binding) but the
+            // RHS produces a concrete primitive, box the operand before the
+            // Copy. Otherwise the slot holds raw Int / Bool / Float bits
+            // while its declared type signals "tagged Value", and any
+            // downstream `rt_obj_*` dispatch (e.g. binop dispatch routed
+            // through `Type::Any` operand) would interpret the raw bits as
+            // a tagged Value and SEGV.
+            let storage_ty_pre = mir_func.locals[&dest_local].ty.clone();
+            // Determine the underlying primitive type, considering both the
+            // declared `value_type` and the actual MIR-level type of the
+            // operand Local (which may have been narrowed by
+            // `rewrite_phase4_callee_returns` to a primitive after a flipped
+            // callee's return is unboxed).
+            let final_operand_src_ty = match &final_operand {
+                mir::Operand::Local(id) => mir_func
+                    .locals
+                    .get(id)
+                    .map(|l| l.ty.clone())
+                    .unwrap_or_else(|| value_type.clone()),
+                _ => value_type.clone(),
+            };
+            let primitive_src_ty = match &value_type {
+                Type::Int | Type::Bool | Type::Float | Type::None => Some(value_type.clone()),
+                _ => match &final_operand_src_ty {
+                    Type::Int | Type::Bool | Type::Float | Type::None => {
+                        Some(final_operand_src_ty.clone())
+                    }
+                    _ => None,
+                },
+            };
+            let final_operand = match (&storage_ty_pre, primitive_src_ty) {
+                (Type::Any, Some(src_ty)) => self.emit_value_slot(final_operand, &src_ty, mir_func),
+                _ => final_operand,
+            };
             self.emit_instruction(mir::InstructionKind::Copy {
                 dest: dest_local,
                 src: final_operand,
@@ -458,8 +518,8 @@ impl<'a> Lowering<'a> {
             let storage_ty = mir_func.locals[&dest_local].ty.clone();
             let needs_post_assign_narrowing = !has_explicit_type_hint
                 && storage_ty != semantic_value_type
-                && !matches!(semantic_value_type, Type::Any | Type::HeapAny)
-                && matches!(storage_ty, Type::Any | Type::HeapAny | Type::Union(_));
+                && !matches!(semantic_value_type, Type::Any)
+                && matches!(storage_ty, Type::Any | Type::Union(_));
 
             if needs_post_assign_narrowing {
                 let narrowed_local = self.materialize_narrowed_local_from_operand(

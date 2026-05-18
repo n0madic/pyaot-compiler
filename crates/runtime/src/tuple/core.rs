@@ -893,6 +893,24 @@ pub extern "C" fn rt_call_with_tuple_args_abi(func_ptr: i64, args_tuple: Value) 
     rt_call_with_tuple_args(func_ptr, args_tuple.unwrap_ptr())
 }
 
+/// Bit 60 of the closure-stored function pointer encodes the user-arg ABI
+/// of the callee: 0 = legacy raw delivery, 1 = Phase 4 tagged delivery.
+/// Set by lowering at closure construction (`lower_closure`) when the
+/// callee is `phase4_safe`.
+///
+/// **Why bit 60, not bit 63**: the closure tuple stores the func pointer
+/// as a `BoxValue { src_type: Int }` tagged Value, encoded as
+/// `(p << 3) | 1`. A marker on bit 63 would shift to bit 66 and be lost
+/// to truncation; bit 60 shifts to bit 63 (still in i64 range), and the
+/// arithmetic right-shift on unbox sign-extends — the trampoline below
+/// clears bits 60-63 before invoking. Function pointers on x86_64 /
+/// ARM64 fit in 48 bits, so bit 60 is always 0 in canonical user-space
+/// addresses.
+const PHASE4_TAGGED_USER_ARGS_MARKER: i64 = 1i64 << 60;
+/// Mask applied to recover the actual function pointer: clears bits
+/// 60-63 (marker bit + sign-extension residue from `UnboxValue Int`).
+const PHASE4_FUNC_PTR_MASK: i64 = (1i64 << 60) - 1;
+
 /// Stage E (unified closure ABI): closure-trampoline call entry point that
 /// extracts captures and user-args from SEPARATE tuples respecting each
 /// tuple's own elem_tag. Replaces the prior `rt_tuple_concat` +
@@ -901,8 +919,13 @@ pub extern "C" fn rt_call_with_tuple_args_abi(func_ptr: i64, args_tuple: Value) 
 /// to a callee that still expected raw primitives in user-visible param slots.
 ///
 /// Capture slots arrive as tagged Values (ValueFromInt/ValueFromBool); the
-/// callee's prologue unwraps them. Args slots arrive as raw scalars; the
-/// helper unwraps them so user-visible Int/Bool params receive raw values.
+/// callee's prologue unwraps them. User-arg delivery depends on the
+/// `PHASE4_TAGGED_USER_ARGS_MARKER` bit of `func_ptr`:
+/// - Bit clear (legacy): args are unwrapped to raw scalars; user-visible
+///   Int/Bool params receive raw values.
+/// - Bit set (Phase 4 tagged ABI): args are kept as tagged Value bits;
+///   the callee's prologue unboxes primitive-annotated user params via
+///   `UnboxValue` MIR ops — symmetric with the captures path.
 pub fn rt_call_with_captures_and_args(
     func_ptr: i64,
     captures_tuple: *mut Obj,
@@ -911,11 +934,17 @@ pub fn rt_call_with_captures_and_args(
     if func_ptr == 0 {
         return 0;
     }
+    let phase4_tagged = (func_ptr & PHASE4_TAGGED_USER_ARGS_MARKER) != 0;
+    let actual_func_ptr = func_ptr & PHASE4_FUNC_PTR_MASK;
     unsafe {
         let mut call_args = [0i64; MAX_CALL_ARGS];
         let n_caps = extract_tuple_keeping_values(captures_tuple, &mut call_args, 0);
-        let n_args = extract_tuple_unwrapping_values(args_tuple, &mut call_args, n_caps);
-        dispatch_call_with_args(func_ptr, &call_args, n_caps + n_args)
+        let n_args = if phase4_tagged {
+            extract_tuple_keeping_values(args_tuple, &mut call_args, n_caps)
+        } else {
+            extract_tuple_unwrapping_values(args_tuple, &mut call_args, n_caps)
+        };
+        dispatch_call_with_args(actual_func_ptr, &call_args, n_caps + n_args)
     }
 }
 #[export_name = "rt_call_with_captures_and_args"]

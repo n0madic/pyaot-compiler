@@ -322,7 +322,21 @@ impl<'a> Lowering<'a> {
                     src: iter_operand,
                 });
 
-                let is_float_iter = matches!(elem_ty.as_ref(), Type::Float);
+                // `is_float_iter` selects the unbox path (`rt_unbox_float`)
+                // over `UnwrapValueInt`. The shared
+                // `iter_elem_resolves_to_float` helper widens detection
+                // beyond pure `Type::Float` to also cover `Type::Any`
+                // and `Type::Union` containing `Float` — both of which
+                // can appear when a class field's harvested type is the
+                // polymorphic-dunder seed `Union[Float, Class[Self]]`
+                // (autograd-style Value.data) but the runtime tag at
+                // every yield site is always a `FloatObj` pointer.
+                // `rt_unbox_float`'s ABI shim handles tagged INT/BOOL/
+                // None/`*FloatObj` uniformly, so the float path is
+                // correct for any tagged-Value yield whose numeric
+                // content is float-shaped at runtime.
+                let is_float_iter =
+                    crate::type_planning::helpers::iter_elem_resolves_to_float(elem_ty.as_ref());
                 let iter_result_type = if is_float_iter {
                     Type::Float
                 } else {
@@ -340,16 +354,17 @@ impl<'a> Lowering<'a> {
                 let first_raw = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
                     vec![mir::Operand::Local(iter_local)],
-                    Type::HeapAny,
+                    Type::Any,
                     mir_func,
                 );
                 let first_local = if is_float_iter {
                     first_raw
                 } else {
                     let dest = self.alloc_and_add_local(Type::Int, mir_func);
-                    self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                    self.emit_instruction(mir::InstructionKind::UnboxValue {
                         dest,
                         src: mir::Operand::Local(first_raw),
+                        dest_type: Type::Int,
                     });
                     dest
                 };
@@ -392,12 +407,10 @@ impl<'a> Lowering<'a> {
                 let result_local = self.alloc_and_add_local(iter_result_type.clone(), mir_func);
                 if is_float_iter {
                     // The iterator yields a pointer to a boxed FloatObj. Unbox to get raw f64.
-                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    self.emit_instruction(mir::InstructionKind::UnboxValue {
                         dest: result_local,
-                        func: mir::RuntimeFunc::Call(
-                            &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
-                        ),
-                        args: vec![mir::Operand::Local(first_local)],
+                        src: mir::Operand::Local(first_local),
+                        dest_type: Type::Float,
                     });
                 } else {
                     self.emit_instruction(mir::InstructionKind::Copy {
@@ -422,16 +435,17 @@ impl<'a> Lowering<'a> {
                 let raw_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
                     vec![mir::Operand::Local(iter_local)],
-                    Type::HeapAny,
+                    Type::Any,
                     mir_func,
                 );
                 let next_local = if is_float_iter {
                     raw_local
                 } else {
                     let dest = self.alloc_and_add_local(Type::Int, mir_func);
-                    self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                    self.emit_instruction(mir::InstructionKind::UnboxValue {
                         dest,
                         src: mir::Operand::Local(raw_local),
+                        dest_type: Type::Int,
                     });
                     dest
                 };
@@ -456,12 +470,12 @@ impl<'a> Lowering<'a> {
 
                 // For float iterators, unbox the boxed FloatObj pointer from IterNextNoExc.
                 let item_operand = if is_float_iter {
-                    let float_local = self.emit_runtime_call(
-                        mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT),
-                        vec![mir::Operand::Local(next_local)],
-                        Type::Float,
-                        mir_func,
-                    );
+                    let float_local = self.alloc_and_add_local(Type::Float, mir_func);
+                    self.emit_instruction(mir::InstructionKind::UnboxValue {
+                        dest: float_local,
+                        src: mir::Operand::Local(next_local),
+                        dest_type: Type::Float,
+                    });
                     mir::Operand::Local(float_local)
                 } else {
                     mir::Operand::Local(next_local)

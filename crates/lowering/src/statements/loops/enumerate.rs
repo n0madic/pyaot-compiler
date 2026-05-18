@@ -643,9 +643,10 @@ impl<'a> Lowering<'a> {
             Type::Any,
             mir_func,
         );
-        self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+        self.emit_instruction(mir::InstructionKind::UnboxValue {
             dest: counter_local,
             src: mir::Operand::Local(boxed_counter),
+            dest_type: Type::Int,
         });
 
         // Unpack elem (index 1)

@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod abi_repair;
+pub mod box_fusion;
 pub mod call_graph;
 pub mod constfold;
 pub mod dce;
@@ -20,6 +21,7 @@ pub mod inline;
 pub mod monomorphize;
 pub mod pass;
 pub mod peephole;
+pub mod raw_demotion;
 pub mod type_inference;
 
 use pyaot_mir::Module;
@@ -42,6 +44,15 @@ pub struct OptimizeConfig {
     pub dce: bool,
     /// Enable constant folding and propagation
     pub constfold: bool,
+    /// Enable raw-local demotion (stub — no-op until Phase 5 implements
+    /// escape analysis + tagged-to-raw rewriting). Activated as part of
+    /// the Storage-Uniform Phase 4 atomic landing.
+    pub raw_demotion: bool,
+    /// Enable box/unbox fusion — adjacent-pair cancellation for tagged
+    /// `Value` box/unbox operations on `Float`. Recovers part of the
+    /// performance lost when Phase 2 collapsed class-field storage to
+    /// uniform tagged Value slots. Phase 6 of the Storage-Uniform refactor.
+    pub box_fusion: bool,
 }
 
 impl Default for OptimizeConfig {
@@ -53,6 +64,8 @@ impl Default for OptimizeConfig {
             inline_threshold: 50,
             dce: true,
             constfold: true,
+            raw_demotion: true,
+            box_fusion: true,
         }
     }
 }
@@ -92,6 +105,8 @@ mod tests {
             name: None,
             ty: ty.clone(),
             is_gc_root: ty.is_heap(),
+            abi_immutable: false,
+            mir_ty: None,
         }
     }
 
@@ -123,6 +138,7 @@ mod tests {
         );
         Function {
             id: FuncId::from(func_id),
+            kind: pyaot_mir::FunctionKind::from_name_and_id(name, FuncId::from(func_id)),
             name: name.to_string(),
             params,
             return_type,
@@ -134,7 +150,10 @@ mod tests {
             is_generic_template: false,
             typevar_params: Vec::new(),
             wrapper_fn_ptr_capture_index: None,
+            phase4_return_abi_flipped: false,
+            phase4_original_return_type: None,
             dom_tree_cache: std::cell::OnceCell::new(),
+            signature: None,
         }
     }
 
@@ -591,6 +610,7 @@ mod tests {
                 init_func_id: Some(FuncId::from(50u32)),
                 field_offsets: IndexMap::from([(field_name, 0usize)]),
                 field_types: IndexMap::from([(field_name, Type::Int)]),
+                field_mir_types: IndexMap::new(),
                 base_class: None,
                 is_protocol: false,
             },

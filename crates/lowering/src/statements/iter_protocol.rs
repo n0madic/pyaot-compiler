@@ -188,21 +188,21 @@ impl<'a> Lowering<'a> {
             return Ok(());
         }
         // Any/HeapAny: use rt_iter_value for runtime type dispatch.
-        if matches!(iter_type, Type::Any | Type::HeapAny) {
+        if matches!(iter_type, Type::Any) {
             let iter_operand = self.lower_expr(iter_expr, hir_module, mir_func)?;
             let iter_local = self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_VALUE),
                 vec![iter_operand],
-                Type::HeapAny,
+                Type::Any,
                 mir_func,
             );
-            let value_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
+            let value_local = self.alloc_and_add_local(Type::Any, mir_func);
             self.codegen.iter_cache.insert(
                 iter_id,
                 IterState::Protocol {
                     iter_local,
                     value_local,
-                    elem_type: Type::HeapAny,
+                    elem_type: Type::Any,
                 },
             );
             return Ok(());
@@ -367,12 +367,11 @@ impl<'a> Lowering<'a> {
             IterableKind::File => unreachable!("handled above"),
             IterableKind::List | IterableKind::Tuple => unreachable!("handled above"),
         };
-        let iter_local =
-            self.emit_runtime_call(rt_func, vec![iter_operand], Type::HeapAny, mir_func);
+        let iter_local = self.emit_runtime_call(rt_func, vec![iter_operand], Type::Any, mir_func);
         // Allocate value_local as HeapAny (next returns *mut Obj). Will
         // be populated by IterHasNext (calls next first) and read by
         // IterAdvance.
-        let value_local = self.alloc_and_add_local(Type::HeapAny, mir_func);
+        let value_local = self.alloc_and_add_local(Type::Any, mir_func);
 
         self.codegen.iter_cache.insert(
             iter_id,
@@ -569,17 +568,19 @@ impl<'a> Lowering<'a> {
                 let bound_operand = match &elem_type {
                     Type::Int => {
                         let int_local = self.alloc_and_add_local(Type::Int, mir_func);
-                        self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                        self.emit_instruction(mir::InstructionKind::UnboxValue {
                             dest: int_local,
                             src: mir::Operand::Local(value_local),
+                            dest_type: Type::Int,
                         });
                         mir::Operand::Local(int_local)
                     }
                     Type::Bool => {
                         let bool_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                        self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+                        self.emit_instruction(mir::InstructionKind::UnboxValue {
                             dest: bool_local,
                             src: mir::Operand::Local(value_local),
+                            dest_type: Type::Bool,
                         });
                         mir::Operand::Local(bool_local)
                     }
@@ -685,7 +686,7 @@ impl<'a> Lowering<'a> {
                 let next_tmp = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&runtime_func_def::RT_ITER_NEXT_NO_EXC),
                     vec![mir::Operand::Local(iter_local)],
-                    Type::HeapAny,
+                    Type::Any,
                     mir_func,
                 );
                 self.emit_instruction(mir::InstructionKind::Copy {

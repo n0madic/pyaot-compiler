@@ -395,10 +395,8 @@ fn instruction_def(kind: &InstructionKind) -> Option<LocalId> {
         | IntToFloat { dest, .. }
         | FloatBits { dest, .. }
         | IntBitsToFloat { dest, .. }
-        | ValueFromInt { dest, .. }
-        | UnwrapValueInt { dest, .. }
-        | ValueFromBool { dest, .. }
-        | UnwrapValueBool { dest, .. }
+        | BoxValue { dest, .. }
+        | UnboxValue { dest, .. }
         | FloatAbs { dest, .. }
         | ExcGetType { dest }
         | ExcHasException { dest }
@@ -443,10 +441,8 @@ fn instruction_uses(kind: &InstructionKind) -> Vec<LocalId> {
         | IntToFloat { src, .. }
         | FloatBits { src, .. }
         | IntBitsToFloat { src, .. }
-        | ValueFromInt { src, .. }
-        | UnwrapValueInt { src, .. }
-        | ValueFromBool { src, .. }
-        | UnwrapValueBool { src, .. }
+        | BoxValue { src, .. }
+        | UnboxValue { src, .. }
         | FloatAbs { src, .. } => push_op(src, &mut out),
         Call { func, args, .. } => {
             push_op(func, &mut out);
@@ -485,7 +481,7 @@ mod tests {
     use pyaot_types::Type;
     use pyaot_utils::FuncId;
 
-    use crate::{BasicBlock, Constant, Function, Instruction, Local};
+    use crate::{BasicBlock, Constant, Function, FunctionKind, Instruction, Local};
 
     fn local(id: u32, ty: Type) -> Local {
         Local {
@@ -493,6 +489,8 @@ mod tests {
             name: None,
             ty,
             is_gc_root: false,
+            abi_immutable: false,
+            mir_ty: None,
         }
     }
 
@@ -539,6 +537,7 @@ mod tests {
 
         Function {
             id: FuncId::from(0u32),
+            kind: FunctionKind::Regular,
             name: "valid".to_string(),
             params: Vec::new(),
             return_type: Type::Int,
@@ -550,7 +549,10 @@ mod tests {
             is_generic_template: false,
             typevar_params: Vec::new(),
             wrapper_fn_ptr_capture_index: None,
+            phase4_return_abi_flipped: false,
+            phase4_original_return_type: None,
             dom_tree_cache: std::cell::OnceCell::new(),
+            signature: None,
         }
     }
 
@@ -625,6 +627,7 @@ mod tests {
 
         let func = Function {
             id: FuncId::from(0u32),
+            kind: FunctionKind::Regular,
             name: "bad".to_string(),
             params: Vec::new(),
             return_type: Type::None,
@@ -636,7 +639,10 @@ mod tests {
             is_generic_template: false,
             typevar_params: Vec::new(),
             wrapper_fn_ptr_capture_index: None,
+            phase4_return_abi_flipped: false,
+            phase4_original_return_type: None,
             dom_tree_cache: std::cell::OnceCell::new(),
+            signature: None,
         };
 
         let err = check(&func).unwrap_err();
@@ -677,6 +683,7 @@ mod tests {
 
         let func = Function {
             id: FuncId::from(0u32),
+            kind: FunctionKind::Regular,
             name: "bad".to_string(),
             params: Vec::new(),
             return_type: Type::None,
@@ -688,7 +695,10 @@ mod tests {
             is_generic_template: false,
             typevar_params: Vec::new(),
             wrapper_fn_ptr_capture_index: None,
+            phase4_return_abi_flipped: false,
+            phase4_original_return_type: None,
             dom_tree_cache: std::cell::OnceCell::new(),
+            signature: None,
         };
 
         let err = check(&func).unwrap_err();
@@ -752,6 +762,7 @@ mod tests {
 
         let func = Function {
             id: FuncId::from(0u32),
+            kind: FunctionKind::Regular,
             name: "dom".to_string(),
             params: Vec::new(),
             return_type: Type::Int,
@@ -763,7 +774,10 @@ mod tests {
             is_generic_template: false,
             typevar_params: Vec::new(),
             wrapper_fn_ptr_capture_index: None,
+            phase4_return_abi_flipped: false,
+            phase4_original_return_type: None,
             dom_tree_cache: std::cell::OnceCell::new(),
+            signature: None,
         };
 
         assert_eq!(check(&func), Ok(()));
@@ -827,6 +841,7 @@ mod tests {
 
         let func = Function {
             id: FuncId::from(0u32),
+            kind: FunctionKind::Regular,
             name: "nodom".to_string(),
             params: Vec::new(),
             return_type: Type::Int,
@@ -838,7 +853,10 @@ mod tests {
             is_generic_template: false,
             typevar_params: Vec::new(),
             wrapper_fn_ptr_capture_index: None,
+            phase4_return_abi_flipped: false,
+            phase4_original_return_type: None,
             dom_tree_cache: std::cell::OnceCell::new(),
+            signature: None,
         };
 
         let err = check(&func).unwrap_err();
@@ -923,6 +941,7 @@ mod tests {
 
         let func = Function {
             id: FuncId::from(0u32),
+            kind: FunctionKind::Regular,
             name: "test".to_string(),
             params: Vec::new(),
             return_type: Type::Int,
@@ -934,7 +953,10 @@ mod tests {
             is_generic_template: false,
             typevar_params: Vec::new(),
             wrapper_fn_ptr_capture_index: None,
+            phase4_return_abi_flipped: false,
+            phase4_original_return_type: None,
             dom_tree_cache: std::cell::OnceCell::new(),
+            signature: None,
         };
 
         assert!(check(&func).is_ok());
@@ -982,6 +1004,7 @@ mod tests {
 
         let func = Function {
             id: FuncId::from(0u32),
+            kind: FunctionKind::Regular,
             name: "test".to_string(),
             params: Vec::new(),
             return_type: Type::Int,
@@ -993,7 +1016,10 @@ mod tests {
             is_generic_template: false,
             typevar_params: Vec::new(),
             wrapper_fn_ptr_capture_index: None,
+            phase4_return_abi_flipped: false,
+            phase4_original_return_type: None,
             dom_tree_cache: std::cell::OnceCell::new(),
+            signature: None,
         };
 
         let err = check(&func).unwrap_err();
@@ -1050,6 +1076,7 @@ mod tests {
 
         let func = Function {
             id: FuncId::from(0u32),
+            kind: FunctionKind::Regular,
             name: "test".to_string(),
             params: Vec::new(),
             return_type: Type::Int,
@@ -1061,7 +1088,10 @@ mod tests {
             is_generic_template: false,
             typevar_params: Vec::new(),
             wrapper_fn_ptr_capture_index: None,
+            phase4_return_abi_flipped: false,
+            phase4_original_return_type: None,
             dom_tree_cache: std::cell::OnceCell::new(),
+            signature: None,
         };
 
         let err = check(&func).unwrap_err();

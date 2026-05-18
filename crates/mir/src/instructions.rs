@@ -125,14 +125,33 @@ pub enum InstructionKind {
     IntBitsToFloat { dest: LocalId, src: Operand },
 
     // ==================== Value tag boxing/unboxing instructions ====================
-    /// Box i64 into a tagged Value: `(src << 3) | 1`
-    ValueFromInt { dest: LocalId, src: Operand },
-    /// Extract i64 from a tagged Value (arithmetic right shift): `(v as i64) >> 3`
-    UnwrapValueInt { dest: LocalId, src: Operand },
-    /// Box i8 bool into a tagged Value: zero-extend, then `(b << 3) | 3`
-    ValueFromBool { dest: LocalId, src: Operand },
-    /// Extract i8 bool from a tagged Value: `((v >> 3) & 1) as i8`
-    UnwrapValueBool { dest: LocalId, src: Operand },
+    /// Unified box: tag a primitive into a tagged `Value`. Codegen lowers
+    /// based on `src_type`:
+    /// - `Int`  → `(src << 3) | 1`
+    /// - `Bool` → `(src << 3) | 3`  (with i8→i64 zext)
+    /// - `Float` → `rt_box_float(src)`  (heap-allocated `FloatObj`)
+    /// - `None` → `rt_box_none()`       (singleton `NoneObj`)
+    ///
+    /// Pass-through guard: if `src`'s operand type is already a tagged
+    /// `Value` (`HeapAny` / `Union` / `Any`) **and** `src_type == Float`,
+    /// codegen emits a no-op copy — eliminates the historical
+    /// `emit_value_slot` Float-passthrough hack (lib.rs:108-113).
+    BoxValue {
+        dest: LocalId,
+        src: Operand,
+        src_type: Type,
+    },
+
+    /// Unified unbox: extract a primitive from a tagged `Value`. Codegen
+    /// lowers based on `dest_type`:
+    /// - `Int`  → arithmetic right shift `>> 3`
+    /// - `Bool` → `((v >> 3) & 1) as i8`
+    /// - `Float` → `rt_unbox_float(src)`  (tag-dispatching unbox)
+    UnboxValue {
+        dest: LocalId,
+        src: Operand,
+        dest_type: Type,
+    },
 
     // ==================== Math instructions ====================
     /// Absolute value of float: abs(x)
@@ -217,6 +236,7 @@ pub enum InstructionKind {
 #[cfg(test)]
 mod value_tag_kinds {
     use super::*;
+    use pyaot_types::Type;
     use pyaot_utils::LocalId;
 
     fn lid(id: u32) -> LocalId {
@@ -228,50 +248,42 @@ mod value_tag_kinds {
     }
 
     #[test]
-    fn value_from_int_constructs() {
+    fn box_value_constructs() {
         let dest = lid(1);
         let src = Operand::Constant(crate::Constant::Int(42));
-        let inst = mk(InstructionKind::ValueFromInt {
+        let inst = mk(InstructionKind::BoxValue {
             dest,
             src: src.clone(),
+            src_type: Type::Int,
         });
-        assert!(matches!(inst.kind, InstructionKind::ValueFromInt { .. }));
+        assert!(matches!(
+            inst.kind,
+            InstructionKind::BoxValue {
+                src_type: Type::Int,
+                ..
+            }
+        ));
     }
 
     #[test]
-    fn unwrap_value_int_constructs() {
+    fn unbox_value_constructs() {
         let dest = lid(2);
         let src_local = lid(1);
-        let inst = mk(InstructionKind::UnwrapValueInt {
+        let inst = mk(InstructionKind::UnboxValue {
             dest,
             src: Operand::Local(src_local),
+            dest_type: Type::Int,
         });
-        assert!(matches!(inst.kind, InstructionKind::UnwrapValueInt { .. }));
+        assert!(matches!(
+            inst.kind,
+            InstructionKind::UnboxValue {
+                dest_type: Type::Int,
+                ..
+            }
+        ));
     }
 
-    #[test]
-    fn value_from_bool_constructs() {
-        let dest = lid(3);
-        let src = Operand::Constant(crate::Constant::Bool(true));
-        let inst = mk(InstructionKind::ValueFromBool {
-            dest,
-            src: src.clone(),
-        });
-        assert!(matches!(inst.kind, InstructionKind::ValueFromBool { .. }));
-    }
-
-    #[test]
-    fn unwrap_value_bool_constructs() {
-        let dest = lid(4);
-        let src_local = lid(3);
-        let inst = mk(InstructionKind::UnwrapValueBool {
-            dest,
-            src: Operand::Local(src_local),
-        });
-        assert!(matches!(inst.kind, InstructionKind::UnwrapValueBool { .. }));
-    }
-
-    /// Verify that `instruction_dest` returns the expected dest for each new variant.
+    /// Verify that BoxValue/UnboxValue dest fields are accessible.
     #[test]
     fn instruction_dest_returns_dest() {
         let d = lid(10);
@@ -279,31 +291,30 @@ mod value_tag_kinds {
         let local_src = Operand::Local(lid(9));
 
         for kind in [
-            InstructionKind::ValueFromInt {
+            InstructionKind::BoxValue {
                 dest: d,
                 src: const_src.clone(),
+                src_type: Type::Int,
             },
-            InstructionKind::UnwrapValueInt {
+            InstructionKind::UnboxValue {
                 dest: d,
                 src: local_src.clone(),
+                dest_type: Type::Int,
             },
-            InstructionKind::ValueFromBool {
+            InstructionKind::BoxValue {
                 dest: d,
                 src: const_src.clone(),
+                src_type: Type::Bool,
             },
-            InstructionKind::UnwrapValueBool {
+            InstructionKind::UnboxValue {
                 dest: d,
                 src: local_src.clone(),
+                dest_type: Type::Bool,
             },
         ] {
-            // The public check API exposes a check function; use the DCE helper
-            // (re-exported via the optimizer crate) indirectly by testing the
-            // pattern ourselves — no external dep needed here.
             let dest_field = match &kind {
-                InstructionKind::ValueFromInt { dest, .. }
-                | InstructionKind::UnwrapValueInt { dest, .. }
-                | InstructionKind::ValueFromBool { dest, .. }
-                | InstructionKind::UnwrapValueBool { dest, .. } => *dest,
+                InstructionKind::BoxValue { dest, .. }
+                | InstructionKind::UnboxValue { dest, .. } => *dest,
                 _ => unreachable!(),
             };
             assert_eq!(dest_field, d);
@@ -315,28 +326,21 @@ mod value_tag_kinds {
     fn local_src_is_a_use() {
         let src_local = lid(7);
         for kind in [
-            InstructionKind::ValueFromInt {
+            InstructionKind::BoxValue {
                 dest: lid(10),
                 src: Operand::Local(src_local),
+                src_type: Type::Int,
             },
-            InstructionKind::UnwrapValueInt {
+            InstructionKind::UnboxValue {
                 dest: lid(10),
                 src: Operand::Local(src_local),
-            },
-            InstructionKind::ValueFromBool {
-                dest: lid(10),
-                src: Operand::Local(src_local),
-            },
-            InstructionKind::UnwrapValueBool {
-                dest: lid(10),
-                src: Operand::Local(src_local),
+                dest_type: Type::Int,
             },
         ] {
             let src_operand = match &kind {
-                InstructionKind::ValueFromInt { src, .. }
-                | InstructionKind::UnwrapValueInt { src, .. }
-                | InstructionKind::ValueFromBool { src, .. }
-                | InstructionKind::UnwrapValueBool { src, .. } => src.clone(),
+                InstructionKind::BoxValue { src, .. } | InstructionKind::UnboxValue { src, .. } => {
+                    src.clone()
+                }
                 _ => unreachable!(),
             };
             assert_eq!(src_operand, Operand::Local(src_local));
@@ -348,20 +352,19 @@ mod value_tag_kinds {
     fn const_src_has_no_local_use() {
         let const_src = Operand::Constant(crate::Constant::Int(0));
         for kind in [
-            InstructionKind::ValueFromInt {
+            InstructionKind::BoxValue {
                 dest: lid(10),
                 src: const_src.clone(),
+                src_type: Type::Int,
             },
-            InstructionKind::ValueFromBool {
+            InstructionKind::BoxValue {
                 dest: lid(10),
                 src: const_src.clone(),
+                src_type: Type::Bool,
             },
         ] {
             let is_local = match &kind {
-                InstructionKind::ValueFromInt { src, .. }
-                | InstructionKind::ValueFromBool { src, .. } => {
-                    matches!(src, Operand::Local(_))
-                }
+                InstructionKind::BoxValue { src, .. } => matches!(src, Operand::Local(_)),
                 _ => unreachable!(),
             };
             assert!(!is_local);

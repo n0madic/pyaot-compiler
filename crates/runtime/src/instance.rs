@@ -129,38 +129,6 @@ pub extern "C" fn rt_instance_set_field_abi(inst: Value, offset: i64, value: i64
     rt_instance_set_field(inst.unwrap_ptr(), offset, value)
 }
 
-/// Read a raw f64 from field slot `offset` of instance `inst`.
-/// The slot stores the f64 bit pattern directly (no FloatObj boxing).
-/// Used for statically-typed Float instance fields.
-pub fn rt_instance_get_field_f64(inst: *mut Obj, offset: i64) -> f64 {
-    unsafe {
-        let instance = inst as *mut crate::object::InstanceObj;
-        let raw = (*(*instance).fields.as_ptr().add(offset as usize)).0;
-        f64::from_bits(raw)
-    }
-}
-#[export_name = "rt_instance_get_field_f64"]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_instance_get_field_f64_abi(inst: Value, offset: i64) -> f64 {
-    rt_instance_get_field_f64(inst.unwrap_ptr(), offset)
-}
-
-/// Write a raw f64 to field slot `offset` of instance `inst`.
-/// The slot stores the f64 bit pattern directly (no FloatObj boxing).
-/// Used for statically-typed Float instance fields.
-pub fn rt_instance_set_field_f64(inst: *mut Obj, offset: i64, value: f64) {
-    unsafe {
-        let instance = inst as *mut crate::object::InstanceObj;
-        *(*instance).fields.as_mut_ptr().add(offset as usize) =
-            pyaot_core_defs::Value(value.to_bits());
-    }
-}
-#[export_name = "rt_instance_set_field_f64"]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn rt_instance_set_field_f64_abi(inst: Value, offset: i64, value: f64) {
-    rt_instance_set_field_f64(inst.unwrap_ptr(), offset, value)
-}
-
 /// Get the class ID of an instance
 /// Returns: class ID, or 0 if null
 pub fn rt_instance_get_class_id(inst: *mut Obj) -> u8 {

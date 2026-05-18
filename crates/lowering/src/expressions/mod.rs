@@ -77,7 +77,9 @@ impl<'a> Lowering<'a> {
                 Ok(mir::Operand::Local(dest))
             }
             hir::ExprKind::ExcCurrentValue => {
-                let dest = self.alloc_and_add_local(Type::Any, mir_func);
+                // rt_exc_get_current() returns *mut Obj cast to i64 (raw pointer, not tagged).
+                // The with-statement uses it as a truthiness sentinel: 0 = no exception.
+                let dest = self.alloc_and_add_local(Type::Int, mir_func);
                 self.emit_instruction(mir::InstructionKind::ExcGetCurrent { dest });
                 Ok(mir::Operand::Local(dest))
             }
@@ -296,6 +298,8 @@ impl<'a> Lowering<'a> {
                 name: None,
                 ty: var_type.clone(),
                 is_gc_root: is_ptr_type,
+                abi_immutable: false,
+                mir_ty: None,
             });
 
             let get_func = self.get_global_get_func(&var_type);
@@ -340,6 +344,8 @@ impl<'a> Lowering<'a> {
                 name: None,
                 ty: var_type.clone(),
                 is_gc_root: is_ptr_type,
+                abi_immutable: false,
+                mir_ty: None,
             });
 
             let get_func = self.get_global_get_func(&var_type);
@@ -429,14 +435,40 @@ impl<'a> Lowering<'a> {
                 func,
             });
 
+            // Phase 4 (Storage-Uniform): if the callee is `phase4_safe`,
+            // OR-in `PHASE4_TAGGED_USER_ARGS_MARKER` (bit 63) on the func
+            // pointer before tagging. The runtime trampoline reads this
+            // bit at dispatch time and switches user-arg extraction to
+            // `extract_tuple_keeping_values`, so the callee receives every
+            // user arg as a tagged Value. The callee's prologue unboxes
+            // primitive-annotated user params via `UnboxValue` MIR ops —
+            // see `function_lowering.rs::needs_prologue_unbox`. Bit 63 is
+            // free on x86_64 / ARM64 (function pointers fit in 48 bits);
+            // the trampoline masks it back out before invoking.
+            let func_ptr_marked = if self.is_phase4_safe(func) && !captures.is_empty() {
+                let marked = self.alloc_and_add_local(Type::Int, mir_func);
+                self.emit_instruction(mir::InstructionKind::BinOp {
+                    dest: marked,
+                    op: mir::BinOp::BitOr,
+                    left: mir::Operand::Local(func_ptr_local),
+                    right: mir::Operand::Constant(mir::Constant::Int(
+                        crate::PHASE4_TAGGED_USER_ARGS_MARKER,
+                    )),
+                });
+                marked
+            } else {
+                func_ptr_local
+            };
+
             // §F.5: wrap the raw i64 function pointer as a tagged
             // `Value::from_int` so the closure tuple slot 0 reads
             // as `is_ptr() == false`. The dispatch path (closure.rs)
             // unwraps via `UnwrapValueInt` before invoking the trampoline.
-            let func_ptr_value = self.alloc_stack_local(Type::HeapAny, mir_func);
-            self.emit_instruction(mir::InstructionKind::ValueFromInt {
+            let func_ptr_value = self.alloc_stack_local(Type::Any, mir_func);
+            self.emit_instruction(mir::InstructionKind::BoxValue {
                 dest: func_ptr_value,
-                src: mir::Operand::Local(func_ptr_local),
+                src: mir::Operand::Local(func_ptr_marked),
+                src_type: Type::Int,
             });
 
             // Lower all captured expressions
@@ -459,6 +491,7 @@ impl<'a> Lowering<'a> {
 
             // After §F.7c: capture tuple stores uniform tagged Values; box every
             // primitive capture so GC distinguishes pointers from immediates.
+            // RT_MAKE_TUPLE allocates a TupleObj heap pointer — guaranteed tagged.
             let captures_tuple = self.alloc_and_add_local(Type::Any, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: captures_tuple,
@@ -476,10 +509,11 @@ impl<'a> Lowering<'a> {
             let fn_ptr_idx = self.wrapper_fn_ptr_capture_index(func, hir_module);
             for (i, capture_op) in capture_operands.into_iter().enumerate() {
                 let stored_op = if Some(i) == fn_ptr_idx {
-                    let wrapped = self.alloc_stack_local(Type::HeapAny, mir_func);
-                    self.emit_instruction(mir::InstructionKind::ValueFromInt {
+                    let wrapped = self.alloc_stack_local(Type::Any, mir_func);
+                    self.emit_instruction(mir::InstructionKind::BoxValue {
                         dest: wrapped,
                         src: capture_op,
+                        src_type: Type::Int,
                     });
                     mir::Operand::Local(wrapped)
                 } else {
@@ -498,6 +532,7 @@ impl<'a> Lowering<'a> {
             }
 
             // Create outer tuple (func_ptr, captures_tuple) - always size 2.
+            // RT_MAKE_TUPLE allocates a TupleObj heap pointer — guaranteed tagged.
             let result_local = self.alloc_and_add_local(Type::Any, mir_func);
             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                 dest: result_local,

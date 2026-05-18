@@ -314,27 +314,35 @@ impl AstToHir {
             ty: None,
             span: with_span,
         });
-        // No exception occurred: pass (None, None, None) matching CPython behavior
-        let none1 = self.module.exprs.alloc(Expr {
-            kind: ExprKind::None,
-            ty: Some(Type::None),
+        // No exception occurred: pass (0, 0, 0). The exception path passes
+        // (1, 0, 0) (see line ~191), so user code uniformly treats `exc_type
+        // != 0` as "exception happened". Pre-Phase-4 the literal `None`
+        // here was coerced to `Int(0)` by `abi_repair::coerce_operand`'s
+        // `Type::Int <- Type::None` arm; under Phase 4 the same `None`
+        // would coerce to `Type::Any` via `rt_box_none()` which the
+        // method's `UnboxValue Int` prologue then misinterprets as a
+        // nonzero pointer. Emit raw `Int(0)` directly to keep the
+        // semantic invariant intact under both ABIs.
+        let zero1 = self.module.exprs.alloc(Expr {
+            kind: ExprKind::Int(0),
+            ty: Some(Type::Int),
             span: with_span,
         });
-        let none2 = self.module.exprs.alloc(Expr {
-            kind: ExprKind::None,
-            ty: Some(Type::None),
+        let zero2 = self.module.exprs.alloc(Expr {
+            kind: ExprKind::Int(0),
+            ty: Some(Type::Int),
             span: with_span,
         });
-        let none3 = self.module.exprs.alloc(Expr {
-            kind: ExprKind::None,
-            ty: Some(Type::None),
+        let zero3 = self.module.exprs.alloc(Expr {
+            kind: ExprKind::Int(0),
+            ty: Some(Type::Int),
             span: with_span,
         });
         let exit_call_finally = self.module.exprs.alloc(Expr {
             kind: ExprKind::MethodCall {
                 obj: ctx_mgr_ref_finally,
                 method: self.interner.intern("__exit__"),
-                args: vec![none1, none2, none3],
+                args: vec![zero1, zero2, zero3],
                 kwargs: vec![],
             },
             ty: None,

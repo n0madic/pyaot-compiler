@@ -183,6 +183,129 @@ impl<'a> Lowering<'a> {
         map
     }
 
+    /// Walk a pattern and pre-allocate locals for every capture leaf with
+    /// the type derived from the surrounding subject type. Ensures that
+    /// blocks processed before the bindings emission see the correct
+    /// MIR-level type for captured vars (avoids the fallback to
+    /// `Type::Any` in `get_or_create_local`, which leaves a primitive
+    /// subject's raw bits in an Any-typed slot).
+    ///
+    /// Stage B.3 of Strong-Typed MIR Rewrite plan v2: classification of
+    /// captures into Raw/Tagged/Heap groups is delegated to
+    /// `alloc_and_add_local`, which auto-populates `Local.mir_ty` via
+    /// `type_to_mir_type_register` (primitives → Raw(K), heap → Heap(_),
+    /// Any → Tagged). The capture's MirType matches its subject — so a
+    /// `match x: case Point(y=v):` with subject `Type::Int` allocates `v`
+    /// as `Raw(I64)` automatically. Per-attr Class pattern handling below
+    /// consults `field_types` from class metadata to recover the precise
+    /// type. Final-pre-codegen verifier is clean for `test_match.py`.
+    fn preallocate_pattern_capture_locals(
+        &mut self,
+        pattern: &hir::Pattern,
+        subject_ty: &Type,
+        hir_module: &hir::Module,
+        mir_func: &mut mir::Function,
+    ) {
+        match pattern {
+            hir::Pattern::MatchAs {
+                pattern: inner,
+                name,
+            } => {
+                if let Some(var_id) = name {
+                    self.allocate_capture_local(*var_id, subject_ty, mir_func);
+                }
+                if let Some(inner) = inner {
+                    self.preallocate_pattern_capture_locals(
+                        inner, subject_ty, hir_module, mir_func,
+                    );
+                }
+            }
+            hir::Pattern::MatchSequence { patterns } => {
+                let any = Type::Any;
+                let elem_ty = subject_ty
+                    .list_elem()
+                    .or_else(|| subject_ty.tuple_var_elem())
+                    .unwrap_or(&any)
+                    .clone();
+                for inner in patterns {
+                    self.preallocate_pattern_capture_locals(inner, &elem_ty, hir_module, mir_func);
+                }
+            }
+            hir::Pattern::MatchOr(alternatives) => {
+                for inner in alternatives {
+                    self.preallocate_pattern_capture_locals(
+                        inner, subject_ty, hir_module, mir_func,
+                    );
+                }
+            }
+            hir::Pattern::MatchMapping { patterns, rest, .. } => {
+                let value_ty = subject_ty
+                    .dict_kv()
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or(Type::Any);
+                for inner in patterns {
+                    self.preallocate_pattern_capture_locals(inner, &value_ty, hir_module, mir_func);
+                }
+                if let Some(var_id) = rest {
+                    self.allocate_capture_local(*var_id, subject_ty, mir_func);
+                }
+            }
+            hir::Pattern::MatchClass {
+                cls,
+                patterns,
+                kwd_attrs,
+                kwd_patterns,
+            } => {
+                // Resolve class_id from the cls expression so we can mirror
+                // the field-type lookup done by
+                // `generate_class_pattern_check` at emission time.
+                let class_id = match &hir_module.exprs[*cls].kind {
+                    hir::ExprKind::ClassRef(id) => Some(*id),
+                    _ => None,
+                };
+                // Positional patterns: __match_args__ not implemented; the
+                // emission path errors out. Conservatively use Any here.
+                for inner in patterns {
+                    self.preallocate_pattern_capture_locals(
+                        inner,
+                        &Type::Any,
+                        hir_module,
+                        mir_func,
+                    );
+                }
+                // Keyword attribute patterns: look up the field type for
+                // each named attr from class metadata, mirroring
+                // `generate_class_pattern_check` (line 903-915).
+                for (attr_name, inner) in kwd_attrs.iter().zip(kwd_patterns.iter()) {
+                    let attr_ty = class_id
+                        .and_then(|cid| self.get_class_info(&cid))
+                        .and_then(|info| info.field_types.get(attr_name).cloned())
+                        .unwrap_or(Type::Any);
+                    self.preallocate_pattern_capture_locals(inner, &attr_ty, hir_module, mir_func);
+                }
+            }
+            hir::Pattern::MatchStar(name) => {
+                if let Some(var_id) = name {
+                    let starred_ty = subject_ty
+                        .list_elem()
+                        .map(|e| Type::list_of(e.clone()))
+                        .unwrap_or_else(|| Type::list_of(Type::Any));
+                    self.allocate_capture_local(*var_id, &starred_ty, mir_func);
+                }
+            }
+            hir::Pattern::MatchValue(_) | hir::Pattern::MatchSingleton(_) => {}
+        }
+    }
+
+    fn allocate_capture_local(&mut self, var_id: VarId, ty: &Type, mir_func: &mut mir::Function) {
+        if self.get_var_local(&var_id).is_some() {
+            return;
+        }
+        let local = self.alloc_and_add_local(ty.clone(), mir_func);
+        self.insert_var_local(var_id, local);
+        self.insert_var_type(var_id, ty.clone());
+    }
+
     /// Lower a function's body via CFG walking instead of tree iteration.
     ///
     /// Caller contract: the MIR entry block is already pushed onto
@@ -342,6 +465,23 @@ impl<'a> Lowering<'a> {
         // ── Step 3: match capturing-pattern bindings pre-pass ────────────
         let case_body_bindings = Self::build_case_body_bindings_map(func, hir_module);
 
+        // ── Step 3b: pre-allocate match-capture locals with subject types ─
+        // cfg_walker iterates blocks in IndexMap insertion order, which is
+        // NOT guaranteed to be CFG-DFS order. If a case-body block (which
+        // references a captured var) is processed before its bindings
+        // emission block, `lower_expr` falls through to `get_or_create_local`
+        // with `Type::Any` and allocates the captured var's local with the
+        // fallback Any type. When the binding block later runs, it Copies
+        // the raw primitive subject into the existing Any-typed slot —
+        // breaking the invariant that `Type::Any` locals carry tagged
+        // Values. Pre-allocating each capture with the correct
+        // subject-derived type ensures every block agrees on the slot
+        // shape from the start.
+        for (_, (subject_id, pattern)) in &case_body_bindings {
+            let subject_type = self.seed_expr_type(*subject_id, hir_module);
+            self.preallocate_pattern_capture_locals(pattern, &subject_type, hir_module, mir_func);
+        }
+
         // ── Step 4: JIT narrowing map ────────────────────────────────────
         let mut narrowings: IndexMap<HirBlockId, Vec<crate::narrowing::TypeNarrowingInfo>> =
             IndexMap::new();
@@ -470,7 +610,7 @@ impl<'a> Lowering<'a> {
                                 let cell_local = self.emit_runtime_call_gc(
                                     make_func,
                                     vec![mir::Operand::Local(existing_local)],
-                                    Type::HeapAny,
+                                    Type::Any,
                                     mir_func,
                                 );
                                 cell_locals.insert(*var_id, cell_local);
@@ -813,7 +953,22 @@ impl<'a> Lowering<'a> {
                         .clone()
                         .unwrap_or(pyaot_types::Type::None);
                     if !matches!(ret_ty, pyaot_types::Type::None) {
-                        let default_operand = self.default_return_operand(&ret_ty, mir_func);
+                        let mut default_operand = self.default_return_operand(&ret_ty, mir_func);
+                        // Phase 4 Commit 4 — flipped functions ship every
+                        // primitive return value as a tagged Value, including
+                        // synthesised defaults for `return;` with a declared
+                        // primitive return type.
+                        if mir_func.phase4_return_abi_flipped
+                            && matches!(
+                                ret_ty,
+                                pyaot_types::Type::Int
+                                    | pyaot_types::Type::Bool
+                                    | pyaot_types::Type::Float
+                            )
+                        {
+                            default_operand =
+                                self.emit_value_slot(default_operand, &ret_ty, mir_func);
+                        }
                         self.current_block_mut().terminator =
                             mir::Terminator::Return(Some(default_operand));
                         return Ok(());

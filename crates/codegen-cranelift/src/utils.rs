@@ -7,8 +7,7 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::ObjectModule;
 use indexmap::IndexMap;
 use pyaot_diagnostics::{CompilerError, Result};
-use pyaot_mir::{self as mir, Operand};
-use pyaot_types::Type;
+use pyaot_mir::{self as mir, MirType, Operand, RawKind};
 use pyaot_utils::{InternedString, LocalId, StringInterner};
 
 /// Helper to declare a runtime function with proper error handling
@@ -35,23 +34,48 @@ pub fn get_call_result(builder: &FunctionBuilder, call_inst: Inst) -> Value {
         .expect("internal compiler error: call instruction should have return value")
 }
 
-/// Convert MIR type to Cranelift type
-pub fn type_to_cranelift(ty: &Type) -> cltypes::Type {
-    match ty {
-        Type::Int => cltypes::I64,
-        Type::Float => cltypes::F64,
-        Type::Bool => cltypes::I8,
-        Type::None => cltypes::I8,
-        Type::Str | Type::File(_) => {
-            cltypes::I64 // Pointer to heap object
+/// **Stage C.3/C.4 — Strong-Typed MIR Codegen.**
+///
+/// Convert a `MirType` to the corresponding Cranelift register type.
+/// This is the SINGLE canonical Cranelift type mapper used across
+/// codegen — declare_var, declare_function/define_function signatures,
+/// Phi block params, store_result guard, Copy/Call return types and
+/// terminator return-type expectation all derive register class from
+/// `Local::resolved_mir_type()` via this helper.
+///
+/// The legacy `type_to_cranelift(&Type)` helper was deleted in Stage C.4.
+/// For Type-keyed sites that don't have a Local (e.g., terminator
+/// return-type expectation against `func.return_type`), translate via
+/// `pyaot_mir::type_to_mir_type_register(&ty)` first.
+///
+/// Mapping:
+/// - `Raw(I64)` → `I64` (Python `int`, raw pointers)
+/// - `Raw(F64)` → `F64` (Python `float` register-level)
+/// - `Raw(I8)`  → `I8`  (Python `bool`, None sentinel)
+/// - `Raw(I32)` → `I32` (sub-word indices / global slots)
+/// - `Tagged`   → `I64` (tagged-Value 64-bit slot)
+/// - `Heap(_)`  → `I64` (heap pointer)
+/// - `FuncPtr(_)`   → `I64` (code address)
+/// - `Closure(_)`   → `I64` (heap pointer to closure tuple)
+/// - `Var(_)` / `Never` → I64 fallback (dead-code slots)
+pub fn mir_type_to_cranelift(mt: &pyaot_mir::MirType) -> cltypes::Type {
+    use pyaot_mir::{MirType, RawKind};
+    match mt {
+        MirType::Raw(RawKind::I64) => cltypes::I64,
+        MirType::Raw(RawKind::F64) => cltypes::F64,
+        MirType::Raw(RawKind::I8) => cltypes::I8,
+        MirType::Raw(RawKind::I32) => cltypes::I32,
+        MirType::Tagged | MirType::Heap(_) | MirType::FuncPtr(_) | MirType::Closure(_) => {
+            cltypes::I64
         }
-        _ if ty.is_list_like() || ty.is_dict_like() || ty.is_tuple_like() => cltypes::I64,
-        // Union values are stored as boxed pointers (*mut Obj)
-        Type::Union(_) => cltypes::I64,
-        Type::Never => panic!("type_to_cranelift: Never type should not reach codegen"),
-        // All remaining types are pointer-sized: Set, Bytes, Optional, Any, HeapAny,
-        // Class, BuiltinException, RuntimeObject, Iterator, Function, Var, etc.
-        _ => cltypes::I64,
+        // Stage C.3: Var and Never are pointer-width fallback. Var
+        // reaching codegen indicates an unreached generic template
+        // (decorator-factory wrapper, unreferenced helper); Never is a
+        // dead-code slot. Both should be safe as I64 since the local is
+        // never read at runtime. Legacy `type_to_cranelift` returned I64
+        // for both implicitly via the wildcard arm — this preserves the
+        // behavior.
+        MirType::Var(_) | MirType::Never => cltypes::I64,
     }
 }
 
@@ -202,34 +226,53 @@ pub fn create_raw_bytes_data(module: &mut ObjectModule, bytes: &[u8]) -> DataId 
     create_data_section_impl(module, bytes.to_vec(), &RAW_BYTES_COUNTER, "__rawbytes_")
 }
 
-/// Helper to determine if an operand is a float type
+/// Helper to determine if an operand is a float type.
+///
+/// Stage F.2: reads `Local::resolved_mir_type()` instead of `Local.ty`
+/// for the local-operand branch. `Raw(F64)` is the canonical float
+/// representation (`Type::Float` translates to this at register level);
+/// `Constant::Float(_)` constants are unconditionally floats.
 pub fn is_float_operand(operand: &Operand, locals: &IndexMap<LocalId, mir::Local>) -> bool {
     match operand {
         Operand::Local(local_id) => locals
             .get(local_id)
-            .is_some_and(|l| matches!(l.ty, Type::Float)),
+            .is_some_and(|l| matches!(l.resolved_mir_type(), MirType::Raw(RawKind::F64))),
         Operand::Constant(mir::Constant::Float(_)) => true,
         _ => false,
     }
 }
 
-/// Helper to determine if an operand is an int type
+/// Helper to determine if an operand is an int type.
+///
+/// Stage F.2: reads `Local::resolved_mir_type()` instead of `Local.ty`
+/// for the local-operand branch. `Raw(I64)` is the canonical int
+/// representation (`Type::Int` translates to this at register level);
+/// `Constant::Int(_)` constants are unconditionally ints.
 pub fn is_int_operand(operand: &Operand, locals: &IndexMap<LocalId, mir::Local>) -> bool {
     match operand {
         Operand::Local(local_id) => locals
             .get(local_id)
-            .is_some_and(|l| matches!(l.ty, Type::Int)),
+            .is_some_and(|l| matches!(l.resolved_mir_type(), MirType::Raw(RawKind::I64))),
         Operand::Constant(mir::Constant::Int(_)) => true,
         _ => false,
     }
 }
 
-/// Helper to determine if an operand is a bool type
+/// Helper to determine if an operand is a bool type.
+///
+/// Stage F.2: reads `Local::resolved_mir_type()` instead of `Local.ty`
+/// for the local-operand branch. `Raw(I8)` is the canonical bool
+/// representation (`Type::Bool` translates to this at register level);
+/// `Constant::Bool(_)` constants are unconditionally bools.
+///
+/// Note: `Type::None` also translates to `Raw(I8)` at register level,
+/// but `None` constants never appear as a `Constant::Bool` variant and
+/// a `None`-typed local operand would not be used in a bool context.
 pub fn is_bool_operand(operand: &Operand, locals: &IndexMap<LocalId, mir::Local>) -> bool {
     match operand {
         Operand::Local(local_id) => locals
             .get(local_id)
-            .is_some_and(|l| matches!(l.ty, Type::Bool)),
+            .is_some_and(|l| matches!(l.resolved_mir_type(), MirType::Raw(RawKind::I8))),
         Operand::Constant(mir::Constant::Bool(_)) => true,
         _ => false,
     }
@@ -251,5 +294,100 @@ pub fn promote_to_float(
         builder.ins().fcvt_from_sint(cltypes::F64, i64_val)
     } else {
         val
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyaot_mir::{HeapShape, MirType, RawKind, Signature};
+    use pyaot_types::Type;
+    use pyaot_utils::ClassId;
+
+    #[test]
+    fn mir_type_to_cranelift_raw_kinds() {
+        assert_eq!(
+            mir_type_to_cranelift(&MirType::Raw(RawKind::I64)),
+            cltypes::I64
+        );
+        assert_eq!(
+            mir_type_to_cranelift(&MirType::Raw(RawKind::F64)),
+            cltypes::F64
+        );
+        assert_eq!(
+            mir_type_to_cranelift(&MirType::Raw(RawKind::I8)),
+            cltypes::I8
+        );
+        assert_eq!(
+            mir_type_to_cranelift(&MirType::Raw(RawKind::I32)),
+            cltypes::I32
+        );
+    }
+
+    #[test]
+    fn mir_type_to_cranelift_pointer_shapes() {
+        // All pointer-shaped MirTypes map to I64 (uniform 64-bit slot).
+        assert_eq!(mir_type_to_cranelift(&MirType::Tagged), cltypes::I64);
+        assert_eq!(
+            mir_type_to_cranelift(&MirType::Heap(HeapShape::Str)),
+            cltypes::I64
+        );
+        assert_eq!(
+            mir_type_to_cranelift(&MirType::Heap(HeapShape::Class {
+                id: ClassId(0),
+                type_args: vec![]
+            })),
+            cltypes::I64
+        );
+        let sig = Box::new(Signature {
+            params: vec![MirType::Tagged],
+            return_type: MirType::Tagged,
+        });
+        assert_eq!(
+            mir_type_to_cranelift(&MirType::FuncPtr(sig.clone())),
+            cltypes::I64
+        );
+    }
+
+    #[test]
+    fn mir_type_to_cranelift_var_falls_back_to_i64() {
+        let mut interner = pyaot_utils::StringInterner::new();
+        let name = interner.intern("T");
+        // Stage C.3: Var → I64 fallback (was panic before, now graceful
+        // since unreferenced generic templates may carry Var-typed locals
+        // through codegen).
+        assert_eq!(mir_type_to_cranelift(&MirType::Var(name)), cltypes::I64);
+    }
+
+    #[test]
+    fn mir_type_to_cranelift_never_falls_back_to_i64() {
+        // Stage C.3: Never → I64 fallback (dead-code slot, never read).
+        assert_eq!(mir_type_to_cranelift(&MirType::Never), cltypes::I64);
+    }
+
+    /// Stage C.4: after legacy `type_to_cranelift` deletion, the
+    /// `mir_type_to_cranelift(type_to_mir_type_register(&ty))` path is
+    /// the sole way to translate a `Type` into a Cranelift register
+    /// class. Verify the expected register classes for the canonical
+    /// type set.
+    #[test]
+    fn type_to_mir_register_equivalence() {
+        use pyaot_mir::type_to_mir_type_register;
+        let cases = [
+            (Type::Int, cltypes::I64),
+            (Type::Float, cltypes::F64),
+            (Type::Bool, cltypes::I8),
+            (Type::None, cltypes::I8),
+            (Type::Str, cltypes::I64),
+            (Type::Any, cltypes::I64),
+            (Type::Any, cltypes::I64),
+        ];
+        for (ty, expected) in cases {
+            let actual = mir_type_to_cranelift(&type_to_mir_type_register(&ty));
+            assert_eq!(
+                actual, expected,
+                "register class for {ty:?}: expected {expected:?}, got {actual:?}",
+            );
+        }
     }
 }

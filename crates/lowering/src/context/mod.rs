@@ -24,7 +24,7 @@ use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::{dunders::canonical_dunder_name, Type};
 use pyaot_utils::{BlockId, ClassId, FuncId, InternedString, LocalId, Span, StringInterner, VarId};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Key function source for sort/sorted operations
 pub enum KeyFuncSource {
@@ -164,6 +164,13 @@ pub struct ClosureState {
     pub dynamic_closure_return_types: IndexMap<VarId, Type>,
     /// Captured variable types for closures (used during lambda lowering)
     pub closure_capture_types: IndexMap<FuncId, Vec<Type>>,
+    /// **Strong-Typed MIR Rewrite (Phase 2f)**: parallel MirType
+    /// representations for closure capture types. When populated, the
+    /// verifier and Phase 3+ optimizer consult these for the canonical
+    /// physical type of each capture slot. Auto-built from
+    /// `closure_capture_types` via `type_to_mir_type_storage` (captures
+    /// are storage slots → primitives map to `Tagged`).
+    pub closure_capture_mir_types: IndexMap<FuncId, Vec<mir::MirType>>,
     /// Wrapper function IDs (closures returned by decorators)
     pub wrapper_func_ids: IndexSet<FuncId>,
     /// Variables that are function pointer parameters (for indirect calls)
@@ -442,21 +449,15 @@ pub struct LoweringSeedInfo {
     /// type is narrower than the storage type, lowering emits `Refine` or
     /// `Unbox + Refine` after `RT_INSTANCE_GET_FIELD`.
     pub refined_class_field_types: IndexMap<ClassId, IndexMap<InternedString, Type>>,
-    /// Class fields whose cross-instance writes carry a runtime-dispatched
-    /// tagged `Value` (compound RHS — `BinOp` / `Call` / `MethodCall` /
-    /// `BuiltinCall` whose seed type collapses to `Any` / `HeapAny`).
-    ///
-    /// The harvester records but does NOT widen the static
-    /// `field_types` here, because that would dilute precise types on
-    /// unrelated annotated fields and break f64 fast-paths /
-    /// monomorphization. Instead, lowering's read & write paths
-    /// consult this set: when present, the field is treated as
-    /// `HeapAny` end-to-end (boxed primitives via `emit_value_slot` on
-    /// store, no `UnwrapValueInt` on load), so a heap pointer stored
-    /// by an autograd-style `child.grad += local_grad * v.grad`
-    /// survives a subsequent read instead of being decoded as a
-    /// garbage int.
-    pub class_fields_with_heap_writes: HashSet<(ClassId, InternedString)>,
+    /// Phase 4 (Storage-Uniform): set of `FuncId`s that are reached via at
+    /// least one HOF runtime callback (`rt_map_new`, `rt_filter_new`,
+    /// `rt_reduce`, `rt_list_sort_with_key`, `rt_sorted_with_key`). These
+    /// callees deliver user args as raw scalars (legacy ABI) and therefore
+    /// CANNOT be flipped to the Phase 4 tagged user-arg ABI. Populated by
+    /// the HIR pre-scan; consumed by `is_phase4_safe()` to decide whether
+    /// a lambda-like callee's user-visible primitive params take the
+    /// tagged Value ABI (with prologue unbox) or stay raw.
+    pub phase4_unsafe_funcs: indexmap::IndexSet<FuncId>,
 }
 
 /// Narrowed block-local shadow plus the stable storage type it shadows.
@@ -476,7 +477,7 @@ impl LoweringSeedInfo {
             expr_types: HashMap::new(),
             base_var_types: IndexMap::new(),
             refined_class_field_types: IndexMap::new(),
-            class_fields_with_heap_writes: HashSet::new(),
+            phase4_unsafe_funcs: indexmap::IndexSet::new(),
         }
     }
 

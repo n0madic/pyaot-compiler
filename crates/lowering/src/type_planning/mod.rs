@@ -13,6 +13,7 @@ pub(crate) mod infer;
 mod lambda_inference;
 mod local_prescan;
 pub(crate) mod ni_analysis;
+mod phase4_safe_scan;
 mod validate;
 
 use indexmap::IndexMap;
@@ -26,6 +27,11 @@ impl<'a> Lowering<'a> {
     /// Run type planning: pre-scan + return type inference for all functions.
     pub(crate) fn build_lowering_seed_info(&mut self, hir_module: &mut hir::Module) {
         self.precompute_closure_capture_types(hir_module);
+        // Phase 4 (Storage-Uniform): record every callee that flows into a
+        // HOF runtime callback slot — those callees deliver user args
+        // raw and so cannot be flipped to the tagged user-arg ABI. Runs
+        // once per module, before lambda lowering reads `is_phase4_safe`.
+        self.precompute_phase4_unsafe_funcs(hir_module);
         self.process_module_decorated_functions(hir_module);
         // First-pass refinement — handles `x = [1, 2, 3]` /
         // `x = {k: v, …}` literal cases that need no var-type
@@ -194,6 +200,11 @@ impl<'a> Lowering<'a> {
         }
         self.lowering_seed_info.base_var_types.clear();
         self.populate_base_var_types(hir_module);
+        // Phase 2: fold refined class-field types into LoweredClassInfo.field_types
+        // so subsequent lowering reads field_types as the single source of truth.
+        // Storage is uniform tagged Value, so widened types from cross-instance
+        // writes (Any) flow naturally into bind/read paths via coerce_for_storage.
+        self.fold_refined_field_types_into_storage();
         // Mirror the converged Iterator(yield) onto each generator FuncDef so
         // callers reading `module.func_defs[fid].return_type` (e.g.
         // `closure_result_type`) see the correct type BEFORE desugar runs.

@@ -87,6 +87,42 @@ type FilterFn8 = extern "C" fn(
     *mut Obj,
 ) -> i8;
 
+/// Phase 4+ Extension E2a: tagged-return filter callback type aliases.
+/// These match the ABI of phase4-return-flipped predicates, which return
+/// a tagged `Value` (i64) instead of raw i8. The element parameter is
+/// `*mut Obj` but carries tagged Value bits; the lambda's prologue does
+/// its own `UnboxValue` for typed params.
+type TaggedFilterFn = extern "C" fn(*mut Obj) -> i64;
+type TaggedFilterFn1 = extern "C" fn(*mut Obj, *mut Obj) -> i64;
+type TaggedFilterFn2 = extern "C" fn(*mut Obj, *mut Obj, *mut Obj) -> i64;
+type TaggedFilterFn3 = extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj) -> i64;
+type TaggedFilterFn4 = extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj) -> i64;
+type TaggedFilterFn5 =
+    extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj) -> i64;
+type TaggedFilterFn6 =
+    extern "C" fn(*mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj, *mut Obj) -> i64;
+type TaggedFilterFn7 = extern "C" fn(
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+) -> i64;
+type TaggedFilterFn8 = extern "C" fn(
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+    *mut Obj,
+) -> i64;
+
 // ==================== Helper Functions ====================
 
 /// Call map function with captures extracted from tuple
@@ -277,6 +313,122 @@ pub(crate) unsafe fn call_filter_with_captures(
     result != 0
 }
 
+/// Phase 4+ Extension E2a: call a phase4-safe (return-ABI-flipped) filter
+/// predicate that returns a **tagged `Value`** (i64) instead of raw i8.
+///
+/// Background: phase4-safe lambdas with `phase4_return_abi_flipped = true`
+/// and a Bool or Int return type wrap their return value in a tagged Value.
+/// The legacy `call_filter_with_captures` calls them as `-> i8` and reads
+/// only the low byte — but tagged bool false is `0x03` (BOOL_TAG), whose
+/// low byte is `3` (non-zero), causing the filter to incorrectly admit
+/// elements where the predicate returned `false`.
+///
+/// This variant calls the predicate as `-> i64`, interprets the result as a
+/// tagged `Value`, and delegates to `crate::ops::rt_is_truthy` which handles
+/// all tagged primitive cases correctly (Int-0 → false, Bool-false → false,
+/// None → false, non-zero Int / Bool-true / heap pointer → true).
+///
+/// Returns true if the tagged Value result is truthy, false otherwise.
+pub(crate) unsafe fn call_filter_with_captures_tagged(
+    func_ptr: i64,
+    captures: *mut Obj,
+    capture_count: u8,
+    elem: *mut Obj,
+) -> bool {
+    use crate::tuple::rt_tuple_get;
+
+    let raw: i64 = match capture_count {
+        0 => {
+            let func: TaggedFilterFn = std::mem::transmute(func_ptr);
+            func(elem)
+        }
+        1 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let func: TaggedFilterFn1 = std::mem::transmute(func_ptr);
+            func(c0, elem)
+        }
+        2 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let func: TaggedFilterFn2 = std::mem::transmute(func_ptr);
+            func(c0, c1, elem)
+        }
+        3 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let func: TaggedFilterFn3 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, elem)
+        }
+        4 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let func: TaggedFilterFn4 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, c3, elem)
+        }
+        5 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let func: TaggedFilterFn5 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, c3, c4, elem)
+        }
+        6 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let c5 = rt_tuple_get(captures, 5);
+            let func: TaggedFilterFn6 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, c3, c4, c5, elem)
+        }
+        7 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let c5 = rt_tuple_get(captures, 5);
+            let c6 = rt_tuple_get(captures, 6);
+            let func: TaggedFilterFn7 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, c3, c4, c5, c6, elem)
+        }
+        8 => {
+            let c0 = rt_tuple_get(captures, 0);
+            let c1 = rt_tuple_get(captures, 1);
+            let c2 = rt_tuple_get(captures, 2);
+            let c3 = rt_tuple_get(captures, 3);
+            let c4 = rt_tuple_get(captures, 4);
+            let c5 = rt_tuple_get(captures, 5);
+            let c6 = rt_tuple_get(captures, 6);
+            let c7 = rt_tuple_get(captures, 7);
+            let func: TaggedFilterFn8 = std::mem::transmute(func_ptr);
+            func(c0, c1, c2, c3, c4, c5, c6, c7, elem)
+        }
+        _ => {
+            eprintln!(
+                "FATAL: filter (tagged): too many captures (max 8 supported, got {})",
+                capture_count
+            );
+            std::process::abort();
+        }
+    };
+    // The callback returned a tagged Value. Reinterpret it as a *mut Obj
+    // and dispatch through rt_is_truthy which handles all tagged primitives:
+    //   - Bool false  (0x03) → 0 (false)
+    //   - Int 0       (0x01) → 0 (false)
+    //   - None        (0x05) → 0 (false)
+    //   - Bool true   (0x0B) → 1 (true)
+    //   - non-zero Int       → 1 (true)
+    //   - heap pointer       → 1 (true, non-null)
+    crate::ops::rt_is_truthy(raw as *mut Obj) != 0
+}
+
 // ==================== Zip Iterator ====================
 
 /// Create a zip iterator from two iterators
@@ -463,6 +615,65 @@ pub extern "C" fn rt_map_new_abi(
     ))
 }
 
+// Phase 4+ Extension E2a: parallel tagged-delivery variant. Sets
+// `kind = IteratorKind::MapTagged`. The runtime's `iter_next_map_tagged`
+// passes the INPUT element through verbatim (no `unwrap_int` /
+// `unwrap_bool`) — the callback (a phase4-safe lambda) does its own
+// `UnboxValue` in its prologue. The OUTPUT re-wrap (`result_box_kind`)
+// is preserved: lambdas are not return-ABI-flipped today (Phase 4
+// Commit 4 excluded `is_lambda_like`), so their return is still a raw
+// primitive that must be re-wrapped into a tagged Value before the
+// consumer (for-loop / chained iterator) sees it.
+//
+// Encoding (same as legacy `rt_map_new`):
+//   bits 0-7  : capture count (low 7 bits)
+//   bits 16-23: result_box_kind (0=passthrough, 1=int, 2=bool)
+// The `elem_unbox_kind` field is forced to 0 on this path (input is
+// always pass-through under tagged delivery).
+pub fn rt_map_new_tagged(
+    func_ptr: i64,
+    iter: *mut Obj,
+    captures: *mut Obj,
+    capture_count: i64,
+) -> *mut Obj {
+    use crate::object::{IteratorKind, MapIterObj};
+
+    let size = std::mem::size_of::<MapIterObj>();
+    let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);
+
+    unsafe {
+        let map_iter = obj as *mut MapIterObj;
+        (*map_iter).kind = IteratorKind::MapTagged as u8;
+        (*map_iter).exhausted = false;
+        (*map_iter).capture_count = (capture_count as u8) & 0x7F;
+        // Input is pass-through under tagged delivery; preserve the
+        // caller's result-box-kind for primitive-returning lambdas.
+        (*map_iter).elem_unbox_kind = 0;
+        (*map_iter).result_box_kind = (capture_count >> 16) as u8;
+        (*map_iter)._pad = [0; 3];
+        (*map_iter).func_ptr = func_ptr;
+        (*map_iter).inner_iter = iter;
+        (*map_iter).captures = captures;
+    }
+
+    obj
+}
+#[export_name = "rt_map_new_tagged"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_map_new_tagged_abi(
+    func_ptr: i64,
+    iter: Value,
+    captures: Value,
+    capture_count: i64,
+) -> Value {
+    Value::from_ptr(rt_map_new_tagged(
+        func_ptr,
+        iter.unwrap_ptr(),
+        captures.unwrap_ptr(),
+        capture_count,
+    ))
+}
+
 // ==================== Filter Iterator ====================
 
 /// Create a filter iterator from a predicate and an iterator
@@ -504,6 +715,53 @@ pub extern "C" fn rt_filter_new_abi(
     capture_count: i64,
 ) -> Value {
     Value::from_ptr(rt_filter_new(
+        func_ptr,
+        iter.unwrap_ptr(),
+        captures.unwrap_ptr(),
+        capture_count,
+    ))
+}
+
+// Phase 4+ Extension E2a: parallel tagged-delivery variant. Sets
+// `kind = IteratorKind::FilterTagged`. The runtime's
+// `iter_next_filter_tagged` passes the input element through verbatim;
+// the predicate callback (phase4-safe lambda) does its own
+// `UnboxValue` in its prologue. Predicate return is an i8 (truthiness)
+// regardless of variant — that part is identical to the legacy path.
+pub fn rt_filter_new_tagged(
+    func_ptr: i64,
+    iter: *mut Obj,
+    captures: *mut Obj,
+    capture_count: i64,
+) -> *mut Obj {
+    use crate::object::{FilterIterObj, IteratorKind};
+
+    let size = std::mem::size_of::<FilterIterObj>();
+    let obj = gc::gc_alloc(size, TypeTagKind::Iterator as u8);
+
+    unsafe {
+        let filter_iter = obj as *mut FilterIterObj;
+        (*filter_iter).kind = IteratorKind::FilterTagged as u8;
+        (*filter_iter).exhausted = false;
+        (*filter_iter).capture_count = (capture_count as u8) & 0x7F;
+        (*filter_iter).elem_unbox_kind = 0;
+        (*filter_iter)._pad = [0; 4];
+        (*filter_iter).func_ptr = func_ptr;
+        (*filter_iter).inner_iter = iter;
+        (*filter_iter).captures = captures;
+    }
+
+    obj
+}
+#[export_name = "rt_filter_new_tagged"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_filter_new_tagged_abi(
+    func_ptr: i64,
+    iter: Value,
+    captures: Value,
+    capture_count: i64,
+) -> Value {
+    Value::from_ptr(rt_filter_new_tagged(
         func_ptr,
         iter.unwrap_ptr(),
         captures.unwrap_ptr(),

@@ -35,9 +35,9 @@ impl<'a> Lowering<'a> {
         // the `Any` arm of `lower_len` which collapses to `Const(0)` —
         // silently producing zero-length lists from valid slices.
         let seed_type = self.seed_expr_type(obj, hir_module);
-        let obj_type = if matches!(seed_type, Type::Any | Type::HeapAny) {
+        let obj_type = if matches!(seed_type, Type::Any) {
             let lowered = self.operand_type(&obj_operand, mir_func);
-            if matches!(lowered, Type::Any | Type::HeapAny) {
+            if matches!(lowered, Type::Any) {
                 seed_type
             } else {
                 lowered

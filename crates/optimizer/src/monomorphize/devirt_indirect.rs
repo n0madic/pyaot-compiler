@@ -239,7 +239,7 @@ fn pick_strategy(user_params: &[&Local], captured_param_types: &[Type]) -> Optio
     }
 
     // Unpack: single tuple-like user param vs N captured params.
-    if user_params.len() == 1 && user_params[0].ty.is_tuple_like() {
+    if user_params.len() == 1 && user_params[0].resolved_mir_type().is_tuple_like() {
         return Some(Strategy::Unpack {
             args_tuple_local: user_params[0].id,
         });
@@ -258,9 +258,10 @@ fn collect_aliases(func: &Function, root: LocalId) -> Vec<LocalId> {
         for block in func.blocks.values() {
             for instr in &block.instructions {
                 match &instr.kind {
-                    InstructionKind::UnwrapValueInt {
+                    InstructionKind::UnboxValue {
                         dest,
                         src: Operand::Local(s),
+                        dest_type: Type::Int,
                     } if aliases.contains(s) && !aliases.contains(dest) => {
                         aliases.push(*dest);
                     }
@@ -387,8 +388,13 @@ fn rewrite_with_unpack(
             Local {
                 id,
                 name: None,
-                ty,
+                ty: ty.clone(),
                 is_gc_root,
+                abi_immutable: false,
+                // Phase 3e: derive mir_ty from `ty` at register level so
+                // newly-allocated temps have a well-defined MirType
+                // signature for downstream verifier / optimiser passes.
+                mir_ty: Some(pyaot_mir::type_to_mir_type_register(&ty)),
             },
         );
         id
@@ -433,7 +439,9 @@ fn rewrite_with_unpack(
             // Emit unpack + per-type unbox for each captured slot.
             let mut call_args: Vec<Operand> = Vec::with_capacity(captured_param_types.len());
             for (i, captured_ty) in captured_param_types.iter().enumerate() {
-                // Step 1: rt_tuple_get(args_tuple, i) -> tagged
+                // Step 1: rt_tuple_get(args_tuple, i) -> tagged Value (HeapAny:
+                // rt_tuple_get has mir_return_semantic=Tagged; mirrors lowering's
+                // closure.rs which already uses Type::Any for the same call).
                 let tagged = alloc_local(func, Type::Any, true);
                 new_instrs.push(Instruction {
                     kind: InstructionKind::RuntimeCall {
@@ -452,9 +460,10 @@ fn rewrite_with_unpack(
                     Type::Int => {
                         let unboxed = alloc_local(func, Type::Int, false);
                         new_instrs.push(Instruction {
-                            kind: InstructionKind::UnwrapValueInt {
+                            kind: InstructionKind::UnboxValue {
                                 dest: unboxed,
                                 src: Operand::Local(tagged),
+                                dest_type: Type::Int,
                             },
                             span,
                         });
@@ -463,9 +472,10 @@ fn rewrite_with_unpack(
                     Type::Bool => {
                         let unboxed = alloc_local(func, Type::Bool, false);
                         new_instrs.push(Instruction {
-                            kind: InstructionKind::UnwrapValueBool {
+                            kind: InstructionKind::UnboxValue {
                                 dest: unboxed,
                                 src: Operand::Local(tagged),
+                                dest_type: Type::Bool,
                             },
                             span,
                         });
@@ -534,12 +544,16 @@ mod tests {
                     ret: Box::new(Type::Int),
                 },
                 is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
             },
             Local {
                 id: LocalId::from(1u32),
                 name: None,
                 ty: Type::Int,
                 is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
             },
         ];
         let raw_fn = Local {
@@ -547,18 +561,24 @@ mod tests {
             name: None,
             ty: Type::Int,
             is_gc_root: false,
+            abi_immutable: false,
+            mir_ty: None,
         };
         let args_tuple = Local {
             id: LocalId::from(3u32),
             name: None,
             ty: Type::Any,
             is_gc_root: true,
+            abi_immutable: false,
+            mir_ty: None,
         };
         let result = Local {
             id: LocalId::from(4u32),
             name: None,
             ty: Type::Any,
             is_gc_root: false,
+            abi_immutable: false,
+            mir_ty: None,
         };
 
         let mut func = MirFunction::new(
@@ -579,9 +599,10 @@ mod tests {
             id: func.entry_block,
             instructions: vec![
                 MirInstruction {
-                    kind: InstructionKind::UnwrapValueInt {
+                    kind: InstructionKind::UnboxValue {
                         dest: LocalId::from(2u32),
                         src: Operand::Local(LocalId::from(0u32)),
+                        dest_type: Type::Int,
                     },
                     span: None,
                 },
@@ -606,7 +627,7 @@ mod tests {
     }
 
     /// Build a `*args` wrapper: params [fn_ptr: Function, args: tuple[Any]].
-    /// Body is `UnwrapValueInt(fn_ptr) → raw_fn; rt_call_with_tuple_args(raw_fn, args)`.
+    /// Body is `UnboxValue(fn_ptr, Int) → raw_fn; rt_call_with_tuple_args(raw_fn, args)`.
     fn make_varargs_wrapper() -> MirFunction {
         let params = vec![
             Local {
@@ -617,12 +638,16 @@ mod tests {
                     ret: Box::new(Type::Int),
                 },
                 is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
             },
             Local {
                 id: LocalId::from(1u32),
                 name: None,
                 ty: Type::tuple_var_of(Type::Any),
                 is_gc_root: true,
+                abi_immutable: false,
+                mir_ty: None,
             },
         ];
         let mut func = MirFunction::new(
@@ -639,6 +664,8 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
             },
         );
         func.locals.insert(
@@ -648,6 +675,8 @@ mod tests {
                 name: None,
                 ty: Type::Any,
                 is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
             },
         );
         for p in &func.params.clone() {
@@ -658,9 +687,10 @@ mod tests {
             id: func.entry_block,
             instructions: vec![
                 MirInstruction {
-                    kind: InstructionKind::UnwrapValueInt {
+                    kind: InstructionKind::UnboxValue {
                         dest: LocalId::from(2u32),
                         src: Operand::Local(LocalId::from(0u32)),
+                        dest_type: Type::Int,
                     },
                     span: None,
                 },
@@ -778,8 +808,11 @@ mod tests {
             other => panic!("expected rt_tuple_get, got {other:?}"),
         }
         match &block.instructions[2].kind {
-            InstructionKind::UnwrapValueInt { .. } => {}
-            other => panic!("expected UnwrapValueInt, got {other:?}"),
+            InstructionKind::UnboxValue {
+                dest_type: Type::Int,
+                ..
+            } => {}
+            other => panic!("expected UnboxValue(Int), got {other:?}"),
         }
         match &block.instructions[5].kind {
             InstructionKind::CallDirect { func: f, args, .. } => {

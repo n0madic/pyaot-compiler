@@ -442,11 +442,19 @@ impl<'a> Lowering<'a> {
                 value: mir::Constant::Int(i as i64),
             });
 
+            // RT_TUPLE_GET always returns a tagged Value (storage-uniform §F.7c).
+            // Use HeapAny when elem type is Any so downstream dispatch correctly
+            // routes through rt_obj_* rather than treating bits as raw i64.
+            let tuple_get_result_ty = if matches!(idx_elem_type, Type::Any) {
+                Type::Any
+            } else {
+                idx_elem_type.clone()
+            };
             let elem_local = if subject_type.is_tuple_like() {
                 self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
                     vec![subject.clone(), mir::Operand::Local(idx_local)],
-                    idx_elem_type.clone(),
+                    tuple_get_result_ty,
                     mir_func,
                 )
             } else {
@@ -578,13 +586,21 @@ impl<'a> Lowering<'a> {
                         right: mir::Operand::Local(one_local),
                     });
 
+                    // RT_TUPLE_GET always returns a tagged Value (storage-uniform §F.7c).
+                    // Use HeapAny when elem type is Any so downstream dispatch correctly
+                    // routes through rt_obj_* rather than treating bits as raw i64.
+                    let tuple_get_result_ty = if matches!(elem_type, Type::Any) {
+                        Type::Any
+                    } else {
+                        elem_type.clone()
+                    };
                     let elem_local = if subject_type.is_tuple_like() {
                         self.emit_runtime_call(
                             mir::RuntimeFunc::Call(
                                 &pyaot_core_defs::runtime_func_def::RT_TUPLE_GET,
                             ),
                             vec![subject.clone(), mir::Operand::Local(final_idx_local)],
-                            elem_type.clone(),
+                            tuple_get_result_ty,
                             mir_func,
                         )
                     } else {
@@ -712,7 +728,7 @@ impl<'a> Lowering<'a> {
                 let boxed_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_GET),
                     vec![ctx.subject.clone(), key_operand],
-                    Type::HeapAny,
+                    Type::Any,
                     mir_func,
                 );
                 let unboxed =
@@ -786,7 +802,7 @@ impl<'a> Lowering<'a> {
                 self.emit_runtime_call(
                     mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_POP),
                     vec![mir::Operand::Local(rest_local), key_operand],
-                    Type::HeapAny,
+                    Type::Any,
                     mir_func,
                 );
             }
@@ -925,18 +941,11 @@ impl<'a> Lowering<'a> {
                             value: mir::Constant::Int(offset as i64),
                         });
 
-                        // Float → raw f64 slot (no boxing); Int/Bool → UnwrapValue*;
-                        // heap/dynamic → label the read with attr_type directly.
-                        if matches!(attr_type, Type::Float) {
-                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
-                                dest: attr_local,
-                                func: mir::RuntimeFunc::Call(
-                                    &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD_F64,
-                                ),
-                                args: vec![ctx.subject.clone(), mir::Operand::Local(offset_local)],
-                            });
-                        } else if matches!(attr_type, Type::Int | Type::Bool) {
-                            let boxed_local = self.alloc_gc_local(Type::HeapAny, mir_func);
+                        // Storage is uniform tagged Value: load tagged, then
+                        // unbox per logical type (Int/Bool via UnwrapValue*,
+                        // Float via rt_unbox_float, others passthrough).
+                        if matches!(attr_type, Type::Int | Type::Bool) {
+                            let boxed_local = self.alloc_gc_local(Type::Any, mir_func);
                             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                                 dest: boxed_local,
                                 func: mir::RuntimeFunc::Call(
@@ -946,15 +955,31 @@ impl<'a> Lowering<'a> {
                             });
                             let src = mir::Operand::Local(boxed_local);
                             self.emit_instruction(if matches!(attr_type, Type::Int) {
-                                mir::InstructionKind::UnwrapValueInt {
+                                mir::InstructionKind::UnboxValue {
                                     dest: attr_local,
                                     src,
+                                    dest_type: Type::Int,
                                 }
                             } else {
-                                mir::InstructionKind::UnwrapValueBool {
+                                mir::InstructionKind::UnboxValue {
                                     dest: attr_local,
                                     src,
+                                    dest_type: Type::Bool,
                                 }
+                            });
+                        } else if matches!(attr_type, Type::Float) {
+                            let boxed_local = self.alloc_gc_local(Type::Any, mir_func);
+                            self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                                dest: boxed_local,
+                                func: mir::RuntimeFunc::Call(
+                                    &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD,
+                                ),
+                                args: vec![ctx.subject.clone(), mir::Operand::Local(offset_local)],
+                            });
+                            self.emit_instruction(mir::InstructionKind::UnboxValue {
+                                dest: attr_local,
+                                src: mir::Operand::Local(boxed_local),
+                                dest_type: Type::Float,
                             });
                         } else {
                             self.emit_instruction(mir::InstructionKind::RuntimeCall {

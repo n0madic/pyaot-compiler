@@ -30,9 +30,38 @@ impl<'a> Lowering<'a> {
 
     /// Allocate a new local variable and add it to the function.
     /// This is a helper to reduce boilerplate when creating locals.
+    ///
+    /// **Phase 2 (Strong-Typed MIR Rewrite)**: auto-populates
+    /// `Local.mir_ty` via register-level translation (`Raw(K)` for
+    /// primitives). Sites that need storage-level interpretation
+    /// (Tagged) should call `alloc_and_add_local_with_mir_ty` directly.
     pub(crate) fn alloc_and_add_local(
         &mut self,
         ty: Type,
+        mir_func: &mut mir::Function,
+    ) -> LocalId {
+        let ty = Self::demote_for_mir_storage(ty);
+        let local_id = self.alloc_local_id();
+        let mir_ty = Some(mir::type_to_mir_type_register(&ty));
+        mir_func.add_local(mir::Local {
+            id: local_id,
+            name: None,
+            ty: ty.clone(),
+            is_gc_root: ty.is_heap(),
+            abi_immutable: false,
+            mir_ty,
+        });
+        local_id
+    }
+
+    /// Allocate a new local with an explicit MirType. Used by Phase 2
+    /// migration sites that need to override the register-level default
+    /// (e.g. closure tuple slots, ABI-bound params, container storage).
+    #[allow(dead_code)]
+    pub(crate) fn alloc_and_add_local_with_mir_ty(
+        &mut self,
+        ty: Type,
+        mir_ty: mir::MirType,
         mir_func: &mut mir::Function,
     ) -> LocalId {
         let ty = Self::demote_for_mir_storage(ty);
@@ -42,6 +71,8 @@ impl<'a> Lowering<'a> {
             name: None,
             ty: ty.clone(),
             is_gc_root: ty.is_heap(),
+            abi_immutable: false,
+            mir_ty: Some(mir_ty),
         });
         local_id
     }
@@ -56,11 +87,14 @@ impl<'a> Lowering<'a> {
     ) -> LocalId {
         let ty = Self::demote_for_mir_storage(ty);
         let local_id = self.alloc_local_id();
+        let mir_ty = Some(mir::type_to_mir_type_register(&ty));
         mir_func.add_local(mir::Local {
             id: local_id,
             name: None,
             ty,
             is_gc_root,
+            abi_immutable: false,
+            mir_ty,
         });
         local_id
     }
@@ -175,11 +209,12 @@ impl<'a> Lowering<'a> {
     ) -> LocalId {
         let needs_unbox = matches!(elem_type, Type::Int | Type::Bool | Type::Float);
         // For primitives, emit the raw call into HeapAny then unbox.
-        // For other types, label the result with the declared element type so
-        // downstream comparison/dispatch paths see the right type (e.g. Union or
-        // HeapAny for `Any` elements) rather than losing the type information.
-        let raw_result_type = if needs_unbox {
-            Type::HeapAny
+        // For `Any` elements: RT_TUPLE_GET returns a tagged Value (storage-uniform
+        // invariant post §F.7c BigBang), so the result is guaranteed tagged —
+        // use HeapAny rather than Any to signal this to downstream dispatch.
+        // For all other heap/Union types, label with the declared element type.
+        let raw_result_type = if needs_unbox || matches!(elem_type, Type::Any) {
+            Type::Any
         } else {
             elem_type.clone()
         };
@@ -202,7 +237,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// Emit `RT_INSTANCE_GET_FIELD(obj, offset)` and recover the typed
-    /// value. After Phase 2 §F.7c, fields are uniform tagged `Value`s:
+    /// value. Storage is uniform tagged `Value` for every field:
     /// `Float` slots hold `Value::from_ptr(*FloatObj)` recovered via
     /// `rt_unbox_float`; `Int` slots hold `Value::from_int(n)` recovered
     /// via `UnwrapValueInt`; `Bool` slots hold `Value::from_bool(b)`
@@ -215,46 +250,30 @@ impl<'a> Lowering<'a> {
         read_type: Type,
         mir_func: &mut mir::Function,
     ) -> LocalId {
-        if matches!(read_type, Type::Float) {
-            return self.emit_runtime_call(
-                mir::RuntimeFunc::Call(
-                    &pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD_F64,
-                ),
-                vec![
-                    obj_operand,
-                    mir::Operand::Constant(mir::Constant::Int(offset as i64)),
-                ],
-                Type::Float,
-                mir_func,
-            );
-        }
-        if matches!(read_type, Type::Int | Type::Bool) {
-            let boxed_local = self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD),
-                vec![
-                    obj_operand,
-                    mir::Operand::Constant(mir::Constant::Int(offset as i64)),
-                ],
-                Type::HeapAny,
-                mir_func,
-            );
-            let dest = self.alloc_and_add_local(read_type.clone(), mir_func);
-            let src = mir::Operand::Local(boxed_local);
-            self.emit_instruction(if matches!(read_type, Type::Int) {
-                mir::InstructionKind::UnwrapValueInt { dest, src }
-            } else {
-                mir::InstructionKind::UnwrapValueBool { dest, src }
-            });
-            return dest;
-        }
-        self.emit_runtime_call(
+        let load_label = match read_type {
+            Type::Int | Type::Bool | Type::Float => Type::Any,
+            _ => read_type.clone(),
+        };
+        let boxed_local = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_INSTANCE_GET_FIELD),
             vec![
                 obj_operand,
                 mir::Operand::Constant(mir::Constant::Int(offset as i64)),
             ],
-            read_type,
+            load_label,
             mir_func,
-        )
+        );
+        match read_type {
+            Type::Int | Type::Bool | Type::Float => {
+                let dest = self.alloc_and_add_local(read_type.clone(), mir_func);
+                self.emit_instruction(mir::InstructionKind::UnboxValue {
+                    dest,
+                    src: mir::Operand::Local(boxed_local),
+                    dest_type: read_type.clone(),
+                });
+                dest
+            }
+            _ => boxed_local,
+        }
     }
 }

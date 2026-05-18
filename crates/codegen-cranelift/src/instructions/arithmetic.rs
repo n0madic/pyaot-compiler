@@ -325,7 +325,7 @@ pub(crate) fn extend_comparison_result(
         .symbols
         .locals
         .get(dest)
-        .map(|l| crate::utils::type_to_cranelift(&l.ty))
+        .map(|l| crate::utils::mir_type_to_cranelift(&l.resolved_mir_type()))
         .unwrap_or(cltypes::I8);
     let result_ty = builder.func.dfg.value_type(cmp_result);
     if result_ty == dest_cl_ty {

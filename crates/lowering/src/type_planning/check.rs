@@ -31,7 +31,7 @@ impl<'a> Lowering<'a> {
         hir_module: &hir::Module,
     ) {
         // Skip check for Any (gradual typing: Any is compatible with everything)
-        if matches!(expected, Type::Any | Type::HeapAny) {
+        if matches!(expected, Type::Any) {
             return;
         }
 

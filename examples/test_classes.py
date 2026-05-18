@@ -3347,5 +3347,68 @@ assert _hwa_a_acc_sq == 25.0, f"heap-writes acc_a^2: {_hwa_a_acc_sq}"
 assert _hwa_b_acc_sq == 56.25, f"heap-writes acc_b^2: {_hwa_b_acc_sq}"
 print("Heap-typed field side-table (autograd-style accumulation): PASS")
 
+# =============================================================================
+# Harvester recursion through FormatSpec / container literals / Index / Attribute
+# =============================================================================
+# `infer_nested_function_param_types_inner` walks call sites to seed
+# unannotated lambda/nested-function param types. Pre-fix the recursion
+# arms covered BinOp/Compare/UnOp/LogicalOp/IfExpr/MethodCall/BuiltinCall
+# but NOT FormatSpec, Tuple/List/Set/Dict literals, Index, or Attribute.
+# Inline lambda calls wrapped in any of these silently bypassed the
+# harvester, the lambda's int param defaulted to `Type::Any`, the call
+# site `ValueFromInt`-tagged the int (`(N<<3)|1`), and the body's
+# `range(n)` interpreted the tagged bits as a count: `range(5)` became
+# `range(41)`, `range(27)` became `range(217)`. Microgpt-adjacent code
+# with `print(f"len: {len(matrix(5))}")` patterns silently produced
+# 8x-bloated computation graphs.
+_hrg_lambda = lambda n: [1 for _ in range(n)]
+# Inline call inside f-string format spec
+_hrg_in_fstring = f"len: {len(_hrg_lambda(5))}"
+assert _hrg_in_fstring == "len: 5", f"lambda in f-string: {_hrg_in_fstring}"
+# Inline call inside list literal
+_hrg_in_list = [_hrg_lambda(5)]
+assert len(_hrg_in_list[0]) == 5, f"lambda in list: {len(_hrg_in_list[0])}"
+# Inline call inside dict-literal value
+_hrg_in_dict = {'k': _hrg_lambda(5)}
+assert len(_hrg_in_dict['k']) == 5, f"lambda in dict: {len(_hrg_in_dict['k'])}"
+# Inline call inside tuple literal
+_hrg_in_tuple = (_hrg_lambda(5), 0)
+assert len(_hrg_in_tuple[0]) == 5, f"lambda in tuple: {len(_hrg_in_tuple[0])}"
+# Inline call inside subscript index
+_hrg_data = [10, 20, 30, 40, 50, 60]
+_hrg_picker = lambda x: x // 2
+_hrg_picked = _hrg_data[_hrg_picker(4)]
+assert _hrg_picked == 30, f"lambda in subscript: {_hrg_picked}"
+print("Harvester recursion through FormatSpec/Tuple/List/Dict/Index: PASS")
+
+# =============================================================================
+# Float-passthrough at list[Float] store with HeapAny operand
+# =============================================================================
+# `emit_value_slot(_, Float)` previously called `rt_box_float` on every
+# operand regardless of MIR type. When the operand was a tagged Value
+# (HeapAny / Union) from `rt_obj_*` arithmetic, codegen's
+# `load_operand_as(F64)` bitcast i64→f64 — the tagged-Value bits became
+# a denormal payload, the resulting FloatObj had garbage value, and any
+# later `rt_unbox_float` round-trip recovered the same denormal. The
+# fix passes the operand through verbatim when its MIR type is HeapAny
+# or Union; downstream `rt_unbox_float` dispatches on tag at runtime.
+class _FpvAccum:
+    __slots__ = ('val',)
+    def __init__(self, v): self.val = v
+    def __mul__(self, other):
+        # Returns Value-tagged result via Union arithmetic
+        other_v = other if isinstance(other, _FpvAccum) else _FpvAccum(other)
+        return _FpvAccum(self.val * other_v.val)
+    def __rmul__(self, other): return self * other
+
+
+_fpv_seed = _FpvAccum(2.5)
+# (1 - beta) * accum produces a Union arithmetic chain at the lambda's
+# Float-typed slot. Pre-fix: `m[0]` would receive denormal e-313 bits.
+# Post-fix: m[0] correctly equals 0.15 * 2.5 = 0.375.
+_fpv_m = [0.0] * 3
+_fpv_m[0] = 0.85 * _fpv_m[0] + 0.15 * _fpv_seed.val
+assert abs(_fpv_m[0] - 0.375) < 1e-9, f"Float-passthrough store: {_fpv_m[0]}"
+print("Float-passthrough at list[Float] store with HeapAny: PASS")
 
 print("All class tests passed!")

@@ -65,6 +65,45 @@ storage for statically-typed Float instance fields. `run::polymorphic`
 12.05 ms (Phase 3 baseline 20.98 ms, Phase 1 baseline 13.26 ms). Loose
 ±10% gate met.
 
+## In-Progress Architectural Work
+
+### Strong-Typed MIR Rewrite (Phase 0-6, ~21-31 sessions)
+
+Migration to representation-aware MIR type system. New
+`pyaot_mir::MirType` enum (Raw/Tagged/Heap/FuncPtr/Closure/Var/Never)
+determines physical representation; MIR Verifier rejects mismatches.
+HIR continues using logical `pyaot_types::Type`.
+
+**Status** (as of 2026-05-17): 38/38 examples verifier-clean at
+`final-pre-codegen` in both debug and release (HardError). Stage
+progression (v2 plan, Stages A-G):
+
+| Stage | Sub-step | Status |
+|---|---|---|
+| A | Verifier infrastructure (`VerifyMirConfig`, comprehensive checks, test corpus) | ✅ DONE |
+| B | Pre-coordination (`vtable_slot_signature`, `MirSemantic`, pattern-capture docs, rebox sweep deleted) | ✅ DONE |
+| C.1 | `Local::computed_is_gc_root()` helper | ✅ DONE |
+| C.2 | Body-local mir_ty sync | ⏸ DEFERRED (needs additional box_fusion sweep) |
+| C.3 | Atomic codegen switchover (declare_var + Phi + store_result + declare/define function sigs + handlers) | ✅ DONE |
+| C.4 | Delete legacy `type_to_cranelift(&Type)` | ✅ DONE |
+| D | Reverse HeapAny migration (~22 producer sites, 6 batches) | ✅ DONE |
+| E.1 | Source-1 closure dispatch fix + orphaned RT_CALL_WITH_CAPTURES_AND_TAGGED_ARGS deleted | ✅ DONE |
+| E.2 | rt_*_tagged HOF variants universal Tagged ABI | ⏸ DEFERRED (load-bearing, multi-session) |
+| E.3 | phase4_return_abi_flipped mechanism audit | ✅ AUDITED LOAD-BEARING |
+| E.4 | `flippable_method_funcs` + `flippable_methods.rs` deleted (-280 lines) | ✅ DONE |
+| E.5 | `FunctionKind` enum replaces string heuristics | ✅ DONE |
+| E.6 | `abi_immutable` flag audit (6 load-bearing sites confirmed) | ✅ AUDITED LOAD-BEARING |
+| F.1 | Delete `Type::HeapAny` enum variant (~344 occurrences → `Type::Any` + `mir_ty`) | ✅ DONE (`21b05aa`) |
+| F.2 | Delete `Local.ty` legacy field | ⏸ PARTIAL (5 sites done; narrowing/propagation blocked on C.2) |
+| G.1 | Verifier HardError at `final-pre-codegen` unconditional (debug + release) | ✅ DONE |
+| G.2 | All 6 Phase-2 widenings confirmed load-bearing | ✅ AUDITED |
+| G.3 | CLAUDE.md + MEMORY.md + INSIGHTS.md + COMPILER_STATUS.md docs updated | ✅ DONE |
+
+Plan: `.claude/plans/strong-typed-mir-v2-coordinated.md` (supersedes `velvety-waddling-map.md`).
+Architectural rationale: `INSIGHTS.md` (top section).
+
+---
+
 ## Feature Status
 
 ### Types

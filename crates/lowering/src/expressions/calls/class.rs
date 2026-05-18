@@ -227,10 +227,10 @@ impl<'a> Lowering<'a> {
         let _ = kwargs; // Ignore kwargs for now
         let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
 
-        // Use Type::Any for cross-module classes
-        // We can't create a proper Type::Class because the class_name InternedString
-        // is from a different module's interner. Type::Any maps to pointer type
-        // which is correct for class instances.
+        // Use Type::Any for cross-module classes: RT_MAKE_INSTANCE always returns
+        // a tagged heap pointer (class instance). We can't create a proper Type::Class
+        // because the class_name InternedString is from a different module's interner,
+        // but HeapAny precisely models "guaranteed tagged Value" at this point.
         let _ = class_name; // Used for __init__ call only
         let class_type = Type::Any;
 

@@ -7,7 +7,9 @@ use crate::exceptions;
 use crate::object::{GeneratorObj, Obj, TypeTagKind};
 use pyaot_core_defs::Value;
 
-use super::composite::{call_filter_with_captures, call_map_with_captures};
+use super::composite::{
+    call_filter_with_captures, call_filter_with_captures_tagged, call_map_with_captures,
+};
 
 /// Internal implementation of iterator next()
 /// Can optionally raise StopIteration or return sentinel
@@ -102,6 +104,10 @@ pub(crate) fn rt_iter_next_internal(iter_obj: *mut Obj, raise_on_exhausted: bool
             IteratorKind::Zip3 => iter_next_zip3(iter_obj, raise_on_exhausted),
 
             IteratorKind::ZipN => iter_next_zipn(iter_obj, raise_on_exhausted),
+
+            IteratorKind::MapTagged => iter_next_map_tagged(iter_obj, raise_on_exhausted),
+
+            IteratorKind::FilterTagged => iter_next_filter_tagged(iter_obj, raise_on_exhausted),
         }
     }
 }
@@ -695,6 +701,123 @@ unsafe fn iter_next_filter(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut
             return elem;
         }
         // If predicate returns false, continue to next element
+    }
+}
+
+/// Phase 4+ Extension E2a: tagged-delivery variant of `iter_next_map`.
+/// Asymmetric semantics:
+///   - INPUT element is passed verbatim — callback's prologue does its
+///     own `UnboxValue` for primitive-typed params (per Step E1).
+///   - OUTPUT return is re-wrapped via `result_box_kind` if the
+///     callback returns a raw primitive (lambdas are not return-ABI
+///     flipped today, so this re-wrap is still required to keep
+///     downstream consumers seeing uniform tagged Values).
+unsafe fn iter_next_map_tagged(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Obj {
+    use crate::object::{IteratorObj, MapIterObj};
+
+    let map_iter = iter_obj as *mut MapIterObj;
+
+    if (*map_iter).exhausted {
+        if raise_on_exhausted {
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
+        }
+        return EXHAUSTED_SENTINEL;
+    }
+
+    let elem = rt_iter_next_internal((*map_iter).inner_iter, false);
+    let inner_iter = (*map_iter).inner_iter;
+    let inner_exhausted = if (*inner_iter).header.type_tag == TypeTagKind::Generator {
+        (*(inner_iter as *mut GeneratorObj)).exhausted
+    } else {
+        (*(inner_iter as *mut IteratorObj)).exhausted
+    };
+    if inner_exhausted {
+        (*map_iter).exhausted = true;
+        if raise_on_exhausted {
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
+        }
+        return EXHAUSTED_SENTINEL;
+    }
+
+    // Pass element through verbatim — callback's prologue unboxes.
+    let result = call_map_with_captures(
+        (*map_iter).func_ptr,
+        (*map_iter).captures,
+        (*map_iter).capture_count & 0x7F,
+        elem,
+    );
+
+    // Output re-wrap: callback returns raw primitive bits when the
+    // declared return type is Int / Bool (lambdas are not return-flipped
+    // today). Re-wrap into a tagged Value for the downstream consumer.
+    match (*map_iter).result_box_kind {
+        1 => pyaot_core_defs::Value::from_int(result as i64).0 as *mut Obj,
+        2 => pyaot_core_defs::Value::from_bool((result as i64) != 0).0 as *mut Obj,
+        _ => result,
+    }
+}
+
+/// Phase 4+ Extension E2a: tagged-delivery variant of `iter_next_filter`.
+///
+/// Two key differences from the legacy `iter_next_filter`:
+///   1. INPUT: element is passed verbatim (no `elem_unbox_kind` unboxing)
+///      — the phase4-safe callback does its own `UnboxValue` in its prologue.
+///   2. OUTPUT: predicate return is interpreted as a **tagged `Value`** (i64),
+///      not raw i8. Phase4-return-flipped lambdas box their Bool/Int return
+///      into a tagged Value; calling them as `-> i8` reads only the low byte
+///      of the tagged representation. Crucially, tagged `false` is `0x03`
+///      (BOOL_TAG), whose low byte is `3` — non-zero — so the legacy i8 path
+///      would incorrectly admit elements where the predicate returned `false`.
+///      `call_filter_with_captures_tagged` calls as `-> i64` and delegates to
+///      `rt_is_truthy` for correct tagged-Value truthiness evaluation.
+unsafe fn iter_next_filter_tagged(iter_obj: *mut Obj, raise_on_exhausted: bool) -> *mut Obj {
+    use crate::object::{FilterIterObj, IteratorObj};
+
+    let filter_iter = iter_obj as *mut FilterIterObj;
+
+    if (*filter_iter).exhausted {
+        if raise_on_exhausted {
+            raise_exc!(exceptions::ExceptionType::StopIteration, "");
+        }
+        return EXHAUSTED_SENTINEL;
+    }
+
+    loop {
+        let elem = rt_iter_next_internal((*filter_iter).inner_iter, false);
+        let inner_iter = (*filter_iter).inner_iter;
+        let inner_exhausted = if (*inner_iter).header.type_tag == TypeTagKind::Generator {
+            (*(inner_iter as *mut GeneratorObj)).exhausted
+        } else {
+            (*(inner_iter as *mut IteratorObj)).exhausted
+        };
+        if inner_exhausted {
+            (*filter_iter).exhausted = true;
+            if raise_on_exhausted {
+                raise_exc!(exceptions::ExceptionType::StopIteration, "");
+            }
+            return EXHAUSTED_SENTINEL;
+        }
+
+        // func_ptr == 0 means filter(None, iter) — truthiness on tagged
+        // Value (same as legacy variant).
+        let passes = if (*filter_iter).func_ptr == 0 {
+            crate::ops::rt_is_truthy(elem) != 0
+        } else {
+            // Pass elem through verbatim — callback's prologue unboxes.
+            // Use the tagged-return variant: phase4-safe predicates return a
+            // tagged Value (i64). The legacy i8 path is wrong here because
+            // tagged bool false (0x03) has a non-zero low byte.
+            call_filter_with_captures_tagged(
+                (*filter_iter).func_ptr,
+                (*filter_iter).captures,
+                (*filter_iter).capture_count & 0x7F,
+                elem,
+            )
+        };
+
+        if passes {
+            return elem;
+        }
     }
 }
 

@@ -34,7 +34,6 @@ fn is_ptr_storage(ty: &Type) -> bool {
             | Type::RuntimeObject(_)
             | Type::File(_)
             | Type::Any
-            | Type::HeapAny
             | Type::BuiltinException(_)
             | Type::NotImplementedT
     )

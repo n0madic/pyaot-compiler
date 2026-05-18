@@ -11,10 +11,6 @@ mod class;
 mod closure;
 mod direct;
 
-/// Maximum number of captures supported in closure dispatch.
-/// This limit exists because we generate static branches for each case.
-pub(super) const MAX_CLOSURE_CAPTURES: usize = 8;
-
 /// Represents an expanded call argument.
 /// Used to track whether an argument needs runtime unpacking.
 #[derive(Debug, Clone, Copy)]

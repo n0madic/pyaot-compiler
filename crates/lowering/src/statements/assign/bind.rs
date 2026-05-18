@@ -44,6 +44,7 @@ impl<'a> Lowering<'a> {
                     *field,
                     value_operand,
                     value_type,
+                    hir_module,
                     mir_func,
                 )
             }
@@ -80,7 +81,7 @@ impl<'a> Lowering<'a> {
                             if let Some(local_id) = self.get_var_local(var_id) {
                                 if let Some(local) = mir_func.locals.get_mut(&local_id) {
                                     local.ty = refined.clone();
-                                    local.is_gc_root = local.ty.is_heap();
+                                    local.is_gc_root = local.computed_is_gc_root();
                                 }
                             }
                             refined
@@ -101,6 +102,7 @@ impl<'a> Lowering<'a> {
                     &index_type,
                     value_operand,
                     value_type,
+                    hir_module,
                     mir_func,
                 )
             }
@@ -147,7 +149,7 @@ impl<'a> Lowering<'a> {
         };
         let promote_any = |t: Type| -> Type {
             if uses_heap_obj && matches!(t, Type::Any) {
-                Type::HeapAny
+                Type::Any
             } else {
                 t
             }
@@ -366,8 +368,7 @@ impl<'a> Lowering<'a> {
             .get(&var_id)
             .cloned()
             .unwrap_or_else(|| value_type.clone());
-        let local_ty_raw = if matches!(prescanned_ty, Type::Any | Type::HeapAny)
-            && !matches!(value_type, Type::Any | Type::HeapAny)
+        let local_ty_raw = if matches!(prescanned_ty, Type::Any) && !matches!(value_type, Type::Any)
         {
             value_type.clone()
         } else {
@@ -421,6 +422,7 @@ impl<'a> Lowering<'a> {
         field: InternedString,
         value_operand: mir::Operand,
         value_type: &Type,
+        hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
         // Accept both Type::Class and Type::Generic (user-defined generic class instance).
@@ -436,66 +438,34 @@ impl<'a> Lowering<'a> {
                 if let Some((_getter, Some(setter_id))) = class_info.properties.get(&field) {
                     let setter_id = *setter_id;
                     let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
+                    // Phase 4: box value arg if setter param[1] is annotated primitive.
+                    let val_ty = self.operand_type(&value_operand, mir_func);
+                    let coerced_value = self.box_dunder_arg_if_needed(
+                        value_operand,
+                        &val_ty,
+                        setter_id,
+                        1,
+                        hir_module,
+                        mir_func,
+                    );
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: dummy_local,
                         func: setter_id,
-                        args: vec![obj_operand, value_operand],
+                        args: vec![obj_operand, coerced_value],
                     });
                     return Ok(());
                 }
                 // 2. Regular instance field
                 if let Some(&offset) = class_info.field_offsets.get(&field) {
-                    let storage_ty = class_info
+                    // Storage is uniform tagged `Value`. The logical type
+                    // (`field_types[field]`) drives boxing in
+                    // `coerce_for_instance_field_store`; the F64 fast-path
+                    // and the heap-writes side-table are gone (Phase 2).
+                    let field_ty = class_info
                         .field_types
                         .get(&field)
                         .cloned()
                         .unwrap_or(Type::Any);
-                    // Mirror the read path (`lower_attribute`): prefer the
-                    // constructor-refined type so the F64 fast-path for stores
-                    // agrees with the F64 fast-path for loads. Without this an
-                    // unannotated `Float`-refined field reads raw f64 via
-                    // RT_INSTANCE_GET_FIELD_F64 but writes via the generic
-                    // RT_INSTANCE_SET_FIELD with a boxed FloatObj — the read
-                    // then interprets pointer bits as a denormal float.
-                    //
-                    // Override to `HeapAny` if the cross-instance harvester
-                    // recorded a compound write (autograd-style
-                    // `child.grad += local_grad * v.grad`) — the field's
-                    // runtime tag may be a heap pointer, so we must NOT
-                    // re-encode it as INT via the standard primitive
-                    // coercion. `coerce_for_instance_field_store` with
-                    // `field_ty == HeapAny` falls through to
-                    // `coerce_for_storage` which boxes primitives via
-                    // `emit_value_slot` and passes already-tagged Values
-                    // verbatim. See `class_fields_with_heap_writes`.
-                    let field_ty = if self.field_has_heap_writes(*class_id, field) {
-                        Type::HeapAny
-                    } else {
-                        self.get_refined_class_field_type(class_id, &field)
-                            .cloned()
-                            .unwrap_or(storage_ty)
-                    };
-                    if matches!(field_ty, Type::Float) {
-                        let f64_op = self.coerce_for_storage(
-                            value_operand,
-                            value_type,
-                            &Type::Float,
-                            mir_func,
-                        );
-                        self.emit_runtime_call(
-                            mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_INSTANCE_SET_FIELD_F64,
-                            ),
-                            vec![
-                                obj_operand,
-                                mir::Operand::Constant(mir::Constant::Int(offset as i64)),
-                                f64_op,
-                            ],
-                            Type::None,
-                            mir_func,
-                        );
-                        return Ok(());
-                    }
                     let coerced = self.coerce_for_instance_field_store(
                         value_operand,
                         value_type,
@@ -575,8 +545,7 @@ impl<'a> Lowering<'a> {
             // Primitive into union / dynamic field — box so the raw bits
             // become a heap pointer.
             (Type::Int | Type::Bool | Type::Float | Type::None, Type::Union(_))
-            | (Type::Int | Type::Bool | Type::Float | Type::None, Type::Any)
-            | (Type::Int | Type::Bool | Type::Float | Type::None, Type::HeapAny) => {
+            | (Type::Int | Type::Bool | Type::Float | Type::None, Type::Any) => {
                 self.emit_value_slot(value_operand, value_ty, mir_func)
             }
             // Everything else — identity.
@@ -601,12 +570,12 @@ impl<'a> Lowering<'a> {
         if matches!(field_ty, Type::Float) {
             let f64_operand =
                 self.coerce_for_storage(value_operand, value_ty, &Type::Float, mir_func);
-            let boxed_local = self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
-                vec![f64_operand],
-                Type::HeapAny,
-                mir_func,
-            );
+            let boxed_local = self.alloc_and_add_local(Type::Any, mir_func);
+            self.emit_instruction(mir::InstructionKind::BoxValue {
+                dest: boxed_local,
+                src: f64_operand,
+                src_type: Type::Float,
+            });
             return mir::Operand::Local(boxed_local);
         }
         if matches!(field_ty, Type::Int) {
@@ -618,7 +587,7 @@ impl<'a> Lowering<'a> {
                     src: value_operand,
                 });
                 mir::Operand::Local(int_dest)
-            } else if matches!(value_ty, Type::HeapAny) {
+            } else if matches!(value_ty, Type::Any) {
                 // The MIR operand is already a tagged `Value` from a
                 // runtime dispatch (e.g. `rt_obj_add`). The static
                 // field type narrowed to `Int` because the harvester
@@ -630,34 +599,41 @@ impl<'a> Lowering<'a> {
                 // garbage but at least no high pointer bits leak into
                 // the integer payload to surface as `OverflowError`.
                 let int_dest = self.alloc_and_add_local(Type::Int, mir_func);
-                self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                self.emit_instruction(mir::InstructionKind::UnboxValue {
                     dest: int_dest,
                     src: value_operand,
+                    dest_type: Type::Int,
                 });
                 mir::Operand::Local(int_dest)
             } else {
                 self.coerce_for_storage(value_operand, value_ty, field_ty, mir_func)
             };
-            let dest = self.alloc_and_add_local(Type::HeapAny, mir_func);
-            self.emit_instruction(mir::InstructionKind::ValueFromInt {
+            let dest = self.alloc_and_add_local(Type::Any, mir_func);
+            self.emit_instruction(mir::InstructionKind::BoxValue {
                 dest,
                 src: int_operand,
+                src_type: Type::Int,
             });
             return mir::Operand::Local(dest);
         }
         if matches!(field_ty, Type::Bool) {
-            let coerced = if matches!(value_ty, Type::HeapAny) {
+            let coerced = if matches!(value_ty, Type::Any) {
                 let bool_dest = self.alloc_and_add_local(Type::Bool, mir_func);
-                self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+                self.emit_instruction(mir::InstructionKind::UnboxValue {
                     dest: bool_dest,
                     src: value_operand,
+                    dest_type: Type::Bool,
                 });
                 mir::Operand::Local(bool_dest)
             } else {
                 self.coerce_for_storage(value_operand, value_ty, field_ty, mir_func)
             };
-            let dest = self.alloc_and_add_local(Type::HeapAny, mir_func);
-            self.emit_instruction(mir::InstructionKind::ValueFromBool { dest, src: coerced });
+            let dest = self.alloc_and_add_local(Type::Any, mir_func);
+            self.emit_instruction(mir::InstructionKind::BoxValue {
+                dest,
+                src: coerced,
+                src_type: Type::Bool,
+            });
             return mir::Operand::Local(dest);
         }
         self.coerce_for_storage(value_operand, value_ty, field_ty, mir_func)
@@ -673,6 +649,7 @@ impl<'a> Lowering<'a> {
         index_type: &Type,
         value_operand: mir::Operand,
         value_type: &Type,
+        hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<()> {
         match obj_type {
@@ -720,10 +697,29 @@ impl<'a> Lowering<'a> {
                     .and_then(|info| info.get_dunder_func("__setitem__"));
                 if let Some(func_id) = setitem_func {
                     let dummy_local = self.alloc_and_add_local(Type::None, mir_func);
+                    // Phase 4: box index/value args if __setitem__ params are annotated primitives.
+                    let index_ty = self.operand_type(&index_operand, mir_func);
+                    let coerced_index = self.box_dunder_arg_if_needed(
+                        index_operand,
+                        &index_ty,
+                        func_id,
+                        1,
+                        hir_module,
+                        mir_func,
+                    );
+                    let value_ty = self.operand_type(&value_operand, mir_func);
+                    let coerced_value = self.box_dunder_arg_if_needed(
+                        value_operand,
+                        &value_ty,
+                        func_id,
+                        2,
+                        hir_module,
+                        mir_func,
+                    );
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: dummy_local,
                         func: func_id,
-                        args: vec![obj_operand, index_operand, value_operand],
+                        args: vec![obj_operand, coerced_index, coerced_value],
                     });
                 }
             }

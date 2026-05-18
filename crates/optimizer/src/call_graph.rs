@@ -25,8 +25,7 @@
 use std::collections::HashMap;
 
 use indexmap::{IndexMap, IndexSet};
-use pyaot_mir::{InstructionKind, Module, Operand};
-use pyaot_types::Type;
+use pyaot_mir::{HeapShape, InstructionKind, MirType, Module, Operand};
 use pyaot_utils::{BlockId, ClassId, FuncId, LocalId};
 
 /// One specific call edge. `(caller, callee)` pairs are de-duplicated in
@@ -523,19 +522,28 @@ fn build_vtable_name_map(module: &Module) -> HashMap<(ClassId, u64), FuncId> {
     map
 }
 
+/// Stage F.2: reads `resolved_mir_type()` instead of `local.ty`. Both
+/// `Type::Class` and `Type::Generic` (user-generic instances) map to
+/// `MirType::Heap(HeapShape::Class { id, .. })`, so this single match arm
+/// covers both where the old code only covered `Type::Class`.
 fn operand_class_id(operand: &Operand, func: &pyaot_mir::Function) -> Option<ClassId> {
     let Operand::Local(id) = operand else {
         return None;
     };
-    let ty = func.locals.get(id).map(|local| &local.ty).or_else(|| {
-        func.params
-            .iter()
-            .find(|param| param.id == *id)
-            .map(|param| &param.ty)
-    })?;
-    match ty {
-        Type::Class { class_id, .. } => Some(*class_id),
-        _ => None,
+    let mir_ty = func
+        .locals
+        .get(id)
+        .map(|local| local.resolved_mir_type())
+        .or_else(|| {
+            func.params
+                .iter()
+                .find(|param| param.id == *id)
+                .map(|param| param.resolved_mir_type())
+        })?;
+    if let MirType::Heap(HeapShape::Class { id: class_id, .. }) = mir_ty {
+        Some(class_id)
+    } else {
+        None
     }
 }
 
@@ -695,6 +703,8 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
             },
         );
         let bb = func.entry_block;
@@ -808,6 +818,8 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
             },
         );
         f0.locals.insert(
@@ -817,6 +829,8 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
             },
         );
         let bb0 = f0.entry_block;
@@ -870,6 +884,8 @@ mod tests {
                 name: None,
                 ty: Type::Any,
                 is_gc_root: true,
+                abi_immutable: false,
+                mir_ty: None,
             },
         );
         caller.locals.insert(
@@ -879,6 +895,8 @@ mod tests {
                 name: None,
                 ty: Type::Any,
                 is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
             },
         );
         let bb0 = caller.entry_block;
@@ -931,6 +949,8 @@ mod tests {
                 name: None,
                 ty: Type::Int,
                 is_gc_root: false,
+                abi_immutable: false,
+                mir_ty: None,
             },
         );
         let bb0 = caller.entry_block;
@@ -982,6 +1002,8 @@ mod tests {
                     name: None,
                     ty: Type::Int,
                     is_gc_root: false,
+                    abi_immutable: false,
+                    mir_ty: None,
                 },
             );
         }

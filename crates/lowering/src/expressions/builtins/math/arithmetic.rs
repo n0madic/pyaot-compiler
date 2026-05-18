@@ -78,11 +78,31 @@ impl<'a> Lowering<'a> {
                 Ok(mir::Operand::Local(result_local))
             }
             Type::Float => {
-                // abs(float) -> use FloatAbs instruction
+                // abs(float) -> use FloatAbs instruction.
+                //
+                // The seed type says `Float` but the operand may have
+                // been lowered through a path (e.g. Union arithmetic via
+                // `rt_obj_*`) that produced a tagged-`Value` (i64) MIR
+                // local. `FloatAbs` requires an f64 operand — feed in
+                // an `rt_unbox_float` (whose ABI shim handles tagged
+                // INT / BOOL / Float-pointer uniformly) when the
+                // operand's MIR type isn't already `Float`.
+                let operand_mir_ty = self.operand_type(&arg_operand, mir_func);
+                let coerced_operand = if matches!(operand_mir_ty, Type::Float) {
+                    arg_operand
+                } else {
+                    let unboxed = self.alloc_and_add_local(Type::Float, mir_func);
+                    self.emit_instruction(mir::InstructionKind::UnboxValue {
+                        dest: unboxed,
+                        src: arg_operand,
+                        dest_type: Type::Float,
+                    });
+                    mir::Operand::Local(unboxed)
+                };
                 let result_local = self.alloc_and_add_local(Type::Float, mir_func);
                 self.emit_instruction(mir::InstructionKind::FloatAbs {
                     dest: result_local,
-                    src: arg_operand,
+                    src: coerced_operand,
                 });
                 Ok(mir::Operand::Local(result_local))
             }
@@ -244,8 +264,16 @@ impl<'a> Lowering<'a> {
             Type::Int // default start is 0 (int)
         };
 
-        // Result type promotion: float if either element or start is float
-        let result_type = if element_type == Type::Float || start_type == Type::Float {
+        // Result type promotion: float if either element or start is float.
+        // Use the shared `iter_elem_resolves_to_float` helper so that
+        // `sum(val.data for val in logits)` where `val.data` was widened
+        // to `Union[Float, Class[Self]]` (polymorphic-dunder seed
+        // pollution) still routes through the float-arithmetic path
+        // instead of the integer fallback. Mirrors the same widening in
+        // `lower_minmax_builtin`.
+        let elem_is_float =
+            crate::type_planning::helpers::iter_elem_resolves_to_float(&element_type);
+        let result_type = if elem_is_float || start_type == Type::Float {
             Type::Float
         } else {
             Type::Int
@@ -313,7 +341,7 @@ impl<'a> Lowering<'a> {
             let raw_local = self.emit_runtime_call(
                 mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_NEXT_NO_EXC),
                 vec![mir::Operand::Local(iter_local)],
-                Type::HeapAny,
+                Type::Any,
                 mir_func,
             );
 
@@ -338,17 +366,19 @@ impl<'a> Lowering<'a> {
             let next_local = match &element_type {
                 Type::Int => {
                     let dest = self.alloc_and_add_local(Type::Int, mir_func);
-                    self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+                    self.emit_instruction(mir::InstructionKind::UnboxValue {
                         dest,
                         src: mir::Operand::Local(raw_local),
+                        dest_type: Type::Int,
                     });
                     dest
                 }
                 Type::Bool => {
                     let dest = self.alloc_and_add_local(Type::Bool, mir_func);
-                    self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+                    self.emit_instruction(mir::InstructionKind::UnboxValue {
                         dest,
                         src: mir::Operand::Local(raw_local),
+                        dest_type: Type::Bool,
                     });
                     dest
                 }

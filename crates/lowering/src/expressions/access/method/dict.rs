@@ -21,7 +21,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) {
         if matches!(value_ty, Type::Int | Type::Float | Type::Bool) {
-            let boxed_local = self.emit_runtime_call(call_func, args, Type::HeapAny, mir_func);
+            let boxed_local = self.emit_runtime_call(call_func, args, Type::Any, mir_func);
             let unboxed =
                 self.unbox_if_needed(mir::Operand::Local(boxed_local), value_ty, mir_func);
             self.emit_instruction(mir::InstructionKind::Copy {

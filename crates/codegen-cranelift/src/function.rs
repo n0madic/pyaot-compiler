@@ -22,7 +22,7 @@ use std::collections::HashSet;
 use crate::context::{CodegenContext, GcFrameData};
 use crate::instructions::compile_instruction;
 use crate::terminators::compile_terminator;
-use crate::utils::{create_traceback_string_data, mangle_function_name, type_to_cranelift};
+use crate::utils::{create_traceback_string_data, mangle_function_name, mir_type_to_cranelift};
 use pyaot_utils::{BlockId, Span};
 
 /// Context for function compilation, grouping related parameters
@@ -47,15 +47,19 @@ pub fn declare_function(module: &mut ObjectModule, func: &mir::Function) -> Resu
     let mut sig = module.make_signature();
     sig.call_conv = CallConv::SystemV;
 
+    // Stage C.3 step 2: derive param/return Cranelift types from
+    // resolved MirType via the function's typed signature.
+    let resolved_sig = func.resolved_signature();
+
     // Add parameters
-    for param in &func.params {
-        let cl_type = type_to_cranelift(&param.ty);
+    for param_mt in &resolved_sig.params {
+        let cl_type = mir_type_to_cranelift(param_mt);
         sig.params.push(AbiParam::new(cl_type));
     }
 
     // Add return type (skip for None/void, but include Bool which is also I8)
-    let ret_type = type_to_cranelift(&func.return_type);
     if !matches!(func.return_type, pyaot_types::Type::None) {
+        let ret_type = mir_type_to_cranelift(&resolved_sig.return_type);
         sig.returns.push(AbiParam::new(ret_type));
     }
 
@@ -80,9 +84,11 @@ pub fn define_function(
     compiler.ctx.func.signature = compiler.module.make_signature();
     compiler.ctx.func.signature.call_conv = CallConv::SystemV;
 
+    // Stage C.3 step 2: signature derived from resolved MirType.
+    let resolved_sig = func.resolved_signature();
     // Set up signature (same as declare)
-    for param in &func.params {
-        let cl_type = type_to_cranelift(&param.ty);
+    for param_mt in &resolved_sig.params {
+        let cl_type = mir_type_to_cranelift(param_mt);
         compiler
             .ctx
             .func
@@ -91,8 +97,8 @@ pub fn define_function(
             .push(AbiParam::new(cl_type));
     }
     // Add return type (skip for None/void, but include Bool which is also I8)
-    let ret_type = type_to_cranelift(&func.return_type);
     if !matches!(func.return_type, pyaot_types::Type::None) {
+        let ret_type = mir_type_to_cranelift(&resolved_sig.return_type);
         compiler
             .ctx
             .func
@@ -101,11 +107,15 @@ pub fn define_function(
             .push(AbiParam::new(ret_type));
     }
 
-    // Count GC roots - locals that need GC tracking
+    // Count GC roots - locals that need GC tracking.
+    // Stage C.1 completion: codegen now reads gc-root status exclusively
+    // from MirType via `computed_is_gc_root`. The legacy `is_gc_root`
+    // field remains set by lowering for sites not yet migrated but is
+    // no longer consulted at this codegen call.
     let gc_roots: Vec<(LocalId, usize)> = func
         .locals
         .iter()
-        .filter(|(_, l)| l.is_gc_root)
+        .filter(|(_, l)| l.computed_is_gc_root())
         .enumerate()
         .map(|(idx, (local_id, _))| (*local_id, idx))
         .collect();
@@ -118,10 +128,22 @@ pub fn define_function(
     builder.append_block_params_for_function_params(entry_block);
     builder.switch_to_block(entry_block);
 
-    // Map MIR locals to Cranelift variables
+    // Map MIR locals to Cranelift variables.
+    //
+    // Stage C.3 of Strong-Typed MIR Rewrite plan v2: declare each var
+    // using the resolved MirType — the authoritative representation
+    // since Phase 2 lowering. When `mir_ty` is None, `resolved_mir_type`
+    // falls back to register-level translation of `ty` (matching the
+    // legacy `type_to_cranelift(local.ty)` behavior).
+    //
+    // Divergence handling: when ty and mir_ty disagree (e.g., post-WPA
+    // ty=Float but mir_ty=Tagged), the declaration honours mir_ty,
+    // matching how the actual bit pattern is stored in the slot.
+    // Downstream load sites that need a different register class must
+    // insert explicit conversion (rt_unbox_float, ireduce, fcvt, etc.).
     let mut var_map = IndexMap::new();
     for (local_id, local) in func.locals.iter() {
-        let var = builder.declare_var(type_to_cranelift(&local.ty));
+        let var = builder.declare_var(mir_type_to_cranelift(&local.resolved_mir_type()));
         var_map.insert(*local_id, var);
     }
 
@@ -181,10 +203,13 @@ pub fn define_function(
         for inst in &block.instructions {
             match &inst.kind {
                 mir::InstructionKind::Phi { dest, .. } => {
+                    // Stage C.3: Phi block-param type must match the Phi
+                    // dest's declared var type (set by declare_var via
+                    // resolved_mir_type). Use the same path for consistency.
                     let ty = func
                         .locals
                         .get(dest)
-                        .map(|l| type_to_cranelift(&l.ty))
+                        .map(|l| mir_type_to_cranelift(&l.resolved_mir_type()))
                         .expect("phi dest missing local");
                     builder.append_block_param(cl_block, ty);
                 }

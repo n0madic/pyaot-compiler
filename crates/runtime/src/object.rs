@@ -26,6 +26,16 @@ pub enum IteratorKind {
     ISlice = 12,
     Zip3 = 13,
     ZipN = 14,
+    // Phase 4+ Extension E2a: tagged-delivery variants. The runtime
+    // passes both the input element and the callback's return value
+    // verbatim — the callback's prologue (lowering's phase4-safe lambda
+    // path) performs its own `UnboxValue` on primitive-typed params,
+    // and the callback returns a tagged Value (Phase 4 Commit 4
+    // return-ABI flip). Used when lowering routes to
+    // `rt_map_new_tagged` / `rt_filter_new_tagged` for phase4-safe
+    // lambda callees.
+    MapTagged = 15,
+    FilterTagged = 16,
 }
 
 impl TryFrom<u8> for IteratorKind {
@@ -48,6 +58,8 @@ impl TryFrom<u8> for IteratorKind {
             12 => Ok(IteratorKind::ISlice),
             13 => Ok(IteratorKind::Zip3),
             14 => Ok(IteratorKind::ZipN),
+            15 => Ok(IteratorKind::MapTagged),
+            16 => Ok(IteratorKind::FilterTagged),
             _ => Err(value),
         }
     }

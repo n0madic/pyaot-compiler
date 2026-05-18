@@ -4,6 +4,193 @@ Non-obvious insights, gotchas, and hard-won knowledge about the Python AOT Compi
 
 ---
 
+## Strong-Typed MIR Rewrite — Architectural Direction
+
+The compiler has a **representation-aware MIR type system** alongside
+the legacy logical type system. `pyaot_types::Type` is a logical /
+structural type used by HIR. `pyaot_mir::MirType` determines **physical
+representation**:
+
+- `MirType::Raw(RawKind)` — primitive bits in slot
+- `MirType::Tagged` — tagged Value (any tag) — replaces both
+  `Type::Any` and `Type::HeapAny`
+- `MirType::Heap(HeapShape)` — typed heap pointer
+- `MirType::FuncPtr(Signature)` — code address with signature
+- `MirType::Closure(ClosureShape)` — closure tuple
+- `MirType::Var(name)`, `MirType::Never`
+
+**Why**: the legacy `Type::Any` vs `Type::HeapAny` distinction was
+load-bearing but ambiguous — slots typed `Type::Any` could hold raw
+bits OR tagged Values depending on which producer wrote them. This
+ambiguity is the root cause of multiple session-spanning bugs (see
+`memory/feedback_a4_a6_universal_enforce_blocked.md`,
+`memory/project_source2_partial_fix_landed.md`).
+
+The new `MirType` makes representation EXPLICIT and enforced by a
+verifier pass (`crates/mir/src/verify.rs`, run via `--verify-mir`).
+Verifier runs in HardError mode at `final-pre-codegen` in all builds.
+
+**Dual-field design (FINAL STATE)**: `Local.ty: Type` (logical) +
+`Local.mir_ty: Option<MirType>` (physical). These are not an
+intermediate migration artifact — see "Dual-Field Type System" entry
+below. `Type::HeapAny` was deleted in Stage F.1 (commit `21b05aa`).
+Stage F.2 deletes `Local.ty`; `mir_ty` Option removal is blocked
+(see `memory/feedback_mir_ty_option_removal_blocked.md`).
+
+Active plan: `.claude/plans/strong-typed-mir-v2-coordinated.md`.
+Translation helpers:
+`type_to_mir_type_storage` (primitives → `Tagged`),
+`type_to_mir_type_register` (primitives → `Raw(K)`),
+`mir_type_to_cranelift` (typed counterpart to legacy `type_to_cranelift`),
+`param_type_to_mir_type` / `return_type_to_mir_type` (RuntimeFuncDef
+ParamType / ReturnType → MirType).
+
+**Verifier status (2026-05-18)**: all runtime tests verifier-clean at
+`final-pre-codegen`. Phase 2-level widenings in `assignable_to` and
+verifier checks acknowledge known physical-bit-equivalences (Raw(I64)
+↔ Tagged at Copy in defensive-boxing scenarios; numeric tower
+Raw(I8|I64|F64) → Raw(F64) and Raw(_) → Tagged at Return; container
+covariance for uniform-Value-storage shapes).
+
+**For new code**: prefer reading `Local::resolved_mir_type()` over
+`Local.ty`. Lowering call sites should populate `mir_ty` explicitly
+via `alloc_and_add_local_with_mir_ty` when storage semantics differ
+from the register-level translation default.
+
+**Load-bearing legacy items NOT yet deleted**:
+`phase4_*` flags, `PHASE4_TAGGED_USER_ARGS_MARKER` marker bit, parallel
+`rt_*_tagged` runtime variants, `abi_immutable` per-Local flag.
+These get cleaned up in Stage E.2/E.3/F.2.
+
+**Stage E.6 audit result (2026-05-17)**: `abi_immutable` is genuinely
+independent of `mir_ty == Tagged` at every reader site. The flag
+cannot be replaced with `resolved_mir_type() == Tagged` because:
+
+1. **Narrowing guards** (`refine_function_params` line 1065,
+   `materialize_function_types` lines 1789/1837): the combined check
+   is `abi_immutable && ty==Any`. Without `abi_immutable`, the guard
+   would match all `Any` params — but WPA is *allowed* to narrow
+   unannotated `Any` params that lack prologue unbox. The flag
+   specifically distinguishes ABI-bound `Any` params from
+   freely-narrowable `Any` params.
+
+2. **`sync_call_direct_dest_mir_ty`** (line 1725): guards
+   `Tagged → Raw` narrowing on call-dest locals. Replacing with
+   `resolved_mir_type() == Tagged` would block all Tagged call dests
+   from being narrowed, defeating the entire purpose of the function.
+
+3. **`phi_normalize`** (line 220): same over-blocking issue — only
+   processes Tagged dests, so `abi_immutable` guard is the only way
+   to carve out protected slots.
+
+For body-local Locals set by `binary_ops.rs` (`abi_immutable=true,
+mir_ty=None`): the `resolved_mir_type()` fallback via
+`type_to_mir_type_register(Any)` also returns `Tagged`, so
+the flag and `mir_ty==Tagged` are EQUIVALENT for that case only —
+but since param locals also flow through the same guards and need
+the finer-grained discrimination, the flag cannot be removed.
+
+**Zero readers were migrated; zero guards are redundant.** The flag
+must remain until Phase 5/6 when `ty` is deleted and all narrowing
+guards are rewritten against `mir_ty` directly.
+
+---
+
+## Dual-Field Type System — Final Design (2026-05-18)
+
+`Local` holds two parallel type fields:
+
+```rust
+pub ty: pyaot_types::Type,            // logical/structural (HIR contract)
+pub mir_ty: Option<pyaot_mir::MirType>, // physical representation (MIR contract)
+```
+
+**These are the designed final state, not an intermediate migration
+artifact.** The fields serve different purposes:
+
+- `ty` — carries the HIR-level type contract (Int, Float, Bool, Any,
+  List[T], Class, ...). Used by type inference, WPA narrowing, name
+  resolution, and all optimizer passes that reason about logical type
+  structure. Deleted in Stage F.2 (blocked on C.2).
+
+- `mir_ty` — carries the physical representation decision (Raw(I64),
+  Tagged, Heap(List), ...). Set explicitly by lowering at construction
+  sites where representation is known. Falls back to
+  `type_to_mir_type_register(&ty)` via `resolved_mir_type()` when not
+  set. `Option::None` has semantic meaning (see below).
+
+**Why `mir_ty` remains `Option<MirType>` and NOT `MirType`:**
+
+`None` encodes TWO distinct semantic states that cannot be collapsed
+without adding explicit tracking infrastructure:
+
+1. **"Not yet computed / legacy path"** — should fall back to
+   `type_to_mir_type_register(&ty)`. True for most construction sites.
+
+2. **"Program variable of unknown physical representation"** — the local
+   was created via `get_or_create_local` (prescan path) and may hold
+   raw bits at runtime. Must NOT be assumed to hold a tagged Value.
+
+Critical call sites rely on this distinction:
+
+- `operand_is_guaranteed_tagged()` (lowering): returns true only for
+  compiler temporaries with `mir_ty: Some(Tagged)`. A program variable
+  local (`var_to_local` entry) with `ty: Any` gets `mir_ty: None` (or
+  `None`-fallback = Tagged), but `is_guaranteed_tagged` returns false
+  because the field is `None`. Without `Option`, both kinds of locals
+  have `mir_ty: Tagged` for `ty: Any` → the function cannot distinguish
+  them → wrong code generation for closure dispatch.
+
+- `sync_call_direct_dest_mir_ty()` (type_inference): `let Some(...) =
+  &local.mir_ty else { continue }` skips unannotated locals. These may
+  carry heap objects (closure pointers, func refs). If they're given
+  `Tagged` and no longer skipped, they get narrowed to `Raw(I64)` →
+  SIGSEGV when runtime treats them as heap pointer.
+
+- `materialize_function_types()` param `old_was_widenable`:
+  `is_some_and(|m| matches!(m, Tagged | Raw(_)))` returns false for
+  None params (WPA-synthetic functions, legacy paths). In new code they'd
+  have `mir_ty: Tagged` → widenable → WPA narrows `ty: Any → Int` and
+  sets `mir_ty: Tagged → Raw(I64)` → callee param interprets closure
+  bits as raw int → SIGSEGV.
+
+**Empirically verified**: Attempting the `Option<MirType> → MirType`
+removal in session 2026-05-18 produced 37/40 runtime test failures.
+Reverting restored baseline. See
+`memory/feedback_mir_ty_option_removal_blocked.md` for root cause
+documentation and prerequisites for a future retry.
+
+**Prerequisites before Option removal is safe:**
+1. Stage C.2 body-local mir_ty sync must land first (or)
+2. Add explicit `is_var_local: bool` to `Local` to replace the
+   None-program-variable signal and update `operand_is_guaranteed_tagged`
+   and `sync_call_direct_dest_mir_ty` accordingly.
+3. Verifier `check_copy` numeric-tower widening: accept all `Raw(K) →
+   Raw(K')` since `compile_copy` handles all cross-kind conversions.
+
+---
+
+## Narrow-or-Box Invariant for Tagged-Value Runtime Calls
+
+Some runtime helpers return a tagged `Value` whose runtime tag is not known at compile time — `rt_obj_add/sub/mul/div/floordiv/mod/pow`, `rt_obj_neg/pos/invert`, generator resume returns, and any other ABI that wraps `Value::from_*` per the §F.7c BigBang. The result may be:
+
+- An `INT` / `BOOL` tag (raw payload in the high bits)
+- A `NONE` pointer (singleton)
+- A `*mut FloatObj` (heap-boxed float)
+- Any other heap object (class instance from a `__add__` dunder, etc.)
+
+**Invariant**: a tagged-Value result MUST land in a slot whose `is_gc_root` is `true`. A primitive-typed slot (`Int`/`Bool`/`Float`) has `is_gc_root=false` because `Type::is_heap()` returns `false` for primitives — the GC walker will skip it, and any heap pointer stored there becomes a use-after-free as soon as a collection runs. Symptoms: SEGV on the next attribute read, `OverflowError` from arithmetic on pointer-shaped i64s, or `loss=NaN` from f64 fast-paths reading FloatObj pointer bits as denormals.
+
+**Enforcement**: `Lowering::emit_tagged_runtime_call(func, args, declared_type, mir_func)` is the chokepoint.
+- For `declared_type ∈ {Int, Bool, Float}` — allocates a `Type::Any` intermediate (GC-tracked, `mir_ty=Tagged`), runs the call, then unboxes to the primitive via `unbox_if_needed`.
+- Otherwise — allocates with `declared_type` directly and asserts `is_gc_root=true` in debug.
+
+Use this helper for every `rt_obj_*` family caller and any future runtime ABI that returns a tagged Value. Do NOT call `emit_runtime_call` directly with a primitive `result_type` for these — that emits a `is_gc_root=false` slot and silently corrupts memory under arithmetic with class operands or autograd-style heterogeneous accumulation.
+
+For typed runtime calls (`rt_str_concat → Str`, `rt_list_get → elem_ty` via `emit_list_get`, `rt_tuple_get → elem_ty` via `emit_tuple_get`, etc.), the result shape is statically known and the generic `is_heap()` check on the declared type is correct — keep using `emit_runtime_call` directly.
+
+---
+
 ## Tagged Value Encoding (Phase 2 foundation, S2.1)
 
 `core-defs::Value(pub u64)` is the single runtime word. Low three bits carry the tag; the rest carries the payload:
@@ -622,16 +809,22 @@ DefaultDict and Counter use the **same `DictObj` struct** as regular dicts (iden
 
 For defaultdict, the factory tag is packed into the **high byte (bits 56–63) of `DictObj::entries_capacity`**. This works because real capacities are power-of-two values well below 2^56 on 64-bit platforms. Helpers in `dict.rs` (`real_entries_capacity`, `set_real_entries_capacity`) mask the tag byte when reading/writing capacity. This avoids a separate registry keyed by pointer address (which would break when the slab allocator reuses addresses for new objects).
 
-## Type::HeapAny — Distinguishing Heap Pointers From Raw Values
+## Type::HeapAny — Historical (Deleted in Stage F.1)
 
-`Type::Any` is ambiguous — a value typed as `Any` could be a raw i64 (e.g., from dict unboxing) or a `*mut Obj` heap pointer (e.g., from `list[i]` where element type is unknown). This distinction matters for print and compare dispatchers that need to know whether to dereference the value.
+`Type::HeapAny` was deleted in Stage F.1 (commit `21b05aa`). The variant no
+longer exists in `crates/types/src/lib.rs`. All ~344 former occurrences were
+replaced with `Type::Any` paired with an explicit `mir_ty = Some(MirType::Tagged)`
+on the Local. The MIR-layer `MirType::Tagged` discriminator is now the
+canonical way to express "this slot is guaranteed to hold a tagged Value at
+runtime"; `Type::Any` in HIR/lowering is uniformly treated as ambiguous at the
+logical layer.
 
-`Type::HeapAny` was introduced as a guaranteed `*mut Obj` variant. Print uses `PrintKind::Obj` (runtime type-tag dispatch via `rt_print_obj`) and comparison uses `CompareKind::Obj` (runtime dispatch via `rt_obj_eq`) for `HeapAny`, while `Any` keeps the legacy `PrintKind::Int` / `BinOp` behavior.
-
-**HeapAny producers** (places that set result type to `HeapAny`):
-- `AnyGetItem` result in `indexing.rs` (runtime-dispatched subscript)
-- `List(Any)` and `Tuple([Any])` element access in `resolve_index_type` and subscript lowering
-- `ObjectMethodCall` returns with `TypeSpec::Any` in `stdlib.rs`
+**Historical context** (for understanding old code comments): `Type::Any` was
+ambiguous — a raw i64 or a `*mut Obj` heap pointer depending on producer.
+`Type::HeapAny` was introduced as the "guaranteed pointer" variant to drive
+correct `PrintKind` and `CompareKind` selection. This role is now played by
+`mir_ty == Tagged` after Stage D migrated all producer sites and Stage F.1
+deleted the enum variant.
 
 ## Cross-Module Types Must Round-Trip Through `RawType`
 
@@ -658,13 +851,13 @@ Annotations like `r: mymod.Response` are parsed BEFORE `mir_merger` runs, so the
 
 The rewrite descends into `Type::Generic{args}`, `Union`, `Iterator`, `DefaultDict`, `Function`, etc. (`rewrite_class_type` in `mir_merger.rs`), so `list[mymod.Foo]` and `Optional[Foo]` also work.
 
-## Type Narrowing on `Any` / `HeapAny` Must Route to the Target
+## Type Narrowing on `Any` Must Route to the Target
 
-`isinstance(x, T)` inside an `if` branch needs to narrow the variable's compile-time type so that downstream dispatchers (`lower_len`, `lower_print`, `select_compare_func`) pick the right runtime call. For `Union` types this works naturally — the narrowed type is the Union element that matches `T`. For `Type::Any` and `Type::HeapAny` it didn't: `narrow_to` fell through to the generic arm, asked `types_match_for_isinstance(Any, T)` (which has no `Any` case and returns `false`), and produced `Type::Never`.
+`isinstance(x, T)` inside an `if` branch needs to narrow the variable's compile-time type so that downstream dispatchers (`lower_len`, `lower_print`, `select_compare_func`) pick the right runtime call. For `Union` types this works naturally — the narrowed type is the Union element that matches `T`. For `Type::Any` it didn't: `narrow_to` fell through to the generic arm, asked `types_match_for_isinstance(Any, T)` (which has no `Any` case and returns `false`), and produced `Type::Never`.
 
 The symptom was subtle: `len(x)` where `x: Any` under `isinstance(x, str)` returned `0` silently (the `_ => Int(0)` fallback in `lower_len`). For `requests.post(data="string")`, the `data.encode()` path reached `encode()` with the narrowed type set to `Never`, so the compiler emitted a no-op body, and the server received an empty request.
 
-Fix: `Type::Any` and `Type::HeapAny` narrow to the isinstance target type. See `TypeLattice::meet` in `crates/types/src/lib.rs`. The else-branch still returns `Any` via `TypeLattice::minus`'s non-Union arm (correct — after `if isinstance(x, str): ... else:`, `x` can still be anything except `str`).
+Fix: `Type::Any` narrows to the isinstance target type. See `TypeLattice::meet` in `crates/types/src/lib.rs`. The else-branch still returns `Any` via `TypeLattice::minus`'s non-Union arm (correct — after `if isinstance(x, str): ... else:`, `x` can still be anything except `str`). Note: `Type::HeapAny` was deleted in Stage F.1; the `meet` impl no longer has a `HeapAny` arm.
 
 ## Don't Cache `Var` Expression Types
 
@@ -694,11 +887,11 @@ Any new caller that constructs a `Type::File(_)` should mirror this rule: the mo
 
 Every context-manager-aware type (currently `Type::File(_)`) must handle both `__enter__` (returns self — i.e. `File(binary)`) and `__exit__` (returns `Bool`) in `resolve_method_return_type`. If you add a new stdlib type that supports `with`, don't forget these dunder arms.
 
-## `Tuple[Any]` Destructuring Needs HeapAny Promotion
+## `Tuple[Any]` Destructuring: Heap-Tagged Local Allocation
 
-Tuple indexing (`t[0]`) promotes `Type::Any` elements to `Type::HeapAny` when the tuple uses `ELEM_HEAP_OBJ` storage (see `expressions/access/indexing.rs::175-209`). Destructuring (`a, b = t`) used to skip this and assign `Type::Any` directly, which causes `print(a)` to emit the raw pointer as an integer instead of dispatching on the object's type tag (`type_dispatch.rs::select_print_func`).
+After Stage F.1 (`Type::HeapAny` deleted), tuple element access for `Any`-typed elements uses `mir_ty = Some(MirType::Tagged)` instead of the former `Type::HeapAny`. Tuple indexing (`t[0]`) allocates the result local with `alloc_and_add_local_with_mir_ty(Type::Any, MirType::Tagged)` so the GC walker and type dispatchers know the slot holds a tagged Value, not raw bits (see `expressions/access/indexing.rs`).
 
-`statements/assign/bind.rs` (`lower_tuple_pattern`) mirrors the indexing logic: it computes `uses_heap_obj = !elem_types.iter().all(|t| *t == Int)` and promotes `Any → HeapAny` before storing in temp locals / nested recursive extraction. If you add a new unpacking code path (e.g. pattern matching), apply the same promotion — otherwise print/compare/len on the unpacked variables silently misbehaves.
+Destructuring (`a, b = t`) mirrors this logic: `statements/assign/bind.rs` (`lower_tuple_pattern`) allocates temp locals with `mir_ty = Tagged` for `Any`-element tuples. If you add a new unpacking code path (e.g. pattern matching), use the same `alloc_and_add_local_with_mir_ty` pattern — otherwise `print`/`compare`/`len` on the unpacked variables will dispatch incorrectly (raw integer path instead of runtime type-tag dispatch).
 
 ---
 
@@ -1413,3 +1606,93 @@ Acceptance for S3.3b.1: 29 method specializations in `examples/test_generics.py 
 - After devirt, the spec's return type is set to the captured target's return; WPA pass 2 then propagates that into caller locals, dropping `is_gc_root` for non-heap returns.
 
 This closes §P.2.3: GC `mark_object` no longer needs alignment / low-page / `TypeTagKind::from_tag` belt-and-suspenders sanity guards. Code-pointers from decorator wrappers used to leak into GC roots via wrapper return locals typed `Type::Any`; after S3.3b.2 those locals get the captured target's precise return type and the only residual `Type::Any` returns come from `*args` trampoline sites, where the value is always a heap object (runtime call result), never a raw fn-pointer. Only the null check survives in `mark_object`. See `crates/optimizer/src/monomorphize/devirt_indirect.rs` for the rewrite pass and `crates/runtime/src/gc.rs:226-243` for the trimmed mark routine.
+
+---
+
+## Stage E.2: HOF Universal Tagged ABI — Experiment (2026-05-17, BLOCKED)
+
+**Goal**: Unify `map`/`filter`/`reduce` HOF runtimes to always use the
+tagged-delivery variants (`rt_map_new_tagged`, `rt_filter_new_tagged`,
+`rt_reduce_tagged`), eliminating the `phase4_safe_callback` conditional
+in `composite.rs` and eventually deleting `phase4_unsafe_funcs` from
+`LoweringSeedInfo`.
+
+**Experiment performed**: Temporarily forced `phase4_safe_callback = true`
+for all user-function callbacks in `lower_map`, `lower_reduce`, and
+`lower_filter` in `composite.rs`. Built release and ran all 38 examples.
+
+**Results**: 1 test failure (`test_builtins`). Two distinct blockers
+identified:
+
+### Blocker 1 — Filter return ABI (fundamental, runtime-level change required)
+
+Filter callbacks are called as `extern "C" fn(*mut Obj) -> i8`. The
+`i8` return is the truthiness predicate. Phase 4 return-ABI-flipping boxes
+the return value into a tagged `Value` (i64). A tagged `i64` encoding
+`false` (i.e., `Value::from_bool(false) = TAG_BOOL | 0 = 0x4_0000_0000_0000_0000`)
+truncates to a non-zero `i8`, making `False` predicates pass as truthy.
+
+The `phase4_unsafe_funcs` scan marks every filter callback as unsafe
+**specifically** to block the return-ABI flip. The input delivery
+(`rt_filter_new_tagged` passes tagged Values to the predicate) is safe
+only when the callback is NOT return-flipped. This is an asymmetric
+requirement: tagged INPUT, raw i8 OUTPUT.
+
+**Resolution path**: A third filter ABI variant that delivers tagged input
+but does not carry a return-ABI flip is theoretically possible. The
+`iter_next_filter_tagged` runtime already correctly passes elements
+verbatim. The missing piece is preventing return-flip at the prologue level
+for filter-targeted functions without disabling the rest of phase4-safe
+behaviour. This would require splitting `phase4_unsafe_funcs` into
+"unsafe-for-return-flip" vs "unsafe-for-input-tagged". Non-trivial.
+
+### Blocker 2 — Variable-stored lambdas in map/reduce
+
+`fn_closure = lambda x: x * y; map(fn_closure, ...)` fails. The lambda is
+marked `phase4_unsafe` via `mark_address_taken_funcrefs` (any lambda bound
+to a Var has its address "escaped" conservatively). With the lambda marked
+unsafe, its prologue has NO `UnboxValue` — it expects raw bits. But
+`rt_map_new_tagged` delivers tagged Values. Corruption.
+
+The conservative marking is correct: the lambda bound to a variable MIGHT
+flow through a non-HOF call site (indirect call, decorator factory, etc.)
+that uses `rt_call_with_captures_and_args`. The scan can't see whether the
+variable is used only in HOF positions without full dataflow analysis.
+
+**Resolution path**: Narrowing `mark_address_taken_funcrefs` to only mark
+lambdas that actually escape to non-HOF call sites (via flow-sensitive
+variable usage analysis). This is a non-trivial dataflow change to
+`phase4_safe_scan.rs`.
+
+### Summary
+
+`phase4_unsafe_funcs` is NOT a vacuous gate — it is the correct chokepoint
+for two genuinely incompatible ABI constraints. Deleting it requires:
+
+1. Resolving the filter i8-return ABI asymmetry (split into
+   input-safe/return-safe parts, or add a third filter ABI variant).
+2. Narrowing `mark_address_taken_funcrefs` with per-use-site dataflow so
+   HOF-only lambda variables are not over-conservatively marked.
+
+Neither is a single-session fix. The experiment is reverted; all 38 tests
+pass. This insight replaces the MEMORY.md note "asymmetric tagged variants
+for HOF ... Filter stays on legacy (i8-truthiness ABI incompatible)".
+
+---
+
+## Stage F.1: HeapAny → Any Collapse (2026-05-17, LANDED)
+
+**Status**: `Type::HeapAny` enum variant DELETED (commit 21b05aa). All ~344 occurrences replaced with `Type::Any` + `MirType::Tagged` discriminator. 38/38 examples pass.
+
+**Blockers that were resolved before landing**:
+- Source-1 (address-taken closure dispatch): `lower_indirect_call` now uses `get_original_func_return_type_for_wrapper` to prefer the decorated function's concrete return type over the wrapper's `Any`. Fixed in Stage E.1.
+- Source-2 (post-devirt Any dest BoxValue): `CallVirtual → CallDirect` and `CallVirtualNamed → CallDirect` singleton-narrowing paths now call `emit_call_direct_with_bridge()` (same logic as `Call → CallDirect`). When `original_dest_ty` is `Any`/`Union` and the callee returns a raw primitive, a `BoxValue`/`rt_box_float`/`rt_box_none` bridge is inserted. Fixed as F.1 prerequisite.
+
+**What the collapse changed**:
+- `binary_ops.rs` `left_is_any`/`right_is_any` guards now match `Type::Any` (previously matched only `HeapAny`), routing tagged-Value `Any` operands through `rt_obj_*`.
+- `binary_ops.rs:436` rt_obj_* result typed `Type::Any` (was `HeapAny`).
+- `type_inference.rs:1800,1872` HeapAny-specific WPA guards updated/removed.
+- `abi_repair.rs:702` HeapAny match arm merged with Any arm.
+- Global 344-occurrence replacement across 66 files.
+
+**Historical failure analysis** (from the blocked experiment that preceded landing): the naive global replacement without fixing Source-1/Source-2 failed 4 tests. Those two sources were the only things making `HeapAny ≠ Any` semantically meaningful at runtime.

@@ -133,6 +133,8 @@ impl<'a> Lowering<'a> {
                     name: None,
                     ty: Type::Bool,
                     is_gc_root: false,
+                    abi_immutable: false,
+                    mir_ty: None,
                 });
                 let zero = mir::Operand::Constant(mir::Constant::Int(0));
                 self.emit_instruction(mir::InstructionKind::BinOp {
@@ -150,6 +152,8 @@ impl<'a> Lowering<'a> {
                     name: None,
                     ty: Type::Bool,
                     is_gc_root: false,
+                    abi_immutable: false,
+                    mir_ty: None,
                 });
                 let zero = mir::Operand::Constant(mir::Constant::Float(0.0));
                 self.emit_instruction(mir::InstructionKind::BinOp {
@@ -325,14 +329,14 @@ impl<'a> Lowering<'a> {
                         .is_ok();
                 }
                 // Any/HeapAny: the match arms below handle this
-                return matches!(actual, Type::Any | Type::HeapAny);
+                return matches!(actual, Type::Any);
             }
         }
 
         match (actual, expected) {
             (a, b) if a == b => true,
             (Type::Never, _) => true,
-            (_, Type::Any | Type::HeapAny) => true,
+            (_, Type::Any) => true,
             (Type::Bool, Type::Int) | (Type::Int, Type::Float) | (Type::Bool, Type::Float) => true,
             (Type::None, Type::Union(set)) if set.contains(&Type::None) => true,
             (Type::Union(left), right) => left

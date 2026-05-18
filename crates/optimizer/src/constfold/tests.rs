@@ -2,8 +2,8 @@
 
 use indexmap::IndexMap;
 use pyaot_mir::{
-    BasicBlock, BinOp, Constant, Function, Instruction, InstructionKind, Local, Module, Operand,
-    Terminator, UnOp,
+    BasicBlock, BinOp, Constant, Function, FunctionKind, Instruction, InstructionKind, Local,
+    Module, Operand, Terminator, UnOp,
 };
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, FuncId, LocalId, StringInterner};
@@ -14,6 +14,8 @@ fn make_local(id: u32, ty: Type) -> Local {
         name: None,
         ty,
         is_gc_root: false,
+        abi_immutable: false,
+        mir_ty: None,
     }
 }
 
@@ -43,6 +45,7 @@ fn make_func(locals: Vec<Local>, instructions: Vec<InstructionKind>) -> Function
 
     Function {
         id: func_id,
+        kind: FunctionKind::Regular,
         name: "test".to_string(),
         params: vec![],
         return_type: Type::None,
@@ -54,7 +57,10 @@ fn make_func(locals: Vec<Local>, instructions: Vec<InstructionKind>) -> Function
         is_generic_template: false,
         typevar_params: Vec::new(),
         wrapper_fn_ptr_capture_index: None,
+        phase4_return_abi_flipped: false,
+        phase4_original_return_type: None,
         dom_tree_cache: std::cell::OnceCell::new(),
+        signature: None,
     }
 }
 
@@ -394,6 +400,7 @@ fn test_constant_branch_simplification() {
 
     let func = Function {
         id: func_id,
+        kind: FunctionKind::Regular,
         name: "test".to_string(),
         params: vec![],
         return_type: Type::None,
@@ -409,7 +416,10 @@ fn test_constant_branch_simplification() {
         is_generic_template: false,
         typevar_params: Vec::new(),
         wrapper_fn_ptr_capture_index: None,
+        phase4_return_abi_flipped: false,
+        phase4_original_return_type: None,
         dom_tree_cache: std::cell::OnceCell::new(),
+        signature: None,
     };
 
     let mut module = make_module(func);
@@ -711,6 +721,7 @@ fn test_phi_pruned_after_branch_to_goto_fold() {
 
     let func = Function {
         id: FuncId::from(0u32),
+        kind: FunctionKind::Regular,
         name: "test_phi_after_fold".to_string(),
         params: vec![],
         return_type: Type::None,
@@ -722,7 +733,10 @@ fn test_phi_pruned_after_branch_to_goto_fold() {
         is_generic_template: false,
         typevar_params: Vec::new(),
         wrapper_fn_ptr_capture_index: None,
+        phase4_return_abi_flipped: false,
+        phase4_original_return_type: None,
         dom_tree_cache: std::cell::OnceCell::new(),
+        signature: None,
     };
 
     let mut module = make_module(func);

@@ -76,7 +76,7 @@ impl<'a> Lowering<'a> {
         self.get_var_type(var_id)
             .cloned()
             .and_then(|ty| {
-                if matches!(ty, Type::Any | Type::HeapAny) {
+                if matches!(ty, Type::Any) {
                     self.get_base_var_type(var_id).cloned().or(Some(ty))
                 } else {
                     Some(ty)
@@ -157,7 +157,7 @@ impl<'a> Lowering<'a> {
     }
 
     fn narrowing_requires_unbox(original_type: &Type, narrowed_type: &Type) -> bool {
-        matches!(original_type, Type::Union(_) | Type::Any | Type::HeapAny)
+        matches!(original_type, Type::Union(_) | Type::Any)
             && matches!(narrowed_type, Type::Int | Type::Float | Type::Bool)
     }
 
@@ -538,7 +538,7 @@ impl<'a> Lowering<'a> {
             } else {
                 None
             }
-        } else if matches!(original_type, Type::Any | Type::HeapAny) {
+        } else if matches!(original_type, Type::Any) {
             // Any/HeapAny can hold any runtime type — both branches are live
             None
         } else {
@@ -554,9 +554,7 @@ impl<'a> Lowering<'a> {
 
         // For narrowing purposes, only return info for Union/Any types
         // Concrete non-Union types don't benefit from narrowing but we still detect dead code
-        if !matches!(original_type, Type::Union(_) | Type::Any | Type::HeapAny)
-            && dead_branch.is_none()
-        {
+        if !matches!(original_type, Type::Union(_) | Type::Any) && dead_branch.is_none() {
             return None;
         }
 
@@ -881,6 +879,8 @@ mod tests {
             name: None,
             ty: union_ty.clone(),
             is_gc_root: true,
+            abi_immutable: false,
+            mir_ty: None,
         });
         lowering.insert_var_local(var_id, base_local);
         lowering.insert_var_type(var_id, union_ty.clone());
@@ -897,10 +897,13 @@ mod tests {
         let instructions = lowering.current_block_mut().instructions.clone();
         assert_eq!(instructions.len(), 2);
         match &instructions[0].kind {
-            // §F.2: Int unbox is now an inline `UnwrapValueInt` MIR
-            // instruction, not a runtime call.
-            InstructionKind::UnwrapValueInt { .. } => {}
-            other => panic!("expected UnwrapValueInt, got {other:?}"),
+            // Phase 3.5b: unbox is unified `UnboxValue { dest_type: Int }`,
+            // codegen lowers to inline `(v as i64) >> 3`.
+            InstructionKind::UnboxValue {
+                dest_type: Type::Int,
+                ..
+            } => {}
+            other => panic!("expected UnboxValue(Int), got {other:?}"),
         }
         match &instructions[1].kind {
             InstructionKind::Refine { ty, .. } => assert_eq!(ty, &Type::Int),
@@ -937,6 +940,8 @@ mod tests {
             name: None,
             ty: Type::Any,
             is_gc_root: true,
+            abi_immutable: false,
+            mir_ty: None,
         });
         lowering.insert_var_local(var_id, base_local);
         lowering.insert_var_type(var_id, Type::Any);
@@ -953,10 +958,13 @@ mod tests {
         let instructions = lowering.current_block_mut().instructions.clone();
         assert_eq!(instructions.len(), 2);
         match &instructions[0].kind {
-            // §F.2: Int unbox is now an inline `UnwrapValueInt` MIR
-            // instruction, not a runtime call.
-            InstructionKind::UnwrapValueInt { .. } => {}
-            other => panic!("expected UnwrapValueInt, got {other:?}"),
+            // Phase 3.5b: unbox is unified `UnboxValue { dest_type: Int }`,
+            // codegen lowers to inline `(v as i64) >> 3`.
+            InstructionKind::UnboxValue {
+                dest_type: Type::Int,
+                ..
+            } => {}
+            other => panic!("expected UnboxValue(Int), got {other:?}"),
         }
         match &instructions[1].kind {
             InstructionKind::Refine { ty, .. } => assert_eq!(ty, &Type::Int),
@@ -989,6 +997,8 @@ mod tests {
             name: None,
             ty: Type::Any,
             is_gc_root: true,
+            abi_immutable: false,
+            mir_ty: None,
         });
         lowering.insert_var_local(var_id, base_local);
         lowering.insert_var_type(var_id, Type::Any);

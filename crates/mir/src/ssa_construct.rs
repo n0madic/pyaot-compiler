@@ -215,10 +215,8 @@ fn instruction_def(kind: &InstructionKind) -> Option<LocalId> {
         | IntToFloat { dest, .. }
         | FloatBits { dest, .. }
         | IntBitsToFloat { dest, .. }
-        | ValueFromInt { dest, .. }
-        | UnwrapValueInt { dest, .. }
-        | ValueFromBool { dest, .. }
-        | UnwrapValueBool { dest, .. }
+        | BoxValue { dest, .. }
+        | UnboxValue { dest, .. }
         | FloatAbs { dest, .. }
         | ExcGetType { dest }
         | ExcHasException { dest }
@@ -485,10 +483,8 @@ fn collect_kind_uses(kind: &InstructionKind, out: &mut IndexSet<LocalId>) {
         | IntToFloat { src, .. }
         | FloatBits { src, .. }
         | IntBitsToFloat { src, .. }
-        | ValueFromInt { src, .. }
-        | UnwrapValueInt { src, .. }
-        | ValueFromBool { src, .. }
-        | UnwrapValueBool { src, .. }
+        | BoxValue { src, .. }
+        | UnboxValue { src, .. }
         | FloatAbs { src, .. } => push(src, out),
         Call { func, args, .. } => {
             push(func, out);
@@ -750,10 +746,8 @@ fn rename_uses(kind: &mut InstructionKind, stacks: &HashMap<LocalId, Vec<LocalId
         | IntToFloat { src, .. }
         | FloatBits { src, .. }
         | IntBitsToFloat { src, .. }
-        | ValueFromInt { src, .. }
-        | UnwrapValueInt { src, .. }
-        | ValueFromBool { src, .. }
-        | UnwrapValueBool { src, .. }
+        | BoxValue { src, .. }
+        | UnboxValue { src, .. }
         | FloatAbs { src, .. } => subst_operand(src, stacks),
         Call { func, args, .. } => {
             subst_operand(func, stacks);
@@ -803,10 +797,8 @@ fn rewrite_def(kind: &mut InstructionKind, fresh: LocalId) {
         | IntToFloat { dest, .. }
         | FloatBits { dest, .. }
         | IntBitsToFloat { dest, .. }
-        | ValueFromInt { dest, .. }
-        | UnwrapValueInt { dest, .. }
-        | ValueFromBool { dest, .. }
-        | UnwrapValueBool { dest, .. }
+        | BoxValue { dest, .. }
+        | UnboxValue { dest, .. }
         | FloatAbs { dest, .. }
         | ExcGetType { dest }
         | ExcHasException { dest }
@@ -892,6 +884,8 @@ mod tests {
             name: None,
             ty,
             is_gc_root: false,
+            abi_immutable: false,
+            mir_ty: None,
         }
     }
 

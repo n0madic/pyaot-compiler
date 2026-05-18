@@ -218,48 +218,6 @@ impl<'a> Lowering<'a> {
             other => other.demote_never_params_to_any(),
         }
     }
-
-    pub(crate) fn get_refined_class_field_type(
-        &self,
-        class_id: &pyaot_utils::ClassId,
-        field: &InternedString,
-    ) -> Option<&Type> {
-        self.lowering_seed_info
-            .refined_class_field_types
-            .get(class_id)
-            .and_then(|fields| fields.get(field))
-    }
-
-    /// True if `(class_id, field)` was recorded by the cross-instance
-    /// harvester as receiving a compound runtime-dispatched RHS whose
-    /// runtime tag may be a heap pointer (autograd-style accumulation).
-    /// Lowering's bind / read paths consult this to suppress
-    /// `UnwrapValueInt` / `ValueFromInt` round-trips that would corrupt
-    /// pointer bits — see `class_fields_with_heap_writes` doc comment.
-    pub(crate) fn field_has_heap_writes(
-        &self,
-        class_id: pyaot_utils::ClassId,
-        field: InternedString,
-    ) -> bool {
-        self.lowering_seed_info
-            .class_fields_with_heap_writes
-            .contains(&(class_id, field))
-    }
-
-    /// Mark `(class_id, field)` as receiving a heap-shaped runtime
-    /// write. Idempotent. Called from
-    /// `refine_class_fields_from_cross_instance_writes` when the RHS
-    /// seed type collapses to `Any` / `HeapAny` for a structurally
-    /// compound expression.
-    pub(crate) fn mark_class_field_heap_writes(
-        &mut self,
-        class_id: pyaot_utils::ClassId,
-        field: InternedString,
-    ) {
-        self.lowering_seed_info
-            .class_fields_with_heap_writes
-            .insert((class_id, field));
-    }
 }
 
 // =============================================================================
@@ -500,6 +458,37 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Stage E.1 (Source-1 fix): given a wrapper func_id, find the original
+    /// (decorated) function's return type by reversing the `decorated_to_wrapper`
+    /// map. Used by `lower_indirect_call` so that the `func(*args)` call site
+    /// inside a wrapper uses the callee's precise return type (e.g. `Int`)
+    /// rather than the wrapper's own `Any` return type. Without this, the
+    /// trampoline result lands in a `mir_ty: Tagged` (GC-tracked) local
+    /// holding raw primitive bits — safe only as long as GC never runs, which
+    /// is not a property we can rely on.
+    pub(crate) fn get_original_func_return_type_for_wrapper(
+        &self,
+        wrapper_id: FuncId,
+        hir_module: &hir::Module,
+    ) -> Option<Type> {
+        // Reverse-scan decorated_to_wrapper: original → wrapper.
+        let original_id = self
+            .closures
+            .decorated_to_wrapper
+            .iter()
+            .find_map(|(orig, wrap)| {
+                if *wrap == wrapper_id {
+                    Some(*orig)
+                } else {
+                    None
+                }
+            })?;
+        hir_module
+            .func_defs
+            .get(&original_id)
+            .and_then(|f| f.return_type.clone())
+    }
+
     /// §P.2.2: for a factory-style decorator pattern, identify which of the
     /// outer function's params is captured by the returned closure at the
     /// fn-ptr capture index. Returns the captured param's VarId so it can
@@ -716,12 +705,34 @@ impl<'a> Lowering<'a> {
 
     /// Set closure capture types for a function.
     pub(crate) fn insert_closure_capture_types(&mut self, func_id: FuncId, types: Vec<Type>) {
+        // Phase 2f: auto-build parallel MirType list via storage-level
+        // translation. Captures are heap-stored slots in the closure
+        // tuple → primitives map to `Tagged`.
+        let mir_types: Vec<pyaot_mir::MirType> = types
+            .iter()
+            .map(pyaot_mir::type_to_mir_type_storage)
+            .collect();
         self.closures.closure_capture_types.insert(func_id, types);
+        self.closures
+            .closure_capture_mir_types
+            .insert(func_id, mir_types);
     }
 
     /// Check if closure capture types are tracked for a function.
     pub(crate) fn has_closure_capture_types(&self, func_id: &FuncId) -> bool {
         self.closures.closure_capture_types.contains_key(func_id)
+    }
+
+    /// Get the MirType (storage-level) for each capture slot of a
+    /// closure func. Returns `None` if the function isn't tracked.
+    /// Phase 3+ consumers should prefer this over the legacy
+    /// `get_closure_capture_types` accessor.
+    #[allow(dead_code)]
+    pub(crate) fn get_closure_capture_mir_types(
+        &self,
+        func_id: &FuncId,
+    ) -> Option<&Vec<pyaot_mir::MirType>> {
+        self.closures.closure_capture_mir_types.get(func_id)
     }
 }
 
@@ -956,6 +967,8 @@ mod tests {
             name: None,
             ty: Type::Int,
             is_gc_root: false,
+            abi_immutable: false,
+            mir_ty: None,
         });
 
         assert_eq!(

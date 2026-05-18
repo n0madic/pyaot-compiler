@@ -52,6 +52,8 @@ impl<'a> Lowering<'a> {
                     name: None,
                     ty: Type::Str,
                     is_gc_root: true,
+                    abi_immutable: false,
+                    mir_ty: None,
                 });
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,
@@ -75,6 +77,8 @@ impl<'a> Lowering<'a> {
                             name: None,
                             ty: Type::Bool,
                             is_gc_root: false,
+                            abi_immutable: false,
+                            mir_ty: None,
                         });
                         let kind_tag = mir::Operand::Constant(mir::Constant::Int(
                             mir::GetElementKind::Bool.to_tag() as i64,
@@ -95,6 +99,8 @@ impl<'a> Lowering<'a> {
                             name: None,
                             ty: Type::Str, // Placeholder for *mut Obj
                             is_gc_root: false,
+                            abi_immutable: false,
+                            mir_ty: None,
                         });
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: boxed_local,
@@ -109,13 +115,13 @@ impl<'a> Lowering<'a> {
                             name: None,
                             ty: Type::Float,
                             is_gc_root: false,
+                            abi_immutable: false,
+                            mir_ty: None,
                         });
-                        self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        self.emit_instruction(mir::InstructionKind::UnboxValue {
                             dest: result_local,
-                            func: mir::RuntimeFunc::Call(
-                                &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
-                            ),
-                            args: vec![mir::Operand::Local(boxed_local)],
+                            src: mir::Operand::Local(boxed_local),
+                            dest_type: Type::Float,
                         });
                     }
                     Type::Int => {
@@ -125,6 +131,8 @@ impl<'a> Lowering<'a> {
                             name: None,
                             ty: Type::Int,
                             is_gc_root: false,
+                            abi_immutable: false,
+                            mir_ty: None,
                         });
                         let kind_tag = mir::Operand::Constant(mir::Constant::Int(
                             mir::GetElementKind::Int.to_tag() as i64,
@@ -138,18 +146,27 @@ impl<'a> Lowering<'a> {
                         });
                     }
                     _ => {
-                        // For heap types (Str, List, etc.), ListGet returns *mut Obj.
-                        // Any element type → HeapAny (always a valid pointer from ListGet).
+                        // For heap types (Str, List, etc.), ListGet returns a tagged Value
+                        // (storage-uniform: list stores Value elements). After F.1 HeapAny
+                        // deletion: set mir_ty = Some(Tagged) explicitly for Any-typed results
+                        // so comparison/binop dispatch recognises them as tagged.
                         let result_ty = if matches!(elem_ty, Type::Any) {
-                            Type::HeapAny
+                            Type::Any
                         } else {
                             elem_ty.clone()
+                        };
+                        let result_mir_ty = if matches!(result_ty, Type::Any) {
+                            Some(mir::MirType::Tagged)
+                        } else {
+                            None
                         };
                         mir_func.add_local(mir::Local {
                             id: result_local,
                             name: None,
                             ty: result_ty.clone(),
                             is_gc_root: result_ty.is_heap(),
+                            abi_immutable: false,
+                            mir_ty: result_mir_ty,
                         });
                         self.emit_instruction(mir::InstructionKind::RuntimeCall {
                             dest: result_local,
@@ -192,7 +209,7 @@ impl<'a> Lowering<'a> {
                 // emit_tuple_get applies the appropriate unbox for primitive elem types.
                 // When element type is Any, result is a heap pointer → HeapAny.
                 let eff_elem_ty = if matches!(elem_ty, Type::Any) {
-                    Type::HeapAny
+                    Type::Any
                 } else {
                     elem_ty.clone()
                 };
@@ -205,7 +222,7 @@ impl<'a> Lowering<'a> {
                 // Variable-length tuple — every index returns the element type.
                 // Runtime bounds-check is done by rt_tuple_get.
                 let eff_elem_ty = if matches!(elem_ty, Type::Any) {
-                    Type::HeapAny
+                    Type::Any
                 } else {
                     elem_ty.clone()
                 };
@@ -223,15 +240,24 @@ impl<'a> Lowering<'a> {
                 // dispatch routes through `rt_obj_*` instead of treating
                 // raw `Any` bits as a primitive.
                 let result_ty = if matches!(value_ty, Type::Any) {
-                    Type::HeapAny
+                    Type::Any
                 } else {
                     value_ty.clone()
+                };
+                // Set mir_ty = Some(Tagged) for Any-typed dict-value results so
+                // comparison/binop dispatch recognises them as tagged Values.
+                let result_mir_ty = if matches!(result_ty, Type::Any) {
+                    Some(mir::MirType::Tagged)
+                } else {
+                    None
                 };
                 mir_func.add_local(mir::Local {
                     id: result_local,
                     name: None,
                     ty: result_ty.clone(),
                     is_gc_root: result_ty.is_heap(),
+                    abi_immutable: false,
+                    mir_ty: result_mir_ty,
                 });
                 // Box key if needed (int/bool keys need boxing)
                 let index_type = self.seed_expr_type(index, hir_module);
@@ -246,7 +272,7 @@ impl<'a> Lowering<'a> {
                     let boxed_local = self.emit_runtime_call(
                         mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_DICT_GET),
                         vec![obj_operand, boxed_key],
-                        Type::HeapAny,
+                        Type::Any,
                         mir_func,
                     );
                     let unboxed =
@@ -274,6 +300,8 @@ impl<'a> Lowering<'a> {
                     name: None,
                     ty: (**value_ty).clone(),
                     is_gc_root: value_ty.is_heap(),
+                    abi_immutable: false,
+                    mir_ty: None,
                 });
                 let index_type = self.seed_expr_type(index, hir_module);
                 let boxed_key = self.emit_value_slot(index_operand, &index_type, mir_func);
@@ -286,7 +314,7 @@ impl<'a> Lowering<'a> {
                             &pyaot_core_defs::runtime_func_def::RT_DEFAULT_DICT_GET,
                         ),
                         vec![obj_operand, boxed_key],
-                        Type::HeapAny,
+                        Type::Any,
                         mir_func,
                     );
                     let unboxed = self.unbox_if_needed(
@@ -334,11 +362,23 @@ impl<'a> Lowering<'a> {
                         name: None,
                         ty: return_ty.clone(),
                         is_gc_root: return_ty.is_heap(),
+                        abi_immutable: false,
+                        mir_ty: None,
                     });
+                    // Phase 4: box index arg if __getitem__ param[1] is annotated primitive.
+                    let index_ty = self.operand_type(&index_operand, mir_func);
+                    let coerced_index = self.box_dunder_arg_if_needed(
+                        index_operand,
+                        &index_ty,
+                        func_id,
+                        1, // param 0 = self, param 1 = key
+                        hir_module,
+                        mir_func,
+                    );
                     self.emit_instruction(mir::InstructionKind::CallDirect {
                         dest: result_local,
                         func: func_id,
-                        args: vec![obj_operand, index_operand],
+                        args: vec![obj_operand, coerced_index],
                     });
                 } else {
                     mir_func.add_local(mir::Local {
@@ -346,6 +386,8 @@ impl<'a> Lowering<'a> {
                         name: None,
                         ty: Type::Any,
                         is_gc_root: false,
+                        abi_immutable: false,
+                        mir_ty: None,
                     });
                     return Ok(mir::Operand::Constant(mir::Constant::None));
                 }
@@ -357,8 +399,10 @@ impl<'a> Lowering<'a> {
                 mir_func.add_local(mir::Local {
                     id: result_local,
                     name: None,
-                    ty: Type::HeapAny,
+                    ty: Type::Any,
                     is_gc_root: true,
+                    abi_immutable: false,
+                    mir_ty: None,
                 });
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: result_local,

@@ -476,7 +476,7 @@ fn runtime_call_return_type(func: &RuntimeFunc) -> Option<Type> {
         RuntimeFunc::ExcSetjmp => Some(Type::Int), // i32 result code
         RuntimeFunc::ExcGetType => Some(Type::Int), // i32 type tag
         RuntimeFunc::ExcHasException => Some(Type::Bool),
-        RuntimeFunc::ExcGetCurrent => Some(Type::HeapAny), // ptr to exception obj
+        RuntimeFunc::ExcGetCurrent => Some(Type::Any), // ptr to exception obj
         RuntimeFunc::ExcIsinstanceClass => Some(Type::Bool),
         RuntimeFunc::ExcInstanceStr => Some(Type::Str),
 
@@ -770,26 +770,16 @@ fn wpa_join_types(a: &Type, b: &Type) -> Type {
 fn merge_observed_wpa_type(prev: Option<&Type>, new_ty: &Type) -> Type {
     match prev {
         None => new_ty.clone(),
-        Some(prev_ty)
-            if matches!(prev_ty, Type::Any | Type::HeapAny) && matches!(new_ty, Type::None) =>
-        {
+        Some(prev_ty) if matches!(prev_ty, Type::Any) && matches!(new_ty, Type::None) => {
             prev_ty.clone()
         }
-        Some(prev_ty)
-            if matches!(new_ty, Type::Any | Type::HeapAny) && matches!(prev_ty, Type::None) =>
-        {
+        Some(prev_ty) if matches!(new_ty, Type::Any) && matches!(prev_ty, Type::None) => {
             new_ty.clone()
         }
-        Some(prev_ty)
-            if matches!(prev_ty, Type::Any | Type::HeapAny)
-                && !matches!(new_ty, Type::Any | Type::HeapAny) =>
-        {
+        Some(prev_ty) if matches!(prev_ty, Type::Any) && !matches!(new_ty, Type::Any) => {
             new_ty.clone()
         }
-        Some(prev_ty)
-            if matches!(new_ty, Type::Any | Type::HeapAny)
-                && !matches!(prev_ty, Type::Any | Type::HeapAny) =>
-        {
+        Some(prev_ty) if matches!(new_ty, Type::Any) && !matches!(prev_ty, Type::Any) => {
             prev_ty.clone()
         }
         Some(prev_ty) => wpa_join_types(prev_ty, new_ty),
@@ -799,26 +789,16 @@ fn merge_observed_wpa_type(prev: Option<&Type>, new_ty: &Type) -> Type {
 fn merge_dynamic_observed_wpa_type(prev: Option<&Type>, new_ty: &Type) -> Type {
     match prev {
         None => new_ty.clone(),
-        Some(prev_ty)
-            if matches!(prev_ty, Type::Any | Type::HeapAny) && matches!(new_ty, Type::None) =>
-        {
+        Some(prev_ty) if matches!(prev_ty, Type::Any) && matches!(new_ty, Type::None) => {
             prev_ty.clone()
         }
-        Some(prev_ty)
-            if matches!(new_ty, Type::Any | Type::HeapAny) && matches!(prev_ty, Type::None) =>
-        {
+        Some(prev_ty) if matches!(new_ty, Type::Any) && matches!(prev_ty, Type::None) => {
             new_ty.clone()
         }
-        Some(prev_ty)
-            if matches!(prev_ty, Type::Any | Type::HeapAny)
-                && !matches!(new_ty, Type::Any | Type::HeapAny) =>
-        {
+        Some(prev_ty) if matches!(prev_ty, Type::Any) && !matches!(new_ty, Type::Any) => {
             new_ty.clone()
         }
-        Some(prev_ty)
-            if matches!(new_ty, Type::Any | Type::HeapAny)
-                && !matches!(prev_ty, Type::Any | Type::HeapAny) =>
-        {
+        Some(prev_ty) if matches!(new_ty, Type::Any) && !matches!(prev_ty, Type::Any) => {
             prev_ty.clone()
         }
         Some(prev_ty) if *prev_ty == *new_ty => prev_ty.clone(),
@@ -1042,14 +1022,31 @@ fn refine_function_params(
         return false;
     }
 
+    // Phase 4+ Extension Step E1: per-param ABI immutability. Each
+    // parameter that carries a tagged-Value ABI contract is marked
+    // `abi_immutable = true` by lowering at the param-construction site
+    // (whenever a prologue `UnboxValue` is emitted: lambda captures,
+    // lambda user-param flip, regular function user-param flip,
+    // generator resume frame state). WPA must not refine those slots
+    // back to an underlying primitive based on call-site argument types,
+    // because the callee's prologue reads the slot as tagged. Narrowing
+    // the seed here would later propagate through any `Copy` (e.g., one
+    // produced by `box_fusion`) into a class-field-write `rt_box_float`
+    // that bitcasts the tagged bits as f64. The per-local flag
+    // supersedes the earlier function-level `is_lambda_like ||
+    // phase4_user_abi_flipped` guard, which was over-conservative for
+    // callees with mixed params (some annotated-flipped, some
+    // unannotated-narrowable in the same function).
+
     // Build seed overrides for every param we derived a type for.
     let mut overrides: HashMap<LocalId, Type> = HashMap::new();
     for (i, param) in func.params.iter().enumerate() {
         if let Some(ty) = &joined[i] {
-            let param_seed_is_dynamic = matches!(
-                param.ty,
-                Type::Any | Type::HeapAny | Type::Never | Type::Union(_)
-            );
+            if param.abi_immutable && matches!(param.ty, Type::Any) {
+                continue;
+            }
+            let param_seed_is_dynamic =
+                matches!(param.ty, Type::Any | Type::Never | Type::Union(_));
             let override_ty = if !param_seed_is_dynamic {
                 // Respect concrete MIR signature seeds for annotated parameters.
                 // WPA may refine dynamic/unannotated seeds, but it must not widen
@@ -1063,8 +1060,8 @@ fn refine_function_params(
                 // seed. Otherwise WPA can materialize a raw primitive/class ABI
                 // that no longer matches the body's runtime-call expectations.
                 param.ty.clone()
-            } else if matches!(ty, Type::Any | Type::HeapAny | Type::Never)
-                && !matches!(param.ty, Type::Any | Type::HeapAny | Type::Never)
+            } else if matches!(ty, Type::Any | Type::Never)
+                && !matches!(param.ty, Type::Any | Type::Never)
             {
                 // Preserve an existing concrete param ABI when a call-site observation
                 // is only "some heap object". This commonly happens for mutable-default
@@ -1192,10 +1189,8 @@ fn instruction_dest(kind: &InstructionKind) -> Option<LocalId> {
         | InstructionKind::IntToFloat { dest, .. }
         | InstructionKind::FloatBits { dest, .. }
         | InstructionKind::IntBitsToFloat { dest, .. }
-        | InstructionKind::ValueFromInt { dest, .. }
-        | InstructionKind::UnwrapValueInt { dest, .. }
-        | InstructionKind::ValueFromBool { dest, .. }
-        | InstructionKind::UnwrapValueBool { dest, .. }
+        | InstructionKind::BoxValue { dest, .. }
+        | InstructionKind::UnboxValue { dest, .. }
         | InstructionKind::FloatAbs { dest, .. }
         | InstructionKind::ExcGetType { dest }
         | InstructionKind::ExcHasException { dest }
@@ -1374,7 +1369,7 @@ fn logical_operand_type(
                 inner(src, func, types, def_map, preds, site_block, seen)
             }
             InstructionKind::Refine { src, ty, .. } => {
-                if matches!(ty, Type::Any | Type::HeapAny | Type::Union(_)) {
+                if matches!(ty, Type::Any | Type::Union(_)) {
                     inner(src, func, types, def_map, preds, site_block, seen)
                 } else {
                     ty.clone()
@@ -1395,8 +1390,20 @@ fn logical_operand_type(
             InstructionKind::IntToFloat { .. } | InstructionKind::IntBitsToFloat { .. } => {
                 Type::Float
             }
-            InstructionKind::ValueFromInt { .. } => Type::Int,
-            InstructionKind::ValueFromBool { .. } => Type::Bool,
+            // For Int/Bool, the dest carries tagged i64 bits whose inner
+            // primitive type is known at compile time — propagate src_type
+            // so abi_repair's boxed_value_hint can classify the operand.
+            // For Float/None the dest is a heap pointer (FloatObj / NoneObj),
+            // so fall through to site_ty (HeapAny/Any) to avoid confusing
+            // downstream uses that expect a raw f64/i8.
+            InstructionKind::BoxValue {
+                src_type: Type::Int,
+                ..
+            } => Type::Int,
+            InstructionKind::BoxValue {
+                src_type: Type::Bool,
+                ..
+            } => Type::Bool,
             InstructionKind::RuntimeCall {
                 func: RuntimeFunc::Call(def),
                 ..
@@ -1623,6 +1630,7 @@ pub fn analyze_and_materialize_types(module: &mut Module) -> TypeTable {
         wpa_param_inference_to_fixed_point(module, &call_graph, &mut table);
     }
     materialize_inferred_types(module, &table);
+    sync_call_direct_dest_mir_ty(module);
     table
 }
 
@@ -1635,19 +1643,95 @@ fn materialize_inferred_types(module: &mut Module, table: &TypeTable) {
     }
 }
 
+/// Phase 3a-4 — sync `CallDirect` dest `mir_ty` to the callee's narrowed
+/// return-type representation.
+///
+/// After `materialize_function_return_types` updates each function's
+/// `return_type` (e.g. `Any → Int` for an unannotated function that always
+/// returns an integer), call sites still carry the pre-narrowing dest
+/// `mir_ty`. Lowering originally emitted these dests as `Tagged` because
+/// HIR-level types weren't yet refined; now that WPA has resolved the
+/// callee's return shape, the caller's dest must agree.
+///
+/// **Guards** (mirror Phase 3a-2 param sync):
+///   1. Skip when dest `abi_immutable == true` (Phase 4 E1 invariant).
+///   2. Skip when dest `mir_ty == None` (legacy path; nothing to sync).
+///   3. Skip when callee `phase4_return_abi_flipped == true` — the callee
+///      boxes before `Return`, so its true return ABI is Tagged regardless
+///      of `return_type`.
+///   4. Only narrow `Tagged → Raw(I64|I8)` — those have identical Cranelift
+///      I64 register shape, so downstream uses survive. `Raw(F64)` lives in
+///      XMM registers, so narrowing a Tagged slot to F64 would require
+///      explicit bitcast we don't emit; leave those as Tagged.
+fn sync_call_direct_dest_mir_ty(module: &mut Module) {
+    // Snapshot callee data needed for the sync — return type + flip flag.
+    // We borrow `&mut module.functions` afterwards, so collect first.
+    let callee_info: std::collections::HashMap<pyaot_utils::FuncId, (pyaot_types::Type, bool)> =
+        module
+            .functions
+            .iter()
+            .map(|(&id, f)| (id, (f.return_type.clone(), f.phase4_return_abi_flipped)))
+            .collect();
+
+    for func in module.functions.values_mut() {
+        // Collect (dest, new_mir_ty) tuples; mutate locals in a second pass
+        // to avoid borrowing `func.blocks` and `func.locals` simultaneously.
+        let mut updates: Vec<(pyaot_utils::LocalId, pyaot_mir::MirType)> = Vec::new();
+        for block in func.blocks.values() {
+            for inst in &block.instructions {
+                let pyaot_mir::InstructionKind::CallDirect {
+                    dest,
+                    func: callee_id,
+                    ..
+                } = &inst.kind
+                else {
+                    continue;
+                };
+                let Some((ret_ty, flipped)) = callee_info.get(callee_id) else {
+                    continue;
+                };
+                if *flipped {
+                    continue;
+                }
+                let new_mir_ty = pyaot_mir::type_to_mir_type_register(ret_ty);
+                if !matches!(new_mir_ty, pyaot_mir::MirType::Raw(_)) {
+                    continue;
+                }
+                let Some(local) = func.locals.get(dest) else {
+                    continue;
+                };
+                if local.abi_immutable {
+                    continue;
+                }
+                let Some(old_mir_ty) = &local.mir_ty else {
+                    continue;
+                };
+                if !matches!(old_mir_ty, pyaot_mir::MirType::Tagged) {
+                    continue;
+                }
+                updates.push((*dest, new_mir_ty));
+            }
+        }
+        for (id, new_mir_ty) in updates {
+            if let Some(local) = func.locals.get_mut(&id) {
+                local.mir_ty = Some(new_mir_ty);
+            }
+        }
+    }
+}
+
 fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
-    // Stage E: lambda-like callees (`__lambda_*`, `__nested_*`,
-    // `__genexp_*`) intentionally ship primitive captured params as
-    // ABI-facing `Type::Any` slots — the value arrives tagged from the
-    // closure trampoline / HOF dispatcher / wrapper CallDirect, and the
-    // function body unboxes it once in a prologue. If WPA were allowed
-    // to refine those slots back to Int/Bool/Float here, the Cranelift
-    // signature would no longer match the boxed ABI emitted by every
-    // caller, and the prologue `UnwrapValueInt` would interpret a raw
-    // primitive as tagged bits.
-    let is_lambda_like = func.name.starts_with("__lambda_")
-        || func.name.starts_with("__nested_")
-        || func.name.starts_with("__genexp_");
+    // Phase 4+ Extension Step E1: per-param ABI immutability. Each
+    // parameter Local carries an `abi_immutable: bool` set by lowering
+    // when a prologue `UnboxValue` is emitted (lambda captures, lambda
+    // user-param flip, regular user-param flip, generator resume frame).
+    // Narrowing `Type::Any` back to a primitive on such a param would
+    // invalidate the prologue's unbox semantics — the body would
+    // interpret raw primitive bits as a tagged Value. The per-local flag
+    // supersedes the earlier function-level `is_lambda_like ||
+    // phase4_user_abi_flipped` guard, which couldn't distinguish
+    // legitimately-narrowable unannotated params from ABI-bound params
+    // in the same function.
 
     // §P.2.2: collect locals defined by FuncAddr / BuiltinAddr — those hold
     // raw text-segment addresses, never heap objects. Without this, when
@@ -1657,7 +1741,24 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
     // guard. Lowering already calls `alloc_stack_local` for these, but type
     // inference re-derives `is_gc_root` purely from the type, which loses
     // that signal.
+    //
+    // Stage C.2 Attempt 4 — producer-aware mir_ty narrowing.
+    //
+    // Build two sets in a single scan:
+    //   `func_ptr_locals` (existing) — FuncAddr/BuiltinAddr dests.
+    //   `raw_producer_locals` (new) — locals whose defining instruction
+    //   provably emits raw bits (no tagged Value encoding in the result
+    //   register). We use this below to gate mir_ty narrowing: only narrow
+    //   Tagged → Raw when the producer is already raw-returning.
+    //
+    // Conservative classification: when we cannot statically prove that the
+    // producer emits raw bits (Copy, Refine, Phi, CallDirect, dynamic
+    // calls, rt_obj_* family), we leave the local OUT of `raw_producer_locals`
+    // so mir_ty stays Tagged. This means some narrowing opportunities are
+    // missed, but zero Tagged→Raw mis-interpretations occur.
     let mut func_ptr_locals: std::collections::HashSet<pyaot_utils::LocalId> =
+        std::collections::HashSet::new();
+    let mut raw_producer_locals: std::collections::HashSet<pyaot_utils::LocalId> =
         std::collections::HashSet::new();
     for block in func.blocks.values() {
         for inst in &block.instructions {
@@ -1665,14 +1766,98 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
                 pyaot_mir::InstructionKind::FuncAddr { dest, .. }
                 | pyaot_mir::InstructionKind::BuiltinAddr { dest, .. } => {
                     func_ptr_locals.insert(*dest);
+                    // Code pointers are raw i64 addresses, not tagged Values.
+                    raw_producer_locals.insert(*dest);
                 }
+                // Constant literals — always raw at MIR level (Int/Bool/Float
+                // constants are unencoded; Str/Bytes produce Tagged, but those
+                // locals won't have a Raw new_mir_ty so the gate never fires).
+                pyaot_mir::InstructionKind::Const { dest, .. } => {
+                    raw_producer_locals.insert(*dest);
+                }
+                // BinOp / UnOp on primitives — raw result.
+                pyaot_mir::InstructionKind::BinOp { dest, .. }
+                | pyaot_mir::InstructionKind::UnOp { dest, .. } => {
+                    raw_producer_locals.insert(*dest);
+                }
+                // Explicit tagged→raw unboxing — always raw output.
+                pyaot_mir::InstructionKind::UnboxValue { dest, .. } => {
+                    raw_producer_locals.insert(*dest);
+                }
+                // Numeric conversion instructions — all produce raw bits.
+                pyaot_mir::InstructionKind::FloatToInt { dest, .. }
+                | pyaot_mir::InstructionKind::BoolToInt { dest, .. }
+                | pyaot_mir::InstructionKind::IntToFloat { dest, .. }
+                | pyaot_mir::InstructionKind::FloatBits { dest, .. }
+                | pyaot_mir::InstructionKind::IntBitsToFloat { dest, .. }
+                | pyaot_mir::InstructionKind::FloatAbs { dest, .. } => {
+                    raw_producer_locals.insert(*dest);
+                }
+                // Exception query instructions — raw i8/i32 results.
+                pyaot_mir::InstructionKind::ExcGetType { dest }
+                | pyaot_mir::InstructionKind::ExcHasException { dest }
+                | pyaot_mir::InstructionKind::ExcCheckType { dest, .. }
+                | pyaot_mir::InstructionKind::ExcCheckClass { dest, .. } => {
+                    raw_producer_locals.insert(*dest);
+                }
+                // RuntimeCall — check the def's explicit return semantic.
+                // `MirSemantic::Raw` means the runtime function returns an
+                // unencoded primitive; insert into raw_producer_locals.
+                // `MirSemantic::Tagged` or `MirSemantic::Heap` → tagged,
+                // NOT inserted (producer is Tagged, narrowing is unsafe).
+                // When no explicit semantic is set the fallback is Raw for
+                // non-GC, Tagged for GC-tracked (via infer_return); we use
+                // `gc_roots_result` as a proxy: gc-tracked ↔ Tagged return.
+                pyaot_mir::InstructionKind::RuntimeCall {
+                    dest,
+                    func: rt_func,
+                    ..
+                } => {
+                    use pyaot_core_defs::runtime_func_def::MirSemantic;
+                    let is_raw = match rt_func {
+                        pyaot_mir::RuntimeFunc::Call(def) => match def.return_semantic() {
+                            Some(MirSemantic::Raw) => true,
+                            Some(MirSemantic::Tagged) | Some(MirSemantic::Heap(_)) => false,
+                            None => !def.gc_roots_result,
+                        },
+                        // Non-Call variants (ExcSetjmp etc.) — check by
+                        // exclusion: all remaining variants that return
+                        // a non-GC integer (ExcSetjmp → i32).
+                        _ => {
+                            // ExcSetjmp returns i32 (raw). Any other non-Call
+                            // RuntimeFunc variants return raw ints too
+                            // (legacy path — covered conservatively as raw
+                            // since they don't gc_roots_result).
+                            true
+                        }
+                    };
+                    if is_raw {
+                        raw_producer_locals.insert(*dest);
+                    }
+                }
+                // Copy, Refine, Phi, Call, CallDirect, CallVirtual,
+                // CallVirtualNamed, CallNamed, GcAlloc, BoxValue,
+                // ExcGetCurrent — conservative: do NOT insert.
+                // Their output representation is either Tagged or
+                // depends on src/callee (which we don't resolve here
+                // to avoid multi-pass complexity).
                 _ => {}
             }
         }
     }
 
+    // Snapshot per-param ABI immutability so the locals loop (which
+    // also iterates over param-Locals) can honour the contract without
+    // re-scanning `func.params` per local.
+    let abi_immutable_param_ids: std::collections::HashSet<pyaot_utils::LocalId> = func
+        .params
+        .iter()
+        .filter(|p| p.abi_immutable)
+        .map(|p| p.id)
+        .collect();
+
     for param in &mut func.params {
-        if is_lambda_like && matches!(param.ty, Type::Any) {
+        if param.abi_immutable && matches!(param.ty, Type::Any) {
             continue;
         }
         if let Some(new_ty) = types
@@ -1680,17 +1865,47 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
             .filter(|ty| !matches!(ty, Type::Never))
             .cloned()
         {
-            param.ty = new_ty;
-            param.is_gc_root = param.ty.is_heap();
+            param.ty = new_ty.clone();
+            param.is_gc_root = param.computed_is_gc_root();
+            // Phase 3a-2: keep mir_ty in sync with WPA-narrowed ty for
+            // non-ABI-bound params. Restricted to Raw-kind narrowing —
+            // sync only when WPA inferred a concrete primitive type
+            // (Int / Bool / Float / None). Cases:
+            //   - Tagged → Raw: lowering's Any/Union seed became a
+            //     primitive → genuine narrowing, must sync.
+            //   - Never → Raw: degenerate-lambda case → would widen a
+            //     dead code path and surface new spurious violations,
+            //     skip (matched by mir_ty.is_some_and(|m| m.is_raw())
+            //     check below — we only sync when the *new* form is Raw
+            //     AND the *old* form was Tagged or already-Raw).
+            let new_mir_ty = pyaot_mir::type_to_mir_type_register(&new_ty);
+            let old_was_widenable = param.mir_ty.as_ref().is_some_and(|m| {
+                matches!(m, pyaot_mir::MirType::Tagged | pyaot_mir::MirType::Raw(_))
+            });
+            if matches!(new_mir_ty, pyaot_mir::MirType::Raw(_)) && old_was_widenable {
+                param.mir_ty = Some(new_mir_ty.clone());
+                // The same LocalId can also exist in `func.locals` as a
+                // shadow entry (lowering puts params into both lists).
+                if let Some(shadow) = func.locals.get_mut(&param.id) {
+                    if !shadow.abi_immutable {
+                        shadow.ty = new_ty;
+                        shadow.is_gc_root = shadow.computed_is_gc_root();
+                        shadow.mir_ty = Some(new_mir_ty);
+                    }
+                }
+            }
         }
     }
 
     for local in func.locals.values_mut() {
-        // Mirror the param guard: a lambda-like local that corresponds to
-        // a Type::Any param entry is part of the ABI and must stay Any.
-        if is_lambda_like
-            && matches!(local.ty, Type::Any)
-            && func.params.iter().any(|p| p.id == local.id)
+        // Mirror the param guard: a Type::Any param-Local must stay Any
+        // when `abi_immutable` is set. Body-local Locals may also carry
+        // `abi_immutable = true` (e.g. set by `lower_binop` when a Local
+        // is consumed by an `rt_obj_*` runtime call — the call site
+        // expects a tagged Value, so the local's `Any` / `HeapAny`
+        // contract must not be narrowed by WPA).
+        if matches!(local.ty, Type::Any)
+            && (abi_immutable_param_ids.contains(&local.id) || local.abi_immutable)
         {
             continue;
         }
@@ -1699,8 +1914,41 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
             .filter(|ty| !matches!(ty, Type::Never))
             .cloned()
         {
-            local.ty = new_ty;
-            local.is_gc_root = local.ty.is_heap();
+            local.ty = new_ty.clone();
+            local.is_gc_root = local.computed_is_gc_root();
+
+            // Stage C.2 Attempt 4 — producer-aware body-local mir_ty narrowing.
+            //
+            // Only narrow mir_ty Tagged → Raw when the defining instruction
+            // provably emits raw bits (tracked in `raw_producer_locals`).
+            // If the producer is Tagged-returning (e.g. rt_obj_*, GcAlloc,
+            // BoxValue, Copy/Refine/Phi of unknown shape, dynamic calls),
+            // the slot still holds a tagged Value at runtime — narrowing
+            // mir_ty to Raw would cause downstream code to interpret tagged
+            // bits as a raw integer (the root cause of all three prior
+            // attempt failures).
+            //
+            // When the producer IS in `raw_producer_locals`, the slot
+            // already holds unencoded primitive bits, so mir_ty=Raw is
+            // consistent and no UnboxValue is needed between producer and
+            // consumer.
+            let new_mir_ty = pyaot_mir::type_to_mir_type_register(&new_ty);
+            if matches!(new_mir_ty, pyaot_mir::MirType::Raw(_)) {
+                let old_was_tagged = local
+                    .mir_ty
+                    .as_ref()
+                    .is_some_and(|m| matches!(m, pyaot_mir::MirType::Tagged));
+                if old_was_tagged {
+                    // Only narrow if the producer is known-raw; otherwise
+                    // keep mir_ty=Tagged to preserve the tagged-bit contract.
+                    if raw_producer_locals.contains(&local.id) {
+                        local.mir_ty = Some(new_mir_ty);
+                    }
+                    // else: mir_ty stays Tagged — correct, safe.
+                }
+                // If old mir_ty was already Raw (or None), leave it alone —
+                // the existing value was set correctly by lowering.
+            }
         }
         if func_ptr_locals.contains(&local.id) {
             local.is_gc_root = false;
@@ -1714,6 +1962,23 @@ fn materialize_function_return_types(module: &mut Module, table: &TypeTable) -> 
         let Some(types) = table.function_types(func_id) else {
             continue;
         };
+        // Phase 4 Commit 4/5: callees whose return ABI was flipped to
+        // tagged Value carry a contract that `func.return_type ==
+        // Type::Any`. The body's Return operands still carry the
+        // *declared* primitive type (e.g. `Int` for `return 3`) before
+        // the lowering-inserted `BoxValue` (or codegen's terminator-
+        // time boxing for generator resume functions), so
+        // `infer_function_return_type` would re-narrow Any → Int /
+        // Any → Float. Skip narrowing to preserve the tagged-ABI
+        // contract. Callers' dest locals already see Any.
+        //
+        // Generator resume functions (originally identified by
+        // `func_id.0 >= RESUME_FUNC_ID_OFFSET`) are flagged
+        // `phase4_return_abi_flipped = true` at lowering time, so the
+        // unified check below subsumes the old name-based skip.
+        if func.phase4_return_abi_flipped {
+            continue;
+        }
         let inferred = infer_function_return_type(func, types);
         if !matches!(inferred, Type::Never) && func.return_type != inferred {
             func.return_type = inferred;
@@ -1757,6 +2022,8 @@ mod tests {
             name: None,
             ty,
             is_gc_root: false,
+            abi_immutable: false,
+            mir_ty: None,
         }
     }
 
@@ -2037,10 +2304,10 @@ mod tests {
             .insert(LocalId::from(1u32), mk_local(1, Type::Any));
         callee
             .locals
-            .insert(LocalId::from(2u32), mk_local(2, Type::HeapAny));
+            .insert(LocalId::from(2u32), mk_local(2, Type::Any));
         callee
             .locals
-            .insert(LocalId::from(3u32), mk_local(3, Type::HeapAny));
+            .insert(LocalId::from(3u32), mk_local(3, Type::Any));
         let entry = callee.entry_block;
         callee.block_mut(entry).instructions.extend([
             Instruction {
@@ -2332,6 +2599,8 @@ mod tests {
             name: None,
             ty: Type::Any,
             is_gc_root: false,
+            abi_immutable: false,
+            mir_ty: None,
         };
         let mut f = Function::new(
             FuncId::from(id),
@@ -2443,6 +2712,8 @@ mod tests {
                     name: None,
                     ty: Type::Int,
                     is_gc_root: false,
+                    abi_immutable: false,
+                    mir_ty: None,
                 },
             );
             let bb0 = c.entry_block;
@@ -2509,6 +2780,8 @@ mod tests {
             name: None,
             ty: Type::Any,
             is_gc_root: false,
+            abi_immutable: false,
+            mir_ty: None,
         };
         let self_ret = LocalId::from(1u32);
         let mut f = Function::new(f_id, "f".to_string(), vec![param.clone()], Type::Int, None);
@@ -2874,14 +3147,14 @@ mod tests {
 
     #[test]
     fn runtime_call_exc_get_current_is_heap_any() {
-        let mut func = empty_func(Type::HeapAny);
+        let mut func = empty_func(Type::Any);
         let r = LocalId::from(0u32);
         func.locals.insert(r, mk_local(0, Type::Any));
         push_runtime_call(&mut func, r, pyaot_mir::RuntimeFunc::ExcGetCurrent);
         func.block_mut(func.entry_block).terminator = Terminator::Return(Some(Operand::Local(r)));
         func.is_ssa = true;
         let types = infer_function(&func, None);
-        assert_eq!(types.get(&r), Some(&Type::HeapAny));
+        assert_eq!(types.get(&r), Some(&Type::Any));
     }
 
     /// Indirect `Call` where the function-pointer operand is defined by a
@@ -2956,6 +3229,8 @@ mod tests {
             name: None,
             ty: Type::Any,
             is_gc_root: false,
+            abi_immutable: false,
+            mir_ty: None,
         };
         let mut leaf = Function::new(
             leaf_id,
@@ -2975,6 +3250,8 @@ mod tests {
             name: None,
             ty: Type::Any,
             is_gc_root: false,
+            abi_immutable: false,
+            mir_ty: None,
         };
         let mid_ret = LocalId::from(1u32);
         let mut mid = Function::new(
@@ -3123,6 +3400,10 @@ mod tests {
             field_offsets.insert(*name, *off);
             field_types.insert(*name, ty.clone());
         }
+        let field_mir_types: indexmap::IndexMap<_, _> = field_types
+            .iter()
+            .map(|(name, ty)| (*name, pyaot_mir::type_to_mir_type_storage(ty)))
+            .collect();
         module.class_info.insert(
             class_id,
             ClassMetadata {
@@ -3130,6 +3411,7 @@ mod tests {
                 init_func_id: Some(init_func_id),
                 field_offsets,
                 field_types,
+                field_mir_types,
                 base_class: None,
                 is_protocol: false,
             },
@@ -3238,6 +3520,7 @@ mod tests {
                 init_func_id: None,
                 field_offsets: IndexMap::new(),
                 field_types: IndexMap::new(),
+                field_mir_types: IndexMap::new(),
                 base_class: None,
                 is_protocol: false,
             },

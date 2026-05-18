@@ -31,6 +31,22 @@ pub struct Args {
     #[arg(long)]
     pub emit_types: bool,
 
+    /// Run the Strong-Typed MIR Verifier in warning mode at every
+    /// pipeline stage (legacy shortcut). Equivalent to
+    /// `--verify-mir-stage=post-lowering=warn,...`. See Stage A.1
+    /// of `.claude/plans/strong-typed-mir-v2-coordinated.md`.
+    #[arg(long)]
+    pub verify_mir: bool,
+
+    /// Per-stage MIR verifier override. Syntax:
+    /// `--verify-mir-stage=<stage>=<mode>` where stage ∈
+    /// {post-lowering, post-wpa-pass-1, post-optimize, post-mono,
+    /// final-pre-codegen} and mode ∈ {off, warn, hard-error}.
+    /// May be repeated to override multiple stages. Stage A.1 of
+    /// Strong-Typed MIR Rewrite plan v2.
+    #[arg(long = "verify-mir-stage", value_name = "STAGE=MODE")]
+    pub verify_mir_stage: Vec<String>,
+
     /// Path to runtime library
     #[arg(long, default_value = "target/release/libpyaot_runtime.a")]
     pub runtime_lib: PathBuf,

@@ -5,7 +5,7 @@
 //! - `calls`: CallDirect, CallNamed, Call, CallVirtual, CallVirtualNamed, FuncAddr, BuiltinAddr
 //! - `copy`: Copy with type coercion
 //! - `conversions`: FloatToInt, BoolToInt, IntToFloat, FloatAbs, FloatBits, IntBitsToFloat
-//! - `tag`: ValueFromInt, UnwrapValueInt, ValueFromBool, UnwrapValueBool
+//! - `tag`: BoxValue, UnboxValue
 
 pub(crate) mod arithmetic;
 pub(crate) mod calls;
@@ -165,17 +165,19 @@ pub fn compile_instruction(
         }
 
         // Value tag boxing/unboxing instructions
-        mir::InstructionKind::ValueFromInt { dest, src } => {
-            tag::compile_value_from_int(builder, dest, src, ctx);
+        mir::InstructionKind::BoxValue {
+            dest,
+            src,
+            src_type,
+        } => {
+            tag::compile_box_value(builder, dest, src, src_type, ctx)?;
         }
-        mir::InstructionKind::UnwrapValueInt { dest, src } => {
-            tag::compile_unwrap_value_int(builder, dest, src, ctx);
-        }
-        mir::InstructionKind::ValueFromBool { dest, src } => {
-            tag::compile_value_from_bool(builder, dest, src, ctx);
-        }
-        mir::InstructionKind::UnwrapValueBool { dest, src } => {
-            tag::compile_unwrap_value_bool(builder, dest, src, ctx);
+        mir::InstructionKind::UnboxValue {
+            dest,
+            src,
+            dest_type,
+        } => {
+            tag::compile_unbox_value(builder, dest, src, dest_type, ctx)?;
         }
 
         // GC instructions are handled at the function level (prologue/epilogue)

@@ -1,6 +1,7 @@
 //! Peephole pattern matchers and transformations
 
 use pyaot_mir::{BinOp, Constant, Instruction, InstructionKind, Operand, RuntimeFunc, UnOp};
+use pyaot_types::Type;
 
 /// Simplify a single instruction in-place. Returns true if changed.
 pub fn simplify_instruction(kind: &mut InstructionKind) -> bool {
@@ -99,18 +100,20 @@ fn match_pair_pattern(
         }
     }
 
-    // Round-trip elimination for ValueFromInt / UnwrapValueInt (and Bool variants).
-    // ValueFromInt(UnwrapValueInt(x)) → Copy(x)
-    // UnwrapValueInt(ValueFromInt(x)) → Copy(x)
+    // Round-trip elimination for BoxValue / UnboxValue (Int and Bool variants).
+    // BoxValue(UnboxValue(x, Int), Int) → Copy(x)
+    // UnboxValue(BoxValue(x, Int), Int) → Copy(x)
     // (Same for Bool variants.)
     if let (
-        InstructionKind::ValueFromInt {
+        InstructionKind::BoxValue {
             dest: first_dest,
             src: orig_src,
+            src_type: Type::Int,
         },
-        InstructionKind::UnwrapValueInt {
+        InstructionKind::UnboxValue {
             dest: second_dest,
             src: inner_src,
+            dest_type: Type::Int,
         },
     ) = (first, second)
     {
@@ -122,13 +125,15 @@ fn match_pair_pattern(
         }
     }
     if let (
-        InstructionKind::UnwrapValueInt {
+        InstructionKind::UnboxValue {
             dest: first_dest,
             src: orig_src,
+            dest_type: Type::Int,
         },
-        InstructionKind::ValueFromInt {
+        InstructionKind::BoxValue {
             dest: second_dest,
             src: inner_src,
+            src_type: Type::Int,
         },
     ) = (first, second)
     {
@@ -140,13 +145,15 @@ fn match_pair_pattern(
         }
     }
     if let (
-        InstructionKind::ValueFromBool {
+        InstructionKind::BoxValue {
             dest: first_dest,
             src: orig_src,
+            src_type: Type::Bool,
         },
-        InstructionKind::UnwrapValueBool {
+        InstructionKind::UnboxValue {
             dest: second_dest,
             src: inner_src,
+            dest_type: Type::Bool,
         },
     ) = (first, second)
     {
@@ -158,13 +165,15 @@ fn match_pair_pattern(
         }
     }
     if let (
-        InstructionKind::UnwrapValueBool {
+        InstructionKind::UnboxValue {
             dest: first_dest,
             src: orig_src,
+            dest_type: Type::Bool,
         },
-        InstructionKind::ValueFromBool {
+        InstructionKind::BoxValue {
             dest: second_dest,
             src: inner_src,
+            src_type: Type::Bool,
         },
     ) = (first, second)
     {

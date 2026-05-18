@@ -382,14 +382,13 @@ impl VarVersionState {
         if prev_ty == new_ty || prev_ty.is_heap() == new_ty.is_heap() {
             return false;
         }
-        if matches!(new_ty, Type::Any | Type::HeapAny) {
+        if matches!(new_ty, Type::Any) {
             return false;
         }
         // Dynamic heap locals can safely accept raw primitives by boxing at
         // store time; concrete heap locals cannot.
-        let prev_accepts_boxed_primitive =
-            matches!(prev_ty, Type::Any | Type::HeapAny | Type::Union(_))
-                && matches!(new_ty, Type::Int | Type::Bool | Type::Float | Type::None);
+        let prev_accepts_boxed_primitive = matches!(prev_ty, Type::Any | Type::Union(_))
+            && matches!(new_ty, Type::Int | Type::Bool | Type::Float | Type::None);
         !prev_accepts_boxed_primitive
     }
 }
@@ -920,7 +919,7 @@ fn merge_var(
                 )
             );
             let is_tuple_pair = prev.is_tuple_like() && new_ty.is_tuple_like();
-            let prev_is_any = matches!(prev, Type::Any | Type::HeapAny);
+            let prev_is_any = matches!(prev, Type::Any);
             if is_numeric_pair || is_tuple_pair {
                 let merged = prev.join(&new_ty);
                 scratch.insert(var_id, merged);

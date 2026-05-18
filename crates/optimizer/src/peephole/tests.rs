@@ -2,8 +2,8 @@
 
 use indexmap::IndexMap;
 use pyaot_mir::{
-    BasicBlock, BinOp, Constant, Function, Instruction, InstructionKind, Local, Module, Operand,
-    Terminator, UnOp,
+    BasicBlock, BinOp, Constant, Function, FunctionKind, Instruction, InstructionKind, Local,
+    Module, Operand, Terminator, UnOp,
 };
 use pyaot_types::Type;
 use pyaot_utils::{BlockId, FuncId, LocalId};
@@ -14,6 +14,8 @@ fn make_local(id: u32, ty: Type) -> Local {
         name: None,
         ty,
         is_gc_root: false,
+        abi_immutable: false,
+        mir_ty: None,
     }
 }
 
@@ -42,6 +44,7 @@ fn make_func(locals: Vec<Local>, instructions: Vec<InstructionKind>) -> Function
 
     Function {
         id: func_id,
+        kind: FunctionKind::Regular,
         name: "test".to_string(),
         params: vec![],
         return_type: Type::None,
@@ -53,7 +56,10 @@ fn make_func(locals: Vec<Local>, instructions: Vec<InstructionKind>) -> Function
         is_generic_template: false,
         typevar_params: Vec::new(),
         wrapper_fn_ptr_capture_index: None,
+        phase4_return_abi_flipped: false,
+        phase4_original_return_type: None,
         dom_tree_cache: std::cell::OnceCell::new(),
+        signature: None,
     }
 }
 
@@ -363,21 +369,23 @@ fn test_xor_self() {
 
 #[test]
 fn test_box_unbox_elimination() {
-    // _1 = ValueFromInt(_0)
-    // _2 = UnwrapValueInt(_1)  →  _2 = Copy(_0)
+    // _1 = BoxValue(_0, Int)
+    // _2 = UnboxValue(_1, Int)  →  _2 = Copy(_0)
     let locals = vec![
         make_local(0, Type::Int),
         make_local(1, Type::Int),
         make_local(2, Type::Int),
     ];
     let instructions = vec![
-        InstructionKind::ValueFromInt {
+        InstructionKind::BoxValue {
             dest: LocalId::from(1u32),
             src: Operand::Local(LocalId::from(0u32)),
+            src_type: Type::Int,
         },
-        InstructionKind::UnwrapValueInt {
+        InstructionKind::UnboxValue {
             dest: LocalId::from(2u32),
             src: Operand::Local(LocalId::from(1u32)),
+            dest_type: Type::Int,
         },
     ];
 
@@ -385,10 +393,13 @@ fn test_box_unbox_elimination() {
     super::run_peephole(&mut module);
 
     let insts = get_instructions(&module);
-    // First instruction unchanged (ValueFromInt)
+    // First instruction unchanged (BoxValue)
     assert!(matches!(
         &insts[0].kind,
-        InstructionKind::ValueFromInt { .. }
+        InstructionKind::BoxValue {
+            src_type: Type::Int,
+            ..
+        }
     ));
     // Second instruction replaced with Copy
     match &insts[1].kind {

@@ -65,14 +65,10 @@ pub enum Type {
     /// Type variable (for generics)
     Var(InternedString),
 
-    /// Unknown/Any type (for gradual typing) — may be raw i64 or heap pointer
+    /// Unknown/Any type (for gradual typing) — may be raw i64 or tagged heap pointer.
+    /// The MIR-layer `MirType::Tagged` discriminates which slots are guaranteed tagged;
+    /// HIR/lowering use `Any` uniformly (Stage F.1 deleted `Type::HeapAny`).
     Any,
-
-    /// Heap-allocated Any — guaranteed to be a valid *mut Obj pointer.
-    /// Used for runtime-dispatched subscript results (rt_any_getitem),
-    /// ObjectMethodCall returns, and similar cases where the value is
-    /// always a boxed heap object. Print and compare use runtime dispatch.
-    HeapAny,
 
     /// User-defined class type
     Class {
@@ -270,7 +266,7 @@ impl Type {
     /// - Top-level `Never` (meaningful for return types / dead code).
     /// - `Function { params, ret }` (params are contravariant, not part of
     ///   the empty-literal seed pipeline).
-    /// - Primitives, `Any`, `HeapAny`, `Class`, `Var`, `BuiltinException`,
+    /// - Primitives, `Any`, `Class`, `Var`, `BuiltinException`,
     ///   `RuntimeObject`, `File`, `NotImplementedT`.
     pub fn demote_never_params_to_any(&self) -> Type {
         let demote_param = |t: &Type| -> Type {
@@ -497,8 +493,7 @@ fn type_discriminant(t: &Type) -> u32 {
         Type::File(_) => 18,
         Type::RuntimeObject(_) => 19,
         Type::NotImplementedT => 20,
-        Type::HeapAny => 21,
-        Type::Any => 22,
+        Type::Any => 21,
         Type::Generic { base, .. } => 23 + base.0,
         // Union should never appear as a member of another union after collection.
         Type::Union(_) => u32::MAX,
@@ -521,7 +516,7 @@ fn numeric_promote(a: &Type, b: &Type) -> Option<Type> {
 /// 1. Flatten any nested unions.
 /// 2. Deduplicate.
 /// 3. Remove `Never` (bottom identity).
-/// 4. Absorb into `Any` if any member is `Any`/`HeapAny`.
+/// 4. Absorb into `Any` if any member is `Any`.
 /// 5. Remove members subsumed by another member (`Bool` removed when `Int` present).
 /// 6. Sort by `(discriminant, display-string)` for commutativity.
 fn make_canonical_union(members: impl IntoIterator<Item = Type>) -> Type {
@@ -536,8 +531,8 @@ fn make_canonical_union(members: impl IntoIterator<Item = Type>) -> Type {
     // Remove Never.
     flat.retain(|t| *t != Type::Never);
 
-    // Absorb Any/HeapAny.
-    if flat.iter().any(|t| matches!(t, Type::Any | Type::HeapAny)) {
+    // Absorb Any.
+    if flat.iter().any(|t| matches!(t, Type::Any)) {
         return Type::Any;
     }
 
@@ -658,14 +653,14 @@ impl TypeLattice for Type {
     /// subsumed-member removal.
     ///
     /// Design decisions:
-    /// - `Any`/`HeapAny` is the top element: `join(Any, t) == Any`.
+    /// - `Any` is the top element: `join(Any, t) == Any`.
     /// - `Never` is the bottom element: `join(Never, t) == t`.
     /// - Numeric tower (`Bool ⊂ Int ⊂ Float`) collapses numeric pairs.
     /// - Unions are flattened, deduplicated, simplified (subsumed members
     ///   removed), and sorted canonically so that `join(a,b) == join(b,a)`.
     fn join(&self, other: &Self) -> Self {
         // top absorbs
-        if matches!(self, Type::Any | Type::HeapAny) || matches!(other, Type::Any | Type::HeapAny) {
+        if matches!(self, Type::Any) || matches!(other, Type::Any) {
             return Type::Any;
         }
         // bottom is identity
@@ -746,10 +741,10 @@ impl TypeLattice for Type {
     ///   the non-Never results.
     fn meet(&self, other: &Self) -> Self {
         // top is identity for meet
-        if matches!(self, Type::Any | Type::HeapAny) {
+        if matches!(self, Type::Any) {
             return other.clone();
         }
-        if matches!(other, Type::Any | Type::HeapAny) {
+        if matches!(other, Type::Any) {
             return self.clone();
         }
         // bottom absorbs
@@ -801,7 +796,7 @@ impl TypeLattice for Type {
     /// - `minus(a, b) == Never` when `a ≤ b` (a is fully removed)
     /// - Unions: filter out subsumed members.
     fn minus(&self, other: &Self) -> Self {
-        if matches!(self, Type::Any | Type::HeapAny) {
+        if matches!(self, Type::Any) {
             return self.clone();
         }
         if *self == Type::Never {
@@ -810,7 +805,7 @@ impl TypeLattice for Type {
         if *other == Type::Never {
             return self.clone();
         }
-        if matches!(other, Type::Any | Type::HeapAny) {
+        if matches!(other, Type::Any) {
             return Type::Never;
         }
         if self == other || self.is_subtype_of(other) {
@@ -861,9 +856,9 @@ impl Type {
             // Nothing is subtype of Never (except Never itself, handled by reflexivity)
             (_, Type::Never) => false,
 
-            // Any and HeapAny are supertypes of everything
-            (_, Type::Any) | (_, Type::HeapAny) => true,
-            (Type::Any, _) | (Type::HeapAny, _) => false,
+            // Any is the top type — supertype of everything
+            (_, Type::Any) => true,
+            (Type::Any, _) => false,
 
             // Bool is subtype of Int (Python semantics: isinstance(True, int) == True)
             (Type::Bool, Type::Int) => true,
@@ -996,7 +991,7 @@ impl std::fmt::Display for Type {
                 write!(f, ") -> {}", ret)
             }
             Type::Var(name) => write!(f, "'{:?}", name),
-            Type::Any | Type::HeapAny => write!(f, "Any"),
+            Type::Any => write!(f, "Any"),
             Type::Class { name, .. } => write!(f, "{:?}", name),
             Type::Iterator(t) => write!(f, "Iterator[{}]", t),
             Type::BuiltinException(kind) => write!(f, "{}", kind),

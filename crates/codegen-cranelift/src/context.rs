@@ -83,19 +83,26 @@ impl CodegenContext<'_> {
             .var_map
             .get(dest)
             .expect("internal error: local not in var_map - codegen bug");
+        // Stage C.3: expected type matches the declare_var path
+        // (mir_type_to_cranelift on resolved_mir_type), so guard against
+        // the same canonical representation.
         let expected_ty = self
             .symbols
             .locals
             .get(dest)
-            .map(|local| crate::utils::type_to_cranelift(&local.ty))
+            .map(|local| crate::utils::mir_type_to_cranelift(&local.resolved_mir_type()))
             .expect("internal error: local metadata missing for codegen result");
         let actual_ty = builder.func.dfg.value_type(value);
         assert!(
             expected_ty == actual_ty,
-            "codegen type mismatch in {} for local {:?}: declared {:?} => {:?}, value is {:?}",
+            "codegen type mismatch in {} for local {:?}: declared {:?} (mir_ty resolves to {:?}) => {:?}, value is {:?}",
             self.debug.function_name,
             dest,
             self.symbols.locals.get(dest).map(|local| &local.ty),
+            self.symbols
+                .locals
+                .get(dest)
+                .map(|local| local.resolved_mir_type()),
             expected_ty,
             actual_ty
         );

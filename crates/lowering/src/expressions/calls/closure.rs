@@ -5,11 +5,11 @@ use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir as mir;
 use pyaot_types::Type;
-use pyaot_utils::{BlockId, LocalId};
+use pyaot_utils::LocalId;
 
 use crate::context::Lowering;
 
-use super::{ExpandedArg, MAX_CLOSURE_CAPTURES};
+use super::ExpandedArg;
 
 impl<'a> Lowering<'a> {
     /// Lower a closure call.
@@ -120,10 +120,11 @@ impl<'a> Lowering<'a> {
             dest: func_ptr_raw,
             func: original_func_id,
         });
-        let func_ptr_local = self.alloc_stack_local(Type::HeapAny, mir_func);
-        self.emit_instruction(mir::InstructionKind::ValueFromInt {
+        let func_ptr_local = self.alloc_stack_local(Type::Any, mir_func);
+        self.emit_instruction(mir::InstructionKind::BoxValue {
             dest: func_ptr_local,
             src: mir::Operand::Local(func_ptr_raw),
+            src_type: Type::Int,
         });
 
         // 2. Build arguments: func_ptr + user args
@@ -230,17 +231,31 @@ impl<'a> Lowering<'a> {
 
         if let Some(args_tuple_local) = varargs_tuple_local {
             // *args forwarding: use runtime trampoline
+            // Stage E.1 (Source-1 fix): prefer the decorated function's return
+            // type over the wrapper's own (unannotated) return type. If the
+            // wrapper has `return_type = Type::Any` (no annotation) but the
+            // original function is typed (e.g. `-> int`), use the original's
+            // return type so the trampoline result lands in a Raw (not GC-
+            // tracked) slot rather than a `mir_ty: Tagged` slot that would
+            // SIGSEGV if GC runs while holding raw primitive bits.
+            let result_ty = self
+                .get_original_func_return_type_for_wrapper(mir_func.id, hir_module)
+                .unwrap_or_else(|| mir_func.return_type.clone());
             return self.lower_indirect_call_with_varargs(
                 func_local,
                 args_tuple_local,
-                mir_func.return_type.clone(),
+                result_ty,
                 mir_func,
             );
         }
 
         // Non-varargs case: lower arguments normally
         let arg_operands = self.lower_expanded_args(args, hir_module, mir_func)?;
-        let result_ty = mir_func.return_type.clone();
+        // Stage E.1 (Source-1 fix): same as the *args path above — prefer
+        // the original decorated function's precise return type.
+        let result_ty = self
+            .get_original_func_return_type_for_wrapper(mir_func.id, hir_module)
+            .unwrap_or_else(|| mir_func.return_type.clone());
         let arg_types: Vec<Type> = arg_operands
             .iter()
             .map(|op| self.operand_type(op, mir_func))
@@ -275,6 +290,7 @@ impl<'a> Lowering<'a> {
                     let tuple_local = match tuple_operand {
                         mir::Operand::Local(local) => local,
                         _ => {
+                            // VarPositional *args is a TupleObj heap pointer — tagged.
                             let local = self.alloc_and_add_local(Type::Any, mir_func);
                             self.emit_instruction(mir::InstructionKind::Copy {
                                 dest: local,
@@ -338,37 +354,115 @@ impl<'a> Lowering<'a> {
         // walks captures (tagged Values) and args (raw scalars) separately
         // so each side is unwrapped correctly.
         self.push_block(closure_bb);
-        {
-            // Extract func_ptr from closure tuple index 0 — stored as a
-            // `Value::from_int` tagged Value (§F.5); unwrap to recover the
-            // raw i64 function pointer the trampoline expects.
-            let tagged_func = self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
-                vec![
-                    mir::Operand::Local(func_local),
-                    mir::Operand::Constant(mir::Constant::Int(0)),
-                ],
-                Type::HeapAny,
-                mir_func,
-            );
-            let real_func = self.alloc_stack_local(Type::Int, mir_func);
-            self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
-                dest: real_func,
-                src: mir::Operand::Local(tagged_func),
+        // Extract func_ptr from closure tuple index 0 — stored as a
+        // `Value::from_int` tagged Value (§F.5); unwrap to recover the
+        // raw i64 function pointer the trampoline expects.
+        let tagged_func = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+            vec![
+                mir::Operand::Local(func_local),
+                mir::Operand::Constant(mir::Constant::Int(0)),
+            ],
+            Type::Any,
+            mir_func,
+        );
+        let real_func = self.alloc_stack_local(Type::Int, mir_func);
+        self.emit_instruction(mir::InstructionKind::UnboxValue {
+            dest: real_func,
+            src: mir::Operand::Local(tagged_func),
+            dest_type: Type::Int,
+        });
+
+        // Extract captures tuple from closure tuple index 1
+        let captures_tuple = self.emit_runtime_call(
+            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+            vec![
+                mir::Operand::Local(func_local),
+                mir::Operand::Constant(mir::Constant::Int(1)),
+            ],
+            Type::Any,
+            mir_func,
+        );
+
+        // Marker-bit dispatch for return ABI: the trampoline propagates
+        // the callee's return verbatim — tagged Value for phase4-safe
+        // (return-flipped) callees, raw bits for legacy callees. For
+        // primitive `result_ty`, branch at runtime on the marker bit
+        // and unbox in the tagged path.
+        let primitive_dest = matches!(result_ty, Type::Int | Type::Bool | Type::Float);
+        if primitive_dest {
+            let marker_val = self.alloc_and_add_local(Type::Int, mir_func);
+            self.emit_instruction(mir::InstructionKind::BinOp {
+                dest: marker_val,
+                op: mir::BinOp::BitAnd,
+                left: mir::Operand::Local(real_func),
+                right: mir::Operand::Constant(mir::Constant::Int(
+                    crate::PHASE4_TAGGED_USER_ARGS_MARKER,
+                )),
             });
-
-            // Extract captures tuple from closure tuple index 1
-            let captures_tuple = self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
-                vec![
-                    mir::Operand::Local(func_local),
-                    mir::Operand::Constant(mir::Constant::Int(1)),
-                ],
-                Type::Any,
-                mir_func,
-            );
-
-            // Call via the captures+args-aware trampoline.
+            let marker_bool = self.alloc_and_add_local(Type::Bool, mir_func);
+            self.emit_instruction(mir::InstructionKind::BinOp {
+                dest: marker_bool,
+                op: mir::BinOp::NotEq,
+                left: mir::Operand::Local(marker_val),
+                right: mir::Operand::Constant(mir::Constant::Int(0)),
+            });
+            let tagged_bb = self.new_block();
+            let legacy_bb = self.new_block();
+            let (tagged_id, legacy_id) = (tagged_bb.id, legacy_bb.id);
+            self.current_block_mut().terminator = mir::Terminator::Branch {
+                cond: mir::Operand::Local(marker_bool),
+                then_block: tagged_id,
+                else_block: legacy_id,
+            };
+            self.push_block(tagged_bb);
+            {
+                // Stage D.1 of Strong-Typed MIR Rewrite plan v2: the
+                // marker-bit-set trampoline path is the documented
+                // "guaranteed Tagged" producer (the runtime trampoline
+                // boxes primitive results before returning). Mark the
+                // temp as HeapAny (not Any) so downstream passes know
+                // this slot can't carry raw bits.
+                let any_temp = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_CALL_WITH_CAPTURES_AND_ARGS,
+                    ),
+                    vec![
+                        mir::Operand::Local(real_func),
+                        mir::Operand::Local(captures_tuple),
+                        mir::Operand::Local(args_tuple_local),
+                    ],
+                    Type::Any,
+                    mir_func,
+                );
+                self.emit_instruction(mir::InstructionKind::UnboxValue {
+                    dest: result_local,
+                    src: mir::Operand::Local(any_temp),
+                    dest_type: result_ty.clone(),
+                });
+            }
+            self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
+            self.push_block(legacy_bb);
+            {
+                let raw_temp = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_CALL_WITH_CAPTURES_AND_ARGS,
+                    ),
+                    vec![
+                        mir::Operand::Local(real_func),
+                        mir::Operand::Local(captures_tuple),
+                        mir::Operand::Local(args_tuple_local),
+                    ],
+                    result_ty.clone(),
+                    mir_func,
+                );
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: result_local,
+                    src: mir::Operand::Local(raw_temp),
+                });
+            }
+            self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
+        } else {
             let closure_result = self.emit_runtime_call(
                 mir::RuntimeFunc::Call(
                     &pyaot_core_defs::runtime_func_def::RT_CALL_WITH_CAPTURES_AND_ARGS,
@@ -381,13 +475,12 @@ impl<'a> Lowering<'a> {
                 result_ty.clone(),
                 mir_func,
             );
-
             self.emit_instruction(mir::InstructionKind::Copy {
                 dest: result_local,
                 src: mir::Operand::Local(closure_result),
             });
+            self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
         }
-        self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
 
         // === Direct case: call via trampoline with args tuple ===
         self.push_block(direct_bb);
@@ -441,20 +534,24 @@ impl<'a> Lowering<'a> {
 
         // Extract func_ptr from index 0 — stored as a `Value::from_int`
         // tagged Value (§F.5); unwrap to recover the raw i64 function
-        // pointer the dispatcher needs.
+        // pointer the trampoline needs. Phase 4: bit 63 may carry the
+        // `PHASE4_TAGGED_USER_ARGS_MARKER`; the trampoline reads it and
+        // masks it back out before invoking, so we pass the raw value
+        // through verbatim.
         let tagged_func = self.emit_runtime_call(
             mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
             vec![
                 mir::Operand::Local(closure_local),
                 mir::Operand::Constant(mir::Constant::Int(0)),
             ],
-            Type::HeapAny,
+            Type::Any,
             mir_func,
         );
         let func_ptr_local = self.alloc_stack_local(Type::Int, mir_func);
-        self.emit_instruction(mir::InstructionKind::UnwrapValueInt {
+        self.emit_instruction(mir::InstructionKind::UnboxValue {
             dest: func_ptr_local,
             src: mir::Operand::Local(tagged_func),
+            dest_type: Type::Int,
         });
 
         // Extract captures tuple from index 1
@@ -467,142 +564,135 @@ impl<'a> Lowering<'a> {
             Type::Any,
             mir_func,
         );
-
-        // Get the number of captures
-        let n_captures_local = self.emit_runtime_call(
-            mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_LEN),
-            vec![mir::Operand::Local(captures_tuple)],
-            Type::Int,
-            mir_func,
-        );
-
-        // Create merge block for all branches
-        let merge_bb = self.new_block();
-        let merge_id = merge_bb.id;
-
-        // Generate cascading branches for 0, 1, 2, ... MAX_CLOSURE_CAPTURES captures
-        // Each branch checks if n_captures == i, and if so, extracts i captures and calls
-        self.emit_capture_dispatch(
-            0,
-            func_ptr_local,
-            captures_tuple,
-            n_captures_local,
+        // Build args tuple from user args (boxes primitives via
+        // `emit_value_slot` per the established convention).
+        let arg_types: Vec<Type> = user_args
+            .iter()
+            .map(|op| self.operand_type(op, mir_func))
+            .collect();
+        let args_tuple = self.create_tuple_from_operands_typed(
             &user_args,
-            result_local,
-            result_ty,
-            merge_id,
+            &Type::Any,
+            Some(&arg_types),
             mir_func,
         );
 
-        // Push the merge block
-        self.push_block(merge_bb);
+        // Phase 4 (Storage-Uniform): route through the runtime trampoline
+        // `rt_call_with_captures_and_args`. The trampoline reads the
+        // `PHASE4_TAGGED_USER_ARGS_MARKER` bit on `func_ptr_local` and
+        // dispatches user-arg extraction accordingly (tagged ABI for
+        // phase4_safe lambdas, raw legacy ABI otherwise). It then
+        // returns whatever the callee returns verbatim — tagged Value
+        // bits for phase4-safe callees (return-flipped), raw primitive
+        // bits for legacy callees (not flipped).
+        //
+        // Return ABI: when the caller wants a primitive `result_ty`,
+        // dispatch on the marker bit at runtime — if set, the callee
+        // returned tagged bits and we must `UnboxValue`; if unset,
+        // the callee returned raw bits and we propagate them directly
+        // into the primitive dest. This makes both shapes safe through
+        // the same call site without static knowledge of the callee.
+        let primitive_dest = matches!(result_ty, Type::Int | Type::Bool | Type::Float);
 
-        result_local
-    }
+        if primitive_dest {
+            // Compute `(func_ptr & MARKER) != 0` → marker_bool.
+            let marker_val = self.alloc_and_add_local(Type::Int, mir_func);
+            self.emit_instruction(mir::InstructionKind::BinOp {
+                dest: marker_val,
+                op: mir::BinOp::BitAnd,
+                left: mir::Operand::Local(func_ptr_local),
+                right: mir::Operand::Constant(mir::Constant::Int(
+                    crate::PHASE4_TAGGED_USER_ARGS_MARKER,
+                )),
+            });
+            let marker_bool = self.alloc_and_add_local(Type::Bool, mir_func);
+            self.emit_instruction(mir::InstructionKind::BinOp {
+                dest: marker_bool,
+                op: mir::BinOp::NotEq,
+                left: mir::Operand::Local(marker_val),
+                right: mir::Operand::Constant(mir::Constant::Int(0)),
+            });
 
-    /// Recursively emit capture dispatch branches.
-    /// For each capture count from `current` to MAX_CLOSURE_CAPTURES, generate:
-    /// - Check if n_captures == current
-    /// - If yes: extract captures and call
-    /// - If no: continue to next case
-    #[allow(clippy::too_many_arguments)]
-    fn emit_capture_dispatch(
-        &mut self,
-        current: usize,
-        func_ptr_local: LocalId,
-        captures_tuple: LocalId,
-        n_captures_local: LocalId,
-        user_args: &[mir::Operand],
-        result_local: LocalId,
-        result_ty: Type,
-        merge_id: BlockId,
-        mir_func: &mut mir::Function,
-    ) {
-        if current > MAX_CLOSURE_CAPTURES {
-            // Fallback: call with just user args (shouldn't normally reach here)
-            let fallback_result = self.alloc_and_add_local(result_ty, mir_func);
-            self.emit_instruction(mir::InstructionKind::Call {
-                dest: fallback_result,
-                func: mir::Operand::Local(func_ptr_local),
-                args: user_args.to_vec(),
-            });
-            self.emit_instruction(mir::InstructionKind::Copy {
-                dest: result_local,
-                src: mir::Operand::Local(fallback_result),
-            });
+            let tagged_bb = self.new_block();
+            let legacy_bb = self.new_block();
+            let merge_bb = self.new_block();
+            let (tagged_id, legacy_id, merge_id) = (tagged_bb.id, legacy_bb.id, merge_bb.id);
+
+            self.current_block_mut().terminator = mir::Terminator::Branch {
+                cond: mir::Operand::Local(marker_bool),
+                then_block: tagged_id,
+                else_block: legacy_id,
+            };
+
+            // Tagged branch: trampoline returns tagged Value → unbox.
+            // Stage D.1: temp local typed HeapAny — guaranteed Tagged
+            // bit pattern when the marker-bit dispatched here.
+            self.push_block(tagged_bb);
+            {
+                let any_temp = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_CALL_WITH_CAPTURES_AND_ARGS,
+                    ),
+                    vec![
+                        mir::Operand::Local(func_ptr_local),
+                        mir::Operand::Local(captures_tuple),
+                        mir::Operand::Local(args_tuple),
+                    ],
+                    Type::Any,
+                    mir_func,
+                );
+                self.emit_instruction(mir::InstructionKind::UnboxValue {
+                    dest: result_local,
+                    src: mir::Operand::Local(any_temp),
+                    dest_type: result_ty.clone(),
+                });
+            }
             self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
-            return;
-        }
 
-        // Check if n_captures == current
-        let is_current = self.alloc_and_add_local(Type::Bool, mir_func);
-        self.emit_instruction(mir::InstructionKind::BinOp {
-            dest: is_current,
-            op: mir::BinOp::Eq,
-            left: mir::Operand::Local(n_captures_local),
-            right: mir::Operand::Constant(mir::Constant::Int(current as i64)),
-        });
+            // Legacy branch: trampoline returns raw bits → assign verbatim.
+            self.push_block(legacy_bb);
+            {
+                let raw_temp = self.emit_runtime_call(
+                    mir::RuntimeFunc::Call(
+                        &pyaot_core_defs::runtime_func_def::RT_CALL_WITH_CAPTURES_AND_ARGS,
+                    ),
+                    vec![
+                        mir::Operand::Local(func_ptr_local),
+                        mir::Operand::Local(captures_tuple),
+                        mir::Operand::Local(args_tuple),
+                    ],
+                    result_ty.clone(),
+                    mir_func,
+                );
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: result_local,
+                    src: mir::Operand::Local(raw_temp),
+                });
+            }
+            self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
 
-        // Create blocks
-        let match_bb = self.new_block();
-        let next_bb = self.new_block();
-        let match_id = match_bb.id;
-        let next_id = next_bb.id;
-
-        // Branch
-        self.current_block_mut().terminator = mir::Terminator::Branch {
-            cond: mir::Operand::Local(is_current),
-            then_block: match_id,
-            else_block: next_id,
-        };
-
-        // Match case: extract `current` captures and call
-        self.push_block(match_bb);
-
-        // Extract all captures
-        let mut call_args = Vec::with_capacity(current + user_args.len());
-        for i in 0..current {
-            let cap_local = self.emit_runtime_call(
-                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_TUPLE_GET),
+            self.push_block(merge_bb);
+        } else {
+            // Non-primitive dest: trampoline returns the callee's tagged
+            // Value verbatim (or pointer for heap types). Copy through.
+            let trampoline_result = self.emit_runtime_call(
+                mir::RuntimeFunc::Call(
+                    &pyaot_core_defs::runtime_func_def::RT_CALL_WITH_CAPTURES_AND_ARGS,
+                ),
                 vec![
+                    mir::Operand::Local(func_ptr_local),
                     mir::Operand::Local(captures_tuple),
-                    mir::Operand::Constant(mir::Constant::Int(i as i64)),
+                    mir::Operand::Local(args_tuple),
                 ],
-                Type::Any,
+                result_ty,
                 mir_func,
             );
-            call_args.push(mir::Operand::Local(cap_local));
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest: result_local,
+                src: mir::Operand::Local(trampoline_result),
+            });
         }
-        call_args.extend(user_args.iter().cloned());
 
-        // Make the call
-        let branch_result = self.alloc_and_add_local(result_ty.clone(), mir_func);
-        self.emit_instruction(mir::InstructionKind::Call {
-            dest: branch_result,
-            func: mir::Operand::Local(func_ptr_local),
-            args: call_args,
-        });
-
-        // Copy to shared result
-        self.emit_instruction(mir::InstructionKind::Copy {
-            dest: result_local,
-            src: mir::Operand::Local(branch_result),
-        });
-
-        self.current_block_mut().terminator = mir::Terminator::Goto(merge_id);
-
-        // Continue with next case
-        self.push_block(next_bb);
-        self.emit_capture_dispatch(
-            current + 1,
-            func_ptr_local,
-            captures_tuple,
-            n_captures_local,
-            user_args,
-            result_local,
-            result_ty,
-            merge_id,
-            mir_func,
-        );
+        result_local
     }
 }

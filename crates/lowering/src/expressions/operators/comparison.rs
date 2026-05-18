@@ -685,24 +685,70 @@ impl<'a> Lowering<'a> {
                 return Ok(mir::Operand::Local(bool_result));
             }
 
-            // No dunder method — fall through to default comparison
-            let mir_op = match op {
-                hir::CmpOp::Eq => mir::BinOp::Eq,
-                hir::CmpOp::NotEq => mir::BinOp::NotEq,
-                hir::CmpOp::Lt => mir::BinOp::Lt,
-                hir::CmpOp::LtE => mir::BinOp::LtE,
-                hir::CmpOp::Gt => mir::BinOp::Gt,
-                hir::CmpOp::GtE => mir::BinOp::GtE,
-                _ => unreachable!(),
+            // No forward dunder. Try reflected dunder on the right operand (CPython §3.3.8).
+            let reflected_func = if let Some(reflected_name) = op.reflected_dunder_name() {
+                match &right_type {
+                    Type::Class { class_id: r_id, .. } => self
+                        .get_class_info(r_id)
+                        .and_then(|ci| ci.get_dunder_func(reflected_name)),
+                    _ => None,
+                }
+            } else {
+                None
             };
-            self.emit_instruction(mir::InstructionKind::BinOp {
-                dest: result_local,
-                op: mir_op,
-                left: left_op,
-                right: right_op,
-            });
-        } else if matches!(left_type, Type::HeapAny) || matches!(right_type, Type::HeapAny) {
-            // HeapAny comparison: runtime dispatch via rt_obj_eq/lt/etc.
+
+            if let Some(rfunc_id) = reflected_func {
+                let may_return_ni = self.func_may_return_not_implemented(rfunc_id, hir_module);
+                let dest = self.alloc_dunder_result(rfunc_id, &Type::Bool, hir_module, mir_func);
+                let boxed_left_arg = self.box_dunder_arg_if_needed(
+                    left_op.clone(),
+                    &left_type,
+                    rfunc_id,
+                    1,
+                    hir_module,
+                    mir_func,
+                );
+                self.emit_instruction(mir::InstructionKind::CallDirect {
+                    dest,
+                    func: rfunc_id,
+                    args: vec![right_op.clone(), boxed_left_arg],
+                });
+                if may_return_ni {
+                    let final_local = self.emit_comparison_ni_fallback(
+                        dest,
+                        None, // No further reflection after the reflected dunder
+                        right_op,
+                        right_type.clone(),
+                        left_op,
+                        left_type.clone(),
+                        op,
+                        hir_module,
+                        mir_func,
+                    );
+                    return Ok(mir::Operand::Local(final_local));
+                } else {
+                    return Ok(mir::Operand::Local(dest));
+                }
+            }
+
+            // Neither forward nor reflected dunder: identity fallback (Eq/NotEq) or TypeError (ordering).
+            self.emit_default_compare_fallback(
+                result_local,
+                &left_op,
+                &left_type,
+                &right_op,
+                &right_type,
+                op,
+                mir_func,
+            );
+        } else if self.operand_is_guaranteed_tagged(&left_op, &left_type, mir_func)
+            || self.operand_is_guaranteed_tagged(&right_op, &right_type, mir_func)
+        {
+            // Guaranteed-tagged Any comparison: runtime dispatch via rt_obj_eq/lt/etc.
+            // "Guaranteed tagged" means ty: Any with mir_ty explicitly set to Tagged
+            // (created via alloc_and_add_local — formerly HeapAny locals after F.1
+            // HeapAny deletion). Variable locals (ty: Any, mir_ty: None) may hold
+            // raw primitive bits from legacy trampolines and fall through to BinOp.
             // Box the other operand if primitive.
             let boxed_left = self.emit_value_slot(left_op, &left_type, mir_func);
             let boxed_right = self.emit_value_slot(right_op, &right_type, mir_func);
@@ -926,9 +972,10 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) {
         let tmp = self.alloc_and_add_local(Type::Bool, mir_func);
-        self.emit_instruction(mir::InstructionKind::UnwrapValueBool {
+        self.emit_instruction(mir::InstructionKind::UnboxValue {
             dest: tmp,
             src: mir::Operand::Local(src),
+            dest_type: Type::Bool,
         });
         self.emit_instruction(mir::InstructionKind::Copy {
             dest,

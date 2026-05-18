@@ -37,7 +37,7 @@ pub(crate) fn select_print_func(ty: &Type) -> &'static RuntimeFuncDef {
         // tagged bits like `(payload << 3) | 1` as a raw int and either
         // print garbage (e.g. `49` for payload `6`) or SEGV when the
         // value is a real heap pointer.
-        Type::Any | Type::HeapAny => &runtime_func_def::RT_PRINT_OBJ,
+        Type::Any => &runtime_func_def::RT_PRINT_OBJ,
         Type::Iterator(_) | Type::RuntimeObject(_) | Type::File(_) => {
             &runtime_func_def::RT_PRINT_OBJ
         }
@@ -83,7 +83,7 @@ pub(crate) fn select_len_func(ty: &Type) -> Option<&'static RuntimeFuncDef> {
         Type::RuntimeObject(pyaot_core_defs::TypeTagKind::Deque) => {
             Some(&pyaot_stdlib_defs::modules::collections::DEQUE_LEN.codegen)
         }
-        Type::Any | Type::HeapAny => Some(&runtime_func_def::RT_OBJ_LEN),
+        Type::Any => Some(&runtime_func_def::RT_OBJ_LEN),
         _ => None,
     }
 }
@@ -154,7 +154,7 @@ pub(crate) fn select_slicing_func(ty: &Type) -> Option<&'static RuntimeFuncDef> 
     match ty {
         Type::Str => Some(&runtime_func_def::RT_STR_SLICE),
         Type::Bytes => Some(&runtime_func_def::RT_BYTES_SLICE),
-        Type::Any | Type::HeapAny => Some(&runtime_func_def::RT_OBJ_SLICE),
+        Type::Any => Some(&runtime_func_def::RT_OBJ_SLICE),
         _ => None,
     }
 }
@@ -171,7 +171,7 @@ pub(crate) fn select_slicing_step_func(ty: &Type) -> Option<&'static RuntimeFunc
     match ty {
         Type::Str => Some(&runtime_func_def::RT_STR_SLICE_STEP),
         Type::Bytes => Some(&runtime_func_def::RT_BYTES_SLICE_STEP),
-        Type::Any | Type::HeapAny => Some(&runtime_func_def::RT_OBJ_SLICE_STEP),
+        Type::Any => Some(&runtime_func_def::RT_OBJ_SLICE_STEP),
         _ => None,
     }
 }

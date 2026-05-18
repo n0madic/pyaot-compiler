@@ -36,7 +36,7 @@ impl<'a> Lowering<'a> {
                 };
 
                 // Skip Any — gradual typing
-                if matches!(param_ty, Type::Any | Type::HeapAny) {
+                if matches!(param_ty, Type::Any) {
                     continue;
                 }
 
@@ -75,7 +75,7 @@ impl<'a> Lowering<'a> {
         for class_def in hir_module.class_defs.values() {
             for attr in &class_def.class_attrs {
                 // Skip Any — gradual typing
-                if matches!(attr.ty, Type::Any | Type::HeapAny) {
+                if matches!(attr.ty, Type::Any) {
                     continue;
                 }
 
