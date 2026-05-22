@@ -1456,4 +1456,27 @@ assert max(passthru9(any9_list)) == 3, "max(Iterator[Any]) should equal 3"
 any9_floats: list[Any] = [1.5, 2.5]
 assert repr(sum(passthru9(any9_floats))) == "4.0", "sum of float Any elements stays float"
 
+# min/max over a CONCRETE list[Any] / set[Any] / tuple[Any] (#9 follow-up).
+# These route through rt_*_minmax with the tagged elem_kind. The float
+# variants are the discriminators: the old Int path read FloatObj pointers
+# as raw ints -> garbage. repr() distinguishes "3" (int) from "3.0" (float).
+mm_int_l: list[Any] = [3, 1, 2]
+assert repr(min(mm_int_l)) == "1", "min(list[Any] of int) should be int 1"
+assert repr(max(mm_int_l)) == "3", "max(list[Any] of int) should be int 3"
+mm_flt_l: list[Any] = [3.5, 1.5, 2.5]
+assert repr(min(mm_flt_l)) == "1.5", "min(list[Any] of float) should be 1.5"
+assert repr(max(mm_flt_l)) == "3.5", "max(list[Any] of float) should be 3.5"
+mm_int_s: set[Any] = {30, 10, 20}
+assert repr(min(mm_int_s)) == "10", "min(set[Any] of int) should be int 10"
+assert repr(max(mm_int_s)) == "30", "max(set[Any] of int) should be int 30"
+mm_flt_s: set[Any] = {3.5, 1.5, 2.5}
+assert repr(min(mm_flt_s)) == "1.5", "min(set[Any] of float) should be 1.5"
+assert repr(max(mm_flt_s)) == "3.5", "max(set[Any] of float) should be 3.5"
+mm_int_t: tuple[Any, Any, Any] = (3, 1, 2)
+assert repr(min(mm_int_t)) == "1", "min(tuple[Any] of int) should be int 1"
+assert repr(max(mm_int_t)) == "3", "max(tuple[Any] of int) should be int 3"
+mm_flt_t: tuple[Any, Any, Any] = (3.5, 1.5, 2.5)
+assert repr(min(mm_flt_t)) == "1.5", "min(tuple[Any] of float) should be 1.5"
+assert repr(max(mm_flt_t)) == "3.5", "max(tuple[Any] of float) should be 3.5"
+
 print("sum/min/max over Any-typed elements tests passed!")

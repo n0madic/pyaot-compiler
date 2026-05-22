@@ -788,7 +788,9 @@ pub static RT_CMP_OBJ_ORD: RuntimeFuncDef =
 
 // ===== Container min/max operations =====
 // ContainerMinMax { container, op, elem } → static defs.
-// Int/Float: rt_{container}_minmax(container: I64, is_min: I8, elem_kind: I8) -> I64
+// Int/Float/Tagged: rt_{container}_minmax(container: I64, is_min: I8, elem_kind: I8) -> I64
+//   elem_kind: 0=int, 1=float, 2=tagged (Any — runtime compares via rt_obj_cmp,
+//   returns the winning element's tagged Value bits).
 // WithKey: rt_{container}_minmax_with_key(container: I64, key_fn: I64, elem_tag: I64, captures: I64, count: I64, is_min: I8) -> I64
 
 /// rt_list_minmax(list: *mut Obj, is_min: i8, elem_kind: i8) -> i64

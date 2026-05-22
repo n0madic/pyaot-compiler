@@ -1,13 +1,14 @@
 //! List min/max operations
 
-use crate::minmax_utils::find_extremum_float;
+use crate::minmax_utils::{find_extremum_float, find_extremum_tagged};
 use crate::object::{ListObj, Obj};
 use crate::sorted::compare_key_values;
 use pyaot_core_defs::Value;
 
-/// Generic list min/max for int and float elements.
-/// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float.
-/// Returns i64 (for float, result is f64::to_bits()).
+/// Generic list min/max for int, float and tagged-`Value` elements.
+/// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float, 2=tagged.
+/// Returns i64 (for float, result is f64::to_bits(); for tagged, the
+/// winning element's tagged `Value` bits).
 pub fn rt_list_minmax(list: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
     if list.is_null() {
         return 0;
@@ -30,7 +31,11 @@ pub fn rt_list_minmax(list: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
         let data = (*list_obj).data;
         let len = (*list_obj).len;
         let want_min = is_min == 0;
-        if elem_kind == 1 {
+        if elem_kind == 2 {
+            // Tagged (`Any`): compare slots via the universal comparator;
+            // return the winning element's tagged Value bits.
+            find_extremum_tagged(data, len, want_min).0 as i64
+        } else if elem_kind == 1 {
             // Float: heap-boxed FloatObj pointers; find_extremum_float works unchanged.
             find_extremum_float(data as *const usize, len, want_min).to_bits() as i64
         } else {

@@ -76,11 +76,12 @@ pub extern "C" fn rt_tuple_count_abi(tuple: Value, value: Value) -> i64 {
     rt_tuple_count(tuple.unwrap_ptr(), value.unwrap_ptr())
 }
 
-/// Generic tuple min/max for int and float elements.
-/// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float.
-/// Returns i64 (for float, result is f64::to_bits()).
+/// Generic tuple min/max for int, float and tagged-`Value` elements.
+/// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float, 2=tagged.
+/// Returns i64 (for float, result is f64::to_bits(); for tagged, the
+/// winning element's tagged `Value` bits).
 pub fn rt_tuple_minmax(tuple: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
-    use crate::minmax_utils::{find_extremum_float, find_extremum_int};
+    use crate::minmax_utils::{find_extremum_float, find_extremum_int, find_extremum_tagged};
     if tuple.is_null() {
         return 0;
     }
@@ -99,10 +100,14 @@ pub fn rt_tuple_minmax(tuple: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
                 );
             }
         }
-        let data = (*tuple_obj).data.as_ptr() as *const usize;
+        let data_v = (*tuple_obj).data.as_ptr();
+        let data = data_v as *const usize;
         let len = (*tuple_obj).len;
         let want_min = is_min == 0;
-        if elem_kind == 1 {
+        if elem_kind == 2 {
+            // Tagged (`Any`): compare slots via the universal comparator.
+            find_extremum_tagged(data_v, len, want_min).0 as i64
+        } else if elem_kind == 1 {
             find_extremum_float(data, len, want_min).to_bits() as i64
         } else {
             // Slots store tagged Values; find_extremum_int preserves ordering

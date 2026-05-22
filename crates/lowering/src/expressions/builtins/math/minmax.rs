@@ -3,7 +3,7 @@
 use pyaot_diagnostics::Result;
 use pyaot_hir as hir;
 use pyaot_mir::{self as mir, ContainerKind, ElementKind, MinMaxOp};
-use pyaot_types::Type;
+use pyaot_types::{Type, TypeLattice};
 
 use crate::context::{FuncOrBuiltin, Lowering};
 
@@ -124,28 +124,27 @@ impl<'a> Lowering<'a> {
                     return Ok(mir::Operand::Local(result_local));
                 }
 
-                // Original logic for non-key case
-                // Determine if element type is float.
-                // TODO(#9): an `Any` element here still falls into the
-                // `Int` arm and routes through `rt_list_minmax` with
-                // `ElementKind::Int`. Unlike the iterator branch (which
-                // has a tagged `rt_obj_cmp` path), the concrete-container
-                // helpers `rt_{list,tuple,set}_minmax` have no tagged
-                // `elem_kind` — adding one is a runtime-ABI change.
-                let is_float_list = matches!(elem_type, Type::Float);
-                let (result_type, elem_kind) = if is_float_list {
-                    (Type::Float, ElementKind::Float)
-                } else {
-                    (Type::Int, ElementKind::Int)
-                };
+                // Non-key case. 3-way classification (shared with
+                // `lower_sum` and the iterator branch): `Float` for a
+                // float / `Union`-containing-`Float` element; `Tagged`
+                // for bare `Any` (runtime compares slots via `rt_obj_cmp`
+                // and returns a tagged `Value`, so int vs float is
+                // preserved); `Int` otherwise.
+                let (result_type, elem_kind) =
+                    match crate::type_planning::helpers::classify_reduction_elem(&elem_type) {
+                        crate::type_planning::helpers::ReductionResult::Float => {
+                            (Type::Float, ElementKind::Float)
+                        }
+                        crate::type_planning::helpers::ReductionResult::Tagged => {
+                            (Type::Any, ElementKind::Tagged)
+                        }
+                        crate::type_planning::helpers::ReductionResult::Int => {
+                            (Type::Int, ElementKind::Int)
+                        }
+                    };
                 let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
-                let elem_kind_val: u8 = if matches!(elem_kind, ElementKind::Float) {
-                    1
-                } else {
-                    0
-                };
                 let elem_kind_operand =
-                    mir::Operand::Constant(mir::Constant::Int(elem_kind_val as i64));
+                    mir::Operand::Constant(mir::Constant::Int(elem_kind.to_tag() as i64));
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(ContainerKind::List.minmax_def()),
                     vec![list_operand, is_min_operand, elem_kind_operand],
@@ -201,22 +200,29 @@ impl<'a> Lowering<'a> {
                     return Ok(mir::Operand::Local(result_local));
                 }
 
-                // Original logic for non-key case
-                // Determine if element type is float (use first element type)
-                let is_float_tuple = elem_types.first().is_some_and(|t| matches!(t, Type::Float));
-                let (result_type, elem_kind) = if is_float_tuple {
-                    (Type::Float, ElementKind::Float)
-                } else {
-                    (Type::Int, ElementKind::Int)
-                };
+                // Non-key case. Classify the join of all element types
+                // (a fixed tuple is heterogeneous): any `Any` slot makes
+                // the join `Any` → tagged path; `int|float` → `Float`.
+                let effective_elem = elem_types
+                    .iter()
+                    .cloned()
+                    .reduce(|a, b| a.join(&b))
+                    .unwrap_or(Type::Int);
+                let (result_type, elem_kind) =
+                    match crate::type_planning::helpers::classify_reduction_elem(&effective_elem) {
+                        crate::type_planning::helpers::ReductionResult::Float => {
+                            (Type::Float, ElementKind::Float)
+                        }
+                        crate::type_planning::helpers::ReductionResult::Tagged => {
+                            (Type::Any, ElementKind::Tagged)
+                        }
+                        crate::type_planning::helpers::ReductionResult::Int => {
+                            (Type::Int, ElementKind::Int)
+                        }
+                    };
                 let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
-                let elem_kind_val: u8 = if matches!(elem_kind, ElementKind::Float) {
-                    1
-                } else {
-                    0
-                };
                 let elem_kind_operand =
-                    mir::Operand::Constant(mir::Constant::Int(elem_kind_val as i64));
+                    mir::Operand::Constant(mir::Constant::Int(elem_kind.to_tag() as i64));
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(ContainerKind::Tuple.minmax_def()),
                     vec![tuple_operand, is_min_operand, elem_kind_operand],
@@ -270,22 +276,22 @@ impl<'a> Lowering<'a> {
                     return Ok(mir::Operand::Local(result_local));
                 }
 
-                // Original logic for non-key case
-                // Determine if element type is float
-                let is_float_set = matches!(elem_type, Type::Float);
-                let (result_type, elem_kind) = if is_float_set {
-                    (Type::Float, ElementKind::Float)
-                } else {
-                    (Type::Int, ElementKind::Int)
-                };
+                // Non-key case — same 3-way classification as list/tuple.
+                let (result_type, elem_kind) =
+                    match crate::type_planning::helpers::classify_reduction_elem(&elem_type) {
+                        crate::type_planning::helpers::ReductionResult::Float => {
+                            (Type::Float, ElementKind::Float)
+                        }
+                        crate::type_planning::helpers::ReductionResult::Tagged => {
+                            (Type::Any, ElementKind::Tagged)
+                        }
+                        crate::type_planning::helpers::ReductionResult::Int => {
+                            (Type::Int, ElementKind::Int)
+                        }
+                    };
                 let is_min_operand = mir::Operand::Constant(mir::Constant::Int(op.to_tag() as i64));
-                let elem_kind_val: u8 = if matches!(elem_kind, ElementKind::Float) {
-                    1
-                } else {
-                    0
-                };
                 let elem_kind_operand =
-                    mir::Operand::Constant(mir::Constant::Int(elem_kind_val as i64));
+                    mir::Operand::Constant(mir::Constant::Int(elem_kind.to_tag() as i64));
                 let result_local = self.emit_runtime_call(
                     mir::RuntimeFunc::Call(ContainerKind::Set.minmax_def()),
                     vec![set_operand, is_min_operand, elem_kind_operand],

@@ -121,17 +121,34 @@ pub enum ElementKind {
     Int,
     /// Float elements - returns f64
     Float,
+    /// Tagged `Value` elements (`Any`) - compared via the universal
+    /// runtime comparator (`rt_obj_cmp`); returns the winning tagged Value
+    Tagged,
     /// Use key function - returns *mut Obj
     WithKey,
 }
 
 impl ElementKind {
-    /// Runtime function suffix: "_int", "_float", "_with_key"
+    /// Runtime function suffix: "_int", "_float", "_tagged", "_with_key"
     pub fn suffix(&self) -> &'static str {
         match self {
             ElementKind::Int => "_int",
             ElementKind::Float => "_float",
+            ElementKind::Tagged => "_tagged",
             ElementKind::WithKey => "_with_key",
+        }
+    }
+
+    /// Numeric `elem_kind` tag passed to `rt_*_minmax`: Int=0, Float=1,
+    /// Tagged=2. `WithKey` never reaches an `elem_kind` operand (the
+    /// `_with_key` runtime variants take no `elem_kind`) — it maps to 0
+    /// as an unreachable placeholder.
+    pub fn to_tag(self) -> u8 {
+        match self {
+            ElementKind::Int => 0,
+            ElementKind::Float => 1,
+            ElementKind::Tagged => 2,
+            ElementKind::WithKey => 0,
         }
     }
 }

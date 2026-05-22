@@ -245,6 +245,32 @@ pub(super) unsafe fn obj_cmp_ordering(a: *mut Obj, b: *mut Obj) -> std::cmp::Ord
             "'<' not supported between instances of 'NoneType' and other types"
         );
     }
+    // From here both operands must be real heap pointers. A tagged
+    // immediate (int/bool) that survived every numeric/None arm above is
+    // paired with a non-Float heap object — genuinely incomparable in
+    // Python. Raise instead of dereferencing the immediate as a pointer.
+    if !va.is_ptr() || !vb.is_ptr() {
+        let name_a = if va.is_ptr() {
+            type_name((*a).type_tag())
+        } else if va.is_int() {
+            "int"
+        } else {
+            "bool"
+        };
+        let name_b = if vb.is_ptr() {
+            type_name((*b).type_tag())
+        } else if vb.is_int() {
+            "int"
+        } else {
+            "bool"
+        };
+        raise_exc!(
+            ExceptionType::TypeError,
+            "'<' not supported between instances of '{}' and '{}'",
+            name_a,
+            name_b
+        );
+    }
     // Both must be real heap pointers from here on.
     let tag_a = (*a).type_tag();
     let tag_b = (*b).type_tag();

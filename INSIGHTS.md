@@ -393,10 +393,23 @@ All three sites — `lower_sum`, `lower_minmax_builtin`, and
 `resolve_builtin_call_type` — must agree on the classification, or the
 expression type and the lowered local type diverge.
 
-Out of scope: `min`/`max` over a *concrete* `list[Any]`/`set[Any]` still
-routes through `rt_*_minmax` with `ElementKind::Int`; a tagged `elem_kind`
-in those runtime helpers would be a runtime-ABI change (see the `TODO` at
-the concrete-container branches of `lower_minmax_builtin`).
+`min`/`max` over a *concrete* `list[Any]`/`set[Any]`/`tuple[Any]` route
+through the same tagged path: `ElementKind::Tagged` (`elem_kind == 2`) is
+passed to `rt_{list,tuple,set}_minmax`, whose tagged arm compares slots via
+`rt_obj_cmp` (`crate::minmax_utils::find_extremum_tagged` for the
+contiguous list/tuple arrays; an inline entry loop for the sparse set) and
+returns the winning element's tagged `Value` bits into a `Type::Any` dest.
+The runtime ABI signature is unchanged — only a new `elem_kind` value. The
+fixed-tuple branch classifies the *join* of all element slot types, so a
+single `Any` slot routes the whole tuple to the tagged path. Variable
+tuples (`tuple[T, ...]`) do not reach this branch — a separate pre-existing
+gap, unrelated.
+
+Side fix: `obj_cmp_ordering` (`ops/comparison.rs`, the comparator behind
+`rt_obj_cmp`) now raises `TypeError` when one operand is a tagged
+immediate paired with a non-`Float` heap object, instead of dereferencing
+the immediate as a heap pointer — a latent UB the tagged min/max path (and
+the #9 iterator path) would otherwise expose.
 
 ---
 

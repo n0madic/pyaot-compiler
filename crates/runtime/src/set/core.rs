@@ -202,9 +202,10 @@ pub unsafe fn set_finalize(set: *mut Obj) {
     }
 }
 
-/// Generic set min/max for int and float elements.
-/// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float.
-/// Returns i64 (for float, result is f64::to_bits()).
+/// Generic set min/max for int, float and tagged-`Value` elements.
+/// is_min: 0=min, 1=max; elem_kind: 0=int, 1=float, 2=tagged.
+/// Returns i64 (for float, result is f64::to_bits(); for tagged, the
+/// winning element's tagged `Value` bits).
 pub fn rt_set_minmax(set: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
     use crate::object::FloatObj;
 
@@ -254,6 +255,30 @@ pub fn rt_set_minmax(set: *mut Obj, is_min: u8, elem_kind: u8) -> i64 {
                 }
             }
             result.unwrap_or(0.0).to_bits() as i64
+        } else if elem_kind == 2 {
+            // Tagged (`Any`) elements: compare entries via the universal
+            // comparator; return the winning element's tagged Value bits.
+            let cmp_op: u8 = if want_min { 0 } else { 2 }; // 0 = Lt, 2 = Gt
+            let mut result: Option<Value> = None;
+            for i in 0..capacity {
+                let elem = (*entries.add(i)).elem;
+                if elem.0 != 0 && elem != TOMBSTONE {
+                    match result {
+                        None => result = Some(elem),
+                        Some(current) => {
+                            if crate::ops::rt_obj_cmp(
+                                elem.0 as *mut Obj,
+                                current.0 as *mut Obj,
+                                cmp_op,
+                            ) != 0
+                            {
+                                result = Some(elem);
+                            }
+                        }
+                    }
+                }
+            }
+            result.map(|v| v.0 as i64).unwrap_or(0)
         } else {
             // Int elements
             let mut result: Option<i64> = None;
