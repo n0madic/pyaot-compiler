@@ -1394,7 +1394,7 @@ pub fn report_warnings(stage: &str, errors: &[MirError]) {
             }
             if !tail_kinds.is_empty() {
                 eprintln!("    [other kinds in tail:]");
-                for (_, e) in &tail_kinds {
+                for e in tail_kinds.values() {
                     eprintln!(
                         "    {:?} {}: {}",
                         e.block.unwrap_or(BlockId(0)),
