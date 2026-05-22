@@ -623,6 +623,8 @@ mod tests {
     }
 
     #[test]
+    // `3.14159` is a formatter test input, not the math constant pi.
+    #[allow(clippy::approx_constant)]
     fn test_float_basic() {
         assert_eq!(format_float_spec(3.14159, ".2f").unwrap(), "3.14");
         assert_eq!(format_float_spec(3.14159, "8.2f").unwrap(), "    3.14");

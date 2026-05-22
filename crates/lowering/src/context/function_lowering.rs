@@ -401,10 +401,10 @@ impl<'a> Lowering<'a> {
                 && (primitive_typed || is_fn_ptr_capture))
                 || user_param_phase4_unbox;
 
-            // For nonlocal parameters, the type is a cell pointer (heap object pointer)
-            let param_ty = if is_cell_param {
-                Type::Any
-            } else if needs_prologue_unbox {
+            // Cell params hold a cell pointer (a heap object); prologue-
+            // unboxed params receive a tagged Value — both are `Type::Any`
+            // at the MIR boundary.
+            let param_ty = if is_cell_param || needs_prologue_unbox {
                 Type::Any
             } else {
                 base_ty.clone()

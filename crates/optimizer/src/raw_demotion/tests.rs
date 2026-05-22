@@ -416,8 +416,8 @@ fn multiple_unbox_uses_of_same_box_are_all_rewritten() {
     let bb0 = BlockId::from(0u32);
     let insts = get_instructions(&module, bb0);
     // Both UnboxValues become Copy(_0)
-    for i in 1..=2 {
-        match &insts[i].kind {
+    for (i, inst) in insts.iter().enumerate().skip(1).take(2) {
+        match &inst.kind {
             InstructionKind::Copy { src, .. } => {
                 assert!(matches!(src, Operand::Local(id) if *id == LocalId::from(0u32)));
             }

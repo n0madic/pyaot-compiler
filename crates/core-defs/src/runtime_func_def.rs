@@ -41,11 +41,11 @@ pub enum ReturnType {
 ///
 /// Default mapping when not explicitly annotated (see
 /// `infer_mir_semantic`):
-///   * `ParamType::I64`  → `MirSemantic::Raw` (conservative — caller
-///                          may store a raw integer here)
-///   * `ParamType::F64`  → `MirSemantic::Raw`
-///   * `ParamType::I8`   → `MirSemantic::Raw`
-///   * `ParamType::I32`  → `MirSemantic::Raw`
+/// * `ParamType::I64` → `MirSemantic::Raw` (conservative — caller may
+///   store a raw integer here)
+/// * `ParamType::F64` → `MirSemantic::Raw`
+/// * `ParamType::I8` → `MirSemantic::Raw`
+/// * `ParamType::I32` → `MirSemantic::Raw`
 ///
 /// Functions that actually pass tagged Values or heap pointers in their
 /// I64 slots MUST annotate explicitly to enable the verifier check.

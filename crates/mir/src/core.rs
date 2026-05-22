@@ -323,13 +323,13 @@ impl Local {
     /// flag from the local's resolved MirType.
     ///
     /// Rules:
-    ///   * `Heap(_)` → true  (heap pointer must be tracked)
-    ///   * `Tagged` → true   (may carry a heap pointer — Box(Float) etc.)
-    ///   * `FuncPtr(_)` / `Closure(_)` → true (code addresses are
-    ///                                          tracked when stored)
-    ///   * `Raw(_)` → false  (primitive — no GC tracking)
-    ///   * `Var(_)` → conservative `false` (TypeVar is erased before codegen)
-    ///   * `Never` → false (control doesn't reach)
+    /// * `Heap(_)` → true (heap pointer must be tracked)
+    /// * `Tagged` → true (may carry a heap pointer — Box(Float) etc.)
+    /// * `FuncPtr(_)` / `Closure(_)` → true (code addresses are tracked
+    ///   when stored)
+    /// * `Raw(_)` → false (primitive — no GC tracking)
+    /// * `Var(_)` → conservative `false` (TypeVar is erased before codegen)
+    /// * `Never` → false (control doesn't reach)
     ///
     /// Until C.1 fully lands (field deletion), this method coexists with
     /// the explicit `is_gc_root` field. Consumers can migrate one at a

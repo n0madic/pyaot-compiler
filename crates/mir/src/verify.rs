@@ -651,7 +651,7 @@ fn check_runtime_call(
             continue;
         };
         let sem = def.param_semantic(idx);
-        if !semantic_accepts(sem, &arg_ty, def.params.get(idx).copied()) {
+        if !semantic_accepts(sem, &arg_ty) {
             ctx.error(
                 "RuntimeCall",
                 format!(
@@ -667,24 +667,22 @@ fn check_runtime_call(
 /// MirSemantic? Permissive — widening to Tagged is always accepted, and
 /// Heap-shape matching is loose (any Heap pointer accepted in Tagged-
 /// position because Tagged subsumes Heap pointers physically).
-fn semantic_accepts(
-    sem: pyaot_core_defs::runtime_func_def::MirSemantic,
-    arg_ty: &MirType,
-    raw_class: Option<pyaot_core_defs::runtime_func_def::ParamType>,
-) -> bool {
+fn semantic_accepts(sem: pyaot_core_defs::runtime_func_def::MirSemantic, arg_ty: &MirType) -> bool {
     use pyaot_core_defs::runtime_func_def::MirSemantic;
     match sem {
         MirSemantic::Raw => {
-            // Raw accepts matching RawKind OR Tagged (caller may have
-            // a Tagged Value being implicitly unboxed in codegen).
-            // Reject obvious cross-class mismatches (F64 ↔ I64-class).
-            match (arg_ty, raw_class) {
-                (MirType::Raw(_), _) => true,
-                (MirType::Tagged, _) => true,
-                (MirType::Heap(_) | MirType::FuncPtr(_) | MirType::Closure(_), _) => true,
-                (MirType::Never, _) => true,
-                _ => false,
-            }
+            // Raw accepts a matching RawKind, Tagged (caller may have a
+            // Tagged Value being implicitly unboxed in codegen), or any
+            // pointer shape (physically i64-compatible).
+            matches!(
+                arg_ty,
+                MirType::Raw(_)
+                    | MirType::Tagged
+                    | MirType::Heap(_)
+                    | MirType::FuncPtr(_)
+                    | MirType::Closure(_)
+                    | MirType::Never
+            )
         }
         MirSemantic::Tagged => matches!(
             arg_ty,
@@ -1121,21 +1119,21 @@ fn check_binop(
             format!("dest {dest_ty} is not Raw — BinOp operates on Raw primitives only"),
         );
     }
-    if !is_dead
-        && !matches!(left_ty, MirType::Raw(_))
-        && !(is_identity && pointer_shaped(&left_ty))
-        && !tagged_class_method_widening
-    {
+    let left_ok = is_dead
+        || matches!(left_ty, MirType::Raw(_))
+        || (is_identity && pointer_shaped(&left_ty))
+        || tagged_class_method_widening;
+    if !left_ok {
         ctx.error(
             "BinOp",
             format!("left operand {left_ty} is not Raw — BinOp operates on Raw primitives only"),
         );
     }
-    if !is_dead
-        && !matches!(right_ty, MirType::Raw(_))
-        && !(is_identity && pointer_shaped(&right_ty))
-        && !tagged_class_method_widening
-    {
+    let right_ok = is_dead
+        || matches!(right_ty, MirType::Raw(_))
+        || (is_identity && pointer_shaped(&right_ty))
+        || tagged_class_method_widening;
+    if !right_ok {
         ctx.error(
             "BinOp",
             format!("right operand {right_ty} is not Raw — BinOp operates on Raw primitives only"),
