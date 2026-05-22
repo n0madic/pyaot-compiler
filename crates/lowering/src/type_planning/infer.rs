@@ -1296,8 +1296,16 @@ impl<'a> Lowering<'a> {
             ty
         } else {
             let check = |class_id: pyaot_utils::ClassId, dunder: &str| -> bool {
-                self.get_class_info(&class_id)
-                    .is_some_and(|ci| ci.get_dunder_func(dunder).is_some())
+                match self.get_class_info(&class_id) {
+                    // Cross-module class — not in the local `class_info` map,
+                    // so its dunder table is unknowable here. Mirror
+                    // `class_implements_protocol`: accept unconditionally
+                    // rather than dropping the Union variant (a dropped
+                    // cross-module class that actually defines the dunder
+                    // would mistype the binop result).
+                    None => true,
+                    Some(ci) => ci.get_dunder_func(dunder).is_some(),
+                }
             };
             helpers::resolve_binop_type_class_aware(op, left_ty, right_ty, &check)
                 .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any))

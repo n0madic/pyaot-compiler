@@ -315,4 +315,34 @@ assert str(key_last) == "beta", (
     "str() of destructured Tuple[Any] element must dispatch on actual type tag"
 )
 
+# ===== SECTION: structural == for Counter and defaultdict =====
+# Counter and defaultdict share the DictObj layout; `==` must compare by
+# content (same keys + equal counts/values), not by pointer identity —
+# both for concrete-typed operands and through the generic `rt_obj_eq`
+# path when an operand is a dynamic `Any`.
+ctr_eq_a = Counter("aabbc")
+ctr_eq_b = Counter("bcaab")
+ctr_eq_c = Counter("aabbd")
+assert ctr_eq_a == ctr_eq_b, "Counter == is structural and order-independent"
+assert ctr_eq_a != ctr_eq_c, "Counter != detects differing counts"
+
+dd_eq_a = defaultdict(int)
+dd_eq_a["x"] = 1
+dd_eq_a["y"] = 2
+dd_eq_b = defaultdict(int)
+dd_eq_b["y"] = 2
+dd_eq_b["x"] = 1
+dd_eq_c = defaultdict(int)
+dd_eq_c["x"] = 9
+assert dd_eq_a == dd_eq_b, "defaultdict == is structural and order-independent"
+assert dd_eq_a != dd_eq_c, "defaultdict != detects differing value"
+
+# Dynamic operand (Any) routed through the generic object-eq path.
+ctr_eq_dyn = [Counter("xy"), 0][0]
+assert ctr_eq_dyn == Counter("yx"), "Any == Counter (structural)"
+dd_eq_dyn = [dd_eq_a, 0][0]
+assert dd_eq_dyn == dd_eq_b, "Any == defaultdict (structural)"
+
+print("Structural Counter/defaultdict equality tests passed")
+
 print("All collections tests passed!")

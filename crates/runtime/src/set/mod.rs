@@ -11,7 +11,7 @@ pub use algebra::{
     rt_set_difference, rt_set_intersection, rt_set_symmetric_difference, rt_set_union,
 };
 
-pub use comparison::{rt_set_isdisjoint, rt_set_issubset, rt_set_issuperset};
+pub use comparison::{rt_set_eq, rt_set_isdisjoint, rt_set_issubset, rt_set_issuperset};
 
 pub use convert::rt_set_to_list;
 

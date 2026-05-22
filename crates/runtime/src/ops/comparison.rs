@@ -142,7 +142,26 @@ pub fn rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8 {
             TypeTagKind::Str => crate::string::rt_str_eq(a, b),
             TypeTagKind::Bytes => crate::bytes::rt_bytes_eq(a, b),
             TypeTagKind::None => 1,
-            // For containers and other types, use identity comparison
+            // Containers compare structurally (Python `==`), not by
+            // identity. `rt_tuple_eq` / `rt_list_eq` recurse element-wise
+            // via `eq_hashable_obj`. Without these arms, comparing two
+            // distinct-but-equal tuples/lists through the generic
+            // `rt_obj_eq` path (an `Any`/`Union` operand vs a container)
+            // would fall to the identity check below and wrongly report
+            // inequality.
+            TypeTagKind::Tuple => crate::tuple::rt_tuple_eq(a, b),
+            TypeTagKind::List => crate::list::rt_list_eq(a, b),
+            // Dict, DefaultDict and Counter all share the `DictObj`
+            // memory layout — `rt_dict_eq` reads only the common fields
+            // (`len` / `entries` / `entries_len` / the index table), so
+            // it compares any of them structurally.
+            TypeTagKind::Dict | TypeTagKind::DefaultDict | TypeTagKind::Counter => {
+                crate::dict::rt_dict_eq(a, b)
+            }
+            TypeTagKind::Set => crate::set::rt_set_eq(a, b),
+            // Class instances and other types: identity comparison. Class
+            // instances without `__eq__` use identity, matching Python's
+            // default object equality.
             _ => {
                 if a == b {
                     1

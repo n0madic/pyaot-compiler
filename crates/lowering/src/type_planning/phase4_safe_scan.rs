@@ -65,6 +65,17 @@ impl<'a> Lowering<'a> {
                             &escaped_vars,
                         );
                     }
+                    // Block terminators carry expressions too: `return`,
+                    // `raise`, branch conditions and `yield` are
+                    // `HirTerminator` variants, not `block.stmts`. Without
+                    // this a HOF callback in terminator position (e.g.
+                    // `return sorted(xs, key=lambda ...)`) would never be
+                    // scanned. Mirrors `build_escaped_lambda_vars`.
+                    self.scan_terminator_for_phase4_unsafe(
+                        &block.terminator,
+                        hir_module,
+                        &var_to_func,
+                    );
                 }
             }
         }
@@ -74,7 +85,7 @@ impl<'a> Lowering<'a> {
         &mut self,
         stmt: &hir::Stmt,
         hir_module: &hir::Module,
-        var_to_func: &HashMap<VarId, FuncId>,
+        var_to_func: &HashMap<VarId, Vec<FuncId>>,
         escaped_vars: &HashSet<VarId>,
     ) {
         match &stmt.kind {
@@ -84,9 +95,6 @@ impl<'a> Lowering<'a> {
                 // `f = lambda ...` and `f = decorator(orig)` both bind a
                 // callable to a Var. The lambda's address (or any
                 // FuncRef inside the value) escapes through the Var.
-                // Skip the marking when the binding target is a class
-                // attribute (those are unrelated method definitions, not
-                // address-taken first-class values).
                 //
                 // Escape-analysis refinement: if the binding target is a
                 // simple Var, only mark the FuncRef as phase4_unsafe when
@@ -94,18 +102,23 @@ impl<'a> Lowering<'a> {
                 // least one non-HOF position. If ALL uses are HOF callbacks
                 // (map/filter/reduce first arg; sorted/min/max key=), the
                 // lambda can stay phase4_safe and take the tagged ABI path.
-                let is_class_attr = matches!(target, hir::BindingTarget::ClassAttr { .. });
-                if !is_class_attr {
-                    let var_escapes = match target {
-                        hir::BindingTarget::Var(vid) => escaped_vars.contains(vid),
-                        // Non-Var binding targets (attr, index, tuple) always
-                        // count as escaped — the lambda flows into a container
-                        // or object slot where it may be called with unknown ABI.
-                        _ => true,
-                    };
-                    if var_escapes {
-                        self.mark_address_taken_funcrefs(expr, hir_module);
-                    }
+                //
+                // Class-attribute targets are NOT skipped: `Cls.handler =
+                // lambda ...` stores a genuine first-class callable into a
+                // class slot from which it can be fetched and called with
+                // an unknown ABI. Plain method definitions also flow here,
+                // but marking a method phase4_unsafe is harmless — methods
+                // are already excluded from return-ABI flipping.
+                let var_escapes = match target {
+                    hir::BindingTarget::Var(vid) => escaped_vars.contains(vid),
+                    // Non-Var binding targets (attr, index, tuple, class
+                    // attr) always count as escaped — the lambda flows into
+                    // a container / object / class slot where it may be
+                    // called with an unknown ABI.
+                    _ => true,
+                };
+                if var_escapes {
+                    self.mark_address_taken_funcrefs(expr, hir_module);
                 }
                 self.scan_expr_for_phase4_unsafe(expr, hir_module, var_to_func);
             }
@@ -175,11 +188,60 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Scan a block terminator for HOF callbacks and address-taken
+    /// FuncRefs. `return` / `raise` / branch conditions / `yield` are
+    /// `HirTerminator` variants (never pushed into `block.stmts`), so the
+    /// `StmtKind::Return` / `StmtKind::Raise` arms of
+    /// `scan_stmt_for_phase4_unsafe` never fire — this is the path that
+    /// actually reaches terminator-position expressions.
+    fn scan_terminator_for_phase4_unsafe(
+        &mut self,
+        terminator: &hir::HirTerminator,
+        hir_module: &hir::Module,
+        var_to_func: &HashMap<VarId, Vec<FuncId>>,
+    ) {
+        match terminator {
+            hir::HirTerminator::Return(Some(expr_id)) => {
+                // Return is NOT address-taking (see the `StmtKind::Return`
+                // rationale above) — only scan for nested HOF callbacks.
+                self.scan_expr_for_phase4_unsafe(
+                    &hir_module.exprs[*expr_id],
+                    hir_module,
+                    var_to_func,
+                );
+            }
+            hir::HirTerminator::Branch { cond, .. } => {
+                self.scan_expr_for_phase4_unsafe(&hir_module.exprs[*cond], hir_module, var_to_func);
+            }
+            hir::HirTerminator::Raise { exc, cause } => {
+                self.scan_expr_for_phase4_unsafe(&hir_module.exprs[*exc], hir_module, var_to_func);
+                if let Some(c) = cause {
+                    self.scan_expr_for_phase4_unsafe(
+                        &hir_module.exprs[*c],
+                        hir_module,
+                        var_to_func,
+                    );
+                }
+            }
+            hir::HirTerminator::Yield { value, .. } => {
+                self.scan_expr_for_phase4_unsafe(
+                    &hir_module.exprs[*value],
+                    hir_module,
+                    var_to_func,
+                );
+            }
+            hir::HirTerminator::Return(None)
+            | hir::HirTerminator::Jump(_)
+            | hir::HirTerminator::Reraise
+            | hir::HirTerminator::Unreachable => {}
+        }
+    }
+
     fn scan_expr_for_phase4_unsafe(
         &mut self,
         expr: &hir::Expr,
         hir_module: &hir::Module,
-        var_to_func: &HashMap<VarId, FuncId>,
+        var_to_func: &HashMap<VarId, Vec<FuncId>>,
     ) {
         match &expr.kind {
             hir::ExprKind::BuiltinCall {
@@ -266,7 +328,10 @@ impl<'a> Lowering<'a> {
                 }
             }
             hir::ExprKind::Call {
-                func, args, kwargs, ..
+                func,
+                args,
+                kwargs,
+                kwargs_unpack,
             } => {
                 // Call.func position: a `FuncRef` here is a direct call,
                 // not an address-taken reference, so don't mark it. Recurse
@@ -293,6 +358,16 @@ impl<'a> Lowering<'a> {
                     self.mark_address_taken_funcrefs(&hir_module.exprs[kw.value], hir_module);
                     self.scan_expr_for_phase4_unsafe(
                         &hir_module.exprs[kw.value],
+                        hir_module,
+                        var_to_func,
+                    );
+                }
+                // `**kwargs` unpack expression — a FuncRef inside the
+                // unpacked dict is address-taken just like a regular kwarg.
+                if let Some(unpack_id) = kwargs_unpack {
+                    self.mark_address_taken_funcrefs(&hir_module.exprs[*unpack_id], hir_module);
+                    self.scan_expr_for_phase4_unsafe(
+                        &hir_module.exprs[*unpack_id],
                         hir_module,
                         var_to_func,
                     );
@@ -377,7 +452,102 @@ impl<'a> Lowering<'a> {
                     var_to_func,
                 );
             }
-            _ => {}
+            // `super().method(...)` — args are a call-arg position; a
+            // FuncRef passed here is address-taken (mirrors MethodCall).
+            hir::ExprKind::SuperCall { args, .. } => {
+                for arg_id in args {
+                    self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
+                    self.scan_expr_for_phase4_unsafe(
+                        &hir_module.exprs[*arg_id],
+                        hir_module,
+                        var_to_func,
+                    );
+                }
+            }
+            // Stdlib function call — args are a call-arg position.
+            hir::ExprKind::StdlibCall { args, .. } => {
+                for arg_id in args {
+                    self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
+                    self.scan_expr_for_phase4_unsafe(
+                        &hir_module.exprs[*arg_id],
+                        hir_module,
+                        var_to_func,
+                    );
+                }
+            }
+            // f-string format spec — recurse so an inline HOF call inside
+            // `f"{sorted(xs, key=lambda ...)}"` gets scanned.
+            hir::ExprKind::FormatSpec { value, .. } => {
+                self.scan_expr_for_phase4_unsafe(
+                    &hir_module.exprs[*value],
+                    hir_module,
+                    var_to_func,
+                );
+            }
+            hir::ExprKind::Slice {
+                obj,
+                start,
+                end,
+                step,
+            } => {
+                self.scan_expr_for_phase4_unsafe(&hir_module.exprs[*obj], hir_module, var_to_func);
+                for sub in [start, end, step].into_iter().flatten() {
+                    self.scan_expr_for_phase4_unsafe(
+                        &hir_module.exprs[*sub],
+                        hir_module,
+                        var_to_func,
+                    );
+                }
+            }
+            hir::ExprKind::Yield(value) => {
+                if let Some(value_id) = value {
+                    self.scan_expr_for_phase4_unsafe(
+                        &hir_module.exprs[*value_id],
+                        hir_module,
+                        var_to_func,
+                    );
+                }
+            }
+            hir::ExprKind::IterHasNext(iter_id) => {
+                self.scan_expr_for_phase4_unsafe(
+                    &hir_module.exprs[*iter_id],
+                    hir_module,
+                    var_to_func,
+                );
+            }
+            hir::ExprKind::MatchPattern { subject, .. } => {
+                self.scan_expr_for_phase4_unsafe(
+                    &hir_module.exprs[*subject],
+                    hir_module,
+                    var_to_func,
+                );
+            }
+            // GeneratorIntrinsic is a post-desugar artifact; this scan runs
+            // pre-desugar so it never appears, and it carries no HOF
+            // callbacks. Listed explicitly to keep the match exhaustive.
+            hir::ExprKind::GeneratorIntrinsic(_) => {}
+            // Leaf expressions — no subexpressions to recurse into. The
+            // match is exhaustive (no `_`) so a new `ExprKind` variant
+            // becomes a compile error rather than a silently-missed
+            // construct that would be wrongly treated as phase4_safe.
+            hir::ExprKind::Int(_)
+            | hir::ExprKind::Float(_)
+            | hir::ExprKind::Bool(_)
+            | hir::ExprKind::Str(_)
+            | hir::ExprKind::Bytes(_)
+            | hir::ExprKind::None
+            | hir::ExprKind::NotImplemented
+            | hir::ExprKind::Var(_)
+            | hir::ExprKind::FuncRef(_)
+            | hir::ExprKind::ClassRef(_)
+            | hir::ExprKind::ClassAttrRef { .. }
+            | hir::ExprKind::TypeRef(_)
+            | hir::ExprKind::ImportedRef { .. }
+            | hir::ExprKind::ModuleAttr { .. }
+            | hir::ExprKind::BuiltinRef(_)
+            | hir::ExprKind::StdlibAttr(_)
+            | hir::ExprKind::StdlibConst(_)
+            | hir::ExprKind::ExcCurrentValue => {}
         }
     }
 
@@ -405,12 +575,16 @@ impl<'a> Lowering<'a> {
                 }
             }
             hir::ExprKind::Call {
-                func, args, kwargs, ..
+                func,
+                args,
+                kwargs,
+                kwargs_unpack,
             } => {
                 // Within an address-taken context, the Call's result may
                 // itself be a callable (decorator factory pattern); recurse
-                // into both func and args. Bare Call.func is direct here
-                // too — only address-taken via the surrounding context.
+                // into func, args, kwargs and the `**kwargs` unpack expr.
+                // Bare Call.func is direct here too — only address-taken via
+                // the surrounding context.
                 self.mark_address_taken_funcrefs(&hir_module.exprs[*func], hir_module);
                 for arg in args {
                     let arg_id = match arg {
@@ -420,6 +594,38 @@ impl<'a> Lowering<'a> {
                 }
                 for kw in kwargs {
                     self.mark_address_taken_funcrefs(&hir_module.exprs[kw.value], hir_module);
+                }
+                if let Some(unpack_id) = kwargs_unpack {
+                    self.mark_address_taken_funcrefs(&hir_module.exprs[*unpack_id], hir_module);
+                }
+            }
+            hir::ExprKind::MethodCall {
+                obj, args, kwargs, ..
+            } => {
+                self.mark_address_taken_funcrefs(&hir_module.exprs[*obj], hir_module);
+                for arg_id in args {
+                    self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
+                }
+                for kw in kwargs {
+                    self.mark_address_taken_funcrefs(&hir_module.exprs[kw.value], hir_module);
+                }
+            }
+            hir::ExprKind::BuiltinCall { args, kwargs, .. } => {
+                for arg_id in args {
+                    self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
+                }
+                for kw in kwargs {
+                    self.mark_address_taken_funcrefs(&hir_module.exprs[kw.value], hir_module);
+                }
+            }
+            hir::ExprKind::SuperCall { args, .. } => {
+                for arg_id in args {
+                    self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
+                }
+            }
+            hir::ExprKind::StdlibCall { args, .. } => {
+                for arg_id in args {
+                    self.mark_address_taken_funcrefs(&hir_module.exprs[*arg_id], hir_module);
                 }
             }
             hir::ExprKind::IfExpr {
@@ -444,7 +650,69 @@ impl<'a> Lowering<'a> {
                     self.mark_address_taken_funcrefs(&hir_module.exprs[*v], hir_module);
                 }
             }
-            _ => {}
+            hir::ExprKind::BinOp { left, right, .. }
+            | hir::ExprKind::Compare { left, right, .. }
+            | hir::ExprKind::LogicalOp { left, right, .. } => {
+                self.mark_address_taken_funcrefs(&hir_module.exprs[*left], hir_module);
+                self.mark_address_taken_funcrefs(&hir_module.exprs[*right], hir_module);
+            }
+            hir::ExprKind::UnOp { operand, .. } => {
+                self.mark_address_taken_funcrefs(&hir_module.exprs[*operand], hir_module);
+            }
+            hir::ExprKind::Attribute { obj, .. } => {
+                self.mark_address_taken_funcrefs(&hir_module.exprs[*obj], hir_module);
+            }
+            hir::ExprKind::Index { obj, index } => {
+                self.mark_address_taken_funcrefs(&hir_module.exprs[*obj], hir_module);
+                self.mark_address_taken_funcrefs(&hir_module.exprs[*index], hir_module);
+            }
+            hir::ExprKind::Slice {
+                obj,
+                start,
+                end,
+                step,
+            } => {
+                self.mark_address_taken_funcrefs(&hir_module.exprs[*obj], hir_module);
+                for sub in [start, end, step].into_iter().flatten() {
+                    self.mark_address_taken_funcrefs(&hir_module.exprs[*sub], hir_module);
+                }
+            }
+            hir::ExprKind::FormatSpec { value, .. } => {
+                self.mark_address_taken_funcrefs(&hir_module.exprs[*value], hir_module);
+            }
+            hir::ExprKind::Yield(value) => {
+                if let Some(value_id) = value {
+                    self.mark_address_taken_funcrefs(&hir_module.exprs[*value_id], hir_module);
+                }
+            }
+            hir::ExprKind::IterHasNext(iter_id) => {
+                self.mark_address_taken_funcrefs(&hir_module.exprs[*iter_id], hir_module);
+            }
+            hir::ExprKind::MatchPattern { subject, .. } => {
+                self.mark_address_taken_funcrefs(&hir_module.exprs[*subject], hir_module);
+            }
+            // GeneratorIntrinsic — post-desugar artifact, never seen here.
+            hir::ExprKind::GeneratorIntrinsic(_) => {}
+            // Leaf expressions — no FuncRef can hide inside. Exhaustive
+            // match (no `_`): a new `ExprKind` becomes a compile error
+            // rather than a silently-missed address-taken FuncRef.
+            hir::ExprKind::Int(_)
+            | hir::ExprKind::Float(_)
+            | hir::ExprKind::Bool(_)
+            | hir::ExprKind::Str(_)
+            | hir::ExprKind::Bytes(_)
+            | hir::ExprKind::None
+            | hir::ExprKind::NotImplemented
+            | hir::ExprKind::Var(_)
+            | hir::ExprKind::ClassRef(_)
+            | hir::ExprKind::ClassAttrRef { .. }
+            | hir::ExprKind::TypeRef(_)
+            | hir::ExprKind::ImportedRef { .. }
+            | hir::ExprKind::ModuleAttr { .. }
+            | hir::ExprKind::BuiltinRef(_)
+            | hir::ExprKind::StdlibAttr(_)
+            | hir::ExprKind::StdlibConst(_)
+            | hir::ExprKind::ExcCurrentValue => {}
         }
     }
 
@@ -452,7 +720,7 @@ impl<'a> Lowering<'a> {
         &mut self,
         expr: &hir::Expr,
         hir_module: &hir::Module,
-        var_to_func: &HashMap<VarId, FuncId>,
+        var_to_func: &HashMap<VarId, Vec<FuncId>>,
     ) {
         match &expr.kind {
             hir::ExprKind::FuncRef(func_id) => {
@@ -460,24 +728,30 @@ impl<'a> Lowering<'a> {
             }
             hir::ExprKind::Closure { func, captures } => {
                 self.lowering_seed_info.phase4_unsafe_funcs.insert(*func);
+                // A captured FuncRef / Closure is address-taken — mark it
+                // unsafe. `scan_expr_for_phase4_unsafe` has no FuncRef arm,
+                // so routing captures through it would leave a captured
+                // callback (e.g. `key=lambda x: helper(x)` with `helper`
+                // captured) wrongly phase4_safe.
                 for cap_id in captures {
-                    self.scan_expr_for_phase4_unsafe(
-                        &hir_module.exprs[*cap_id],
-                        hir_module,
-                        var_to_func,
-                    );
+                    self.mark_address_taken_funcrefs(&hir_module.exprs[*cap_id], hir_module);
                 }
             }
             hir::ExprKind::Var(var_id) => {
-                // Indirect callback: `f = lambda ...; map(f, ...)`. Resolve
-                // the var → func mapping built in the first pass. If the
-                // var holds a known FuncId, mark it. Otherwise the var is
-                // reassigned dynamically (best-effort: lambdas reached only
-                // through unresolvable Vars stay phase4_safe; if the lambda
-                // ever reaches a HOF this way it will produce wrong results
-                // — verify with a regression test if such cases arise).
-                if let Some(func_id) = var_to_func.get(var_id) {
-                    self.lowering_seed_info.phase4_unsafe_funcs.insert(*func_id);
+                // Indirect callback: `f = lambda ...; sorted(xs, key=f)`.
+                // `var_to_func` records EVERY function bound to the var
+                // (a var may be rebound — `f = key_a; ...; f = key_b`), so
+                // mark them all: we cannot statically tell which binding is
+                // live at this call site, and a missed one would be wrongly
+                // return-ABI-flipped while reached via a raw-scalar HOF.
+                //
+                // TODO(#7): a var bound to a `Call` result (`f = factory()`)
+                // is not recorded in `var_to_func` and stays phase4_safe —
+                // resolving it needs interprocedural analysis.
+                if let Some(func_ids) = var_to_func.get(var_id) {
+                    for func_id in func_ids {
+                        self.lowering_seed_info.phase4_unsafe_funcs.insert(*func_id);
+                    }
                 }
             }
             _ => {}
@@ -561,16 +835,17 @@ impl<'a> Lowering<'a> {
     }
 }
 
-/// Build a `Var → FuncId` resolution map by scanning every
-/// `Bind { target: Var, value: Closure | FuncRef }` in the module.
-/// Mirrors the `var_to_func` pattern in
-/// `closure_scan::infer_nested_function_param_types_inner`. Vars
-/// reassigned dynamically (multiple binds with different targets) take
-/// the LAST insertion — sufficient for the conservative HOF-target
-/// marking since any single binding to a HOF callback is enough to
-/// disqualify the lambda from phase4_safe.
-fn build_phase4_var_to_func(hir_module: &hir::Module) -> HashMap<VarId, FuncId> {
-    let mut map: HashMap<VarId, FuncId> = HashMap::new();
+/// Build a `Var → [FuncId]` resolution map by scanning every
+/// `Bind { target: Var, value: Closure | FuncRef | IfExpr<...> }` in the
+/// module. Mirrors the `var_to_func` pattern in
+/// `closure_scan::infer_nested_function_param_types_inner`.
+///
+/// A var reassigned across multiple binds (`f = key_a; ...; f = key_b`)
+/// accumulates ALL bound functions — recording only the last binding
+/// would leave the other lambda wrongly phase4_safe even though it may
+/// be the one that actually reaches a raw-scalar HOF callback slot.
+fn build_phase4_var_to_func(hir_module: &hir::Module) -> HashMap<VarId, Vec<FuncId>> {
+    let mut map: HashMap<VarId, Vec<FuncId>> = HashMap::new();
     for (_stmt_id, stmt) in hir_module.stmts.iter() {
         let hir::StmtKind::Bind { target, value, .. } = &stmt.kind else {
             continue;
@@ -578,18 +853,32 @@ fn build_phase4_var_to_func(hir_module: &hir::Module) -> HashMap<VarId, FuncId> 
         let hir::BindingTarget::Var(var_id) = target else {
             continue;
         };
-        let value_expr = &hir_module.exprs[*value];
-        match &value_expr.kind {
-            hir::ExprKind::Closure { func, .. } => {
-                map.insert(*var_id, *func);
-            }
-            hir::ExprKind::FuncRef(func_id) => {
-                map.insert(*var_id, *func_id);
-            }
-            _ => {}
+        let mut funcs: Vec<FuncId> = Vec::new();
+        collect_phase4_bound_funcs(&hir_module.exprs[*value], hir_module, &mut funcs);
+        if !funcs.is_empty() {
+            map.entry(*var_id).or_default().extend(funcs);
         }
     }
     map
+}
+
+/// Collect every `FuncId` a binding-value expression may statically
+/// resolve to: `Closure` / `FuncRef` literals, recursing through both
+/// branches of an `IfExpr` (`f = a_lambda if cond else b_lambda`). A
+/// `Call` result is not statically resolvable here and is intentionally
+/// left out — see the `TODO(#7)` in `mark_callback_phase4_unsafe`.
+fn collect_phase4_bound_funcs(expr: &hir::Expr, hir_module: &hir::Module, out: &mut Vec<FuncId>) {
+    match &expr.kind {
+        hir::ExprKind::Closure { func, .. } => out.push(*func),
+        hir::ExprKind::FuncRef(func_id) => out.push(*func_id),
+        hir::ExprKind::IfExpr {
+            then_val, else_val, ..
+        } => {
+            collect_phase4_bound_funcs(&hir_module.exprs[*then_val], hir_module, out);
+            collect_phase4_bound_funcs(&hir_module.exprs[*else_val], hir_module, out);
+        }
+        _ => {}
+    }
 }
 
 /// Escape analysis for lambda-bound variables.
@@ -616,7 +905,7 @@ fn build_phase4_var_to_func(hir_module: &hir::Module) -> HashMap<VarId, FuncId> 
 /// position. Variables NOT in the set are HOF-only and can stay phase4_safe.
 fn build_escaped_lambda_vars(
     hir_module: &hir::Module,
-    var_to_func: &HashMap<VarId, FuncId>,
+    var_to_func: &HashMap<VarId, Vec<FuncId>>,
     interner: &StringInterner,
 ) -> HashSet<VarId> {
     let mut escaped: HashSet<VarId> = HashSet::new();
@@ -663,7 +952,7 @@ fn build_escaped_lambda_vars(
 fn scan_terminator_for_escaped_lambda_vars(
     terminator: &hir::HirTerminator,
     hir_module: &hir::Module,
-    var_to_func: &HashMap<VarId, FuncId>,
+    var_to_func: &HashMap<VarId, Vec<FuncId>>,
     interner: &StringInterner,
     escaped: &mut HashSet<VarId>,
 ) {
@@ -693,7 +982,7 @@ fn scan_terminator_for_escaped_lambda_vars(
 fn scan_stmt_for_escaped_lambda_vars(
     stmt: &hir::Stmt,
     hir_module: &hir::Module,
-    var_to_func: &HashMap<VarId, FuncId>,
+    var_to_func: &HashMap<VarId, Vec<FuncId>>,
     interner: &StringInterner,
     escaped: &mut HashSet<VarId>,
 ) {
@@ -763,7 +1052,7 @@ fn scan_stmt_for_escaped_lambda_vars(
 fn scan_binding_target_for_escaped(
     target: &hir::BindingTarget,
     hir_module: &hir::Module,
-    var_to_func: &HashMap<VarId, FuncId>,
+    var_to_func: &HashMap<VarId, Vec<FuncId>>,
     interner: &StringInterner,
     escaped: &mut HashSet<VarId>,
 ) {
@@ -795,7 +1084,7 @@ fn scan_binding_target_for_escaped(
 fn mark_escaped_in_expr(
     expr: &hir::Expr,
     hir_module: &hir::Module,
-    var_to_func: &HashMap<VarId, FuncId>,
+    var_to_func: &HashMap<VarId, Vec<FuncId>>,
     interner: &StringInterner,
     escaped: &mut HashSet<VarId>,
 ) {
@@ -930,7 +1219,7 @@ fn mark_escaped_in_expr(
 fn mark_escaped_in_expr_id(
     expr_id: hir::ExprId,
     hir_module: &hir::Module,
-    var_to_func: &HashMap<VarId, FuncId>,
+    var_to_func: &HashMap<VarId, Vec<FuncId>>,
     interner: &StringInterner,
     escaped: &mut HashSet<VarId>,
 ) {
@@ -949,7 +1238,7 @@ fn mark_escaped_in_expr_id(
 fn mark_escaped_in_expr_hof_arg(
     expr: &hir::Expr,
     hir_module: &hir::Module,
-    var_to_func: &HashMap<VarId, FuncId>,
+    var_to_func: &HashMap<VarId, Vec<FuncId>>,
     interner: &StringInterner,
     escaped: &mut HashSet<VarId>,
 ) {

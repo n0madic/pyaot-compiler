@@ -35,6 +35,15 @@ type ClassHasDunderFn<'a> = Option<&'a dyn Fn(pyaot_utils::ClassId, &str) -> boo
 ///
 /// Returns `false` for pure `Int`/`Bool`/`Class[T]`/etc — those keep
 /// their existing typed paths.
+///
+/// TODO(#9): the `Type::Any` arm forces `sum`/`min`/`max` over an
+/// `Any`-element iterator onto the float result path, so `sum(int_gen)`
+/// where the generator's element type degraded to `Any` yields a float
+/// (CPython returns an int). The correct fix is a tagged-accumulation
+/// path (`rt_obj_add` / `rt_obj_*` compare, `Any` result) in the
+/// Iterator branches of `lower_sum` / `lower_minmax_builtin`; until then
+/// the float path is kept because the alternative (Int unbox) crashes on
+/// genuinely float-valued `Any` elements.
 pub(crate) fn iter_elem_resolves_to_float(elem_ty: &Type) -> bool {
     match elem_ty {
         Type::Float | Type::Any => true,
@@ -185,7 +194,13 @@ fn distribute_binop_over_union(
         acc = acc.join(&part);
         had_any = true;
     }
-    if !had_any || matches!(acc, Type::Never) {
+    if !had_any {
+        // Every variant was dropped by the class-aware filter — no dispatched
+        // dunder applies. Preserve the original Union (rebuilt via `join`)
+        // for diagnostics instead of widening to `Any`, which would pollute
+        // downstream joins and silence class-binop runtime dispatch.
+        variants.iter().fold(Type::Never, |acc, v| acc.join(v))
+    } else if matches!(acc, Type::Never) {
         Type::Any
     } else {
         acc
@@ -213,7 +228,13 @@ fn distribute_binop_over_union_left(
         acc = acc.join(&part);
         had_any = true;
     }
-    if !had_any || matches!(acc, Type::Never) {
+    if !had_any {
+        // Every variant was dropped by the class-aware filter — no dispatched
+        // dunder applies. Preserve the original Union (rebuilt via `join`)
+        // for diagnostics instead of widening to `Any`, which would pollute
+        // downstream joins and silence class-binop runtime dispatch.
+        variants.iter().fold(Type::Never, |acc, v| acc.join(v))
+    } else if matches!(acc, Type::Never) {
         Type::Any
     } else {
         acc

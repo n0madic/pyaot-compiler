@@ -808,4 +808,36 @@ assert sorted_str_set[2] == "cherry", "sorted string set third"
 
 print("sorted(set()) tests passed")
 
+# ===== Regression: structural == / != for dict and set =====
+# `dict == dict` and `set == set` must compare by content, not pointer
+# identity — both for concrete-typed operands and when one side is a
+# dynamic `Any` operand routed through `rt_obj_eq`. `rt_dict_eq` /
+# `rt_set_eq` perform order-independent structural comparison.
+_de_a = {"a": 1, "b": 2}
+_de_b = {"b": 2, "a": 1}
+_de_c = {"a": 1, "b": 9}
+assert _de_a == _de_b, "dict == is structural and order-independent"
+assert _de_a != _de_c, "dict != detects differing value"
+assert {"k": [1, 2]} == {"k": [1, 2]}, "dict == recurses into list values"
+assert {"k": (1, 2)} != {"k": (1, 3)}, "dict != recurses into tuple values"
+assert {} == {}, "empty dict equality"
+assert _de_a != {"a": 1}, "dict != detects differing length"
+
+_se_a = {1, 2, 3}
+_se_b = {3, 2, 1}
+_se_c = {1, 2, 9}
+assert _se_a == _se_b, "set == is structural and order-independent"
+assert _se_a != _se_c, "set != detects differing element"
+assert set() == set(), "empty set equality"
+assert _se_a != {1, 2}, "set != detects differing length"
+assert {(1, 2), (3, 4)} == {(3, 4), (1, 2)}, "set of tuples equality"
+
+# Dynamic operand (Any) routed through the generic object-eq path.
+_de_dyn = [{1: 2}, 0][0]
+assert _de_dyn == {1: 2}, "Any == dict (structural)"
+_se_dyn = [{7, 8}, 0][0]
+assert _se_dyn == {8, 7}, "Any == set (structural)"
+
+print("Structural dict/set equality tests passed")
+
 print("All dict, set, and bytes tests passed!")

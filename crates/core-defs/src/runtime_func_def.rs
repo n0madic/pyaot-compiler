@@ -773,6 +773,12 @@ pub static RT_CMP_TUPLE_ORD: RuntimeFuncDef =
 pub static RT_CMP_STR_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_str_eq");
 /// rt_bytes_eq(a: *mut Obj, b: *mut Obj) -> i8
 pub static RT_CMP_BYTES_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_bytes_eq");
+/// rt_dict_eq(a: *mut Obj, b: *mut Obj) -> i8
+/// Structural dict equality — same keys with equal values, order-independent.
+pub static RT_CMP_DICT_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_dict_eq");
+/// rt_set_eq(a: *mut Obj, b: *mut Obj) -> i8
+/// Structural set equality — same elements, order-independent.
+pub static RT_CMP_SET_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_set_eq");
 /// rt_obj_eq(a: *mut Obj, b: *mut Obj) -> i8
 pub static RT_CMP_OBJ_EQ: RuntimeFuncDef = RuntimeFuncDef::binary_to_i8("rt_obj_eq");
 /// rt_obj_cmp(a: *mut Obj, b: *mut Obj, op_tag: u8) -> i8

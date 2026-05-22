@@ -490,36 +490,30 @@ impl<'a> Lowering<'a> {
             };
             let value_expr = &hir_module.exprs[value_expr_id];
             let value_ty = self.seed_infer_expr_type(value_expr, hir_module, overlay);
-            // Skip writes whose RHS we can't type precisely — joining `Any`
-            // would only erase information, and aggressive widening would
-            // break code that legitimately stays inside a narrow precise
-            // type (e.g. `count: int = 0; count = count + 1` — the BinOp
-            // seed may transiently see `Any` while the prescan converges
-            // but the steady-state remains `Int`).
+            // An `Any`-typed RHS may carry a heap-shaped runtime value
+            // (boxed Float from `rt_obj_*` dispatch, a class instance,
+            // a container, etc.). Widen the refined field type to `Any`
+            // for EVERY `Any` RHS — compound (`BinOp` / `Call` / …) and
+            // non-compound (a bare `Var` / `Index` / `Attribute`) alike.
+            // A non-compound `Any` Var can hold a heap pointer just as
+            // easily as a compound one; leaving the field narrowly typed
+            // makes a read emit `UnwrapValueInt` on that pointer (the
+            // autograd `OverflowError` regression, commit bc2a89e).
             //
-            // For compound `Any` / `HeapAny` RHS (BinOp / Call / … —
-            // genuine heap-shaped runtime values from `rt_obj_*` dispatch),
-            // widen the refined field type to `Any` so subsequent reads /
-            // writes route through the generic tagged-`Value` path. Storage
-            // is uniform tagged `Value` after Phase 2, so widening no
-            // longer breaks F64 fast-paths or generic monomorphization.
+            // Widening is sound because storage is uniform tagged `Value`
+            // after Phase 2, and `Any`-typed reads/writes route through
+            // the generic tagged path — including structural comparison
+            // for container fields (`rt_obj_eq` delegates to
+            // `rt_tuple_eq` / `rt_list_eq`). `Never` RHS contributes
+            // nothing and is skipped.
             if matches!(value_ty, Type::Any | Type::Never) {
                 if matches!(value_ty, Type::Any) {
-                    let is_compound_rhs = matches!(
-                        value_expr.kind,
-                        hir::ExprKind::BinOp { .. }
-                            | hir::ExprKind::Call { .. }
-                            | hir::ExprKind::MethodCall { .. }
-                            | hir::ExprKind::BuiltinCall { .. }
-                    );
-                    if is_compound_rhs {
-                        let class_fields = self
-                            .lowering_seed_info
-                            .refined_class_field_types
-                            .entry(class_id)
-                            .or_default();
-                        class_fields.insert(field, Type::Any);
-                    }
+                    let class_fields = self
+                        .lowering_seed_info
+                        .refined_class_field_types
+                        .entry(class_id)
+                        .or_default();
+                    class_fields.insert(field, Type::Any);
                 }
                 continue;
             }

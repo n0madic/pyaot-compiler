@@ -4,11 +4,13 @@
 //! - `indices`: hash index table mapping hash slots to entry indices
 //! - `entries`: dense array of DictEntry stored in insertion order
 
+mod comparison;
 mod core;
 mod iteration;
 mod ops;
 
 // Re-export all public functions
+pub use comparison::rt_dict_eq;
 pub use core::{dict_finalize, rt_dict_len, rt_make_dict};
 pub(crate) use core::{
     real_entries_capacity, set_real_entries_capacity, CAPACITY_MASK, FACTORY_TAG_SHIFT,

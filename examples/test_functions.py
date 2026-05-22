@@ -1721,4 +1721,30 @@ assert apply_fn(double_it, 0) == 0, "function passed as argument (zero)"
 
 print("Function passed as argument: PASS")
 
+# ===== Regression: HOF key= callback in a `return` terminator =====
+# The phase4 safety scan must visit block terminators (`return ...`), not
+# only block statements — `return`/`raise`/branch/`yield` are HirTerminator
+# variants. A `sorted(..., key=lambda ...)` returned directly must still
+# have its key lambda marked phase4_unsafe so it is NOT return-ABI-flipped;
+# otherwise the raw-scalar sort-key ABI mismatches and the sort misbehaves.
+def sort_pairs_by_second(pairs):
+    return sorted(pairs, key=lambda p: p[1])
+
+_hof_pairs = [(1, 30), (2, 10), (3, 20)]
+_hof_sorted = sort_pairs_by_second(_hof_pairs)
+assert _hof_sorted == [(2, 10), (3, 20), (1, 30)], f"key= in return: {_hof_sorted}"
+print("HOF key= callback in return position: PASS")
+
+# ===== Regression: HOF key= callback inside an f-string format spec =====
+# A `sorted(..., key=lambda ...)` embedded in `f"{...}"` lives inside a
+# FormatSpec node. The closure-capture pre-scan must recurse through
+# FormatSpec to harvest the key lambda's parameter type; otherwise the
+# param stays `Any`, the lambda is lowered with the tagged-Value ABI
+# while `sorted` delivers raw scalars, and the lambda reads garbage
+# (previously surfaced as `TypeError: unary - on NoneType`).
+_hof_nums = [5, 1, 4, 2, 3]
+_hof_msg = f"min-by-neg={sorted(_hof_nums, key=lambda n: -n)[-1]}"
+assert _hof_msg == "min-by-neg=1", f"key= in f-string: {_hof_msg}"
+print("HOF key= callback in f-string format spec: PASS")
+
 print("All function tests passed!")

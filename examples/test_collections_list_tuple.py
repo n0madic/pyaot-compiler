@@ -1206,4 +1206,24 @@ assert len(bt_xm) == 2 and bt_xm[0] == 2 and bt_xm[1] == 3
 
 print("New unpacking shapes (BindingTarget migration) tests passed!")
 
+# ===== Regression: structural == for a container behind a dynamic operand =====
+# When one operand is `Any` (e.g. an element of a heterogeneous list, or a
+# widened class field) and the other is a concrete tuple/list, the
+# comparison must route through `rt_obj_eq`, which delegates to
+# `rt_tuple_eq` / `rt_list_eq` for structural comparison. Previously the
+# generic object-equality path fell back to pointer identity for
+# containers, so two distinct-but-equal tuples/lists compared unequal.
+_dyn_eq_items = [(1.0,), 99, "x"]
+_dyn_eq_first = _dyn_eq_items[0]
+assert _dyn_eq_first == (1.0,), f"Any == tuple literal: {_dyn_eq_first}"
+assert (1.0,) == _dyn_eq_first, f"tuple literal == Any: {_dyn_eq_first}"
+assert _dyn_eq_first != (2.0,), "Any != differing tuple"
+
+_dyn_eq_lists = [[1, 2, 3], 0]
+_dyn_eq_lst = _dyn_eq_lists[0]
+assert _dyn_eq_lst == [1, 2, 3], f"Any == list literal: {_dyn_eq_lst}"
+assert _dyn_eq_lst != [1, 2], "Any != differing list"
+
+print("Structural == for container behind dynamic operand: PASS")
+
 print("All list and tuple collection tests passed!")

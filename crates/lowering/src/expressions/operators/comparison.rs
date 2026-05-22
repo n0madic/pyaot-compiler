@@ -149,9 +149,54 @@ impl<'a> Lowering<'a> {
             return Ok(mir::Operand::Local(result_local));
         }
 
-        // Check if either operand is Union type - use runtime dispatch
-        if left_type.is_union() || right_type.is_union() {
-            // For Union types, box the non-Union operand if needed and use runtime comparison
+        // Runtime-dispatched comparison. Fires when either operand is a
+        // `Union` (dynamic), OR when one operand is `Any` (may hold any
+        // heap object at runtime) and the other is a concrete heap
+        // container / str / bytes.
+        //
+        // The `Any`-vs-heap case must be caught here, before the
+        // container-typed branches below: a raw `BinOp::Eq` would compare
+        // tagged bits / pointers instead of structural content, and the
+        // `is_list_like` / `is_tuple_like` branches short-circuit
+        // `container == non-container` to a constant `false` — both wrong
+        // when the `Any` side actually holds a matching object at runtime
+        // (e.g. an `Any`-typed class field that received a tuple write).
+        // `rt_obj_*` dispatches by runtime type tag and handles it
+        // correctly. Class is intentionally excluded — `Class` operands
+        // have their own dunder-dispatch branch with NotImplemented
+        // handling. Restricted to ordering / (in)equality ops; `In` /
+        // `NotIn` keep their dedicated membership branches.
+        // `Counter` is a `DictObj`-layout type but not `is_dict_like()`
+        // (it carries no K/V type args). Treat the whole dict family —
+        // `dict`, `defaultdict`, `Counter` — uniformly for structural
+        // equality routing.
+        let is_dict_family = |t: &Type| {
+            t.is_dict_like() || matches!(t, Type::RuntimeObject(pyaot_types::TypeTagKind::Counter))
+        };
+        let heap_object_ty = |t: &Type| {
+            t.is_list_like()
+                || is_dict_family(t)
+                || t.is_set_like()
+                || t.is_tuple_like()
+                || matches!(t, Type::Str | Type::Bytes)
+        };
+        let mixed_any_vs_heap = matches!(
+            op,
+            hir::CmpOp::Eq
+                | hir::CmpOp::NotEq
+                | hir::CmpOp::Lt
+                | hir::CmpOp::LtE
+                | hir::CmpOp::Gt
+                | hir::CmpOp::GtE
+        ) && ((matches!(left_type, Type::Any)
+            && heap_object_ty(&right_type))
+            || (matches!(right_type, Type::Any) && heap_object_ty(&left_type)));
+        if left_type.is_union() || right_type.is_union() || mixed_any_vs_heap {
+            // Box the non-Union operand if needed, then use runtime
+            // comparison. A Union operand is already a tagged Value;
+            // `Any` / concrete operands go through `emit_value_slot`
+            // (which boxes raw primitives and passes heap pointers /
+            // already-tagged Values through unchanged).
             let boxed_left = if left_type.is_union() {
                 left_op
             } else {
@@ -600,6 +645,53 @@ impl<'a> Lowering<'a> {
                         mir::CompareKind::Tuple.runtime_func_def(compare_op),
                     ),
                     args: vec![left_op, right_op, op_tag],
+                });
+            }
+        } else if is_dict_family(&left_type)
+            && is_dict_family(&right_type)
+            && matches!(op, hir::CmpOp::Eq | hir::CmpOp::NotEq)
+        {
+            // dict == dict / dict != dict — structural comparison.
+            // `rt_dict_eq` compares keys and values order-independently;
+            // a raw `BinOp::Eq` would compare dict pointers by identity.
+            let eq_func =
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CMP_DICT_EQ);
+            if matches!(op, hir::CmpOp::NotEq) {
+                let eq_local =
+                    self.emit_runtime_call(eq_func, vec![left_op, right_op], Type::Bool, mir_func);
+                self.emit_instruction(mir::InstructionKind::UnOp {
+                    dest: result_local,
+                    op: mir::UnOp::Not,
+                    operand: mir::Operand::Local(eq_local),
+                });
+            } else {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: eq_func,
+                    args: vec![left_op, right_op],
+                });
+            }
+        } else if left_type.is_set_like()
+            && right_type.is_set_like()
+            && matches!(op, hir::CmpOp::Eq | hir::CmpOp::NotEq)
+        {
+            // set == set / set != set — structural comparison.
+            // `rt_set_eq` compares elements order-independently; a raw
+            // `BinOp::Eq` would compare set pointers by identity.
+            let eq_func = mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_CMP_SET_EQ);
+            if matches!(op, hir::CmpOp::NotEq) {
+                let eq_local =
+                    self.emit_runtime_call(eq_func, vec![left_op, right_op], Type::Bool, mir_func);
+                self.emit_instruction(mir::InstructionKind::UnOp {
+                    dest: result_local,
+                    op: mir::UnOp::Not,
+                    operand: mir::Operand::Local(eq_local),
+                });
+            } else {
+                self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                    dest: result_local,
+                    func: eq_func,
+                    args: vec![left_op, right_op],
                 });
             }
         } else if let Type::Class { class_id, .. } = &left_type {

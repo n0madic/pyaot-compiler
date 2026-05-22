@@ -1694,7 +1694,15 @@ fn sync_call_direct_dest_mir_ty(module: &mut Module) {
                     continue;
                 }
                 let new_mir_ty = pyaot_mir::type_to_mir_type_register(ret_ty);
-                if !matches!(new_mir_ty, pyaot_mir::MirType::Raw(_)) {
+                // Guard #4: only narrow Tagged -> Raw(I64|I8) — those share
+                // the I64 register shape, so downstream uses survive. Raw(F64)
+                // lives in XMM registers; narrowing a Tagged slot to F64 would
+                // require a bitcast we do not emit here, so leave those Tagged.
+                if !matches!(
+                    new_mir_ty,
+                    pyaot_mir::MirType::Raw(pyaot_mir::RawKind::I64)
+                        | pyaot_mir::MirType::Raw(pyaot_mir::RawKind::I8)
+                ) {
                     continue;
                 }
                 let Some(local) = func.locals.get(dest) else {
@@ -1769,11 +1777,21 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
                     // Code pointers are raw i64 addresses, not tagged Values.
                     raw_producer_locals.insert(*dest);
                 }
-                // Constant literals — always raw at MIR level (Int/Bool/Float
-                // constants are unencoded; Str/Bytes produce Tagged, but those
-                // locals won't have a Raw new_mir_ty so the gate never fires).
-                pyaot_mir::InstructionKind::Const { dest, .. } => {
-                    raw_producer_locals.insert(*dest);
+                // Constant literals — only Int/Bool/Float constants are
+                // unencoded raw bits. Str/Bytes constants are heap pointers,
+                // and None is a tagged NONE Value — but
+                // `type_to_mir_type_register(None)` is `Raw(I8)`, so without
+                // this value filter a None-typed Const would wrongly pass the
+                // gate and be narrowed Tagged -> Raw(I8).
+                pyaot_mir::InstructionKind::Const { dest, value } => {
+                    if matches!(
+                        value,
+                        pyaot_mir::Constant::Int(_)
+                            | pyaot_mir::Constant::Float(_)
+                            | pyaot_mir::Constant::Bool(_)
+                    ) {
+                        raw_producer_locals.insert(*dest);
+                    }
                 }
                 // BinOp / UnOp on primitives — raw result.
                 pyaot_mir::InstructionKind::BinOp { dest, .. }
@@ -1820,16 +1838,29 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
                             Some(MirSemantic::Tagged) | Some(MirSemantic::Heap(_)) => false,
                             None => !def.gc_roots_result,
                         },
-                        // Non-Call variants (ExcSetjmp etc.) — check by
-                        // exclusion: all remaining variants that return
-                        // a non-GC integer (ExcSetjmp → i32).
-                        _ => {
-                            // ExcSetjmp returns i32 (raw). Any other non-Call
-                            // RuntimeFunc variants return raw ints too
-                            // (legacy path — covered conservatively as raw
-                            // since they don't gc_roots_result).
-                            true
-                        }
+                        // Non-Call variants — classified explicitly. An
+                        // exhaustive match (no `_`) makes a future variant a
+                        // compile error instead of a silent misclassification.
+                        // Raw-integer returns (i32 / i8):
+                        pyaot_mir::RuntimeFunc::ExcSetjmp
+                        | pyaot_mir::RuntimeFunc::ExcGetType
+                        | pyaot_mir::RuntimeFunc::ExcHasException
+                        | pyaot_mir::RuntimeFunc::ExcIsinstanceClass => true,
+                        // Heap-pointer / tagged-Value returns — NOT raw
+                        // producers; narrowing their dest mir_ty would read a
+                        // heap pointer as a raw integer.
+                        pyaot_mir::RuntimeFunc::MakeStr
+                        | pyaot_mir::RuntimeFunc::MakeBytes
+                        | pyaot_mir::RuntimeFunc::ExcGetCurrent
+                        | pyaot_mir::RuntimeFunc::ExcInstanceStr => false,
+                        // Void / noreturn — no usable dest value.
+                        pyaot_mir::RuntimeFunc::ExcRaise
+                        | pyaot_mir::RuntimeFunc::ExcReraise
+                        | pyaot_mir::RuntimeFunc::ExcClear
+                        | pyaot_mir::RuntimeFunc::ExcRaiseCustom
+                        | pyaot_mir::RuntimeFunc::ExcRegisterClassName
+                        | pyaot_mir::RuntimeFunc::PrintValue(_)
+                        | pyaot_mir::RuntimeFunc::AssertFail => false,
                     };
                     if is_raw {
                         raw_producer_locals.insert(*dest);
@@ -1879,9 +1910,14 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
             //     check below — we only sync when the *new* form is Raw
             //     AND the *old* form was Tagged or already-Raw).
             let new_mir_ty = pyaot_mir::type_to_mir_type_register(&new_ty);
-            let old_was_widenable = param.mir_ty.as_ref().is_some_and(|m| {
-                matches!(m, pyaot_mir::MirType::Tagged | pyaot_mir::MirType::Raw(_))
-            });
+            // Mirror the body-local guard (`old_was_tagged` below): only sync
+            // when the old mir_ty was Tagged. Accepting an already-`Raw(_)`
+            // old form allowed a cross-register-class flip (e.g.
+            // Raw(F64) -> Raw(I64)); when old == new the sync was a no-op.
+            let old_was_widenable = param
+                .mir_ty
+                .as_ref()
+                .is_some_and(|m| matches!(m, pyaot_mir::MirType::Tagged));
             if matches!(new_mir_ty, pyaot_mir::MirType::Raw(_)) && old_was_widenable {
                 param.mir_ty = Some(new_mir_ty.clone());
                 // The same LocalId can also exist in `func.locals` as a

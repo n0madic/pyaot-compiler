@@ -95,3 +95,26 @@ pub fn rt_set_isdisjoint(a: *mut Obj, b: *mut Obj) -> i8 {
 pub extern "C" fn rt_set_isdisjoint_abi(a: Value, b: Value) -> i8 {
     rt_set_isdisjoint(a.unwrap_ptr(), b.unwrap_ptr())
 }
+
+/// Compare two sets for structural equality (Python `==`).
+///
+/// Two sets are equal iff they have the same length and every element of
+/// `a` is contained in `b`. Equal length combined with `a ⊆ b` implies
+/// `a == b`. Returns 1 if equal, 0 otherwise.
+pub fn rt_set_eq(a: *mut Obj, b: *mut Obj) -> i8 {
+    if a.is_null() && b.is_null() {
+        return 1;
+    }
+    if a.is_null() || b.is_null() {
+        return 0;
+    }
+    if crate::set::rt_set_len(a) != crate::set::rt_set_len(b) {
+        return 0;
+    }
+    rt_set_issubset(a, b)
+}
+#[export_name = "rt_set_eq"]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn rt_set_eq_abi(a: Value, b: Value) -> i8 {
+    rt_set_eq(a.unwrap_ptr(), b.unwrap_ptr())
+}
