@@ -235,7 +235,7 @@ Architectural rationale: `INSIGHTS.md` (top section).
 | functools.reduce() | ✅ | Supports initial value and closures with captures |
 | format() | ✅ | Format specs: d, b, o, x, X, f, e, g, width, fill, alignment, grouping (`,`, `_`) |
 | reversed(), sorted() | ✅ | sorted() supports key= (incl. builtins like abs) and reverse= |
-| min(), max(), sum() | ✅ | Supports lists, tuples, sets, ranges, and iterators/generators. **Full dunder dispatch on user-class elements** (Area C §C.3): sum() via `__add__`/`__radd__` (primitive start bootstraps through reflected); min()/max() via `__lt__`/`__gt__` rich-comparison dunders. **Area G §G.4**: min/max on tuple-yielding gen-exprs (`min((v, i) for i, v in enumerate(...))`) now use lexicographic `rt_tuple_cmp` instead of raw pointer comparison. |
+| min(), max(), sum() | ✅ | Supports lists, tuples, sets, ranges, and iterators/generators. **Full dunder dispatch on user-class elements** (Area C §C.3): sum() via `__add__`/`__radd__` (primitive start bootstraps through reflected); min()/max() via `__lt__`/`__gt__` rich-comparison dunders. **Area G §G.4**: min/max on tuple-yielding gen-exprs (`min((v, i) for i, v in enumerate(...))`) now use lexicographic `rt_tuple_cmp` instead of raw pointer comparison. **Code-review finding 9**: reductions over an `Any`-element iterator/`list[Any]` accumulate through a tagged-`Value` path (`rt_obj_add` for sum, `rt_obj_cmp` for min/max), so `int` vs `float` is preserved per CPython instead of being forced onto the float result path. |
 | abs(), pow(), round() | ✅ | |
 | hash(), id() | ✅ | |
 | isinstance() | ✅ | Single type and tuple-of-types: `isinstance(x, (int, float))` supported; Union-aware narrowing in if/else branches |

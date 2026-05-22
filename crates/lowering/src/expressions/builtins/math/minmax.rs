@@ -125,7 +125,13 @@ impl<'a> Lowering<'a> {
                 }
 
                 // Original logic for non-key case
-                // Determine if element type is float
+                // Determine if element type is float.
+                // TODO(#9): an `Any` element here still falls into the
+                // `Int` arm and routes through `rt_list_minmax` with
+                // `ElementKind::Int`. Unlike the iterator branch (which
+                // has a tagged `rt_obj_cmp` path), the concrete-container
+                // helpers `rt_{list,tuple,set}_minmax` have no tagged
+                // `elem_kind` — adding one is a runtime-ABI change.
                 let is_float_list = matches!(elem_type, Type::Float);
                 let (result_type, elem_kind) = if is_float_list {
                     (Type::Float, ElementKind::Float)
@@ -322,26 +328,21 @@ impl<'a> Lowering<'a> {
                     src: iter_operand,
                 });
 
-                // `is_float_iter` selects the unbox path (`rt_unbox_float`)
-                // over `UnwrapValueInt`. The shared
-                // `iter_elem_resolves_to_float` helper widens detection
-                // beyond pure `Type::Float` to also cover `Type::Any`
-                // and `Type::Union` containing `Float` — both of which
-                // can appear when a class field's harvested type is the
-                // polymorphic-dunder seed `Union[Float, Class[Self]]`
-                // (autograd-style Value.data) but the runtime tag at
-                // every yield site is always a `FloatObj` pointer.
-                // `rt_unbox_float`'s ABI shim handles tagged INT/BOOL/
-                // None/`*FloatObj` uniformly, so the float path is
-                // correct for any tagged-Value yield whose numeric
-                // content is float-shaped at runtime.
-                let is_float_iter =
-                    crate::type_planning::helpers::iter_elem_resolves_to_float(elem_ty.as_ref());
-                let iter_result_type = if is_float_iter {
-                    Type::Float
-                } else {
-                    Type::Int
-                };
+                // Result-type classification (3-way), shared with
+                // `lower_sum` and `resolve_builtin_call_type`.
+                // `Float` → the unbox path (`rt_unbox_float`); also covers
+                // a `Union` containing `Float` (the microgpt polymorphic-
+                // dunder seed `Union[Float, Class[Self]]`, whose runtime
+                // yield tag is always a `FloatObj` pointer).
+                // `Tagged` → the element is bare `Any`: keep it a tagged
+                // `Value` and compare via `rt_obj_cmp`, so int vs float is
+                // preserved per CPython.
+                // `Int` → the raw `i64` path.
+                use crate::type_planning::helpers::{classify_reduction_elem, ReductionResult};
+                let elem_kind = classify_reduction_elem(elem_ty.as_ref());
+                let is_tagged = elem_kind == ReductionResult::Tagged;
+                let is_float_iter = elem_kind == ReductionResult::Float;
+                let iter_result_type = elem_kind.result_type();
                 let cmp_op = if is_min {
                     mir::BinOp::Lt
                 } else {
@@ -357,7 +358,7 @@ impl<'a> Lowering<'a> {
                     Type::Any,
                     mir_func,
                 );
-                let first_local = if is_float_iter {
+                let first_local = if is_float_iter || is_tagged {
                     first_raw
                 } else {
                     let dest = self.alloc_and_add_local(Type::Int, mir_func);
@@ -438,7 +439,7 @@ impl<'a> Lowering<'a> {
                     Type::Any,
                     mir_func,
                 );
-                let next_local = if is_float_iter {
+                let next_local = if is_float_iter || is_tagged {
                     raw_local
                 } else {
                     let dest = self.alloc_and_add_local(Type::Int, mir_func);
@@ -482,12 +483,33 @@ impl<'a> Lowering<'a> {
                 };
 
                 let cmp_local = self.alloc_and_add_local(Type::Bool, mir_func);
-                self.emit_instruction(mir::InstructionKind::BinOp {
-                    dest: cmp_local,
-                    op: cmp_op,
-                    left: item_operand.clone(),
-                    right: mir::Operand::Local(result_local),
-                });
+                if is_tagged {
+                    // Tagged compare: `rt_obj_cmp` dispatches by runtime
+                    // tag (int / float / mixed), so the kept element keeps
+                    // its exact int-vs-float identity.
+                    let cmp = if is_min {
+                        mir::ComparisonOp::Lt
+                    } else {
+                        mir::ComparisonOp::Gt
+                    };
+                    let op_tag = mir::Operand::Constant(mir::Constant::Int(cmp.to_tag() as i64));
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest: cmp_local,
+                        func: mir::RuntimeFunc::Call(mir::CompareKind::Obj.runtime_func_def(cmp)),
+                        args: vec![
+                            item_operand.clone(),
+                            mir::Operand::Local(result_local),
+                            op_tag,
+                        ],
+                    });
+                } else {
+                    self.emit_instruction(mir::InstructionKind::BinOp {
+                        dest: cmp_local,
+                        op: cmp_op,
+                        left: item_operand.clone(),
+                        right: mir::Operand::Local(result_local),
+                    });
+                }
 
                 let then_bb = self.new_block();
                 let merge_bb = self.new_block();

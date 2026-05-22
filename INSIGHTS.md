@@ -364,6 +364,42 @@ The function `box_if_raw_int_iterator()` in `runtime/src/iterator/mod.rs` checks
 
 ---
 
+## Reductions over an `Any`-element iterator: tagged accumulation
+
+`sum`/`min`/`max` pick their accumulation strategy from the iterable's
+*element* type via `classify_reduction_elem` (`type_planning/helpers.rs`),
+which returns a 3-way `ReductionResult`:
+
+- `Int`/`Float` — element resolves to a concrete numeric type; fold in a
+  raw `i64`/`f64` with `BinOp::Add` / `BinOp::Lt|Gt`.
+- `Tagged` — element is bare `Type::Any`: the runtime numeric shape
+  (`int` vs `float`) is unknown at compile time. The accumulator stays a
+  GC-rooted tagged `Value` (`Type::Any`); `lower_sum` folds through
+  `rt_obj_add` and `lower_minmax_builtin` compares through `rt_obj_cmp`
+  (`CompareKind::Obj`). Both runtime helpers dispatch by tag, so an
+  all-`int` iterator yields an `int` and a `float` yields a `float`,
+  matching CPython.
+
+The earlier code forced every `Any`-element reduction onto the **float**
+path (`iter_elem_resolves_to_float` returned `true` for `Type::Any`),
+because the only alternative then was an unconditional `UnwrapValueInt`
+that corrupts genuinely-float values. That made `sum(int_gen)` return
+`6.0` where CPython returns `6` (code-review finding #9).
+
+A `Union` containing `Float` (the microgpt polymorphic-dunder seed
+`Union[Float, Class[Self]]`) still classifies as `Float` — its runtime
+yield tag is always a `FloatObj` pointer, so the float path is correct.
+All three sites — `lower_sum`, `lower_minmax_builtin`, and
+`resolve_builtin_call_type` — must agree on the classification, or the
+expression type and the lowered local type diverge.
+
+Out of scope: `min`/`max` over a *concrete* `list[Any]`/`set[Any]` still
+routes through `rt_*_minmax` with `ElementKind::Int`; a tagged `elem_kind`
+in those runtime helpers would be a runtime-ABI change (see the `TODO` at
+the concrete-container branches of `lower_minmax_builtin`).
+
+---
+
 ## Type Refinement During Lowering
 
 Variable types can change mid-lowering, not just at declaration. The lowering context tracks types in `var_type` map and updates them:

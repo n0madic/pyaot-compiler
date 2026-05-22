@@ -264,28 +264,41 @@ impl<'a> Lowering<'a> {
             Type::Int // default start is 0 (int)
         };
 
-        // Result type promotion: float if either element or start is float.
-        // Use the shared `iter_elem_resolves_to_float` helper so that
-        // `sum(val.data for val in logits)` where `val.data` was widened
-        // to `Union[Float, Class[Self]]` (polymorphic-dunder seed
-        // pollution) still routes through the float-arithmetic path
-        // instead of the integer fallback. Mirrors the same widening in
-        // `lower_minmax_builtin`.
-        let elem_is_float =
-            crate::type_planning::helpers::iter_elem_resolves_to_float(&element_type);
-        let result_type = if elem_is_float || start_type == Type::Float {
-            Type::Float
-        } else {
-            Type::Int
-        };
+        // Result-type classification (3-way). `classify_reduction_elem`
+        // gives `Float` when the element or start is float — or a `Union`
+        // containing `Float`, the microgpt polymorphic-dunder seed
+        // `Union[Float, Class[Self]]`; `Tagged` when the element/start is
+        // bare `Any`, in which case the accumulator stays a tagged `Value`
+        // and folds through `rt_obj_add` so int vs float is preserved per
+        // CPython; `Int` otherwise. Must agree with `lower_minmax_builtin`
+        // and `resolve_builtin_call_type`.
+        use crate::type_planning::helpers::{classify_reduction_elem, ReductionResult};
+        let result_kind =
+            classify_reduction_elem(&element_type).join(classify_reduction_elem(&start_type));
+        let result_type = result_kind.result_type();
+        let accumulate_tagged = result_kind == ReductionResult::Tagged;
 
-        // Get start value with correct type
+        // Get the start value in the representation the accumulator wants.
         let start_operand = if args.len() > 1 {
             let start_expr = &hir_module.exprs[args[1]];
             let start_op = self.lower_expr(start_expr, hir_module, mir_func)?;
 
-            // Promote start to float if needed
-            if result_type == Type::Float && start_type != Type::Float {
+            if accumulate_tagged {
+                // Tagged accumulator: the start must be a tagged `Value`.
+                // Box a primitive start; pass an already-tagged start through.
+                if matches!(start_type, Type::Int | Type::Bool) {
+                    let boxed = self.alloc_gc_local(Type::Any, mir_func);
+                    self.emit_instruction(mir::InstructionKind::BoxValue {
+                        dest: boxed,
+                        src: start_op,
+                        src_type: start_type.clone(),
+                    });
+                    mir::Operand::Local(boxed)
+                } else {
+                    start_op
+                }
+            } else if result_type == Type::Float && start_type != Type::Float {
+                // Promote an int start to float.
                 let temp = self.alloc_and_add_local(Type::Float, mir_func);
                 self.emit_instruction(mir::InstructionKind::IntToFloat {
                     dest: temp,
@@ -295,17 +308,34 @@ impl<'a> Lowering<'a> {
             } else {
                 start_op
             }
+        } else if accumulate_tagged {
+            // Default start `0` as a tagged int `Value` (CPython `sum([])` == 0).
+            let zero = self.alloc_and_add_local(Type::Int, mir_func);
+            self.emit_instruction(mir::InstructionKind::Copy {
+                dest: zero,
+                src: mir::Operand::Constant(mir::Constant::Int(0)),
+            });
+            let boxed = self.alloc_gc_local(Type::Any, mir_func);
+            self.emit_instruction(mir::InstructionKind::BoxValue {
+                dest: boxed,
+                src: mir::Operand::Local(zero),
+                src_type: Type::Int,
+            });
+            mir::Operand::Local(boxed)
+        } else if result_type == Type::Float {
+            mir::Operand::Constant(mir::Constant::Float(0.0))
         } else {
-            // Default start value based on result type
-            if result_type == Type::Float {
-                mir::Operand::Constant(mir::Constant::Float(0.0))
-            } else {
-                mir::Operand::Constant(mir::Constant::Int(0))
-            }
+            mir::Operand::Constant(mir::Constant::Int(0))
         };
 
-        // Create result accumulator and initialize
-        let result_local = self.alloc_and_add_local(result_type.clone(), mir_func);
+        // Create the result accumulator and initialise it from the start
+        // value. A tagged accumulator must be GC-tracked: `rt_obj_add` can
+        // box a float result, so the slot may hold a heap pointer.
+        let result_local = if accumulate_tagged {
+            self.alloc_gc_local(Type::Any, mir_func)
+        } else {
+            self.alloc_and_add_local(result_type.clone(), mir_func)
+        };
         self.emit_instruction(mir::InstructionKind::Copy {
             dest: result_local,
             src: start_operand,
@@ -396,13 +426,26 @@ impl<'a> Lowering<'a> {
                 mir::Operand::Local(next_local)
             };
 
-            let temp_result = self.alloc_and_add_local(result_type.clone(), mir_func);
-            self.emit_instruction(mir::InstructionKind::BinOp {
-                dest: temp_result,
-                op: mir::BinOp::Add,
-                left: mir::Operand::Local(result_local),
-                right: item_operand,
-            });
+            // Accumulate: the tagged path dispatches through `rt_obj_add`
+            // (runtime preserves int vs float by tag); the typed path uses
+            // a raw `BinOp::Add`.
+            let temp_result = if accumulate_tagged {
+                self.emit_runtime_call_gc(
+                    mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_OBJ_ADD),
+                    vec![mir::Operand::Local(result_local), item_operand],
+                    Type::Any,
+                    mir_func,
+                )
+            } else {
+                let dest = self.alloc_and_add_local(result_type.clone(), mir_func);
+                self.emit_instruction(mir::InstructionKind::BinOp {
+                    dest,
+                    op: mir::BinOp::Add,
+                    left: mir::Operand::Local(result_local),
+                    right: item_operand,
+                });
+                dest
+            };
 
             self.emit_instruction(mir::InstructionKind::Copy {
                 dest: result_local,
@@ -484,14 +527,25 @@ impl<'a> Lowering<'a> {
             unboxed_item
         };
 
-        // result = result + item
-        let temp_result = self.alloc_and_add_local(result_type.clone(), mir_func);
-        self.emit_instruction(mir::InstructionKind::BinOp {
-            dest: temp_result,
-            op: mir::BinOp::Add,
-            left: mir::Operand::Local(result_local),
-            right: item_operand,
-        });
+        // result = result + item — tagged path via `rt_obj_add`, typed
+        // path via raw `BinOp::Add` (see the iterator branch above).
+        let temp_result = if accumulate_tagged {
+            self.emit_runtime_call_gc(
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_OBJ_ADD),
+                vec![mir::Operand::Local(result_local), item_operand],
+                Type::Any,
+                mir_func,
+            )
+        } else {
+            let dest = self.alloc_and_add_local(result_type.clone(), mir_func);
+            self.emit_instruction(mir::InstructionKind::BinOp {
+                dest,
+                op: mir::BinOp::Add,
+                left: mir::Operand::Local(result_local),
+                right: item_operand,
+            });
+            dest
+        };
 
         self.emit_instruction(mir::InstructionKind::Copy {
             dest: result_local,

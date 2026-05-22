@@ -1419,3 +1419,41 @@ setattr(hat, "name", "world")
 assert hat.name == "world", f"setattr: expected name=world, got {hat.name}"
 
 print("hasattr/setattr tests passed!")
+
+
+# ============================================================================
+# sum/min/max over Any-typed elements (code-review #9)
+# ============================================================================
+# A `list[Any]` annotation pins the element type to `Any`, and an annotated
+# generator parameter `xs: list[Any]` stays `list[Any]` (the harvester only
+# refines UNannotated params), so the generator returns `Iterator[Any]`.
+# These exercise the tagged-accumulation path: sum/min/max must preserve
+# `int` vs `float` exactly as CPython does. `repr()` is the discriminator
+# because `6 == 6.0` is True in Python and would not catch an int->float
+# regression.
+
+any9_list: list[Any] = [1, 2, 3]
+
+
+def passthru9(xs: list[Any]):
+    for x in xs:
+        yield x
+
+
+# lower_sum, list branch (tagged accumulation over list[Any])
+assert repr(sum(any9_list)) == "6", "sum(list[Any]) must stay int 6"
+# lower_sum, iterator branch (tagged accumulation over Iterator[Any])
+assert repr(sum(passthru9(any9_list))) == "6", "sum(Iterator[Any]) must stay int 6"
+# explicit start value
+assert sum(passthru9(any9_list), 10) == 16, "sum(Iterator[Any], 10) should equal 16"
+# empty iterable -> boxed int 0
+any9_empty: list[Any] = []
+assert sum(any9_empty) == 0, "sum(empty list[Any]) should equal 0"
+# lower_minmax, iterator branch
+assert min(passthru9(any9_list)) == 1, "min(Iterator[Any]) should equal 1"
+assert max(passthru9(any9_list)) == 3, "max(Iterator[Any]) should equal 3"
+# float elements through the same Any path stay float
+any9_floats: list[Any] = [1.5, 2.5]
+assert repr(sum(passthru9(any9_floats))) == "4.0", "sum of float Any elements stays float"
+
+print("sum/min/max over Any-typed elements tests passed!")

@@ -16,39 +16,65 @@ use super::infer::extract_iterable_element_type;
 /// `None` means callers without class info (free-function callers).
 type ClassHasDunderFn<'a> = Option<&'a dyn Fn(pyaot_utils::ClassId, &str) -> bool>;
 
-/// Whether a reduction's iterator element type "resolves to Float" at
-/// runtime — i.e. the runtime tag is guaranteed to encode an f64 value
-/// (either a tagged INT/BOOL that promotes to float, or a heap-pointer
-/// to a `FloatObj` after `rt_box_float`). When this returns `true`,
-/// reduction lowering (`min`/`max`/`sum`/list-comprehension) routes
-/// the unbox through `rt_unbox_float` (whose ABI shim handles all
-/// numeric tags) instead of `UnwrapValueInt` (which arithmetic-shifts
-/// a pointer's bits into garbage int).
+/// Result-type class of a numeric reduction (`sum`/`min`/`max`).
 ///
-/// Conservative coverage:
-///   - `Type::Float` — pure float fast-path (legacy behaviour).
-///   - `Type::Any` — tagged `Value` of unknown shape; `rt_unbox_float`'s
-///     ABI shim handles `is_int`/`is_bool`/`is_ptr→FloatObj` cases.
-///   - `Type::Union(variants)` containing `Float` (typically the
-///     polymorphic-dunder seed `Union[Float, Class[Self]]` for a
-///     class field whose runtime values are all `FloatObj` boxes).
+/// The element type of the iterable determines how the reduction
+/// accumulates: a definitely-int element folds in a raw `i64`, a
+/// definitely-float element in a raw `f64`, and a `Type::Any` element
+/// (a tagged `Value` whose numeric shape is only known at runtime) folds
+/// through the runtime (`rt_obj_add` / `rt_obj_cmp`), keeping the result
+/// a tagged `Value`. The tagged path is what lets `sum`/`min`/`max` over
+/// an `Any`-element iterator preserve `int` vs `float` exactly as CPython
+/// does, instead of forcing every such reduction onto the float path.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ReductionResult {
+    /// Element resolves to int/bool — accumulate as a raw `i64`.
+    Int,
+    /// Element resolves to float — accumulate as a raw `f64`.
+    Float,
+    /// Element is `Type::Any` — accumulate via `rt_obj_*`; result stays tagged.
+    Tagged,
+}
+
+impl ReductionResult {
+    /// Logical `Type` of the reduction result.
+    pub(crate) fn result_type(self) -> Type {
+        match self {
+            ReductionResult::Int => Type::Int,
+            ReductionResult::Float => Type::Float,
+            ReductionResult::Tagged => Type::Any,
+        }
+    }
+
+    /// Combine the element class with the start-value class. `Float`
+    /// dominates (a float start or element forces float arithmetic),
+    /// then `Tagged` (an `Any` start or element forces runtime dispatch),
+    /// and `Int` is the identity.
+    pub(crate) fn join(self, other: ReductionResult) -> ReductionResult {
+        match (self, other) {
+            (ReductionResult::Float, _) | (_, ReductionResult::Float) => ReductionResult::Float,
+            (ReductionResult::Tagged, _) | (_, ReductionResult::Tagged) => ReductionResult::Tagged,
+            _ => ReductionResult::Int,
+        }
+    }
+}
+
+/// Classify a reduction's iterator element type into a [`ReductionResult`].
 ///
-/// Returns `false` for pure `Int`/`Bool`/`Class[T]`/etc — those keep
-/// their existing typed paths.
-///
-/// TODO(#9): the `Type::Any` arm forces `sum`/`min`/`max` over an
-/// `Any`-element iterator onto the float result path, so `sum(int_gen)`
-/// where the generator's element type degraded to `Any` yields a float
-/// (CPython returns an int). The correct fix is a tagged-accumulation
-/// path (`rt_obj_add` / `rt_obj_*` compare, `Any` result) in the
-/// Iterator branches of `lower_sum` / `lower_minmax_builtin`; until then
-/// the float path is kept because the alternative (Int unbox) crashes on
-/// genuinely float-valued `Any` elements.
-pub(crate) fn iter_elem_resolves_to_float(elem_ty: &Type) -> bool {
+/// Returns `Float` for `Type::Float` and for a `Union` that contains
+/// `Float` — the latter covers the polymorphic-dunder seed
+/// `Union[Float, Class[Self]]` (autograd-style `Value.data`), whose
+/// runtime tag at every yield site is a `FloatObj` pointer. Returns
+/// `Tagged` for bare `Type::Any` (a tagged `Value` of unknown numeric
+/// shape). Returns `Int` for everything else (`Int`/`Bool`/`Class[T]`/...).
+pub(crate) fn classify_reduction_elem(elem_ty: &Type) -> ReductionResult {
     match elem_ty {
-        Type::Float | Type::Any => true,
-        Type::Union(variants) => variants.iter().any(|v| matches!(v, Type::Float)),
-        _ => false,
+        Type::Float => ReductionResult::Float,
+        Type::Union(variants) if variants.iter().any(|v| matches!(v, Type::Float)) => {
+            ReductionResult::Float
+        }
+        Type::Any => ReductionResult::Tagged,
+        _ => ReductionResult::Int,
     }
 }
 
@@ -611,12 +637,14 @@ pub(crate) fn resolve_builtin_call_type(
             if matches!(element_type, Type::Class { .. }) {
                 return Some(element_type);
             }
+            // 3-way classification (must agree with `lower_sum`): a float
+            // element/start → `Float`; an `Any` element/start → `Any`
+            // (tagged accumulation preserves int vs float at runtime);
+            // otherwise → `Int`.
             let start_type = arg_types.get(1).cloned().unwrap_or(Type::Int);
-            if element_type == Type::Float || start_type == Type::Float {
-                Some(Type::Float)
-            } else {
-                Some(Type::Int)
-            }
+            let kind =
+                classify_reduction_elem(&element_type).join(classify_reduction_elem(&start_type));
+            Some(kind.result_type())
         }
 
         // === Round ===
