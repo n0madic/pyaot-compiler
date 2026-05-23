@@ -334,15 +334,15 @@ impl Local {
     /// Until C.1 fully lands (field deletion), this method coexists with
     /// the explicit `is_gc_root` field. Consumers can migrate one at a
     /// time. Both are kept in sync by lowering at allocation time.
+    ///
+    /// Delegates to [`MirType::needs_gc_root`] — the single source of truth
+    /// for GC-rooting semantics. Notably `FuncPtr(_)` returns `false`: code
+    /// segment pointers don't need GC tracking. The previous local override
+    /// here returned `true` for FuncPtr and was compensated by the
+    /// `func_ptr_locals` side-table in `type_inference.rs`; that compensation
+    /// is no longer needed.
     pub fn computed_is_gc_root(&self) -> bool {
-        match self.resolved_mir_type() {
-            crate::types::MirType::Heap(_)
-            | crate::types::MirType::Tagged
-            | crate::types::MirType::Closure(_) => true,
-            crate::types::MirType::FuncPtr(_) => true,
-            crate::types::MirType::Raw(_) | crate::types::MirType::Never => false,
-            crate::types::MirType::Var(_) => false,
-        }
+        self.resolved_mir_type().needs_gc_root()
     }
 }
 

@@ -1770,8 +1770,6 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
     // calls, rt_obj_* family), we leave the local OUT of `raw_producer_locals`
     // so mir_ty stays Tagged. This means some narrowing opportunities are
     // missed, but zero Tagged→Raw mis-interpretations occur.
-    let mut func_ptr_locals: std::collections::HashSet<pyaot_utils::LocalId> =
-        std::collections::HashSet::new();
     let mut raw_producer_locals: std::collections::HashSet<pyaot_utils::LocalId> =
         std::collections::HashSet::new();
     for block in func.blocks.values() {
@@ -1779,7 +1777,6 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
             match &inst.kind {
                 pyaot_mir::InstructionKind::FuncAddr { dest, .. }
                 | pyaot_mir::InstructionKind::BuiltinAddr { dest, .. } => {
-                    func_ptr_locals.insert(*dest);
                     // Code pointers are raw i64 addresses, not tagged Values.
                     raw_producer_locals.insert(*dest);
                 }
@@ -2008,9 +2005,6 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
                 // If old mir_ty was already Raw (or None), leave it alone —
                 // the existing value was set correctly by lowering.
             }
-        }
-        if func_ptr_locals.contains(&local.id) {
-            local.is_gc_root = false;
         }
     }
 }
