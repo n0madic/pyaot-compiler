@@ -176,15 +176,33 @@ impl<'a> Lowering<'a> {
             // Direct calls to FuncRef are handled in calls.rs
             //
             // §P.2.2: function pointers are raw text-segment addresses — never
-            // heap objects. The local stays `Type::Any` so abi_repair / consumer
-            // call sites keep their existing handling, but `is_gc_root` is
-            // forced to `false` (via `alloc_stack_local`) so the shadow stack
-            // doesn't scan a misaligned pointer-shaped non-object. Consumer
-            // sites that need to store this into a Value-tagged slot (e.g.
-            // closure captures) are responsible for wrapping via `ValueFromInt`
-            // — see `lower_closure` and the §F.5 path in `statements/assign/mod.rs`.
+            // heap objects. We type the FuncAddr dest with the callee's actual
+            // signature as `MirType::FuncPtr(sig)`. This:
+            //   1. Makes `computed_is_gc_root()` correctly return false
+            //      (FuncPtr is code-segment, not heap).
+            //   2. Allows the verifier `check_func_addr` to validate the dest
+            //      against the callee's resolved signature (matches via
+            //      structural Eq) instead of accepting any Tagged/Raw(I64)
+            //      slot as a "function pointer".
+            //   3. Cleanly widens to `Tagged` at downstream Tagged-typed
+            //      consumers (via the documented FuncPtr → Tagged widening
+            //      rule in `types.rs::assignable_to`), and to `Raw(I64)` at
+            //      Cranelift call sites.
+            //
+            // Fallbacks:
+            //   - Cross-module FuncRef (callee not in `hir_module.func_defs`)
+            //     → `MirType::Raw(I64)`. computed_is_gc_root = false; same
+            //     physical layout. Verifier accepts FuncAddr → Raw(I64)
+            //     directly (see check_func_addr line 822-824).
             hir::ExprKind::FuncRef(func_id) => {
-                let result_local = self.alloc_stack_local(Type::Any, mir_func);
+                let mir_ty = if let Some(hir_func) = hir_module.func_defs.get(func_id) {
+                    let sig = crate::context::hir_function_to_mir_signature(hir_func);
+                    mir::MirType::func_ptr(sig)
+                } else {
+                    mir::MirType::raw_i64()
+                };
+                let result_local =
+                    self.alloc_and_add_local_with_mir_ty(Type::Any, mir_ty, mir_func);
                 self.emit_instruction(mir::InstructionKind::FuncAddr {
                     dest: result_local,
                     func: *func_id,

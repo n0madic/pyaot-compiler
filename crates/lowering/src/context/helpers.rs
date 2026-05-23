@@ -18,6 +18,47 @@ pub enum FuncOrBuiltin {
     Builtin(mir::BuiltinFunctionKind),
 }
 
+/// Translate a `hir::Function` to a `mir::Signature` matching the layout
+/// that `mir::Function::resolved_signature()` produces for the corresponding
+/// MIR function (when no explicit `signature` is set on the Function).
+///
+/// Used by lowering when allocating a `MirType::FuncPtr(sig)` slot for a
+/// `FuncRef` (`hir::ExprKind::FuncRef`) so the verifier's `check_func_addr`
+/// can validate the FuncAddr dest against the callee's actual signature.
+///
+/// **Register-level** translation: primitives (`Int`, `Bool`, `Float`,
+/// `None`) become `Raw(K)`, matching `type_to_mir_type_register`. This is
+/// the default ABI verifier sees in `resolved_signature()` (`mir/core.rs:260`)
+/// — params via `Local.resolved_mir_type()` (register), return via
+/// `type_to_mir_type_register`. Using storage-level here would always
+/// mismatch the verifier's expectation for any function with primitive
+/// params/return.
+///
+/// Edge cases:
+/// - Unannotated parameter (`Param.ty == None`) → `MirType::Tagged` (matches
+///   the lowering default for un-typed values).
+/// - Missing return type (`return_type == None`) → `MirType::Tagged`.
+/// - `Type::Var(name)` in a generic template → `MirType::Var(name)` (verifier
+///   handles Var equality structurally; monomorphisation substitutes later).
+pub(crate) fn hir_function_to_mir_signature(hir_func: &hir::Function) -> mir::Signature {
+    let params = hir_func
+        .params
+        .iter()
+        .map(|p| match &p.ty {
+            Some(ty) => mir::type_to_mir_type_register(ty),
+            None => mir::MirType::Tagged,
+        })
+        .collect();
+    let return_type = match &hir_func.return_type {
+        Some(ty) => mir::type_to_mir_type_register(ty),
+        None => mir::MirType::Tagged,
+    };
+    mir::Signature {
+        params,
+        return_type,
+    }
+}
+
 impl<'a> Lowering<'a> {
     /// Get the current ambient source span, falling back to a dummy span.
     /// Safe to call in any expression-lowering context because `lower_expr()`

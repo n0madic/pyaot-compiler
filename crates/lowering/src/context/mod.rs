@@ -16,6 +16,8 @@ mod locals;
 
 // Re-export FuncOrBuiltin for use in iteration.rs
 pub use helpers::FuncOrBuiltin;
+// Re-export hir → mir signature translation for FuncRef lowering.
+pub(crate) use helpers::hir_function_to_mir_signature;
 
 use indexmap::IndexMap;
 use indexmap::IndexSet;
