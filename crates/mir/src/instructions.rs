@@ -233,6 +233,292 @@ pub enum InstructionKind {
     },
 }
 
+/// True if the runtime function attached to a `RuntimeCall` instruction
+/// produces no observable SSA value at codegen time. The `dest` field on
+/// such calls is a placeholder MIR often reuses as a side-effectful
+/// target (e.g. `rt_list_set` writes into the same list local); renaming
+/// it as a fresh SSA def would shadow live state.
+///
+/// Visibility note: `pub` so other crates (optimizer, codegen) can share
+/// the predicate. A mismatch would cause `ssa_check` to flag valid MIR
+/// as invalid.
+pub fn runtime_call_is_void(func: &RuntimeFunc) -> bool {
+    match func {
+        // Descriptor-based: returns field is authoritative.
+        RuntimeFunc::Call(def) => def.returns.is_none(),
+        // Legacy variants known to leave `dest` untouched at codegen.
+        RuntimeFunc::AssertFail
+        | RuntimeFunc::PrintValue(_)
+        | RuntimeFunc::ExcRegisterClassName
+        | RuntimeFunc::ExcRaise
+        | RuntimeFunc::ExcReraise
+        | RuntimeFunc::ExcClear => true,
+        // These return values or are dispatched via terminators whose own
+        // codegen still writes through `dest`, so keep them as SSA defs.
+        RuntimeFunc::MakeStr
+        | RuntimeFunc::MakeBytes
+        | RuntimeFunc::ExcSetjmp
+        | RuntimeFunc::ExcGetType
+        | RuntimeFunc::ExcHasException
+        | RuntimeFunc::ExcGetCurrent
+        | RuntimeFunc::ExcIsinstanceClass
+        | RuntimeFunc::ExcRaiseCustom
+        | RuntimeFunc::ExcInstanceStr => false,
+    }
+}
+
+impl InstructionKind {
+    /// Returns the `LocalId` defined (written) by this instruction, if any.
+    ///
+    /// Special case: a `RuntimeCall` whose `func` is void-returning
+    /// (`runtime_call_is_void`) does NOT produce a new SSA value — its
+    /// `dest` slot is a placeholder the codegen leaves untouched. Such
+    /// instructions return `None`.
+    ///
+    /// `GcPush.frame` and `ExcPushFrame.frame_local` are classified as
+    /// defs even though the value is Cranelift-synthesized at codegen
+    /// time — the SSA checker needs them treated as defining sites.
+    ///
+    /// Side-effect-only instructions (`GcPop`, `ExcPopFrame`, `ExcClear`,
+    /// `ExcStartHandling`, `ExcEndHandling`) return `None`.
+    pub fn def(&self) -> Option<LocalId> {
+        use InstructionKind::*;
+        match self {
+            RuntimeCall { dest, func, .. } => {
+                if runtime_call_is_void(func) {
+                    None
+                } else {
+                    Some(*dest)
+                }
+            }
+            Const { dest, .. }
+            | BinOp { dest, .. }
+            | UnOp { dest, .. }
+            | Call { dest, .. }
+            | CallDirect { dest, .. }
+            | CallNamed { dest, .. }
+            | CallVirtual { dest, .. }
+            | CallVirtualNamed { dest, .. }
+            | FuncAddr { dest, .. }
+            | BuiltinAddr { dest, .. }
+            | Copy { dest, .. }
+            | GcAlloc { dest, .. }
+            | FloatToInt { dest, .. }
+            | BoolToInt { dest, .. }
+            | IntToFloat { dest, .. }
+            | FloatBits { dest, .. }
+            | IntBitsToFloat { dest, .. }
+            | BoxValue { dest, .. }
+            | UnboxValue { dest, .. }
+            | FloatAbs { dest, .. }
+            | ExcGetType { dest }
+            | ExcHasException { dest }
+            | ExcGetCurrent { dest }
+            | ExcCheckType { dest, .. }
+            | ExcCheckClass { dest, .. }
+            | Phi { dest, .. }
+            | Refine { dest, .. } => Some(*dest),
+            GcPush { frame } => Some(*frame),
+            ExcPushFrame { frame_local } => Some(*frame_local),
+            GcPop | ExcPopFrame | ExcClear | ExcStartHandling | ExcEndHandling => None,
+        }
+    }
+
+    /// Apply `f` to each `LocalId` used (read) by this instruction.
+    ///
+    /// `Phi` instructions iterate their `sources: Vec<(BlockId, Operand)>`.
+    /// `GcPush` / `ExcPushFrame` classify their frame field as a def (see
+    /// [`Self::def`]) so they have NO uses here — emitting one would make
+    /// the def "depend on itself" in reachability analysis.
+    pub fn for_each_use<F: FnMut(LocalId)>(&self, mut f: F) {
+        use InstructionKind::*;
+        fn push<F: FnMut(LocalId)>(op: &Operand, f: &mut F) {
+            if let Operand::Local(id) = op {
+                f(*id);
+            }
+        }
+        match self {
+            Const { .. }
+            | FuncAddr { .. }
+            | BuiltinAddr { .. }
+            | GcAlloc { .. }
+            | GcPop
+            | GcPush { .. }
+            | ExcPopFrame
+            | ExcPushFrame { .. }
+            | ExcClear
+            | ExcGetType { .. }
+            | ExcHasException { .. }
+            | ExcGetCurrent { .. }
+            | ExcCheckType { .. }
+            | ExcCheckClass { .. }
+            | ExcStartHandling
+            | ExcEndHandling => {}
+            BinOp { left, right, .. } => {
+                push(left, &mut f);
+                push(right, &mut f);
+            }
+            UnOp { operand, .. } => push(operand, &mut f),
+            Copy { src, .. }
+            | FloatToInt { src, .. }
+            | BoolToInt { src, .. }
+            | IntToFloat { src, .. }
+            | FloatBits { src, .. }
+            | IntBitsToFloat { src, .. }
+            | BoxValue { src, .. }
+            | UnboxValue { src, .. }
+            | FloatAbs { src, .. }
+            | Refine { src, .. } => push(src, &mut f),
+            Call { func, args, .. } => {
+                push(func, &mut f);
+                for a in args {
+                    push(a, &mut f);
+                }
+            }
+            CallDirect { args, .. } | CallNamed { args, .. } | RuntimeCall { args, .. } => {
+                for a in args {
+                    push(a, &mut f);
+                }
+            }
+            CallVirtual { obj, args, .. } | CallVirtualNamed { obj, args, .. } => {
+                push(obj, &mut f);
+                for a in args {
+                    push(a, &mut f);
+                }
+            }
+            Phi { sources, .. } => {
+                for (_, op) in sources {
+                    push(op, &mut f);
+                }
+            }
+        }
+    }
+
+    /// Apply `f` to a mutable reference to each `LocalId` used by this
+    /// instruction. Used by SSA renaming to substitute uses with their
+    /// current top-of-stack name.
+    ///
+    /// **Phi NOTE**: Phi `sources` are NOT visited here. SSA construction
+    /// fills phi sources from each predecessor's `rename_block` via
+    /// `fill_phi_sources` — a renaming pass that walks Phi here would
+    /// rewrite the predecessor-tagged slot with the *current* block's
+    /// stack top, which is wrong.
+    pub fn for_each_use_mut<F: FnMut(&mut LocalId)>(&mut self, mut f: F) {
+        use InstructionKind::*;
+        fn push<F: FnMut(&mut LocalId)>(op: &mut Operand, f: &mut F) {
+            if let Operand::Local(id) = op {
+                f(id);
+            }
+        }
+        match self {
+            Const { .. }
+            | FuncAddr { .. }
+            | BuiltinAddr { .. }
+            | GcAlloc { .. }
+            | GcPop
+            | GcPush { .. }
+            | ExcPopFrame
+            | ExcPushFrame { .. }
+            | ExcClear
+            | ExcGetType { .. }
+            | ExcHasException { .. }
+            | ExcGetCurrent { .. }
+            | ExcCheckType { .. }
+            | ExcCheckClass { .. }
+            | ExcStartHandling
+            | ExcEndHandling => {}
+            BinOp { left, right, .. } => {
+                push(left, &mut f);
+                push(right, &mut f);
+            }
+            UnOp { operand, .. } => push(operand, &mut f),
+            Copy { src, .. }
+            | FloatToInt { src, .. }
+            | BoolToInt { src, .. }
+            | IntToFloat { src, .. }
+            | FloatBits { src, .. }
+            | IntBitsToFloat { src, .. }
+            | BoxValue { src, .. }
+            | UnboxValue { src, .. }
+            | FloatAbs { src, .. }
+            | Refine { src, .. } => push(src, &mut f),
+            Call { func, args, .. } => {
+                push(func, &mut f);
+                for a in args {
+                    push(a, &mut f);
+                }
+            }
+            CallDirect { args, .. } | CallNamed { args, .. } | RuntimeCall { args, .. } => {
+                for a in args {
+                    push(a, &mut f);
+                }
+            }
+            CallVirtual { obj, args, .. } | CallVirtualNamed { obj, args, .. } => {
+                push(obj, &mut f);
+                for a in args {
+                    push(a, &mut f);
+                }
+            }
+            Phi { .. } => {
+                // φ sources are populated by the predecessor's
+                // `rename_block` / `fill_phi_sources`, not here.
+            }
+        }
+    }
+
+    /// Rewrite the destination local of this instruction to `fresh`. Used
+    /// by SSA renaming to assign each def a fresh LocalId.
+    ///
+    /// Panics in debug builds when called on a side-effect-only
+    /// instruction (`GcPop`, `ExcPopFrame`, `ExcClear`, `ExcStartHandling`,
+    /// `ExcEndHandling`) — such instructions have no def. Callers should
+    /// gate on [`Self::def`] returning `Some` first.
+    pub fn set_def(&mut self, fresh: LocalId) {
+        use InstructionKind::*;
+        match self {
+            Const { dest, .. }
+            | BinOp { dest, .. }
+            | UnOp { dest, .. }
+            | Call { dest, .. }
+            | CallDirect { dest, .. }
+            | CallNamed { dest, .. }
+            | CallVirtual { dest, .. }
+            | CallVirtualNamed { dest, .. }
+            | FuncAddr { dest, .. }
+            | BuiltinAddr { dest, .. }
+            | RuntimeCall { dest, .. }
+            | Copy { dest, .. }
+            | GcAlloc { dest, .. }
+            | FloatToInt { dest, .. }
+            | BoolToInt { dest, .. }
+            | IntToFloat { dest, .. }
+            | FloatBits { dest, .. }
+            | IntBitsToFloat { dest, .. }
+            | BoxValue { dest, .. }
+            | UnboxValue { dest, .. }
+            | FloatAbs { dest, .. }
+            | ExcGetType { dest }
+            | ExcHasException { dest }
+            | ExcGetCurrent { dest }
+            | ExcCheckType { dest, .. }
+            | ExcCheckClass { dest, .. }
+            | Phi { dest, .. }
+            | Refine { dest, .. } => {
+                *dest = fresh;
+            }
+            GcPush { frame } => {
+                *frame = fresh;
+            }
+            ExcPushFrame { frame_local } => {
+                *frame_local = fresh;
+            }
+            GcPop | ExcPopFrame | ExcClear | ExcStartHandling | ExcEndHandling => {
+                debug_assert!(false, "set_def called on a defless instruction");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod value_tag_kinds {
     use super::*;

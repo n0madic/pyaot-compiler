@@ -1147,51 +1147,11 @@ fn operand_type(op: &Operand, types: &FunctionTypes) -> Type {
     }
 }
 
-fn instruction_dest(kind: &InstructionKind) -> Option<LocalId> {
-    match kind {
-        InstructionKind::Const { dest, .. }
-        | InstructionKind::BinOp { dest, .. }
-        | InstructionKind::UnOp { dest, .. }
-        | InstructionKind::Call { dest, .. }
-        | InstructionKind::CallDirect { dest, .. }
-        | InstructionKind::CallNamed { dest, .. }
-        | InstructionKind::CallVirtual { dest, .. }
-        | InstructionKind::CallVirtualNamed { dest, .. }
-        | InstructionKind::FuncAddr { dest, .. }
-        | InstructionKind::BuiltinAddr { dest, .. }
-        | InstructionKind::RuntimeCall { dest, .. }
-        | InstructionKind::Copy { dest, .. }
-        | InstructionKind::GcAlloc { dest, .. }
-        | InstructionKind::FloatToInt { dest, .. }
-        | InstructionKind::BoolToInt { dest, .. }
-        | InstructionKind::IntToFloat { dest, .. }
-        | InstructionKind::FloatBits { dest, .. }
-        | InstructionKind::IntBitsToFloat { dest, .. }
-        | InstructionKind::BoxValue { dest, .. }
-        | InstructionKind::UnboxValue { dest, .. }
-        | InstructionKind::FloatAbs { dest, .. }
-        | InstructionKind::ExcGetType { dest }
-        | InstructionKind::ExcHasException { dest }
-        | InstructionKind::ExcGetCurrent { dest }
-        | InstructionKind::ExcCheckType { dest, .. }
-        | InstructionKind::ExcCheckClass { dest, .. }
-        | InstructionKind::Phi { dest, .. }
-        | InstructionKind::Refine { dest, .. } => Some(*dest),
-        InstructionKind::GcPush { .. }
-        | InstructionKind::GcPop
-        | InstructionKind::ExcPushFrame { .. }
-        | InstructionKind::ExcPopFrame
-        | InstructionKind::ExcClear
-        | InstructionKind::ExcStartHandling
-        | InstructionKind::ExcEndHandling => None,
-    }
-}
-
 fn build_def_map(func: &Function) -> HashMap<LocalId, &InstructionKind> {
     let mut defs = HashMap::new();
     for block in func.blocks.values() {
         for inst in &block.instructions {
-            if let Some(dest) = instruction_dest(&inst.kind) {
+            if let Some(dest) = inst.kind.def() {
                 defs.insert(dest, &inst.kind);
             }
         }

@@ -74,53 +74,18 @@ impl OptimizationPass for DcePass {
 }
 
 // ==================== Shared helper functions ====================
+//
+// `instruction_dest` and `instruction_used_locals` removed: callers use
+// `InstructionKind::def()` and `InstructionKind::for_each_use(...)` from
+// `pyaot_mir` directly. The DCE-side `instruction_dest` historically did
+// NOT mirror `runtime_call_is_void`; the unified `.def()` does — void
+// RuntimeCalls now correctly report no def, so dead-instruction
+// elimination won't try to retain them on the assumption that something
+// reads their (nonexistent) result.
 
 fn collect_operand_locals(op: &Operand, out: &mut Vec<LocalId>) {
     if let Operand::Local(id) = op {
         out.push(*id);
-    }
-}
-
-/// Extract the destination local defined by an instruction, if any.
-pub(crate) fn instruction_dest(kind: &InstructionKind) -> Option<LocalId> {
-    match kind {
-        InstructionKind::Const { dest, .. }
-        | InstructionKind::BinOp { dest, .. }
-        | InstructionKind::UnOp { dest, .. }
-        | InstructionKind::Call { dest, .. }
-        | InstructionKind::CallDirect { dest, .. }
-        | InstructionKind::CallNamed { dest, .. }
-        | InstructionKind::CallVirtual { dest, .. }
-        | InstructionKind::CallVirtualNamed { dest, .. }
-        | InstructionKind::FuncAddr { dest, .. }
-        | InstructionKind::BuiltinAddr { dest, .. }
-        | InstructionKind::RuntimeCall { dest, .. }
-        | InstructionKind::Copy { dest, .. }
-        | InstructionKind::GcAlloc { dest, .. }
-        | InstructionKind::FloatToInt { dest, .. }
-        | InstructionKind::BoolToInt { dest, .. }
-        | InstructionKind::IntToFloat { dest, .. }
-        | InstructionKind::FloatBits { dest, .. }
-        | InstructionKind::IntBitsToFloat { dest, .. }
-        | InstructionKind::BoxValue { dest, .. }
-        | InstructionKind::UnboxValue { dest, .. }
-        | InstructionKind::FloatAbs { dest, .. }
-        | InstructionKind::ExcGetType { dest, .. }
-        | InstructionKind::ExcHasException { dest, .. }
-        | InstructionKind::ExcGetCurrent { dest, .. }
-        | InstructionKind::ExcCheckType { dest, .. }
-        | InstructionKind::ExcCheckClass { dest, .. }
-        | InstructionKind::Phi { dest, .. }
-        | InstructionKind::Refine { dest, .. } => Some(*dest),
-
-        // These instructions have no destination (side-effect only)
-        InstructionKind::GcPush { .. }
-        | InstructionKind::GcPop
-        | InstructionKind::ExcPushFrame { .. }
-        | InstructionKind::ExcPopFrame
-        | InstructionKind::ExcClear
-        | InstructionKind::ExcStartHandling
-        | InstructionKind::ExcEndHandling => None,
     }
 }
 
@@ -147,85 +112,6 @@ pub(crate) fn instruction_is_pure(kind: &InstructionKind) -> bool {
             | InstructionKind::Phi { .. }
             | InstructionKind::Refine { .. }
     )
-}
-
-/// Collect all LocalIds read by an instruction.
-pub(crate) fn instruction_used_locals(kind: &InstructionKind) -> Vec<LocalId> {
-    let mut locals = Vec::new();
-    match kind {
-        InstructionKind::Const { .. } => {}
-        InstructionKind::BinOp { left, right, .. } => {
-            collect_operand_locals(left, &mut locals);
-            collect_operand_locals(right, &mut locals);
-        }
-        InstructionKind::UnOp { operand, .. } => {
-            collect_operand_locals(operand, &mut locals);
-        }
-        InstructionKind::Call { func, args, .. } => {
-            collect_operand_locals(func, &mut locals);
-            for arg in args {
-                collect_operand_locals(arg, &mut locals);
-            }
-        }
-        InstructionKind::CallDirect { args, .. } | InstructionKind::CallNamed { args, .. } => {
-            for arg in args {
-                collect_operand_locals(arg, &mut locals);
-            }
-        }
-        InstructionKind::CallVirtual { obj, args, .. }
-        | InstructionKind::CallVirtualNamed { obj, args, .. } => {
-            collect_operand_locals(obj, &mut locals);
-            for arg in args {
-                collect_operand_locals(arg, &mut locals);
-            }
-        }
-        InstructionKind::RuntimeCall { args, .. } => {
-            for arg in args {
-                collect_operand_locals(arg, &mut locals);
-            }
-        }
-        InstructionKind::Copy { src, .. } => {
-            collect_operand_locals(src, &mut locals);
-        }
-        InstructionKind::GcPush { frame } => {
-            locals.push(*frame);
-        }
-        InstructionKind::ExcPushFrame { frame_local } => {
-            locals.push(*frame_local);
-        }
-        InstructionKind::FloatToInt { src, .. }
-        | InstructionKind::BoolToInt { src, .. }
-        | InstructionKind::IntToFloat { src, .. }
-        | InstructionKind::FloatBits { src, .. }
-        | InstructionKind::IntBitsToFloat { src, .. }
-        | InstructionKind::BoxValue { src, .. }
-        | InstructionKind::UnboxValue { src, .. }
-        | InstructionKind::FloatAbs { src, .. } => {
-            collect_operand_locals(src, &mut locals);
-        }
-        InstructionKind::FuncAddr { .. }
-        | InstructionKind::BuiltinAddr { .. }
-        | InstructionKind::GcPop
-        | InstructionKind::GcAlloc { .. }
-        | InstructionKind::ExcPopFrame
-        | InstructionKind::ExcGetType { .. }
-        | InstructionKind::ExcClear
-        | InstructionKind::ExcHasException { .. }
-        | InstructionKind::ExcGetCurrent { .. }
-        | InstructionKind::ExcCheckType { .. }
-        | InstructionKind::ExcCheckClass { .. }
-        | InstructionKind::ExcStartHandling
-        | InstructionKind::ExcEndHandling => {}
-        InstructionKind::Phi { sources, .. } => {
-            for (_, op) in sources {
-                collect_operand_locals(op, &mut locals);
-            }
-        }
-        InstructionKind::Refine { src, .. } => {
-            collect_operand_locals(src, &mut locals);
-        }
-    }
-    locals
 }
 
 /// Collect all LocalIds read by a terminator.

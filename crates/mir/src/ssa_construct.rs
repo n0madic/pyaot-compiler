@@ -37,34 +37,9 @@ use crate::{
 /// Callers use this to decide whether an `InstructionKind::RuntimeCall`
 /// should be treated as defining its `dest` for SSA renaming purposes.
 ///
-/// Visibility note: `pub(crate)` so `ssa_check` shares the exact same
-/// predicate. A mismatch here would cause the checker to flag valid
-/// MIR as invalid (e.g. void `rt_*_set` / `rt_string_builder_append`
-/// that reuse a LocalId as a side-effectful placeholder).
-pub(crate) fn runtime_call_is_void(func: &RuntimeFunc) -> bool {
-    match func {
-        // Descriptor-based: returns field is authoritative.
-        RuntimeFunc::Call(def) => def.returns.is_none(),
-        // Legacy variants known to leave `dest` untouched at codegen.
-        RuntimeFunc::AssertFail
-        | RuntimeFunc::PrintValue(_)
-        | RuntimeFunc::ExcRegisterClassName
-        | RuntimeFunc::ExcRaise
-        | RuntimeFunc::ExcReraise
-        | RuntimeFunc::ExcClear => true,
-        // These return values or are dispatched via terminators whose own
-        // codegen still writes through `dest`, so keep them as SSA defs.
-        RuntimeFunc::MakeStr
-        | RuntimeFunc::MakeBytes
-        | RuntimeFunc::ExcSetjmp
-        | RuntimeFunc::ExcGetType
-        | RuntimeFunc::ExcHasException
-        | RuntimeFunc::ExcGetCurrent
-        | RuntimeFunc::ExcIsinstanceClass
-        | RuntimeFunc::ExcRaiseCustom
-        | RuntimeFunc::ExcInstanceStr => false,
-    }
-}
+// `runtime_call_is_void` moved to `crate::instructions` alongside the
+// `InstructionKind::def()` consumer. Re-exported for ssa_check.
+pub(crate) use crate::instructions::runtime_call_is_void;
 
 /// Transform `func` into SSA form in place using Cytron's algorithm.
 ///
@@ -148,7 +123,7 @@ fn collect_defs(func: &Function) -> HashMap<LocalId, IndexSet<BlockId>> {
 
     for (&bid, block) in &func.blocks {
         for inst in &block.instructions {
-            if let Some(d) = instruction_def(&inst.kind) {
+            if let Some(d) = inst.kind.def() {
                 defs.entry(d).or_default().insert(bid);
             }
         }
@@ -164,11 +139,9 @@ fn collect_use_blocks(func: &Function) -> HashMap<LocalId, IndexSet<BlockId>> {
     let mut uses: HashMap<LocalId, IndexSet<BlockId>> = HashMap::new();
     for (&bid, block) in &func.blocks {
         for inst in &block.instructions {
-            let mut kind_uses: IndexSet<LocalId> = IndexSet::new();
-            collect_kind_uses(&inst.kind, &mut kind_uses);
-            for id in kind_uses {
+            inst.kind.for_each_use(|id| {
                 uses.entry(id).or_default().insert(bid);
-            }
+            });
         }
         let mut term_uses: IndexSet<LocalId> = IndexSet::new();
         collect_terminator_uses(&block.terminator, &mut term_uses);
@@ -179,65 +152,7 @@ fn collect_use_blocks(func: &Function) -> HashMap<LocalId, IndexSet<BlockId>> {
     uses
 }
 
-fn instruction_def(kind: &InstructionKind) -> Option<LocalId> {
-    use InstructionKind::*;
-    match kind {
-        // RuntimeCalls whose runtime function returns nothing do NOT produce
-        // a new SSA value — the `dest` slot is a placeholder the codegen
-        // leaves untouched (see the "Void function" branch in
-        // `codegen::runtime_calls::compile_runtime_func_def`). MIR often
-        // reuses an existing LocalId as this placeholder (e.g. `TupleSet`
-        // stores into the same tuple local it mutates), so renaming that
-        // LocalId here would shadow the live value and subsequent uses
-        // would pick up an uninitialised Cranelift slot. Treating these as
-        // non-defining keeps the tuple/list/dict mutation chain intact.
-        RuntimeCall { dest, func, .. } => {
-            if runtime_call_is_void(func) {
-                None
-            } else {
-                Some(*dest)
-            }
-        }
-        Const { dest, .. }
-        | BinOp { dest, .. }
-        | UnOp { dest, .. }
-        | Call { dest, .. }
-        | CallDirect { dest, .. }
-        | CallNamed { dest, .. }
-        | CallVirtual { dest, .. }
-        | CallVirtualNamed { dest, .. }
-        | FuncAddr { dest, .. }
-        | BuiltinAddr { dest, .. }
-        | Copy { dest, .. }
-        | GcAlloc { dest, .. }
-        | FloatToInt { dest, .. }
-        | BoolToInt { dest, .. }
-        | IntToFloat { dest, .. }
-        | FloatBits { dest, .. }
-        | IntBitsToFloat { dest, .. }
-        | BoxValue { dest, .. }
-        | UnboxValue { dest, .. }
-        | FloatAbs { dest, .. }
-        | ExcGetType { dest }
-        | ExcHasException { dest }
-        | ExcGetCurrent { dest }
-        | ExcCheckType { dest, .. }
-        | ExcCheckClass { dest, .. }
-        | Phi { dest, .. }
-        | Refine { dest, .. } => Some(*dest),
-        // `GcPush.frame` / `ExcPushFrame.frame_local` are Cranelift-level
-        // synthesized definitions: the codegen computes the frame address
-        // from a stack slot and stores it via `def_var(frame, addr)`.
-        // Classically no MIR instruction produces these values, yet they
-        // must be treated as defs for SSA: otherwise the checker sees
-        // `ExcPushFrame` / `GcPush` both as uses-without-defs (since no
-        // def exists) AND as uses that must be dominated by a non-existent
-        // def. Classify them as defining their respective frame local.
-        GcPush { frame } => Some(*frame),
-        ExcPushFrame { frame_local } => Some(*frame_local),
-        GcPop | ExcPopFrame | ExcClear | ExcStartHandling | ExcEndHandling => None,
-    }
-}
+// `instruction_def` removed — callers use `InstructionKind::def()`.
 
 // ============================================================================
 // Phase 2: φ-insertion via iterated dominance frontier
@@ -440,81 +355,16 @@ fn collect_referenced_locals(func: &Function) -> IndexSet<LocalId> {
     let mut out: IndexSet<LocalId> = IndexSet::new();
     for block in func.blocks.values() {
         for inst in &block.instructions {
-            if let Some(d) = instruction_def(&inst.kind) {
+            if let Some(d) = inst.kind.def() {
                 out.insert(d);
             }
-            collect_kind_uses(&inst.kind, &mut out);
+            inst.kind.for_each_use(|id| {
+                out.insert(id);
+            });
         }
         collect_terminator_uses(&block.terminator, &mut out);
     }
     out
-}
-
-fn collect_kind_uses(kind: &InstructionKind, out: &mut IndexSet<LocalId>) {
-    use InstructionKind::*;
-    let push = |op: &Operand, out: &mut IndexSet<LocalId>| {
-        if let Operand::Local(id) = op {
-            out.insert(*id);
-        }
-    };
-    match kind {
-        Const { .. }
-        | FuncAddr { .. }
-        | BuiltinAddr { .. }
-        | GcAlloc { .. }
-        | GcPop
-        | ExcPopFrame
-        | ExcClear
-        | ExcGetType { .. }
-        | ExcHasException { .. }
-        | ExcGetCurrent { .. }
-        | ExcCheckType { .. }
-        | ExcCheckClass { .. }
-        | ExcStartHandling
-        | ExcEndHandling => {}
-        BinOp { left, right, .. } => {
-            push(left, out);
-            push(right, out);
-        }
-        UnOp { operand, .. } => push(operand, out),
-        Copy { src, .. }
-        | FloatToInt { src, .. }
-        | BoolToInt { src, .. }
-        | IntToFloat { src, .. }
-        | FloatBits { src, .. }
-        | IntBitsToFloat { src, .. }
-        | BoxValue { src, .. }
-        | UnboxValue { src, .. }
-        | FloatAbs { src, .. } => push(src, out),
-        Call { func, args, .. } => {
-            push(func, out);
-            for a in args {
-                push(a, out);
-            }
-        }
-        CallDirect { args, .. } | CallNamed { args, .. } | RuntimeCall { args, .. } => {
-            for a in args {
-                push(a, out);
-            }
-        }
-        CallVirtual { obj, args, .. } | CallVirtualNamed { obj, args, .. } => {
-            push(obj, out);
-            for a in args {
-                push(a, out);
-            }
-        }
-        // GcPush / ExcPushFrame define their frame_local (Cranelift-
-        // synthesized def_var); see classification in `instruction_def`.
-        // They must NOT appear in collect_kind_uses or the def would
-        // "depend on itself" when computing reachable locals.
-        GcPush { .. } | ExcPushFrame { .. } => {}
-        Phi { sources, .. } => {
-            for (_, op) in sources {
-                push(op, out);
-            }
-        }
-        Refine { src, .. } => push(src, out),
-    }
 }
 
 fn collect_terminator_uses(term: &Terminator, out: &mut IndexSet<LocalId>) {
@@ -595,10 +445,11 @@ fn rename_block(
             if matches!(inst.kind, InstructionKind::Phi { .. }) {
                 continue;
             }
-            rename_uses(&mut inst.kind, &ctx.stacks);
-            if let Some(original) = instruction_def(&inst.kind) {
+            inst.kind
+                .for_each_use_mut(|id| subst_local(id, &ctx.stacks));
+            if let Some(original) = inst.kind.def() {
                 let fresh = alloc_fresh(ctx, original, param_ids, bid);
-                rewrite_def(&mut inst.kind, fresh);
+                inst.kind.set_def(fresh);
                 ctx.stacks.entry(original).or_default().push(fresh);
                 pushed.push(original);
             }
@@ -717,109 +568,12 @@ fn alloc_fresh(
 // ============================================================================
 // Use/def rewriting helpers
 // ============================================================================
-
-fn rename_uses(kind: &mut InstructionKind, stacks: &HashMap<LocalId, Vec<LocalId>>) {
-    use InstructionKind::*;
-    match kind {
-        Const { .. }
-        | FuncAddr { .. }
-        | BuiltinAddr { .. }
-        | GcAlloc { .. }
-        | GcPop
-        | ExcPopFrame
-        | ExcClear
-        | ExcGetType { .. }
-        | ExcHasException { .. }
-        | ExcGetCurrent { .. }
-        | ExcCheckType { .. }
-        | ExcCheckClass { .. }
-        | ExcStartHandling
-        | ExcEndHandling => {}
-        BinOp { left, right, .. } => {
-            subst_operand(left, stacks);
-            subst_operand(right, stacks);
-        }
-        UnOp { operand, .. } => subst_operand(operand, stacks),
-        Copy { src, .. }
-        | FloatToInt { src, .. }
-        | BoolToInt { src, .. }
-        | IntToFloat { src, .. }
-        | FloatBits { src, .. }
-        | IntBitsToFloat { src, .. }
-        | BoxValue { src, .. }
-        | UnboxValue { src, .. }
-        | FloatAbs { src, .. } => subst_operand(src, stacks),
-        Call { func, args, .. } => {
-            subst_operand(func, stacks);
-            for a in args {
-                subst_operand(a, stacks);
-            }
-        }
-        CallDirect { args, .. } | CallNamed { args, .. } | RuntimeCall { args, .. } => {
-            for a in args {
-                subst_operand(a, stacks);
-            }
-        }
-        CallVirtual { obj, args, .. } | CallVirtualNamed { obj, args, .. } => {
-            subst_operand(obj, stacks);
-            for a in args {
-                subst_operand(a, stacks);
-            }
-        }
-        // Classified as defs, not uses — no rename needed here.
-        GcPush { .. } | ExcPushFrame { .. } => {}
-        Phi { .. } => {
-            // φ uses are filled in by the predecessor's `rename_block` via
-            // `fill_phi_sources`, not here.
-        }
-        Refine { src, .. } => subst_operand(src, stacks),
-    }
-}
-
-fn rewrite_def(kind: &mut InstructionKind, fresh: LocalId) {
-    use InstructionKind::*;
-    match kind {
-        Const { dest, .. }
-        | BinOp { dest, .. }
-        | UnOp { dest, .. }
-        | Call { dest, .. }
-        | CallDirect { dest, .. }
-        | CallNamed { dest, .. }
-        | CallVirtual { dest, .. }
-        | CallVirtualNamed { dest, .. }
-        | FuncAddr { dest, .. }
-        | BuiltinAddr { dest, .. }
-        | RuntimeCall { dest, .. }
-        | Copy { dest, .. }
-        | GcAlloc { dest, .. }
-        | FloatToInt { dest, .. }
-        | BoolToInt { dest, .. }
-        | IntToFloat { dest, .. }
-        | FloatBits { dest, .. }
-        | IntBitsToFloat { dest, .. }
-        | BoxValue { dest, .. }
-        | UnboxValue { dest, .. }
-        | FloatAbs { dest, .. }
-        | ExcGetType { dest }
-        | ExcHasException { dest }
-        | ExcGetCurrent { dest }
-        | ExcCheckType { dest, .. }
-        | ExcCheckClass { dest, .. }
-        | Phi { dest, .. }
-        | Refine { dest, .. } => {
-            *dest = fresh;
-        }
-        GcPush { frame } => {
-            *frame = fresh;
-        }
-        ExcPushFrame { frame_local } => {
-            *frame_local = fresh;
-        }
-        GcPop | ExcPopFrame | ExcClear | ExcStartHandling | ExcEndHandling => {
-            debug_assert!(false, "rewrite_def called on a defless instruction");
-        }
-    }
-}
+//
+// Per-instruction use/def manipulation now lives on `InstructionKind` itself
+// (`def`, `for_each_use`, `for_each_use_mut`, `set_def` in
+// `crate::instructions`). This module keeps only the terminator-specific
+// versions and the `subst_local` substitution primitive that the
+// `for_each_use_mut` closures call into.
 
 fn rename_terminator_uses(term: &mut Terminator, stacks: &HashMap<LocalId, Vec<LocalId>>) {
     match term {
@@ -969,8 +723,8 @@ mod tests {
 
         // The two defs should have distinct LocalIds after renaming.
         let block = &func.blocks[&bb0];
-        let d1 = instruction_def(&block.instructions[0].kind).unwrap();
-        let d2 = instruction_def(&block.instructions[1].kind).unwrap();
+        let d1 = block.instructions[0].kind.def().unwrap();
+        let d2 = block.instructions[1].kind.def().unwrap();
         assert_ne!(d1, d2);
         // Return should read the second def.
         match &block.terminator {

@@ -7,9 +7,7 @@ use indexmap::IndexSet;
 use pyaot_mir::Function;
 use pyaot_utils::LocalId;
 
-use super::{
-    instruction_dest, instruction_is_pure, instruction_used_locals, terminator_used_locals,
-};
+use super::{instruction_is_pure, terminator_used_locals};
 
 /// Eliminate dead instructions: pure instructions whose dest is never used.
 /// Returns true if any instructions were removed.
@@ -20,7 +18,7 @@ pub fn eliminate_dead_instructions(func: &mut Function) -> bool {
     for block in func.blocks.values_mut() {
         let before = block.instructions.len();
         block.instructions.retain(|instr| {
-            if let Some(dest) = instruction_dest(&instr.kind) {
+            if let Some(dest) = instr.kind.def() {
                 if instruction_is_pure(&instr.kind) && !used_locals.contains(&dest) {
                     return false;
                 }
@@ -42,12 +40,12 @@ pub fn eliminate_dead_locals(func: &mut Function) -> bool {
 
     for block in func.blocks.values() {
         for instr in &block.instructions {
-            if let Some(dest) = instruction_dest(&instr.kind) {
+            if let Some(dest) = instr.kind.def() {
                 referenced.insert(dest);
             }
-            for local_id in instruction_used_locals(&instr.kind) {
-                referenced.insert(local_id);
-            }
+            instr.kind.for_each_use(|id| {
+                referenced.insert(id);
+            });
         }
         for local_id in terminator_used_locals(&block.terminator) {
             referenced.insert(local_id);
@@ -70,9 +68,9 @@ fn compute_used_locals(func: &Function) -> IndexSet<LocalId> {
 
     for block in func.blocks.values() {
         for instr in &block.instructions {
-            for local_id in instruction_used_locals(&instr.kind) {
-                used.insert(local_id);
-            }
+            instr.kind.for_each_use(|id| {
+                used.insert(id);
+            });
         }
         for local_id in terminator_used_locals(&block.terminator) {
             used.insert(local_id);
