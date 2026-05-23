@@ -15,25 +15,67 @@ use pyaot_mir::{
     RawKind, RuntimeFunc,
 };
 use pyaot_types::Type;
-use pyaot_utils::{BlockId, ClassId, FuncId, LocalId};
+use pyaot_utils::{BlockId, ClassId, FuncId, LocalId, Span};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AbiShape {
-    Int,
-    Float,
-    Bool,
-    None,
-    Heap,
+/// Build a boxing `InstructionKind` that wraps a primitive `src` (of
+/// `src_ty`) into a tagged `Value` at `dest`. Used in two contexts:
+///
+/// - `coerce_operand` where lowering already allocated `dest`.
+/// - `emit_call_direct_with_bridge` where the boxed `dest` carries the
+///   widened-return-type slot.
+///
+/// `src_ty` must be one of `Int`, `Bool`, `Float`, `None` — primitives that
+/// have a defined tagged representation. Heap types do not need boxing
+/// (they're already pointer-shaped); callers must filter before calling.
+///
+/// Panics on non-primitive `src_ty` (programmer error).
+fn box_primitive_inst(src: Operand, src_ty: &Type, dest: LocalId) -> InstructionKind {
+    match src_ty {
+        Type::Int => InstructionKind::BoxValue {
+            dest,
+            src,
+            src_type: Type::Int,
+        },
+        Type::Bool => InstructionKind::BoxValue {
+            dest,
+            src,
+            src_type: Type::Bool,
+        },
+        Type::Float => InstructionKind::RuntimeCall {
+            dest,
+            func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
+            args: vec![src],
+        },
+        Type::None => InstructionKind::RuntimeCall {
+            dest,
+            func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_NONE),
+            // rt_box_none() is a zero-arg singleton accessor — the boxed
+            // `None` value is the same regardless of source. Verifier
+            // catches arity mismatches.
+            args: vec![],
+        },
+        _ => unreachable!("box_primitive_inst: non-primitive src_ty={:?}", src_ty),
+    }
 }
 
-fn abi_shape(ty: &Type) -> AbiShape {
-    match ty {
-        Type::Int => AbiShape::Int,
-        Type::Float => AbiShape::Float,
-        Type::Bool => AbiShape::Bool,
-        Type::None => AbiShape::None,
-        _ => AbiShape::Heap,
-    }
+/// Allocate a fresh temp local and emit a boxing instruction wrapping
+/// `operand` (of `actual_ty`) into a tagged Value slot typed `dest_ty`.
+/// Returns the boxed Operand.
+fn emit_box_primitive(
+    func: &mut Function,
+    next_local_id: &mut u32,
+    operand: Operand,
+    actual_ty: &Type,
+    dest_ty: Type,
+    span: Option<Span>,
+    emitted: &mut Vec<Instruction>,
+) -> Operand {
+    let dest = alloc_temp_local(func, next_local_id, dest_ty);
+    emitted.push(Instruction {
+        kind: box_primitive_inst(operand, actual_ty, dest),
+        span,
+    });
+    Operand::Local(dest)
 }
 
 fn operand_type(operand: &Operand, func: &Function) -> Type {
@@ -280,31 +322,8 @@ fn emit_call_direct_with_bridge(
         );
 
     if widening_to_heap {
-        let box_inst = match callee_return_ty {
-            Type::Int => InstructionKind::BoxValue {
-                dest,
-                src: Operand::Local(temp_dest),
-                src_type: Type::Int,
-            },
-            Type::Bool => InstructionKind::BoxValue {
-                dest,
-                src: Operand::Local(temp_dest),
-                src_type: Type::Bool,
-            },
-            Type::Float => InstructionKind::RuntimeCall {
-                dest,
-                func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
-                args: vec![Operand::Local(temp_dest)],
-            },
-            Type::None => InstructionKind::RuntimeCall {
-                dest,
-                func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_NONE),
-                args: Vec::new(),
-            },
-            _ => unreachable!(),
-        };
         repaired.push(Instruction {
-            kind: box_inst,
+            kind: box_primitive_inst(Operand::Local(temp_dest), callee_return_ty, dest),
             span,
         });
     } else {
@@ -752,121 +771,16 @@ fn coerce_operand(
             )),
         },
         Type::Any | Type::Union(_) => match actual {
-            Type::Int => {
-                let dest = alloc_temp_local(func, next_local_id, expected.clone());
-                emitted.push(Instruction {
-                    kind: InstructionKind::BoxValue {
-                        dest,
-                        src: operand,
-                        src_type: Type::Int,
-                    },
-                    span,
-                });
-                Ok(Operand::Local(dest))
-            }
-            Type::Float => {
-                let dest = alloc_temp_local(func, next_local_id, expected.clone());
-                emitted.push(Instruction {
-                    kind: InstructionKind::RuntimeCall {
-                        dest,
-                        func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
-                        args: vec![operand],
-                    },
-                    span,
-                });
-                Ok(Operand::Local(dest))
-            }
-            Type::Bool => {
-                let dest = alloc_temp_local(func, next_local_id, expected.clone());
-                emitted.push(Instruction {
-                    kind: InstructionKind::BoxValue {
-                        dest,
-                        src: operand,
-                        src_type: Type::Bool,
-                    },
-                    span,
-                });
-                Ok(Operand::Local(dest))
-            }
-            Type::None => {
-                let dest = alloc_temp_local(func, next_local_id, expected.clone());
-                emitted.push(Instruction {
-                    kind: InstructionKind::RuntimeCall {
-                        dest,
-                        func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_NONE),
-                        // rt_box_none() is a zero-arg singleton accessor — the
-                        // boxed `None` value is the same regardless of source.
-                        // Verifier catches arity mismatches.
-                        args: vec![],
-                    },
-                    span,
-                });
-                Ok(Operand::Local(dest))
-            }
+            Type::Int | Type::Bool | Type::Float | Type::None => Ok(emit_box_primitive(
+                func,
+                next_local_id,
+                operand,
+                &actual,
+                expected.clone(),
+                span,
+                emitted,
+            )),
             _ => Ok(operand),
-        },
-        _ if matches!(expected, Type::Any) => match actual {
-            // §F.7c: container slots and field-write paths expect tagged
-            // `Value` bits. Wrap raw primitives via the appropriate boxer
-            // before the call so the runtime sees a uniform Value.
-            Type::Int => {
-                let dest = alloc_temp_local(func, next_local_id, Type::Any);
-                emitted.push(Instruction {
-                    kind: InstructionKind::BoxValue {
-                        dest,
-                        src: operand,
-                        src_type: Type::Int,
-                    },
-                    span,
-                });
-                Ok(Operand::Local(dest))
-            }
-            Type::Bool => {
-                let dest = alloc_temp_local(func, next_local_id, Type::Any);
-                emitted.push(Instruction {
-                    kind: InstructionKind::BoxValue {
-                        dest,
-                        src: operand,
-                        src_type: Type::Bool,
-                    },
-                    span,
-                });
-                Ok(Operand::Local(dest))
-            }
-            Type::Float => {
-                let dest = alloc_temp_local(func, next_local_id, Type::Any);
-                emitted.push(Instruction {
-                    kind: InstructionKind::RuntimeCall {
-                        dest,
-                        func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_FLOAT),
-                        args: vec![operand],
-                    },
-                    span,
-                });
-                Ok(Operand::Local(dest))
-            }
-            Type::None => {
-                let dest = alloc_temp_local(func, next_local_id, Type::Any);
-                emitted.push(Instruction {
-                    kind: InstructionKind::RuntimeCall {
-                        dest,
-                        func: RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_BOX_NONE),
-                        // rt_box_none() is a zero-arg singleton accessor — the
-                        // boxed `None` value is the same regardless of source.
-                        // Verifier catches arity mismatches.
-                        args: vec![],
-                    },
-                    span,
-                });
-                Ok(Operand::Local(dest))
-            }
-            _ => match abi_shape(&actual) {
-                AbiShape::Heap => Ok(operand),
-                _ => Err(CompilerError::codegen_error(
-                    format!("cannot coerce {:?} to heap ABI at call site", actual),
-                    None,
-                )),
-            },
         },
         _ if expected.is_heap() => match actual {
             Type::None => match operand {

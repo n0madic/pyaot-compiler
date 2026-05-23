@@ -74,7 +74,7 @@ impl TypeTable {
     /// fixed-point iteration per function independently; the pass is
     /// intra-procedural at this stage. WPA parameter / field inference
     /// (S1.11 / S1.12) layer on top by cross-linking call sites.
-    pub fn infer_module(module: &Module) -> Self {
+    pub(crate) fn infer_module(module: &Module) -> Self {
         let mut per_func: HashMap<FuncId, FunctionTypes> = HashMap::new();
         for (&func_id, func) in &module.functions {
             per_func.insert(func_id, infer_function(func, Some(module)));
@@ -85,20 +85,20 @@ impl TypeTable {
     /// Looks up the inferred type for `(func_id, local_id)`. Returns
     /// `None` if the function wasn't in the module at inference time or
     /// the LocalId has no entry (unreachable def or inconsistent input).
-    pub fn get(&self, func_id: FuncId, local_id: LocalId) -> Option<&Type> {
+    pub(crate) fn get(&self, func_id: FuncId, local_id: LocalId) -> Option<&Type> {
         self.per_func.get(&func_id)?.get(&local_id)
     }
 
     /// Borrow the whole map for a function. Primarily for tests and
     /// MIR-dumping tools.
-    pub fn function_types(&self, func_id: FuncId) -> Option<&FunctionTypes> {
+    pub(crate) fn function_types(&self, func_id: FuncId) -> Option<&FunctionTypes> {
         self.per_func.get(&func_id)
     }
 
     /// Replace a function's per-LocalId type map. Used by interprocedural
     /// passes (WPA param / field inference) that recompute a function's
     /// types after param or field updates flow in from other functions.
-    pub fn set_function_types(&mut self, func_id: FuncId, types: FunctionTypes) {
+    pub(crate) fn set_function_types(&mut self, func_id: FuncId, types: FunctionTypes) {
         self.per_func.insert(func_id, types);
     }
 }
@@ -110,7 +110,7 @@ impl TypeTable {
 /// available get cross-function lookups (e.g., `CallDirect` resolves to
 /// the callee's declared return type). Stand-alone callers pass `None`
 /// and accept that direct-call dests fall back to their seed type.
-pub fn infer_function(func: &Function, module: Option<&Module>) -> FunctionTypes {
+pub(crate) fn infer_function(func: &Function, module: Option<&Module>) -> FunctionTypes {
     infer_function_with_seed(func, module, &HashMap::new())
 }
 
@@ -119,7 +119,7 @@ pub fn infer_function(func: &Function, module: Option<&Module>) -> FunctionTypes
 /// inference pass (§1.6, S1.11) uses this to inject call-site-derived
 /// types for function params, overriding the original HIR-lowering
 /// coarse seed.
-pub fn infer_function_with_seed(
+pub(crate) fn infer_function_with_seed(
     func: &Function,
     module: Option<&Module>,
     seed_overrides: &HashMap<LocalId, Type>,
@@ -663,7 +663,7 @@ const MAX_WPA_SCC_ITERATIONS: usize = 16;
 /// seed type — typically `Any` for unannotated params, or the declared
 /// annotation otherwise. Entry points like `__pyaot_module_init__` fall
 /// into this bucket.
-pub fn wpa_param_inference(
+pub(crate) fn wpa_param_inference(
     module: &Module,
     call_graph: &crate::call_graph::CallGraph,
     table: &mut TypeTable,
@@ -806,38 +806,44 @@ fn merge_dynamic_observed_wpa_type(prev: Option<&Type>, new_ty: &Type) -> Type {
     }
 }
 
-fn param_requires_erased_runtime_abi_with_def_map(
+/// Walk Copy / Refine / Phi chains backward from `local_id` to determine
+/// whether the value transitively originated from `param_id`. Used by the
+/// callers below to decide whether a parameter feeds into an
+/// ABI-relevant runtime call.
+fn local_depends_on_param(
+    local_id: LocalId,
+    param_id: LocalId,
+    def_map: &HashMap<LocalId, &InstructionKind>,
+    seen: &mut HashSet<LocalId>,
+) -> bool {
+    if local_id == param_id {
+        return true;
+    }
+    if !seen.insert(local_id) {
+        return false;
+    }
+    match def_map.get(&local_id).copied() {
+        Some(InstructionKind::Copy { src, .. } | InstructionKind::Refine { src, .. }) => {
+            matches!(src, Operand::Local(src_local) if local_depends_on_param(*src_local, param_id, def_map, seen))
+        }
+        Some(InstructionKind::Phi { sources, .. }) => sources.iter().any(|(_, src)| {
+            matches!(src, Operand::Local(src_local) if local_depends_on_param(*src_local, param_id, def_map, seen))
+        }),
+        _ => false,
+    }
+}
+
+/// Generic ABI-requirement scan: does any RuntimeCall whose callee
+/// satisfies `predicate` take an argument that transitively depends on
+/// `param_id`? Used to decide whether the parameter's ABI must stay
+/// tagged (the runtime helper interprets the bits via the Value tag
+/// machinery).
+fn param_requires_abi_with_def_map(
     func: &Function,
     param_id: LocalId,
     def_map: &HashMap<LocalId, &InstructionKind>,
+    predicate: impl Fn(&pyaot_core_defs::RuntimeFuncDef) -> bool,
 ) -> bool {
-    fn local_depends_on_param(
-        local_id: LocalId,
-        param_id: LocalId,
-        def_map: &HashMap<LocalId, &InstructionKind>,
-        seen: &mut HashSet<LocalId>,
-    ) -> bool {
-        if local_id == param_id {
-            return true;
-        }
-        if !seen.insert(local_id) {
-            return false;
-        }
-        match def_map.get(&local_id).copied() {
-            Some(InstructionKind::Copy { src, .. } | InstructionKind::Refine { src, .. }) => {
-                matches!(src, Operand::Local(src_local) if local_depends_on_param(*src_local, param_id, def_map, seen))
-            }
-            Some(InstructionKind::Phi { sources, .. }) => sources.iter().any(|(_, src)| {
-                matches!(src, Operand::Local(src_local) if local_depends_on_param(*src_local, param_id, def_map, seen))
-            }),
-            _ => false,
-        }
-    }
-
-    let rt_get_type_tag = &pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG;
-    let rt_isinstance_class = &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS;
-    let rt_isinstance_class_inherited =
-        &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS_INHERITED;
     for block in func.blocks.values() {
         for inst in &block.instructions {
             let InstructionKind::RuntimeCall {
@@ -848,10 +854,7 @@ fn param_requires_erased_runtime_abi_with_def_map(
             else {
                 continue;
             };
-            if !(ptr::eq(*def, rt_get_type_tag)
-                || ptr::eq(*def, rt_isinstance_class)
-                || ptr::eq(*def, rt_isinstance_class_inherited))
-            {
+            if !predicate(def) {
                 continue;
             }
             if args.iter().any(|arg| match arg {
@@ -868,59 +871,34 @@ fn param_requires_erased_runtime_abi_with_def_map(
     false
 }
 
+/// Param feeds into `rt_get_type_tag` / `rt_isinstance_class[_inherited]`
+/// — runtime type introspection that demands a tagged-Value ABI.
+fn param_requires_erased_runtime_abi_with_def_map(
+    func: &Function,
+    param_id: LocalId,
+    def_map: &HashMap<LocalId, &InstructionKind>,
+) -> bool {
+    let rt_get_type_tag = &pyaot_core_defs::runtime_func_def::RT_GET_TYPE_TAG;
+    let rt_isinstance_class = &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS;
+    let rt_isinstance_class_inherited =
+        &pyaot_core_defs::runtime_func_def::RT_ISINSTANCE_CLASS_INHERITED;
+    param_requires_abi_with_def_map(func, param_id, def_map, |def| {
+        ptr::eq(def, rt_get_type_tag)
+            || ptr::eq(def, rt_isinstance_class)
+            || ptr::eq(def, rt_isinstance_class_inherited)
+    })
+}
+
+/// Param feeds into any `rt_obj_*` runtime helper — the heap-object
+/// dunder dispatch family that consumes tagged Values.
 fn param_requires_heap_erased_abi_with_def_map(
     func: &Function,
     param_id: LocalId,
     def_map: &HashMap<LocalId, &InstructionKind>,
 ) -> bool {
-    fn local_depends_on_param(
-        local_id: LocalId,
-        param_id: LocalId,
-        def_map: &HashMap<LocalId, &InstructionKind>,
-        seen: &mut HashSet<LocalId>,
-    ) -> bool {
-        if local_id == param_id {
-            return true;
-        }
-        if !seen.insert(local_id) {
-            return false;
-        }
-        match def_map.get(&local_id).copied() {
-            Some(InstructionKind::Copy { src, .. } | InstructionKind::Refine { src, .. }) => {
-                matches!(src, Operand::Local(src_local) if local_depends_on_param(*src_local, param_id, def_map, seen))
-            }
-            Some(InstructionKind::Phi { sources, .. }) => sources.iter().any(|(_, src)| {
-                matches!(src, Operand::Local(src_local) if local_depends_on_param(*src_local, param_id, def_map, seen))
-            }),
-            _ => false,
-        }
-    }
-
-    for block in func.blocks.values() {
-        for inst in &block.instructions {
-            let InstructionKind::RuntimeCall {
-                func: RuntimeFunc::Call(def),
-                args,
-                ..
-            } = &inst.kind
-            else {
-                continue;
-            };
-            if !def.symbol.starts_with("rt_obj_") {
-                continue;
-            }
-            if args.iter().any(|arg| match arg {
-                Operand::Local(local) => {
-                    let mut seen = HashSet::new();
-                    local_depends_on_param(*local, param_id, def_map, &mut seen)
-                }
-                Operand::Constant(_) => false,
-            }) {
-                return true;
-            }
-        }
-    }
-    false
+    param_requires_abi_with_def_map(func, param_id, def_map, |def| {
+        def.symbol.starts_with("rt_obj_")
+    })
 }
 
 /// One pass over a single function: collect arg types across every
@@ -1594,7 +1572,7 @@ pub fn wpa_field_inference(module: &mut Module, type_table: &TypeTable) -> bool 
 /// actually refine something. Until then, one outer iteration is
 /// typically enough: S1.11 establishes param types; this call derives
 /// fields from them.
-pub fn wpa_param_and_field_inference_to_fixed_point(
+pub(crate) fn wpa_param_and_field_inference_to_fixed_point(
     module: &mut Module,
     call_graph: &crate::call_graph::CallGraph,
     type_table: &mut TypeTable,

@@ -243,6 +243,26 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Resolve a function's return type by consulting the type-inference cache
+    /// first, then falling back to the HIR's declared `return_type` (defaulting
+    /// to `Type::None` for functions with no annotation).
+    ///
+    /// Returns `None` only if `func_id` is unknown in both the cache and the
+    /// module's `func_defs` map — typically a cross-module reference that
+    /// hasn't been resolved.
+    pub(crate) fn resolve_func_return_type(
+        &self,
+        func_id: &pyaot_utils::FuncId,
+        module: &hir::Module,
+    ) -> Option<Type> {
+        self.get_func_return_type(func_id).cloned().or_else(|| {
+            module
+                .func_defs
+                .get(func_id)
+                .map(|f| f.return_type.clone().unwrap_or(Type::None))
+        })
+    }
+
     /// Resolve call target type from the function expression.
     /// Returns `None` if no resolution found (caller applies fallback).
     fn resolve_call_target_type(
@@ -251,22 +271,16 @@ impl<'a> Lowering<'a> {
         module: &hir::Module,
     ) -> Option<Type> {
         if let hir::ExprKind::FuncRef(func_id) = &func_expr.kind {
-            if let Some(return_type) = self.get_func_return_type(func_id) {
-                return Some(return_type.clone());
-            }
-            if let Some(func_def) = module.func_defs.get(func_id) {
-                return Some(func_def.return_type.clone().unwrap_or(Type::None));
+            if let Some(return_type) = self.resolve_func_return_type(func_id, module) {
+                return Some(return_type);
             }
         }
         // Immediate Closure call, e.g. `(Closure { __genexp_N, [captures] })()`
         // emitted by gen-expr desugaring. Return the wrapped function's return
         // type so downstream `sum`/`min`/`max` dispatch sees `Iterator(...)`.
         if let hir::ExprKind::Closure { func: func_id, .. } = &func_expr.kind {
-            if let Some(return_type) = self.get_func_return_type(func_id) {
-                return Some(return_type.clone());
-            }
-            if let Some(func_def) = module.func_defs.get(func_id) {
-                return Some(func_def.return_type.clone().unwrap_or(Type::None));
+            if let Some(return_type) = self.resolve_func_return_type(func_id, module) {
+                return Some(return_type);
             }
         }
         if let hir::ExprKind::Var(var_id) = &func_expr.kind {
@@ -280,11 +294,9 @@ impl<'a> Lowering<'a> {
                     .get_class_info(class_id)
                     .and_then(|info| info.get_dunder_func("__call__"))
                 {
-                    if let Some(return_type) = self.get_func_return_type(&call_func_id) {
-                        return Some(return_type.clone());
-                    }
-                    if let Some(func_def) = module.func_defs.get(&call_func_id) {
-                        return Some(func_def.return_type.clone().unwrap_or(Type::None));
+                    if let Some(return_type) = self.resolve_func_return_type(&call_func_id, module)
+                    {
+                        return Some(return_type);
                     }
                 }
             }
@@ -295,27 +307,20 @@ impl<'a> Lowering<'a> {
                 return Some(Type::Any);
             }
             if let Some((_, original_func_id)) = self.get_var_wrapper(var_id) {
-                if let Some(return_type) = self.get_func_return_type(&original_func_id) {
-                    return Some(return_type.clone());
-                }
-                if let Some(func_def) = module.func_defs.get(&original_func_id) {
-                    return Some(func_def.return_type.clone().unwrap_or(Type::None));
+                if let Some(return_type) = self.resolve_func_return_type(&original_func_id, module)
+                {
+                    return Some(return_type);
                 }
             }
             if let Some((_, original_func_id)) = self.get_module_var_wrapper(var_id) {
-                if let Some(return_type) = self.get_func_return_type(&original_func_id) {
-                    return Some(return_type.clone());
-                }
-                if let Some(func_def) = module.func_defs.get(&original_func_id) {
-                    return Some(func_def.return_type.clone().unwrap_or(Type::None));
+                if let Some(return_type) = self.resolve_func_return_type(&original_func_id, module)
+                {
+                    return Some(return_type);
                 }
             }
             if let Some(func_id) = self.get_var_func(var_id) {
-                if let Some(return_type) = self.get_func_return_type(&func_id) {
-                    return Some(return_type.clone());
-                }
-                if let Some(func_def) = module.func_defs.get(&func_id) {
-                    return Some(func_def.return_type.clone().unwrap_or(Type::None));
+                if let Some(return_type) = self.resolve_func_return_type(&func_id, module) {
+                    return Some(return_type);
                 }
             }
             // Identity-decorated module-level functions: `@identity def f(): …`
@@ -324,11 +329,8 @@ impl<'a> Lowering<'a> {
             // Required so eager-cache of Call-expr return types sees the original
             // function's return type instead of falling through to `Type::Any`.
             if let Some(func_id) = self.get_module_var_func(var_id) {
-                if let Some(return_type) = self.get_func_return_type(&func_id) {
-                    return Some(return_type.clone());
-                }
-                if let Some(func_def) = module.func_defs.get(&func_id) {
-                    return Some(func_def.return_type.clone().unwrap_or(Type::None));
+                if let Some(return_type) = self.resolve_func_return_type(&func_id, module) {
+                    return Some(return_type);
                 }
             }
         }
