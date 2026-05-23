@@ -31,6 +31,19 @@ impl AstToHir {
         let simple_stmt = match stmt {
             // Inline simple statements
             py::Stmt::Expr(expr_stmt) => {
+                // Special case: `...` at statement position is a stub-body
+                // placeholder (e.g. `def foo(): ...` or `class C: ...`).
+                // Lower it to `pass` so it does not flow as a real value.
+                // Any other position (e.g. `x is ...`, `[...]`, `f(...)`)
+                // is rejected by `convert_constant`.
+                if let py::Expr::Constant(c) = &*expr_stmt.value {
+                    if matches!(c.value, py::Constant::Ellipsis) {
+                        StmtKind::Pass
+                    } else {
+                        let expr_id = self.convert_expr(*expr_stmt.value)?;
+                        StmtKind::Expr(expr_id)
+                    }
+                } else
                 // Special case: yield from as a statement — desugar directly to For loop
                 // This avoids creating a trailing Expr(None) that would break
                 // generator pattern detection (which requires exactly 1 statement in body)

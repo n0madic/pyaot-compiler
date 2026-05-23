@@ -167,71 +167,142 @@ impl SlabAllocator {
     /// Sweep all slab pages: finalize unmarked objects, rebuild free lists.
     /// Returns the number of bytes freed.
     ///
+    /// ## Re-entrancy safety
+    ///
+    /// `finalize_object` may invoke user `__del__` methods which can call
+    /// `gc_alloc → slab.alloc`. To prevent double-finalization (where a freshly
+    /// allocated slot at a higher offset gets re-visited by the same sweep
+    /// loop), this implementation uses a three-phase strategy:
+    ///
+    /// 1. **Mark phase**: walk all slots and build a `to_finalize` linked list
+    ///    threaded through the first 8 bytes of unmarked slots. Slot sizes are
+    ///    left intact (finalizers may need them). For reachable slots, clear
+    ///    the GC mark.
+    /// 2. **Finalize phase**: walk the `to_finalize` list, snapshotting the
+    ///    `next` pointer before each `finalize_object` call. During this phase
+    ///    the slab `free_head` is null, so any reentrant `slab.alloc` falls
+    ///    through to bump allocation above the snapshot sweep limit.
+    /// 3. **Free phase**: walk the list again, zero each header size, and link
+    ///    every freed slot (both pre-existing and newly finalized) into the
+    ///    fresh `free_head`.
+    ///
+    /// Index-based page iteration (rather than `iter_mut`) avoids aliasing UB
+    /// when `__del__` reentrantly allocates a new page (which would push to
+    /// `class.pages` and invalidate any outstanding iterator).
+    ///
     /// # Safety
     /// Must be called during GC sweep phase.
     pub unsafe fn sweep(&mut self) -> usize {
         let mut bytes_freed = 0;
 
-        for class in &mut self.classes {
-            let slot_size = class.slot_size;
+        for class_idx in 0..NUM_SIZE_CLASSES {
+            bytes_freed += self.sweep_class(class_idx);
+        }
 
-            // Reset free list — rebuild from scratch during sweep
-            class.free_head = std::ptr::null_mut();
+        bytes_freed
+    }
 
-            // Snapshot the cursor position for the current (last) page.
-            // Under gc_stress_test, a collection can trigger between a bump
-            // allocation and the allocated_up_to update. Using the cursor
-            // as upper bound for the last page ensures no allocated slots
-            // are missed during sweep.
-            let num_pages = class.pages.len();
+    /// Sweep a single size class. See [`Self::sweep`] for the re-entrancy
+    /// strategy.
+    #[inline]
+    unsafe fn sweep_class(&mut self, class_idx: usize) -> usize {
+        let slot_size = self.classes[class_idx].slot_size;
+        let slots_per_page = self.classes[class_idx].slots_per_page;
 
-            for (page_idx, page_info) in class.pages.iter_mut().enumerate() {
-                let sweep_limit = if page_idx == num_pages - 1 {
-                    // For the current (last) page, use the cursor-derived
-                    // high-water mark to catch any slots between
-                    // allocated_up_to and the actual cursor position.
-                    let cursor_offset = if class.cursor >= page_info.ptr
-                        && class.cursor <= page_info.ptr.add(class.slots_per_page * slot_size)
-                    {
-                        class.cursor.offset_from(page_info.ptr) as usize
+        // Reset free list — it will be rebuilt in the free phase.
+        self.classes[class_idx].free_head = std::ptr::null_mut();
+
+        // Snapshot page geometry. Reentrant allocations from `__del__` may
+        // push new pages, but we only sweep snapshot range.
+        let num_pages = self.classes[class_idx].pages.len();
+        let cursor = self.classes[class_idx].cursor;
+
+        // In-band linked list heads. Slots are linked through their first
+        // 8 bytes (same layout as `free_head`).
+        let mut to_finalize_head: *mut u8 = std::ptr::null_mut();
+        let mut pre_existing_free_head: *mut u8 = std::ptr::null_mut();
+        let mut bytes_freed = 0usize;
+
+        // PHASE 1: mark and link.
+        for page_idx in 0..num_pages {
+            let page_ptr = self.classes[class_idx].pages[page_idx].ptr;
+            let allocated_up_to = self.classes[class_idx].pages[page_idx].allocated_up_to;
+
+            let sweep_limit = if page_idx == num_pages - 1 {
+                // Current (last) page may have a cursor higher than
+                // allocated_up_to under gc_stress_test (collection between
+                // cursor bump and allocated_up_to update).
+                let cursor_offset =
+                    if cursor >= page_ptr && cursor <= page_ptr.add(slots_per_page * slot_size) {
+                        cursor.offset_from(page_ptr) as usize
                     } else {
-                        page_info.allocated_up_to
+                        allocated_up_to
                     };
-                    cursor_offset.max(page_info.allocated_up_to)
+                cursor_offset.max(allocated_up_to)
+            } else {
+                allocated_up_to
+            };
+
+            // Persist the limit so future sweeps see the same range.
+            self.classes[class_idx].pages[page_idx].allocated_up_to = sweep_limit;
+
+            let mut offset = 0;
+            while offset < sweep_limit {
+                let obj_ptr = page_ptr.add(offset) as *mut Obj;
+                let header = &mut (*obj_ptr).header;
+
+                if header.size == 0 {
+                    // Pre-existing free slot — link into pre_existing list.
+                    *(obj_ptr as *mut *mut u8) = pre_existing_free_head;
+                    pre_existing_free_head = obj_ptr as *mut u8;
+                } else if !(*obj_ptr).is_marked() {
+                    // Unmarked live object — defer finalize, keep size intact.
+                    bytes_freed += header.size;
+                    *(obj_ptr as *mut *mut u8) = to_finalize_head;
+                    to_finalize_head = obj_ptr as *mut u8;
                 } else {
-                    // Fully-used pages: allocated_up_to is authoritative
-                    page_info.allocated_up_to
-                };
-
-                // Update allocated_up_to to match the sweep limit so
-                // future sweeps don't miss these slots.
-                page_info.allocated_up_to = sweep_limit;
-
-                let mut offset = 0;
-                while offset < sweep_limit {
-                    let obj_ptr = page_info.ptr.add(offset) as *mut Obj;
-                    let header = &mut (*obj_ptr).header;
-
-                    if header.size == 0 {
-                        // Slot was previously freed — add back to free list
-                        *(obj_ptr as *mut *mut u8) = class.free_head;
-                        class.free_head = obj_ptr as *mut u8;
-                    } else if !(*obj_ptr).is_marked() {
-                        // Live object that is unreachable — finalize and free
-                        finalize_object(obj_ptr);
-                        bytes_freed += header.size;
-                        header.size = 0; // Mark slot as free
-                        *(obj_ptr as *mut *mut u8) = class.free_head;
-                        class.free_head = obj_ptr as *mut u8;
-                    } else {
-                        // Reachable — clear mark for next cycle
-                        (*obj_ptr).set_marked(false);
-                    }
-
-                    offset += slot_size;
+                    // Reachable — clear mark for next cycle.
+                    (*obj_ptr).set_marked(false);
                 }
+
+                offset += slot_size;
             }
         }
+
+        // PHASE 2: finalize. No mut borrow on `class` is held across the call;
+        // `__del__` may reentrantly call `slab().alloc(...)`. Reentrant allocs
+        // see `free_head == null` and bump-allocate above the snapshot range.
+        let mut p = to_finalize_head;
+        while !p.is_null() {
+            // Save `next` before finalize: __del__ never sees this slot via
+            // GC roots (it was unreachable), but defensive against user code
+            // mutating the slot through aliasing.
+            let next = *(p as *const *mut u8);
+            finalize_object(p as *mut Obj);
+            p = next;
+        }
+
+        // PHASE 3: zero sizes and rebuild free list. Walk both lists.
+        let mut new_free_head = std::ptr::null_mut::<u8>();
+
+        let mut p = pre_existing_free_head;
+        while !p.is_null() {
+            let next = *(p as *const *mut u8);
+            *(p as *mut *mut u8) = new_free_head;
+            new_free_head = p;
+            p = next;
+        }
+
+        let mut p = to_finalize_head;
+        while !p.is_null() {
+            let next = *(p as *const *mut u8);
+            (*(p as *mut Obj)).header.size = 0;
+            *(p as *mut *mut u8) = new_free_head;
+            new_free_head = p;
+            p = next;
+        }
+
+        self.classes[class_idx].free_head = new_free_head;
 
         bytes_freed
     }

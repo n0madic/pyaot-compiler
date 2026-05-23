@@ -31,7 +31,22 @@ impl AstToHir {
             }
             py::Constant::Bytes(b) => ExprKind::Bytes(b.clone()),
             py::Constant::None => ExprKind::None,
-            py::Constant::Ellipsis => ExprKind::None, // Ellipsis (...) treated as None for protocol method stubs
+            py::Constant::Ellipsis => {
+                // `...` is only accepted as a stub-body filler (statement-
+                // position expression in a function/method/class body). The
+                // statement converter intercepts that case explicitly and
+                // emits `Pass` without invoking this helper, so reaching the
+                // ellipsis arm here means the literal appeared in a real
+                // expression context (e.g. `x is ...`, `f(...)`, `[..., 1]`)
+                // — which would otherwise silently collapse to `None` and
+                // mis-route comparisons / arguments.
+                return Err(CompilerError::parse_error(
+                    "`...` (Ellipsis) is only supported as a stub body \
+                     placeholder (e.g. `def f(): ...`); it is not a runtime \
+                     value in this compiler",
+                    span,
+                ));
+            }
             _ => {
                 return Err(CompilerError::parse_error(
                     format!("Unsupported constant: {:?}", constant),

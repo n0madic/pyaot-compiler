@@ -115,10 +115,29 @@ impl Value {
 
     /// Extract the raw pointer. Panics in debug if the tag is not a pointer.
     /// The resulting pointer may be null.
+    ///
+    /// In release builds the conversion is unchecked and may yield an
+    /// arbitrary bit pattern when the tag is not Ptr — callers that cannot
+    /// guarantee the pointer tag MUST consult [`Self::is_ptr`] first. Several
+    /// runtime ABI shims intentionally rely on the raw bits (e.g. to
+    /// reconstruct the original tagged `Value` via `Value(p as u64)`), so a
+    /// silent null fallback here would alter their semantics.
     #[inline]
     pub fn unwrap_ptr<T>(self) -> *mut T {
         debug_assert!(self.is_ptr());
         self.0 as *mut T
+    }
+
+    /// Extract the raw pointer if the tag is Ptr, otherwise return null. Use
+    /// this in code paths where a tagged primitive should be treated as
+    /// "absent heap object" rather than reinterpreted as bits.
+    #[inline]
+    pub fn unwrap_ptr_or_null<T>(self) -> *mut T {
+        if self.is_ptr() {
+            self.0 as *mut T
+        } else {
+            core::ptr::null_mut()
+        }
     }
 
     /// Runtime type for immediate (non-pointer) tags. Returns `None` for

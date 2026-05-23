@@ -92,7 +92,12 @@ pub fn rt_instance_get_field(inst: *mut Obj, offset: i64) -> i64 {
 #[export_name = "rt_instance_get_field"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_instance_get_field_abi(inst: Value, offset: i64) -> i64 {
-    rt_instance_get_field(inst.unwrap_ptr(), offset)
+    unsafe {
+        rt_instance_get_field(
+            crate::utils::expect_ptr_or_type_error(inst, "rt_instance_get_field"),
+            offset,
+        )
+    }
 }
 
 /// Set a field in an instance by offset
@@ -126,7 +131,13 @@ pub fn rt_instance_set_field(inst: *mut Obj, offset: i64, value: i64) {
 #[export_name = "rt_instance_set_field"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_instance_set_field_abi(inst: Value, offset: i64, value: i64) {
-    rt_instance_set_field(inst.unwrap_ptr(), offset, value)
+    unsafe {
+        rt_instance_set_field(
+            crate::utils::expect_ptr_or_type_error(inst, "rt_instance_set_field"),
+            offset,
+            value,
+        )
+    }
 }
 
 /// Get the class ID of an instance
@@ -145,6 +156,9 @@ pub fn rt_instance_get_class_id(inst: *mut Obj) -> u8 {
 #[export_name = "rt_instance_get_class_id"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_instance_get_class_id_abi(inst: Value) -> u8 {
+    if !inst.is_ptr() {
+        return 0;
+    }
     rt_instance_get_class_id(inst.unwrap_ptr())
 }
 

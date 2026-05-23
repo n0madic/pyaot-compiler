@@ -33,9 +33,8 @@ pub extern "C" fn rt_box_float_abi(value: f64) -> Value {
 /// Unbox a float value from a heap-allocated FloatObj
 /// Used for list elements when the element type is float
 ///
-/// # Panics
-/// Panics if `obj` is null or has wrong type tag. This catches type confusion
-/// bugs in both debug and release builds.
+/// Raises `TypeError` if `obj` has the wrong type tag. Returns 0.0 for null
+/// (matching zero-initialisation semantics for empty Union/Optional slots).
 pub fn rt_unbox_float(obj: *mut Obj) -> f64 {
     if obj.is_null() {
         return 0.0;
@@ -44,7 +43,11 @@ pub fn rt_unbox_float(obj: *mut Obj) -> f64 {
     unsafe {
         let actual_tag = (*obj).header.type_tag;
         if actual_tag != TypeTagKind::Float {
-            panic!("rt_unbox_float: expected Float, got {:?}", actual_tag);
+            raise_exc!(
+                crate::exceptions::ExceptionType::TypeError,
+                "rt_unbox_float: expected Float, got {}",
+                actual_tag.type_name()
+            );
         }
         let float_obj = obj as *mut FloatObj;
         (*float_obj).value

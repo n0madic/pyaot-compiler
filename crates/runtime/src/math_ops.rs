@@ -64,6 +64,72 @@ pub extern "C" fn rt_pow_int(base: i64, exp: i64) -> i64 {
     }
 }
 
+/// Left shift with CPython semantics: `left << right`.
+///
+/// CPython raises `ValueError` for negative shift counts. Counts >= 64 would
+/// promote the result beyond i64 in CPython; this compiler does not support
+/// arbitrary-precision integers, so we raise `OverflowError` instead of
+/// silently producing a Cranelift-defined wraparound (x86 `ishl` masks count
+/// to `count & 63`, so `1 << 64` would otherwise yield 1).
+#[no_mangle]
+pub extern "C" fn rt_int_lshift(left: i64, right: i64) -> i64 {
+    if right < 0 {
+        unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "negative shift count"
+            )
+        }
+    }
+    if right >= 64 {
+        // CPython would return left * 2**right; we cap at i64 and raise.
+        // The special case `0 << n` is well-defined (zero) — preserve it.
+        if left == 0 {
+            return 0;
+        }
+        unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::OverflowError,
+                "shift count too large for i64"
+            )
+        }
+    }
+    // Detect overflow: result must fit in i64 with the sign bit preserved.
+    // `left.checked_shl(right as u32)` checks the shift count itself; we
+    // additionally verify the round-trip to catch value overflow.
+    let shifted = (left as u64).wrapping_shl(right as u32) as i64;
+    if right > 0 && (shifted >> right) != left {
+        unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::OverflowError,
+                "integer overflow in left shift"
+            )
+        }
+    }
+    shifted
+}
+
+/// Right shift with CPython semantics: `left >> right` (arithmetic).
+///
+/// CPython raises `ValueError` for negative shift counts. For counts >= 64,
+/// the result is the sign bit replicated (matching CPython's infinite-width
+/// behaviour at the boundary): 0 for non-negative `left`, -1 for negative.
+#[no_mangle]
+pub extern "C" fn rt_int_rshift(left: i64, right: i64) -> i64 {
+    if right < 0 {
+        unsafe {
+            raise_exc!(
+                crate::exceptions::ExceptionType::ValueError,
+                "negative shift count"
+            )
+        }
+    }
+    if right >= 64 {
+        return if left < 0 { -1 } else { 0 };
+    }
+    left >> right
+}
+
 /// Round float to nearest integer using banker's rounding (round half to even): round(x) -> i64
 /// Returns: rounded value as integer
 #[no_mangle]

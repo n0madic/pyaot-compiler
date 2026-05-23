@@ -303,8 +303,22 @@ pub(crate) fn compile_binop(
             mir::BinOp::BitAnd => builder.ins().band(left_val, right_val),
             mir::BinOp::BitOr => builder.ins().bor(left_val, right_val),
             mir::BinOp::BitXor => builder.ins().bxor(left_val, right_val),
-            mir::BinOp::LShift => builder.ins().ishl(left_val, right_val),
-            mir::BinOp::RShift => builder.ins().sshr(left_val, right_val),
+            mir::BinOp::LShift => call_int_binop_rt(
+                builder,
+                ctx,
+                "rt_int_lshift",
+                cltypes::I64,
+                left_val,
+                right_val,
+            )?,
+            mir::BinOp::RShift => call_int_binop_rt(
+                builder,
+                ctx,
+                "rt_int_rshift",
+                cltypes::I64,
+                left_val,
+                right_val,
+            )?,
         }
     };
 

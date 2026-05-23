@@ -352,6 +352,12 @@ pub extern "C" fn rt_vtable_lookup_by_name(obj_ptr: *mut u8, name_hash: i64) -> 
     if obj_ptr.is_null() {
         return std::ptr::null();
     }
+    // Reject tagged Value bit patterns (low 3 bits non-zero). Callers that pass
+    // a tagged-INT/BOOL/NONE through the *mut u8 ABI would otherwise read a
+    // misaligned `type_tag` byte and treat the payload as `InstanceObj`.
+    if (obj_ptr as usize) & 0b111 != 0 {
+        return std::ptr::null();
+    }
     unsafe {
         // Validate that this is actually an InstanceObj by checking the type tag.
         // The type_tag field is the first byte of ObjHeader, which is at offset 0.
@@ -393,6 +399,10 @@ pub extern "C" fn rt_vtable_lookup_by_name(obj_ptr: *mut u8, name_hash: i64) -> 
 #[no_mangle]
 pub extern "C" fn rt_obj_has_method(obj_ptr: *mut u8, name_hash: i64) -> i8 {
     if obj_ptr.is_null() {
+        return 0;
+    }
+    // Reject tagged Value bit patterns (low 3 bits non-zero).
+    if (obj_ptr as usize) & 0b111 != 0 {
         return 0;
     }
     unsafe {

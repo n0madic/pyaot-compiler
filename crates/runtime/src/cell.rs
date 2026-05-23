@@ -112,7 +112,12 @@ pub fn rt_cell_get_int(cell: *mut Obj) -> i64 {
 #[export_name = "rt_cell_get_int"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_cell_get_int_abi(cell: Value) -> i64 {
-    rt_cell_get_int(cell.unwrap_ptr())
+    unsafe {
+        rt_cell_get_int(crate::utils::expect_ptr_or_type_error(
+            cell,
+            "rt_cell_get_int",
+        ))
+    }
 }
 
 /// Get float value from cell
@@ -130,7 +135,12 @@ pub fn rt_cell_get_float(cell: *mut Obj) -> f64 {
 #[export_name = "rt_cell_get_float"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_cell_get_float_abi(cell: Value) -> f64 {
-    rt_cell_get_float(cell.unwrap_ptr())
+    unsafe {
+        rt_cell_get_float(crate::utils::expect_ptr_or_type_error(
+            cell,
+            "rt_cell_get_float",
+        ))
+    }
 }
 
 /// Get boolean value from cell
@@ -148,7 +158,12 @@ pub fn rt_cell_get_bool(cell: *mut Obj) -> i8 {
 #[export_name = "rt_cell_get_bool"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_cell_get_bool_abi(cell: Value) -> i8 {
-    rt_cell_get_bool(cell.unwrap_ptr())
+    unsafe {
+        rt_cell_get_bool(crate::utils::expect_ptr_or_type_error(
+            cell,
+            "rt_cell_get_bool",
+        ))
+    }
 }
 
 /// Get pointer value from cell
@@ -166,7 +181,12 @@ pub fn rt_cell_get_ptr(cell: *mut Obj) -> *mut Obj {
 #[export_name = "rt_cell_get_ptr"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_cell_get_ptr_abi(cell: Value) -> Value {
-    Value::from_ptr(rt_cell_get_ptr(cell.unwrap_ptr()))
+    unsafe {
+        Value::from_ptr(rt_cell_get_ptr(crate::utils::expect_ptr_or_type_error(
+            cell,
+            "rt_cell_get_ptr",
+        )))
+    }
 }
 
 // ==================== Cell Set Functions ====================
@@ -185,7 +205,12 @@ pub fn rt_cell_set_int(cell: *mut Obj, value: i64) {
 #[export_name = "rt_cell_set_int"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_cell_set_int_abi(cell: Value, value: i64) {
-    rt_cell_set_int(cell.unwrap_ptr(), value)
+    unsafe {
+        rt_cell_set_int(
+            crate::utils::expect_ptr_or_type_error(cell, "rt_cell_set_int"),
+            value,
+        )
+    }
 }
 
 /// Set float value in cell
@@ -202,7 +227,12 @@ pub fn rt_cell_set_float(cell: *mut Obj, value: f64) {
 #[export_name = "rt_cell_set_float"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_cell_set_float_abi(cell: Value, value: f64) {
-    rt_cell_set_float(cell.unwrap_ptr(), value)
+    unsafe {
+        rt_cell_set_float(
+            crate::utils::expect_ptr_or_type_error(cell, "rt_cell_set_float"),
+            value,
+        )
+    }
 }
 
 /// Set boolean value in cell
@@ -219,7 +249,12 @@ pub fn rt_cell_set_bool(cell: *mut Obj, value: i8) {
 #[export_name = "rt_cell_set_bool"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_cell_set_bool_abi(cell: Value, value: i8) {
-    rt_cell_set_bool(cell.unwrap_ptr(), value)
+    unsafe {
+        rt_cell_set_bool(
+            crate::utils::expect_ptr_or_type_error(cell, "rt_cell_set_bool"),
+            value,
+        )
+    }
 }
 
 /// Set pointer value in cell
@@ -236,7 +271,12 @@ pub fn rt_cell_set_ptr(cell: *mut Obj, value: *mut Obj) {
 #[export_name = "rt_cell_set_ptr"]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn rt_cell_set_ptr_abi(cell: Value, value: Value) {
-    rt_cell_set_ptr(cell.unwrap_ptr(), value.unwrap_ptr())
+    unsafe {
+        rt_cell_set_ptr(
+            crate::utils::expect_ptr_or_type_error(cell, "rt_cell_set_ptr"),
+            value.unwrap_ptr(),
+        )
+    }
 }
 
 // ==================== GC Support ====================

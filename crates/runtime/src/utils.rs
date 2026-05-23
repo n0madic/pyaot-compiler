@@ -7,6 +7,7 @@
 use crate::exceptions::ExceptionType;
 use crate::object::{Obj, StrObj, TypeTagKind};
 use crate::string::{rt_str_data, rt_str_len};
+use pyaot_core_defs::Value;
 
 /// Create a string object from a Rust &str
 ///
@@ -119,6 +120,36 @@ pub unsafe fn raise_value_error(msg: &str) -> ! {
 #[inline(never)]
 pub unsafe fn raise_io_error(msg: &str) -> ! {
     raise_exc!(ExceptionType::IOError, "{}", msg)
+}
+
+/// Extract a heap pointer from a tagged Value, raising TypeError if the
+/// Value carries a tagged primitive (Int / Bool / None) instead of a heap
+/// pointer.
+///
+/// Use this in `_abi` shims that dereference the resulting pointer (e.g.
+/// `rt_instance_*`, `rt_cell_*`, `rt_obj_len`, `rt_obj_has_method`). The
+/// global `Value::unwrap_ptr` now returns null for tagged primitives in
+/// release builds, but that yields a SIGSEGV instead of a Python-visible
+/// exception. Where a proper TypeError is preferable, call this helper first.
+///
+/// # Safety
+/// Calls `raise_exc!` on mismatch, which uses `longjmp`. Caller must hold no
+/// Rust references that need dropping (the longjmp will skip destructors).
+#[inline]
+pub unsafe fn expect_ptr_or_type_error<T>(v: Value, op: &'static str) -> *mut T {
+    if !v.is_ptr() {
+        let tag_name = match v.primitive_type() {
+            Some(t) => t.type_name(),
+            None => "unknown",
+        };
+        raise_exc!(
+            ExceptionType::TypeError,
+            "{}: expected heap object, got tagged {}",
+            op,
+            tag_name
+        );
+    }
+    v.unwrap_ptr()
 }
 
 /// Format a float value the way CPython does (shortest repr that round-trips).
