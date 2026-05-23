@@ -179,6 +179,13 @@ impl<'a> Lowering<'a> {
                 || t.is_set_like()
                 || t.is_tuple_like()
                 || matches!(t, Type::Str | Type::Bytes)
+                // RuntimeObject (StructTime/StringIO/BytesIO/Deque/...) and
+                // Iterator are heap-allocated objects whose runtime tag drives
+                // structural equality via `rt_obj_eq`. Without these arms an
+                // `Any`-vs-RuntimeObject comparison falls through to raw
+                // pointer/Value-bit comparison, which is wrong: the Any side
+                // may hold the same runtime object the right side names.
+                || matches!(t, Type::RuntimeObject(_) | Type::Iterator(_))
         };
         let mixed_any_vs_heap = matches!(
             op,

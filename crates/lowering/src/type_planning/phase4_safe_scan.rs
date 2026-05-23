@@ -856,7 +856,17 @@ fn build_phase4_var_to_func(hir_module: &hir::Module) -> HashMap<VarId, Vec<Func
         let mut funcs: Vec<FuncId> = Vec::new();
         collect_phase4_bound_funcs(&hir_module.exprs[*value], hir_module, &mut funcs);
         if !funcs.is_empty() {
-            map.entry(*var_id).or_default().extend(funcs);
+            let entry = map.entry(*var_id).or_default();
+            // Skip duplicates — same FuncId appears when an IfExpr has
+            // matching branches (`f = lam if c else lam`) or when a var is
+            // rebound to the same lambda. Downstream consumers iterate the
+            // vec; HashSet::insert would dedupe but reading the vec twice
+            // is wasted work.
+            for f in funcs {
+                if !entry.contains(&f) {
+                    entry.push(f);
+                }
+            }
         }
     }
     map
@@ -1211,7 +1221,19 @@ fn mark_escaped_in_expr(
             mark_escaped_in_expr_id(*then_val, hir_module, var_to_func, interner, escaped);
             mark_escaped_in_expr_id(*else_val, hir_module, var_to_func, interner, escaped);
         }
-        _ => {}
+        // Default recursion via the exhaustive `for_each_subexpr_id`
+        // helper — Slice / SuperCall / StdlibCall / FormatSpec / Yield /
+        // IterHasNext / MatchPattern / leaves all route here. Previously
+        // `_ => {}` silently dropped them. Adding a new `ExprKind`
+        // variant now produces a compile error in
+        // `hir::visit::for_each_subexpr_id` instead of a silent miss.
+        _ => {
+            let mut sub_ids: smallvec::SmallVec<[hir::ExprId; 4]> = smallvec::SmallVec::new();
+            hir::visit::for_each_subexpr_id(expr, hir_module, |id| sub_ids.push(id));
+            for id in sub_ids {
+                mark_escaped_in_expr_id(id, hir_module, var_to_func, interner, escaped);
+            }
+        }
     }
 }
 

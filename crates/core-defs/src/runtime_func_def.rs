@@ -312,9 +312,29 @@ impl RuntimeFuncDef {
     }
 
     /// Stage B.2 helper: resolved return semantic with fallback.
+    ///
+    /// Resolution order:
+    /// 1. Explicit `mir_return_semantic` annotation (`new_typed`/`ptr_*`).
+    /// 2. `gc_roots_result == true` ⇒ `MirSemantic::Tagged` — the def
+    ///    returns a heap-managed pointer (boxed primitive, container,
+    ///    instance, runtime object). Without this fallback, a def
+    ///    declared via the bare `new(..., Some(RI64), true)` constructor
+    ///    would inherit `MirSemantic::Raw` from `infer_return` and
+    ///    downstream classification at
+    ///    `optimizer::type_inference::materialize_function_types` would
+    ///    treat the dest local as a raw-bits producer — the
+    ///    producer-aware narrowing pass would then flip its `mir_ty`
+    ///    Tagged→Raw, and consumers reading the slot would interpret
+    ///    the heap pointer bits as a raw integer. The `gc_roots_result`
+    ///    flag is the single source of truth for "heap-managed return".
+    /// 3. Default `infer_return` from the Cranelift register class (Raw
+    ///    for all non-void return types).
     pub fn return_semantic(&self) -> Option<MirSemantic> {
         if let Some(s) = self.mir_return_semantic {
             return Some(s);
+        }
+        if self.gc_roots_result {
+            return Some(MirSemantic::Tagged);
         }
         self.returns.map(MirSemantic::infer_return)
     }

@@ -1390,12 +1390,18 @@ fn logical_operand_type(
             InstructionKind::IntToFloat { .. } | InstructionKind::IntBitsToFloat { .. } => {
                 Type::Float
             }
-            // For Int/Bool, the dest carries tagged i64 bits whose inner
-            // primitive type is known at compile time — propagate src_type
-            // so abi_repair's boxed_value_hint can classify the operand.
-            // For Float/None the dest is a heap pointer (FloatObj / NoneObj),
-            // so fall through to site_ty (HeapAny/Any) to avoid confusing
-            // downstream uses that expect a raw f64/i8.
+            // Propagate the boxed primitive's logical type so downstream
+            // consumers (`logical_operand_type`, `abi_repair`'s
+            // boxed_value_hint, the producer-aware narrowing pass) can
+            // classify the operand. BoxValue Int/Bool and rt_box_float/
+            // rt_box_none all yield tagged Value slots; the logical type
+            // returned here is the inner primitive class. The slot's
+            // physical representation (tagged Value bits — for Int/Bool
+            // packed in the i64, for Float/None a heap pointer) is
+            // tracked separately via `mir_ty` (Tagged / Heap) and
+            // `gc_roots_result`, so propagating Float/None here does NOT
+            // mislead consumers that need raw f64 / i8 — they consult
+            // mir_ty for the physical shape.
             InstructionKind::BoxValue {
                 src_type: Type::Int,
                 ..
@@ -1777,12 +1783,20 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
                     // Code pointers are raw i64 addresses, not tagged Values.
                     raw_producer_locals.insert(*dest);
                 }
-                // Constant literals — only Int/Bool/Float constants are
-                // unencoded raw bits. Str/Bytes constants are heap pointers,
-                // and None is a tagged NONE Value — but
-                // `type_to_mir_type_register(None)` is `Raw(I8)`, so without
-                // this value filter a None-typed Const would wrongly pass the
-                // gate and be narrowed Tagged -> Raw(I8).
+                // Constant literals — only Int/Bool/Float are unencoded raw
+                // bits at the Cranelift level. Str/Bytes are heap pointers
+                // (their `type_to_mir_type_register` is `Heap(_)`, not Raw,
+                // so they would not pass the downstream `matches!(_, Raw(_))`
+                // gate anyway). None is the subtle case: codegen emits
+                // `iconst(I8, 0)` and `type_to_mir_type_register(Type::None)
+                // = Raw(I8)`, so the only emitter (`statements/match_stmt/
+                // patterns.rs:86` — `alloc_and_add_local(Type::None, ...)`)
+                // already sets `mir_ty = Some(Raw(I8))` at allocation, and
+                // the `old_was_tagged` gate downstream rejects narrowing.
+                // The filter is defensive: it documents that None is NOT a
+                // raw-producer in the "Tagged → Raw" narrowing sense and
+                // protects against any future emitter that allocates a
+                // Tagged-typed Const::None dest.
                 pyaot_mir::InstructionKind::Const { dest, value } => {
                     if matches!(
                         value,
@@ -1914,6 +1928,15 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
             // when the old mir_ty was Tagged. Accepting an already-`Raw(_)`
             // old form allowed a cross-register-class flip (e.g.
             // Raw(F64) -> Raw(I64)); when old == new the sync was a no-op.
+            //
+            // Unlike `sync_call_direct_dest_mir_ty`, we DO permit
+            // Tagged → Raw(F64) here: callers passing a Float operand
+            // already pass Raw(F64) bits, so the param's F64 register is
+            // consistent at the callsite. The dest-sync's stricter
+            // Raw(I64|I8) rule exists because a CallDirect's return value
+            // is delivered through the I64 ABI register; narrowing the
+            // dest's Cranelift Variable to F64 would mismatch the actual
+            // i64-shaped return bits without an intervening bitcast.
             let old_was_widenable = param
                 .mir_ty
                 .as_ref()

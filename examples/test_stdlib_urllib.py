@@ -245,15 +245,21 @@ print("All urllib.parse tests passed!")
 # Test urllib.request module
 # =============================================================================
 
-# NOTE: These tests require network connectivity and access to httpbin.org
+# NOTE: These tests require network connectivity and access to httpbingo.org
+# (a Go-port of httpbin with the same API surface — used here instead of
+# httpbin.org because the latter is consistently 5-8x slower and
+# 5x more variance-prone, which pushed total test runtime past the
+# 30s execution timeout and caused flaky failures in CI).
 # They will be skipped in the example test suite to avoid network dependencies
 # For manual testing, uncomment and run with a network connection
 
 try:
     # Test basic GET request
-    response_get = urlopen("https://httpbin.org/get", None, 10.0)
+    response_get = urlopen("https://httpbingo.org/get", None, 10.0)
     assert response_get.status == 200, f"Expected status 200, got {response_get.status}"
-    assert "httpbin.org" in response_get.url, f"Expected httpbin.org in URL, got '{response_get.url}'"
+    assert "httpbingo.org" in response_get.url, (
+        f"Expected httpbingo.org in URL, got '{response_get.url}'"
+    )
     body_get = response_get.read()
     assert len(body_get) > 0, "Expected non-empty body"
     assert response_get.getcode() == 200, f"Expected getcode() 200, got {response_get.getcode()}"
@@ -264,14 +270,14 @@ try:
     assert headers_get is not None, "headers should not be None"
 
     # Test POST request
-    response_post = urlopen("https://httpbin.org/post", b"key=value", 10.0)
+    response_post = urlopen("https://httpbingo.org/post", b"key=value", 10.0)
     assert response_post.status == 200, f"Expected status 200, got {response_post.status}"
 
     # Test HTTP error status
     # CPython raises HTTPError for 4xx/5xx; our runtime returns the response object.
     # Use try/except to handle both behaviors.
     try:
-        response_404 = urlopen("https://httpbin.org/status/404", None, 10.0)
+        response_404 = urlopen("https://httpbingo.org/status/404", None, 10.0)
         # If we get here, runtime returned the response (compiled mode)
         assert response_404.status == 404, f"Expected status 404, got {response_404.status}"
     except HTTPError:
@@ -332,14 +338,14 @@ print("urllib.request.Request tests passed!")
 
 try:
     # urlopen(str) — legacy path, still works.
-    resp_str = urlopen("https://httpbin.org/get", None, 10.0)
+    resp_str = urlopen("https://httpbingo.org/get", None, 10.0)
     assert resp_str.status == 200, (
         f"urlopen(str) GET should return 200, got {resp_str.status}"
     )
 
     # urlopen(Request) — CPython-style. GET via Request.
     req_get = Request(
-        "https://httpbin.org/get",
+        "https://httpbingo.org/get",
         headers={"X-Probe": "pyaot"},
         method="GET",
     )
@@ -349,17 +355,17 @@ try:
     )
     body_req = resp_req.read().decode()
     assert "X-Probe" in body_req or "pyaot" in body_req, (
-        "Request headers should be sent to the server (httpbin echoes them)"
+        "Request headers should be sent to the server (httpbingo echoes them)"
     )
 
     # Request.method drives the HTTP verb regardless of body presence.
-    req_put = Request("https://httpbin.org/put", data=b"payload", method="PUT")
+    req_put = Request("https://httpbingo.org/put", data=b"payload", method="PUT")
     resp_put = urlopen(req_put, None, 10.0)
     assert resp_put.status == 200, (
         f"urlopen(Request method=PUT) should return 200, got {resp_put.status}"
     )
 
-    req_del = Request("https://httpbin.org/delete", method="DELETE")
+    req_del = Request("https://httpbingo.org/delete", method="DELETE")
     resp_del = urlopen(req_del, None, 10.0)
     assert resp_del.status == 200, (
         f"urlopen(Request method=DELETE) should return 200, got {resp_del.status}"
@@ -383,7 +389,7 @@ retrieve_path = "/tmp/pyaot_test_urlretrieve.bin"
 if os.path.exists(retrieve_path):
     os.remove(retrieve_path)
 try:
-    ret_filename, _ = urlretrieve("https://httpbin.org/bytes/128", retrieve_path)
+    ret_filename, _ = urlretrieve("https://httpbingo.org/bytes/128", retrieve_path)
     assert ret_filename == retrieve_path, (
         f"urlretrieve should return the filename it was asked to write; got '{ret_filename}'"
     )
@@ -393,18 +399,18 @@ try:
     with open(retrieve_path, "rb") as retrieve_fh:
         retrieved_bytes = retrieve_fh.read()
     assert len(retrieved_bytes) == 128, (
-        f"httpbin.org/bytes/128 should return 128 bytes; got {len(retrieved_bytes)}"
+        f"httpbingo.org/bytes/128 should return 128 bytes; got {len(retrieved_bytes)}"
     )
     os.remove(retrieve_path)
 
-    # POST variant — `data` triggers a POST. httpbin.org/post echoes the
+    # POST variant — `data` triggers a POST. httpbingo.org/post echoes the
     # request body back in its JSON response, so we just verify the file
     # gets created (the body is non-empty JSON under both runtimes).
     post_path = "/tmp/pyaot_test_urlretrieve_post.bin"
     if os.path.exists(post_path):
         os.remove(post_path)
     post_filename, _ = urlretrieve(
-        "https://httpbin.org/post", post_path, None, b"payload=hello"
+        "https://httpbingo.org/post", post_path, None, b"payload=hello"
     )
     assert post_filename == post_path
     assert os.path.exists(post_path), "urlretrieve POST must write the response body"

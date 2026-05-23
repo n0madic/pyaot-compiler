@@ -137,6 +137,10 @@ impl<'a> Lowering<'a> {
             let prev_returns = self.func_return_types.inner.clone();
             let prev_refined = self.lowering_seed_info.refined_container_types.clone();
             let prev_class_fields = self.lowering_seed_info.refined_class_field_types.clone();
+            let prev_heap_writes = self
+                .lowering_seed_info
+                .class_fields_with_heap_writes
+                .clone();
             let prev_prescan = self
                 .lowering_seed_info
                 .per_function_local_seed_types
@@ -186,12 +190,22 @@ impl<'a> Lowering<'a> {
             // into an Any-declared local and panics with a type mismatch.
             let class_fields_changed =
                 self.lowering_seed_info.refined_class_field_types != prev_class_fields;
+            // Track heap-writes side-set growth: a new (class, field)
+            // observation flips downstream attribute reads to `Any` via
+            // `resolve_class_attr_type`'s in-loop guard, which can shift
+            // dependent inference (binop result types, container
+            // narrowing). Without this signal the loop may exit before
+            // the heap-write propagates through the next round of
+            // narrowing.
+            let heap_writes_changed =
+                self.lowering_seed_info.class_fields_with_heap_writes != prev_heap_writes;
             let prescan_changed =
                 self.lowering_seed_info.per_function_local_seed_types != prev_prescan;
             if !harvester_changed
                 && !returns_changed
                 && !refined_changed
                 && !class_fields_changed
+                && !heap_writes_changed
                 && !captures_changed
                 && !prescan_changed
             {

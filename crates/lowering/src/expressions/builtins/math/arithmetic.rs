@@ -248,14 +248,20 @@ impl<'a> Lowering<'a> {
         let iterable_expr = &hir_module.exprs[args[0]];
         let iterable_type = self.seed_expr_type(args[0], hir_module);
 
-        // Infer element type from list or iterator type annotation
-        let element_type = if let Some(elem_ty) = iterable_type.list_elem() {
-            elem_ty.clone()
-        } else if let Type::Iterator(elem_ty) = &iterable_type {
-            (**elem_ty).clone()
-        } else {
-            Type::Int // fallback for other iterables
-        };
+        // Element-type extraction unified through the shared helper.
+        // Handles list / tuple (fixed + var) / set / dict-keys / str /
+        // bytes / iterator / Union end-to-end so the lowering path
+        // matches `resolve_builtin_call_type::Sum` (helpers.rs:629).
+        //
+        // For tuple/set/dict/str/bytes iterables the unified Iterator
+        // branch below converts the container to an `IteratorObj` via
+        // the appropriate `rt_iter_*` factory and runs the standard
+        // next/exhausted loop — so the element-type extraction here
+        // must reflect the actual yield type rather than fall back to
+        // `Type::Int` (the prior narrow form was a placeholder for the
+        // pre-alpha "list-only sum" limitation).
+        let element_type =
+            crate::type_planning::infer::extract_iterable_element_type(&iterable_type);
 
         // Check if start value is provided and its type
         let start_type = if args.len() > 1 {
@@ -285,18 +291,16 @@ impl<'a> Lowering<'a> {
 
             if accumulate_tagged {
                 // Tagged accumulator: the start must be a tagged `Value`.
-                // Box a primitive start; pass an already-tagged start through.
-                if matches!(start_type, Type::Int | Type::Bool) {
-                    let boxed = self.alloc_gc_local(Type::Any, mir_func);
-                    self.emit_instruction(mir::InstructionKind::BoxValue {
-                        dest: boxed,
-                        src: start_op,
-                        src_type: start_type.clone(),
-                    });
-                    mir::Operand::Local(boxed)
-                } else {
-                    start_op
-                }
+                // Route through `emit_value_slot` so every primitive start
+                // (Int / Bool / Float / None) gets boxed to a tagged slot
+                // and every already-tagged operand passes through
+                // unchanged. Previously this branch boxed Int/Bool but
+                // passed a raw F64 start through verbatim — when
+                // `sum(any_iter, 1.5)` selected the Tagged accumulator
+                // (now the join's preferred result), codegen's
+                // `store_result` then panicked on the
+                // expected(Tagged=I64) vs actual(F64) mismatch.
+                self.emit_value_slot(start_op, &start_type, mir_func)
             } else if result_type == Type::Float && start_type != Type::Float {
                 // Promote an int start to float.
                 let temp = self.alloc_and_add_local(Type::Float, mir_func);
@@ -345,12 +349,73 @@ impl<'a> Lowering<'a> {
         let iterable_operand =
             self.lower_expr_expecting(iterable_expr, None, hir_module, mir_func)?;
 
-        // Iterator path: use IterNextNoExc + GeneratorIsExhausted protocol
-        if matches!(iterable_type, Type::Iterator(_)) {
-            let iter_local = self.alloc_and_add_local(iterable_type.clone(), mir_func);
+        // Unified Iterator path for everything except `list` (which keeps
+        // its dedicated indexed-access fast-path below). For
+        // set/tuple/tuple-var/dict/str/bytes containers we materialise an
+        // `IteratorObj` via the appropriate `rt_iter_*` factory and run
+        // the same next/exhausted loop as for `iter()` results and
+        // generators.
+        //
+        // Previously the function fell through to the List path's
+        // `rt_list_len + rt_list_get` for these containers, which read a
+        // SetObj / TupleObj as if it were a ListObj — returning garbage
+        // values (review finding #2). Now the conversion is explicit and
+        // exhaustive for the supported container shapes.
+        let iter_factory_def: Option<&'static pyaot_core_defs::runtime_func_def::RuntimeFuncDef> = {
+            use pyaot_core_defs::runtime_func_def as r;
+            if matches!(iterable_type, Type::Iterator(_)) {
+                None // already an iterator — copy iterable_operand directly
+            } else if iterable_type.set_elem().is_some() {
+                Some(&r::RT_ITER_SET)
+            } else if iterable_type.tuple_elems().is_some()
+                || iterable_type.tuple_var_elem().is_some()
+            {
+                Some(&r::RT_ITER_TUPLE)
+            } else if iterable_type.dict_kv().is_some() {
+                Some(&r::RT_ITER_DICT)
+            } else {
+                // `Str` / `Bytes` are intentionally NOT supported as `sum`
+                // iterables: CPython raises `TypeError` for `sum("abc")`
+                // (the int accumulator + str element has no `__add__`),
+                // and emitting the iterator branch here would just trade
+                // garbage for a verifier reject downstream.
+                None
+            }
+        };
+
+        let use_iter_branch =
+            matches!(iterable_type, Type::Iterator(_)) || iter_factory_def.is_some();
+
+        // Iterator path: use IterNextNoExc + IterIsExhausted protocol.
+        // `rt_iter_is_exhausted` is the universal predicate that handles
+        // both `IteratorObj` (set/tuple/dict/str/bytes/list iterators
+        // created via the factory above) AND `GeneratorObj` (generator
+        // function call results) by dispatching on the runtime type tag.
+        // Previously this branch used `rt_generator_is_exhausted` which
+        // is GeneratorObj-only — that worked for pre-existing
+        // `iter()`/generator inputs but would have been wrong for any
+        // factory-converted container.
+        if use_iter_branch {
+            let iter_local = self.alloc_gc_local(Type::Any, mir_func);
+            let iter_seed = if let Some(factory) = iter_factory_def {
+                self.emit_runtime_call_gc(
+                    mir::RuntimeFunc::Call(factory),
+                    vec![iterable_operand],
+                    Type::Any,
+                    mir_func,
+                )
+            } else {
+                // iterable_operand is already an IteratorObj / GeneratorObj.
+                let tmp = self.alloc_gc_local(Type::Any, mir_func);
+                self.emit_instruction(mir::InstructionKind::Copy {
+                    dest: tmp,
+                    src: iterable_operand,
+                });
+                tmp
+            };
             self.emit_instruction(mir::InstructionKind::Copy {
                 dest: iter_local,
-                src: iterable_operand,
+                src: mir::Operand::Local(iter_seed),
             });
 
             let loop_header = self.new_block();
@@ -376,9 +441,7 @@ impl<'a> Lowering<'a> {
             );
 
             let exhausted_local = self.emit_runtime_call(
-                mir::RuntimeFunc::Call(
-                    &pyaot_core_defs::runtime_func_def::RT_GENERATOR_IS_EXHAUSTED,
-                ),
+                mir::RuntimeFunc::Call(&pyaot_core_defs::runtime_func_def::RT_ITER_IS_EXHAUSTED),
                 vec![mir::Operand::Local(iter_local)],
                 Type::Bool,
                 mir_func,
@@ -409,6 +472,27 @@ impl<'a> Lowering<'a> {
                         dest,
                         src: mir::Operand::Local(raw_local),
                         dest_type: Type::Bool,
+                    });
+                    dest
+                }
+                // `rt_iter_next_no_exc` returns a tagged Value — for a
+                // Float-element iterator the bits are a `*mut FloatObj`
+                // pointer, not a raw f64. Without this unboxing step the
+                // raw pointer would feed `BinOp::Add` (whose codegen
+                // bitcasts I64→F64) and produce a denormal garbage
+                // accumulator. Pre-existing latent bug — never
+                // triggered before because the Iterator branch only ran
+                // for `Type::Iterator(_)` inputs, which in practice
+                // yielded Int elements. Now reachable through the
+                // set/tuple/dict factories below.
+                Type::Float => {
+                    let dest = self.alloc_and_add_local(Type::Float, mir_func);
+                    self.emit_instruction(mir::InstructionKind::RuntimeCall {
+                        dest,
+                        func: mir::RuntimeFunc::Call(
+                            &pyaot_core_defs::runtime_func_def::RT_UNBOX_FLOAT,
+                        ),
+                        args: vec![mir::Operand::Local(raw_local)],
                     });
                     dest
                 }

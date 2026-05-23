@@ -525,6 +525,25 @@ impl<'a> Lowering<'a> {
                 // type-planning fixpoint loop itself we may still observe
                 // pre-fold storage labels — refinements applied in later
                 // iterations narrow those reads.
+                //
+                // Heap-writes side-set takes precedence over the refined
+                // table: a field that has EVER received an Any-typed RHS
+                // must read as `Any`, even when the refined table holds
+                // a precise narrowing computed before/after the
+                // observation. Without this in-loop check, the refined
+                // narrowing would shadow the heap-write signal until the
+                // post-loop fold catches up, and inference computations
+                // (binop result types, container element narrowing,
+                // etc.) that fire INSIDE the loop would use the stale
+                // precise type and produce inconsistent results.
+                if self
+                    .lowering_seed_info
+                    .class_fields_with_heap_writes
+                    .get(&class_id)
+                    .is_some_and(|fs| fs.contains(&attr))
+                {
+                    return Some(Type::Any);
+                }
                 if let Some(field_ty) = self
                     .lowering_seed_info
                     .refined_class_field_types

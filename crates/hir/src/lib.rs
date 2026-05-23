@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cfg_builder;
+pub mod visit;
 
 use indexmap::IndexMap;
 use indexmap::IndexSet;

@@ -1264,7 +1264,37 @@ impl<'a> Lowering<'a> {
                     accumulators,
                 );
             }
-            _ => {}
+            // Default recursion for variants that don't need bespoke
+            // arg-position semantics: Slice / SuperCall / StdlibCall /
+            // Yield / IterHasNext / MatchPattern / Closure-captures /
+            // leaves. Routing through the exhaustive
+            // `hir::visit::for_each_subexpr_id` helper means a new
+            // `ExprKind` variant becomes a compile error in that
+            // function — every scanner using the helper inherits the
+            // fix.
+            //
+            // Previously this branch was `_ => {}`, which silently
+            // dropped Slice / SuperCall / StdlibCall / Yield /
+            // IterHasNext / MatchPattern / Closure captures (code-
+            // review finding #1) — inline `matrix(5)` calls in those
+            // positions never got harvested for `matrix`'s param type.
+            //
+            // Borrow-checker: collect sub-expression ids first, then
+            // recurse. The closure can't call `&mut self` methods
+            // while it's holding the iteration borrow.
+            _ => {
+                let mut sub_ids: smallvec::SmallVec<[hir::ExprId; 4]> = smallvec::SmallVec::new();
+                hir::visit::for_each_subexpr_id(expr, hir_module, |id| sub_ids.push(id));
+                for id in sub_ids {
+                    self.scan_expr_for_calls(
+                        &hir_module.exprs[id],
+                        hir_module,
+                        var_to_func,
+                        overlay,
+                        accumulators,
+                    );
+                }
+            }
         }
     }
 }

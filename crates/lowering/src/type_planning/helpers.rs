@@ -46,14 +46,22 @@ impl ReductionResult {
         }
     }
 
-    /// Combine the element class with the start-value class. `Float`
-    /// dominates (a float start or element forces float arithmetic),
-    /// then `Tagged` (an `Any` start or element forces runtime dispatch),
-    /// and `Int` is the identity.
+    /// Combine the element class with the start-value class. `Tagged`
+    /// dominates — when either side is a tagged Value (`Any` or a Union
+    /// that carries `Float` as a tagged-FloatObj-pointer variant), the
+    /// only safe accumulation is through `rt_obj_*`, which dispatches by
+    /// runtime tag and preserves int vs float exactly as CPython does.
+    /// `Float` dominates `Int` (numeric tower). `Int` is the identity.
+    ///
+    /// Previously Float dominated Tagged; that order caused
+    /// `sum(any_iter, 1.5)` to route element=Any (Tagged) results through
+    /// the Float fast-path's `IntToFloat` on tagged-Value bits, which
+    /// the verifier correctly rejects (#3). The new order routes the
+    /// reduction through `rt_obj_add` instead.
     pub(crate) fn join(self, other: ReductionResult) -> ReductionResult {
         match (self, other) {
-            (ReductionResult::Float, _) | (_, ReductionResult::Float) => ReductionResult::Float,
             (ReductionResult::Tagged, _) | (_, ReductionResult::Tagged) => ReductionResult::Tagged,
+            (ReductionResult::Float, _) | (_, ReductionResult::Float) => ReductionResult::Float,
             _ => ReductionResult::Int,
         }
     }
@@ -61,19 +69,23 @@ impl ReductionResult {
 
 /// Classify a reduction's iterator element type into a [`ReductionResult`].
 ///
-/// Returns `Float` for `Type::Float` and for a `Union` that contains
-/// `Float` — the latter covers the polymorphic-dunder seed
-/// `Union[Float, Class[Self]]` (autograd-style `Value.data`), whose
-/// runtime tag at every yield site is a `FloatObj` pointer. Returns
-/// `Tagged` for bare `Type::Any` (a tagged `Value` of unknown numeric
-/// shape). Returns `Int` for everything else (`Int`/`Bool`/`Class[T]`/...).
+/// Returns `Float` ONLY for concrete `Type::Float` — the only shape that
+/// is guaranteed to be a raw `f64` in an XMM register. Returns `Tagged`
+/// for bare `Type::Any` AND for a `Union` that contains `Float` (the
+/// polymorphic-dunder seed `Union[Float, Class[Self]]` from
+/// `pyaot_types::dunders::polymorphic_other_type` — autograd-style
+/// `Value.data`). Every Union-with-Float yield site is a tagged
+/// `Value`, NOT a raw f64: the runtime tag at that site may be a
+/// `FloatObj` pointer (autograd) or an instance pointer (when the dunder
+/// returns Self). Tagged dispatch through `rt_obj_add` handles both
+/// correctly. Returns `Int` for everything else (`Int`/`Bool`/`Class[T]`/...).
 pub(crate) fn classify_reduction_elem(elem_ty: &Type) -> ReductionResult {
     match elem_ty {
         Type::Float => ReductionResult::Float,
-        Type::Union(variants) if variants.iter().any(|v| matches!(v, Type::Float)) => {
-            ReductionResult::Float
-        }
         Type::Any => ReductionResult::Tagged,
+        Type::Union(variants) if variants.iter().any(|v| matches!(v, Type::Float)) => {
+            ReductionResult::Tagged
+        }
         _ => ReductionResult::Int,
     }
 }
@@ -222,13 +234,20 @@ fn distribute_binop_over_union(
     }
     if !had_any {
         // Every variant was dropped by the class-aware filter — no dispatched
-        // dunder applies. Preserve the original Union (rebuilt via `join`)
-        // for diagnostics instead of widening to `Any`, which would pollute
-        // downstream joins and silence class-binop runtime dispatch.
+        // dunder applies. Re-join the original variants via `Type::join`,
+        // which folds through `make_canonical_union` and collapses the
+        // numeric tower (Int/Bool subsumed by Float). The exact Union shape
+        // is NOT preserved; what we preserve is "result stays a tagged-
+        // Value-dispatchable type" instead of widening to `Any`, which
+        // would silence the runtime class-binop dispatch the resolver still
+        // expects when the variant set carries Class entries.
         variants.iter().fold(Type::Never, |acc, v| acc.join(v))
-    } else if matches!(acc, Type::Never) {
-        Type::Any
     } else {
+        // had_any → acc != Never: resolve_binop_type never returns
+        // Some(Never); the .unwrap_or_else(|| v.clone()) substitutes the
+        // variant itself (never Never) when no rule applies. The previous
+        // `else if matches!(acc, Type::Never) { Type::Any }` arm was dead
+        // and has been removed.
         acc
     }
 }
@@ -255,14 +274,12 @@ fn distribute_binop_over_union_left(
         had_any = true;
     }
     if !had_any {
-        // Every variant was dropped by the class-aware filter — no dispatched
-        // dunder applies. Preserve the original Union (rebuilt via `join`)
-        // for diagnostics instead of widening to `Any`, which would pollute
-        // downstream joins and silence class-binop runtime dispatch.
+        // Mirror of `distribute_binop_over_union`'s no-variant-kept branch:
+        // re-join via `Type::join` (numeric tower collapses Int/Bool into
+        // Float). See that function for the full rationale.
         variants.iter().fold(Type::Never, |acc, v| acc.join(v))
-    } else if matches!(acc, Type::Never) {
-        Type::Any
     } else {
+        // had_any → acc != Never (see `distribute_binop_over_union`).
         acc
     }
 }

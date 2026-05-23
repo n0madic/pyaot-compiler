@@ -490,30 +490,31 @@ impl<'a> Lowering<'a> {
             };
             let value_expr = &hir_module.exprs[value_expr_id];
             let value_ty = self.seed_infer_expr_type(value_expr, hir_module, overlay);
-            // An `Any`-typed RHS may carry a heap-shaped runtime value
-            // (boxed Float from `rt_obj_*` dispatch, a class instance,
-            // a container, etc.). Widen the refined field type to `Any`
-            // for EVERY `Any` RHS — compound (`BinOp` / `Call` / …) and
-            // non-compound (a bare `Var` / `Index` / `Attribute`) alike.
-            // A non-compound `Any` Var can hold a heap pointer just as
-            // easily as a compound one; leaving the field narrowly typed
-            // makes a read emit `UnwrapValueInt` on that pointer (the
-            // autograd `OverflowError` regression, commit bc2a89e).
+            // An `Any`-typed RHS carries a heap-shaped runtime value
+            // (boxed Float from `rt_obj_*` dispatch, a class instance, a
+            // container, etc.). Record the observation in the MONOTONIC
+            // `class_fields_with_heap_writes` side-set, NOT in
+            // `refined_class_field_types`. The previous behaviour wrote
+            // `Type::Any` directly into the refined table, which
+            // overwrote any precise narrowing computed in an earlier
+            // iteration; since the refined table persists across
+            // fixpoint iterations, a single transient `Any`-typed RHS
+            // observation would permanently demote the field even when
+            // every other write was precise.
             //
-            // Widening is sound because storage is uniform tagged `Value`
-            // after Phase 2, and `Any`-typed reads/writes route through
-            // the generic tagged path — including structural comparison
-            // for container fields (`rt_obj_eq` delegates to
-            // `rt_tuple_eq` / `rt_list_eq`). `Never` RHS contributes
+            // The side-set carries the permanent widening signal;
+            // `fold_refined_field_types_into_storage` applies it last
+            // (after the refined table's narrowing has converged) by
+            // forcing `info.field_types[field] = Type::Any`. Post-fold,
+            // readers see one source of truth. `Never` RHS contributes
             // nothing and is skipped.
             if matches!(value_ty, Type::Any | Type::Never) {
                 if matches!(value_ty, Type::Any) {
-                    let class_fields = self
-                        .lowering_seed_info
-                        .refined_class_field_types
+                    self.lowering_seed_info
+                        .class_fields_with_heap_writes
                         .entry(class_id)
-                        .or_default();
-                    class_fields.insert(field, Type::Any);
+                        .or_default()
+                        .insert(field);
                 }
                 continue;
             }
@@ -546,16 +547,34 @@ impl<'a> Lowering<'a> {
     }
 
     /// Fold every refined class-field type into the corresponding
-    /// `LoweredClassInfo.field_types` entry, then drain the refined map.
-    /// After this pass, `class_info.field_types` is the single source of
-    /// truth for storage layout and read-time labelling — lowering reads
-    /// only it, no separate refined map.
+    /// `LoweredClassInfo.field_types` entry, then apply the heap-writes
+    /// side-set as a final widening pass, then drain both. After this
+    /// pass, `class_info.field_types` is the single source of truth for
+    /// storage layout and read-time labelling — lowering reads only it,
+    /// no separate refined or side-set table.
+    ///
+    /// Order matters: refined narrowing is applied first (whatever
+    /// converged across the fixpoint), then the monotonic heap-writes
+    /// signal forces `Type::Any` for any field that ever received an
+    /// Any-typed RHS — overriding the narrowed type. This separation
+    /// keeps the fixpoint convergence stable (refined narrowing isn't
+    /// perturbed by transient Any observations) while still encoding
+    /// the permanent widening into the single post-fold source.
     pub(crate) fn fold_refined_field_types_into_storage(&mut self) {
         let refined = std::mem::take(&mut self.lowering_seed_info.refined_class_field_types);
+        let heap_writes =
+            std::mem::take(&mut self.lowering_seed_info.class_fields_with_heap_writes);
         for (class_id, fields) in refined {
             if let Some(info) = self.classes.class_info.get_mut(&class_id) {
                 for (field_name, refined_ty) in fields {
                     info.field_types.insert(field_name, refined_ty);
+                }
+            }
+        }
+        for (class_id, fields) in heap_writes {
+            if let Some(info) = self.classes.class_info.get_mut(&class_id) {
+                for field in fields {
+                    info.field_types.insert(field, Type::Any);
                 }
             }
         }
