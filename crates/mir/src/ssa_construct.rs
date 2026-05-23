@@ -27,18 +27,12 @@ use pyaot_utils::{BlockId, LocalId};
 use smallvec::SmallVec;
 
 use crate::dom_tree::terminator_successors;
-use crate::{
-    Function, Instruction, InstructionKind, Local, Operand, RaiseCause, RuntimeFunc, Terminator,
-};
+use crate::{Function, Instruction, InstructionKind, Local, Operand, RaiseCause, Terminator};
 
-/// A RuntimeFunc is "void" if its codegen path never writes the `dest`
-/// LocalId — either the runtime function returns nothing, or the call is
-/// handled elsewhere (e.g. exception-raising dispatches as a terminator).
-/// Callers use this to decide whether an `InstructionKind::RuntimeCall`
-/// should be treated as defining its `dest` for SSA renaming purposes.
-///
-// `runtime_call_is_void` moved to `crate::instructions` alongside the
-// `InstructionKind::def()` consumer. Re-exported for ssa_check.
+// `runtime_call_is_void` lives in `crate::instructions` alongside its
+// `InstructionKind::def()` consumer. Re-exported here so `ssa_check`
+// (which `use crate::ssa_construct::runtime_call_is_void`) keeps its
+// existing import path stable.
 pub(crate) use crate::instructions::runtime_call_is_void;
 
 /// Transform `func` into SSA form in place using Cytron's algorithm.

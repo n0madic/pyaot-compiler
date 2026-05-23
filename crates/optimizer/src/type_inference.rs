@@ -82,9 +82,13 @@ impl TypeTable {
         Self { per_func }
     }
 
-    /// Looks up the inferred type for `(func_id, local_id)`. Returns
+    /// Look up the inferred type for `(func_id, local_id)`. Returns
     /// `None` if the function wasn't in the module at inference time or
     /// the LocalId has no entry (unreachable def or inconsistent input).
+    /// Used by test fixtures in this module; not load-bearing in
+    /// production but kept since deleting it would force tests to
+    /// reach into `per_func` directly.
+    #[cfg(test)]
     pub(crate) fn get(&self, func_id: FuncId, local_id: LocalId) -> Option<&Type> {
         self.per_func.get(&func_id)?.get(&local_id)
     }
@@ -1512,38 +1516,6 @@ pub fn wpa_field_inference(module: &mut Module, type_table: &TypeTable) -> bool 
     }
 
     any_changed
-}
-
-/// Run WPA param inference and field inference together to a
-/// whole-program fixed point. Each outer iteration:
-///
-/// 1. Runs [`wpa_param_inference_to_fixed_point`] (which itself iterates
-///    the SCC graph until param types stabilise).
-/// 2. Runs [`wpa_field_inference`] once to refine
-///    `class_info.field_types` from post-param-inference data.
-///
-/// The loop exits when a pass changes no field type. Bounded by
-/// [`MAX_FIELD_WPA_ITERATIONS`] for defensiveness.
-///
-/// When a future `apply_instruction` rule picks up
-/// `rt_instance_get_field` via `class_info.field_types`, refined fields
-/// will flow back into method-body inference and through that into
-/// caller arg types — at which point multiple outer iterations will
-/// actually refine something. Until then, one outer iteration is
-/// typically enough: S1.11 establishes param types; this call derives
-/// fields from them.
-pub(crate) fn wpa_param_and_field_inference_to_fixed_point(
-    module: &mut Module,
-    call_graph: &crate::call_graph::CallGraph,
-    type_table: &mut TypeTable,
-) {
-    for _ in 0..MAX_FIELD_WPA_ITERATIONS {
-        wpa_param_inference_to_fixed_point(module, call_graph, type_table);
-        let field_changed = wpa_field_inference(module, type_table);
-        if !field_changed {
-            break;
-        }
-    }
 }
 
 /// Run the full Phase-1 type-analysis pipeline as a production pass and
