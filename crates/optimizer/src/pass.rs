@@ -109,9 +109,6 @@ pub fn build_pass_pipeline(config: &OptimizeConfig) -> PassManager {
     if config.constfold || config.inline {
         pm.add_pass(Box::new(crate::peephole::PeepholePass));
     }
-    if config.box_fusion {
-        pm.add_pass(Box::new(crate::box_fusion::BoxFusionPass));
-    }
     if config.raw_demotion {
         pm.add_pass(Box::new(crate::raw_demotion::RawLocalDemotionPass));
     }
@@ -257,7 +254,6 @@ mod tests {
                 "inline",
                 "constfold",
                 "peephole",
-                "box-fusion",
                 "raw-demotion",
                 "dce"
             ]
@@ -274,7 +270,6 @@ mod tests {
             dce: false,
             constfold: false,
             raw_demotion: false,
-            box_fusion: false,
         };
         let pm = build_pass_pipeline(&config);
 
@@ -291,7 +286,6 @@ mod tests {
             dce: false,
             constfold: false,
             raw_demotion: false,
-            box_fusion: false,
         };
         let pm = build_pass_pipeline(&config);
 
@@ -309,7 +303,6 @@ mod tests {
             dce: false,
             constfold: true,
             raw_demotion: false,
-            box_fusion: false,
         };
         let pm = build_pass_pipeline(&config);
 

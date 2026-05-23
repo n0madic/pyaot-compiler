@@ -385,6 +385,214 @@ fn unbox_with_constant_source_is_not_rewritten() {
 }
 
 #[test]
+fn unbox_float_then_box_float_collapses_to_copy() {
+    // _1 = UnboxValue(_0, Float)
+    // _2 = BoxValue(_1, Float)  →  _2 = Copy(_0)
+    //
+    // Reverse direction (U→B), inherited from the legacy box_fusion pass.
+    let locals = vec![
+        make_local(0, Type::Any),
+        make_local(1, Type::Float),
+        make_local(2, Type::Any),
+    ];
+    let instructions = vec![
+        InstructionKind::UnboxValue {
+            dest: LocalId::from(1u32),
+            src: Operand::Local(LocalId::from(0u32)),
+            dest_type: Type::Float,
+        },
+        InstructionKind::BoxValue {
+            dest: LocalId::from(2u32),
+            src: Operand::Local(LocalId::from(1u32)),
+            src_type: Type::Float,
+        },
+    ];
+
+    let mut module = make_module(make_func(locals, instructions, true));
+    super::raw_demotion_once(&mut module);
+
+    let bb0 = BlockId::from(0u32);
+    let insts = get_instructions(&module, bb0);
+    match &insts[1].kind {
+        InstructionKind::Copy { dest, src } => {
+            assert_eq!(*dest, LocalId::from(2u32));
+            assert!(matches!(src, Operand::Local(id) if *id == LocalId::from(0u32)));
+        }
+        other => panic!("Expected Copy, got {:?}", other),
+    }
+}
+
+#[test]
+fn box_float_mir_then_rt_unbox_float_mixed_form_collapses() {
+    // _1 = BoxValue(_0, Float)
+    // _2 = rt_unbox_float(_1)  →  _2 = Copy(_0)
+    //
+    // Mixed MIR/runtime form, inherited from legacy box_fusion.
+    let locals = vec![
+        make_local(0, Type::Float),
+        make_local(1, Type::Any),
+        make_local(2, Type::Float),
+    ];
+    let instructions = vec![
+        InstructionKind::BoxValue {
+            dest: LocalId::from(1u32),
+            src: Operand::Local(LocalId::from(0u32)),
+            src_type: Type::Float,
+        },
+        InstructionKind::RuntimeCall {
+            dest: LocalId::from(2u32),
+            func: RuntimeFunc::Call(&RT_UNBOX_FLOAT),
+            args: vec![Operand::Local(LocalId::from(1u32))],
+        },
+    ];
+
+    let mut module = make_module(make_func(locals, instructions, true));
+    super::raw_demotion_once(&mut module);
+
+    let bb0 = BlockId::from(0u32);
+    let insts = get_instructions(&module, bb0);
+    match &insts[1].kind {
+        InstructionKind::Copy { dest, src } => {
+            assert_eq!(*dest, LocalId::from(2u32));
+            assert!(matches!(src, Operand::Local(id) if *id == LocalId::from(0u32)));
+        }
+        other => panic!("Expected Copy, got {:?}", other),
+    }
+}
+
+#[test]
+fn rt_unbox_float_then_box_float_mir_mixed_form_collapses() {
+    // _1 = rt_unbox_float(_0)
+    // _2 = BoxValue(_1, Float)  →  _2 = Copy(_0)
+    //
+    // Reverse direction across mixed runtime/MIR forms.
+    let locals = vec![
+        make_local(0, Type::Any),
+        make_local(1, Type::Float),
+        make_local(2, Type::Any),
+    ];
+    let instructions = vec![
+        InstructionKind::RuntimeCall {
+            dest: LocalId::from(1u32),
+            func: RuntimeFunc::Call(&RT_UNBOX_FLOAT),
+            args: vec![Operand::Local(LocalId::from(0u32))],
+        },
+        InstructionKind::BoxValue {
+            dest: LocalId::from(2u32),
+            src: Operand::Local(LocalId::from(1u32)),
+            src_type: Type::Float,
+        },
+    ];
+
+    let mut module = make_module(make_func(locals, instructions, true));
+    super::raw_demotion_once(&mut module);
+
+    let bb0 = BlockId::from(0u32);
+    let insts = get_instructions(&module, bb0);
+    match &insts[1].kind {
+        InstructionKind::Copy { dest, src } => {
+            assert_eq!(*dest, LocalId::from(2u32));
+            assert!(matches!(src, Operand::Local(id) if *id == LocalId::from(0u32)));
+        }
+        other => panic!("Expected Copy, got {:?}", other),
+    }
+}
+
+#[test]
+fn box_then_copy_then_unbox_chain_collapses() {
+    // _1 = BoxValue(_0, Int)
+    // _2 = Copy(_1)               <-- producer alias through Copy
+    // _3 = UnboxValue(_2, Int)    →  _3 = Copy(_0)
+    //
+    // The intermediate Copy used to defeat both peephole (non-adjacent)
+    // and box_fusion (non-adjacent). The unified pass propagates producer
+    // identity through Copy chains in `collect_producers`.
+    let locals = vec![
+        make_local(0, Type::Int),
+        make_local(1, Type::Any),
+        make_local(2, Type::Any),
+        make_local(3, Type::Int),
+    ];
+    let instructions = vec![
+        InstructionKind::BoxValue {
+            dest: LocalId::from(1u32),
+            src: Operand::Local(LocalId::from(0u32)),
+            src_type: Type::Int,
+        },
+        InstructionKind::Copy {
+            dest: LocalId::from(2u32),
+            src: Operand::Local(LocalId::from(1u32)),
+        },
+        InstructionKind::UnboxValue {
+            dest: LocalId::from(3u32),
+            src: Operand::Local(LocalId::from(2u32)),
+            dest_type: Type::Int,
+        },
+    ];
+
+    let mut module = make_module(make_func(locals, instructions, true));
+    super::raw_demotion_once(&mut module);
+
+    let bb0 = BlockId::from(0u32);
+    let insts = get_instructions(&module, bb0);
+    match &insts[2].kind {
+        InstructionKind::Copy { dest, src } => {
+            assert_eq!(*dest, LocalId::from(3u32));
+            assert!(matches!(src, Operand::Local(id) if *id == LocalId::from(0u32)));
+        }
+        other => panic!("Expected Copy, got {:?}", other),
+    }
+}
+
+#[test]
+fn copy_rewrite_propagates_mir_ty_from_source_local() {
+    // Single-block adjacent BoxValue / UnboxValue. After rewrite the dest
+    // local's `ty` and `mir_ty` must mirror the raw source's metadata,
+    // not the box product type — load-bearing for float autograd
+    // (microgpt) per the legacy `box_fusion` Phase 3f audit.
+    let mut src = make_local(0, Type::Float);
+    src.mir_ty = Some(pyaot_mir::MirType::raw_f64());
+    let locals = vec![
+        src,
+        make_local(1, Type::Any), // box dest — tagged
+        {
+            // Unbox dest — pretend it was allocated as f64 already; we
+            // assert it ends up with mir_ty = Raw(F64) after rewrite.
+            let mut l = make_local(2, Type::Any);
+            l.mir_ty = Some(pyaot_mir::MirType::Tagged);
+            l
+        },
+    ];
+    let instructions = vec![
+        InstructionKind::BoxValue {
+            dest: LocalId::from(1u32),
+            src: Operand::Local(LocalId::from(0u32)),
+            src_type: Type::Float,
+        },
+        InstructionKind::UnboxValue {
+            dest: LocalId::from(2u32),
+            src: Operand::Local(LocalId::from(1u32)),
+            dest_type: Type::Float,
+        },
+    ];
+
+    let mut module = make_module(make_func(locals, instructions, true));
+    super::raw_demotion_once(&mut module);
+
+    let func = module.functions.values().next().unwrap();
+    let dest_local = func.locals.get(&LocalId::from(2u32)).unwrap();
+    assert_eq!(dest_local.ty, Type::Float);
+    assert!(
+        matches!(
+            dest_local.mir_ty.as_ref(),
+            Some(pyaot_mir::MirType::Raw(pyaot_mir::RawKind::F64))
+        ),
+        "dest mir_ty must inherit Raw(F64) from src, got {:?}",
+        dest_local.mir_ty
+    );
+}
+
+#[test]
 fn multiple_unbox_uses_of_same_box_are_all_rewritten() {
     let locals = vec![
         make_local(0, Type::Int),

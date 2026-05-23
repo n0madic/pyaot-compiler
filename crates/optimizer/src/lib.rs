@@ -11,7 +11,6 @@
 #![forbid(unsafe_code)]
 
 pub mod abi_repair;
-pub mod box_fusion;
 pub mod call_graph;
 pub mod constfold;
 pub mod dce;
@@ -44,15 +43,12 @@ pub struct OptimizeConfig {
     pub dce: bool,
     /// Enable constant folding and propagation
     pub constfold: bool,
-    /// Enable raw-local demotion (stub — no-op until Phase 5 implements
-    /// escape analysis + tagged-to-raw rewriting). Activated as part of
-    /// the Storage-Uniform Phase 4 atomic landing.
+    /// Enable cross-block box/unbox elision (the unified pass that replaced
+    /// the legacy peephole box/unbox patterns and the `box_fusion`
+    /// adjacent-pair pass). Folds `BoxValue` ↔ `UnboxValue` and
+    /// `rt_box_float` ↔ `rt_unbox_float` round-trips in either direction
+    /// through SSA def-use chains (including across `Copy` aliases).
     pub raw_demotion: bool,
-    /// Enable box/unbox fusion — adjacent-pair cancellation for tagged
-    /// `Value` box/unbox operations on `Float`. Recovers part of the
-    /// performance lost when Phase 2 collapsed class-field storage to
-    /// uniform tagged Value slots. Phase 6 of the Storage-Uniform refactor.
-    pub box_fusion: bool,
 }
 
 impl Default for OptimizeConfig {
@@ -65,7 +61,6 @@ impl Default for OptimizeConfig {
             dce: true,
             constfold: true,
             raw_demotion: true,
-            box_fusion: true,
         }
     }
 }

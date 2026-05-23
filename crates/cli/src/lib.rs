@@ -369,7 +369,6 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
         dce: options.dce,
         constfold: options.constfold,
         raw_demotion: true,
-        box_fusion: true,
     };
     if options.verbose {
         if opt_config.devirtualize {

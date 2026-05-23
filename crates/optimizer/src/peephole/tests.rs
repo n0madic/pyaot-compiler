@@ -367,49 +367,10 @@ fn test_xor_self() {
 
 // ==================== Pair patterns ====================
 
-#[test]
-fn test_box_unbox_elimination() {
-    // _1 = BoxValue(_0, Int)
-    // _2 = UnboxValue(_1, Int)  →  _2 = Copy(_0)
-    let locals = vec![
-        make_local(0, Type::Int),
-        make_local(1, Type::Int),
-        make_local(2, Type::Int),
-    ];
-    let instructions = vec![
-        InstructionKind::BoxValue {
-            dest: LocalId::from(1u32),
-            src: Operand::Local(LocalId::from(0u32)),
-            src_type: Type::Int,
-        },
-        InstructionKind::UnboxValue {
-            dest: LocalId::from(2u32),
-            src: Operand::Local(LocalId::from(1u32)),
-            dest_type: Type::Int,
-        },
-    ];
-
-    let mut module = make_module(make_func(locals, instructions));
-    super::run_peephole(&mut module);
-
-    let insts = get_instructions(&module);
-    // First instruction unchanged (BoxValue)
-    assert!(matches!(
-        &insts[0].kind,
-        InstructionKind::BoxValue {
-            src_type: Type::Int,
-            ..
-        }
-    ));
-    // Second instruction replaced with Copy
-    match &insts[1].kind {
-        InstructionKind::Copy { dest, src } => {
-            assert_eq!(*dest, LocalId::from(2u32));
-            assert!(matches!(src, Operand::Local(id) if *id == LocalId::from(0u32)));
-        }
-        other => panic!("Expected Copy, got {:?}", other),
-    }
-}
+// `test_box_unbox_elimination` lived here until tagged-Value box/unbox
+// folding moved to `crate::raw_demotion`. Coverage is preserved by the
+// `cross_block_box_int_unbox_int_collapses` etc. tests in that module —
+// see `raw_demotion/tests.rs`.
 
 #[test]
 fn test_double_negation() {
