@@ -13,7 +13,6 @@ fn make_local(id: u32, ty: Type) -> Local {
         id: LocalId::from(id),
         name: None,
         ty,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     }

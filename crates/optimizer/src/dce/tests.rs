@@ -16,7 +16,6 @@ fn local(id: u32) -> Local {
         id: LocalId::from(id),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     }

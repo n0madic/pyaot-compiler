@@ -20,7 +20,6 @@ fn make_local(id: u32, ty: Type) -> Local {
         id: LocalId::from(id),
         name: None,
         ty,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     }
@@ -117,7 +116,6 @@ fn test_devirtualize_known_class() {
         id: LocalId::from(0u32),
         name: None,
         ty: class_type.clone(),
-        is_gc_root: true,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -172,7 +170,6 @@ fn test_skip_unknown_type() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Any,
-        is_gc_root: true,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -217,7 +214,6 @@ fn test_skip_missing_vtable_slot() {
         id: LocalId::from(0u32),
         name: None,
         ty: class_type.clone(),
-        is_gc_root: true,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -263,7 +259,6 @@ fn test_devirtualize_obj_in_params() {
         id: LocalId::from(0u32),
         name: None,
         ty: class_type.clone(),
-        is_gc_root: true,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -337,7 +332,6 @@ fn test_devirtualize_generic_user_class_receiver() {
         id: LocalId::from(0u32),
         name: None,
         ty: receiver_type.clone(),
-        is_gc_root: true,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -402,7 +396,6 @@ fn test_devirtualize_generic_builtin_no_vtable() {
         id: LocalId::from(0u32),
         name: None,
         ty: receiver_type,
-        is_gc_root: true,
         abi_immutable: false,
         mir_ty: None,
     };

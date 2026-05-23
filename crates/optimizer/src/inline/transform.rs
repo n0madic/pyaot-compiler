@@ -196,7 +196,6 @@ fn perform_inline(
             id: new_param_id,
             name: param.name,
             ty: param.ty.clone(),
-            is_gc_root: param.is_gc_root,
             abi_immutable: false,
             // Phase 3e: preserve mir_ty from the inlined callee param so
             // body locals keep their precise MirType signature instead of
@@ -222,7 +221,6 @@ fn perform_inline(
             id: new_id,
             name: local.name,
             ty: local.ty.clone(),
-            is_gc_root: local.is_gc_root,
             abi_immutable: false,
             // Phase 3e: preserve mir_ty from the inlined callee local so
             // body operations keep their precise MirType signature.

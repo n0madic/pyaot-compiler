@@ -878,7 +878,6 @@ mod tests {
             id: base_local,
             name: None,
             ty: union_ty.clone(),
-            is_gc_root: true,
             abi_immutable: false,
             mir_ty: None,
         });
@@ -939,7 +938,6 @@ mod tests {
             id: base_local,
             name: None,
             ty: Type::Any,
-            is_gc_root: true,
             abi_immutable: false,
             mir_ty: None,
         });
@@ -996,7 +994,6 @@ mod tests {
             id: base_local,
             name: None,
             ty: Type::Any,
-            is_gc_root: true,
             abi_immutable: false,
             mir_ty: None,
         });

@@ -173,7 +173,6 @@ impl<'a> Lowering<'a> {
                     id: result_local,
                     name: None,
                     ty: Type::Bool,
-                    is_gc_root: false,
                     abi_immutable: false,
                     mir_ty: None,
                 });
@@ -192,7 +191,6 @@ impl<'a> Lowering<'a> {
                     id: result_local,
                     name: None,
                     ty: Type::Bool,
-                    is_gc_root: false,
                     abi_immutable: false,
                     mir_ty: None,
                 });

@@ -310,12 +310,11 @@ impl<'a> Lowering<'a> {
         if let Some((var_id, var_type)) = self.get_module_var_export(&key).cloned() {
             // This is an imported variable - emit global read
             let result_local = self.alloc_local_id();
-            let is_ptr_type = var_type.is_heap();
+
             mir_func.add_local(mir::Local {
                 id: result_local,
                 name: None,
                 ty: var_type.clone(),
-                is_gc_root: is_ptr_type,
                 abi_immutable: false,
                 mir_ty: None,
             });
@@ -356,12 +355,11 @@ impl<'a> Lowering<'a> {
         if let Some((var_id, var_type)) = self.get_module_var_export(&key).cloned() {
             // Emit global read for the module variable
             let result_local = self.alloc_local_id();
-            let is_ptr_type = var_type.is_heap();
+
             mir_func.add_local(mir::Local {
                 id: result_local,
                 name: None,
                 ty: var_type.clone(),
-                is_gc_root: is_ptr_type,
                 abi_immutable: false,
                 mir_ty: None,
             });
@@ -482,7 +480,8 @@ impl<'a> Lowering<'a> {
             // `Value::from_int` so the closure tuple slot 0 reads
             // as `is_ptr() == false`. The dispatch path (closure.rs)
             // unwraps via `UnwrapValueInt` before invoking the trampoline.
-            let func_ptr_value = self.alloc_stack_local(Type::Any, mir_func);
+            let func_ptr_value =
+                self.alloc_and_add_local_with_mir_ty(Type::Any, mir::MirType::Tagged, mir_func);
             self.emit_instruction(mir::InstructionKind::BoxValue {
                 dest: func_ptr_value,
                 src: mir::Operand::Local(func_ptr_marked),
@@ -527,7 +526,11 @@ impl<'a> Lowering<'a> {
             let fn_ptr_idx = self.wrapper_fn_ptr_capture_index(func, hir_module);
             for (i, capture_op) in capture_operands.into_iter().enumerate() {
                 let stored_op = if Some(i) == fn_ptr_idx {
-                    let wrapped = self.alloc_stack_local(Type::Any, mir_func);
+                    let wrapped = self.alloc_and_add_local_with_mir_ty(
+                        Type::Any,
+                        mir::MirType::Tagged,
+                        mir_func,
+                    );
                     self.emit_instruction(mir::InstructionKind::BoxValue {
                         dest: wrapped,
                         src: capture_op,

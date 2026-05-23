@@ -28,13 +28,16 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Allocate a new local variable and add it to the function.
-    /// This is a helper to reduce boilerplate when creating locals.
+    /// Allocate a new local with the default register-level MirType derived
+    /// from `ty` (primitives → `Raw(K)`, heap/Tagged → as per
+    /// [`pyaot_mir::type_to_mir_type_register`]).
     ///
-    /// **Phase 2 (Strong-Typed MIR Rewrite)**: auto-populates
-    /// `Local.mir_ty` via register-level translation (`Raw(K)` for
-    /// primitives). Sites that need storage-level interpretation
-    /// (Tagged) should call `alloc_and_add_local_with_mir_ty` directly.
+    /// GC-root status is computed from the resulting `mir_ty` via
+    /// [`mir::Local::computed_is_gc_root`]: heap shapes and `Tagged` track,
+    /// raw primitives and `FuncPtr`/`Closure` do not. Sites that need an
+    /// override (e.g. a Tagged slot holding a non-heap code address) should
+    /// use [`Self::alloc_and_add_local_with_mir_ty`] with an explicit
+    /// `MirType::FuncPtr(sig)` or `MirType::Raw(I64)` instead.
     pub(crate) fn alloc_and_add_local(
         &mut self,
         ty: Type,
@@ -46,18 +49,16 @@ impl<'a> Lowering<'a> {
         mir_func.add_local(mir::Local {
             id: local_id,
             name: None,
-            ty: ty.clone(),
-            is_gc_root: ty.is_heap(),
+            ty,
             abi_immutable: false,
             mir_ty,
         });
         local_id
     }
 
-    /// Allocate a new local with an explicit MirType. Used by Phase 2
-    /// migration sites that need to override the register-level default
-    /// (e.g. closure tuple slots, ABI-bound params, container storage).
-    #[allow(dead_code)]
+    /// Allocate a new local with an explicit MirType. Used by sites that
+    /// need to override the register-level default (e.g. closure tuple
+    /// slots, ABI-bound params, container storage, FuncPtr code addresses).
     pub(crate) fn alloc_and_add_local_with_mir_ty(
         &mut self,
         ty: Type,
@@ -69,48 +70,11 @@ impl<'a> Lowering<'a> {
         mir_func.add_local(mir::Local {
             id: local_id,
             name: None,
-            ty: ty.clone(),
-            is_gc_root: ty.is_heap(),
+            ty,
             abi_immutable: false,
             mir_ty: Some(mir_ty),
         });
         local_id
-    }
-
-    /// Allocate a new local variable with explicit gc_root flag.
-    /// Use this when you need to override the default is_heap_type behavior.
-    fn alloc_and_add_local_with_gc(
-        &mut self,
-        ty: Type,
-        is_gc_root: bool,
-        mir_func: &mut mir::Function,
-    ) -> LocalId {
-        let ty = Self::demote_for_mir_storage(ty);
-        let local_id = self.alloc_local_id();
-        let mir_ty = Some(mir::type_to_mir_type_register(&ty));
-        mir_func.add_local(mir::Local {
-            id: local_id,
-            name: None,
-            ty,
-            is_gc_root,
-            abi_immutable: false,
-            mir_ty,
-        });
-        local_id
-    }
-
-    /// Allocate a local that is a GC root (for heap-allocated types like str, list, dict).
-    /// Use this for values that live on the heap and need garbage collection tracking.
-    pub(crate) fn alloc_gc_local(&mut self, ty: Type, mir_func: &mut mir::Function) -> LocalId {
-        self.alloc_and_add_local_with_gc(ty, true, mir_func)
-    }
-
-    /// Allocate a local that is NOT a GC root (for stack values or transient pointers).
-    /// Use this for temporary values that don't need GC tracking, such as:
-    /// - Static string pointers (compile-time constants)
-    /// - Transient pointers used only for immediate unboxing
-    pub(crate) fn alloc_stack_local(&mut self, ty: Type, mir_func: &mut mir::Function) -> LocalId {
-        self.alloc_and_add_local_with_gc(ty, false, mir_func)
     }
 
     /// Create a new basic block
@@ -190,7 +154,7 @@ impl<'a> Lowering<'a> {
         result_type: Type,
         mir_func: &mut mir::Function,
     ) -> LocalId {
-        let dest = self.alloc_gc_local(result_type, mir_func);
+        let dest = self.alloc_and_add_local(result_type, mir_func);
         self.emit_instruction(mir::InstructionKind::RuntimeCall { dest, func, args });
         dest
     }

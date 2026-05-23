@@ -146,9 +146,19 @@ pub fn rewrite_phase4_callee_returns(module: &mut mir::Module) {
                         };
                         if should_rewrite {
                             // Retype dest to the original primitive shape.
+                            // Explicitly set mir_ty to the matching Raw(K) so
+                            // `computed_is_gc_root()` returns false; without
+                            // it the register translation of `Type::Any`
+                            // (formerly held) would have falsely tracked the
+                            // raw primitive bits on the shadow stack.
                             if let Some(local) = func.locals.get_mut(&dest) {
                                 local.ty = orig_ret.clone();
-                                local.is_gc_root = false;
+                                local.mir_ty = Some(match orig_ret {
+                                    Type::Int => mir::MirType::raw_i64(),
+                                    Type::Bool => mir::MirType::raw_i8(),
+                                    Type::Float => mir::MirType::raw_f64(),
+                                    _ => unreachable!("phase4 flip only over primitive returns"),
+                                });
                             }
                             let temp_any_id = pyaot_utils::LocalId::from(next_local_id);
                             next_local_id += 1;
@@ -157,12 +167,10 @@ pub fn rewrite_phase4_callee_returns(module: &mut mir::Module) {
                                 mir::Local {
                                     id: temp_any_id,
                                     name: None,
-                                    // Phase4-flipped callees return tagged Value bits;
-                                    // HeapAny is the correct representation here.
+                                    // Phase4-flipped callees return tagged Value bits.
                                     ty: Type::Any,
-                                    is_gc_root: true,
                                     abi_immutable: false,
-                                    mir_ty: None,
+                                    mir_ty: Some(mir::MirType::Tagged),
                                 },
                             );
                             new_instructions.push(mir::Instruction {
@@ -211,9 +219,19 @@ pub fn rewrite_phase4_callee_returns(module: &mut mir::Module) {
                                     | Some(Type::Any)
                             );
                             if should_rewrite {
+                                // Retype dest to the original primitive shape
+                                // with matching Raw(K) mir_ty (same rationale
+                                // as the CallDirect arm above).
                                 if let Some(local) = func.locals.get_mut(&dest) {
                                     local.ty = orig_ret.clone();
-                                    local.is_gc_root = false;
+                                    local.mir_ty = Some(match orig_ret {
+                                        Type::Int => mir::MirType::raw_i64(),
+                                        Type::Bool => mir::MirType::raw_i8(),
+                                        Type::Float => mir::MirType::raw_f64(),
+                                        _ => {
+                                            unreachable!("phase4 flip only over primitive returns")
+                                        }
+                                    });
                                 }
                                 let temp_any_id = pyaot_utils::LocalId::from(next_local_id);
                                 next_local_id += 1;
@@ -222,12 +240,10 @@ pub fn rewrite_phase4_callee_returns(module: &mut mir::Module) {
                                     mir::Local {
                                         id: temp_any_id,
                                         name: None,
-                                        // Phase4-flipped callees return tagged Value bits;
-                                        // HeapAny is the correct representation here.
+                                        // Phase4-flipped callees return tagged Value bits.
                                         ty: Type::Any,
-                                        is_gc_root: true,
                                         abi_immutable: false,
-                                        mir_ty: None,
+                                        mir_ty: Some(mir::MirType::Tagged),
                                     },
                                 );
                                 new_instructions.push(mir::Instruction {
@@ -361,7 +377,8 @@ impl<'a> Lowering<'a> {
         // `codegen-cranelift/src/instructions/tag.rs`).
         match ty {
             Type::Int | Type::Bool | Type::Float | Type::None => {
-                let dest = self.alloc_stack_local(Type::Any, mir_func);
+                let dest =
+                    self.alloc_and_add_local_with_mir_ty(Type::Any, mir::MirType::Tagged, mir_func);
                 self.emit_instruction(mir::InstructionKind::BoxValue {
                     dest,
                     src: operand,
@@ -389,7 +406,11 @@ impl<'a> Lowering<'a> {
                         _ => None,
                     };
                     if let Some(src_type) = src_type {
-                        let dest = self.alloc_stack_local(Type::Any, mir_func);
+                        let dest = self.alloc_and_add_local_with_mir_ty(
+                            Type::Any,
+                            mir::MirType::Tagged,
+                            mir_func,
+                        );
                         self.emit_instruction(mir::InstructionKind::BoxValue {
                             dest,
                             src: operand,
@@ -419,7 +440,10 @@ impl<'a> Lowering<'a> {
     ) -> mir::Operand {
         match target_type {
             Type::Int | Type::Bool | Type::Float => {
-                let dest = self.alloc_stack_local(target_type.clone(), mir_func);
+                // UnboxValue dest: primitive type (Int/Bool/Float). Default
+                // register translation gives `Raw(K)`, exactly what codegen
+                // expects.
+                let dest = self.alloc_and_add_local(target_type.clone(), mir_func);
                 self.emit_instruction(mir::InstructionKind::UnboxValue {
                     dest,
                     src: operand,
@@ -467,7 +491,7 @@ impl<'a> Lowering<'a> {
     ) -> pyaot_utils::LocalId {
         match declared_type {
             Type::Int | Type::Bool | Type::Float => {
-                let raw_dest = self.alloc_gc_local(Type::Any, mir_func);
+                let raw_dest = self.alloc_and_add_local(Type::Any, mir_func);
                 self.emit_instruction(mir::InstructionKind::RuntimeCall {
                     dest: raw_dest,
                     func,
@@ -482,7 +506,10 @@ impl<'a> Lowering<'a> {
             _ => {
                 let dest = self.alloc_and_add_local(declared_type, mir_func);
                 debug_assert!(
-                    mir_func.locals.get(&dest).is_some_and(|l| l.is_gc_root),
+                    mir_func
+                        .locals
+                        .get(&dest)
+                        .is_some_and(|l| l.computed_is_gc_root()),
                     "emit_tagged_runtime_call: declared_type must be heap-shaped \
                      (slot must be GC-tracked) — pass a primitive type to take \
                      the unbox path instead"
@@ -517,7 +544,7 @@ impl<'a> Lowering<'a> {
         match result_ty {
             Type::Int | Type::Bool | Type::Float => {
                 // Callee returns tagged Value (Any ABI); receive into HeapAny, then unbox.
-                let heap_local = self.alloc_gc_local(Type::Any, mir_func);
+                let heap_local = self.alloc_and_add_local(Type::Any, mir_func);
                 self.emit_instruction(mir::InstructionKind::CallDirect {
                     dest: heap_local,
                     func,
@@ -701,7 +728,6 @@ impl<'a> Lowering<'a> {
                 id: local_id,
                 name: None,
                 ty: ty.clone(),
-                is_gc_root: ty.is_heap(),
                 abi_immutable: false,
                 mir_ty: None,
             });

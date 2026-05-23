@@ -955,7 +955,7 @@ impl<'a> Lowering<'a> {
         mir_func: &mut mir::Function,
     ) -> pyaot_utils::LocalId {
         let op_tag: i64 = if is_min { 0 } else { 2 };
-        let best_local = self.alloc_gc_local(elem_ty.clone(), mir_func);
+        let best_local = self.alloc_and_add_local(elem_ty.clone(), mir_func);
 
         let seed_bb = self.new_block();
         let seed_bb_id = seed_bb.id;

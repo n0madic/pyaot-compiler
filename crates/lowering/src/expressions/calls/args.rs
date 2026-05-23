@@ -51,7 +51,8 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             let raw = operands[i].clone();
-            let wrapped = self.alloc_stack_local(Type::Any, mir_func);
+            let wrapped =
+                self.alloc_and_add_local_with_mir_ty(Type::Any, mir::MirType::Tagged, mir_func);
             self.emit_instruction(mir::InstructionKind::BoxValue {
                 dest: wrapped,
                 src: raw,

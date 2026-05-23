@@ -319,7 +319,7 @@ impl<'a> Lowering<'a> {
                 dest: zero,
                 src: mir::Operand::Constant(mir::Constant::Int(0)),
             });
-            let boxed = self.alloc_gc_local(Type::Any, mir_func);
+            let boxed = self.alloc_and_add_local(Type::Any, mir_func);
             self.emit_instruction(mir::InstructionKind::BoxValue {
                 dest: boxed,
                 src: mir::Operand::Local(zero),
@@ -336,7 +336,7 @@ impl<'a> Lowering<'a> {
         // value. A tagged accumulator must be GC-tracked: `rt_obj_add` can
         // box a float result, so the slot may hold a heap pointer.
         let result_local = if accumulate_tagged {
-            self.alloc_gc_local(Type::Any, mir_func)
+            self.alloc_and_add_local(Type::Any, mir_func)
         } else {
             self.alloc_and_add_local(result_type.clone(), mir_func)
         };
@@ -396,7 +396,7 @@ impl<'a> Lowering<'a> {
         // `iter()`/generator inputs but would have been wrong for any
         // factory-converted container.
         if use_iter_branch {
-            let iter_local = self.alloc_gc_local(Type::Any, mir_func);
+            let iter_local = self.alloc_and_add_local(Type::Any, mir_func);
             let iter_seed = if let Some(factory) = iter_factory_def {
                 self.emit_runtime_call_gc(
                     mir::RuntimeFunc::Call(factory),
@@ -406,7 +406,7 @@ impl<'a> Lowering<'a> {
                 )
             } else {
                 // iterable_operand is already an IteratorObj / GeneratorObj.
-                let tmp = self.alloc_gc_local(Type::Any, mir_func);
+                let tmp = self.alloc_and_add_local(Type::Any, mir_func);
                 self.emit_instruction(mir::InstructionKind::Copy {
                     dest: tmp,
                     src: iterable_operand,

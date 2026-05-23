@@ -380,7 +380,8 @@ fn rewrite_with_unpack(
 ) -> bool {
     // Allocate fresh local IDs above the current max.
     let mut next_local: u32 = func.locals.keys().map(|id| id.0 + 1).max().unwrap_or(0);
-    let mut alloc_local = |func: &mut Function, ty: Type, is_gc_root: bool| -> LocalId {
+    // GC-rooting derived from mir_ty via computed_is_gc_root().
+    let mut alloc_local = |func: &mut Function, ty: Type| -> LocalId {
         let id = LocalId::from(next_local);
         next_local += 1;
         func.locals.insert(
@@ -389,7 +390,6 @@ fn rewrite_with_unpack(
                 id,
                 name: None,
                 ty: ty.clone(),
-                is_gc_root,
                 abi_immutable: false,
                 // Phase 3e: derive mir_ty from `ty` at register level so
                 // newly-allocated temps have a well-defined MirType
@@ -442,7 +442,7 @@ fn rewrite_with_unpack(
                 // Step 1: rt_tuple_get(args_tuple, i) -> tagged Value (HeapAny:
                 // rt_tuple_get has mir_return_semantic=Tagged; mirrors lowering's
                 // closure.rs which already uses Type::Any for the same call).
-                let tagged = alloc_local(func, Type::Any, true);
+                let tagged = alloc_local(func, Type::Any);
                 new_instrs.push(Instruction {
                     kind: InstructionKind::RuntimeCall {
                         dest: tagged,
@@ -458,7 +458,7 @@ fn rewrite_with_unpack(
                 // Step 2: per-type unbox.
                 let arg_local = match captured_ty {
                     Type::Int => {
-                        let unboxed = alloc_local(func, Type::Int, false);
+                        let unboxed = alloc_local(func, Type::Int);
                         new_instrs.push(Instruction {
                             kind: InstructionKind::UnboxValue {
                                 dest: unboxed,
@@ -470,7 +470,7 @@ fn rewrite_with_unpack(
                         unboxed
                     }
                     Type::Bool => {
-                        let unboxed = alloc_local(func, Type::Bool, false);
+                        let unboxed = alloc_local(func, Type::Bool);
                         new_instrs.push(Instruction {
                             kind: InstructionKind::UnboxValue {
                                 dest: unboxed,
@@ -482,7 +482,7 @@ fn rewrite_with_unpack(
                         unboxed
                     }
                     Type::Float => {
-                        let unboxed = alloc_local(func, Type::Float, false);
+                        let unboxed = alloc_local(func, Type::Float);
                         new_instrs.push(Instruction {
                             kind: InstructionKind::RuntimeCall {
                                 dest: unboxed,
@@ -543,7 +543,6 @@ mod tests {
                     params: vec![Type::Int],
                     ret: Box::new(Type::Int),
                 },
-                is_gc_root: false,
                 abi_immutable: false,
                 mir_ty: None,
             },
@@ -551,7 +550,6 @@ mod tests {
                 id: LocalId::from(1u32),
                 name: None,
                 ty: Type::Int,
-                is_gc_root: false,
                 abi_immutable: false,
                 mir_ty: None,
             },
@@ -560,7 +558,6 @@ mod tests {
             id: LocalId::from(2u32),
             name: None,
             ty: Type::Int,
-            is_gc_root: false,
             abi_immutable: false,
             mir_ty: None,
         };
@@ -568,7 +565,6 @@ mod tests {
             id: LocalId::from(3u32),
             name: None,
             ty: Type::Any,
-            is_gc_root: true,
             abi_immutable: false,
             mir_ty: None,
         };
@@ -576,7 +572,6 @@ mod tests {
             id: LocalId::from(4u32),
             name: None,
             ty: Type::Any,
-            is_gc_root: false,
             abi_immutable: false,
             mir_ty: None,
         };
@@ -637,7 +632,6 @@ mod tests {
                     params: vec![Type::Int, Type::Int],
                     ret: Box::new(Type::Int),
                 },
-                is_gc_root: false,
                 abi_immutable: false,
                 mir_ty: None,
             },
@@ -645,7 +639,6 @@ mod tests {
                 id: LocalId::from(1u32),
                 name: None,
                 ty: Type::tuple_var_of(Type::Any),
-                is_gc_root: true,
                 abi_immutable: false,
                 mir_ty: None,
             },
@@ -663,7 +656,6 @@ mod tests {
                 id: LocalId::from(2u32),
                 name: None,
                 ty: Type::Int,
-                is_gc_root: false,
                 abi_immutable: false,
                 mir_ty: None,
             },
@@ -674,7 +666,6 @@ mod tests {
                 id: LocalId::from(3u32),
                 name: None,
                 ty: Type::Any,
-                is_gc_root: false,
                 abi_immutable: false,
                 mir_ty: None,
             },

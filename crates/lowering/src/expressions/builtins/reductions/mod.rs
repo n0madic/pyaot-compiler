@@ -167,7 +167,7 @@ impl<'a> Lowering<'a> {
         // Accumulator is a heap-typed local (class instance) — must be a
         // GC root so the intermediate values produced by each dunder call
         // are visible to the shadow-stack walker.
-        let acc_local = self.alloc_gc_local(class_ty.clone(), mir_func);
+        let acc_local = self.alloc_and_add_local(class_ty.clone(), mir_func);
 
         let header_bb = self.new_block();
         let header_bb_id = header_bb.id;
@@ -407,7 +407,7 @@ impl<'a> Lowering<'a> {
         let iter_ty = Type::Iterator(Box::new(iterable_ty.clone()));
 
         if matches!(iterable_ty, Type::Iterator(_)) {
-            let iter_local = self.alloc_gc_local(iterable_ty.clone(), mir_func);
+            let iter_local = self.alloc_and_add_local(iterable_ty.clone(), mir_func);
             self.emit_instruction(mir::InstructionKind::Copy {
                 dest: iter_local,
                 src: operand,
@@ -540,7 +540,7 @@ impl<'a> Lowering<'a> {
         _hir_module: &hir::Module,
         mir_func: &mut mir::Function,
     ) -> Result<mir::Operand> {
-        let best_local = self.alloc_gc_local(class_ty.clone(), mir_func);
+        let best_local = self.alloc_and_add_local(class_ty.clone(), mir_func);
 
         let seed_bb = self.new_block();
         let seed_bb_id = seed_bb.id;

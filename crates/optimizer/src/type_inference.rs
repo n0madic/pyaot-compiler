@@ -1908,7 +1908,6 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
             .cloned()
         {
             param.ty = new_ty.clone();
-            param.is_gc_root = param.computed_is_gc_root();
             // Phase 3a-2: keep mir_ty in sync with WPA-narrowed ty for
             // non-ABI-bound params. Restricted to Raw-kind narrowing —
             // sync only when WPA inferred a concrete primitive type
@@ -1945,7 +1944,6 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
                 if let Some(shadow) = func.locals.get_mut(&param.id) {
                     if !shadow.abi_immutable {
                         shadow.ty = new_ty;
-                        shadow.is_gc_root = shadow.computed_is_gc_root();
                         shadow.mir_ty = Some(new_mir_ty);
                     }
                 }
@@ -1971,7 +1969,6 @@ fn materialize_function_types(func: &mut Function, types: &FunctionTypes) {
             .cloned()
         {
             local.ty = new_ty.clone();
-            local.is_gc_root = local.computed_is_gc_root();
 
             // Stage C.2 Attempt 4 — producer-aware body-local mir_ty narrowing.
             //
@@ -2074,7 +2071,6 @@ mod tests {
             id: LocalId::from(id),
             name: None,
             ty,
-            is_gc_root: false,
             abi_immutable: false,
             mir_ty: None,
         }
@@ -2651,7 +2647,6 @@ mod tests {
             id: LocalId::from(0u32),
             name: None,
             ty: Type::Any,
-            is_gc_root: false,
             abi_immutable: false,
             mir_ty: None,
         };
@@ -2764,7 +2759,6 @@ mod tests {
                     id: ret,
                     name: None,
                     ty: Type::Int,
-                    is_gc_root: false,
                     abi_immutable: false,
                     mir_ty: None,
                 },
@@ -2832,7 +2826,6 @@ mod tests {
             id: LocalId::from(0u32),
             name: None,
             ty: Type::Any,
-            is_gc_root: false,
             abi_immutable: false,
             mir_ty: None,
         };
@@ -3281,7 +3274,6 @@ mod tests {
             id: LocalId::from(0u32),
             name: None,
             ty: Type::Any,
-            is_gc_root: false,
             abi_immutable: false,
             mir_ty: None,
         };
@@ -3302,7 +3294,6 @@ mod tests {
             id: LocalId::from(0u32),
             name: None,
             ty: Type::Any,
-            is_gc_root: false,
             abi_immutable: false,
             mir_ty: None,
         };

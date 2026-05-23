@@ -81,7 +81,6 @@ impl<'a> Lowering<'a> {
                             if let Some(local_id) = self.get_var_local(var_id) {
                                 if let Some(local) = mir_func.locals.get_mut(&local_id) {
                                     local.ty = refined.clone();
-                                    local.is_gc_root = local.computed_is_gc_root();
                                 }
                             }
                             refined

@@ -39,7 +39,6 @@ pub fn specialize_function(
                 id: new_id,
                 name: p.name,
                 ty: new_ty.clone(),
-                is_gc_root: new_ty.is_heap(),
                 // Preserve ABI immutability from template: monomorphization
                 // must not relax the prologue-unbox contract.
                 abi_immutable: p.abi_immutable,
@@ -64,7 +63,6 @@ pub fn specialize_function(
                 id: new_id,
                 name: local.name,
                 ty: new_ty.clone(),
-                is_gc_root: new_ty.is_heap(),
                 abi_immutable: local.abi_immutable,
                 mir_ty: Some(new_mir_ty),
             },
@@ -150,7 +148,6 @@ pub fn specialize_wrapper(
                     id: new_id,
                     name: p.name,
                     ty: captured_signature.clone(),
-                    is_gc_root: false,
                     abi_immutable: false,
                     // Wrapper-specialization mir_ty deliberately None: the
                     // captured_signature is a Function type whose precise
@@ -164,7 +161,6 @@ pub fn specialize_wrapper(
                     id: new_id,
                     name: p.name,
                     ty: p.ty.clone(),
-                    is_gc_root: p.computed_is_gc_root(),
                     abi_immutable: false,
                     mir_ty: None,
                 }
@@ -178,15 +174,17 @@ pub fn specialize_wrapper(
     let mut locals: IndexMap<LocalId, Local> = IndexMap::new();
     for (_, local) in &template.locals {
         let new_id = remapper.remap_local(local.id);
-        // If this local corresponds to the fn-ptr param, retype it.
+        // If this local corresponds to the fn-ptr param, retype it to the
+        // captured signature; GC-root status is derived from the resulting
+        // mir_ty via computed_is_gc_root().
         let is_fn_ptr_param_local = template
             .params
             .get(fn_ptr_param_idx)
             .is_some_and(|p| p.id == local.id);
-        let (ty, is_gc_root) = if is_fn_ptr_param_local {
-            (captured_signature.clone(), false)
+        let ty = if is_fn_ptr_param_local {
+            captured_signature.clone()
         } else {
-            (local.ty.clone(), local.is_gc_root)
+            local.ty.clone()
         };
         locals.insert(
             new_id,
@@ -194,7 +192,6 @@ pub fn specialize_wrapper(
                 id: new_id,
                 name: local.name,
                 ty,
-                is_gc_root,
                 abi_immutable: local.abi_immutable,
                 // Wrapper-specialization: keep mir_ty None to preserve
                 // decorator_factory_optimized behavior.

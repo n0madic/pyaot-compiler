@@ -115,12 +115,15 @@ impl<'a> Lowering<'a> {
         // `UnwrapValueInt` recovers the raw text-segment address — same ABI
         // as the closure-tuple trampoline path. Stays off the shadow stack
         // (alloc_stack_local) since the wrapped Value(low bit 1) is_ptr=false.
-        let func_ptr_raw = self.alloc_stack_local(Type::Int, mir_func);
+        // Raw text-segment address: register translation Int → Raw(I64),
+        // computed_is_gc_root = false (no GC tracking for code pointers).
+        let func_ptr_raw = self.alloc_and_add_local(Type::Int, mir_func);
         self.emit_instruction(mir::InstructionKind::FuncAddr {
             dest: func_ptr_raw,
             func: original_func_id,
         });
-        let func_ptr_local = self.alloc_stack_local(Type::Any, mir_func);
+        let func_ptr_local =
+            self.alloc_and_add_local_with_mir_ty(Type::Any, mir::MirType::Tagged, mir_func);
         self.emit_instruction(mir::InstructionKind::BoxValue {
             dest: func_ptr_local,
             src: mir::Operand::Local(func_ptr_raw),
@@ -366,7 +369,7 @@ impl<'a> Lowering<'a> {
             Type::Any,
             mir_func,
         );
-        let real_func = self.alloc_stack_local(Type::Int, mir_func);
+        let real_func = self.alloc_and_add_local(Type::Int, mir_func);
         self.emit_instruction(mir::InstructionKind::UnboxValue {
             dest: real_func,
             src: mir::Operand::Local(tagged_func),
@@ -547,7 +550,7 @@ impl<'a> Lowering<'a> {
             Type::Any,
             mir_func,
         );
-        let func_ptr_local = self.alloc_stack_local(Type::Int, mir_func);
+        let func_ptr_local = self.alloc_and_add_local(Type::Int, mir_func);
         self.emit_instruction(mir::InstructionKind::UnboxValue {
             dest: func_ptr_local,
             src: mir::Operand::Local(tagged_func),

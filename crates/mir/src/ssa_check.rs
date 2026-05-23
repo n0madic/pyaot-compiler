@@ -488,7 +488,6 @@ mod tests {
             id: LocalId::from(id),
             name: None,
             ty,
-            is_gc_root: false,
             abi_immutable: false,
             mir_ty: None,
         }

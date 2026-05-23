@@ -21,7 +21,6 @@ fn make_local(id: u32, ty: Type) -> Local {
         id: LocalId::from(id),
         name: None,
         ty,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     }
@@ -37,7 +36,6 @@ fn make_trivial_getter(func_id: FuncId, offset: i64, self_type: Type) -> Functio
         id: LocalId::from(0u32),
         name: None,
         ty: self_type,
-        is_gc_root: true,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -91,7 +89,6 @@ fn make_caller_with_call(caller_id: FuncId, getter_id: FuncId, obj_type: Type) -
         id: LocalId::from(10u32),
         name: None,
         ty: obj_type,
-        is_gc_root: true,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -184,7 +181,6 @@ fn test_skip_non_trivial_getter_multiple_blocks() {
         id: LocalId::from(0u32),
         name: None,
         ty: class_type.clone(),
-        is_gc_root: true,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -266,7 +262,6 @@ fn test_skip_non_trivial_getter_multiple_instructions() {
         id: LocalId::from(0u32),
         name: None,
         ty: class_type.clone(),
-        is_gc_root: true,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -351,7 +346,6 @@ fn test_skip_call_with_multiple_args() {
         id: LocalId::from(10u32),
         name: None,
         ty: class_type,
-        is_gc_root: true,
         abi_immutable: false,
         mir_ty: None,
     };

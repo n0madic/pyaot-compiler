@@ -39,7 +39,7 @@ impl FunctionCost {
 
         // Check for GC roots in locals
         for local in func.locals.values() {
-            if local.is_gc_root {
+            if local.computed_is_gc_root() {
                 has_gc_roots = true;
                 break;
             }
@@ -47,7 +47,7 @@ impl FunctionCost {
 
         // Check parameters for GC roots
         for param in &func.params {
-            if param.is_gc_root {
+            if param.computed_is_gc_root() {
                 has_gc_roots = true;
                 break;
             }

@@ -468,14 +468,19 @@ impl<'a> Lowering<'a> {
                 id: local_id,
                 name: Some(hir_param.name),
                 ty: param_ty.clone(),
-                is_gc_root: is_cell_param || (param_ty.is_heap() && !is_fn_ptr_param), // Cells are heap objects
                 // Step E1: per-param ABI immutability. True iff this param
                 // has a lowering-emitted prologue UnboxValue / capture
                 // unbox — narrowing back to a primitive would invalidate
                 // the prologue's tagged-bit interpretation.
                 abi_immutable: needs_prologue_unbox,
+                // GC-rooting derived from mir_ty via computed_is_gc_root():
+                // cells (`Type::Cell(_)` → `Heap(Cell)`) and heap-typed
+                // params track; primitive (`Raw(K)`) and fn-ptr (Tagged
+                // INT-wrapped, `Value::is_ptr() == false`) do not.
                 mir_ty,
             };
+            let _ = is_cell_param;
+            let _ = is_fn_ptr_param;
             params.push(mir_param);
         }
 

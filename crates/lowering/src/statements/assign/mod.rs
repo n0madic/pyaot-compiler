@@ -159,7 +159,11 @@ impl<'a> Lowering<'a> {
                     // walk would treat the function-code address as a heap
                     // pointer and either follow it (SEGV) or rely on the
                     // address-heuristic filter, which §F.8 removes.
-                    let func_addr_value = self.alloc_stack_local(Type::Any, mir_func);
+                    let func_addr_value = self.alloc_and_add_local_with_mir_ty(
+                        Type::Any,
+                        mir::MirType::Tagged,
+                        mir_func,
+                    );
                     self.emit_instruction(mir::InstructionKind::BoxValue {
                         dest: func_addr_value,
                         src: mir::Operand::Local(func_addr_marked),
@@ -201,7 +205,11 @@ impl<'a> Lowering<'a> {
                     let fn_ptr_idx = self.wrapper_fn_ptr_capture_index(*func, hir_module);
                     for (i, capture_op) in capture_operands.iter().enumerate() {
                         let stored_op = if Some(i) == fn_ptr_idx {
-                            let wrapped = self.alloc_stack_local(Type::Any, mir_func);
+                            let wrapped = self.alloc_and_add_local_with_mir_ty(
+                                Type::Any,
+                                mir::MirType::Tagged,
+                                mir_func,
+                            );
                             self.emit_instruction(mir::InstructionKind::BoxValue {
                                 dest: wrapped,
                                 src: capture_op.clone(),

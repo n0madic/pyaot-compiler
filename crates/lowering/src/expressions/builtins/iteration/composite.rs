@@ -480,7 +480,8 @@ impl<'a> Lowering<'a> {
         let fn_ptr_idx = target_func.and_then(|f| self.wrapper_fn_ptr_capture_index(f, hir_module));
         for (i, capture_operand) in capture_operands.into_iter().enumerate() {
             let stored_op = if Some(i) == fn_ptr_idx {
-                let wrapped = self.alloc_stack_local(Type::Any, mir_func);
+                let wrapped =
+                    self.alloc_and_add_local_with_mir_ty(Type::Any, mir::MirType::Tagged, mir_func);
                 self.emit_instruction(mir::InstructionKind::BoxValue {
                     dest: wrapped,
                     src: capture_operand,

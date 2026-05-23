@@ -277,7 +277,6 @@ pub struct Local {
     pub id: LocalId,
     pub name: Option<InternedString>,
     pub ty: Type,
-    pub is_gc_root: bool, // true if this holds a GC-managed pointer
     /// Phase 4+ Extension Step E1 (per-param ABI granularity): true for
     /// function-parameter Locals whose `ty == Type::Any` is part of the
     /// ABI contract — narrowing them back to a primitive would invalidate
@@ -319,28 +318,23 @@ impl Local {
         crate::types::type_to_mir_type_register(&self.ty)
     }
 
-    /// Stage C.1 of Strong-Typed MIR Rewrite plan v2: derive the GC-root
-    /// flag from the local's resolved MirType.
+    /// Single source of truth for GC-rooting: delegates to
+    /// [`MirType::needs_gc_root`] via [`Self::resolved_mir_type`].
     ///
     /// Rules:
     /// * `Heap(_)` → true (heap pointer must be tracked)
     /// * `Tagged` → true (may carry a heap pointer — Box(Float) etc.)
-    /// * `FuncPtr(_)` / `Closure(_)` → true (code addresses are tracked
-    ///   when stored)
+    /// * `Closure(_)` → true (closure tuple itself is `gc_alloc`-allocated)
+    /// * `FuncPtr(_)` → false (text-segment code pointer; not GC-managed)
     /// * `Raw(_)` → false (primitive — no GC tracking)
     /// * `Var(_)` → conservative `false` (TypeVar is erased before codegen)
     /// * `Never` → false (control doesn't reach)
     ///
-    /// Until C.1 fully lands (field deletion), this method coexists with
-    /// the explicit `is_gc_root` field. Consumers can migrate one at a
-    /// time. Both are kept in sync by lowering at allocation time.
-    ///
-    /// Delegates to [`MirType::needs_gc_root`] — the single source of truth
-    /// for GC-rooting semantics. Notably `FuncPtr(_)` returns `false`: code
-    /// segment pointers don't need GC tracking. The previous local override
-    /// here returned `true` for FuncPtr and was compensated by the
-    /// `func_ptr_locals` side-table in `type_inference.rs`; that compensation
-    /// is no longer needed.
+    /// Sites that need a "Tagged slot, not GC-tracked" override (e.g. raw
+    /// code addresses transiently held before boxing) must allocate the
+    /// Local with `MirType::FuncPtr(sig)` or `MirType::Raw(I64)` via
+    /// `alloc_and_add_local_with_mir_ty` — the previous `is_gc_root` bool
+    /// field has been removed; the MirType is now the only signal.
     pub fn computed_is_gc_root(&self) -> bool {
         self.resolved_mir_type().needs_gc_root()
     }

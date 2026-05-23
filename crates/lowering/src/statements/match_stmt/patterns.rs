@@ -945,7 +945,7 @@ impl<'a> Lowering<'a> {
                         // unbox per logical type (Int/Bool via UnwrapValue*,
                         // Float via rt_unbox_float, others passthrough).
                         if matches!(attr_type, Type::Int | Type::Bool) {
-                            let boxed_local = self.alloc_gc_local(Type::Any, mir_func);
+                            let boxed_local = self.alloc_and_add_local(Type::Any, mir_func);
                             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                                 dest: boxed_local,
                                 func: mir::RuntimeFunc::Call(
@@ -968,7 +968,7 @@ impl<'a> Lowering<'a> {
                                 }
                             });
                         } else if matches!(attr_type, Type::Float) {
-                            let boxed_local = self.alloc_gc_local(Type::Any, mir_func);
+                            let boxed_local = self.alloc_and_add_local(Type::Any, mir_func);
                             self.emit_instruction(mir::InstructionKind::RuntimeCall {
                                 dest: boxed_local,
                                 func: mir::RuntimeFunc::Call(

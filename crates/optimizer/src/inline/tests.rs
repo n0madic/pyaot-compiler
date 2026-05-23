@@ -17,7 +17,6 @@ fn create_add_function(func_id: FuncId) -> Function {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -25,7 +24,6 @@ fn create_add_function(func_id: FuncId) -> Function {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -33,7 +31,6 @@ fn create_add_function(func_id: FuncId) -> Function {
         id: LocalId::from(2u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -70,7 +67,6 @@ fn create_caller_function(func_id: FuncId, add_func_id: FuncId) -> Function {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -78,7 +74,6 @@ fn create_caller_function(func_id: FuncId, add_func_id: FuncId) -> Function {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -86,7 +81,6 @@ fn create_caller_function(func_id: FuncId, add_func_id: FuncId) -> Function {
         id: LocalId::from(2u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -193,7 +187,6 @@ fn test_recursive_detection() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -211,7 +204,6 @@ fn test_recursive_detection() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -287,7 +279,6 @@ fn test_no_inline_recursive() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -295,7 +286,6 @@ fn test_no_inline_recursive() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -325,7 +315,6 @@ fn test_no_inline_recursive() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -333,7 +322,6 @@ fn test_no_inline_recursive() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -395,7 +383,6 @@ fn test_generator_not_inlined() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -403,7 +390,6 @@ fn test_generator_not_inlined() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -432,7 +418,6 @@ fn test_generator_not_inlined() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -440,7 +425,6 @@ fn test_generator_not_inlined() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -514,7 +498,6 @@ fn test_multi_block_callee_inlined() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -522,7 +505,6 @@ fn test_multi_block_callee_inlined() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -578,7 +560,6 @@ fn test_multi_block_callee_inlined() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -586,7 +567,6 @@ fn test_multi_block_callee_inlined() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -653,7 +633,6 @@ fn test_multiple_call_sites_in_same_function() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -661,7 +640,6 @@ fn test_multiple_call_sites_in_same_function() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -669,7 +647,6 @@ fn test_multiple_call_sites_in_same_function() {
         id: LocalId::from(2u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -677,7 +654,6 @@ fn test_multiple_call_sites_in_same_function() {
         id: LocalId::from(3u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -760,7 +736,6 @@ fn test_transitive_inlining() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -768,7 +743,6 @@ fn test_transitive_inlining() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -797,7 +771,6 @@ fn test_transitive_inlining() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -805,7 +778,6 @@ fn test_transitive_inlining() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -833,7 +805,6 @@ fn test_transitive_inlining() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -841,7 +812,6 @@ fn test_transitive_inlining() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -907,7 +877,6 @@ fn test_consider_decision_medium_function() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -928,7 +897,6 @@ fn test_consider_decision_medium_function() {
             id: LocalId::from(i + 1),
             name: None,
             ty: Type::Int,
-            is_gc_root: false,
             abi_immutable: false,
             mir_ty: None,
         };
@@ -969,7 +937,6 @@ fn test_gc_roots_excluded_from_always_inline() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Str,
-        is_gc_root: true,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -977,7 +944,6 @@ fn test_gc_roots_excluded_from_always_inline() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Str,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -1030,7 +996,6 @@ fn test_max_iterations_limits_inlining() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -1038,7 +1003,6 @@ fn test_max_iterations_limits_inlining() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -1065,7 +1029,6 @@ fn test_max_iterations_limits_inlining() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -1073,7 +1036,6 @@ fn test_max_iterations_limits_inlining() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -1101,7 +1063,6 @@ fn test_max_iterations_limits_inlining() {
         id: LocalId::from(0u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };
@@ -1109,7 +1070,6 @@ fn test_max_iterations_limits_inlining() {
         id: LocalId::from(1u32),
         name: None,
         ty: Type::Int,
-        is_gc_root: false,
         abi_immutable: false,
         mir_ty: None,
     };

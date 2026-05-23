@@ -62,7 +62,6 @@ fn alloc_temp_local(func: &mut Function, next_local_id: &mut u32, ty: Type) -> L
             id,
             name: None,
             ty: ty.clone(),
-            is_gc_root: ty.is_heap(),
             abi_immutable: false,
             // Phase 3e: derive mir_ty so abi_repair-introduced temps have a
             // precise MirType signature for the verifier and downstream

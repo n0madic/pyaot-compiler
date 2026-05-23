@@ -51,7 +51,6 @@ impl<'a> Lowering<'a> {
                     id: result_local,
                     name: None,
                     ty: Type::Str,
-                    is_gc_root: true,
                     abi_immutable: false,
                     mir_ty: None,
                 });
@@ -76,7 +75,6 @@ impl<'a> Lowering<'a> {
                             id: result_local,
                             name: None,
                             ty: Type::Bool,
-                            is_gc_root: false,
                             abi_immutable: false,
                             mir_ty: None,
                         });
@@ -98,7 +96,6 @@ impl<'a> Lowering<'a> {
                             id: boxed_local,
                             name: None,
                             ty: Type::Str, // Placeholder for *mut Obj
-                            is_gc_root: false,
                             abi_immutable: false,
                             mir_ty: None,
                         });
@@ -114,7 +111,6 @@ impl<'a> Lowering<'a> {
                             id: result_local,
                             name: None,
                             ty: Type::Float,
-                            is_gc_root: false,
                             abi_immutable: false,
                             mir_ty: None,
                         });
@@ -130,7 +126,6 @@ impl<'a> Lowering<'a> {
                             id: result_local,
                             name: None,
                             ty: Type::Int,
-                            is_gc_root: false,
                             abi_immutable: false,
                             mir_ty: None,
                         });
@@ -164,7 +159,6 @@ impl<'a> Lowering<'a> {
                             id: result_local,
                             name: None,
                             ty: result_ty.clone(),
-                            is_gc_root: result_ty.is_heap(),
                             abi_immutable: false,
                             mir_ty: result_mir_ty,
                         });
@@ -255,7 +249,6 @@ impl<'a> Lowering<'a> {
                     id: result_local,
                     name: None,
                     ty: result_ty.clone(),
-                    is_gc_root: result_ty.is_heap(),
                     abi_immutable: false,
                     mir_ty: result_mir_ty,
                 });
@@ -299,7 +292,6 @@ impl<'a> Lowering<'a> {
                     id: result_local,
                     name: None,
                     ty: (**value_ty).clone(),
-                    is_gc_root: value_ty.is_heap(),
                     abi_immutable: false,
                     mir_ty: None,
                 });
@@ -361,7 +353,6 @@ impl<'a> Lowering<'a> {
                         id: result_local,
                         name: None,
                         ty: return_ty.clone(),
-                        is_gc_root: return_ty.is_heap(),
                         abi_immutable: false,
                         mir_ty: None,
                     });
@@ -385,7 +376,6 @@ impl<'a> Lowering<'a> {
                         id: result_local,
                         name: None,
                         ty: Type::Any,
-                        is_gc_root: false,
                         abi_immutable: false,
                         mir_ty: None,
                     });
@@ -400,7 +390,6 @@ impl<'a> Lowering<'a> {
                     id: result_local,
                     name: None,
                     ty: Type::Any,
-                    is_gc_root: true,
                     abi_immutable: false,
                     mir_ty: None,
                 });

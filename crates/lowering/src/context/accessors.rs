@@ -966,7 +966,6 @@ mod tests {
             id: local_id,
             name: None,
             ty: Type::Int,
-            is_gc_root: false,
             abi_immutable: false,
             mir_ty: None,
         });

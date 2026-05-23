@@ -99,7 +99,6 @@ mod tests {
             id: LocalId::from(id),
             name: None,
             ty: ty.clone(),
-            is_gc_root: ty.is_heap(),
             abi_immutable: false,
             mir_ty: None,
         }
