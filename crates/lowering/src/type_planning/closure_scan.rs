@@ -253,7 +253,18 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Recursively scan an expression for inline closures and record their capture types
+    /// Recursively scan an expression for inline closures and record their
+    /// capture types. Bespoke handling for three variants:
+    ///
+    /// - `Closure`: record capture types (the core observation this
+    ///   scanner exists for).
+    /// - `BuiltinCall`: register HOF lambda-param type hints for
+    ///   `map` / `filter` / `reduce` / `sorted` / `min` / `max`.
+    /// - `MethodCall`: register HOF hints for `list.sort(key=…)`.
+    ///
+    /// All other variants fall through to the default `for_each_subexpr_id`
+    /// recursion (every variant that contains sub-`ExprId`s is walked
+    /// exhaustively at compile time).
     fn scan_expr_for_closures(
         &mut self,
         expr: &hir::Expr,
@@ -262,13 +273,13 @@ impl<'a> Lowering<'a> {
     ) {
         match &expr.kind {
             hir::ExprKind::Closure { func, captures } => {
-                // Found an inline closure — record its capture types. Second
-                // pass of `precompute_closure_capture_types` may refine an
-                // earlier approximation: if the new inference produces a
-                // strictly more concrete type than the one already stored,
-                // overwrite. A strictly-monotone refinement rule
-                // (`Any → concrete`) keeps the fixpoint trivially
-                // convergent.
+                // Found an inline closure — record its capture types.
+                // Second pass of `precompute_closure_capture_types` may
+                // refine an earlier approximation: if the new inference
+                // produces a strictly more concrete type than the one
+                // already stored, overwrite. A strictly-monotone
+                // refinement rule (`Any → concrete`) keeps the fixpoint
+                // trivially convergent.
                 let mut capture_types = Vec::new();
                 for capture_id in captures {
                     let capture_expr = &hir_module.exprs[*capture_id];
@@ -288,24 +299,7 @@ impl<'a> Lowering<'a> {
                 if refine {
                     self.insert_closure_capture_types(*func, capture_types);
                 }
-            }
-            hir::ExprKind::Call {
-                func, args, kwargs, ..
-            } => {
-                // Scan function and all arguments
-                let func_expr = &hir_module.exprs[*func];
-                self.scan_expr_for_closures(func_expr, hir_module, var_types);
-                for call_arg in args {
-                    let arg_id = match call_arg {
-                        hir::CallArg::Regular(expr_id) | hir::CallArg::Starred(expr_id) => expr_id,
-                    };
-                    let arg_expr = &hir_module.exprs[*arg_id];
-                    self.scan_expr_for_closures(arg_expr, hir_module, var_types);
-                }
-                for kw in kwargs {
-                    let kw_expr = &hir_module.exprs[kw.value];
-                    self.scan_expr_for_closures(kw_expr, hir_module, var_types);
-                }
+                // Captures already recursed via for_each_subexpr_id below.
             }
             hir::ExprKind::BuiltinCall {
                 builtin,
@@ -313,8 +307,7 @@ impl<'a> Lowering<'a> {
                 kwargs,
                 ..
             } => {
-                // Register lambda parameter type hints for builtin HOFs
-                // map/filter: callback takes 1 element parameter
+                // map/filter: callback takes 1 element parameter.
                 if matches!(builtin, hir::Builtin::Map | hir::Builtin::Filter) && args.len() >= 2 {
                     self.register_lambda_hints_from_iterable(
                         &hir_module.exprs[args[0]],
@@ -325,7 +318,7 @@ impl<'a> Lowering<'a> {
                         |elem| vec![elem],
                     );
                 }
-                // reduce: callback takes 2 element parameters (acc, elem)
+                // reduce: callback takes 2 element parameters (acc, elem).
                 if matches!(builtin, hir::Builtin::Reduce) && args.len() >= 2 {
                     self.register_lambda_hints_from_iterable(
                         &hir_module.exprs[args[0]],
@@ -336,7 +329,7 @@ impl<'a> Lowering<'a> {
                         |elem| vec![elem.clone(), elem],
                     );
                 }
-                // sorted/min/max key=: key callback takes 1 element parameter
+                // sorted/min/max key=: key callback takes 1 element parameter.
                 if matches!(
                     builtin,
                     hir::Builtin::Sorted | hir::Builtin::Min | hir::Builtin::Max
@@ -361,27 +354,16 @@ impl<'a> Lowering<'a> {
                         );
                     }
                 }
-
-                // Scan all arguments (this catches map(lambda ..., ...), filter(lambda ..., ...), etc.)
-                for arg_id in args {
-                    let arg_expr = &hir_module.exprs[*arg_id];
-                    self.scan_expr_for_closures(arg_expr, hir_module, var_types);
-                }
-                for kw in kwargs {
-                    let kw_expr = &hir_module.exprs[kw.value];
-                    self.scan_expr_for_closures(kw_expr, hir_module, var_types);
-                }
+                // Args and kwargs already recursed via for_each_subexpr_id.
             }
             hir::ExprKind::MethodCall {
                 obj,
                 method,
-                args,
+                args: _,
                 kwargs,
             } => {
-                let obj_expr = &hir_module.exprs[*obj];
-                self.scan_expr_for_closures(obj_expr, hir_module, var_types);
-
-                // list.sort(key=...) — register lambda hints with the list's element type.
+                // list.sort(key=...) — register lambda hints with the
+                // list's element type.
                 if self.interner.resolve(*method) == "sort" {
                     let key_func = kwargs.iter().find_map(|kw| {
                         if self.interner.resolve(kw.name) == "key" {
@@ -391,6 +373,7 @@ impl<'a> Lowering<'a> {
                         }
                     });
                     if let Some(key_expr) = key_func {
+                        let obj_expr = &hir_module.exprs[*obj];
                         self.register_lambda_hints_from_iterable(
                             key_expr,
                             obj_expr,
@@ -401,112 +384,21 @@ impl<'a> Lowering<'a> {
                         );
                     }
                 }
-
-                for arg_id in args {
-                    let arg_expr = &hir_module.exprs[*arg_id];
-                    self.scan_expr_for_closures(arg_expr, hir_module, var_types);
-                }
-                for kw in kwargs {
-                    let kw_expr = &hir_module.exprs[kw.value];
-                    self.scan_expr_for_closures(kw_expr, hir_module, var_types);
-                }
+                // Obj/args/kwargs already recursed via for_each_subexpr_id.
             }
-            hir::ExprKind::BinOp { left, right, .. }
-            | hir::ExprKind::LogicalOp { left, right, .. } => {
-                let left_expr = &hir_module.exprs[*left];
-                let right_expr = &hir_module.exprs[*right];
-                self.scan_expr_for_closures(left_expr, hir_module, var_types);
-                self.scan_expr_for_closures(right_expr, hir_module, var_types);
-            }
-            hir::ExprKind::UnOp { operand, .. } => {
-                let operand_expr = &hir_module.exprs[*operand];
-                self.scan_expr_for_closures(operand_expr, hir_module, var_types);
-            }
-            hir::ExprKind::Compare { left, right, .. } => {
-                let left_expr = &hir_module.exprs[*left];
-                let right_expr = &hir_module.exprs[*right];
-                self.scan_expr_for_closures(left_expr, hir_module, var_types);
-                self.scan_expr_for_closures(right_expr, hir_module, var_types);
-            }
-            hir::ExprKind::List(elements)
-            | hir::ExprKind::Tuple(elements)
-            | hir::ExprKind::Set(elements) => {
-                for elem_id in elements {
-                    let elem_expr = &hir_module.exprs[*elem_id];
-                    self.scan_expr_for_closures(elem_expr, hir_module, var_types);
-                }
-            }
-            hir::ExprKind::Dict(pairs) => {
-                for (key_id, val_id) in pairs {
-                    let key_expr = &hir_module.exprs[*key_id];
-                    let val_expr = &hir_module.exprs[*val_id];
-                    self.scan_expr_for_closures(key_expr, hir_module, var_types);
-                    self.scan_expr_for_closures(val_expr, hir_module, var_types);
-                }
-            }
-            hir::ExprKind::Index { obj, index } => {
-                let obj_expr = &hir_module.exprs[*obj];
-                let index_expr = &hir_module.exprs[*index];
-                self.scan_expr_for_closures(obj_expr, hir_module, var_types);
-                self.scan_expr_for_closures(index_expr, hir_module, var_types);
-            }
-            hir::ExprKind::IfExpr {
-                cond,
-                then_val,
-                else_val,
-            } => {
-                let cond_expr = &hir_module.exprs[*cond];
-                let then_expr = &hir_module.exprs[*then_val];
-                let else_expr = &hir_module.exprs[*else_val];
-                self.scan_expr_for_closures(cond_expr, hir_module, var_types);
-                self.scan_expr_for_closures(then_expr, hir_module, var_types);
-                self.scan_expr_for_closures(else_expr, hir_module, var_types);
-            }
-            // f-string format spec — a `sorted(..., key=lambda ...)` (or
-            // any HOF callback) embedded in `f"{...}"` lives inside a
-            // `FormatSpec` node. Without recursing here, the key lambda's
-            // parameter type hint is never harvested, the param stays
-            // `Any`, and the lambda is lowered with the tagged-Value ABI
-            // while `sorted` delivers raw scalars — the lambda then reads
-            // garbage (observed as `None`).
-            hir::ExprKind::FormatSpec { value, .. } => {
-                self.scan_expr_for_closures(&hir_module.exprs[*value], hir_module, var_types);
-            }
-            hir::ExprKind::Attribute { obj, .. } => {
-                self.scan_expr_for_closures(&hir_module.exprs[*obj], hir_module, var_types);
-            }
-            hir::ExprKind::SuperCall { args, .. } => {
-                for arg_id in args {
-                    self.scan_expr_for_closures(&hir_module.exprs[*arg_id], hir_module, var_types);
-                }
-            }
-            hir::ExprKind::StdlibCall { args, .. } => {
-                for arg_id in args {
-                    self.scan_expr_for_closures(&hir_module.exprs[*arg_id], hir_module, var_types);
-                }
-            }
-            hir::ExprKind::Slice {
-                obj,
-                start,
-                end,
-                step,
-            } => {
-                self.scan_expr_for_closures(&hir_module.exprs[*obj], hir_module, var_types);
-                for sub in [start, end, step].into_iter().flatten() {
-                    self.scan_expr_for_closures(&hir_module.exprs[*sub], hir_module, var_types);
-                }
-            }
-            hir::ExprKind::Yield(Some(value_id)) => {
-                self.scan_expr_for_closures(&hir_module.exprs[*value_id], hir_module, var_types);
-            }
-            hir::ExprKind::IterHasNext(iter_id) => {
-                self.scan_expr_for_closures(&hir_module.exprs[*iter_id], hir_module, var_types);
-            }
-            hir::ExprKind::MatchPattern { subject, .. } => {
-                self.scan_expr_for_closures(&hir_module.exprs[*subject], hir_module, var_types);
-            }
-            // Primitives and other simple expressions don't contain closures
             _ => {}
+        }
+
+        // Default recursion through every sub-`ExprId` via the exhaustive
+        // helper. Routing through `for_each_subexpr_id` means a new
+        // `ExprKind` variant becomes a compile error in that helper —
+        // every scanner inherits the fix.
+        //
+        // Borrow-checker: collect sub-expression ids first, then recurse.
+        let mut sub_ids: smallvec::SmallVec<[hir::ExprId; 4]> = smallvec::SmallVec::new();
+        hir::visit::for_each_subexpr_id(expr, hir_module, |id| sub_ids.push(id));
+        for id in sub_ids {
+            self.scan_expr_for_closures(&hir_module.exprs[id], hir_module, var_types);
         }
     }
 
@@ -932,16 +824,15 @@ impl<'a> Lowering<'a> {
         overlay: &IndexMap<VarId, Type>,
         accumulators: &mut std::collections::HashMap<pyaot_utils::FuncId, Vec<Type>>,
     ) {
-        if let hir::ExprKind::Call {
-            func,
-            args,
-            kwargs,
-            kwargs_unpack,
-        } = &expr.kind
-        {
-            let func_expr = &hir_module.exprs[*func];
-            // The second tuple field `harvest_skip` is how many leading
-            // param slots `args` does NOT cover at this call site:
+        // Bespoke handling for the two ExprKind variants that need per-arm
+        // semantics. Both fall through to the default `for_each_subexpr_id`
+        // recursion below (Call's harvest does NOT short-circuit; IfExpr's
+        // narrowing arm short-circuits to avoid double-recursing through
+        // unnarrowed branches).
+        match &expr.kind {
+            // Call: harvest positional-arg types per function position. The
+            // second tuple field `harvest_skip` is how many leading param
+            // slots `args` does NOT cover at this call site:
             //  - FuncRef / Closure / Var: 0 (captures live on the Closure
             //    node, not in `Call.args`).
             //  - ClassRef: 1 (call args map to `__init__` params [1..],
@@ -952,147 +843,73 @@ impl<'a> Lowering<'a> {
             // type into `self`'s param hint, propagating `Float` (or
             // whatever the first arg's type is) into `self.data` reads via
             // the seed-overlay and breaking downstream ABIs.
-            let resolved = match &func_expr.kind {
-                hir::ExprKind::FuncRef(fid) => Some((*fid, 0usize)),
-                hir::ExprKind::Closure { func: fid, .. } => Some((*fid, 0usize)),
-                hir::ExprKind::Var(v) => var_to_func.get(v).copied(),
-                hir::ExprKind::ClassRef(class_id) => hir_module
-                    .class_defs
-                    .get(class_id)
-                    .and_then(|c| c.init_method)
-                    .map(|init_id| (init_id, 1usize)),
-                _ => None,
-            };
-            if let Some((fid, harvest_skip)) = resolved {
-                let mut positional_tys: Vec<Type> = Vec::with_capacity(args.len());
-                let mut skip = false;
-                for call_arg in args {
-                    match call_arg {
-                        hir::CallArg::Regular(arg_id) => {
-                            let arg_expr = &hir_module.exprs[*arg_id];
-                            let ty = self.seed_infer_expr_type(arg_expr, hir_module, overlay);
-                            positional_tys.push(ty);
-                        }
-                        hir::CallArg::Starred(_) => {
-                            skip = true;
-                            break;
-                        }
-                    }
-                }
-                if !skip {
-                    let needed_len = harvest_skip + positional_tys.len();
-                    let entry = accumulators
-                        .entry(fid)
-                        .or_insert_with(|| vec![Type::Never; needed_len]);
-                    if entry.len() < needed_len {
-                        entry.resize(needed_len, Type::Never);
-                    }
-                    for (i, ty) in positional_tys.into_iter().enumerate() {
-                        let slot = harvest_skip + i;
-                        let existing = std::mem::replace(&mut entry[slot], Type::Never);
-                        entry[slot] = join_nested_arg_ty(existing, ty);
-                    }
-                }
-            }
-            // Recurse into args so nested Calls get scanned too.
-            for call_arg in args {
-                let arg_id = match call_arg {
-                    hir::CallArg::Regular(id) | hir::CallArg::Starred(id) => id,
+            hir::ExprKind::Call { func, args, .. } => {
+                let func_expr = &hir_module.exprs[*func];
+                let resolved = match &func_expr.kind {
+                    hir::ExprKind::FuncRef(fid) => Some((*fid, 0usize)),
+                    hir::ExprKind::Closure { func: fid, .. } => Some((*fid, 0usize)),
+                    hir::ExprKind::Var(v) => var_to_func.get(v).copied(),
+                    hir::ExprKind::ClassRef(class_id) => hir_module
+                        .class_defs
+                        .get(class_id)
+                        .and_then(|c| c.init_method)
+                        .map(|init_id| (init_id, 1usize)),
+                    _ => None,
                 };
-                let arg_expr = &hir_module.exprs[*arg_id];
-                self.scan_expr_for_calls(arg_expr, hir_module, var_to_func, overlay, accumulators);
+                if let Some((fid, harvest_skip)) = resolved {
+                    let mut positional_tys: Vec<Type> = Vec::with_capacity(args.len());
+                    let mut skip = false;
+                    for call_arg in args {
+                        match call_arg {
+                            hir::CallArg::Regular(arg_id) => {
+                                let arg_expr = &hir_module.exprs[*arg_id];
+                                let ty = self.seed_infer_expr_type(arg_expr, hir_module, overlay);
+                                positional_tys.push(ty);
+                            }
+                            hir::CallArg::Starred(_) => {
+                                skip = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !skip {
+                        let needed_len = harvest_skip + positional_tys.len();
+                        let entry = accumulators
+                            .entry(fid)
+                            .or_insert_with(|| vec![Type::Never; needed_len]);
+                        if entry.len() < needed_len {
+                            entry.resize(needed_len, Type::Never);
+                        }
+                        for (i, ty) in positional_tys.into_iter().enumerate() {
+                            let slot = harvest_skip + i;
+                            let existing = std::mem::replace(&mut entry[slot], Type::Never);
+                            entry[slot] = join_nested_arg_ty(existing, ty);
+                        }
+                    }
+                }
+                // Fall through to default recurse — `for_each_subexpr_id`
+                // walks the callee + args + kwargs + kwargs_unpack.
             }
-            // Recurse into the func expression itself (for nested
-            // closure factories).
-            self.scan_expr_for_calls(func_expr, hir_module, var_to_func, overlay, accumulators);
-            // Recurse into keyword-argument values and the `**kwargs`
-            // unpack expression so inline calls there get harvested too.
-            for kw in kwargs {
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[kw.value],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-            }
-            if let Some(unpack_id) = kwargs_unpack {
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*unpack_id],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-            }
-            return;
-        }
-        // Generic recursion into sub-expressions for any other kind.
-        match &expr.kind {
-            hir::ExprKind::BinOp { left, right, .. }
-            | hir::ExprKind::Compare { left, right, .. } => {
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*left],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*right],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-            }
-            hir::ExprKind::UnOp { operand, .. } => {
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*operand],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-            }
-            hir::ExprKind::LogicalOp { left, right, .. } => {
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*left],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*right],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-            }
+            // IfExpr: apply `isinstance(var, T)` narrowing to recursion
+            // overlays so that arg-type observations inside ternary
+            // branches reflect the narrowed (or excluded) type for `var`.
+            // Matches the constructor harvester's IfExpr arm — without
+            // this, a `Value(other)` call in the else branch of `other if
+            // isinstance(other, Value) else Value(other)` records `other`'s
+            // pre-narrowed polymorphic seed (`Union[Self, int, float,
+            // bool]`), so the harvested `Value.__init__`'s `data` param
+            // hint ends up as `Union[Float, Class[Self]]` instead of
+            // `Float`. The downstream effect is that `__init__` is emitted
+            // with a `Union`-typed param, primitive callers get boxed into
+            // a `Value`-tagged slot, and `self.data = d` stuffs tagged-
+            // Value bits into the F64 slot — observable as denormal float
+            // reads at runtime (microgpt training step computes loss=NaN
+            // through the `softmax` call chain).
             hir::ExprKind::IfExpr {
                 cond,
                 then_val,
                 else_val,
             } => {
-                // Apply `isinstance(var, T)` narrowing to the recursion
-                // overlays so that arg-type observations inside ternary
-                // branches reflect the narrowed (or excluded) type for
-                // `var`. Matches the constructor harvester's IfExpr arm
-                // — without this, a `Value(other)` call in the else
-                // branch of `other if isinstance(other, Value) else
-                // Value(other)` records `other`'s pre-narrowed
-                // polymorphic seed (`Union[Self, int, float, bool]`),
-                // so the harvested `Value.__init__`'s `data` param hint
-                // ends up as `Union[Float, Class[Self]]` instead of
-                // `Float`. The downstream effect is that `__init__` is
-                // emitted with a `Union`-typed param, primitive callers
-                // get boxed into a `Value`-tagged slot, and `self.data
-                // = d` stuffs tagged-Value bits into the F64 slot —
-                // observable as denormal float reads at runtime
-                // (microgpt training step computes loss=NaN through the
-                // `softmax` call chain).
                 let cond_expr = &hir_module.exprs[*cond];
                 let narrow =
                     self.extract_simple_isinstance_narrowing(cond_expr, hir_module, Some(overlay));
@@ -1132,169 +949,31 @@ impl<'a> Lowering<'a> {
                         accumulators,
                     );
                 }
+                // Narrowing arm already recursed into cond/then/else with
+                // the per-branch overlays — skip the default recurse below.
+                return;
             }
-            hir::ExprKind::MethodCall {
-                obj, args, kwargs, ..
-            } => {
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*obj],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-                for a in args {
-                    self.scan_expr_for_calls(
-                        &hir_module.exprs[*a],
-                        hir_module,
-                        var_to_func,
-                        overlay,
-                        accumulators,
-                    );
-                }
-                // Recurse into keyword-argument values so inline calls in
-                // `obj.method(key=helper(7))` get harvested too.
-                for kw in kwargs {
-                    self.scan_expr_for_calls(
-                        &hir_module.exprs[kw.value],
-                        hir_module,
-                        var_to_func,
-                        overlay,
-                        accumulators,
-                    );
-                }
-            }
-            hir::ExprKind::BuiltinCall { args, kwargs, .. } => {
-                for a in args {
-                    self.scan_expr_for_calls(
-                        &hir_module.exprs[*a],
-                        hir_module,
-                        var_to_func,
-                        overlay,
-                        accumulators,
-                    );
-                }
-                // Recurse into keyword-argument values so inline calls in
-                // `sorted(xs, key=transform(matrix(5)))` get harvested too.
-                for kw in kwargs {
-                    self.scan_expr_for_calls(
-                        &hir_module.exprs[kw.value],
-                        hir_module,
-                        var_to_func,
-                        overlay,
-                        accumulators,
-                    );
-                }
-            }
-            // f-string format spec wrapping a value expression — recurse so
-            // inline calls inside `f"...{matrix(5)}..."` get harvested.
-            hir::ExprKind::FormatSpec { value, .. } => {
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*value],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-            }
-            // Container literals, subscript, attribute — recurse so inline
-            // calls inside `[matrix(5)]`, `d[matrix(5)]`, etc. get harvested.
-            hir::ExprKind::Tuple(elements) | hir::ExprKind::List(elements) => {
-                for e in elements {
-                    self.scan_expr_for_calls(
-                        &hir_module.exprs[*e],
-                        hir_module,
-                        var_to_func,
-                        overlay,
-                        accumulators,
-                    );
-                }
-            }
-            hir::ExprKind::Set(elements) => {
-                for e in elements {
-                    self.scan_expr_for_calls(
-                        &hir_module.exprs[*e],
-                        hir_module,
-                        var_to_func,
-                        overlay,
-                        accumulators,
-                    );
-                }
-            }
-            hir::ExprKind::Dict(items) => {
-                for (k, v) in items {
-                    self.scan_expr_for_calls(
-                        &hir_module.exprs[*k],
-                        hir_module,
-                        var_to_func,
-                        overlay,
-                        accumulators,
-                    );
-                    self.scan_expr_for_calls(
-                        &hir_module.exprs[*v],
-                        hir_module,
-                        var_to_func,
-                        overlay,
-                        accumulators,
-                    );
-                }
-            }
-            hir::ExprKind::Index { obj, index } => {
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*obj],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*index],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-            }
-            hir::ExprKind::Attribute { obj, .. } => {
-                self.scan_expr_for_calls(
-                    &hir_module.exprs[*obj],
-                    hir_module,
-                    var_to_func,
-                    overlay,
-                    accumulators,
-                );
-            }
-            // Default recursion for variants that don't need bespoke
-            // arg-position semantics: Slice / SuperCall / StdlibCall /
-            // Yield / IterHasNext / MatchPattern / Closure-captures /
-            // leaves. Routing through the exhaustive
-            // `hir::visit::for_each_subexpr_id` helper means a new
-            // `ExprKind` variant becomes a compile error in that
-            // function — every scanner using the helper inherits the
-            // fix.
-            //
-            // Previously this branch was `_ => {}`, which silently
-            // dropped Slice / SuperCall / StdlibCall / Yield /
-            // IterHasNext / MatchPattern / Closure captures (code-
-            // review finding #1) — inline `matrix(5)` calls in those
-            // positions never got harvested for `matrix`'s param type.
-            //
-            // Borrow-checker: collect sub-expression ids first, then
-            // recurse. The closure can't call `&mut self` methods
-            // while it's holding the iteration borrow.
-            _ => {
-                let mut sub_ids: smallvec::SmallVec<[hir::ExprId; 4]> = smallvec::SmallVec::new();
-                hir::visit::for_each_subexpr_id(expr, hir_module, |id| sub_ids.push(id));
-                for id in sub_ids {
-                    self.scan_expr_for_calls(
-                        &hir_module.exprs[id],
-                        hir_module,
-                        var_to_func,
-                        overlay,
-                        accumulators,
-                    );
-                }
-            }
+            _ => {}
+        }
+
+        // Default recursion through every sub-`ExprId` via the exhaustive
+        // helper. Routing through `for_each_subexpr_id` means a new
+        // `ExprKind` variant becomes a compile error in that helper —
+        // every scanner inherits the fix.
+        //
+        // Borrow-checker: collect sub-expression ids first, then recurse.
+        // The closure can't call `&mut self` methods while it's holding
+        // the iteration borrow.
+        let mut sub_ids: smallvec::SmallVec<[hir::ExprId; 4]> = smallvec::SmallVec::new();
+        hir::visit::for_each_subexpr_id(expr, hir_module, |id| sub_ids.push(id));
+        for id in sub_ids {
+            self.scan_expr_for_calls(
+                &hir_module.exprs[id],
+                hir_module,
+                var_to_func,
+                overlay,
+                accumulators,
+            );
         }
     }
 }

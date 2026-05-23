@@ -962,12 +962,12 @@ impl<'a> Lowering<'a> {
         observed_arg_types: &mut IndexMap<(ClassId, usize), Type>,
     ) {
         let expr = &hir_module.exprs[expr_id];
+        // Bespoke arms: Call (constructor arg harvest), IfExpr (isinstance
+        // narrowing), MatchPattern (pattern walker). Everything else falls
+        // through to the default `for_each_subexpr_id` recursion below.
         match &expr.kind {
             hir::ExprKind::Call {
-                func,
-                args,
-                kwargs,
-                kwargs_unpack,
+                func, args, kwargs, ..
             } => {
                 let func_expr = &hir_module.exprs[*func];
                 if let hir::ExprKind::ClassRef(class_id) = func_expr.kind {
@@ -1014,64 +1014,8 @@ impl<'a> Lowering<'a> {
                         }
                     }
                 }
-
-                self.scan_constructor_calls_in_expr(
-                    *func,
-                    hir_module,
-                    current_types,
-                    init_bindings,
-                    observed_arg_types,
-                );
-                for arg in args {
-                    let expr_id = match arg {
-                        hir::CallArg::Regular(expr_id) | hir::CallArg::Starred(expr_id) => expr_id,
-                    };
-                    self.scan_constructor_calls_in_expr(
-                        *expr_id,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
-                for kwarg in kwargs {
-                    self.scan_constructor_calls_in_expr(
-                        kwarg.value,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
-                if let Some(expr_id) = kwargs_unpack {
-                    self.scan_constructor_calls_in_expr(
-                        *expr_id,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
-            }
-            hir::ExprKind::BuiltinCall { args, kwargs, .. } => {
-                for expr_id in args {
-                    self.scan_constructor_calls_in_expr(
-                        *expr_id,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
-                for kwarg in kwargs {
-                    self.scan_constructor_calls_in_expr(
-                        kwarg.value,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
+                // Fall through to default recurse (callee + args + kwargs
+                // + kwargs_unpack are all walked by for_each_subexpr_id).
             }
             hir::ExprKind::IfExpr {
                 cond,
@@ -1148,235 +1092,10 @@ impl<'a> Lowering<'a> {
                         observed_arg_types,
                     );
                 }
+                // Narrowing arm already recursed into cond/then/else with
+                // the per-branch overlays — skip the default recurse.
+                return;
             }
-            hir::ExprKind::BinOp { left, right, .. }
-            | hir::ExprKind::Compare { left, right, .. }
-            | hir::ExprKind::LogicalOp { left, right, .. } => {
-                self.scan_constructor_calls_in_expr(
-                    *left,
-                    hir_module,
-                    current_types,
-                    init_bindings,
-                    observed_arg_types,
-                );
-                self.scan_constructor_calls_in_expr(
-                    *right,
-                    hir_module,
-                    current_types,
-                    init_bindings,
-                    observed_arg_types,
-                );
-            }
-            hir::ExprKind::UnOp { operand, .. }
-            | hir::ExprKind::Attribute { obj: operand, .. }
-            | hir::ExprKind::Yield(Some(operand))
-            | hir::ExprKind::IterHasNext(operand) => self.scan_constructor_calls_in_expr(
-                *operand,
-                hir_module,
-                current_types,
-                init_bindings,
-                observed_arg_types,
-            ),
-            hir::ExprKind::Yield(None)
-            | hir::ExprKind::Int(_)
-            | hir::ExprKind::Float(_)
-            | hir::ExprKind::Bool(_)
-            | hir::ExprKind::Str(_)
-            | hir::ExprKind::Bytes(_)
-            | hir::ExprKind::None
-            | hir::ExprKind::NotImplemented
-            | hir::ExprKind::Var(_)
-            | hir::ExprKind::FuncRef(_)
-            | hir::ExprKind::ClassRef(_)
-            | hir::ExprKind::ClassAttrRef { .. }
-            | hir::ExprKind::TypeRef(_)
-            | hir::ExprKind::ImportedRef { .. }
-            | hir::ExprKind::ModuleAttr { .. }
-            | hir::ExprKind::BuiltinRef(_)
-            | hir::ExprKind::StdlibAttr(_)
-            | hir::ExprKind::StdlibConst(_)
-            | hir::ExprKind::ExcCurrentValue => {}
-            hir::ExprKind::FormatSpec { value, .. } => {
-                self.scan_constructor_calls_in_expr(
-                    *value,
-                    hir_module,
-                    current_types,
-                    init_bindings,
-                    observed_arg_types,
-                );
-            }
-            hir::ExprKind::List(items)
-            | hir::ExprKind::Tuple(items)
-            | hir::ExprKind::Set(items)
-            | hir::ExprKind::Closure {
-                captures: items, ..
-            } => {
-                for item in items {
-                    self.scan_constructor_calls_in_expr(
-                        *item,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
-            }
-            hir::ExprKind::Dict(entries) => {
-                for (key, value) in entries {
-                    self.scan_constructor_calls_in_expr(
-                        *key,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                    self.scan_constructor_calls_in_expr(
-                        *value,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
-            }
-            hir::ExprKind::Index { obj, index } => {
-                self.scan_constructor_calls_in_expr(
-                    *obj,
-                    hir_module,
-                    current_types,
-                    init_bindings,
-                    observed_arg_types,
-                );
-                self.scan_constructor_calls_in_expr(
-                    *index,
-                    hir_module,
-                    current_types,
-                    init_bindings,
-                    observed_arg_types,
-                );
-            }
-            hir::ExprKind::Slice {
-                obj,
-                start,
-                end,
-                step,
-            } => {
-                self.scan_constructor_calls_in_expr(
-                    *obj,
-                    hir_module,
-                    current_types,
-                    init_bindings,
-                    observed_arg_types,
-                );
-                if let Some(expr_id) = start {
-                    self.scan_constructor_calls_in_expr(
-                        *expr_id,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
-                if let Some(expr_id) = end {
-                    self.scan_constructor_calls_in_expr(
-                        *expr_id,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
-                if let Some(expr_id) = step {
-                    self.scan_constructor_calls_in_expr(
-                        *expr_id,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
-            }
-            hir::ExprKind::MethodCall {
-                obj, args, kwargs, ..
-            } => {
-                self.scan_constructor_calls_in_expr(
-                    *obj,
-                    hir_module,
-                    current_types,
-                    init_bindings,
-                    observed_arg_types,
-                );
-                for expr_id in args {
-                    self.scan_constructor_calls_in_expr(
-                        *expr_id,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
-                for kwarg in kwargs {
-                    self.scan_constructor_calls_in_expr(
-                        kwarg.value,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
-            }
-            hir::ExprKind::SuperCall { args, .. } | hir::ExprKind::StdlibCall { args, .. } => {
-                for expr_id in args {
-                    self.scan_constructor_calls_in_expr(
-                        *expr_id,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
-            }
-            hir::ExprKind::GeneratorIntrinsic(intrinsic) => match intrinsic {
-                hir::GeneratorIntrinsic::GetState(expr_id)
-                | hir::GeneratorIntrinsic::SetExhausted(expr_id)
-                | hir::GeneratorIntrinsic::IsExhausted(expr_id)
-                | hir::GeneratorIntrinsic::GetSentValue(expr_id)
-                | hir::GeneratorIntrinsic::IterNextNoExc(expr_id)
-                | hir::GeneratorIntrinsic::IterIsExhausted(expr_id) => self
-                    .scan_constructor_calls_in_expr(
-                        *expr_id,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    ),
-                hir::GeneratorIntrinsic::SetState { gen, .. }
-                | hir::GeneratorIntrinsic::GetLocal { gen, .. } => self
-                    .scan_constructor_calls_in_expr(
-                        *gen,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    ),
-                hir::GeneratorIntrinsic::SetLocal { gen, value, .. } => {
-                    self.scan_constructor_calls_in_expr(
-                        *gen,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                    self.scan_constructor_calls_in_expr(
-                        *value,
-                        hir_module,
-                        current_types,
-                        init_bindings,
-                        observed_arg_types,
-                    );
-                }
-                hir::GeneratorIntrinsic::Create { .. } => {}
-            },
             hir::ExprKind::MatchPattern { subject, pattern } => {
                 self.scan_constructor_calls_in_expr(
                     *subject,
@@ -1392,7 +1111,32 @@ impl<'a> Lowering<'a> {
                     init_bindings,
                     observed_arg_types,
                 );
+                // Match patterns: subject + nested pattern walked. The
+                // default recurse via for_each_subexpr_id would re-walk
+                // `subject` (only the subject is a direct sub-ExprId of
+                // MatchPattern — the pattern leaves go through the
+                // separate pattern walker). Skip to avoid double-visit.
+                return;
             }
+            _ => {}
+        }
+
+        // Default recursion through every sub-`ExprId` via the exhaustive
+        // helper. Routing through `for_each_subexpr_id` means a new
+        // `ExprKind` variant becomes a compile error in that helper —
+        // every scanner inherits the fix.
+        //
+        // Borrow-checker: collect sub-expression ids first, then recurse.
+        let mut sub_ids: smallvec::SmallVec<[hir::ExprId; 4]> = smallvec::SmallVec::new();
+        hir::visit::for_each_subexpr_id(expr, hir_module, |id| sub_ids.push(id));
+        for id in sub_ids {
+            self.scan_constructor_calls_in_expr(
+                id,
+                hir_module,
+                current_types,
+                init_bindings,
+                observed_arg_types,
+            );
         }
     }
 
