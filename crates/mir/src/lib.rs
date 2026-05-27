@@ -23,7 +23,7 @@ pub use core::{
     BasicBlock, ClassMetadata, Function, FunctionKind, Local, Module, VtableEntry, VtableInfo,
 };
 pub use dom_tree::{terminator_successors, DomTree};
-pub use instructions::{Instruction, InstructionKind};
+pub use instructions::{runtime_call_is_void, Instruction, InstructionKind};
 pub use kinds::{
     CompareKind, ComparisonOp, ContainerKind, ConversionTypeKind, ElementKind, GetElementKind,
     IterDirection, IterSourceKind, MinMaxOp, PrintKind, ReprTargetKind, SearchOp, SortableKind,
