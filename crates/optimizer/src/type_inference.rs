@@ -900,9 +900,7 @@ fn param_requires_heap_erased_abi_with_def_map(
     param_id: LocalId,
     def_map: &HashMap<LocalId, &InstructionKind>,
 ) -> bool {
-    param_requires_abi_with_def_map(func, param_id, def_map, |def| {
-        def.symbol.starts_with("rt_obj_")
-    })
+    param_requires_abi_with_def_map(func, param_id, def_map, |def| def.any_param_tagged())
 }
 
 /// One pass over a single function: collect arg types across every

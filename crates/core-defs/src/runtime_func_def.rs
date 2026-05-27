@@ -311,6 +311,21 @@ impl RuntimeFuncDef {
         }
     }
 
+    /// Returns `true` if any explicitly-annotated parameter has
+    /// `MirSemantic::Tagged`.
+    ///
+    /// Used by WPA parameter ABI inference to detect calls into the
+    /// tagged-Value dispatch family without fragile symbol-name prefix checks.
+    /// Functions declared via `ptr_*` / `unary_to_i64` / `binary_to_i8`
+    /// constructors all have at least one Tagged param. Functions declared via
+    /// bare `new()` with no `mir_param_semantics` (e.g. `RT_OBJ_HAS_METHOD`)
+    /// return `false` — correct, since those args are raw heap pointer + raw
+    /// integer, not tagged Values.
+    pub fn any_param_tagged(&self) -> bool {
+        self.mir_param_semantics
+            .map_or(false, |sems| sems.iter().any(|&s| s == MirSemantic::Tagged))
+    }
+
     /// Stage B.2 helper: resolved return semantic with fallback.
     ///
     /// Resolution order:

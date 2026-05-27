@@ -261,9 +261,7 @@ impl<'a> Lowering<'a> {
 
                 // Use inferred return type if available, then HIR return type, then Any
                 let result_ty = self
-                    .get_func_return_type(&func_id)
-                    .cloned()
-                    .or_else(|| func_def.and_then(|f| f.return_type.clone()))
+                    .resolve_func_return_type(&func_id, hir_module)
                     .unwrap_or(Type::Any);
                 let result_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
 
@@ -297,9 +295,7 @@ impl<'a> Lowering<'a> {
 
                 // Use inferred return type if available, then HIR return type, then Any
                 let result_ty = self
-                    .get_func_return_type(&func_id)
-                    .cloned()
-                    .or_else(|| func_def.and_then(|f| f.return_type.clone()))
+                    .resolve_func_return_type(&func_id, hir_module)
                     .unwrap_or(Type::Any);
                 let result_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
 
@@ -324,8 +320,7 @@ impl<'a> Lowering<'a> {
                     let user_args = self.lower_expanded_args(args, hir_module, mir_func)?;
                     call_args.extend(user_args);
                     let result_ty = self
-                        .get_func_return_type(&call_func_id)
-                        .cloned()
+                        .resolve_func_return_type(&call_func_id, hir_module)
                         .unwrap_or(Type::Any);
                     let result_local = self.alloc_and_add_local(result_ty, mir_func);
                     self.emit_instruction(mir::InstructionKind::CallDirect {
@@ -601,9 +596,7 @@ impl<'a> Lowering<'a> {
             // Create a destination local for the result
             // Check inferred return types first (for generators), then HIR definition
             let result_ty = self
-                .get_func_return_type(func_id)
-                .cloned()
-                .or_else(|| func_def.and_then(|f| f.return_type.clone()))
+                .resolve_func_return_type(func_id, hir_module)
                 .unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::Any));
             let result_local = self.alloc_and_add_local(result_ty.clone(), mir_func);
 
