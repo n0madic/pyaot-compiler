@@ -64,6 +64,98 @@ pub enum Terminator {
     RaiseInstance { instance: Operand },
 }
 
+impl Terminator {
+    /// Apply `f` to each `LocalId` used (read) by this terminator.
+    ///
+    /// `TrySetjmp::frame_local` is visited as a use: setjmp READS the
+    /// jmp_buf storage location whose def is the upstream `ExcPushFrame`
+    /// instruction. This differs from `InstructionKind::for_each_use`'s
+    /// `GcPush::frame` / `ExcPushFrame::frame_local` (which ARE the defs
+    /// of their frame field).
+    pub fn for_each_use<F: FnMut(LocalId)>(&self, mut f: F) {
+        fn push<F: FnMut(LocalId)>(op: &Operand, f: &mut F) {
+            if let Operand::Local(id) = op {
+                f(*id);
+            }
+        }
+        match self {
+            Terminator::Return(op) => {
+                if let Some(op) = op {
+                    push(op, &mut f);
+                }
+            }
+            Terminator::Goto(_) | Terminator::Unreachable | Terminator::Reraise => {}
+            Terminator::Branch { cond, .. } => push(cond, &mut f),
+            Terminator::TrySetjmp { frame_local, .. } => f(*frame_local),
+            Terminator::Raise { message, cause, .. } => {
+                if let Some(op) = message {
+                    push(op, &mut f);
+                }
+                if let Some(RaiseCause {
+                    message: Some(op), ..
+                }) = cause
+                {
+                    push(op, &mut f);
+                }
+            }
+            Terminator::RaiseCustom {
+                message, instance, ..
+            } => {
+                if let Some(op) = message {
+                    push(op, &mut f);
+                }
+                if let Some(op) = instance {
+                    push(op, &mut f);
+                }
+            }
+            Terminator::RaiseInstance { instance } => push(instance, &mut f),
+        }
+    }
+
+    /// Apply `f` to a mutable reference to each `LocalId` used by this
+    /// terminator. Used by SSA renaming to substitute uses with their
+    /// current top-of-stack name. Mirrors [`Self::for_each_use`].
+    pub fn for_each_use_mut<F: FnMut(&mut LocalId)>(&mut self, mut f: F) {
+        fn push<F: FnMut(&mut LocalId)>(op: &mut Operand, f: &mut F) {
+            if let Operand::Local(id) = op {
+                f(id);
+            }
+        }
+        match self {
+            Terminator::Return(op) => {
+                if let Some(op) = op {
+                    push(op, &mut f);
+                }
+            }
+            Terminator::Goto(_) | Terminator::Unreachable | Terminator::Reraise => {}
+            Terminator::Branch { cond, .. } => push(cond, &mut f),
+            Terminator::TrySetjmp { frame_local, .. } => f(frame_local),
+            Terminator::Raise { message, cause, .. } => {
+                if let Some(op) = message {
+                    push(op, &mut f);
+                }
+                if let Some(RaiseCause {
+                    message: Some(op), ..
+                }) = cause
+                {
+                    push(op, &mut f);
+                }
+            }
+            Terminator::RaiseCustom {
+                message, instance, ..
+            } => {
+                if let Some(op) = message {
+                    push(op, &mut f);
+                }
+                if let Some(op) = instance {
+                    push(op, &mut f);
+                }
+            }
+            Terminator::RaiseInstance { instance } => push(instance, &mut f),
+        }
+    }
+}
+
 /// Cause exception for `raise X from Y`
 #[derive(Debug, Clone)]
 pub struct RaiseCause {

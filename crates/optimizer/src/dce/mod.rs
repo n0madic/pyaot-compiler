@@ -9,8 +9,8 @@ pub(crate) mod reachability;
 #[cfg(test)]
 mod tests;
 
-use pyaot_mir::{InstructionKind, Module, Operand, Terminator};
-use pyaot_utils::{FuncId, LocalId, StringInterner};
+use pyaot_mir::{InstructionKind, Module};
+use pyaot_utils::{FuncId, StringInterner};
 
 use crate::pass::OptimizationPass;
 
@@ -83,12 +83,6 @@ impl OptimizationPass for DcePass {
 // elimination won't try to retain them on the assumption that something
 // reads their (nonexistent) result.
 
-fn collect_operand_locals(op: &Operand, out: &mut Vec<LocalId>) {
-    if let Operand::Local(id) = op {
-        out.push(*id);
-    }
-}
-
 /// Returns true if the instruction is pure (no side effects).
 /// Pure instructions can be removed if their dest is never used.
 ///
@@ -112,42 +106,6 @@ pub(crate) fn instruction_is_pure(kind: &InstructionKind) -> bool {
             | InstructionKind::Phi { .. }
             | InstructionKind::Refine { .. }
     )
-}
-
-/// Collect all LocalIds read by a terminator.
-pub(crate) fn terminator_used_locals(term: &Terminator) -> Vec<LocalId> {
-    let mut locals = Vec::new();
-    match term {
-        Terminator::Return(Some(op)) => collect_operand_locals(op, &mut locals),
-        Terminator::Return(None) | Terminator::Goto(_) | Terminator::Unreachable => {}
-        Terminator::Branch { cond, .. } => collect_operand_locals(cond, &mut locals),
-        Terminator::TrySetjmp { frame_local, .. } => locals.push(*frame_local),
-        Terminator::Raise { message, cause, .. } => {
-            if let Some(op) = message {
-                collect_operand_locals(op, &mut locals);
-            }
-            if let Some(c) = cause {
-                if let Some(op) = &c.message {
-                    collect_operand_locals(op, &mut locals);
-                }
-            }
-        }
-        Terminator::RaiseCustom {
-            message, instance, ..
-        } => {
-            if let Some(op) = message {
-                collect_operand_locals(op, &mut locals);
-            }
-            if let Some(op) = instance {
-                collect_operand_locals(op, &mut locals);
-            }
-        }
-        Terminator::Reraise => {}
-        Terminator::RaiseInstance { instance } => {
-            collect_operand_locals(instance, &mut locals);
-        }
-    }
-    locals
 }
 
 // `terminator_successors` moved to `pyaot_mir::dom_tree` (Phase 1 S1.4) —

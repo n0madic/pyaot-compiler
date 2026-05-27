@@ -22,7 +22,7 @@ use std::fmt;
 use pyaot_utils::{BlockId, LocalId};
 
 use crate::dom_tree::{terminator_successors, DomTree};
-use crate::{Function, InstructionKind, Operand, Terminator};
+use crate::{Function, InstructionKind, Operand};
 
 /// A single SSA invariant violation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,7 +210,7 @@ fn check_definitions_and_dominance(func: &Function, violations: &mut Vec<SsaViol
     }
     for (&bid, block) in &func.blocks {
         for instr in &block.instructions {
-            if let Some(d) = instruction_def(&instr.kind) {
+            if let Some(d) = instr.kind.def() {
                 if let Some(prev) = def_block.insert(d, bid) {
                     violations.push(SsaViolation::MultipleDefinitions {
                         local: d,
@@ -248,17 +248,17 @@ fn check_definitions_and_dominance(func: &Function, violations: &mut Vec<SsaViol
                     }
                 }
             } else {
-                for u in instruction_uses(&instr.kind) {
+                instr.kind.for_each_use(|u| {
                     check_one_use(u, bid, &def_block, &defined_in_block, dom, violations);
-                }
+                });
             }
-            if let Some(d) = instruction_def(&instr.kind) {
+            if let Some(d) = instr.kind.def() {
                 defined_in_block.insert(d);
             }
         }
-        for u in terminator_uses(&block.terminator) {
+        block.terminator.for_each_use(|u| {
             check_one_use(u, bid, &def_block, &defined_in_block, dom, violations);
-        }
+        });
     }
 }
 
@@ -321,159 +321,6 @@ fn check_one_use(
     }
 }
 
-fn push_op(op: &Operand, out: &mut Vec<LocalId>) {
-    if let Operand::Local(id) = op {
-        out.push(*id);
-    }
-}
-
-fn terminator_uses(t: &Terminator) -> Vec<LocalId> {
-    let mut out = Vec::new();
-    match t {
-        Terminator::Return(op) => {
-            if let Some(op) = op {
-                push_op(op, &mut out);
-            }
-        }
-        Terminator::Goto(_) | Terminator::Unreachable | Terminator::Reraise => {}
-        Terminator::Branch { cond, .. } => push_op(cond, &mut out),
-        Terminator::TrySetjmp { frame_local, .. } => out.push(*frame_local),
-        Terminator::Raise { message, cause, .. } => {
-            if let Some(op) = message {
-                push_op(op, &mut out);
-            }
-            if let Some(cause) = cause {
-                if let Some(op) = &cause.message {
-                    push_op(op, &mut out);
-                }
-            }
-        }
-        Terminator::RaiseCustom {
-            message, instance, ..
-        } => {
-            if let Some(op) = message {
-                push_op(op, &mut out);
-            }
-            if let Some(op) = instance {
-                push_op(op, &mut out);
-            }
-        }
-        Terminator::RaiseInstance { instance } => push_op(instance, &mut out),
-    }
-    out
-}
-
-fn instruction_def(kind: &InstructionKind) -> Option<LocalId> {
-    use InstructionKind::*;
-    match kind {
-        // Void RuntimeCalls use `dest` as a side-effect placeholder;
-        // their codegen leaves the Cranelift slot untouched. Treating
-        // them as defs would flag legitimate multi-use of a placeholder
-        // (e.g. multiple `rt_string_builder_append` calls in a loop
-        // body) as SSA violations.
-        RuntimeCall { dest, func, .. } => {
-            if crate::ssa_construct::runtime_call_is_void(func) {
-                None
-            } else {
-                Some(*dest)
-            }
-        }
-        Const { dest, .. }
-        | BinOp { dest, .. }
-        | UnOp { dest, .. }
-        | Call { dest, .. }
-        | CallDirect { dest, .. }
-        | CallNamed { dest, .. }
-        | CallVirtual { dest, .. }
-        | CallVirtualNamed { dest, .. }
-        | FuncAddr { dest, .. }
-        | BuiltinAddr { dest, .. }
-        | Copy { dest, .. }
-        | GcAlloc { dest, .. }
-        | FloatToInt { dest, .. }
-        | BoolToInt { dest, .. }
-        | IntToFloat { dest, .. }
-        | FloatBits { dest, .. }
-        | IntBitsToFloat { dest, .. }
-        | BoxValue { dest, .. }
-        | UnboxValue { dest, .. }
-        | FloatAbs { dest, .. }
-        | ExcGetType { dest }
-        | ExcHasException { dest }
-        | ExcGetCurrent { dest }
-        | ExcCheckType { dest, .. }
-        | ExcCheckClass { dest, .. }
-        | Phi { dest, .. }
-        | Refine { dest, .. } => Some(*dest),
-        // Cranelift-synthesized defs — see ssa_construct::instruction_def.
-        GcPush { frame } => Some(*frame),
-        ExcPushFrame { frame_local } => Some(*frame_local),
-        GcPop | ExcPopFrame | ExcClear | ExcStartHandling | ExcEndHandling => None,
-    }
-}
-
-fn instruction_uses(kind: &InstructionKind) -> Vec<LocalId> {
-    use InstructionKind::*;
-    let mut out = Vec::new();
-    match kind {
-        Const { .. }
-        | FuncAddr { .. }
-        | BuiltinAddr { .. }
-        | GcAlloc { .. }
-        | GcPop
-        | ExcPopFrame
-        | ExcClear
-        | ExcGetType { .. }
-        | ExcHasException { .. }
-        | ExcGetCurrent { .. }
-        | ExcCheckType { .. }
-        | ExcCheckClass { .. }
-        | ExcStartHandling
-        | ExcEndHandling => {}
-        BinOp { left, right, .. } => {
-            push_op(left, &mut out);
-            push_op(right, &mut out);
-        }
-        UnOp { operand, .. } => push_op(operand, &mut out),
-        Copy { src, .. }
-        | FloatToInt { src, .. }
-        | BoolToInt { src, .. }
-        | IntToFloat { src, .. }
-        | FloatBits { src, .. }
-        | IntBitsToFloat { src, .. }
-        | BoxValue { src, .. }
-        | UnboxValue { src, .. }
-        | FloatAbs { src, .. } => push_op(src, &mut out),
-        Call { func, args, .. } => {
-            push_op(func, &mut out);
-            for a in args {
-                push_op(a, &mut out);
-            }
-        }
-        CallDirect { args, .. } | CallNamed { args, .. } | RuntimeCall { args, .. } => {
-            for a in args {
-                push_op(a, &mut out);
-            }
-        }
-        CallVirtual { obj, args, .. } | CallVirtualNamed { obj, args, .. } => {
-            push_op(obj, &mut out);
-            for a in args {
-                push_op(a, &mut out);
-            }
-        }
-        // GcPush / ExcPushFrame define `frame` / `frame_local` rather
-        // than using them — see `instruction_def`. Not uses.
-        GcPush { .. } | ExcPushFrame { .. } => {}
-        Phi { sources, .. } => {
-            for (_, op) in sources {
-                push_op(op, &mut out);
-            }
-        }
-        Refine { src, .. } => push_op(src, &mut out),
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,7 +328,7 @@ mod tests {
     use pyaot_types::Type;
     use pyaot_utils::FuncId;
 
-    use crate::{BasicBlock, Constant, Function, FunctionKind, Instruction, Local};
+    use crate::{BasicBlock, Constant, Function, FunctionKind, Instruction, Local, Terminator};
 
     fn local(id: u32, ty: Type) -> Local {
         Local {

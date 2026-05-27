@@ -7,7 +7,7 @@ use indexmap::IndexSet;
 use pyaot_mir::Function;
 use pyaot_utils::LocalId;
 
-use super::{instruction_is_pure, terminator_used_locals};
+use super::instruction_is_pure;
 
 /// Eliminate dead instructions: pure instructions whose dest is never used.
 /// Returns true if any instructions were removed.
@@ -47,9 +47,9 @@ pub fn eliminate_dead_locals(func: &mut Function) -> bool {
                 referenced.insert(id);
             });
         }
-        for local_id in terminator_used_locals(&block.terminator) {
-            referenced.insert(local_id);
-        }
+        block.terminator.for_each_use(|id| {
+            referenced.insert(id);
+        });
     }
 
     // Keep parameters even if unused (they are part of the function signature)
@@ -72,9 +72,9 @@ fn compute_used_locals(func: &Function) -> IndexSet<LocalId> {
                 used.insert(id);
             });
         }
-        for local_id in terminator_used_locals(&block.terminator) {
-            used.insert(local_id);
-        }
+        block.terminator.for_each_use(|id| {
+            used.insert(id);
+        });
     }
 
     used

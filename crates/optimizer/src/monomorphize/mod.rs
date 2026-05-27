@@ -524,51 +524,13 @@ fn find_funcaddr_source(
     None
 }
 
-/// Returns true if `kind` writes to the local `target` (its `dest` matches).
-/// Used by `find_funcaddr_source` to abort the trace when an unrecognised
-/// producer hits the needle local. Listed with the actual MIR variants as of
-/// `crates/mir/src/instructions.rs`; variants without a `dest: LocalId`
-/// (control flow, GC frame management) are unreachable here.
+/// Returns true if `kind` writes to the local `target`. Used by
+/// `find_funcaddr_source` to abort the trace when an unrecognised producer
+/// hits the needle local. Void RuntimeCalls report no def (`def()` returns
+/// `None`) — their `dest` slot is a placeholder the codegen never writes,
+/// so they are correctly NOT treated as writers.
 fn writes_local(kind: &InstructionKind, target: pyaot_utils::LocalId) -> bool {
-    use InstructionKind as K;
-    let dest = match kind {
-        K::Const { dest, .. }
-        | K::BinOp { dest, .. }
-        | K::UnOp { dest, .. }
-        | K::Call { dest, .. }
-        | K::CallDirect { dest, .. }
-        | K::CallNamed { dest, .. }
-        | K::CallVirtual { dest, .. }
-        | K::CallVirtualNamed { dest, .. }
-        | K::FuncAddr { dest, .. }
-        | K::BuiltinAddr { dest, .. }
-        | K::RuntimeCall { dest, .. }
-        | K::Copy { dest, .. }
-        | K::GcAlloc { dest, .. }
-        | K::FloatToInt { dest, .. }
-        | K::BoolToInt { dest, .. }
-        | K::IntToFloat { dest, .. }
-        | K::FloatBits { dest, .. }
-        | K::IntBitsToFloat { dest, .. }
-        | K::BoxValue { dest, .. }
-        | K::UnboxValue { dest, .. }
-        | K::FloatAbs { dest, .. }
-        | K::ExcGetType { dest, .. }
-        | K::ExcHasException { dest, .. }
-        | K::ExcGetCurrent { dest, .. }
-        | K::ExcCheckType { dest, .. }
-        | K::ExcCheckClass { dest, .. }
-        | K::Refine { dest, .. }
-        | K::Phi { dest, .. } => *dest,
-        K::GcPush { .. }
-        | K::GcPop
-        | K::ExcPushFrame { .. }
-        | K::ExcPopFrame
-        | K::ExcClear
-        | K::ExcStartHandling
-        | K::ExcEndHandling => return false,
-    };
-    dest == target
+    kind.def() == Some(target)
 }
 
 /// Walk a single function in instruction order and propagate the source

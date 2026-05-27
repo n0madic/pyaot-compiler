@@ -27,13 +27,7 @@ use pyaot_utils::{BlockId, LocalId};
 use smallvec::SmallVec;
 
 use crate::dom_tree::terminator_successors;
-use crate::{Function, Instruction, InstructionKind, Local, Operand, RaiseCause, Terminator};
-
-// `runtime_call_is_void` lives in `crate::instructions` alongside its
-// `InstructionKind::def()` consumer. Re-exported here so `ssa_check`
-// (which `use crate::ssa_construct::runtime_call_is_void`) keeps its
-// existing import path stable.
-pub(crate) use crate::instructions::runtime_call_is_void;
+use crate::{Function, Instruction, InstructionKind, Local, Operand};
 
 /// Transform `func` into SSA form in place using Cytron's algorithm.
 ///
@@ -137,11 +131,9 @@ fn collect_use_blocks(func: &Function) -> HashMap<LocalId, IndexSet<BlockId>> {
                 uses.entry(id).or_default().insert(bid);
             });
         }
-        let mut term_uses: IndexSet<LocalId> = IndexSet::new();
-        collect_terminator_uses(&block.terminator, &mut term_uses);
-        for id in term_uses {
+        block.terminator.for_each_use(|id| {
             uses.entry(id).or_default().insert(bid);
-        }
+        });
     }
     uses
 }
@@ -356,50 +348,11 @@ fn collect_referenced_locals(func: &Function) -> IndexSet<LocalId> {
                 out.insert(id);
             });
         }
-        collect_terminator_uses(&block.terminator, &mut out);
+        block.terminator.for_each_use(|id| {
+            out.insert(id);
+        });
     }
     out
-}
-
-fn collect_terminator_uses(term: &Terminator, out: &mut IndexSet<LocalId>) {
-    let push = |op: &Operand, out: &mut IndexSet<LocalId>| {
-        if let Operand::Local(id) = op {
-            out.insert(*id);
-        }
-    };
-    match term {
-        Terminator::Return(Some(op)) => push(op, out),
-        Terminator::Return(None)
-        | Terminator::Goto(_)
-        | Terminator::Unreachable
-        | Terminator::Reraise => {}
-        Terminator::Branch { cond, .. } => push(cond, out),
-        Terminator::TrySetjmp { frame_local, .. } => {
-            out.insert(*frame_local);
-        }
-        Terminator::Raise { message, cause, .. } => {
-            if let Some(op) = message {
-                push(op, out);
-            }
-            if let Some(RaiseCause {
-                message: Some(op), ..
-            }) = cause
-            {
-                push(op, out);
-            }
-        }
-        Terminator::RaiseCustom {
-            message, instance, ..
-        } => {
-            if let Some(op) = message {
-                push(op, out);
-            }
-            if let Some(op) = instance {
-                push(op, out);
-            }
-        }
-        Terminator::RaiseInstance { instance } => push(instance, out),
-    }
 }
 
 fn rename_block(
@@ -449,7 +402,9 @@ fn rename_block(
             }
         }
 
-        rename_terminator_uses(&mut block.terminator, &ctx.stacks);
+        block
+            .terminator
+            .for_each_use_mut(|id| subst_local(id, &ctx.stacks));
     }
 
     // Fill in φ-sources for each successor. The successor may or may not
@@ -569,46 +524,6 @@ fn alloc_fresh(
 // versions and the `subst_local` substitution primitive that the
 // `for_each_use_mut` closures call into.
 
-fn rename_terminator_uses(term: &mut Terminator, stacks: &HashMap<LocalId, Vec<LocalId>>) {
-    match term {
-        Terminator::Return(Some(op)) => subst_operand(op, stacks),
-        Terminator::Return(None)
-        | Terminator::Goto(_)
-        | Terminator::Unreachable
-        | Terminator::Reraise => {}
-        Terminator::Branch { cond, .. } => subst_operand(cond, stacks),
-        Terminator::TrySetjmp { frame_local, .. } => subst_local(frame_local, stacks),
-        Terminator::Raise { message, cause, .. } => {
-            if let Some(op) = message {
-                subst_operand(op, stacks);
-            }
-            if let Some(RaiseCause {
-                message: Some(op), ..
-            }) = cause
-            {
-                subst_operand(op, stacks);
-            }
-        }
-        Terminator::RaiseCustom {
-            message, instance, ..
-        } => {
-            if let Some(op) = message {
-                subst_operand(op, stacks);
-            }
-            if let Some(op) = instance {
-                subst_operand(op, stacks);
-            }
-        }
-        Terminator::RaiseInstance { instance } => subst_operand(instance, stacks),
-    }
-}
-
-fn subst_operand(op: &mut Operand, stacks: &HashMap<LocalId, Vec<LocalId>>) {
-    if let Operand::Local(id) = op {
-        subst_local(id, stacks);
-    }
-}
-
 fn subst_local(id: &mut LocalId, stacks: &HashMap<LocalId, Vec<LocalId>>) {
     if let Some(current) = stacks.get(id).and_then(|s| s.last()).copied() {
         *id = current;
@@ -622,7 +537,7 @@ fn subst_local(id: &mut LocalId, stacks: &HashMap<LocalId, Vec<LocalId>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BasicBlock;
+    use crate::{BasicBlock, Terminator};
     use pyaot_types::Type;
     use pyaot_utils::FuncId;
 
