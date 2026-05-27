@@ -174,17 +174,20 @@ impl SlabAllocator {
     /// allocated slot at a higher offset gets re-visited by the same sweep
     /// loop), this implementation uses a three-phase strategy:
     ///
-    /// 1. **Mark phase**: walk all slots and build a `to_finalize` linked list
-    ///    threaded through the first 8 bytes of unmarked slots. Slot sizes are
-    ///    left intact (finalizers may need them). For reachable slots, clear
+    /// 1. **Mark phase**: walk all slots and collect `(obj_ptr, type_tag)`
+    ///    pairs for unmarked slots into a side `to_finalize` vector. Free
+    ///    slots get linked into a `pre_existing_free` list (in-band, through
+    ///    the first 8 bytes of each free slot). For reachable slots, clear
     ///    the GC mark.
-    /// 2. **Finalize phase**: walk the `to_finalize` list, snapshotting the
-    ///    `next` pointer before each `finalize_object` call. During this phase
-    ///    the slab `free_head` is null, so any reentrant `slab.alloc` falls
-    ///    through to bump allocation above the snapshot sweep limit.
-    /// 3. **Free phase**: walk the list again, zero each header size, and link
+    /// 2. **Finalize phase**: iterate the `to_finalize` vector, dispatching
+    ///    each finalizer by the saved tag. The tag is read once before any
+    ///    free-list link write, so it survives even though the slot's first
+    ///    8 bytes are overwritten in phase 3. During phase 2 the slab
+    ///    `free_head` is null, so any reentrant `slab.alloc` falls through
+    ///    to bump allocation above the snapshot sweep limit.
+    /// 3. **Free phase**: zero each finalized slot's header size and link
     ///    every freed slot (both pre-existing and newly finalized) into the
-    ///    fresh `free_head`.
+    ///    fresh `free_head` via the slot's first 8 bytes.
     ///
     /// Index-based page iteration (rather than `iter_mut`) avoids aliasing UB
     /// when `__del__` reentrantly allocates a new page (which would push to
@@ -217,13 +220,17 @@ impl SlabAllocator {
         let num_pages = self.classes[class_idx].pages.len();
         let cursor = self.classes[class_idx].cursor;
 
-        // In-band linked list heads. Slots are linked through their first
-        // 8 bytes (same layout as `free_head`).
-        let mut to_finalize_head: *mut u8 = std::ptr::null_mut();
+        // Pre-existing free slots stay linked in-band through their first
+        // 8 bytes (same layout as `free_head`). For to-finalize slots we
+        // snapshot `(obj_ptr, type_tag)` into a side vector because the
+        // free-list link in phase 3 overwrites the slot's first 8 bytes,
+        // including the `type_tag` byte at offset 0 — finalizer dispatch
+        // can no longer trust the header after that point.
+        let mut to_finalize: Vec<(*mut Obj, TypeTagKind)> = Vec::new();
         let mut pre_existing_free_head: *mut u8 = std::ptr::null_mut();
         let mut bytes_freed = 0usize;
 
-        // PHASE 1: mark and link.
+        // PHASE 1: scan slots; record finalize targets, link pre-existing frees.
         for page_idx in 0..num_pages {
             let page_ptr = self.classes[class_idx].pages[page_idx].ptr;
             let allocated_up_to = self.classes[class_idx].pages[page_idx].allocated_up_to;
@@ -256,10 +263,10 @@ impl SlabAllocator {
                     *(obj_ptr as *mut *mut u8) = pre_existing_free_head;
                     pre_existing_free_head = obj_ptr as *mut u8;
                 } else if !(*obj_ptr).is_marked() {
-                    // Unmarked live object — defer finalize, keep size intact.
+                    // Unmarked live object — capture tag while the header
+                    // is still intact, defer finalize.
                     bytes_freed += header.size;
-                    *(obj_ptr as *mut *mut u8) = to_finalize_head;
-                    to_finalize_head = obj_ptr as *mut u8;
+                    to_finalize.push((obj_ptr, header.type_tag));
                 } else {
                     // Reachable — clear mark for next cycle.
                     (*obj_ptr).set_marked(false);
@@ -272,17 +279,12 @@ impl SlabAllocator {
         // PHASE 2: finalize. No mut borrow on `class` is held across the call;
         // `__del__` may reentrantly call `slab().alloc(...)`. Reentrant allocs
         // see `free_head == null` and bump-allocate above the snapshot range.
-        let mut p = to_finalize_head;
-        while !p.is_null() {
-            // Save `next` before finalize: __del__ never sees this slot via
-            // GC roots (it was unreachable), but defensive against user code
-            // mutating the slot through aliasing.
-            let next = *(p as *const *mut u8);
-            finalize_object(p as *mut Obj);
-            p = next;
+        for &(obj_ptr, tag) in &to_finalize {
+            finalize_object_by_tag(obj_ptr, tag);
         }
 
-        // PHASE 3: zero sizes and rebuild free list. Walk both lists.
+        // PHASE 3: zero sizes and rebuild free list. Walk the pre-existing
+        // in-band list, then push the freshly finalized slots.
         let mut new_free_head = std::ptr::null_mut::<u8>();
 
         let mut p = pre_existing_free_head;
@@ -293,13 +295,10 @@ impl SlabAllocator {
             p = next;
         }
 
-        let mut p = to_finalize_head;
-        while !p.is_null() {
-            let next = *(p as *const *mut u8);
-            (*(p as *mut Obj)).header.size = 0;
-            *(p as *mut *mut u8) = new_free_head;
-            new_free_head = p;
-            p = next;
+        for &(obj_ptr, _) in &to_finalize {
+            (*obj_ptr).header.size = 0;
+            *(obj_ptr as *mut *mut u8) = new_free_head;
+            new_free_head = obj_ptr as *mut u8;
         }
 
         self.classes[class_idx].free_head = new_free_head;
@@ -336,9 +335,13 @@ pub fn is_slab_size(size: usize) -> bool {
     size <= SLAB_MAX_SIZE
 }
 
-/// Finalize an object before freeing (release auxiliary allocations)
-unsafe fn finalize_object(obj_ptr: *mut Obj) {
-    match (*obj_ptr).type_tag() {
+/// Finalize an object before freeing (release auxiliary allocations).
+///
+/// `tag` is passed explicitly because slab sweep may overwrite the slot's
+/// header (first 8 bytes) before this is called; the caller is responsible
+/// for snapshotting the tag while the header is still intact.
+unsafe fn finalize_object_by_tag(obj_ptr: *mut Obj, tag: TypeTagKind) {
+    match tag {
         TypeTagKind::File => {
             crate::file::file_finalize(obj_ptr);
         }
@@ -388,12 +391,14 @@ unsafe fn finalize_object(obj_ptr: *mut Obj) {
     }
 }
 
-/// Public finalize function for use by gc.rs sweep of large objects
+/// Public finalize function for use by `gc.rs` sweep of large objects.
+/// Reads `type_tag` from the header (caller guarantees the header is intact).
 ///
 /// # Safety
-/// obj_ptr must be a valid pointer to a GC-managed object.
+/// `obj_ptr` must be a valid pointer to a GC-managed object whose header has
+/// not been overwritten by a free-list link or similar.
 pub unsafe fn finalize_object_pub(obj_ptr: *mut Obj) {
-    finalize_object(obj_ptr);
+    finalize_object_by_tag(obj_ptr, (*obj_ptr).type_tag());
 }
 
 // ============================================================================
