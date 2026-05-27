@@ -6,7 +6,8 @@
 //! pure-bitcast roundtrips (`FloatBits` ↔ `IntBitsToFloat`), double
 //! negation, and arithmetic algebraic identities.
 
-use pyaot_mir::{BinOp, Constant, Instruction, InstructionKind, Operand, UnOp};
+use pyaot_mir::{BinOp, Constant, Function, Instruction, InstructionKind, Operand, UnOp};
+use pyaot_types::Type;
 
 /// Simplify a single instruction in-place. Returns true if changed.
 pub fn simplify_instruction(kind: &mut InstructionKind) -> bool {
@@ -377,4 +378,48 @@ fn match_binop_same_operand(
         }),
         _ => None,
     }
+}
+
+/// Rewrite `UnboxValue { src: L, dest_type: T }` to `Copy { src: L }` when
+/// `L`'s resolved MirType is already `Raw(K)` matching `T`.
+///
+/// Created when lowering emits UnboxValue on a then-Tagged src (param /
+/// body local with inferred `Type::Any`), and WPA's
+/// `refine_function_params` / `materialize_function_types` later narrows
+/// the src's `mir_ty` from `Tagged` to `Raw(K)` based on call-site /
+/// producer inference. The UnboxValue then violates the MIR verifier
+/// invariant (`UnboxValue` requires a Tagged-compatible src) without
+/// having any semantic effect — the bits are already raw. Replace with
+/// `Copy` so codegen issues a plain register move and DCE can fold the
+/// chain further.
+pub fn drop_redundant_unboxes(func: &mut Function) -> bool {
+    let mut changed = false;
+    for block in func.blocks.values_mut() {
+        for inst in &mut block.instructions {
+            let replacement = match &inst.kind {
+                InstructionKind::UnboxValue {
+                    dest,
+                    src: Operand::Local(src_id),
+                    dest_type,
+                } if matches!(dest_type, Type::Int | Type::Bool | Type::Float) => {
+                    let expected = pyaot_mir::type_to_mir_type_register(dest_type);
+                    let src_mir_ty = func.locals.get(src_id).map(|l| l.resolved_mir_type());
+                    if src_mir_ty.as_ref() == Some(&expected) {
+                        Some(InstructionKind::Copy {
+                            dest: *dest,
+                            src: Operand::Local(*src_id),
+                        })
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some(r) = replacement {
+                inst.kind = r;
+                changed = true;
+            }
+        }
+    }
+    changed
 }

@@ -427,10 +427,16 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Unbox a heap-stored value to a primitive type if needed. After §F.2:
-    /// - `Int`/`Bool` emit inline `UnwrapValueInt` / `UnwrapValueBool` MIR
-    ///   instructions (arithmetic shift) — no runtime call.
-    /// - `Float` calls `rt_unbox_float` (heap-boxed FloatObj).
+    /// Unbox a tagged-value slot to a raw primitive if needed.
+    ///
+    /// - `Int`/`Bool`/`Float` with a `Tagged` (or Heap-widened) source:
+    ///   emit `UnboxValue { dest_type }`. Codegen lowers this to the
+    ///   appropriate tag-strip / value-extract sequence.
+    /// - `Int`/`Bool`/`Float` whose source local already has `Raw(K)`
+    ///   `mir_ty` matching the target kind: the bits are already in the
+    ///   right representation — no unbox needed, return the operand as-is.
+    ///   (`UnboxValue` requires a Tagged source; applying it to a Raw local
+    ///   violates the MIR verifier invariant.)
     /// - Other types pass through unchanged.
     pub(crate) fn unbox_if_needed(
         &mut self,
@@ -440,9 +446,18 @@ impl<'a> Lowering<'a> {
     ) -> mir::Operand {
         match target_type {
             Type::Int | Type::Bool | Type::Float => {
-                // UnboxValue dest: primitive type (Int/Bool/Float). Default
-                // register translation gives `Raw(K)`, exactly what codegen
-                // expects.
+                // If the source local is already Raw with the expected kind,
+                // skip UnboxValue — it would be invalid (UnboxValue requires
+                // a Tagged source). The bits are already the right primitive.
+                if let mir::Operand::Local(id) = &operand {
+                    let expected = mir::type_to_mir_type_register(target_type);
+                    if mir_func.locals.get(id).map(|l| l.resolved_mir_type()) == Some(expected) {
+                        return operand;
+                    }
+                }
+                // Source is Tagged (or no mir_ty) — emit UnboxValue to extract
+                // the raw primitive. Default register translation gives Raw(K),
+                // exactly what codegen expects.
                 let dest = self.alloc_and_add_local(target_type.clone(), mir_func);
                 self.emit_instruction(mir::InstructionKind::UnboxValue {
                     dest,

@@ -49,6 +49,23 @@ pub fn run_peephole(module: &mut Module) {
     }
 }
 
+/// Mandatory cleanup: rewrite `UnboxValue { src: L, dest_type: T }` to
+/// `Copy` whenever `L`'s resolved MirType is already `Raw(K)` matching
+/// `T`. Must run after WPA `refine_function_params` /
+/// `materialize_function_types` (which can narrow a param/local's
+/// `mir_ty` from `Tagged` to `Raw(K)` based on call-site/producer
+/// inference) and before the final verifier — otherwise stale
+/// UnboxValues with already-raw sources fail the MIR verifier's
+/// `Tagged`-source requirement.
+pub fn run_redundant_unbox_cleanup(module: &mut Module) {
+    let func_ids: Vec<FuncId> = module.functions.keys().copied().collect();
+    for func_id in func_ids {
+        if let Some(func) = module.functions.get_mut(&func_id) {
+            patterns::drop_redundant_unboxes(func);
+        }
+    }
+}
+
 fn optimize_function_once(func: &mut Function) -> bool {
     let mut changed = false;
 
@@ -63,6 +80,12 @@ fn optimize_function_once(func: &mut Function) -> bool {
     for block in func.blocks.values_mut() {
         changed |= patterns::simplify_pairs(&mut block.instructions);
     }
+
+    // Drop redundant UnboxValue whose src local is already Raw of the
+    // matching kind. Created when lowering emits UnboxValue on a Tagged
+    // param/local that WPA later narrows to Raw via
+    // `refine_function_params` / `materialize_function_types`.
+    changed |= patterns::drop_redundant_unboxes(func);
 
     changed
 }

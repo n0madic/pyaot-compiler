@@ -502,6 +502,13 @@ pub fn compile_to_executable(options: &CompileOptions) -> Result<()> {
     // declared types post-opt; re-normalize to catch any new Raw→Tagged
     // mismatches and narrow Phi dests with uniform Raw sources.
     pyaot_mir::phi_normalize::normalize_phi_sources_module(&mut mir_module);
+    // Cleanup: when WPA's `refine_function_params` narrowed a param's
+    // `mir_ty` from `Tagged` to `Raw(K)` (because call-site analysis
+    // found a concrete primitive), any `UnboxValue` that lowering had
+    // emitted on that param at a time when it was still `Tagged` now
+    // has a Raw-shaped source, which violates the verifier's Tagged
+    // contract. Rewrite such UnboxValues to `Copy`.
+    pyaot_optimizer::peephole::run_redundant_unbox_cleanup(&mut mir_module);
     // Stage G.1: final-pre-codegen verifier ALWAYS runs in HardError mode
     // (forced on even when config sets Off for safety — 38 examples are
     // verifier-clean, so violations are compiler bugs and must fail
