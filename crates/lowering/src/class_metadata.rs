@@ -1045,11 +1045,6 @@ impl<'a> Lowering<'a> {
                 // tower to `Float`, which is the correct `data` type for
                 // numeric arithmetic.
                 let cond_expr = &hir_module.exprs[*cond];
-                let narrow = self.extract_simple_isinstance_narrowing(
-                    cond_expr,
-                    hir_module,
-                    Some(current_types),
-                );
                 self.scan_constructor_calls_in_expr(
                     *cond,
                     hir_module,
@@ -1057,11 +1052,11 @@ impl<'a> Lowering<'a> {
                     init_bindings,
                     observed_arg_types,
                 );
-                if let Some((var_id, then_narrow, else_narrow)) = narrow {
-                    let mut then_overlay = current_types.clone();
-                    then_overlay.insert(var_id, then_narrow);
-                    let mut else_overlay = current_types.clone();
-                    else_overlay.insert(var_id, else_narrow);
+                if let Some((then_overlay, else_overlay)) = self.build_isinstance_branch_overlays(
+                    cond_expr,
+                    hir_module,
+                    Some(current_types),
+                ) {
                     self.scan_constructor_calls_in_expr(
                         *then_val,
                         hir_module,

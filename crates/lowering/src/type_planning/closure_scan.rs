@@ -911,14 +911,10 @@ impl<'a> Lowering<'a> {
                 else_val,
             } => {
                 let cond_expr = &hir_module.exprs[*cond];
-                let narrow =
-                    self.extract_simple_isinstance_narrowing(cond_expr, hir_module, Some(overlay));
                 self.scan_expr_for_calls(cond_expr, hir_module, var_to_func, overlay, accumulators);
-                if let Some((var_id, then_narrow, else_narrow)) = narrow {
-                    let mut then_overlay = overlay.clone();
-                    then_overlay.insert(var_id, then_narrow);
-                    let mut else_overlay = overlay.clone();
-                    else_overlay.insert(var_id, else_narrow);
+                if let Some((then_overlay, else_overlay)) =
+                    self.build_isinstance_branch_overlays(cond_expr, hir_module, Some(overlay))
+                {
                     self.scan_expr_for_calls(
                         &hir_module.exprs[*then_val],
                         hir_module,

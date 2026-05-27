@@ -924,40 +924,36 @@ impl<'a> Lowering<'a> {
                 // keep `other` as `Any` and subsequent `other.data` fails
                 // with "unknown attribute".
                 let cond_expr = &module.exprs[*cond];
-                let narrow =
-                    self.extract_simple_isinstance_narrowing(cond_expr, module, param_types);
-                match narrow {
-                    Some((var_id, then_narrow, else_narrow)) => {
-                        let mut then_overlay = param_types.cloned().unwrap_or_else(IndexMap::new);
-                        then_overlay.insert(var_id, then_narrow);
-                        let mut else_overlay = param_types.cloned().unwrap_or_else(IndexMap::new);
-                        else_overlay.insert(var_id, else_narrow);
-                        let then_ty = self.infer_seed_expr_type_inner(
+                let (then_ty, else_ty) = if let Some((then_overlay, else_overlay)) =
+                    self.build_isinstance_branch_overlays(cond_expr, module, param_types)
+                {
+                    (
+                        self.infer_seed_expr_type_inner(
                             &module.exprs[*then_val],
                             module,
                             Some(&then_overlay),
-                        );
-                        let else_ty = self.infer_seed_expr_type_inner(
+                        ),
+                        self.infer_seed_expr_type_inner(
                             &module.exprs[*else_val],
                             module,
                             Some(&else_overlay),
-                        );
-                        helpers::union_or_any(then_ty, else_ty)
-                    }
-                    None => {
-                        let then_ty = self.infer_seed_expr_type_inner(
+                        ),
+                    )
+                } else {
+                    (
+                        self.infer_seed_expr_type_inner(
                             &module.exprs[*then_val],
                             module,
                             param_types,
-                        );
-                        let else_ty = self.infer_seed_expr_type_inner(
+                        ),
+                        self.infer_seed_expr_type_inner(
                             &module.exprs[*else_val],
                             module,
                             param_types,
-                        );
-                        helpers::union_or_any(then_ty, else_ty)
-                    }
-                }
+                        ),
+                    )
+                };
+                helpers::union_or_any(then_ty, else_ty)
             }
             hir::ExprKind::List(elements) => {
                 let elem_types: Vec<Type> = elements
@@ -1189,6 +1185,35 @@ impl<'a> Lowering<'a> {
         } else {
             Some((var_id, narrowed, excluded))
         }
+    }
+
+    /// Build per-branch type overlays for an IfExpr whose condition might be
+    /// `isinstance(var, T)` or `not isinstance(var, T)`.
+    ///
+    /// Returns `Some((then_overlay, else_overlay))` where `then_overlay` has
+    /// `var` narrowed to the positive-isinstance type and `else_overlay` to
+    /// the negative. Returns `None` when the condition is not a recognised
+    /// isinstance pattern; callers should pass `current` unchanged to both
+    /// branches in that case.
+    ///
+    /// Single DRY source for the overlay-building half of the
+    /// isinstance-narrowing IfExpr arms in `infer_seed_expr_type_inner`,
+    /// `scan_expr_for_calls`, and `scan_constructor_calls_in_expr`. Fixes to
+    /// the overlay logic propagate automatically to all three callers.
+    pub(crate) fn build_isinstance_branch_overlays(
+        &self,
+        cond: &hir::Expr,
+        module: &hir::Module,
+        current: Option<&IndexMap<VarId, Type>>,
+    ) -> Option<(IndexMap<VarId, Type>, IndexMap<VarId, Type>)> {
+        let (var_id, then_narrow, else_narrow) =
+            self.extract_simple_isinstance_narrowing(cond, module, current)?;
+        let base: IndexMap<VarId, Type> = current.map_or_else(IndexMap::new, |m| m.clone());
+        let mut then_overlay = base.clone();
+        let mut else_overlay = base;
+        then_overlay.insert(var_id, then_narrow);
+        else_overlay.insert(var_id, else_narrow);
+        Some((then_overlay, else_overlay))
     }
 }
 
